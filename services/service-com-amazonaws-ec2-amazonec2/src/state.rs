@@ -1221,18 +1221,22 @@
 //! still a gateway the API reports rather than a record that vanishes.
 //! [`ComAmazonawsEc2Amazonec2State::materialize_due_transitions`] applies both moves.
 //!
-//! ## Transit gateway policy tables and their associations
+//! ## Transit gateway policy tables, their associations and their entries
 //!
 //! [`ComAmazonawsEc2Amazonec2State::transit_gateway_policy_tables`] holds the account's
 //! policy tables as [`TransitGatewayPolicyTableRecord`]s, keyed by
 //! `TransitGatewayPolicyTableId` in a [`BTreeMap`]: the modelled [`TransitGatewayPolicyTable`]
-//! every operation that reports one answers with, plus the thing that shape carries no
+//! every operation that reports one answers with, plus the two things that shape carries no
 //! member for — the attachments associated with the table, keyed by
 //! `TransitGatewayAttachmentId`, each as the modelled
 //! [`TransitGatewayPolicyTableAssociation`] its own report answers with beside the
-//! [`PendingStateMove`] the clock owes it. An association is per (table, attachment), so
-//! that is what the key is, and the order it gives is the order
-//! `GetTransitGatewayPolicyTableAssociations` reports and pages over.
+//! [`PendingStateMove`] the clock owes it, and the table's ENTRIES, keyed by the rule number
+//! that identifies one within it, each as the modelled [`TransitGatewayPolicyTableEntry`]
+//! `GetTransitGatewayPolicyTableEntries` reports. An association is per (table, attachment),
+//! so that is what the key is, and the order it gives is the order
+//! `GetTransitGatewayPolicyTableAssociations` reports and pages over; what an entry is stored
+//! as, and the one writer of one, are
+//! [`crate::state::transit_gateway_policy_table_entries`].
 //!
 //! `AssociateTransitGatewayPolicyTable` answers an association in the non-terminal
 //! `associating` state, so the clock owes it `associated` one [`TRANSITION_DELAY`] later,
@@ -1923,7 +1927,8 @@ use crate::ops::types::{
     TransitGatewayMulticastDomainAssociation, TransitGatewayOptions,
     TransitGatewayPeeringAttachment, TransitGatewayPolicyTable,
     TransitGatewayAssociation,
-    TransitGatewayPolicyTableAssociation, TransitGatewayPrefixListAttachment,
+    TransitGatewayPolicyTableAssociation, TransitGatewayPolicyTableEntry,
+    TransitGatewayPrefixListAttachment,
     TransitGatewayPrefixListReference, TransitGatewayPropagation,
     TransitGatewayRequestOptions,
     TransitGatewayRouteTable, TransitGatewayRouteTableAnnouncement,
@@ -2038,6 +2043,14 @@ pub use vpc_peering_connections::*;
 /// to live in the "Transit gateway metering policies" section of this module.
 pub mod transit_gateway_metering_policy_entries;
 pub use transit_gateway_metering_policy_entries::*;
+
+/// The entries of a transit gateway policy table — what one is stored as, the rule a request
+/// may describe, the state a created entry is in, the refusals a create and a reader answer,
+/// the store's bounds and its one writer — in a module of its own, re-exported so a handler
+/// reaches them as `crate::state::<item>` like every other primitive here. The tables the
+/// entries belong to live in the "Transit gateway policy tables" section of this module.
+pub mod transit_gateway_policy_table_entries;
+pub use transit_gateway_policy_table_entries::*;
 
 /// The `Reservation` shape, under the name the scaffold generated for it.
 ///

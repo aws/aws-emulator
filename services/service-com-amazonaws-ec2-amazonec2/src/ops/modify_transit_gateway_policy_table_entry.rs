@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ModifyTransitGatewayPolicyTableEntry
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ModifyTransitGatewayPolicyTableEntry`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ModifyTransitGatewayPolicyTableEntry::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! "Modifies the specified transit gateway policy table entry": it resolves the policy table
+//! and the entry the request names, lays the request's matching criteria over the ones the
+//! entry holds — "unspecified fields retain their current values" — and stores the entry as
+//! it now stands, which `GetTransitGatewayPolicyTableEntries` then reads.
+//!
+//! Nothing about the answer is taken from a recording: the entry is the one the request's
+//! table and rule number name, the rule is the one the update leaves it carrying, and the
+//! route table it targets is the one the request names, resolved against the store, or the
+//! one the entry already targeted.
 //!
 //! ## Shape of an operation
 //!
@@ -141,18 +142,178 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ModifyTransitGatewayPolicyTableEntry` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ModifyTransitGatewayPolicyTableEntryErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ModifyTransitGatewayPolicyTableEntry"))
+        // `ctx` carries request metadata only; this operation reads none of it — an entry is
+        // a resource OF the policy table the request names and carries no Region of its own.
+        // The store is reached through the engine held on `self`.
+        let _ = ctx;
+        use crate::state;
+
+        // "The ID of the transit gateway policy table" (`$TransitGatewayPolicyTableId`) and
+        // "the rule number of the policy table entry to modify" (`$PolicyRuleNumber`) are
+        // each `@required` but modelled `clientOptional`, so a request that left one out
+        // reaches this handler as an empty string rather than being refused at the boundary:
+        // a parameter the request did not carry is EC2's `MissingParameter`. The id's FORM is
+        // checked before the store is touched, and the rule number is read as the number it
+        // is evaluated in order of by the crate's ONE reading of one, so this modify names
+        // the same entry the create and the delete do.
+        let policy_table_id = input.transit_gateway_policy_table_id.as_str();
+        if policy_table_id.is_empty() {
+            return Err(state::missing_parameter(
+                "The request must contain the parameter transitGatewayPolicyTableId",
+            ));
+        }
+        state::require_well_formed_id(
+            state::TRANSIT_GATEWAY_POLICY_TABLE_ID_PREFIX,
+            policy_table_id,
+            state::INVALID_TRANSIT_GATEWAY_POLICY_TABLE_ID_MALFORMED,
+        )?;
+        let rule_number_text = input.policy_rule_number.as_str();
+        if rule_number_text.is_empty() {
+            return Err(state::missing_parameter(
+                "The request must contain the parameter policyRuleNumber",
+            ));
+        }
+        let rule_number = state::transit_gateway_policy_table_rule_number(rule_number_text)?;
+
+        // "The ID of the transit gateway route table to use for traffic matching this rule"
+        // (`$TargetRouteTableId`) is OPTIONAL on a modify, so a request that names none
+        // leaves the entry targeting the route table it already did; one that IS named is
+        // held to the route table id's own form here, before anything is resolved.
+        let target_route_table_id = input
+            .target_route_table_id
+            .as_deref()
+            .filter(|value| !value.is_empty());
+        if let Some(target_route_table_id) = target_route_table_id {
+            state::require_well_formed_transit_gateway_route_table_id(target_route_table_id)?;
+        }
+
+        // "Checks whether you have the required permissions for the action, WITHOUT ACTUALLY
+        // MAKING THE REQUEST, and provides an error response. If you have the required
+        // permissions, the error response is DryRunOperation. Otherwise, it is
+        // UnauthorizedOperation" (`$DryRun`): the flag asks about PERMISSION, not about the
+        // resources the request names, so it is answered once the request's own form has been
+        // checked and before anything is resolved or written; every caller of this emulator
+        // is permitted.
+        if input.dry_run.unwrap_or(false) {
+            return Err(state::dry_run_operation());
+        }
+
+        let service_state = state::require_service_state(&*self.engine)?;
+        let mut store = service_state.lock();
+        // The clock first: whether this entry can be modified is asked of the state its table
+        // and the route table it would target are ACTUALLY in rather than the one they were
+        // left in.
+        store.materialize_due_transitions();
+
+        // An entry has nowhere to live without the table that holds it, so an id this account
+        // holds no policy table for is refused with the one wording every operation that
+        // WRITES an entry answers for an id it cannot resolve — and an entry the table does
+        // not hold is a refusal too, not a create: a caller that modifies an entry nobody
+        // created has to be able to tell that from a modification it performed.
+        if !store
+            .transit_gateway_policy_tables
+            .contains_key(policy_table_id)
+        {
+            return Err(
+                state::invalid_transit_gateway_policy_table_id_not_found_for_entry(
+                    policy_table_id,
+                ),
+            );
+        }
+        let table = store.require_transit_gateway_policy_table(policy_table_id)?;
+        let Some(entry) = table.entries.get(&rule_number) else {
+            return Err(
+                state::invalid_transit_gateway_policy_table_entry_not_found(
+                    policy_table_id,
+                    rule_number,
+                ),
+            );
+        };
+
+        // "The updated matching criteria for the policy table entry. Unspecified fields
+        // retain their current values" (`$PolicyRule`): the rule the entry will carry is the
+        // request laid over the rule it holds, field by field, through the crate's one
+        // reading of a requested rule — so a modify cannot leave an entry carrying a rule a
+        // create would have refused.
+        let policy_rule = state::updated_transit_gateway_policy_rule(
+            entry.policy_rule.as_ref(),
+            input.policy_rule.as_ref(),
+        )?;
+        // The route table the entry targets after the update: the one the request named, or
+        // the one it already targeted.
+        let target_route_table_id = target_route_table_id
+            .map(str::to_string)
+            .or_else(|| entry.target_route_table_id.clone());
+
+        // A route table the entry is to route matching traffic to has to exist: an id that
+        // names no route table of the account is a dangling reference, and storing it would
+        // leave an entry routing traffic to a table that can never receive it — asked of the
+        // id the entry will carry, so an update cannot smuggle one past the create's check.
+        if let Some(target_route_table_id) = target_route_table_id.as_deref() {
+            if !store
+                .transit_gateway_route_tables
+                .contains_key(target_route_table_id)
+            {
+                return Err(state::invalid_transit_gateway_route_table_id_not_found(
+                    target_route_table_id,
+                ));
+            }
+        }
+
+        // What this call would leave behind, computed by the ONE definition of a stored
+        // entry's caller-supplied bytes, so the figure checked here is exactly the one the
+        // write charges. The budget is asked about the NET change: this call stores no
+        // further entry, so the per-table record ceiling cannot bound it, while the rule's
+        // CIDR blocks, port ranges and metadata are caller-chosen text — a modify that
+        // replaced a small rule with a large one, over and over, would otherwise grow this
+        // process's memory past the only bound it has.
+        let updated = TransitGatewayPolicyTableEntry {
+            policy_rule_number: entry.policy_rule_number.clone(),
+            policy_rule: policy_rule.clone(),
+            target_route_table_id: target_route_table_id.clone(),
+            state: entry.state.clone(),
+        };
+        let refund = state::transit_gateway_policy_table_entry_payload_bytes(entry);
+        let charge = state::transit_gateway_policy_table_entry_payload_bytes(&updated);
+        if store.would_exceed_stored_bytes_after_refund(charge, refund) {
+            return Err(entry_does_not_fit(&store, charge));
+        }
+        let Some(entry) = store.modify_transit_gateway_policy_table_entry(
+            policy_table_id,
+            rule_number,
+            policy_rule,
+            target_route_table_id,
+        ) else {
+            // Unreachable: the table and the entry were both resolved above, the budget was
+            // asked about this very charge, and the lock has been held throughout. Kept as
+            // the backstop that keeps a modify the writer declined from reading as a 200 over
+            // an entry the store still holds as it was, worded by the ONE definition of that
+            // refusal so the pre-check and the backstop cannot drift apart.
+            return Err(entry_does_not_fit(&store, charge));
+        };
+
+        // The answer is the entry as it is now STORED, so this modify and every later reader
+        // of it cannot drift apart.
+        Ok(ModifyTransitGatewayPolicyTableEntryOutput {
+            transit_gateway_policy_table_entry: Some(entry),
+        })
     }
+}
+
+/// The refusal a modification that does not fit the store's byte budget answers: HTTP 400
+/// `ResourceLimitExceeded`, naming what the store holds, what it holds at most and what this
+/// modification would have charged.
+///
+/// The ONE definition of that wording, worded as every other replacement path of this crate
+/// words it, so the pre-check and the writer's backstop below it cannot drift apart.
+fn entry_does_not_fit(
+    store: &crate::state::ComAmazonawsEc2Amazonec2State,
+    charge: usize,
+) -> ModifyTransitGatewayPolicyTableEntryError {
+    crate::state::resource_limit_exceeded(format!(
+        "This emulator holds {held} of at most {max} bytes of caller-supplied data, so it \
+         cannot store this modification's {charge} bytes",
+        held = store.stored_bytes(),
+        max = crate::state::MAX_STORED_BYTES,
+    ))
 }

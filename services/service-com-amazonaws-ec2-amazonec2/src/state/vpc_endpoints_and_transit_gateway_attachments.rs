@@ -1718,6 +1718,19 @@ pub struct TransitGatewayPolicyTableRecord {
     pub view: TransitGatewayPolicyTable,
     /// The attachments associated with this table, by `TransitGatewayAttachmentId`.
     pub associations: BTreeMap<String, TransitGatewayPolicyTableAssociationRecord>,
+    /// The entries of this table, by the rule number that identifies one within it, as the
+    /// modelled [`TransitGatewayPolicyTableEntry`] shape itself.
+    ///
+    /// Keyed by the rule number because that is what identifies an entry WITHIN its table —
+    /// `DeleteTransitGatewayPolicyTableEntry` and `ModifyTransitGatewayPolicyTableEntry` each
+    /// name an entry by its table and that number alone — so a table cannot hold two entries
+    /// at one number, and the key order is "lower rule numbers are evaluated first and take
+    /// precedence" (`CreateTransitGatewayPolicyTableEntryRequest$PolicyRuleNumber`), which is
+    /// the stable order `GetTransitGatewayPolicyTableEntries` reports and pages over. The
+    /// entries live INSIDE the table's record, so a table taken out of the store takes its
+    /// entries with it; what one is stored as and the store's one writer of them are
+    /// [`crate::state::transit_gateway_policy_table_entries`].
+    pub entries: BTreeMap<i32, TransitGatewayPolicyTableEntry>,
 }
 
 /// `InvalidTransitGatewayPolicyTableId.NotFound` (HTTP 400): the request named a transit
@@ -1731,8 +1744,13 @@ pub const INVALID_TRANSIT_GATEWAY_POLICY_TABLE_ID_MALFORMED: &str =
     "InvalidTransitGatewayPolicyTableId.Malformed";
 
 /// Refuse a request that named a transit gateway policy table id no policy table of the
-/// account has: HTTP 400 `InvalidTransitGatewayPolicyTableId.NotFound`, worded the way
-/// [`invalid_transit_gateway_id_not_found`] words the transit gateway's own.
+/// account has: HTTP 400 `InvalidTransitGatewayPolicyTableId.NotFound`.
+///
+/// The sentence is the one the policy table's own operations and the report of its entries
+/// answer this condition with, and it names the table THE REQUEST named. The operations that
+/// write an ENTRY of a table word the same refusal differently — see
+/// [`invalid_transit_gateway_policy_table_id_not_found_for_entry`] — so each is worded in one
+/// place rather than per handler.
 pub fn invalid_transit_gateway_policy_table_id_not_found<E>(
     transit_gateway_policy_table_id: &str,
 ) -> Scaffolded<E> {
@@ -1793,8 +1811,8 @@ impl ComAmazonawsEc2Amazonec2State {
     /// [`Self::insert_transit_gateway_attachment`] mints an attachment id, and the
     /// caller-chosen bytes the table holds (its tags) are charged here on top of the fixed
     /// [`STORED_RECORD_OVERHEAD_BYTES`] every stored record costs, so no path can store one
-    /// uncharged. A table is stored with no associations: every association is made by a
-    /// request.
+    /// uncharged. A table is stored with no associations and no entries: every association is
+    /// made by a request, and so is every entry.
     pub fn insert_transit_gateway_policy_table(
         &mut self,
         mut view: TransitGatewayPolicyTable,
@@ -1812,6 +1830,7 @@ impl ComAmazonawsEc2Amazonec2State {
             TransitGatewayPolicyTableRecord {
                 view,
                 associations: BTreeMap::new(),
+                entries: BTreeMap::new(),
             },
         );
         Some(policy_table_id)

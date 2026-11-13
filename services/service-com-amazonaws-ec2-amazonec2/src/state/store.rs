@@ -2719,15 +2719,13 @@ pub struct ComAmazonawsEc2Amazonec2State {
     /// and pages over.
     pub transit_gateway_connect_peers: BTreeMap<String, TransitGatewayConnectPeerRecord>,
     /// Every transit gateway policy table the account holds, by
-    /// `TransitGatewayPolicyTableId`, each with the attachments associated with it — see
-    /// [`TransitGatewayPolicyTableRecord`] and the module docs. Ordered by id, the stable
-    /// order every reader of it reports in.
+    /// `TransitGatewayPolicyTableId`, each with the attachments associated with it and the
+    /// entries it holds — see [`TransitGatewayPolicyTableRecord`] and the module docs.
+    /// Ordered by id, the stable order every reader of it reports in.
     ///
     /// `CreateTransitGatewayPolicyTable` is the operation that adds one and
-    /// `DeleteTransitGatewayPolicyTable` the one that removes it; both are still scaffolds,
-    /// so a fresh account holds none — which is why `AssociateTransitGatewayPolicyTable`
-    /// answers `InvalidTransitGatewayPolicyTableId.NotFound` for every id until one of them
-    /// is written, exactly as the real service does for a table that does not exist.
+    /// `DeleteTransitGatewayPolicyTable` the one that removes it; that delete is still a
+    /// scaffold, so nothing takes a table out of this store yet.
     pub transit_gateway_policy_tables: BTreeMap<String, TransitGatewayPolicyTableRecord>,
     /// Every transit gateway metering policy the account holds, by
     /// `TransitGatewayMeteringPolicyId`, as the modelled [`TransitGatewayMeteringPolicy`]
