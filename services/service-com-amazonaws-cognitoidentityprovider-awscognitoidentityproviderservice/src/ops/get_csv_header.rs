@@ -2,9 +2,10 @@
 
 //! @op GetCSVHeader
 //! Renders the CSV header of the STORED user pool the request names: one column
-//! per attribute of the pool's schema a user import can carry, then the two
-//! columns Amazon Cognito's import format adds. A `UserPoolId` that names no
-//! stored pool is refused with `ResourceNotFoundException`.
+//! per attribute of the pool's schema a user import can carry, in the order
+//! Amazon Cognito's import template lists them, then the columns that format
+//! adds. A `UserPoolId` that names no stored pool is refused with
+//! `ResourceNotFoundException`.
 //!
 //! ## Shape of an operation
 //!

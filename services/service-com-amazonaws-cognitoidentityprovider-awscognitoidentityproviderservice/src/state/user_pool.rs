@@ -1286,28 +1286,20 @@ impl UserPool {
     /// for the CSV file that determines the users in a user import job"
     /// (`GetCSVHeader`), as the list of column names it is modelled as.
     ///
-    /// COMPUTED from the stored schema IN ITS STORED ORDER, so a pool whose
-    /// schema carries a custom attribute reports a column for it where the
-    /// schema holds it: one column per attribute of this pool a user import can
-    /// carry, then the columns the import format adds
-    /// ([`CSV_HEADER_TRAILING_COLUMNS`]). [`SUB_ATTRIBUTE`] is not among them —
-    /// the pool mints it for every user and no import supplies it — and neither
-    /// are the attributes the service maintains itself
-    /// ([`SERVICE_MAINTAINED_SCHEMA`]), which no import supplies either. The
-    /// stored order is the pool's own, as created ([`effective_schema`]), so the
-    /// header a client builds its CSV from and the schema `DescribeUserPool`
-    /// reports list the pool's attributes in ONE order.
+    /// COMPUTED from this pool's STORED schema, so a pool whose schema carries a
+    /// custom attribute reports a column for it: one column per attribute of
+    /// this pool a user import can carry, then the columns the import format
+    /// adds. [`SUB_ATTRIBUTE`] is not among them — the pool mints it for every
+    /// user and no import supplies it — and neither are the attributes the
+    /// service maintains itself ([`SERVICE_MAINTAINED_SCHEMA`]), which no import
+    /// supplies either.
+    ///
+    /// The ORDER of those columns is the import template's own
+    /// ([`csv_header_columns`]) rather than the order this pool happens to store
+    /// its schema in, so every pool holding the same attributes hands out the
+    /// same template however each one's schema was configured.
     pub fn csv_header(&self) -> Vec<String> {
-        self.schema
-            .iter()
-            .filter_map(|attribute| attribute.name.clone())
-            .filter(|name| name != SUB_ATTRIBUTE)
-            .chain(
-                CSV_HEADER_TRAILING_COLUMNS
-                    .iter()
-                    .map(|column| (*column).to_string()),
-            )
-            .collect()
+        csv_header_columns(&self.schema)
     }
 
     /// Whether `scope` is one an app client of this pool may be permitted to

@@ -17,12 +17,16 @@
 //!   is created on the cheapest plan that includes every feature its
 //!   configuration asks for;
 //! * `GetCSVHeader` answers one column per attribute of the pool a user import
-//!   can carry — every attribute of the STORED schema but the minted `sub`, in
-//!   the order the pool stores them — then the columns the import format adds,
-//!   the last of which carries the user's password as a hash; and the stored
-//!   order is the pool's own, as created: "an array of attributes for the new
-//!   user pool" (`CreateUserPool.Schema`) is stored in the order the request
-//!   names them, with the standard attributes it does not name following.
+//!   can carry — every attribute of the STORED schema but the minted `sub` and
+//!   the `identities` attribute the service maintains — then the columns the
+//!   import format adds, the last of which carries the user's password as a
+//!   hash; and the ORDER of those columns is the import template's own, so a
+//!   pool is handed the same template however its schema was configured
+//!   (`Schema` at the create, in any order, or `AddCustomAttributes`
+//!   afterwards), while the pool keeps storing its schema in the order it was
+//!   created in: "an array of attributes for the new user pool"
+//!   (`CreateUserPool.Schema`) is stored in the order the request names them,
+//!   with the standard attributes it does not name following.
 //!
 //! Each table row names its case and every assertion reports the actual value.
 
@@ -518,15 +522,87 @@ fn expected_schema_order(named: &[&str], added: &[&str]) -> Vec<String> {
     order
 }
 
+/// Amazon Cognito's import template, as it lists a pool's STANDARD columns once
+/// that pool carries attributes of its own: the pool's custom columns sit in the
+/// slot marked below rather than behind every standard one. The minted `sub` is
+/// not a column of the template.
+const IMPORT_TEMPLATE_STANDARD_COLUMNS: [&str; 19] = [
+    "profile",
+    "address",
+    "birthdate",
+    "gender",
+    "preferred_username",
+    "updated_at",
+    "website",
+    "picture",
+    "email_verified",
+    "phone_number_verified",
+    "phone_number",
+    "zoneinfo",
+    // The pool's own (custom) columns go here.
+    "locale",
+    "email",
+    "given_name",
+    "family_name",
+    "middle_name",
+    "name",
+    "nickname",
+];
+
+/// How many of [`IMPORT_TEMPLATE_STANDARD_COLUMNS`] the template lists ahead of
+/// the pool's custom columns.
+const IMPORT_TEMPLATE_COLUMNS_BEFORE_CUSTOM: usize = 12;
+
+/// The header the RULE says the pool a request built hands out: the standard
+/// columns in the import template's order with the pool's custom columns in the
+/// template's slot for them, or — for a pool carrying no custom attributes — its
+/// standard attributes in the claim order the default schema declares them in,
+/// then the columns the import format adds.
+///
+/// Computed from the request alone and never from the pool's stored order, so a
+/// row whose `Schema` names its attributes in one order and a row that appends
+/// them afterwards expect the SAME columns in the same places.
+fn expected_header(named: &[&str], added: &[&str]) -> Vec<String> {
+    let mut custom: Vec<String> = Vec::new();
+    for requested in named.iter().chain(added.iter()) {
+        let stored = stored_name(requested);
+        if !STANDARD_CLAIM_ORDER.contains(requested) && !custom.contains(&stored) {
+            custom.push(stored);
+        }
+    }
+
+    let mut header: Vec<String> = if custom.is_empty() {
+        STANDARD_CLAIM_ORDER
+            .iter()
+            .filter(|standard| **standard != MINTED_ATTRIBUTE)
+            .map(|standard| (*standard).to_string())
+            .collect()
+    } else {
+        IMPORT_TEMPLATE_STANDARD_COLUMNS[..IMPORT_TEMPLATE_COLUMNS_BEFORE_CUSTOM]
+            .iter()
+            .map(|column| (*column).to_string())
+            .chain(custom)
+            .chain(
+                IMPORT_TEMPLATE_STANDARD_COLUMNS[IMPORT_TEMPLATE_COLUMNS_BEFORE_CUSTOM..]
+                    .iter()
+                    .map(|column| (*column).to_string()),
+            )
+            .collect()
+    };
+    header.extend(IMPORT_FORMAT_COLUMNS.iter().map(|column| column.to_string()));
+    header
+}
+
 /// Assert the rule for one pool: it stores its schema in the order it was
-/// created in, and its CSV header is that stored order without the minted
-/// attribute, then the import format's own columns — and asking for the header
-/// changes nothing.
-async fn assert_header_is_the_stored_schema(
+/// created in, its CSV header carries exactly the attributes of that schema an
+/// import can supply in the import template's own order, then the import
+/// format's own columns — and asking for the header changes nothing.
+async fn assert_header_is_the_import_template(
     router: &MultiServiceRouter,
     case: &str,
     user_pool_id: &str,
     expected_schema: &[String],
+    expected: &[String],
 ) {
     let schema = stored_schema(router, user_pool_id).await;
     assert_eq!(
@@ -536,16 +612,28 @@ async fn assert_header_is_the_stored_schema(
     );
 
     let header = csv_header(router, user_pool_id).await;
-    let expected: Vec<String> = schema
+    assert_eq!(
+        header, expected,
+        "case {case:?}: the header is the import template's columns in the template's order, \
+         expected {expected:?}, got {header:?} for schema {schema:?}"
+    );
+
+    // The columns are the pool's own attributes: whatever the order, the header
+    // carries a column for every attribute of the stored schema an import can
+    // supply and for no other attribute.
+    let importable: Vec<String> = schema
         .iter()
         .filter(|name| *name != MINTED_ATTRIBUTE && *name != SERVICE_MAINTAINED_ATTRIBUTE)
         .cloned()
-        .chain(IMPORT_FORMAT_COLUMNS.iter().map(|column| column.to_string()))
         .collect();
+    let mut carried: Vec<String> = header[..header.len() - IMPORT_FORMAT_COLUMNS.len()].to_vec();
+    carried.sort();
+    let mut expected_set = importable.clone();
+    expected_set.sort();
     assert_eq!(
-        header, expected,
-        "case {case:?}: the header is the stored schema in its stored order, then the import \
-         format's own columns, got {header:?} for schema {schema:?}"
+        carried, expected_set,
+        "case {case:?}: the header's columns are the stored schema's importable attributes, got \
+         {header:?} for schema {schema:?}"
     );
     assert_eq!(
         trailing_columns(&header),
@@ -732,7 +820,7 @@ async fn a_schema_is_served_up_to_the_pools_custom_attribute_quota_and_refused_p
 }
 
 #[tokio::test]
-async fn the_csv_header_is_the_pools_stored_schema_then_the_import_columns() {
+async fn the_csv_header_is_the_import_template_whatever_order_the_pool_stores_its_schema_in() {
     let router = router();
 
     for (index, row) in SCHEMA_CASES.iter().enumerate() {
@@ -755,11 +843,12 @@ async fn the_csv_header_is_the_pools_stored_schema_then_the_import_columns() {
             )
             .await;
         }
-        assert_header_is_the_stored_schema(
+        assert_header_is_the_import_template(
             &router,
             row.case,
             &user_pool_id,
             &expected_schema_order(row.named, row.added),
+            &expected_header(row.named, row.added),
         )
         .await;
     }
@@ -777,4 +866,63 @@ async fn the_csv_header_is_the_pools_stored_schema_then_the_import_columns() {
         "case {:?}: an absent pool has no header, got {status} with {payload}",
         "a pool nothing created"
     );
+}
+
+/// Two pools that end up holding the SAME attributes, each configured a
+/// different way: the create's `Schema`, that `Schema` in another order, and a
+/// create that names nothing with `AddCustomAttributes` behind it. The header is
+/// the service's template, so all of them answer the identical column list even
+/// though each pool stores its schema in its own order.
+#[tokio::test]
+async fn pools_holding_the_same_attributes_hand_out_the_same_header() {
+    let router = router();
+
+    // Each row reaches the same pool contents — the standard attributes plus
+    // `custom:shelfCode` — by a different route.
+    let routes: [(&str, &[&str], &[&str]); 4] = [
+        ("a Schema naming the custom attribute alone", &["shelfCode"], &[]),
+        (
+            "a Schema naming the custom attribute among standard ones",
+            &["email", "shelfCode", "address"],
+            &[],
+        ),
+        (
+            "the same Schema in the opposite order",
+            &["address", "shelfCode", "email"],
+            &[],
+        ),
+        ("a default schema the attribute is added to", &[], &["shelfCode"]),
+    ];
+
+    let mut answered: Option<(&str, Vec<String>)> = None;
+    for (index, (case, named, added)) in routes.iter().enumerate() {
+        let user_pool_id = pool(&router, &format!("csv-route-{index}"), schema_member(named)).await;
+        if !added.is_empty() {
+            add_custom_attributes(
+                &router,
+                &user_pool_id,
+                Value::Array(
+                    added
+                        .iter()
+                        .map(|name| json!({ "Name": name, "AttributeDataType": "String" }))
+                        .collect(),
+                ),
+            )
+            .await;
+        }
+        let header = csv_header(&router, &user_pool_id).await;
+        assert_eq!(
+            header,
+            expected_header(named, added),
+            "case {case:?}: the header is the import template, got {header:?}"
+        );
+        match &answered {
+            None => answered = Some((case, header)),
+            Some((first, expected)) => assert_eq!(
+                &header, expected,
+                "case {case:?}: the same attributes hand out the same header as case {first:?}, \
+                 expected {expected:?}, got {header:?}"
+            ),
+        }
+    }
 }

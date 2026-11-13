@@ -31,6 +31,8 @@ mod users;
 mod identity_providers;
 /// A user's attributes, and the pool schema they are judged against.
 mod attributes;
+/// The column order a pool's user-import CSV template carries.
+mod csv_header;
 /// The tokens a pool issues, and the key its JWTs are signed with.
 mod tokens;
 /// The X.509 certificate a pool signs its SAML 2.0 federation traffic with, and
@@ -49,6 +51,7 @@ mod presented_tokens;
 /// one's duration has to lie in.
 mod token_validity;
 pub use attributes::*;
+pub use csv_header::*;
 pub use presented_tokens::*;
 pub use identity_providers::*;
 pub use openid_discovery::*;
