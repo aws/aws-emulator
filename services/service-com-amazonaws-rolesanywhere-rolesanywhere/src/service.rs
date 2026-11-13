@@ -39,6 +39,20 @@
 //! table, and the default error renderers — lives in the generated `ServiceDefinition`
 //! and is reached, not edited, through the one `definition` method below. You
 //! do not write it; editing the entry would let this file drift from the model.
+//!
+//! ## The native session plane
+//!
+//! This service has one data-plane call its Smithy model does not describe:
+//! `POST /sessions`, which exchanges an X.509 identity for temporary credentials. It is
+//! reached through two of the seams above — `can_handle` claims it (nothing else can: the
+//! request carries no SigV4 credential scope and no `X-Amz-Target` for the front door to
+//! resolve a service from) and `override_operation` serves it, through
+//! [`create_session::NativeCreateSession`]. What is served on it, and what it refuses, is
+//! documented in [`create_session`]; how the presented certificate and the request's own
+//! X.509 signature are verified is in [`x509_signature`].
+
+pub mod create_session;
+pub mod x509_signature;
 
 use smithy_server_runtime::{
     http, ErasedOperation, Refusal, Refused, Service,
@@ -52,6 +66,11 @@ use std::sync::Arc;
 /// router builds one shared engine and hands it to `new`.
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
     entry: crate::ServiceDefinition<Eng>,
+    /// Serves the native session plane (`POST /sessions`). Held on the service because
+    /// [`Service::override_operation`] hands the router a BORROW of one of its own
+    /// operations, and it owns the shared engine so every answer is computed from the same
+    /// store the control-plane handlers write.
+    sessions: create_session::NativeCreateSession<Eng>,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -60,6 +79,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
         Self {
+            sessions: create_session::NativeCreateSession::new(Arc::clone(&engine)),
             entry: crate::ServiceDefinition::new(engine),
         }
     }
@@ -77,21 +97,31 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // Claim a request whose resolved route key is this service's signing
         // name. Edit this for anything the model does not express — a signing
         // name shared by several services, or access-key-id-based routing.
-        match smithy_server_runtime::resolve_route_key(parts) {
+        if match smithy_server_runtime::resolve_route_key(parts) {
             Some(key) => key == self.entry.identity().signing_name(),
             None => false,
+        } {
+            return true;
         }
+        // And a native session request (`POST /sessions`), which no route key can name:
+        // the caller holds an X.509 certificate instead of an AWS credential, so there is
+        // no credential scope and no target to resolve this service from. Without this the
+        // front door answers "no emulated service is registered for this request" for the
+        // one call IAM Roles Anywhere exists to serve. See [`create_session`].
+        create_session::claims_parts(parts)
     }
 
     fn override_operation(
         &self,
         req: &aws_smithy_runtime_api::http::Request,
     ) -> Option<&dyn ErasedOperation> {
-        // Return `Some(op)` to serve a request the model's routing key cannot name
-        // correctly; `None` (the default) lets the generated routing table resolve
-        // it. `req` is the whole request, so a decision that depends on the body —
-        // the `Action` form field on a query protocol, say — is reachable here.
-        let _ = req;
+        // A native session request names no modelled operation — `CreateSession` is not in
+        // this service's model — so it is named here instead, and served by the plane that
+        // holds this service's state. Everything else resolves through the generated
+        // routing table.
+        if self.sessions.claims(req) {
+            return Some(&self.sessions);
+        }
         None
     }
 

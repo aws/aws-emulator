@@ -23,8 +23,19 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 # Mints the modelled 36-character `Uuid` resource ids.
 sha2 = { workspace = true }
-# Hex codec for the minted ids and the opaque list `nextToken`.
+# Hex codec for the minted ids, the opaque list `nextToken`, and the hex signature the
+# native session plane's authorization header carries.
 hex = { workspace = true }
+# Reads the end-entity certificate a native `CreateSession` presents and the CA bundle a
+# trust anchor holds. DER/ASN.1 and PEM are parsed by this crate, never by hand.
+x509-cert = { version = "0.2", features = ["pem"] }
+# Verifies the certificate's chain signature and the request's own X.509 signature: the
+# one cryptography library this workspace verifies signatures with.
+ring = "0.17"
+# The sessions this plane vends are minted in — and resolved from — the token service's
+# own session registry, through its own mint, and the role comes from IAM through its
+# reader there, so a vended credential speaks for its role everywhere.
+service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
@@ -32,6 +43,14 @@ emulator-core-build-support = { workspace = true }
 [dev-dependencies]
 sha2 = { workspace = true }
 hex = { workspace = true }
+# Writes the CA and end-entity certificates the native session suite presents, so the
+# bytes under test are built by something other than the code under test.
+rcgen = "0.13"
+# Generates the RSA key pair `rcgen`'s backend cannot, and signs with it, so the suite
+# covers the RSA scheme beside the elliptic-curve one.
+aws-lc-rs = "1"
+# Seeds the role a vended session is a session of, as `iam:CreateRole` records it.
+service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
 
 [lints]
 workspace = true

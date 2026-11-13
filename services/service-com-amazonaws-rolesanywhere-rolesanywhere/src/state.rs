@@ -17,6 +17,16 @@
 //! `ListTagsForResource`) resolve
 //! an ARN against the records themselves rather than against a second tag table that
 //! could disagree with them.
+//!
+//! The SUBJECT half — the audit record of each temporary-credential request the native
+//! session plane serves, which `GetSubject` reads back — lives in [`subjects`], beside the
+//! writer and the reader of that map.
+
+/// The subjects the native session plane records: one record per certificate identity that
+/// has asked this account for credentials.
+pub mod subjects;
+
+pub use subjects::*;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::SystemTime;
@@ -245,6 +255,9 @@ pub struct ComAmazonawsRolesanywhereRolesanywhereState {
     pub profiles: BTreeMap<String, ProfileRecord>,
     /// Every stored certificate revocation list, keyed by its `crlId`.
     pub crls: BTreeMap<String, CrlRecord>,
+    /// Every subject the native session plane has recorded a credential request for,
+    /// keyed by its `subjectId`. See [`subjects`].
+    pub subjects: BTreeMap<String, subjects::SubjectRecord>,
     /// Monotonic input to [`Self::mint_uuid`]; never returned to a caller.
     id_counter: u64,
 }
@@ -278,6 +291,7 @@ impl ComAmazonawsRolesanywhereRolesanywhereState {
             if !self.trust_anchors.contains_key(&id)
                 && !self.profiles.contains_key(&id)
                 && !self.crls.contains_key(&id)
+                && !self.subjects.contains_key(&id)
             {
                 return id;
             }
@@ -515,6 +529,17 @@ pub fn trust_anchor_id_in_arn(trust_anchor_arn: &str) -> &str {
         .unwrap_or_default()
 }
 
+/// The Region an ARN of this service names: the fourth field of
+/// `arn:<partition>:rolesanywhere:<region>:<account>:<resource>`, or `None` when the value
+/// carries no fourth field or that field is empty.
+///
+/// Read off an ARN this service MINTED, which is how a request is attributed to a Region
+/// without taking the Region from the request: the resource the request resolved against
+/// already carries the one its create was signed for.
+pub fn region_in_arn(arn: &str) -> Option<&str> {
+    arn.split(':').nth(3).filter(|region| !region.is_empty())
+}
+
 /// The `message` a refusal carries when a request REFERENCES, by ARN, a trust anchor
 /// that is not stored: the fixed wording, whose only variable part is the id taken from
 /// the ARN the request carried.
@@ -548,7 +573,12 @@ pub fn request_region(parts: &::http::request::Parts) -> String {
 /// respective account ID"
 /// (`smithy_query(query="shape", shape="NotificationSettingDetail")`, member
 /// `configuredBy`).
-pub const SERVICE_NOTIFICATION_PRINCIPAL: &str = "rolesanywhere.amazonaws.com";
+pub const SERVICE_NOTIFICATION_PRINCIPAL: &str = SERVICE_PRINCIPAL;
+
+/// The principal this service speaks for when it acts on an account's behalf: the service
+/// principal a role's trust policy names to let IAM Roles Anywhere assume it, which is
+/// also the spelling above.
+pub const SERVICE_PRINCIPAL: &str = "rolesanywhere.amazonaws.com";
 
 /// The `threshold` — "the number of days before a notification event" — a notification
 /// setting carries while this service, rather than the caller, configures it.

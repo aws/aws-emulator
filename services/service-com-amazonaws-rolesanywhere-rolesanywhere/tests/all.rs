@@ -23,6 +23,8 @@ mod crl_listing;
 mod crl_update_in_place;
 #[path = "all/iso8601_timestamp_members.rs"]
 mod iso8601_timestamp_members;
+#[path = "all/native_create_session.rs"]
+mod native_create_session;
 #[path = "all/not_found_refusal_messages.rs"]
 mod not_found_refusal_messages;
 #[path = "all/notification_settings.rs"]
