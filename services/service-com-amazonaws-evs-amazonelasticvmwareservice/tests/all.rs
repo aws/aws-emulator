@@ -23,6 +23,8 @@ mod child_record_create_stamp;
 mod connector_appliance_fqdn_case;
 #[path = "all/connector_create_while_deleting.rs"]
 mod connector_create_while_deleting;
+#[path = "all/connector_credential_secret.rs"]
+mod connector_credential_secret;
 #[path = "all/connector_deletion.rs"]
 mod connector_deletion;
 #[path = "all/connector_health_checks.rs"]

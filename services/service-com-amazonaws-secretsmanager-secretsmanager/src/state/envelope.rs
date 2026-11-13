@@ -282,6 +282,30 @@ impl StoredValue {
     pub fn holds(&self, value: &SecretValue) -> bool {
         self.kind == value.kind && self.fingerprint == fingerprint(value.kind, &value.bytes)
     }
+
+    /// The NAMES of the fields this value states, read as the key/value JSON document a
+    /// secret value is written as ("a JSON text that you want to encrypt",
+    /// `CreateSecretRequest$SecretString`, this service's Smithy model) — and nothing of
+    /// what any of them holds.
+    ///
+    /// This is what a service that requires a FIELD of a secret has to know: one that
+    /// documents which fields the secret it is pointed at must store asks which fields are
+    /// there, so only the names are answered and the value itself never leaves this store.
+    ///
+    /// A value that is not a JSON object states no fields, which is an answer: an empty
+    /// list. `None` means the question cannot be answered here at all — the value is
+    /// sealed under a customer managed key, and opening one takes the KMS call a store
+    /// read is not ([`open`]) — so a caller reports nothing about the fields rather than
+    /// treating a value it cannot read as one that states none.
+    pub fn stated_field_names(&self) -> Option<Vec<String>> {
+        let Content::AsSent(bytes) = &self.content else {
+            return None;
+        };
+        let Ok(::serde_json::Value::Object(fields)) = ::serde_json::from_slice(bytes) else {
+            return Some(Vec::new());
+        };
+        Some(fields.keys().cloned().collect())
+    }
 }
 
 /// The encryption context the KMS calls for one secret version carry: the secret and

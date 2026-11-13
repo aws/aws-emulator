@@ -37,6 +37,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use service_com_amazonaws_ec2_amazonec2 as ec2;
 use service_com_amazonaws_evs_amazonelasticvmwareservice as evs;
+use service_com_amazonaws_secretsmanager_secretsmanager as secretsmanager;
 use smithy_server_runtime::MultiServiceRouter;
 
 /// The Region the test client signs for, so the ARNs under test carry it.
@@ -270,6 +271,107 @@ pub(crate) fn secret_arn_of(secret_identifier: &str) -> String {
     format!("{SECRET_ARN_PREFIX}{REGION}:{ACCOUNT}:secret:{secret_identifier}")
 }
 
+/// The fields a connector's credential secret stores, as a JSON object: every field the
+/// three `ConnectorType`s require between them — "SDDC_MANAGER requires an apiKey field;
+/// OPERATIONS_MANAGER and VCENTER require username and password fields"
+/// (`smithy_query(query="doc", shape="CreateEnvironmentConnectorRequest",
+/// member="secretIdentifier")`) — so one secret serves a connector of any type.
+///
+/// The VALUES are fixtures and say nothing: what the rule is about is which fields the
+/// secret states.
+pub(crate) fn credential_secret_value() -> Value {
+    json!({
+        "apiKey": "fixture",
+        "username": "fixture",
+        "password": "fixture",
+    })
+}
+
+/// Write the credential secret a connector request names into the account's own Amazon
+/// Web Services Secrets Manager store, storing every field a `ConnectorType` requires.
+///
+/// `CreateEnvironmentConnector` and `UpdateEnvironmentConnector` resolve the
+/// `secretIdentifier` they are given in THAT store — "A connector establishes a connection
+/// to the given appliance type using the credentials stored in Amazon Web Services Secrets
+/// Manager" (`Connector` doc), and Amazon EVS creates no secret — so every suite that
+/// expects a connector create or update to be SERVED registers the secret it names here
+/// first, exactly as [`register_network`] registers the VPC an environment is deployed
+/// into. `tests/all/connector_credential_secret.rs` owns that rule and covers the
+/// identifiers that resolve to nothing and the secrets that store the wrong fields.
+pub(crate) fn register_credential_secret(
+    engine: &engine::InMemoryEngine,
+    secret_identifier: &str,
+) {
+    register_secret_storing(engine, secret_identifier, &credential_secret_value());
+}
+
+/// [`register_credential_secret`] with the secret's stored value GIVEN, for a suite that
+/// varies what the secret states rather than whether it exists.
+pub(crate) fn register_secret_storing(
+    engine: &engine::InMemoryEngine,
+    secret_identifier: &str,
+    value: &Value,
+) {
+    let state = secretsmanager::state::service_state(engine)
+        .expect("the in-memory engine carries the account's Secrets Manager store");
+    let now = std::time::SystemTime::now();
+    let mut secret = secretsmanager::state::Secret::new(
+        secretsmanager::state::secret_name_in(secret_identifier).to_string(),
+        secret_arn_of(secret_identifier),
+        secret_region_of(secret_identifier).to_string(),
+        now,
+    );
+    secret.put_version(
+        secretsmanager::state::SecretVersion {
+            version_id: FIXTURE_SECRET_VERSION_ID.to_string(),
+            value: secretsmanager::state::envelope::StoredValue::as_sent(
+                &secretsmanager::state::envelope::SecretValue::from_request(
+                    Some(&value.to_string()),
+                    None,
+                )
+                .expect("the fixture carries a secret string"),
+            ),
+            version_stages: vec![secretsmanager::state::STAGE_CURRENT.to_string()],
+            created_date: now,
+            last_accessed_date: None,
+        },
+        now,
+    );
+    state.lock().insert(secret);
+}
+
+/// The one version id every registered fixture secret's current value carries: a secret
+/// namespace of its own, so no two fixtures collide inside one secret.
+const FIXTURE_SECRET_VERSION_ID: &str = "00000000-0000-4000-8000-000000000000";
+
+/// The Region a secret identifier names the secret in: the Region segment of an ARN, and
+/// the Region the test client signs for otherwise — the namespace a secret is held in.
+pub(crate) fn secret_region_of(secret_identifier: &str) -> &str {
+    if !secret_identifier.starts_with("arn:") {
+        return REGION;
+    }
+    match secret_identifier.split(':').nth(3) {
+        Some(named) if !named.is_empty() => named,
+        _ => REGION,
+    }
+}
+
+/// The credential secrets the ACCOUNT holds in every emulator this target builds: the
+/// identifiers the connector requests of these suites name, in both forms
+/// `secretIdentifier` accepts.
+///
+/// A connector is created against a secret the account really holds, so they are
+/// registered once with the emulator rather than per suite, exactly as the Premium
+/// Support subscription every create needs is granted there. A suite naming a secret
+/// outside this list registers it itself ([`register_credential_secret`]), and
+/// `tests/all/connector_credential_secret.rs` owns the rule for the identifiers that
+/// resolve to nothing.
+pub(crate) const CREDENTIAL_SECRETS: &[&str] = &[
+    "arn:aws:secretsmanager:us-west-2:000000000000:secret:evs/vcf-AbCd12",
+    "evs/vcf-appliance-credentials",
+    "evs/appliance",
+];
+
 /// The emulator a test drives: one shared engine, this service mounted on it.
 pub(crate) fn emulator() -> Emulator {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
@@ -282,6 +384,11 @@ pub(crate) fn emulator() -> Emulator {
     // `tests/all/premium_support_entitlement.rs` owns that rule and covers the account
     // that holds none.
     crate::premium_support_entitlement::grant_premium_support(&engine);
+    // The credential secrets a connector create or update is served against, in the
+    // account's own Secrets Manager store.
+    for secret_identifier in CREDENTIAL_SECRETS {
+        register_credential_secret(&engine, secret_identifier);
+    }
     router.register_service(
         service_com_amazonaws_evs_amazonelasticvmwareservice::EmulatedService::new(engine.clone()),
     );
@@ -461,6 +568,86 @@ pub(crate) async fn create_settled(router: &Emulator, name: Option<&str>) -> Str
     let id = create(router, name).await;
     settle(router);
     id
+}
+
+/// How long a poll-until helper keeps looking for a state change the clock owes before it
+/// fails the test: far longer than the span itself, so a loaded or slow host cannot fail a
+/// test that only waits for a CONDITION to hold.
+pub(crate) const POLL_DEADLINE: Duration = Duration::from_secs(60);
+
+/// How long it waits between two looks.
+const POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// Look at the connectors of one environment again and again, through
+/// `ListEnvironmentConnectors`, until `holds` is true of the connector `connector_id`, and
+/// answer that record.
+///
+/// This is how a test waits for the state change the clock owes a connector: it waits for
+/// the state to BE what it waits for, with [`POLL_DEADLINE`] of room, rather than for a
+/// span of wall clock that a faster or busier host measures differently. `expected` names
+/// what it is waiting for, so a timeout says which condition never held.
+pub(crate) async fn poll_connector_until<F>(
+    router: &MultiServiceRouter,
+    case: &str,
+    environment_id: &str,
+    connector_id: &str,
+    expected: &str,
+    holds: F,
+) -> Value
+where
+    F: Fn(&Value) -> bool,
+{
+    let deadline = std::time::Instant::now() + POLL_DEADLINE;
+    let mut last = Value::Null;
+    loop {
+        let (status, body) = call(
+            router,
+            "ListEnvironmentConnectors",
+            &json!({ "environmentId": environment_id }),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: list expected 200, got {status} {body}"
+        );
+        last = body["connectors"]
+            .as_array()
+            .and_then(|listed| {
+                listed
+                    .iter()
+                    .find(|connector| connector["connectorId"] == json!(connector_id))
+                    .cloned()
+            })
+            .unwrap_or(last);
+        if holds(&last) {
+            return last;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case:?}: the connector {connector_id} never reached {expected}; last read \
+             {last}"
+        );
+        ::tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// [`poll_connector_until`] for the state change a create or an update owes a connector:
+/// the move to `ACTIVE` once the connection to the appliance is established.
+pub(crate) async fn poll_connector_active(
+    router: &MultiServiceRouter,
+    case: &str,
+    environment_id: &str,
+    connector_id: &str,
+) -> Value {
+    poll_connector_until(
+        router,
+        case,
+        environment_id,
+        connector_id,
+        "ACTIVE",
+        |connector| connector["state"] == json!("ACTIVE"),
+    )
+    .await
 }
 
 #[tokio::test]

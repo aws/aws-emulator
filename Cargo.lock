@@ -13210,6 +13210,7 @@ dependencies = [
  "serde_json",
  "service-com-amazonaws-ec2-amazonec2",
  "service-com-amazonaws-iam-awsidentitymanagementv20100508",
+ "service-com-amazonaws-secretsmanager-secretsmanager",
  "service-com-amazonaws-sts-awssecuritytokenservicev20110615",
  "service-com-amazonaws-support-awssupport-20130415",
  "service-common",

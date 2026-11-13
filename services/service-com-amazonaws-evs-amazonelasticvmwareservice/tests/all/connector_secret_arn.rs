@@ -22,8 +22,8 @@ use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::environment_lifecycle::{
-    call, create_settled, emulator, secret_arn_of, Emulator, PAST_THE_TRANSITION,
-    SECRET_ARN_PREFIX,
+    call, create_settled, emulator, poll_connector_active, register_credential_secret,
+    secret_arn_of, Emulator, SECRET_ARN_PREFIX,
 };
 
 /// Every `ConnectorType` the model declares, from the catalog this crate generated from
@@ -41,6 +41,10 @@ async fn connector_with_secret(
     secret_identifier: &str,
 ) -> (String, Value) {
     let environment = create_settled(router, None).await;
+    // The account really holds the secret the row names: a connector is created only
+    // against credentials that are there (`tests/all/connector_credential_secret.rs` owns
+    // that rule), and this suite is about the ARN such a secret is REPORTED by.
+    register_credential_secret(&router.engine, secret_identifier);
     let (status, body) = call(
         router,
         "CreateEnvironmentConnector",
@@ -172,14 +176,15 @@ async fn a_created_connector_reports_an_arn_for_every_identifier_form() {
         );
         assert_secret_arn(case, &listed, &expected);
 
-        // And the value survives the state change the clock owes the connector.
-        std::thread::sleep(PAST_THE_TRANSITION);
-        let settled = only_connector(&router, case, &environment).await;
-        assert_eq!(
-            settled["state"],
-            json!("ACTIVE"),
-            "case {case:?}: the clock owes the connector ACTIVE, got {settled}"
-        );
+        // And the value survives the state change the clock owes the connector: the test
+        // waits for the connector to BE ACTIVE, not for a span of wall clock.
+        let settled = poll_connector_active(
+            &router,
+            case,
+            &environment,
+            created["connectorId"].as_str().unwrap_or_default(),
+        )
+        .await;
         assert_secret_arn(case, &settled, &expected);
     }
 }
@@ -197,9 +202,8 @@ async fn naming_one_secret_in_either_form_is_the_same_secret_to_a_create_and_an_
         .to_string();
     let name_arn = secret_arn_of(NAME);
     assert_secret_arn(case, &created, &name_arn);
-    // Let the create settle, so an UPDATING below is the update's own doing.
-    std::thread::sleep(PAST_THE_TRANSITION);
-    let settled = only_connector(&router, case, &environment).await;
+    // Wait for the create to have settled, so an UPDATING below is the update's own doing.
+    let settled = poll_connector_active(&router, case, &environment, &connector_id).await;
     assert_secret_arn(case, &settled, &name_arn);
 
     // The same create again, naming that ONE secret by the ARN the name resolves to: the
@@ -260,6 +264,9 @@ async fn naming_one_secret_in_either_form_is_the_same_secret_to_a_create_and_an_
     let mut before = settled;
     for (case, secret_identifier, changes) in rows {
         let expected = secret_arn_of(&secret_identifier);
+        // The account holds the secret each row names: a connector is pointed only at
+        // credentials that are there (`tests/all/connector_credential_secret.rs`).
+        register_credential_secret(&router.engine, &secret_identifier);
         let (status, body) = call(
             &router,
             "UpdateEnvironmentConnector",
@@ -304,9 +311,8 @@ async fn naming_one_secret_in_either_form_is_the_same_secret_to_a_create_and_an_
             listed, updated,
             "case {case:?}: the list must report the updated connector, got {listed}"
         );
-        // The next row compares against this record, once the clock has settled it.
-        std::thread::sleep(PAST_THE_TRANSITION);
-        before = only_connector(&router, case, &environment).await;
+        // The next row compares against this record, once the connector has settled.
+        before = poll_connector_active(&router, case, &environment, &connector_id).await;
         assert_secret_arn(case, &before, &expected);
     }
 }

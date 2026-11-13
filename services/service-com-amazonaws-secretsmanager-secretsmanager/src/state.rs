@@ -1754,6 +1754,27 @@ impl Secret {
         self.versions.iter().find(|v| v.has_stage(stage))
     }
 
+    /// The NAMES of the fields this secret's CURRENT value states
+    /// ([`envelope::StoredValue::stated_field_names`]), which is the value a retrieval
+    /// that names no version gets — "AWSCURRENT, which Secrets Manager creates for the
+    /// latest version" — and so the one a service pointed at this secret reads.
+    ///
+    /// A secret holding no current version at all states no fields, which is an answer: a
+    /// secret can be created without a value ("SecretString … Either SecretString or
+    /// SecretBinary must have a value, but not both" is stated of a value-carrying
+    /// request, and `CreateSecret` accepts neither member), and such a secret stores no
+    /// field. `None` means the fields cannot be read here — a value sealed under a
+    /// customer managed key — so a caller reports nothing about them.
+    ///
+    /// Only names: what the fields HOLD stays in this store (see
+    /// [`envelope::StoredValue::stated_field_names`]).
+    pub fn stated_field_names(&self) -> Option<Vec<String>> {
+        match self.version_with_stage(STAGE_CURRENT) {
+            Some(version) => version.value.stated_field_names(),
+            None => Some(Vec::new()),
+        }
+    }
+
     /// The stored value of every version that carries one of the staging labels
     /// the service itself moves, by version id.
     ///

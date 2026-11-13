@@ -39,6 +39,11 @@ service-com-amazonaws-ec2-amazonec2 = { workspace = true }
 # of band: `CreateEnvironment` requires the subscription and reads it from that store
 # rather than keeping a second copy of the account's plan.
 service-com-amazonaws-support-awssupport-20130415 = { workspace = true }
+# The Secrets Manager store holds the credential secret a connector connects to its VCF
+# appliance with: `CreateEnvironmentConnector` and `UpdateEnvironmentConnector` resolve the
+# `secretIdentifier` they are given in that service's own store rather than storing an
+# identifier that names nothing.
+service-com-amazonaws-secretsmanager-secretsmanager = { workspace = true }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

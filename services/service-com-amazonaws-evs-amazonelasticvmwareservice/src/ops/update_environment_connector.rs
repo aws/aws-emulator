@@ -31,6 +31,16 @@
 //! ([`crate::state::same_dns_name`]) — so naming the stored secret or the stored
 //! appliance in its other form is no change at all.
 //!
+//! A new secret is one the connector can really connect with, the precondition
+//! `CreateEnvironmentConnector` applies to the secret it is created against: the account
+//! holds it and it stores the fields this connector's TYPE requires ("SDDC_MANAGER
+//! requires an apiKey field; OPERATIONS_MANAGER and VCENTER require username and password
+//! fields", `secretIdentifier` doc), both resolved in Secrets Manager's own store
+//! ([`crate::state::secret_resources`]). A request failing either is refused with the
+//! modelled `ValidationException` naming `secretIdentifier` and the stored connector is
+//! left exactly as it was, so no connector is ever pointed at credentials that are not
+//! there.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -264,7 +274,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // reconfigures the connector.
         let requested = match (input.appliance_fqdn.as_deref(), requested_secret_arn) {
             (Some(appliance_fqdn), None) => Requested::ApplianceFqdn(appliance_fqdn),
-            (None, Some(secret_arn)) => Requested::SecretArn(secret_arn),
+            (None, Some(secret_arn)) => Requested::Secret {
+                // Both halves of what the request named the secret by: the identifier as
+                // it was spelled, which a refusal names it by, and the ARN it resolved
+                // to, which is what is stored and compared.
+                identifier: input.secret_identifier.as_deref().unwrap_or_default(),
+                arn: secret_arn,
+            },
             (Some(_), Some(_)) => {
                 return Err(UpdateEnvironmentConnectorErrorModeled::ValidationException(
                     crate::state::request_validation_error(
@@ -301,7 +317,32 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 }
                 changed
             }
-            Requested::SecretArn(secret_arn) => {
+            Requested::Secret {
+                identifier: secret_identifier,
+                arn: secret_arn,
+            } => {
+                // A connector is only ever pointed at credentials it can really connect
+                // with, exactly as at a create: the new secret is one the account holds
+                // and stores the fields the connector's own type requires. The type is
+                // the STORED connector's — an update reconfigures the appliance it
+                // connects to, never which type of appliance it is.
+                //
+                // LOCK ORDER. This reads Secrets Manager's store while this service's
+                // guard is held, which is the one order either lock is ever taken in.
+                let credential_failures =
+                    crate::state::secret_resources::credential_secret_failures(
+                        &*self.engine,
+                        &region,
+                        "secretIdentifier",
+                        secret_identifier,
+                        &connector.connector_type,
+                    );
+                if !credential_failures.is_empty() {
+                    return Err(UpdateEnvironmentConnectorErrorModeled::ValidationException(
+                        crate::state::aggregate_validation_error(credential_failures),
+                    )
+                    .into());
+                }
                 // "The ARN or name of" the secret on input, "The Amazon Resource Name
                 // (ARN) of" it on output: the new identifier is resolved to that
                 // secret's ARN, so a connector reconfigured by NAME still reports an
@@ -354,8 +395,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 enum Requested<'a> {
     /// `applianceFqdn`: the new FQDN of the VCF appliance.
     ApplianceFqdn(&'a str),
-    /// `secretIdentifier`: the new credential secret, as the ARN it was RESOLVED to
-    /// ([`crate::state::secret_resources::resolve_secret_arn`]) rather than the ARN or
-    /// name the request spelled.
-    SecretArn(String),
+    /// `secretIdentifier`: the new credential secret, by both the identifier the request
+    /// spelled — which a refusal names it by — and the ARN it was RESOLVED to
+    /// ([`crate::state::secret_resources::resolve_secret_arn`]), which is what is stored.
+    Secret {
+        /// The `secretIdentifier` as the request spelled it.
+        identifier: &'a str,
+        /// The ARN that identifier names.
+        arn: String,
+    },
 }

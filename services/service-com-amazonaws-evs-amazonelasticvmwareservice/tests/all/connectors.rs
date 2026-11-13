@@ -43,7 +43,8 @@ use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::environment_lifecycle::{
-    call, call_in_region, create_settled, emulator, error_type, secret_arn_of, Emulator,
+    call, call_in_region, create_settled, emulator, error_type, poll_connector_active,
+    register_credential_secret, secret_arn_of, Emulator,
 };
 
 /// Every `ConnectorType` the model declares, from the catalog this crate generated
@@ -175,6 +176,10 @@ async fn environment_with_connector(
     // refused (`tests/all/list_while_initializing.rs`), and every test here reads its
     // connector back through `ListEnvironmentConnectors`.
     let environment = create_settled(router, None).await;
+    // A connector is created against a credential secret the account really holds, which
+    // the row's identifier names ([`register_credential_secret`]);
+    // `tests/all/connector_credential_secret.rs` owns that rule.
+    register_credential_secret(&router.engine, secret_identifier);
     let (status, body) = call(
         router,
         "CreateEnvironmentConnector",
@@ -461,10 +466,18 @@ async fn an_update_reconfigures_exactly_the_member_it_names() {
         let (environment, created) =
             environment_with_connector(&router, case, "VCENTER", FQDN, SECRET_ARN).await;
         let connector_id = created["connectorId"].as_str().unwrap_or_default().to_string();
-        // Let the create settle, so the UPDATING below is the update's own doing.
-        std::thread::sleep(PAST_THE_TRANSITION);
-        let before = only_connector(&router, case, &environment).await;
+        // Wait for the create to have settled, so the UPDATING below is the update's own
+        // doing: the test waits for the connector to BE ACTIVE, not for a span of wall
+        // clock.
+        let before = poll_connector_active(&router, case, &environment, &connector_id).await;
 
+        // A connector is pointed only at a credential secret the account holds, so a row
+        // that names a new secret registers it
+        // (`tests/all/connector_credential_secret.rs` owns that rule); a row naming a new
+        // FQDN registers nothing, since that identifier is no secret.
+        if member == "secretIdentifier" {
+            register_credential_secret(&router.engine, &new_value);
+        }
         let (status, body) = call(
             &router,
             "UpdateEnvironmentConnector",

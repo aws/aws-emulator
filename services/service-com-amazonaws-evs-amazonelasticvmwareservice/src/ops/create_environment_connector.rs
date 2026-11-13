@@ -39,6 +39,17 @@
 //! ([`crate::state::secret_resources::resolve_secret_arn`]): the record this operation
 //! reports, and every later read of it, carries an ARN.
 //!
+//! A connector is only ever created against credentials it can really connect with: "A
+//! connector establishes a connection to the given appliance type using the credentials
+//! stored in Amazon Web Services Secrets Manager" (`Connector` doc), so the secret the
+//! request names has to be one the account holds and to store the fields this connector
+//! type requires ("SDDC_MANAGER requires an apiKey field; OPERATIONS_MANAGER and VCENTER
+//! require username and password fields", `secretIdentifier` doc). Both are resolved in
+//! Secrets Manager's own store ([`crate::state::secret_resources`]), the way the network
+//! an environment names is resolved in Amazon EC2's, and a request failing either is
+//! refused with the modelled `ValidationException` naming `secretIdentifier` — nothing is
+//! stored for it, so no connector reaches `ACTIVE` on credentials that are not there.
+//!
 //! The SDDC_MANAGER connector Amazon EVS creates automatically "for environments where
 //! Amazon EVS installs VCF" is deliberately NOT minted by `CreateEnvironment` here:
 //! its appliance FQDN and its credential secret are produced by the VCF installation,
@@ -316,6 +327,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // Establishing the connection to the appliance has started but is not finished:
         // the connector is CREATING and the clock owes it the move to ACTIVE.
+        //
+        // Which is only possible with credentials to establish it WITH: the secret the
+        // request names is one the account holds, storing the fields this connector type
+        // requires. Evaluated here, where a connector is really about to be created: the
+        // repeat above stores nothing and the conflict creates nothing, so neither needs
+        // the credentials of a connection no new connector makes.
+        //
+        // LOCK ORDER. This reads Secrets Manager's store while this service's guard is
+        // held, which is the one order either lock is ever taken in.
+        let credential_failures = crate::state::secret_resources::credential_secret_failures(
+            &*self.engine,
+            &region,
+            "secretIdentifier",
+            &input.secret_identifier,
+            &input.r#type,
+        );
+        if !credential_failures.is_empty() {
+            return Err(CreateEnvironmentConnectorErrorModeled::ValidationException(
+                crate::state::aggregate_validation_error(credential_failures),
+            )
+            .into());
+        }
         let pending =
             crate::state::PendingConnectorState::starting_now(crate::state::CONNECTOR_ACTIVE);
         let due_at = pending.due_at;
