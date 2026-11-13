@@ -574,6 +574,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             cluster_settings: crate::state::ClusterSettings::default(),
             ingest_pipelines: BTreeMap::new(),
             ism_policies: BTreeMap::new(),
+            // A new domain holds no monitor, no alerting destination and no notification
+            // channel either: the alerting and notifications plugins' own APIs are what
+            // write them.
+            alerting: crate::state::alerting::Alerting::default(),
+            notification_configs: BTreeMap::new(),
             identity_center_options: input
                 .identity_center_options
                 .map(stored_identity_center_options),

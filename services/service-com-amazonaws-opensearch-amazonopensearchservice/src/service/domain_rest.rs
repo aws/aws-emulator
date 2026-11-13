@@ -70,7 +70,6 @@
 //!    permitted every action this surface names.
 //!
 //! The REST surface served is the one this emulator can answer out of persisted state:
-//! The REST surface served is the one this emulator can answer out of persisted state:
 //! the cluster banner and health, the cluster's nodes and its own settings, the compact
 //! listings of its indexes and nodes ([`cat`]), an index's create/read/delete, its own
 //! settings read and updated ([`index_settings`]) and its mappings read and added to
@@ -78,11 +77,14 @@
 //! and delete — each numbered with the revision a conditional write is taken against — the
 //! newline-delimited stream of them the bulk API takes ([`bulk`]), a count and a search over
 //! a bounded query vocabulary ([`selector`]) whose `match` is evaluated over the terms the
-//! field's own analysis chain produces, the tokens a text produces through that chain
+//! field's own analysis chain produces, the documents such a query selects removed
+//! ([`delete_by_query`]), the tokens a text produces through that chain
 //! ([`analyze`]), index templates and the component templates they are composed of
 //! ([`component_templates`]), ingest pipelines (declared, simulated and applied to a write
-//! that names one), the index-management plugin's policy API, and the security plugin's
-//! role and role-mapping API.
+//! that names one), the index-management plugin's policy API, the security plugin's
+//! role and role-mapping API, the ALERTING plugin's monitors, the runs of one and the alerts
+//! they leave ([`alerting`], [`monitor_run`]), and the NOTIFICATIONS plugin's channel
+//! configurations a monitor's action sends through ([`notifications`]).
 //!
 //! A path outside it is answered the way the engine answers a path no handler is registered
 //! for, rather than with an invented body — including a RESERVED path ([`reserved`]), which
@@ -141,6 +143,24 @@ mod cat;
 /// The COMPONENT TEMPLATE API: the building blocks a composable index template is
 /// composed of.
 mod component_templates;
+
+/// The ALERTING plugin's API: the monitors a client writes, the runs of one, and the alerts
+/// its triggers left.
+mod alerting;
+
+/// The DELETE BY QUERY API: the documents a query selects, removed.
+mod delete_by_query;
+
+/// RUNNING one monitor: the queries its inputs ask, whether each trigger's condition holds,
+/// and what each action of a firing trigger sends.
+mod monitor_run;
+
+/// The NOTIFICATIONS plugin's channel API: where an alerting action sends.
+mod notifications;
+
+/// The PATTERNS an index template applies to: the names a write may carry, and whether two
+/// templates of the same priority can match one index name.
+mod template_patterns;
 
 /// The most bytes one data-plane request body is read as JSON.
 ///
@@ -507,32 +527,77 @@ fn prefixed_addressing(path: &str) -> Option<(&str, &str)> {
     (!named.is_empty()).then_some((named, request_path))
 }
 
-/// Answer a request this plane claimed, out of the records the control plane holds.
+/// Answer a request this plane claimed, out of the records the control plane holds — and
+/// trace any notification the work it did owed a channel and could not be handed one.
 ///
-/// `ctx` is present for a request the router named an operation for, which is every request
-/// carrying a credential; it is what the calling principal is resolved from.
+/// This is the entry for a request carrying NO AWS credential, which is answered before the
+/// router authenticates anything and so has no operation context to reach another service
+/// through. [`served`] is the entry for every other request, whose notifications ARE handed
+/// over; what the two ANSWER is the one thing [`serve_resolved`] decides, so the two paths
+/// cannot serve different surfaces.
 pub fn serve<Eng: Send + Sync + 'static>(
     engine: &Eng,
     req: &RtRequest,
     ctx: Option<&OperationContext<'_>>,
 ) -> RtResponse {
+    let answered = served(engine, req, ctx);
+    state::notification_publication::trace_undelivered(&answered.notifications);
+    answered.response
+}
+
+/// One whole data-plane answer: the response, and the notifications the work it did owes a
+/// channel.
+///
+/// The notifications are handed over by the caller, once this service's store is released and
+/// before the request is answered ([`state::notification_publication::publish`]), so a client
+/// that reads a subscribed queue after its request answered finds them there.
+pub struct Served {
+    /// What the request is answered with.
+    pub response: RtResponse,
+    /// The notifications a monitor run this request drove owes its channels.
+    pub notifications: Vec<state::notification_publication::Publication>,
+}
+
+impl Served {
+    /// An answer that owes no notification — every answer but a firing monitor run's.
+    fn of(response: RtResponse) -> Self {
+        Self {
+            response,
+            notifications: Vec::new(),
+        }
+    }
+}
+
+/// Answer a request this plane claimed, out of the records the control plane holds.
+///
+/// `ctx` is present for a request the router named an operation for, which is every request
+/// carrying a credential; it is what the calling principal is resolved from.
+pub fn served<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    req: &RtRequest,
+    ctx: Option<&OperationContext<'_>>,
+) -> Served {
     let uri = parsed_uri(req.uri());
     let Some(resolved) = resolve(engine, &Addressed::of_request(req, &uri)) else {
         // The domain was released by another request between the claim and here, so the
         // host it published answers nothing.
-        return error(503, "cluster_block_exception", "blocked by: [SERVICE_UNAVAILABLE]");
+        return Served::of(error(
+            503,
+            "cluster_block_exception",
+            "blocked by: [SERVICE_UNAVAILABLE]",
+        ));
     };
     let method = req.method().to_ascii_uppercase();
     let body = req.body().bytes().unwrap_or_default();
     if body.len() > MAX_REQUEST_BODY_BYTES {
-        return error(
+        return Served::of(error(
             413,
             ingest::ILLEGAL_ARGUMENT_EXCEPTION,
             &format!(
                 "request body is larger than the maximum of {MAX_REQUEST_BODY_BYTES} bytes \
                  this cluster takes"
             ),
-        );
+        ));
     }
     // The principal the two authorization decisions are taken for. An empty ARN is a
     // request this emulator can resolve no identity for — an engine carrying no STS or IAM
@@ -561,9 +626,16 @@ pub fn serve<Eng: Send + Sync + 'static>(
         started: ::std::time::Instant::now(),
         at: now,
         published: ::std::cell::RefCell::new(Vec::new()),
+        notifications: ::std::cell::RefCell::new(Vec::new()),
+        pending_run: ::std::cell::RefCell::new(None),
+        can_notify: ctx.is_some(),
     };
     let Some(state) = service_state(engine) else {
-        return error(503, "cluster_block_exception", "blocked by: [SERVICE_UNAVAILABLE]");
+        return Served::of(error(
+            503,
+            "cluster_block_exception",
+            "blocked by: [SERVICE_UNAVAILABLE]",
+        ));
     };
     let mut store = state.lock();
     // The dictionary files this domain's packages mount, resolved out of the store before
@@ -577,22 +649,70 @@ pub fn serve<Eng: Send + Sync + 'static>(
     // The read materialises any configuration change the clock already owes this domain,
     // which this request neither starts nor changes.
     let Some(domain) = store.settled_mut(&resolved.domain_name, now) else {
-        return error(503, "cluster_block_exception", "blocked by: [SERVICE_UNAVAILABLE]");
+        return Served::of(error(
+            503,
+            "cluster_block_exception",
+            "blocked by: [SERVICE_UNAVAILABLE]",
+        ));
     };
     if !domain.created {
-        return error(
+        return Served::of(error(
             503,
             "cluster_block_exception",
             "blocked by: [SERVICE_UNAVAILABLE/1/state not recovered / initialized]",
-        );
+        ));
     }
     let answer = serve_resolved(domain, &request, now, &across, &files);
     // The records the work this request did produced go to the log groups the domain
     // publishes them to — after THIS service's store is released, so the two stores are
     // never held at once (`crate::state::log_publishing`'s lock order).
     drop(store);
+    // A MONITOR RUN is planned under that guard and finished here: the step that performs the
+    // caller's own source — the trigger conditions and the message templates — runs with no
+    // store held and off the async worker, and the report it answers REPLACES the placeholder
+    // the planning route returned ([`monitor_run`]). Every other request has planned none.
+    let answer = match request.pending_run.borrow_mut().take() {
+        Some(pending) => {
+            let evaluated = monitor_run::off_the_async_worker(|| pending.evaluate());
+            finished_run(engine, &resolved.domain_name, &request, &evaluated, now)
+        }
+        None => answer,
+    };
     state::log_publishing::deliver(engine, &request.published.into_inner());
-    answer
+    Served {
+        response: answer,
+        notifications: request.notifications.into_inner(),
+    }
+}
+
+/// Record what an evaluated monitor run came to and answer the report it reports.
+///
+/// The store is taken again for this: the alerts a firing leaves and the channel each firing
+/// action sends through are the domain's own records. A domain released while the run was
+/// being evaluated answers nothing, the way it does for any other request.
+fn finished_run<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    domain_name: &str,
+    request: &Request<'_>,
+    evaluated: &monitor_run::EvaluatedRun,
+    now: SystemTime,
+) -> RtResponse {
+    let unavailable = || {
+        error(
+            503,
+            "cluster_block_exception",
+            "blocked by: [SERVICE_UNAVAILABLE]",
+        )
+    };
+    let Some(state) = service_state(engine) else {
+        return unavailable();
+    };
+    let mut store = state.lock();
+    let Some(domain) = store.settled_mut(domain_name, now) else {
+        return unavailable();
+    };
+    let report = monitor_run::finish(domain, request, evaluated);
+    ok(&report)
 }
 
 /// The dictionary files the packages IN PLACE on the domain mount, for a request whose
@@ -630,7 +750,17 @@ fn analysis_files(
 fn reads_analysis(request: &Request<'_>) -> bool {
     matches!(
         request.segments().as_slice(),
-        ["_analyze"] | [_, "_analyze"] | [_, "_search" | "_count"]
+        ["_analyze"]
+            | [_, "_analyze"]
+            | [_, "_search" | "_count"]
+            // The documents a delete-by-query removes are the ones the same query SELECTS,
+            // so it reads the same chains a search does.
+            | [_, "_delete_by_query"]
+            // A monitor RUN searches the monitor's own indexes through the same search
+            // ([`monitor_run`]), so its answer depends on the same chains a client's search
+            // does and the same files have to be in hand.
+            | ["_plugins", "_alerting", "monitors", "_execute"]
+            | ["_plugins", "_alerting", "monitors", _, "_execute"]
     )
 }
 
@@ -839,6 +969,20 @@ struct Request<'a> {
     /// by the step that did it ([`Request::record_served`]) and delivered once this
     /// service's store is released, so no two stores are held at once.
     published: ::std::cell::RefCell<Vec<state::log_publishing::PublishedRecord>>,
+    /// The notifications the work this request did owes a channel — filled in by the
+    /// monitor run that decided a trigger fired ([`monitor_run`]) and published once this
+    /// service's store is released, for the same reason the log records are.
+    notifications: ::std::cell::RefCell<Vec<state::notification_publication::Publication>>,
+    /// The monitor run this request PLANNED, for the step that performs the caller's own
+    /// source: it is evaluated once this service's store is released and off the async
+    /// worker, and the report it answers replaces the placeholder the planning route
+    /// returned ([`monitor_run`]). `None` for every request but an alerting execute.
+    pending_run: ::std::cell::RefCell<Option<monitor_run::PendingRun>>,
+    /// Whether a notification the work this request does owes can be handed to its channel
+    /// at all: the in-process route to another service is the operation context's, which a
+    /// request carrying no AWS credential has none of. An action of such a request reports
+    /// that rather than a send nothing performed.
+    can_notify: bool,
 }
 
 impl Request<'_> {
@@ -1037,6 +1181,34 @@ fn serve_resolved(
             _ => wrong_method(request, "GET, POST"),
         },
         ["_plugins", "_ism", "policies", id] => ism_policy_request(domain, request, id, now),
+        // The ALERTING plugin: the monitors a client writes, the runs of one, the alerts
+        // they left, and the plugin's own legacy destinations. The reserved sub-paths come
+        // before the arm that reads the segment as a monitor id, so neither is read as one.
+        ["_plugins", "_alerting", "monitors"] => alerting::monitors_request(domain, request, now),
+        ["_plugins", "_alerting", "monitors", "_execute"] => {
+            alerting::execute_submitted(domain, request, now, files)
+        }
+        ["_plugins", "_alerting", "monitors", "alerts"] => alerting::alerts_request(domain, request),
+        ["_plugins", "_alerting", "monitors", id, "_execute"] => {
+            alerting::execute_request(domain, request, id, now, files)
+        }
+        ["_plugins", "_alerting", "monitors", id] => {
+            alerting::monitor_request(domain, request, id, now)
+        }
+        ["_plugins", "_alerting", "destinations"] => {
+            alerting::destinations_request(domain, request, now)
+        }
+        ["_plugins", "_alerting", "destinations", id] => {
+            alerting::destination_request(domain, request, id, now)
+        }
+        // The NOTIFICATIONS plugin's channel configurations, which an alerting action's
+        // destination names.
+        ["_plugins", "_notifications", "configs"] => {
+            notifications::configs_request(domain, request, now)
+        }
+        ["_plugins", "_notifications", "configs", config_id] => {
+            notifications::config_request(domain, request, config_id, now)
+        }
         // The security plugin's own "who am I". It is NOT guarded: the plugin answers it
         // for the authenticated user whatever roles that user holds, which is what makes
         // it the route a client checks its own identity and permissions with before it
@@ -1092,6 +1264,11 @@ fn serve_resolved(
             }),
             _ => wrong_method(request, "GET, POST"),
         },
+        // The documents a query selects, removed: the write form of the search above, which
+        // resolves the same documents the same way.
+        [index, "_delete_by_query"] if !reserved(index) => {
+            delete_by_query::delete_by_query_request(domain, request, index, files)
+        }
         [index, "_refresh"] if !reserved(index) => match request.method {
             "GET" | "POST" => guarded(domain, request, fgac::ACTION_REFRESH, |domain| {
                 refresh(domain, request, Some(index))
@@ -4023,12 +4200,13 @@ fn write_template(
         Err(refusal) => return *refusal,
     };
     // "index_patterns is a required field": a template that applies to no index name is
-    // refused rather than stored.
-    let index_patterns: Vec<String> = definition
-        .get("index_patterns")
-        .and_then(Value::as_array)
-        .map(|patterns| patterns.iter().filter_map(|p| p.as_str()).map(str::to_string).collect())
-        .unwrap_or_default();
+    // refused rather than stored. The list and its entries are the CALLER's, so both are
+    // read under the bounds that keep deciding the overlap below a bounded piece of work
+    // ([`template_patterns`]).
+    let index_patterns = match template_patterns::bounded_names(&definition, "index_patterns") {
+        Ok(index_patterns) => index_patterns,
+        Err(refusal) => return *refusal,
+    };
     if index_patterns.is_empty() {
         return error(
             400,
@@ -4071,23 +4249,19 @@ fn write_template(
     // stored. A legacy template composes with its peers instead of displacing them, which
     // is why the rule is the composable form's.
     if !legacy {
-        if let Some(refusal) = equal_priority_overlap(domain, name, &index_patterns, priority) {
+        if let Some(refusal) =
+            template_patterns::equal_priority_overlap(domain, name, &index_patterns, priority)
+        {
             return refusal;
         }
     }
     // "composed_of: an ordered list of component template names": the components an index
-    // created from this template carries, resolved where the index is minted.
-    let composed_of: Vec<String> = definition
-        .get("composed_of")
-        .and_then(Value::as_array)
-        .map(|named| {
-            named
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
+    // created from this template carries, resolved where the index is minted. Held to the
+    // same bounds as the patterns above, for the same reason.
+    let composed_of = match template_patterns::bounded_names(&definition, "composed_of") {
+        Ok(composed_of) => composed_of,
+        Err(refusal) => return *refusal,
+    };
     if let Some(missing) = composed_of
         .iter()
         .find(|named| !domain.component_templates.contains_key(*named))
@@ -4119,62 +4293,6 @@ fn write_template(
         },
     );
     ok(&json!({ "acknowledged": true }))
-}
-
-/// The refusal a composable template earns when another template of the SAME priority
-/// already matches an index name it would match, or `None` when none does.
-///
-/// Two such templates leave index creation with no template to prefer — the priority is
-/// what decides between matching templates — so the engine refuses the second one, naming
-/// the templates it overlaps and the patterns each carries.
-fn equal_priority_overlap(
-    domain: &Domain,
-    name: &str,
-    index_patterns: &[String],
-    priority: i64,
-) -> Option<RtResponse> {
-    let overlaps: Vec<&IndexTemplate> = domain
-        .index_templates
-        .values()
-        .filter(|held| held.name != name && held.priority == priority)
-        .filter(|held| {
-            held.index_patterns.iter().any(|theirs| {
-                index_patterns.iter().any(|ours| overlapping(ours, theirs))
-            })
-        })
-        .collect();
-    if overlaps.is_empty() {
-        return None;
-    }
-    let names: Vec<&str> = overlaps.iter().map(|held| held.name.as_str()).collect();
-    let patterns: Vec<String> = overlaps
-        .iter()
-        .map(|held| format!("{} => [{}]", held.name, held.index_patterns.join(", ")))
-        .collect();
-    Some(error(
-        400,
-        ingest::ILLEGAL_ARGUMENT_EXCEPTION,
-        &format!(
-            "index template [{name}] has index patterns [{}] matching patterns from existing \
-             templates [{}] with patterns ({}) that have the same priority [{priority}], \
-             multiple index templates may not match during index creation, please use a \
-             different priority",
-            index_patterns.join(", "),
-            names.join(","),
-            patterns.join(",")
-        ),
-    ))
-}
-
-/// Whether two index patterns can match ONE index name: the same pattern, or one whose
-/// wildcards cover the other.
-///
-/// Read both ways round, since either may be the one carrying the wildcards, and through
-/// the same wildcard matching every other pattern of this crate is read by — so an overlap
-/// is decided by the matching rule itself rather than by a second reading of `*` and `?`.
-fn overlapping(left: &str, right: &str) -> bool {
-    ::service_common::iam_authorization::wildcard_match(left, right, true)
-        || ::service_common::iam_authorization::wildcard_match(right, left, true)
 }
 
 /// A request on the security plugin's role API.

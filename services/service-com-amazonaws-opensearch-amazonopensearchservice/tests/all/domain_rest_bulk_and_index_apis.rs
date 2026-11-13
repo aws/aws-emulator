@@ -1629,6 +1629,34 @@ async fn a_component_template_composes_the_index_template_that_names_it() {
             json!({ "index_patterns": ["nothing-*"], "composed_of": ["absent"] }),
             400,
         ),
+        (
+            // The list and its entries are the caller's, and deciding an overlap compares
+            // every entry against every entry each stored template carries, so a list past
+            // what this cluster compares is refused rather than stored.
+            "a template naming more patterns than the cluster takes",
+            "too-many-patterns",
+            json!({
+                "index_patterns":
+                    (0..101).map(|at| format!("many-{at}-*")).collect::<Vec<String>>(),
+            }),
+            400,
+        ),
+        (
+            "a template naming a pattern longer than an index name may be",
+            "oversized-pattern",
+            json!({ "index_patterns": ["a".repeat(256)] }),
+            400,
+        ),
+        (
+            "a template composed of more components than the cluster takes",
+            "too-many-components",
+            json!({
+                "index_patterns": ["components-*"],
+                "composed_of":
+                    (0..101).map(|at| format!("component-{at}")).collect::<Vec<String>>(),
+            }),
+            400,
+        ),
     ];
     for (case, name, body, status) in &templates {
         let answered = rest(

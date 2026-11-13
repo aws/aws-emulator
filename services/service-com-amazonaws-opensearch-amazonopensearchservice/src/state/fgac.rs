@@ -64,6 +64,50 @@ pub const ACTION_GET_ISM_POLICY: &str = "cluster:admin/opendistro/ism/policy/get
 /// The action deleting one asks for.
 pub const ACTION_DELETE_ISM_POLICY: &str = "cluster:admin/opendistro/ism/policy/delete";
 
+/// The action writing an alerting MONITOR asks for, as the alerting plugin's own action
+/// names spell it.
+pub const ACTION_WRITE_MONITOR: &str = "cluster:admin/opendistro/alerting/monitor/write";
+
+/// The action reading one asks for.
+pub const ACTION_GET_MONITOR: &str = "cluster:admin/opendistro/alerting/monitor/get";
+
+/// The action deleting one asks for.
+pub const ACTION_DELETE_MONITOR: &str = "cluster:admin/opendistro/alerting/monitor/delete";
+
+/// The action running one asks for.
+pub const ACTION_EXECUTE_MONITOR: &str = "cluster:admin/opendistro/alerting/monitor/execute";
+
+/// The action reading the alerts its triggers left asks for.
+pub const ACTION_GET_ALERTS: &str = "cluster:admin/opendistro/alerting/alerts/get";
+
+/// The action writing a legacy alerting DESTINATION asks for.
+pub const ACTION_WRITE_DESTINATION: &str =
+    "cluster:admin/opendistro/alerting/destination/write";
+
+/// The action reading one asks for.
+pub const ACTION_GET_DESTINATION: &str = "cluster:admin/opendistro/alerting/destination/get";
+
+/// The action deleting one asks for.
+pub const ACTION_DELETE_DESTINATION: &str =
+    "cluster:admin/opendistro/alerting/destination/delete";
+
+/// The action creating a NOTIFICATIONS channel configuration asks for, as the notifications
+/// plugin's own action names spell it.
+pub const ACTION_CREATE_NOTIFICATION_CONFIG: &str =
+    "cluster:admin/opensearch/notifications/configs/create";
+
+/// The action reading one asks for.
+pub const ACTION_GET_NOTIFICATION_CONFIG: &str =
+    "cluster:admin/opensearch/notifications/configs/get";
+
+/// The action updating one asks for.
+pub const ACTION_UPDATE_NOTIFICATION_CONFIG: &str =
+    "cluster:admin/opensearch/notifications/configs/update";
+
+/// The action deleting one asks for.
+pub const ACTION_DELETE_NOTIFICATION_CONFIG: &str =
+    "cluster:admin/opensearch/notifications/configs/delete";
+
 /// The action a write of one document asks for.
 pub const ACTION_INDEX_DOCUMENT: &str = "indices:data/write/index";
 
@@ -117,6 +161,10 @@ pub const ACTION_GET_DOCUMENT: &str = "indices:data/read/get";
 
 /// The action deleting one document asks for.
 pub const ACTION_DELETE_DOCUMENT: &str = "indices:data/write/delete";
+
+/// The action deleting every document a query selects asks for — the action the engine's own
+/// delete-by-query API is registered under.
+pub const ACTION_DELETE_BY_QUERY: &str = "indices:data/write/delete/byquery";
 
 /// The action creating an index asks for.
 pub const ACTION_CREATE_INDEX: &str = "indices:admin/create";

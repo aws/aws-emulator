@@ -110,6 +110,17 @@ pub struct Domain {
     /// The index-management policies this domain holds, keyed by their policy id —
     /// unique on the cluster, so the id IS the key. See [`IsmPolicy`].
     pub ism_policies: BTreeMap<String, IsmPolicy>,
+    /// What the ALERTING plugin holds on this domain: its monitors, the legacy destinations
+    /// their actions can address, and the alerts their triggers left behind. Written and
+    /// reported by that plugin's own API ([`crate::service::domain_rest`]), and run by
+    /// it — so a monitor's trigger, the notification it published and the alert a client
+    /// reads back all come from this one record. See [`alerting::Alerting`].
+    pub alerting: alerting::Alerting,
+    /// The NOTIFICATIONS plugin's channel configurations this domain holds, keyed by their
+    /// `config_id` — unique on the cluster, so the id IS the key. A monitor action's
+    /// `destination_id` names one of these, which is what says WHERE the notification goes.
+    /// See [`notifications::NotificationConfig`].
+    pub notification_configs: BTreeMap<String, notifications::NotificationConfig>,
     pub identity_center_options: Option<IdentityCenterOptions>,
     /// Stored in the `DomainConfig` form; `DomainStatus` reports the
     /// `AutoTuneOptionsOutput` projection of it.

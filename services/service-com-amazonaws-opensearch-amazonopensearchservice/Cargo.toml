@@ -89,6 +89,35 @@ aws-sdk-ec2 = { version = "1", default-features = false }
 # with a negative lookahead (`state::custom_endpoint`), which the engine that boundary
 # compiles a `@pattern` with has no support for.
 fancy-regex = "0.16"
+# `rquickjs` is the QuickJS JavaScript engine, embedded in this process, which is what
+# EVALUATES the condition of an alerting monitor's trigger
+# (`state::trigger_condition`): whether a trigger fires is decided by the caller's own
+# condition over the run's results, so that source is executed rather than read. An
+# EXECUTION SUBSTRATE, which is why that module states and enforces the ceilings that
+# confine it (a fresh engine per evaluation, the engine's own memory and stack limits, a
+# wall clock and a step budget checked by its interrupt handler, and a latched stop the
+# evaluated source cannot reach). `dyn-load` is left OUT, so no host library can be
+# loaded; plain QuickJS registers no filesystem, process, environment, network or thread
+# API, and nothing here adds one. It is also a NATIVE component: `rquickjs-sys` compiles
+# the QuickJS C sources with `cc` inside this build, so nothing is fetched or started
+# outside this process. Already in this workspace's build and lockfile (five services run
+# caller-supplied JavaScript in it), so no new capability class arrives with it.
+rquickjs = "0.14"
+# The maintained Handlebars implementation, which RENDERS the Mustache templates an
+# alerting action's subject and message are written as, and the two values the plugin
+# substitutes into a monitor's own query (`state::message_template`): Handlebars is a
+# superset of Mustache's interpolation, so a template is rendered by a maintained engine
+# rather than by a substitution written here. A library that computes over data: it opens
+# nothing, starts nothing and reaches nothing, and the module bounds both the template it
+# is handed and the text it produces.
+handlebars = { version = "6", default-features = false }
+# The AWS SDK for SNS, driven over the in-process callback
+# (`OperationContext::callback`): an alerting monitor's trigger publishes its rendered
+# message to the Amazon SNS topic its notification channel names
+# (`state::notification_publication`), which is what fans that notification out to the
+# topic's own subscriptions. Only the generated client is needed — the emulator supplies
+# the transport.
+aws-sdk-sns = { version = "1", default-features = false }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
@@ -96,6 +125,16 @@ emulator-core-build-support = { workspace = true }
 [dev-dependencies]
 sha2 = { workspace = true }
 hex = { workspace = true }
+# The Amazon SNS and Amazon SQS services, mounted beside this one on ONE shared engine by
+# the alerting suite: a monitor trigger's notification is published to an SNS topic and
+# read back off the SQS queue subscribed to it, so what the suite asserts is where a client
+# sees it.
+service-com-amazonaws-sns-amazonsimplenotificationservice = { workspace = true }
+service-com-amazonaws-sqs-amazonsqs = { workspace = true }
+# ... and the Amazon SQS SDK client, driven over the in-process callback, which is how that
+# suite creates the queue, subscribes it to the topic and receives from it (the Amazon SNS
+# client it drives beside it is this crate's own dependency above).
+aws-sdk-sqs = { version = "1", default-features = false }
 # Generates the real certificates and key pairs a test brings into Certificate Manager
 # through its own `ImportCertificate`, so the names a domain's custom endpoint is judged
 # against are read out of a real X.509 body rather than written into the test. TEST-ONLY.

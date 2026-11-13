@@ -76,6 +76,26 @@ pub mod encryption_at_rest;
 /// the slow-log records its own data plane produces, and the cluster's application log.
 pub mod log_publishing;
 
+/// The ALERTING plugin's records a domain holds: the monitors a client writes, the legacy
+/// destinations their actions can address, and the alerts their triggers left behind.
+pub mod alerting;
+
+/// The NOTIFICATIONS plugin's channel configurations a domain holds — where an alerting
+/// action sends.
+pub mod notifications;
+
+/// Whether a monitor's trigger fires: the caller's own condition, evaluated over the results
+/// of that monitor's run by the engine embedded in this process.
+pub mod trigger_condition;
+
+/// What a trigger action sends: the message and subject its templates render over the run's
+/// context.
+pub mod message_template;
+
+/// Where a trigger action's notification goes: the publication one firing owes its channel's
+/// topic, and the hop that hands it over.
+pub mod notification_publication;
+
 /// Whether a value satisfies its member's modelled `@pattern` over its WHOLE length —
 /// the reading AWS applies, which the request boundary's find does not enforce for an
 /// unanchored expression.

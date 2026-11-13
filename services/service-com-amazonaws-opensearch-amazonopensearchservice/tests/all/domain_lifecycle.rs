@@ -111,6 +111,32 @@ impl Emulator {
         emulator
     }
 
+    /// The same emulator with Amazon SNS and Amazon SQS mounted on the SAME shared engine,
+    /// so a suite can create the topic an alerting monitor's notification channel names
+    /// through SNS's own `CreateTopic`, subscribe a queue to it through `Subscribe`, and read
+    /// what the notification delivered off that queue — the way a client does.
+    pub(crate) fn with_notification_channels() -> Self {
+        let mut emulator = Self::new();
+        emulator.router.register_service(
+            service_com_amazonaws_sns_amazonsimplenotificationservice::EmulatedService::new(
+                std::sync::Arc::clone(&emulator.engine),
+            ),
+        );
+        emulator.router.register_service(
+            service_com_amazonaws_sqs_amazonsqs::EmulatedService::new(std::sync::Arc::clone(
+                &emulator.engine,
+            )),
+        );
+        emulator
+    }
+
+    /// A handle onto this emulator for the AWS SDK to drive in process — the same seam a
+    /// handler reaches another service through, so a suite's setup calls a mounted service
+    /// exactly the way the service under test does.
+    pub(crate) fn callback(&self) -> smithy_server_runtime::EmbeddedEmulator {
+        smithy_server_runtime::EmbeddedEmulator::from_router(self.router.clone())
+    }
+
     /// The same emulator with the AWS KMS service mounted on the SAME shared engine, so a
     /// suite can create, disable and schedule the deletion of the keys a domain's
     /// encryption at rest names through that service's OWN operations — the store this

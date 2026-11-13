@@ -193,7 +193,21 @@ impl<Eng: Send + Sync + 'static> ErasedOperation for CredentialedDataPlane<Eng> 
     ) -> BoxFuture<'r, aws_smithy_runtime_api::http::Response> {
         Box::pin(async move {
             if domain_rest::claims_request(&*self.engine, req) {
-                return domain_rest::serve(&*self.engine, req, Some(ctx));
+                // Serving is synchronous because this plane answers out of one store it
+                // holds for the read or the write it performs. The one step that is neither —
+                // the CPU-bound evaluation of the caller's own trigger conditions and message
+                // templates — is driven by `served` with that store released and off this
+                // async worker (`domain_rest::monitor_run::off_the_async_worker`), so no
+                // caller-supplied source runs while the worker owes the runtime its health
+                // checks, its timeouts and its part in a graceful shutdown.
+                let answered = domain_rest::served(&*self.engine, req, Some(ctx));
+                // The notifications the work this request did owes a channel are handed over
+                // HERE: this service's store has been released by now, and the request has
+                // not been answered yet, so a client that reads the channel's own
+                // subscriptions after its request answered finds them there.
+                crate::state::notification_publication::publish(ctx, &answered.notifications)
+                    .await;
+                return answered.response;
             }
             // Unreachable: `override_operation` names this only for a request this data
             // plane claims.
