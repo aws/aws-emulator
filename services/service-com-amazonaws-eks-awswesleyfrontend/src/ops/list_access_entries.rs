@@ -180,7 +180,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })?;
 
         // A `nextToken` names the principal to resume AFTER. One this service did not
-        // issue for THIS listing is a bad parameter, not an empty page.
+        // issue for THIS listing is a bad parameter, not an empty page — refused in the
+        // wording the ACCESS-ENTRY plane this listing belongs to states such a member in
+        // ([`state::ACCESS_ENTRY_INVALID_NEXT_TOKEN_MESSAGE`]).
         let resume_after = match input.next_token.as_deref() {
             None => None,
             Some(token) => Some(
@@ -189,7 +191,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         ListAccessEntriesErrorModeled::InvalidParameterException(
                             InvalidParameterException {
                                 cluster_name: Some(input.cluster_name.clone()),
-                                message: Some(state::INVALID_NEXT_TOKEN_MESSAGE.to_string()),
+                                message: Some(
+                                    state::ACCESS_ENTRY_INVALID_NEXT_TOKEN_MESSAGE.to_string(),
+                                ),
                                 ..Default::default()
                             },
                         ),

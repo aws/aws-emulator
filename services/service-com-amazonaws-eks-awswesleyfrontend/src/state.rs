@@ -4556,17 +4556,33 @@ pub fn decode_page_token(token: &str) -> Option<String> {
     decode_scoped_page_token(CLUSTERS_LISTING, token)
 }
 
-/// The sentence a listing refuses a `nextToken` it did not issue with.
+/// The sentence a listing of the CLUSTER-MANAGEMENT plane refuses a `nextToken` it did
+/// not issue with.
 ///
-/// Entirely fixed text, and the SAME sentence for every listing of this service: a
-/// token this service did not mint, one minted for another listing, and one whose
+/// A token this service did not mint, one minted for another listing, and one whose
 /// position no longer exists all fail the one check a listing makes of a token —
 /// whether it recognises it — and leave the caller the one thing to act on, which is
 /// to start the listing again. Amazon EKS states exactly that, in one sentence that
 /// covers both halves of the condition — a token it cannot read and a token whose
 /// position is gone — and names neither the listing nor the token the request
 /// carried.
+///
+/// It is NOT the sentence every listing of this service refuses such a token with: the
+/// wording belongs to the API plane that serves the operation, and the Kubernetes
+/// access-entry APIs word their own
+/// ([`ACCESS_ENTRY_INVALID_NEXT_TOKEN_MESSAGE`]).
 pub const INVALID_NEXT_TOKEN_MESSAGE: &str = "nextToken is not valid or expired.";
+
+/// The sentence a listing of the Kubernetes ACCESS-ENTRY APIs refuses a `nextToken` it
+/// did not issue with.
+///
+/// That plane words a refusal about one request member as the MEMBER at fault followed
+/// by what is wrong with it — the shape it refuses an access entry's `username` with
+/// too ([`cluster_validation::username_refusal`]) — and a page token it cannot read is
+/// a member whose format it does not recognise. Entirely fixed text: it names the
+/// member and the fault, and carries no value of the request.
+pub const ACCESS_ENTRY_INVALID_NEXT_TOKEN_MESSAGE: &str =
+    "The specified nextToken is invalid: unrecognized format.";
 
 /// The ARN of one managed capability of one cluster.
 ///

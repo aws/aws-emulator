@@ -99,6 +99,8 @@ mod execution_observability;
 mod execution_redrive;
 #[path = "all/execution_reports_publish_what_they_settle.rs"]
 mod execution_reports_publish_what_they_settle;
+#[path = "all/execution_run_key_authorization.rs"]
+mod execution_run_key_authorization;
 #[path = "all/execution_role_assumption.rs"]
 mod execution_role_assumption;
 #[path = "all/execution_role_trust_conditions.rs"]

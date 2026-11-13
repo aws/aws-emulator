@@ -98,6 +98,12 @@ async fn poll<Eng: Send + Sync + 'static>(
         // at the moment of the call, exactly as the starting call's was — together with
         // the state machine's own name, which is what the session the role is assumed
         // under is named after.
+        // What the execution's own KEY owes an outcome the clock has already made due,
+        // decided before this pass settles and with no store of this service locked
+        // ([`super::encryption::fail_due_runs_the_key_refuses`]): the decision is the
+        // key's and the clock's together, so it is taken wherever a due outcome is
+        // materialised rather than only where a caller reaches it.
+        super::encryption::fail_due_runs_the_key_refuses(&**engine, super::now());
         let (task, role_arn, machine_name) = {
             let mut store = state.lock();
             store.settle(super::now());

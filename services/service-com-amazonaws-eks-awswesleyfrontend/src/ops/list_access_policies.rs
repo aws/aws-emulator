@@ -149,8 +149,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let _ = (ctx, &self.engine);
 
         // A `nextToken` names the policy to resume AFTER. One this listing did not
-        // issue is a bad parameter, not an empty page — the same answer `ListClusters`
-        // gives a foreign token.
+        // issue is a bad parameter, not an empty page — refused in the wording the
+        // ACCESS-ENTRY plane this listing belongs to states such a member in
+        // ([`state::ACCESS_ENTRY_INVALID_NEXT_TOKEN_MESSAGE`]).
         let resume_after = match input.next_token.as_deref() {
             None => None,
             Some(token) => Some(
@@ -160,7 +161,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                             ListAccessPoliciesErrorModeled::InvalidParameterException(
                                 InvalidParameterException {
                                     message: Some(
-                                        state::INVALID_NEXT_TOKEN_MESSAGE.to_string(),
+                                        state::ACCESS_ENTRY_INVALID_NEXT_TOKEN_MESSAGE
+                                            .to_string(),
                                     ),
                                     ..Default::default()
                                 },

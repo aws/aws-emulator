@@ -151,6 +151,8 @@ mod nodegroup_lifecycle;
 mod nodegroup_scaling_capacity_refusals;
 #[path = "all/not_found_payload.rs"]
 mod not_found_payload;
+#[path = "all/page_token_plane_wording.rs"]
+mod page_token_plane_wording;
 #[path = "all/pass_role_authorization.rs"]
 mod pass_role_authorization;
 #[path = "all/peer_resolution_is_grounded.rs"]

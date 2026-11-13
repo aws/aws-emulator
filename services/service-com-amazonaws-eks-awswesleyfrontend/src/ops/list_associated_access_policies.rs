@@ -182,7 +182,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // caller handed in cannot be decoded, whatever the cluster or the access entry
         // is doing — so it is refused as `InvalidParameterException`, the code every
         // other listing of this service answers a foreign token with, rather than as
-        // the state-dependent `InvalidRequestException`.
+        // the state-dependent `InvalidRequestException`. The SENTENCE is the one the
+        // ACCESS-ENTRY plane this listing belongs to states such a member in
+        // ([`state::ACCESS_ENTRY_INVALID_NEXT_TOKEN_MESSAGE`]), which is not the
+        // pagination sentence the cluster-management listings use.
         let resume_after = match input.next_token.as_deref() {
             None => None,
             Some(token) => Some(
@@ -193,7 +196,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                                 InvalidParameterException {
                                     cluster_name: Some(input.cluster_name.clone()),
                                     message: Some(
-                                        state::INVALID_NEXT_TOKEN_MESSAGE.to_string(),
+                                        state::ACCESS_ENTRY_INVALID_NEXT_TOKEN_MESSAGE
+                                            .to_string(),
                                     ),
                                     ..Default::default()
                                 },

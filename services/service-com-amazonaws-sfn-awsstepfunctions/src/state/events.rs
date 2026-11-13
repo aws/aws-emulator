@@ -463,18 +463,26 @@ async fn hand_over<Eng: Send + Sync + 'static>(
     state: &::engine::ServiceState<ComAmazonawsSfnAwsstepfunctionsState>,
     callback: &smithy_server_runtime::EmbeddedEmulator,
 ) -> usize {
-    let changes = drain(state, callback).await;
+    let changes = drain(engine, state, callback).await;
     changes + super::observability::publish(&**engine)
 }
 
 /// Publish what is queued onto the account's event bus, and answer how many changes went
 /// out.
-async fn drain(
+async fn drain<Eng: Send + Sync + 'static>(
+    engine: &Arc<Eng>,
     state: &::engine::ServiceState<ComAmazonawsSfnAwsstepfunctionsState>,
     callback: &smithy_server_runtime::EmbeddedEmulator,
 ) -> usize {
     let mut published = 0;
     loop {
+        // What an execution's own KEY owes the outcome the clock has made due, decided
+        // BEFORE that outcome is materialised and with no store of this service locked
+        // ([`super::encryption::fail_due_runs_the_key_refuses`]). The decision belongs to
+        // the instant the outcome was owed and not to whoever asked first, so it is taken
+        // wherever a due outcome is settled — here as much as in front of a request —
+        // rather than only where a caller happens to reach it.
+        super::encryption::fail_due_runs_the_key_refuses(&**engine, super::now());
         // The guard is taken and dropped inside this statement: settling is what
         // records the transitions the clock has made due, and the batch is taken in the
         // same critical section so no change is published twice.

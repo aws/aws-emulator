@@ -390,8 +390,9 @@ async fn a_page_size_outside_the_published_bounds_is_refused_in_the_services_own
 }
 
 // ---------------------------------------------------------------------------
-// RULE: a `nextToken` a listing did not issue is refused with the one sentence this
-// service states for a page token, naming neither the listing nor the token.
+// RULE: a `nextToken` a listing of the CLUSTER-MANAGEMENT plane did not issue is
+// refused with the one sentence Amazon EKS states for a page token there, naming
+// neither the listing nor the token.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]

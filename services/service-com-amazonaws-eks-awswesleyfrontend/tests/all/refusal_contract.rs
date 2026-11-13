@@ -45,7 +45,7 @@ use std::time::{Duration, Instant};
 
 use service_com_amazonaws_eks_awswesleyfrontend::state::{
     access_policy_arn, cluster_deletion_protected, update_not_found_message,
-    INVALID_NEXT_TOKEN_MESSAGE,
+    ACCESS_ENTRY_INVALID_NEXT_TOKEN_MESSAGE, INVALID_NEXT_TOKEN_MESSAGE,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -66,7 +66,11 @@ const POLL_INTERVAL: Duration = Duration::from_millis(25);
 const ACTIVE: &str = "ACTIVE";
 
 /// An IAM principal an access entry can be created for.
-fn principal_arn(name: &str) -> String {
+///
+/// `pub(crate)`: `tests/all.rs` is this binary's crate root, so a sibling suite that
+/// drives the same access-entry setup reads these helpers rather than carrying a second
+/// copy of them.
+pub(crate) fn principal_arn(name: &str) -> String {
     format!("arn:aws:iam::000000000000:role/{name}")
 }
 
@@ -87,7 +91,13 @@ async fn update_config(
 }
 
 /// `CreateAccessEntry`: `POST /clusters/{clusterName}/access-entries`.
-async fn create_entry(router: &MultiServiceRouter, cluster: &str, principal: &str) -> Answer {
+///
+/// `pub(crate)` for the reason [`principal_arn`] is.
+pub(crate) async fn create_entry(
+    router: &MultiServiceRouter,
+    cluster: &str,
+    principal: &str,
+) -> Answer {
     call(
         router,
         REGION,
@@ -99,7 +109,9 @@ async fn create_entry(router: &MultiServiceRouter, cluster: &str, principal: &st
 }
 
 /// `AssociateAccessPolicy`: grants one published policy to one access entry.
-async fn associate_policy(
+///
+/// `pub(crate)` for the reason [`principal_arn`] is.
+pub(crate) async fn associate_policy(
     router: &MultiServiceRouter,
     cluster: &str,
     principal: &str,
@@ -154,7 +166,9 @@ where
 ///
 /// The body is the one whose `authenticationMode` serves the access-entry API, since
 /// that is one of the preconditions this provides.
-async fn active_cluster(router: &MultiServiceRouter, case: &str, cluster: &str) {
+///
+/// `pub(crate)` for the reason [`principal_arn`] is.
+pub(crate) async fn active_cluster(router: &MultiServiceRouter, case: &str, cluster: &str) {
     let created = create(router, &access_entry_cluster_request(cluster)).await;
     assert_eq!(
         created.status, 200,
@@ -503,9 +517,12 @@ async fn assert_protected_against_deletion(
 
 // ---------------------------------------------------------------------------
 // RULE: a `nextToken` no listing minted is a MALFORMED PARAMETER — 400
-// InvalidParameterException with this service's one page-token sentence — on
-// every paginated listing it serves, and never the state-dependent
-// InvalidRequestException.
+// InvalidParameterException, never the state-dependent InvalidRequestException —
+// on every paginated listing this service serves, worded in the sentence the API
+// PLANE serving that listing states such a refusal in: the cluster-management
+// listings in Amazon EKS's page-token sentence, and the Kubernetes access-entry
+// listings in the "The specified <member> is invalid: <reason>" form that plane
+// words a bad request member with.
 // ---------------------------------------------------------------------------
 
 /// Where a listing's `nextToken` travels: the query string for the listings the model
@@ -515,6 +532,14 @@ enum Transport {
     Query,
     Body,
 }
+
+/// The sentence the CLUSTER-MANAGEMENT listings refuse a token no listing minted with:
+/// Amazon EKS's own page-token sentence, which names neither the member nor the token.
+const CLUSTER_PLANE_SENTENCE: &str = "nextToken is not valid or expired.";
+
+/// The sentence the Kubernetes ACCESS-ENTRY listings refuse it with: the member at
+/// fault and what is wrong with it, the form that plane words a bad request member in.
+const ACCESS_ENTRY_PLANE_SENTENCE: &str = "The specified nextToken is invalid: unrecognized format.";
 
 #[tokio::test]
 async fn a_page_token_no_listing_minted_is_a_malformed_parameter_on_every_listing() {
@@ -616,69 +641,87 @@ async fn a_page_token_no_listing_minted_is_a_malformed_parameter_on_every_listin
         "control: a token ListAssociatedAccessPolicies minted resumes it, got {resumed:?}"
     );
 
-    // Every paginated listing this service serves, with the path each is addressed at
-    // and where its `nextToken` travels.
-    let listings: Vec<(&str, String, Transport)> = vec![
-        ("ListClusters", "/clusters".to_string(), Transport::Query),
+    // Every paginated listing this service serves, with the path each is addressed at,
+    // where its `nextToken` travels, and the sentence its own plane refuses a token no
+    // listing minted with.
+    let listings: Vec<(&str, String, Transport, &str)> = vec![
+        (
+            "ListClusters",
+            "/clusters".to_string(),
+            Transport::Query,
+            CLUSTER_PLANE_SENTENCE,
+        ),
         (
             "DescribeClusterVersions",
             "/cluster-versions".to_string(),
             Transport::Query,
+            CLUSTER_PLANE_SENTENCE,
         ),
         (
             "ListAccessPolicies",
             "/access-policies".to_string(),
             Transport::Query,
+            ACCESS_ENTRY_PLANE_SENTENCE,
         ),
         (
             "ListEksAnywhereSubscriptions",
             "/eks-anywhere-subscriptions".to_string(),
             Transport::Query,
+            CLUSTER_PLANE_SENTENCE,
         ),
         (
             "ListAddons",
             format!("/clusters/{CLUSTER}/addons"),
             Transport::Query,
+            CLUSTER_PLANE_SENTENCE,
         ),
         (
             "ListNodegroups",
             format!("/clusters/{CLUSTER}/node-groups"),
             Transport::Query,
+            CLUSTER_PLANE_SENTENCE,
         ),
         (
             "ListUpdates",
             format!("/clusters/{CLUSTER}/updates"),
             Transport::Query,
+            CLUSTER_PLANE_SENTENCE,
         ),
         (
             "ListCapabilities",
             format!("/clusters/{CLUSTER}/capabilities"),
             Transport::Query,
+            CLUSTER_PLANE_SENTENCE,
         ),
         (
             "ListCertificateAuthorities",
             format!("/clusters/{CLUSTER}/certificate-authorities"),
             Transport::Query,
+            CLUSTER_PLANE_SENTENCE,
         ),
         (
             "ListAccessEntries",
             format!("/clusters/{CLUSTER}/access-entries"),
             Transport::Query,
+            ACCESS_ENTRY_PLANE_SENTENCE,
         ),
         (
             "ListPodIdentityAssociations",
             format!("/clusters/{CLUSTER}/pod-identity-associations"),
             Transport::Query,
+            CLUSTER_PLANE_SENTENCE,
         ),
         (
             "ListAssociatedAccessPolicies",
             policies_path.clone(),
             Transport::Query,
+            ACCESS_ENTRY_PLANE_SENTENCE,
         ),
         (
             "ListInsights",
             format!("/clusters/{CLUSTER}/insights"),
             Transport::Body,
+            CLUSTER_PLANE_SENTENCE,
         ),
     ];
 
@@ -700,7 +743,7 @@ async fn a_page_token_no_listing_minted_is_a_malformed_parameter_on_every_listin
         ("a minted token with one digit changed", corrupted.clone()),
     ];
 
-    for (operation, path, transport) in &listings {
+    for (operation, path, transport, expected) in &listings {
         for (row, token) in &tokens {
             // The token `ListClusters` minted is a token of THAT listing: it resumes
             // it (asserted above) rather than being refused by it.
@@ -741,13 +784,14 @@ async fn a_page_token_no_listing_minted_is_a_malformed_parameter_on_every_listin
                  {answer:?}"
             );
             let actual = answer.message();
-            // AWS's own sentence, written out here rather than only imported, so a
-            // change to the service's constant cannot keep this green; the constant
-            // is then checked against the same text once below, which is what ties
-            // every listing to it.
+            // Each plane's own sentence, written out here rather than only imported, so
+            // a change to the service's constants cannot keep this green; both
+            // constants are then checked against the same text once below, which is
+            // what ties every listing to one of them.
             assert_eq!(
-                actual, "nextToken is not valid or expired.",
-                "case {case:?}: expected this service's page-token sentence, got {actual:?}"
+                actual, *expected,
+                "case {case:?}: expected the page-token sentence of this listing's plane, got \
+                 {actual:?}"
             );
             assert!(
                 !actual.contains(token.as_str()) || token.is_empty(),
@@ -757,8 +801,9 @@ async fn a_page_token_no_listing_minted_is_a_malformed_parameter_on_every_listin
     }
 
     assert_eq!(
-        INVALID_NEXT_TOKEN_MESSAGE, "nextToken is not valid or expired.",
-        "the constant every listing words this refusal with must be AWS's sentence, got \
-         {INVALID_NEXT_TOKEN_MESSAGE:?}"
+        (INVALID_NEXT_TOKEN_MESSAGE, ACCESS_ENTRY_INVALID_NEXT_TOKEN_MESSAGE),
+        (CLUSTER_PLANE_SENTENCE, ACCESS_ENTRY_PLANE_SENTENCE),
+        "each plane's listings must word this refusal with that plane's own sentence, got \
+         {INVALID_NEXT_TOKEN_MESSAGE:?} and {ACCESS_ENTRY_INVALID_NEXT_TOKEN_MESSAGE:?}"
     );
 }
