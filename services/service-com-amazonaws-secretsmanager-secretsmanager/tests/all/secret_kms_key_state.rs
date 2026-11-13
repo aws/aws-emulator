@@ -48,7 +48,7 @@ const REGION: &str = "us-west-2";
 /// How a read refusal introduces the KMS refusal it relays: Secrets Manager states
 /// what it could not do and then relays the wrapped failure, which is how the
 /// refusal of a secret under an unusable key is worded on the wire.
-const DECRYPTION_SENTENCE: &str = "Secrets Manager can't decrypt the secret value:";
+pub(crate) const DECRYPTION_SENTENCE: &str = "Secrets Manager can't decrypt the secret value:";
 
 /// The mirror of [`DECRYPTION_SENTENCE`] for a write refusal.
 const ENCRYPTION_SENTENCE: &str = "Secrets Manager can't encrypt the secret value:";
@@ -257,7 +257,13 @@ pub(crate) fn create_body(name: &str, kms_key_id: Option<&str>, value: &ValueCas
 /// Assert a refusal is worded as this error class is: Secrets Manager's own clause
 /// for what it could not do, then the wrapped KMS refusal — the message KMS stated,
 /// the code it stated it under, and the fields that name the answer it came from.
-fn assert_relays_kms(message: &str, sentence: &str, kms_code: &str, kms_phrase: &str, case: &str) {
+pub(crate) fn assert_relays_kms(
+    message: &str,
+    sentence: &str,
+    kms_code: &str,
+    kms_phrase: &str,
+    case: &str,
+) {
     assert!(
         message.starts_with(sentence),
         "case {case:?}: expected the message to start {sentence:?}, got {message:?}"
@@ -737,14 +743,14 @@ async fn a_key_change_moves_the_staged_versions_to_the_new_key() {
             let previous = ValueCase::string("the previous value", "value-two");
             let previous_id = version_id_of(
                 &emulator
-                    .sm_ok("PutSecretValue", &value_body(&name, &previous), &case)
+                    .sm_ok("PutSecretValue", &value_body(&name, &previous, &[]), &case)
                     .await,
                 &case,
             );
             let current = ValueCase::string("the current value", "value-three");
             let current_id = version_id_of(
                 &emulator
-                    .sm_ok("PutSecretValue", &value_body(&name, &current), &case)
+                    .sm_ok("PutSecretValue", &value_body(&name, &current, &[]), &case)
                     .await,
                 &case,
             );
@@ -882,17 +888,24 @@ async fn a_key_change_moves_the_staged_versions_to_the_new_key() {
 }
 
 /// The `VersionId` a write reported.
-fn version_id_of(body: &Value, case: &str) -> String {
+pub(crate) fn version_id_of(body: &Value, case: &str) -> String {
     body["VersionId"]
         .as_str()
         .unwrap_or_else(|| panic!("case {case:?}: no VersionId in {body}"))
         .to_string()
 }
 
-/// A write body naming `name` and carrying this value.
-fn value_body(name: &str, value: &ValueCase) -> Value {
+/// A write body naming `name`, carrying this value, and claiming the staging
+/// labels `stages` — none of them leaving the write on the default, `AWSCURRENT`
+/// ("If you don't include VersionStages, then Secrets Manager automatically moves
+/// the staging label AWSCURRENT to this version",
+/// `PutSecretValueRequest$VersionStages`, this service's Smithy model).
+pub(crate) fn value_body(name: &str, value: &ValueCase, stages: &[&str]) -> Value {
     let mut body = Map::new();
     body.insert("SecretId".to_string(), json!(name));
+    if !stages.is_empty() {
+        body.insert("VersionStages".to_string(), json!(stages));
+    }
     if let Value::Object(members) = value.wire_members() {
         body.extend(members);
     }

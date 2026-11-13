@@ -37,6 +37,8 @@ mod secret_deletion_window;
 mod secret_denial_resource_clause;
 #[path = "all/secret_error_responses.rs"]
 mod secret_error_responses;
+#[path = "all/secret_key_change_rekeys_staged_versions.rs"]
+mod secret_key_change_rekeys_staged_versions;
 #[path = "all/secret_kms_access_denied.rs"]
 mod secret_kms_access_denied;
 #[path = "all/secret_kms_key_refusal_classes.rs"]
