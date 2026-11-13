@@ -361,10 +361,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             })
         };
         let Some(handle) = crate::state::decision_task_by_token(&guard, &input.task_token) else {
-            // The token names no `DecisionTaskStarted` event of any stored run, so there
-            // is no scheduling event of this service's state behind it either, and the
-            // `EventId` member's own modelled default of 0 is what names it.
-            return Err(unknown_task(0).into());
+            // The token is a handle on no decision task, but a token of another KIND this
+            // service mints still addresses a task of the stored history: the refusal
+            // names the task the supplied token itself is a handle on, and falls back to
+            // the `EventId` member's own modelled default of 0 only for a token that
+            // addresses no started task at all.
+            return Err(unknown_task(crate::state::scheduled_event_id_by_token(
+                &guard,
+                &input.task_token,
+            ))
+            .into());
         };
         // The two resources a stale handle can have lost, reported each as the one the
         // lookup failed on: the EXECUTION when the addressed run is no longer available,

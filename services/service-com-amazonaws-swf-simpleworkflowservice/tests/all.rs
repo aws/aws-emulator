@@ -23,6 +23,8 @@ mod cooperative_cancellation;
 mod count_open_workflow_executions;
 #[path = "all/count_pending_decision_tasks.rs"]
 mod count_pending_decision_tasks;
+#[path = "all/cross_kind_task_token_refusals.rs"]
+mod cross_kind_task_token_refusals;
 #[path = "all/decision_task_poller_cap.rs"]
 mod decision_task_poller_cap;
 #[path = "all/delete_workflow_type.rs"]

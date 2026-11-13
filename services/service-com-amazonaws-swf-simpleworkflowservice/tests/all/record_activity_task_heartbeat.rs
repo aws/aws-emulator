@@ -611,12 +611,48 @@ async fn a_handle_that_names_no_open_activity_task_is_refused() {
         )
         .await;
     let decision_token = string_at(&decision_task, "/taskToken");
+    // A decision token is still a handle on a task of the stored history, so the refusal
+    // names the decision task's own scheduling event; a token the service never minted is
+    // a handle on no started task at all, so there is no scheduling event behind it and
+    // the `EventId` member's own default is reported.
+    let decision_started_event_id = i64_at(&decision_task, "/startedEventId");
+    let decision_scheduled_event_id = decision_task
+        .pointer("/events")
+        .and_then(Value::as_array)
+        .and_then(|events| {
+            events
+                .iter()
+                .find(|event| {
+                    event
+                        .get("eventId")
+                        .and_then(Value::as_i64)
+                        .is_some_and(|id| id == decision_started_event_id)
+                })
+                .and_then(|event| {
+                    event
+                        .pointer("/decisionTaskStartedEventAttributes/scheduledEventId")
+                        .and_then(Value::as_i64)
+                })
+        })
+        .unwrap_or_else(|| {
+            panic!("case \"stale\": the handed-out decision task names its own scheduling event in {decision_task:?}")
+        });
 
-    for (case, handle) in [
-        ("a decision task's own token", decision_token.as_str()),
-        ("a token the service never minted", "not-a-token"),
-        ("a token with the right shape but a wrong digest", &"0".repeat(64)),
+    for (case, handle, expected_scheduled_event_id) in [
+        (
+            "a decision task's own token",
+            decision_token.as_str(),
+            decision_scheduled_event_id,
+        ),
+        ("a token the service never minted", "not-a-token", 0),
+        (
+            "a token with the right shape but a wrong digest",
+            &"0".repeat(64),
+            0,
+        ),
     ] {
+        let expected_message =
+            format!("Unknown activity, scheduledEventId = {expected_scheduled_event_id}");
         let (status, refused) = emulator
             .call("RecordActivityTaskHeartbeat", &beat_body(handle, None))
             .await;
@@ -626,14 +662,9 @@ async fn a_handle_that_names_no_open_activity_task_is_refused() {
                 error_code(&refused).as_str(),
                 refused.get("message").and_then(Value::as_str),
             ),
-            (
-                400,
-                "UnknownResourceFault",
-                Some("Unknown activity, scheduledEventId = 0"),
-            ),
-            "case {case:?}: with no activity task behind the handle there is no \
-             scheduling event either, so the member's default is reported, got {status} \
-             with {refused:?}"
+            (400, "UnknownResourceFault", Some(expected_message.as_str())),
+            "case {case:?}: the refusal names the task the supplied handle addresses, got \
+             {status} with {refused:?}"
         );
     }
 

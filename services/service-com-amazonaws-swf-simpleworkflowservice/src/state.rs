@@ -3127,9 +3127,10 @@ impl ComAmazonawsSwfSimpleworkflowserviceState {
         at: DateTime,
     ) -> Result<(), String> {
         let Some(handle) = activity_task_by_token(self, token) else {
-            // The token names no `ActivityTaskStarted` event of any stored run, so there
-            // is no scheduling event of this service's state behind it either.
-            return Err(unknown_activity_message(0));
+            // The token is a handle on no activity task, but it can still be a handle on
+            // a task of another KIND this service minted a token for, and the fault names
+            // the task the token itself addresses.
+            return Err(unknown_activity_message(scheduled_event_id_by_token(self, token)));
         };
         let unknown = unknown_activity_message(handle.scheduled_event_id);
         // The service's own sweeps first: a task the clock timed out, or a run it closed,
@@ -3206,9 +3207,10 @@ impl ComAmazonawsSwfSimpleworkflowserviceState {
         at: DateTime,
     ) -> Result<bool, String> {
         let Some(handle) = activity_task_by_token(self, token) else {
-            // The token names no `ActivityTaskStarted` event of any stored run, so there
-            // is no scheduling event of this service's state behind it either.
-            return Err(unknown_activity_message(0));
+            // The token is a handle on no activity task; a token of another KIND this
+            // service mints still addresses a task of the stored history, and that is the
+            // task the fault names.
+            return Err(unknown_activity_message(scheduled_event_id_by_token(self, token)));
         };
         let unknown = unknown_activity_message(handle.scheduled_event_id);
         // The service's own sweeps first: a task the clock timed out, or a run it closed,
@@ -3430,9 +3432,12 @@ pub fn unknown_domain_resource_message(resource_arn: &str) -> String {
 /// The `UnknownResourceFault` message for an activity task a worker's terminal response
 /// addresses and that is no longer open: `Unknown activity, scheduledEventId = <id>`.
 ///
-/// The id is the `scheduledEventId` of the task the token names, taken from the stored
-/// history; a token that names no activity task of any stored run names no scheduling
-/// event either, and reports the `EventId` member's own modelled default of `0`.
+/// The id is the `scheduledEventId` of the task the SUPPLIED TOKEN addresses, taken from
+/// the stored history whichever KIND of task token it is
+/// ([`scheduled_event_id_by_token`]) — AWS reads that id out of the token itself, so a
+/// token of the wrong kind still names the task it really is a handle on. Only a token
+/// that is a handle on no started task of any stored run names no scheduling event, and
+/// reports the `EventId` member's own modelled default of `0`.
 pub fn unknown_activity_message(scheduled_event_id: i64) -> String {
     format!("Unknown activity, scheduledEventId = {scheduled_event_id}")
 }
@@ -3441,9 +3446,10 @@ pub fn unknown_activity_message(scheduled_event_id: i64) -> String {
 /// addresses and that is no longer outstanding, while its run is still available:
 /// `Unknown decision task, scheduledEventId = <id>`.
 ///
-/// The id is the `scheduledEventId` of the task the token names, taken from the stored
-/// `DecisionTaskStarted` event it addressed; a token that names no decision task of any
-/// stored run names no scheduling event either, and reports the `EventId` member's own
+/// The id is the `scheduledEventId` of the task the SUPPLIED TOKEN addresses, taken from
+/// the stored history whichever KIND of task token it is
+/// ([`scheduled_event_id_by_token`]); only a token that is a handle on no started task of
+/// any stored run names no scheduling event, and reports the `EventId` member's own
 /// modelled default of `0`. Built the same way, and for the same reason, as
 /// [`unknown_activity_message`]: the fault names the resource the lookup failed on, and
 /// the only pointer back to a task that is over is the history event that scheduled it.
@@ -3456,6 +3462,86 @@ pub fn unknown_decision_task_message(scheduled_event_id: i64) -> String {
 /// request and no part of the store, so every refusal of that bound reads the same
 /// whichever call tripped it and whichever bound tripped first.
 pub const TOO_MANY_TAGS_MESSAGE: &str = "Too many tags provided.";
+
+/// One started task a `taskToken` is the handle on, as the stored history records it,
+/// whichever KIND of task this service minted that token for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskHandle {
+    /// Which kind of task the token is a handle on, as the started event it was derived
+    /// from records.
+    pub kind: TaskKind,
+    pub domain: String,
+    pub workflow_id: String,
+    pub run_id: String,
+    /// The `eventId` of the event that scheduled the task, as its started event names it.
+    pub scheduled_event_id: i64,
+    /// The `eventId` of the started event that handed the task over, which is the
+    /// identity the token is derived from.
+    pub started_event_id: i64,
+}
+
+/// The task `token` is the handle on, of WHICHEVER kind this service minted it for,
+/// whether or not that task is still outstanding and whether or not its run is still
+/// open.
+///
+/// Every task token of this service is derived from the identity of the started event
+/// that handed one task over — `(kind, domain, workflowId, runId, startedEventId)`
+/// ([`task_token`]) — so the stored `DecisionTaskStarted` and `ActivityTaskStarted`
+/// events ARE the record of which tokens were ever minted, and one scan over them
+/// resolves a handle of either kind. The kind-specific lookups
+/// ([`decision_task_by_token`], [`activity_task_by_token`]) are this scan narrowed to the
+/// kind their caller can act on; a caller that only needs the task the token names,
+/// whatever kind it is — a fault that reports WHICH task the lookup failed on — takes it
+/// from here.
+pub fn task_by_token(
+    guard: &ComAmazonawsSwfSimpleworkflowserviceState,
+    token: &str,
+) -> Option<TaskHandle> {
+    guard.domains.iter().find_map(|(name, domain)| {
+        domain.executions.values().find_map(|execution| {
+            execution.history.iter().find_map(|event| {
+                let (kind, scheduled_event_id) = match &event.attributes {
+                    EventAttributes::DecisionTaskStarted(started) => {
+                        (TaskKind::Decision, started.scheduled_event_id)
+                    }
+                    EventAttributes::ActivityTaskStarted(started) => {
+                        (TaskKind::Activity, started.scheduled_event_id)
+                    }
+                    _ => return None,
+                };
+                let minted = task_token(
+                    kind,
+                    name,
+                    &execution.workflow_id,
+                    &execution.run_id,
+                    event.event_id,
+                );
+                (minted == token).then(|| TaskHandle {
+                    kind,
+                    domain: name.clone(),
+                    workflow_id: execution.workflow_id.clone(),
+                    run_id: execution.run_id.clone(),
+                    scheduled_event_id,
+                    started_event_id: event.event_id,
+                })
+            })
+        })
+    })
+}
+
+/// The `scheduledEventId` of the task `token` addresses, whichever KIND of task token it
+/// is, and the `EventId` member's own modelled default of `0` for a token that is a
+/// handle on no started task of any stored run.
+///
+/// What an `UnknownResourceFault` about a task reports, so a refusal names the task the
+/// supplied token really is a handle on even when that task is not of the kind the call
+/// can act on: the id belongs to the token, not to the lookup that failed.
+pub fn scheduled_event_id_by_token(
+    guard: &ComAmazonawsSwfSimpleworkflowserviceState,
+    token: &str,
+) -> i64 {
+    task_by_token(guard, token).map_or(0, |handle| handle.scheduled_event_id)
+}
 
 /// One decision task a decision `taskToken` is the handle on, as the stored history
 /// records it.
@@ -3485,33 +3571,13 @@ pub fn decision_task_by_token(
     guard: &ComAmazonawsSwfSimpleworkflowserviceState,
     token: &str,
 ) -> Option<DecisionTaskHandle> {
-    guard.domains.iter().find_map(|(name, domain)| {
-        domain.executions.values().find_map(|execution| {
-            execution
-                .history
-                .iter()
-                .filter_map(|event| match &event.attributes {
-                    EventAttributes::DecisionTaskStarted(started) => {
-                        Some((event.event_id, started.scheduled_event_id))
-                    }
-                    _ => None,
-                })
-                .find(|(started_event_id, _)| {
-                    decision_task_token(
-                        name,
-                        &execution.workflow_id,
-                        &execution.run_id,
-                        *started_event_id,
-                    ) == token
-                })
-                .map(|(started_event_id, scheduled_event_id)| DecisionTaskHandle {
-                    domain: name.clone(),
-                    workflow_id: execution.workflow_id.clone(),
-                    run_id: execution.run_id.clone(),
-                    scheduled_event_id,
-                    started_event_id,
-                })
-        })
+    let handle = task_by_token(guard, token).filter(|handle| handle.kind == TaskKind::Decision)?;
+    Some(DecisionTaskHandle {
+        domain: handle.domain,
+        workflow_id: handle.workflow_id,
+        run_id: handle.run_id,
+        scheduled_event_id: handle.scheduled_event_id,
+        started_event_id: handle.started_event_id,
     })
 }
 
@@ -3541,33 +3607,13 @@ pub fn activity_task_by_token(
     guard: &ComAmazonawsSwfSimpleworkflowserviceState,
     token: &str,
 ) -> Option<ActivityTaskHandle> {
-    guard.domains.iter().find_map(|(name, domain)| {
-        domain.executions.values().find_map(|execution| {
-            execution
-                .history
-                .iter()
-                .filter_map(|event| match &event.attributes {
-                    EventAttributes::ActivityTaskStarted(started) => {
-                        Some((event.event_id, started.scheduled_event_id))
-                    }
-                    _ => None,
-                })
-                .find(|(started_event_id, _)| {
-                    activity_task_token(
-                        name,
-                        &execution.workflow_id,
-                        &execution.run_id,
-                        *started_event_id,
-                    ) == token
-                })
-                .map(|(started_event_id, scheduled_event_id)| ActivityTaskHandle {
-                    domain: name.clone(),
-                    workflow_id: execution.workflow_id.clone(),
-                    run_id: execution.run_id.clone(),
-                    scheduled_event_id,
-                    started_event_id,
-                })
-        })
+    let handle = task_by_token(guard, token).filter(|handle| handle.kind == TaskKind::Activity)?;
+    Some(ActivityTaskHandle {
+        domain: handle.domain,
+        workflow_id: handle.workflow_id,
+        run_id: handle.run_id,
+        scheduled_event_id: handle.scheduled_event_id,
+        started_event_id: handle.started_event_id,
     })
 }
 
