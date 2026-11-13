@@ -209,3 +209,7 @@ mod home_directory_mapping_overlap;
 // configuration provisions.
 #[path = "all/server_vended_log_group.rs"]
 mod server_vended_log_group;
+// `agreement_update_write_scope`, likewise appended: WHICH agreement one UpdateAgreement
+// writes, and which refusal a request that breaks more than one rule at once gets.
+#[path = "all/agreement_update_write_scope.rs"]
+mod agreement_update_write_scope;
