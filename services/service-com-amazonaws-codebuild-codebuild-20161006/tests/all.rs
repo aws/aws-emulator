@@ -109,6 +109,8 @@ mod update_fleet;
 mod update_project;
 #[path = "all/update_report_group.rs"]
 mod update_report_group;
+#[path = "all/webhook_absence_precedes_source_rules.rs"]
+mod webhook_absence_precedes_source_rules;
 #[path = "all/webhook_access_token.rs"]
 mod webhook_access_token;
 #[path = "all/webhook_delete_is_idempotent.rs"]
