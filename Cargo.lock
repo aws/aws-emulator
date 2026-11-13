@@ -10810,6 +10810,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "cron",
+ "font8x8",
  "hex",
  "http",
  "opentelemetry-proto",

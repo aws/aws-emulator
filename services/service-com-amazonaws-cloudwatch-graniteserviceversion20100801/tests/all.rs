@@ -203,6 +203,8 @@ mod metric_stream_value_rules;
 mod metric_streams;
 #[path = "all/metric_widget_image.rs"]
 mod metric_widget_image;
+#[path = "all/metric_widget_image_freshness.rs"]
+mod metric_widget_image_freshness;
 #[path = "all/metrics_and_alarms.rs"]
 mod metrics_and_alarms;
 #[path = "all/metrics_scalar_exclusion.rs"]

@@ -25,9 +25,10 @@
 //! Two deviations this handler states rather than hides. `OutputFormat: image/png` renders the
 //! same PNG as `png` and carries it in the modelled `MetricWidgetImage` blob: the raw
 //! `image/png` BODY that value documents is the HTTP framing of the answer, which belongs to
-//! this service's protocol rather than to a handler. And the `view` values whose layout is
-//! lettering ([`crate::state::metric_widget`] draws no text, because no font is shipped) are
-//! served with the graph of the same resolved series instead of being refused.
+//! this service's protocol rather than to a handler. And the `view` values whose layout is a
+//! single figure rather than a plot ([`crate::state::metric_widget::render`] letters a graph's
+//! axes but lays out no other view) are served with the graph of the same resolved series
+//! instead of being refused.
 //!
 //! ## Shape of an operation
 //!

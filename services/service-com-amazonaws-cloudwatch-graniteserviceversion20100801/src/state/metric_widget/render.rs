@@ -17,15 +17,24 @@
 //! plot sits in the image, how a value and an instant become a pixel, and the theme's
 //! colours.
 //!
-//! No text is drawn. A graph's title, axis labels and legend text need a font, and this
-//! emulator ships none, so the legend is the colour swatch of each series and nothing claims
-//! to be lettering. Everything a reader of the image can act on — which window the graph
-//! covers, which values the series took in it, how many series the definition drew — is in the
-//! pixels.
+//! Both axes are LABELLED ([`lettering`]): the value axis carries the values its grid lines
+//! stand at and the time axis the instants the window's grid lines fall on. That lettering is
+//! what puts the series' own numbers in the image, because the plot alone is normalised to the
+//! data it drew — a single point sits halfway up whatever value it took, and a series whose
+//! values are all scaled by the same factor keeps its shape — so without the axes two stores
+//! holding different datapoints would be the same picture. A graph too small to hold the
+//! lettering beside a plot is drawn without it rather than drawn over itself.
+//!
+//! The legend is the colour swatch of each series: a series' label is the definition's or the
+//! metric's own text rather than a number read off the graph, so it is not what the image has
+//! to carry.
 
 use ::plotters::prelude::*;
 
 use super::{MetricWidget, PlottedSeries, View, MAX_IMAGE_SIDE};
+
+/// The glyphs the axis labels are written in, and the bitmap they are written into.
+mod lettering;
 
 /// The margin between the image's edge and the plot, in pixels.
 const PAD: i32 = 8;
@@ -55,6 +64,19 @@ const MARKER_RADIUS: i32 = 2;
 /// are distinguishable and left off a series dense enough that they would merge into the line.
 const MAX_MARKED_POINTS: usize = 200;
 
+/// The gap between the plot and the lettering beside it, in pixels.
+const LABEL_GAP: i32 = 3;
+
+/// The smallest plot an axis is lettered beside, in pixels.
+///
+/// A graph shorter or narrower than this has no room for both the labels and a plot worth
+/// reading, so it is drawn as the plot alone.
+const MIN_LETTERED_SIDE: i32 = 40;
+
+/// How many seconds a window has to span before its instants are labelled with the day they
+/// fall on as well as the time of day.
+const DAY_SECS: f64 = 24.0 * 60.0 * 60.0;
+
 /// The colours one theme draws a graph in.
 #[derive(Debug, Clone, Copy)]
 struct Theme {
@@ -66,6 +88,8 @@ struct Theme {
     grid: [u8; 3],
     /// A horizontal annotation's line.
     annotation: [u8; 3],
+    /// The axis lettering.
+    text: [u8; 3],
 }
 
 /// The light theme, which a definition naming no `theme` is drawn on.
@@ -74,6 +98,7 @@ const LIGHT: Theme = Theme {
     frame: [0x87, 0x95, 0x96],
     grid: [0xe6, 0xe6, 0xe6],
     annotation: [0xd1, 0x32, 0x12],
+    text: [0x54, 0x5b, 0x64],
 };
 
 /// The dark theme (`theme: dark`).
@@ -82,7 +107,48 @@ const DARK: Theme = Theme {
     frame: [0x68, 0x70, 0x78],
     grid: [0x2a, 0x2e, 0x33],
     annotation: [0xff, 0x7a, 0x59],
+    text: [0xd1, 0xd5, 0xdb],
 };
+
+/// One label of an axis: the value or the instant it stands at, and the text written for it.
+#[derive(Debug, Clone)]
+struct AxisLabel {
+    /// The value, or the instant in epoch seconds, the label stands at.
+    at: f64,
+    /// The text written for it.
+    text: String,
+}
+
+/// Where the plot sits in the image.
+#[derive(Debug, Clone, Copy)]
+struct Frame {
+    /// The leftmost column of the plot.
+    left: i32,
+    /// Its topmost row.
+    top: i32,
+    /// Its rightmost column.
+    right: i32,
+    /// Its bottommost row.
+    bottom: i32,
+    /// How tall the strip under the plot the window's instants are written in is, which is zero
+    /// on a graph too small to letter.
+    instants: i32,
+    /// Whether the axes carry their labels.
+    lettered: bool,
+}
+
+impl Frame {
+    /// Whether the plot has an inside at all: an image too small to hold one is answered with
+    /// the background alone rather than with a plot drawn outside itself.
+    fn is_empty(&self) -> bool {
+        self.right <= self.left || self.bottom <= self.top
+    }
+
+    /// The row the legend strip's swatches sit on.
+    fn legend_top(&self) -> i32 {
+        self.bottom + self.instants + PAD
+    }
+}
 
 /// The widget's graph as PNG bytes, or the sentence saying why the bitmap could not be
 /// rendered.
@@ -114,17 +180,85 @@ fn draw(
     bitmap: &mut [u8],
 ) -> Result<(), String> {
     let theme = if widget.dark { DARK } else { LIGHT };
+    let range = value_range(widget, series);
+    let values = value_labels(range);
+    let instants = instant_labels(widget);
+    let frame = frame_of((width, height), series, &values);
+
+    plot(widget, series, (width, height), bitmap, theme, frame, range)?;
+
+    // The plotting library has handed the buffer back, so the labels go straight into the
+    // pixels — over the grid they annotate rather than under it.
+    if frame.lettered && !frame.is_empty() {
+        letter(
+            widget,
+            (width, height),
+            bitmap,
+            theme,
+            frame,
+            range,
+            (&values, &instants),
+        );
+    }
+    Ok(())
+}
+
+/// Where the plot sits in a `width` x `height` image: inside the margin, less the legend strip
+/// when there is a series to legend, and less the room the axis labels take when the graph is
+/// big enough to letter.
+fn frame_of((width, height): (u32, u32), series: &[PlottedSeries], values: &[AxisLabel]) -> Frame {
+    let legend = if series.is_empty() { 0 } else { LEGEND_HEIGHT };
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    let (width, height) = (width as i32, height as i32);
+    let right = width - 1 - PAD;
+    let gutter = values
+        .iter()
+        .map(|label| lettering::text_width(&label.text))
+        .max()
+        .unwrap_or(0)
+        + LABEL_GAP;
+    let instants = lettering::GLYPH_HEIGHT + LABEL_GAP;
+    let plain = Frame {
+        left: PAD,
+        top: PAD,
+        right,
+        bottom: height - 1 - PAD - legend,
+        instants: 0,
+        lettered: false,
+    };
+    let lettered = Frame {
+        left: PAD + gutter,
+        top: PAD,
+        right,
+        bottom: height - 1 - PAD - legend - instants,
+        instants,
+        lettered: true,
+    };
+    if lettered.right - lettered.left >= MIN_LETTERED_SIDE
+        && lettered.bottom - lettered.top >= MIN_LETTERED_SIDE
+    {
+        lettered
+    } else {
+        plain
+    }
+}
+
+/// Draw the background, the grid, the annotations, every series and the legend into `bitmap`.
+#[allow(clippy::too_many_arguments)]
+fn plot(
+    widget: &MetricWidget,
+    series: &[PlottedSeries],
+    (width, height): (u32, u32),
+    bitmap: &mut [u8],
+    theme: Theme,
+    frame: Frame,
+    (low, high): (f64, f64),
+) -> Result<(), String> {
     let root = BitMapBackend::with_buffer(bitmap, (width, height)).into_drawing_area();
     root.fill(&rgb(theme.background)).map_err(failed)?;
 
-    // The plot is the image inside the margin, less the legend strip when there is a series to
-    // legend. An image too small to hold a plot is answered with the background alone rather
-    // than with a plot drawn outside itself.
-    let legend = if series.is_empty() { 0 } else { LEGEND_HEIGHT };
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-    let (right, bottom) = (width as i32 - 1 - PAD, height as i32 - 1 - PAD - legend);
-    let (left, top) = (PAD, PAD);
-    if right <= left || bottom <= top {
+    let (left, top, right, bottom) = (frame.left, frame.top, frame.right, frame.bottom);
+    if frame.is_empty() {
         root.present().map_err(failed)?;
         return Ok(());
     }
@@ -149,9 +283,8 @@ fn draw(
     ))
     .map_err(failed)?;
 
-    let (low, high) = value_range(widget, series);
-    let x_of = |instant: f64| scaled(instant, (widget.start, widget.end), (left, right));
-    let y_of = |value: f64| scaled(value, (low, high), (bottom, top));
+    let x_of = |instant: f64| horizontal(instant, widget, frame);
+    let y_of = |value: f64| vertical(value, (low, high), frame);
 
     for value in &widget.annotations {
         if *value < low || *value > high {
@@ -210,15 +343,13 @@ fn draw(
     // One swatch per series, left to right under the plot, in the order the definition listed
     // them; a strip that runs out of width legends as many as fit.
     let mut at = left;
+    let legend_top = frame.legend_top();
     for drawn in series {
         if at + SWATCH.0 > right {
             break;
         }
         root.draw(&Rectangle::new(
-            [
-                (at, bottom + PAD),
-                (at + SWATCH.0, bottom + PAD + SWATCH.1),
-            ],
+            [(at, legend_top), (at + SWATCH.0, legend_top + SWATCH.1)],
             rgb(drawn.color).filled(),
         ))
         .map_err(failed)?;
@@ -227,6 +358,112 @@ fn draw(
 
     root.present().map_err(failed)?;
     Ok(())
+}
+
+/// Write the axis labels into `bitmap`: the values the plot's grid lines stand at, in the
+/// gutter left of it, and the instants its columns fall on, in the strip under it.
+///
+/// A label is written only where the one before it has left room, so a plot narrow or short
+/// enough that its labels would collide carries the ones that fit rather than a smear.
+#[allow(clippy::too_many_arguments)]
+fn letter(
+    widget: &MetricWidget,
+    (width, height): (u32, u32),
+    bitmap: &mut [u8],
+    theme: Theme,
+    frame: Frame,
+    range: (f64, f64),
+    (values, instants): (&[AxisLabel], &[AxisLabel]),
+) {
+    let mut canvas = lettering::Canvas::new(bitmap, (width, height));
+
+    // Top down, so the highest value on the axis is the one that keeps its label.
+    let mut next_free_row = i32::MIN;
+    for label in values.iter().rev() {
+        let row = vertical(label.at, range, frame) - lettering::GLYPH_HEIGHT / 2;
+        if row < next_free_row {
+            continue;
+        }
+        let column = frame.left - LABEL_GAP - lettering::text_width(&label.text);
+        canvas.write(&label.text, (column, row), theme.text);
+        next_free_row = row + lettering::GLYPH_HEIGHT + LABEL_GAP;
+    }
+
+    // Left to right, so the window's own start is the instant that keeps its label.
+    let mut next_free_column = i32::MIN;
+    let row = frame.bottom + LABEL_GAP;
+    for label in instants {
+        let span = lettering::text_width(&label.text);
+        let column = (horizontal(label.at, widget, frame) - span / 2).max(0);
+        if column < next_free_column {
+            continue;
+        }
+        canvas.write(&label.text, (column, row), theme.text);
+        next_free_column = column + span + LABEL_GAP;
+    }
+}
+
+/// The values the value axis is labelled with: the one every grid line of the plot stands at,
+/// lowest first.
+fn value_labels((low, high): (f64, f64)) -> Vec<AxisLabel> {
+    (0..=GRID_DIVISIONS)
+        .map(|division| {
+            let value = low + (high - low) * f64::from(division) / f64::from(GRID_DIVISIONS);
+            AxisLabel {
+                at: value,
+                text: formatted_value(value),
+            }
+        })
+        .collect()
+}
+
+/// The instants the time axis is labelled with: the one every column of the plot falls on,
+/// earliest first.
+fn instant_labels(widget: &MetricWidget) -> Vec<AxisLabel> {
+    let spans_days = widget.end - widget.start >= DAY_SECS;
+    (0..=GRID_DIVISIONS)
+        .map(|division| {
+            let instant = widget.start
+                + (widget.end - widget.start) * f64::from(division) / f64::from(GRID_DIVISIONS);
+            AxisLabel {
+                at: instant,
+                text: formatted_instant(instant, spans_days),
+            }
+        })
+        .collect()
+}
+
+/// `value` as the axis labels it: enough digits to tell two labels of one axis apart, and no
+/// trailing zeros to spend the plot's width on.
+fn formatted_value(value: f64) -> String {
+    if !value.is_finite() {
+        return String::new();
+    }
+    let magnitude = value.abs();
+    if magnitude != 0.0 && (magnitude >= 1e6 || magnitude < 1e-3) {
+        return format!("{value:.2e}");
+    }
+    let written = format!("{value:.3}");
+    let trimmed = written.trim_end_matches('0').trim_end_matches('.');
+    if trimmed.is_empty() || trimmed == "-" {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// `instant` as the time axis labels it: the time of day in UTC, and the day as well on a
+/// window that spans more than one.
+fn formatted_instant(instant: f64, spans_days: bool) -> String {
+    if !instant.is_finite() {
+        return String::new();
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    let Some(at) = ::chrono::DateTime::from_timestamp(instant.floor() as i64, 0) else {
+        return String::new();
+    };
+    let layout = if spans_days { "%m-%d %H:%M" } else { "%H:%M" };
+    at.format(layout).to_string()
 }
 
 /// The values the plot's vertical axis spans.
@@ -256,6 +493,20 @@ fn value_range(widget: &MetricWidget, series: &[PlottedSeries]) -> (f64, f64) {
         return (low - 1.0, high + 1.0);
     }
     (low, high)
+}
+
+/// The column of the plot `instant` falls in.
+fn horizontal(instant: f64, widget: &MetricWidget, frame: Frame) -> i32 {
+    scaled(
+        instant,
+        (widget.start, widget.end),
+        (frame.left, frame.right),
+    )
+}
+
+/// The row of the plot `value` sits at on an axis spanning `range`.
+fn vertical(value: f64, range: (f64, f64), frame: Frame) -> i32 {
+    scaled(value, range, (frame.bottom, frame.top))
 }
 
 /// `value` placed on the pixel axis `to`, by where it falls in `from`.

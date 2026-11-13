@@ -477,7 +477,7 @@ async fn an_expression_entry_is_evaluated_over_the_series_it_refers_to() {
 
 /// Every `view` the metric widget structure documents renders the graph, and the plot the
 /// renderer draws follows it: a column plot for `bar`, and the time-series line for the views
-/// whose single-value layout needs lettering this emulator cannot draw.
+/// whose single-figure layout this renderer does not lay out.
 ///
 /// The rows are the documented set (`view — The default is timeSeries. Valid values:
 /// timeSeries | singleValue | gauge | bar | pie`), so the DEVIATION is recorded as well as the

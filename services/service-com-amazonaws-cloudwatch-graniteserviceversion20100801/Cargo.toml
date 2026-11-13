@@ -74,6 +74,11 @@ plotters = { version = "0.3", default-features = false, features = ["bitmap_back
 # The bitmap that backend draws into is encoded as the PNG the `MetricWidgetImage` blob
 # carries by the maintained encoder.
 png = "0.17"
+# `state::metric_widget::render::lettering`: a graph's axis labels are the series' own numbers,
+# so the glyphs they are written in come from the maintained 8x8 bitmap font rather than from a
+# hand-drawn glyph table here. Only its glyph data is taken — the plotting library's own text
+# support needs a font file this emulator does not ship.
+font8x8 = "0.3"
 
 # `state::alarm_mute_rules`: an alarm mute rule's schedule is a cron expression
 # (`Schedule$Expression`), so the maintained cron grammar reads the instants its windows open at
