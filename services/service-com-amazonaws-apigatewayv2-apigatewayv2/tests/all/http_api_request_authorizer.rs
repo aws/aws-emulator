@@ -31,11 +31,13 @@
 //! be missing a part of.
 //!
 //! What an ADMITTED request is answered with is NOT asserted here: past the identity-source
-//! precondition the decision is the answer of the Lambda function `AuthorizerUri` names, and
-//! no deployment package runs in this emulator (the authorizer-invocation path is the
-//! subject of its own open issue). So the admitted leg asserts only what this step owes:
-//! that the request was NOT refused `401` by the precondition, and that the endpoint
-//! answered as a data plane rather than through the scaffold channel.
+//! precondition the decision is the answer of the Lambda function `AuthorizerUri` names, so
+//! it belongs to the suites that mount AWS Lambda beside this service and let that function
+//! run (`http_api_backend_dispatch.rs` for the decision itself, and
+//! `http_api_request_authorizer_cache_keying.rs` for how often it is asked). So the admitted
+//! leg asserts only what this step owes: that the request was NOT refused `401` by the
+//! precondition, and that the endpoint answered as a data plane rather than through the
+//! scaffold channel.
 
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;

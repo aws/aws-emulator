@@ -115,6 +115,8 @@ mod http_api_published_endpoint_reporters;
 mod http_api_published_invoke_address;
 #[path = "all/http_api_request_authorizer.rs"]
 mod http_api_request_authorizer;
+#[path = "all/http_api_request_authorizer_cache_keying.rs"]
+mod http_api_request_authorizer_cache_keying;
 #[path = "all/http_api_request_metrics.rs"]
 mod http_api_request_metrics;
 #[path = "all/http_api_route_precedence.rs"]
