@@ -7,11 +7,33 @@
 //! the harness [`crate::cluster_lifecycle`] already builds.
 
 use serde_json::{json, Value};
-use service_com_amazonaws_pcs_awsparallelcomputingservice::state::{
-    CREATE_SCHEDULER_VERSIONS, UPDATE_SCHEDULER_VERSIONS,
-};
 
 use crate::cluster_lifecycle::{call, emulator, wait_past_the_owed_transition};
+
+/// Values that LABEL a scheduler release, so the service carries on with them.
+///
+/// The first four rows are the "Valid Values" `SchedulerRequest$version` prints today
+/// (`smithy_query(query="shape",shape="SchedulerRequest")`); the rest are release labels
+/// that list does not name — an older Slurm release, a patch release, a one-digit minor and
+/// a far-future major — because the member is a plain `String` with no enum, `@pattern` or
+/// `@length`, so the printed list is prose rather than a wire constraint.
+const RELEASE_LABELS: &[&str] = &[
+    "24.11", "25.05", "25.11", "26.05", "23.11", "25.05.1", "25.5", "9999.1",
+];
+
+/// Values that label no scheduler release at all: an empty value, a word, a label with a
+/// component that is not digits, too few and too many components, an empty component, a
+/// component past four digits, and a label with surrounding space.
+const NOT_RELEASE_LABELS: &[&str] = &[
+    "",
+    "latest",
+    "1.0-not-a-real-version",
+    "24",
+    "24.11.2.3",
+    "24.",
+    "12345.1",
+    " 25.05",
+];
 
 /// Which daemon port each `EndpointType` is published on.
 ///
@@ -200,10 +222,10 @@ async fn an_active_cluster_publishes_the_scheduler_endpoints_its_configuration_e
 }
 
 #[tokio::test]
-async fn create_cluster_accepts_exactly_the_scheduler_versions_it_can_provision() {
+async fn create_cluster_accepts_every_scheduler_release_label() {
     let router = emulator();
 
-    for (index, version) in CREATE_SCHEDULER_VERSIONS.iter().enumerate() {
+    for (index, version) in RELEASE_LABELS.iter().enumerate() {
         let name = format!("supported-version-{index}");
         let (status, body) = call(
             &router,
@@ -219,19 +241,9 @@ async fn create_cluster_accepts_exactly_the_scheduler_versions_it_can_provision(
         );
     }
 
-    // Each row is outside the set the create path can provision: a version only the
-    // UPDATE path supports, a released Slurm older than the set, two malformed
-    // neighbours of a supported value, an empty value and a string that is no version.
-    let refused_versions = [
-        "24.05",
-        "23.11",
-        "25.5",
-        "25.05.1",
-        " 25.05",
-        "",
-        "1.0-not-a-real-version",
-    ];
-    for (index, version) in refused_versions.iter().enumerate() {
+    // A value that labels no scheduler release is refused in the create path's own
+    // wording, which names the scheduler type and the version the request carried.
+    for (index, version) in NOT_RELEASE_LABELS.iter().enumerate() {
         let name = format!("unsupported-version-{index}");
         let (status, refused) = call(
             &router,
@@ -273,14 +285,14 @@ async fn create_cluster_accepts_exactly_the_scheduler_versions_it_can_provision(
         );
         assert_eq!(
             names.len(),
-            CREATE_SCHEDULER_VERSIONS.len(),
+            RELEASE_LABELS.len(),
             "case version {version:?}: expected only the accepted clusters, got {names:?}"
         );
     }
 }
 
 #[tokio::test]
-async fn update_cluster_accepts_exactly_the_scheduler_versions_it_supports() {
+async fn update_cluster_accepts_every_scheduler_release_label() {
     let router = emulator();
     let name = "update-versions";
     let (status, created) = call(
@@ -296,8 +308,9 @@ async fn update_cluster_accepts_exactly_the_scheduler_versions_it_supports() {
         .to_string();
     wait_past_the_owed_transition().await;
 
-    // Every version the update path supports is applied and reads back.
-    for version in UPDATE_SCHEDULER_VERSIONS {
+    // The update path holds `version` to the same rule, so every release label is applied
+    // and reads back — including the ones no printed list names.
+    for version in RELEASE_LABELS {
         let (status, updated) = call(
             &router,
             "UpdateCluster",
@@ -334,13 +347,10 @@ async fn update_cluster_accepts_exactly_the_scheduler_versions_it_supports() {
     }
 
     // The version the cluster is left on by the loop above.
-    let settled_version = UPDATE_SCHEDULER_VERSIONS
-        .last()
-        .copied()
-        .unwrap_or_default();
+    let settled_version = RELEASE_LABELS.last().copied().unwrap_or_default();
 
-    // A version outside the update path's set is refused, and the cluster is untouched.
-    for version in ["23.11", "25.5", "26.05.1", "", "1.0-not-a-real-version"] {
+    // A value that labels no release is refused, and the cluster is untouched.
+    for version in NOT_RELEASE_LABELS {
         let (status, refused) = call(
             &router,
             "UpdateCluster",

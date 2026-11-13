@@ -28,18 +28,42 @@
 //!
 //! This suite needs TWO services on one engine — PCS reaches IAM through the in-process
 //! callback, so a single-service router has no IAM to ask — which is why it lives here
-//! rather than in either service's own crate. The rows span how the profile is referenced
-//! (a profile IAM holds, the same profile under a path, a profile that was never created,
-//! one held by ANOTHER account) against whether the cluster exists, and the two
+//! rather than in either service's own crate. PCS also resolves the SUBNETS a create places
+//! a resource in against Amazon EC2, which owns them, so the VPC and subnet below are minted
+//! by EC2's own operations on the same engine: every subnet id in an accepted request is one
+//! EC2 handed out rather than one this suite made up. The rows span how the profile is
+//! referenced (a profile IAM holds, the same profile under a path, a profile that was never
+//! created, one held by ANOTHER account) against whether the cluster exists, and the two
 //! `ClusterIdentifier` forms.
 //!
 //! Assembling the whole router costs stack (see `boot_serve.rs`), so it is built — and the
 //! requests driven — on a sized thread.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use aws_emulator_router::{build_router, InMemoryEngine};
-use service_com_amazonaws_pcs_awsparallelcomputingservice::state::TRANSITION_SPAN;
+
+use crate::query_wire::{element, form_encode};
+
+/// The EC2 API version a client sends in an ec2Query body.
+const EC2_API_VERSION: &str = "2016-11-15";
+
+/// The CIDR of the VPC the subnet below is carved out of, and the subnet's own.
+const VPC_CIDR: &str = "10.44.0.0/16";
+const SUBNET_CIDR: &str = "10.44.1.0/24";
+
+/// How long the cluster is given to reach `ACTIVE` before the wait is called a failure.
+///
+/// PCS reports a new cluster `CREATING` and the clock owes it `ACTIVE` a span later, so what
+/// is waited for takes well under a second; this deadline is generous slack over that span so
+/// that a loaded host cannot decide the outcome, and all it is for is that a move that never
+/// comes fails instead of hanging. Nothing here asserts on elapsed time.
+const ACTIVE_DEADLINE: Duration = Duration::from_secs(60);
+
+/// How long to wait before LOOKING AGAIN while that condition has not yet held. Not a bound
+/// on anything: the bound is [`ACTIVE_DEADLINE`].
+const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 /// Keep this at or above `boot_serve.rs`'s stack: the same assembly runs here.
 const BOOT_STACK_SIZE: usize = 64 * 1024 * 1024;
@@ -190,12 +214,42 @@ fn error_message(payload: &serde_json::Value) -> String {
         .to_string()
 }
 
-/// A `CreateComputeNodeGroup` body carrying every `@required` member.
-fn create_body(cluster: &str, name: &str, profile_arn: &str) -> serde_json::Value {
+/// Drive one ec2Query action that must succeed, answered with its XML body.
+fn ec2(
+    router: &smithy_server_runtime::MultiServiceRouter,
+    runtime: &tokio::runtime::Runtime,
+    action: &str,
+    parameters: &[(&str, &str)],
+) -> String {
+    let mut body = format!("Action={action}&Version={EC2_API_VERSION}");
+    for (key, value) in parameters {
+        body.push('&');
+        body.push_str(&form_encode(key));
+        body.push('=');
+        body.push_str(&form_encode(value));
+    }
+    let (status, text) = send(
+        router,
+        runtime,
+        "ec2",
+        None,
+        "application/x-www-form-urlencoded",
+        body,
+    );
+    assert_eq!(
+        status, 200,
+        "setup: EC2 {action} must succeed, got {status} with {text}"
+    );
+    text
+}
+
+/// A `CreateComputeNodeGroup` body carrying every `@required` member, placing the group in
+/// `subnet` — an id EC2 minted.
+fn create_body(cluster: &str, name: &str, profile_arn: &str, subnet: &str) -> serde_json::Value {
     serde_json::json!({
         "clusterIdentifier": cluster,
         "computeNodeGroupName": name,
-        "subnetIds": ["subnet-0123456789abcdef0"],
+        "subnetIds": [subnet],
         "customLaunchTemplate": {"id": "lt-0123456789abcdef0", "version": "1"},
         "iamInstanceProfileArn": profile_arn,
         "scalingConfiguration": {"minInstanceCount": 0, "maxInstanceCount": 4},
@@ -291,6 +345,39 @@ fn cases(account: &str, cluster_id: &str) -> Vec<Case> {
     ]
 }
 
+/// Wait until `cluster` reports `ACTIVE`, looking again until it does or
+/// [`ACTIVE_DEADLINE`] passes.
+///
+/// The CALLER waits for the condition, as a caller of the real service would; the service
+/// never sleeps for it, and nothing between the reads nudges it.
+fn wait_until_active(
+    router: &smithy_server_runtime::MultiServiceRouter,
+    runtime: &tokio::runtime::Runtime,
+    cluster: &str,
+) {
+    let deadline = Instant::now() + ACTIVE_DEADLINE;
+    loop {
+        let (status, body) = pcs(
+            router,
+            runtime,
+            "GetCluster",
+            serde_json::json!({"clusterIdentifier": cluster}),
+        );
+        assert_eq!(
+            status, 200,
+            "GetCluster {cluster} must answer 200 while it provisions, got {status} {body}"
+        );
+        if body["cluster"]["status"].as_str() == Some("ACTIVE") {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the clock owed {cluster} its ACTIVE status and it never came; last read {body}"
+        );
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
 /// Every compute node group `ListComputeNodeGroups` reports for `cluster`, by name.
 fn group_names(
     router: &smithy_server_runtime::MultiServiceRouter,
@@ -380,6 +467,23 @@ fn a_compute_node_group_is_created_only_for_an_instance_profile_iam_holds() {
                 );
             }
 
+            // Setup: the network the cluster and its groups are placed in, minted by EC2
+            // itself — PCS resolves what a create names against the service that owns
+            // subnets, so an id this suite made up would name no subnet of the account.
+            let vpc = element(
+                &ec2(&router, &runtime, "CreateVpc", &[("CidrBlock", VPC_CIDR)]),
+                "vpcId",
+            );
+            let subnet = element(
+                &ec2(
+                    &router,
+                    &runtime,
+                    "CreateSubnet",
+                    &[("VpcId", vpc.as_str()), ("CidrBlock", SUBNET_CIDR)],
+                ),
+                "subnetId",
+            );
+
             // Setup: one cluster, which the clock makes ACTIVE a span after its create.
             let (status, created) = pcs(
                 &router,
@@ -389,7 +493,7 @@ fn a_compute_node_group_is_created_only_for_an_instance_profile_iam_holds() {
                     "clusterName": HELD_CLUSTER,
                     "scheduler": {"type": "SLURM", "version": "24.11"},
                     "size": "SMALL",
-                    "networking": {"subnetIds": ["subnet-0123456789abcdef0"]},
+                    "networking": {"subnetIds": [subnet.clone()]},
                 }),
             );
             assert_eq!(status, 200, "setup: CreateCluster: got {status} {created}");
@@ -401,16 +505,16 @@ fn a_compute_node_group_is_created_only_for_an_instance_profile_iam_holds() {
                 !cluster_id.is_empty(),
                 "setup: CreateCluster must mint an id, got {created}"
             );
-            // The CALLER waits out the span the service stored, as a caller of the real
+            // The CALLER waits for the cluster to report ACTIVE, as a caller of the real
             // service would; the service never sleeps for it.
-            std::thread::sleep(TRANSITION_SPAN + std::time::Duration::from_millis(250));
+            wait_until_active(&router, &runtime, &cluster_id);
 
             for case in cases(account, &cluster_id) {
                 let (status, body) = pcs(
                     &router,
                     &runtime,
                     "CreateComputeNodeGroup",
-                    create_body(&case.cluster, case.group, &case.profile_arn),
+                    create_body(&case.cluster, case.group, &case.profile_arn, &subnet),
                 );
                 match &case.expected {
                     Expected::Created => {

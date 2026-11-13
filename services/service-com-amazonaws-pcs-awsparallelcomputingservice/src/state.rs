@@ -45,6 +45,10 @@
 //! * response size — [`page_size`] clamps a caller's `maxResults` to the modelled
 //!   `1..=100` before [`paginate`] truncates.
 
+/// The EC2 subnets a request places a resource in, resolved against the service that owns
+/// subnets.
+pub mod ec2_subnets;
+
 /// The IAM instance profile a compute node group's instances assume, resolved against the
 /// service that owns instance profiles.
 pub mod instance_profile;
@@ -98,17 +102,19 @@ pub const STATUS_UPDATING: &str = "UPDATING";
 /// in ACTIVE, UPDATE_FAILED, or SUSPENDED state" (`UpdateCluster`'s own documentation).
 pub const UPDATABLE_CLUSTER_STATUSES: &[&str] = &[STATUS_ACTIVE, "UPDATE_FAILED", "SUSPENDED"];
 
-/// The scheduler versions `CreateCluster` can provision, from the model's
-/// `SchedulerRequest$version` documentation ("Valid Values: 24.11 | 25.05 | 25.11 |
-/// 26.05"). `version` is an unconstrained `String` in the model, so the supported set is
-/// a service-side rule rather than a boundary constraint.
-pub const CREATE_SCHEDULER_VERSIONS: &[&str] = &["24.11", "25.05", "25.11", "26.05"];
+/// How a scheduler release is LABELLED: the `major.minor` of a Slurm release, optionally
+/// with its patch component — `SchedulerRequest$version` is "the version of the specified
+/// scheduling software", pointing at the Slurm versions PCS publishes, and every one of
+/// them is labelled that way. The components below are what a label may be made of; the
+/// SET of releases the service can provision is not stated anywhere in the model, and the
+/// lists its documentation prints move as releases ship, so no such set is a gate here.
+const SCHEDULER_VERSION_COMPONENTS: std::ops::RangeInclusive<usize> = 2..=3;
 
-/// The scheduler versions `UpdateCluster` can move a cluster to, from the model's
-/// `UpdateSchedulerRequest$version` documentation ("Valid Values: 24.05 | 24.11 | 25.05 |
-/// 25.11 | 26.05"). Deliberately a DIFFERENT set from [`CREATE_SCHEDULER_VERSIONS`]: a
-/// version a cluster can be updated to need not be one a new cluster can be created on.
-pub const UPDATE_SCHEDULER_VERSIONS: &[&str] = &["24.05", "24.11", "25.05", "25.11", "26.05"];
+/// The most digits one component of a scheduler release label carries. With
+/// [`SCHEDULER_VERSION_COMPONENTS`] this bounds the length of the version a create
+/// PERSISTS, which the model — where `version` is a plain `String` with no `@length` —
+/// does not.
+const SCHEDULER_VERSION_COMPONENT_DIGITS: usize = 4;
 
 /// The `AccountingMode`/`SlurmRestMode` member that turns an optional Slurm daemon on
 /// ("A value of STANDARD means Slurm accounting is enabled" / "... the Slurm REST API is
@@ -1183,17 +1189,27 @@ pub fn stored_list_violation(entries: usize) -> Option<String> {
     (entries > MAX_STORED_LIST_ENTRIES).then(|| length_at_most_constraint(MAX_STORED_LIST_ENTRIES))
 }
 
-/// The modelled `ValidationException` (HTTP 400) `CreateCluster` answers for a scheduler
-/// version it cannot provision, or `None` when the version is supported.
+/// The modelled `ValidationException` (HTTP 400) `CreateCluster` refuses a scheduler
+/// version with, or `None` when the service carries on with it.
 ///
-/// The service refuses a version outside the set it can provision rather than persisting
-/// a cluster that could never come up; the message names the scheduler type and version
-/// the request asked for.
+/// THE RULE both paths share: `version` is a plain `String` in the model — no enum, no
+/// `@pattern`, no `@length` — so the only thing that holds across releases is that the value
+/// LABELS a scheduler release ([`names_a_scheduler_release`]). The "Valid Values" its
+/// documentation prints are prose that moves as Slurm releases ship and are deliberately NOT
+/// a gate: a request naming a release outside the list of the day is one the service carries
+/// on with, and refusing it here would turn a working create into a terminal refusal. So the
+/// check is a SHAPE check and nothing more, never the set of releases the service can
+/// provision, which no part of the model states.
+///
+/// THE WORDING is this path's own: the create path names the scheduler type and the version
+/// the request asked for, both taken from the request, while the update path answers a fixed
+/// sentence naming neither ([`update_scheduler_version_violation`]) — each path has its own
+/// wording, which is why these are two functions over one rule.
 pub fn create_scheduler_version_violation(
     scheduler_type: &str,
     version: &str,
 ) -> Option<ValidationException> {
-    if CREATE_SCHEDULER_VERSIONS.contains(&version) {
+    if names_a_scheduler_release(version) {
         return None;
     }
     Some(service_validation(format!(
@@ -1201,17 +1217,31 @@ pub fn create_scheduler_version_violation(
     )))
 }
 
-/// The modelled `ValidationException` (HTTP 400) `UpdateCluster` answers for a scheduler
-/// version it cannot move a cluster to, or `None` when the version is supported.
+/// The modelled `ValidationException` (HTTP 400) `UpdateCluster` refuses a scheduler version
+/// with, or `None` when the service carries on with it.
 ///
-/// The update path has its own wording, which names no version.
+/// The same rule as [`create_scheduler_version_violation`] — the value must label a scheduler
+/// release, and the printed "Valid Values" are not a gate — answered in the update path's own
+/// fixed sentence, which names no type and no version.
 pub fn update_scheduler_version_violation(version: &str) -> Option<ValidationException> {
-    if UPDATE_SCHEDULER_VERSIONS.contains(&version) {
+    if names_a_scheduler_release(version) {
         return None;
     }
     Some(service_validation(
         "AWS PCS doesn't support the scheduler version you provided.".to_string(),
     ))
+}
+
+/// Whether `version` labels a scheduler release: [`SCHEDULER_VERSION_COMPONENTS`]
+/// dot-separated components, each one to [`SCHEDULER_VERSION_COMPONENT_DIGITS`] ASCII
+/// digits.
+fn names_a_scheduler_release(version: &str) -> bool {
+    let components: Vec<&str> = version.split('.').collect();
+    SCHEDULER_VERSION_COMPONENTS.contains(&components.len())
+        && components.iter().all(|component| {
+            (1..=SCHEDULER_VERSION_COMPONENT_DIGITS).contains(&component.len())
+                && component.bytes().all(|byte| byte.is_ascii_digit())
+        })
 }
 
 /// The modelled `ValidationException` for a request the SERVICE refuses by a rule the

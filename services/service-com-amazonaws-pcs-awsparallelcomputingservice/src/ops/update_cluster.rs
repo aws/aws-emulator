@@ -183,9 +183,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
-        // `scheduler.version` is an unconstrained `String` in the model, so the set of
-        // versions the service can move a cluster to is enforced here. Refused before
-        // the store is touched, so the stored cluster is left exactly as it was.
+        // `scheduler.version` is a plain `String` in the model here too, so it is held to
+        // the same rule the create path holds it to: the value must label a scheduler
+        // release, and the "Valid Values" the documentation prints are not a gate. The
+        // update path's own wording names no version. Refused before the store is touched,
+        // so the stored cluster is left exactly as it was.
         if let Some(scheduler) = input.scheduler.as_ref() {
             if let Some(refusal) =
                 crate::state::update_scheduler_version_violation(&scheduler.version)

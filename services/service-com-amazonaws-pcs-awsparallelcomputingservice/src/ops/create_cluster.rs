@@ -201,9 +201,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(CreateClusterErrorModeled::ValidationException(refusal).into());
         }
 
-        // `scheduler.version` is an unconstrained `String` in the model, so the set of
-        // versions the service can actually provision is enforced here — before anything
-        // is minted or stored, so a refused request persists nothing.
+        // `scheduler.version` is a plain `String` in the model, and the "Valid Values" its
+        // documentation prints move as releases ship, so the only rule enforced here is
+        // that the value labels a scheduler release at all — a version outside the list of
+        // the day reaches the networking checks below rather than being refused.
         if let Some(refusal) = crate::state::create_scheduler_version_violation(
             &input.scheduler.r#type,
             &input.scheduler.version,
@@ -269,6 +270,30 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        let region = crate::state::request_region(ctx);
+
+        // "The subnets and security groups for the cluster must already exist before you
+        // use this API action" (this operation's own documentation): the subnets the
+        // control-plane ENI would be created in belong to EC2, so a create resolves them
+        // against EC2 before it mints or stores anything — a cluster whose ENI could never
+        // be placed is refused rather than persisted. The list was bounded above, so the
+        // hop is not sized by the request, and it is made before the state lock is taken,
+        // so nothing is held across it.
+        //
+        // The hop goes nowhere: it runs over the emulator's OWN in-process callback
+        // transport, so no socket is opened and no host name is resolved, and the Region it
+        // is addressed in is read as a Region LABEL before it can reach the endpoint
+        // authority (see `crate::state::ec2_subnets`).
+        if let Some(refusal) = crate::state::ec2_subnets::violation(
+            ctx,
+            &region,
+            input.networking.subnet_ids.as_deref().unwrap_or_default(),
+        )
+        .await
+        {
+            return Err(CreateClusterErrorModeled::ValidationException(refusal).into());
+        }
+
         let mut state = state.lock();
         state.settle();
 
@@ -309,7 +334,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let now = crate::state::now_date_time();
         let record = crate::state::ClusterRecord {
             seq,
-            arn: crate::state::cluster_arn(&crate::state::request_region(ctx), &id),
+            arn: crate::state::cluster_arn(&region, &id),
             id: id.clone(),
             name: input.cluster_name.clone(),
             // PCS reports a new cluster as CREATING; the clock owes it ACTIVE.

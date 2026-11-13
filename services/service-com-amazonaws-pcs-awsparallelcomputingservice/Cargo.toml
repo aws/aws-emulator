@@ -29,6 +29,12 @@ hex = { workspace = true }
 # anything of its own. Only the generated client is needed — the emulator supplies the
 # transport, so the SDK's own HTTPS stack and runtime are left out.
 aws-sdk-iam = { version = "1", default-features = false }
+# The AWS SDK for EC2, driven over the same in-process callback: the account's subnets are
+# EC2's resources, so a create that places a cluster's control-plane ENI or a compute node
+# group's instances in caller-named subnets resolves them against EC2
+# (`src/state/ec2_subnets.rs`) before it mints anything. Only the generated client is
+# needed — the emulator supplies the transport.
+aws-sdk-ec2 = { version = "1", default-features = false }
 # The tree's shared IAM-ARN reading, in-process IAM client and `@pattern` rendering.
 service-common = { path = "../common" }
 
@@ -39,6 +45,11 @@ emulator-core-build-support = { workspace = true }
 sha2 = { workspace = true }
 # `tokio::time::sleep` lets a test wait out a lifecycle transition the clock owes.
 tokio = { workspace = true, features = ["time"] }
+# The owner of the resources this service RESOLVES, mounted beside it in the test
+# harness: Amazon EC2 holds the account's subnets, so the subnet resolution a create
+# performs can only be driven end to end with EC2 on the same engine. DEV-ONLY: this
+# crate depends on no other service's crate outside its tests.
+service-com-amazonaws-ec2-amazonec2 = { workspace = true }
 
 [lints]
 workspace = true

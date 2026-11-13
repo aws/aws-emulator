@@ -308,6 +308,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(CreateComputeNodeGroupErrorModeled::ValidationException(refusal).into());
         }
 
+        // The subnets this group would launch instances in are EC2's as well ("the list of
+        // subnet IDs where the compute node group launches instances"), so they are
+        // resolved against EC2 the same way the cluster's control-plane subnets are, before
+        // anything of this service's own is resolved or stored. The list was bounded above,
+        // so the hop is not sized by the request — and it goes nowhere: in-process over the
+        // emulator's own callback transport, with the Region read as a LABEL before it can
+        // reach the endpoint authority (see `crate::state::ec2_subnets`).
+        if let Some(refusal) =
+            crate::state::ec2_subnets::violation(ctx, &region, &input.subnet_ids).await
+        {
+            return Err(CreateComputeNodeGroupErrorModeled::ValidationException(refusal).into());
+        }
+
         let mut state = state.lock();
         state.settle();
 
