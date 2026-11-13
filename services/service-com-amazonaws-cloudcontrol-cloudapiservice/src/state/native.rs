@@ -36,7 +36,9 @@
 mod buckets;
 mod destinations;
 mod log_groups;
+mod managed_policies;
 mod queues;
+mod state_machines;
 mod topics;
 
 use ::serde_json::Value;
@@ -199,6 +201,12 @@ impl NativeResources {
         if let Some(provider) = buckets::BucketProvider::for_engine(engine) {
             providers.push(Box::new(provider));
         }
+        if let Some(provider) = managed_policies::ManagedPolicyProvider::for_engine(engine) {
+            providers.push(Box::new(provider));
+        }
+        if let Some(provider) = state_machines::StateMachineProvider::for_engine(engine) {
+            providers.push(Box::new(provider));
+        }
         Self { providers }
     }
 
@@ -242,6 +250,20 @@ pub type SnsState =
 /// OWN state struct, reached through the shared engine, so a bucket Cloud Control API
 /// provisions is the bucket that service then serves objects in.
 pub type S3State = ::service_com_amazonaws_s3_amazons3::state::ComAmazonawsS3Amazons3State;
+
+/// The IAM store the resources of the `AWS::IAM::*` types live in — that service's OWN
+/// state struct, reached through the shared engine, so a managed policy Cloud Control API
+/// provisions is the policy `iam:GetPolicy` and `iam:AttachRolePolicy` then accept, and the
+/// ARN its primary identifier is comes from that service's own ARN builder.
+pub type IamState =
+    ::service_com_amazonaws_iam_awsidentitymanagementv20100508::state::ComAmazonawsIamAwsidentitymanagementv20100508State;
+
+/// The Step Functions store the resources of the `AWS::StepFunctions::*` types live in —
+/// that service's OWN state struct, reached through the shared engine, so a state machine
+/// Cloud Control API provisions is the one `states:DescribeStateMachine` and
+/// `states:StartExecution` then accept under the ARN reported as its primary identifier.
+pub type SfnState =
+    ::service_com_amazonaws_sfn_awsstepfunctions::state::ComAmazonawsSfnAwsstepfunctionsState;
 
 /// The window `(after, limit)` names of an owning store keyed by its resources' own
 /// identifiers: the entries whose key sorts AFTER `after`, in key order, at most `limit`
@@ -434,6 +456,16 @@ mod tests {
         assert!(
             native.provider("AWS::S3::Bucket").is_some(),
             "expected the bucket provider, got {native:?}"
+        );
+        assert!(
+            native.provider("AWS::IAM::ManagedPolicy").is_some(),
+            "expected the managed policy provider, got {native:?}"
+        );
+        assert!(
+            native
+                .provider("AWS::StepFunctions::StateMachine")
+                .is_some(),
+            "expected the state machine provider, got {native:?}"
         );
         for unbacked in ["AWS::Kinesis::Stream", "AWS::DynamoDB::Table", "AWS::Logs"] {
             assert!(

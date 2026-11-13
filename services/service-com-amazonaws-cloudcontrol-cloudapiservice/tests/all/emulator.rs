@@ -57,6 +57,21 @@ pub(crate) const S3_ENDPOINT_HOST: &str = "s3.us-east-1.amazonaws.com";
 /// Smithy service shape.
 pub(crate) const SQS_TARGET_PREFIX: &str = "AmazonSQS";
 
+/// The sigv4 signing name of the IAM service, whose own store holds the customer managed
+/// policies `AWS::IAM::ManagedPolicy` names.
+pub(crate) const IAM_SIGNING_NAME: &str = "iam";
+
+/// The API version an `awsQuery` call of that service carries, as its model declares it.
+pub(crate) const IAM_API_VERSION: &str = "2010-05-08";
+
+/// The sigv4 signing name of the Step Functions service, whose own store holds the state
+/// machines `AWS::StepFunctions::StateMachine` names.
+pub(crate) const SFN_SIGNING_NAME: &str = "states";
+
+/// The `X-Amz-Target` prefix a client writes for that service: the local name of its
+/// Smithy service shape.
+pub(crate) const SFN_TARGET_PREFIX: &str = "AWSStepFunctions";
+
 /// How long a wait for a resource operation request to complete runs before the case
 /// fails.
 ///
@@ -177,6 +192,83 @@ impl Emulator {
             response.status().as_u16(),
             String::from_utf8_lossy(response.body()).to_string(),
         )
+    }
+
+    /// One emulator with the service that OWNS `AWS::IAM::ManagedPolicy` mounted beside this
+    /// one.
+    pub(crate) fn with_iam() -> Self {
+        Self::mounted(|router, engine| {
+            router.register_service(
+                service_com_amazonaws_iam_awsidentitymanagementv20100508::EmulatedService::new(
+                    engine,
+                ),
+            );
+        })
+    }
+
+    /// One operation of the IAM service — the OWNING service's own API, the one a client uses
+    /// when it is not going through Cloud Control API.
+    ///
+    /// IAM speaks the `awsQuery` protocol, so the call is a form-encoded `POST` naming the
+    /// action in its own body and the answer is an XML envelope, handed back as the
+    /// `(status, body)` text it is rather than as JSON.
+    pub(crate) async fn iam(&self, action: &str, params: &[(&str, &str)]) -> (u16, String) {
+        let mut body = format!("Action={action}&Version={IAM_API_VERSION}");
+        for (name, value) in params {
+            body.push('&');
+            body.push_str(name);
+            body.push('=');
+            body.push_str(&form_encoded(value));
+        }
+        let authorization = format!(
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260101/{SIGNING_REGION}/\
+             {IAM_SIGNING_NAME}/aws4_request, SignedHeaders=host, Signature=00"
+        );
+        let request = http::Request::builder()
+            .method("POST")
+            .uri("/")
+            .header("host", format!("{IAM_SIGNING_NAME}.localhost"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .header("authorization", authorization)
+            .body(Bytes::from(body))
+            .expect("a well-formed request");
+        let response = self.router.dispatch(request).await;
+        (
+            response.status().as_u16(),
+            String::from_utf8_lossy(response.body()).to_string(),
+        )
+    }
+
+    /// One emulator with the service that OWNS `AWS::StepFunctions::StateMachine` mounted
+    /// beside this one.
+    pub(crate) fn with_step_functions() -> Self {
+        Self::mounted(|router, engine| {
+            router.register_service(
+                service_com_amazonaws_sfn_awsstepfunctions::EmulatedService::new(engine),
+            );
+        })
+    }
+
+    /// One operation of the Step Functions service — the OWNING service's own API, the one a
+    /// client uses when it is not going through Cloud Control API.
+    pub(crate) async fn sfn(&self, operation: &str, body: Value) -> (u16, Value) {
+        self.post(
+            SFN_SIGNING_NAME,
+            "application/x-amz-json-1.0",
+            &format!("{SFN_TARGET_PREFIX}.{operation}"),
+            body,
+        )
+        .await
+    }
+
+    /// One operation of the Step Functions service, required to succeed.
+    pub(crate) async fn sfn_ok(&self, operation: &str, body: Value) -> Value {
+        let (status, decoded) = self.sfn(operation, body).await;
+        assert_eq!(
+            status, 200,
+            "{operation}: expected HTTP 200, got {status} with body {decoded:?}"
+        );
+        decoded
     }
 
     /// One emulator with the service that OWNS `AWS::S3::Bucket` mounted beside this one.

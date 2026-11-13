@@ -23,6 +23,12 @@ service-com-amazonaws-sns-amazonsimplenotificationservice = { workspace = true }
 # And for `AWS::S3::Bucket`: a bucket lives in the Amazon S3 service's store, so a bucket
 # provisioned through this service is one that service's own API then serves objects in.
 service-com-amazonaws-s3-amazons3 = { workspace = true }
+# And for `AWS::IAM::ManagedPolicy`: a customer managed policy lives in the IAM service's
+# store, which is also where the ARN its primary identifier is comes from.
+service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
+# And for `AWS::StepFunctions::StateMachine`: a state machine lives in the Step Functions
+# service's store, which is also where the ARN its primary identifier is comes from.
+service-com-amazonaws-sfn-awsstepfunctions = { workspace = true }
 engine = { workspace = true }
 smithy-macros = { workspace = true }
 aws-smithy-schema = { workspace = true }

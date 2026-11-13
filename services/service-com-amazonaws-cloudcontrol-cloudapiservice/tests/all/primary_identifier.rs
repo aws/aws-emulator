@@ -68,12 +68,12 @@ async fn the_primary_identifier_is_the_value_of_the_types_own_identifier_propert
         },
         Case {
             name: "the type's own ARN property",
-            type_name: "AWS::StepFunctions::StateMachine",
+            type_name: "AWS::CloudTrail::Trail",
             desired: json!({
-                "Arn": "arn:aws:states:us-east-1:123456789012:stateMachine:orders",
-                "StateMachineType": "STANDARD",
+                "TrailArn": "arn:aws:cloudtrail:us-east-1:123456789012:trail/audit",
+                "IsLogging": true,
             }),
-            expected: Some("arn:aws:states:us-east-1:123456789012:stateMachine:orders"),
+            expected: Some("arn:aws:cloudtrail:us-east-1:123456789012:trail/audit"),
         },
         Case {
             name: "the bare Name fallback",

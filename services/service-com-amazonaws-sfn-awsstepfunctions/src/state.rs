@@ -658,6 +658,25 @@ pub const MAX_STORE_BYTES: usize = 64 * 1024 * 1024;
 /// cannot grow the store past this.
 pub const MAX_STATE_MACHINES: usize = 1_000;
 
+/// What a write states when the store already holds as many state machines as it may
+/// ([`MAX_STATE_MACHINES`]).
+///
+/// Stated HERE rather than where the guard is applied, so every path that reports the
+/// guard — this service's own writes, and a front end that writes through this store —
+/// states it in the same words.
+pub fn state_machine_count_exhausted() -> String {
+    format!("this emulator already holds the maximum of {MAX_STATE_MACHINES} state machines")
+}
+
+/// What a write states when the record it would leave would take the store past the bytes
+/// it retains ([`MAX_STORE_BYTES`]); see [`state_machine_count_exhausted`].
+pub fn store_bytes_exhausted() -> String {
+    format!(
+        "this state machine would take the store past the {MAX_STORE_BYTES} bytes this \
+         emulator retains"
+    )
+}
+
 /// The most executions this emulator keeps for one state machine, refused with the
 /// modelled `ExecutionLimitExceeded`.
 ///

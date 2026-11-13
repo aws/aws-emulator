@@ -1840,6 +1840,9 @@ mod elbv2_lambda_target_published_address;
 #[path = "all/logs_vended_group_lambda_subscriber_permission.rs"]
 mod logs_vended_group_lambda_subscriber_permission;
 // `cloudformation_monitored_alb_search_estate` and `cloudformation_domain_endpoint_outputs`
+// are declared ONCE, in the head region above beside the other `cloudformation_…` suites.
+// Two branches each re-declared the pair in this tail, which compiles neither: a suite is
+// declared in exactly one place.
 // are declared ONCE each, in the head region above: a module declared twice in this file
 // compiles the suite twice, which the workspace's lints refuse.
 // are declared once, in the span above: two branches each re-added the pair here after both

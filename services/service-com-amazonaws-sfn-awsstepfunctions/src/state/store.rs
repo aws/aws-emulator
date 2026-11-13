@@ -2034,15 +2034,10 @@ impl ComAmazonawsSfnAwsstepfunctionsState {
     /// signed region included — can mint a fresh quota.
     pub fn state_machine_rejection(&self, bytes: usize) -> Option<String> {
         if self.state_machines.len() >= MAX_STATE_MACHINES {
-            return Some(format!(
-                "this emulator already holds the maximum of {MAX_STATE_MACHINES} state machines"
-            ));
+            return Some(state_machine_count_exhausted());
         }
         if !self.has_room_for(bytes) {
-            return Some(format!(
-                "this state machine would take the store past the {MAX_STORE_BYTES} bytes this \
-                 emulator retains"
-            ));
+            return Some(store_bytes_exhausted());
         }
         None
     }
