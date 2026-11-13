@@ -29,6 +29,8 @@ mod buildspec_execution;
 mod buildspec_file_tree;
 #[path = "all/command_execution_lifecycle.rs"]
 mod command_execution_lifecycle;
+#[path = "all/command_substitution.rs"]
+mod command_substitution;
 #[path = "all/delete_build_batch.rs"]
 mod delete_build_batch;
 #[path = "all/delete_fleet.rs"]
@@ -87,6 +89,8 @@ mod report_group_trend;
 mod resource_policy;
 #[path = "all/retry_build.rs"]
 mod retry_build;
+#[path = "all/runtime_versions.rs"]
+mod runtime_versions;
 #[path = "all/sandbox_connection.rs"]
 mod sandbox_connection;
 #[path = "all/sandbox_idle_timeout.rs"]

@@ -26,23 +26,33 @@
 //! buildspec's `env/exported-variables` are read back off this session) and the files it
 //! writes into the session's own working tree, which the commands after it read, and which
 //! is what [`BuildShell`] exposes.
+//!
+//! The commands the build ENVIRONMENT provides beyond the shell's own utilities are the
+//! programs of the runtimes this build installed ([`super::runtime_versions`]), which the
+//! session asks for a command its catalog does not name.
 
 use std::collections::BTreeMap;
 
-/// The session one build's commands run in: the shared session, configured as a build's.
+/// The session one build's commands run in: the shared session, configured as a build's,
+/// with the programs the runtimes this build installed provide.
 #[derive(Debug)]
 pub(super) struct BuildShell {
     session: ::service_common::posix_shell_session::ShellSession,
 }
 
 impl BuildShell {
-    /// A session holding `variables`, with the build's whole command budget left.
-    pub(super) fn new(variables: BTreeMap<String, String>) -> Self {
+    /// A session holding `variables`, with `installed`'s programs and the build's whole
+    /// command budget left.
+    pub(super) fn new(
+        variables: BTreeMap<String, String>,
+        installed: super::InstalledRuntimes,
+    ) -> Self {
         Self {
-            session: ::service_common::posix_shell_session::ShellSession::new(
+            session: ::service_common::posix_shell_session::ShellSession::with_programs(
                 variables,
                 // The shared statuses and bounds, and no output: see this module's header.
                 ::service_common::posix_shell_session::SessionConfig::default(),
+                Box::new(installed),
             ),
         }
     }

@@ -141,9 +141,18 @@ pub(crate) async fn start_build(router: &MultiServiceRouter, body: Value) -> Val
     response["build"].clone()
 }
 
+/// How long a suite waits for the transition the clock owes a started build, looking again
+/// until the build reports itself complete. Generous on purpose: the wait ends on the
+/// CONDITION, and the deadline is only there so a build that never settles fails the test
+/// instead of hanging it.
+pub(crate) const SETTLE_DEADLINE: Duration = Duration::from_secs(60);
+
+/// How long [`settled_build`] waits before looking again.
+const LOOK_AGAIN_AFTER: Duration = Duration::from_millis(25);
+
 /// Start a build of `project`, with `extra`'s members merged into the `StartBuild`
-/// request, let the transition the clock owes it fall due, and hand back the settled
-/// record `BatchGetBuilds` reports.
+/// request, look again until the transition the clock owes it has fallen due, and hand back
+/// the settled record `BatchGetBuilds` reports.
 ///
 /// Shared by every suite whose subject is what a BUILD answered, so each of them drives
 /// one build the same way.
@@ -154,13 +163,23 @@ pub(crate) async fn settled_build(
 ) -> Value {
     let build = start_build(router, merged(json!({"projectName": project}), extra)).await;
     let id = build["id"].as_str().expect("a build id").to_string();
-    tokio::time::sleep(PAST_THE_SETTLE_SPAN).await;
-    let (status, read) = call(router, "BatchGetBuilds", json!({"ids": [id.clone()]})).await;
-    assert_eq!(
-        status, 200,
-        "BatchGetBuilds {id}: expected 200, got {status} with {read}"
-    );
-    read["builds"][0].clone()
+    let deadline = tokio::time::Instant::now() + SETTLE_DEADLINE;
+    loop {
+        let (status, read) = call(router, "BatchGetBuilds", json!({"ids": [id.clone()]})).await;
+        assert_eq!(
+            status, 200,
+            "BatchGetBuilds {id}: expected 200, got {status} with {read}"
+        );
+        let settled = read["builds"][0].clone();
+        if settled["buildComplete"] == json!(true) {
+            return settled;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "build {id}: expected the build to complete, last read {settled}"
+        );
+        tokio::time::sleep(LOOK_AGAIN_AFTER).await;
+    }
 }
 
 /// The `(phaseType, phaseStatus)` pairs a build reports, in the order it reached them.

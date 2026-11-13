@@ -15,16 +15,21 @@
 //!
 //! The buildspec is YAML, read through the one bounded parse this crate reads a
 //! buildspec with ([`super::batchspec::buildspec_document`]), and its command lines are
-//! run by the build environment's shell ([`super::build_shell`]). A build whose
-//! buildspec cannot be read has no phase to run: the source-download phase fails, and
-//! what it reports is what the reading answered — the YAML parser's own diagnostic for a
-//! buildspec that is not YAML, and CodeBuild's `YAML_FILE_ERROR` classification for a
-//! buildspec there was none of to parse.
+//! run by the build environment's shell ([`super::build_shell`]) — which performs, beside
+//! its own utilities, the programs of the runtimes the install phase's `runtime-versions`
+//! selected ([`super::runtime_versions`]). A build whose buildspec cannot be read has no
+//! phase to run: the source-download phase fails, and what it reports is what the reading
+//! answered — the YAML parser's own diagnostic for a buildspec that is not YAML, and
+//! CodeBuild's `YAML_FILE_ERROR` classification for a buildspec there was none of to parse.
+//! A build whose runtime selection the environment cannot satisfy has none either, and that
+//! same phase reports what CodeBuild states about the selection
+//! ([`runtime_install_context`]).
 
 use std::collections::BTreeMap;
 
 use super::batchspec::{buildspec_document, mapping_get, scalar_string, UnreadableBuildspec};
 use super::build_shell::BuildShell;
+use super::runtime_versions::{install_runtimes, RuntimeInstallFailure};
 use super::{finished_phase, open_phase};
 use crate::ops::types::{Build, BuildPhase, ExportedEnvironmentVariable, PhaseContext};
 
@@ -105,10 +110,15 @@ const VARIABLES_KEY: &str = "variables";
 /// See [`ENV_KEY`]: "the variables whose values you want to export".
 const EXPORTED_VARIABLES_KEY: &str = "exported-variables";
 
-/// The buildspec's `phases` key, and the two members of a phase this reading uses.
+/// The buildspec's `phases` key, and the members of a phase this reading uses.
 const PHASES_KEY: &str = "phases";
 /// See [`PHASES_KEY`].
 const COMMANDS_KEY: &str = "commands";
+/// See [`PHASES_KEY`]: the `install` phase's "runtime-versions … specify the runtime and
+/// version".
+const RUNTIME_VERSIONS_KEY: &str = "runtime-versions";
+/// The buildspec key of the phase `runtime-versions` is declared in.
+const INSTALL_PHASE_KEY: &str = "install";
 /// See [`PHASES_KEY`]: "on-failure … ABORT … CONTINUE".
 const ON_FAILURE_KEY: &str = "on-failure";
 /// The buildspec's `artifacts` key, whose `files` are "the locations … that contain the
@@ -131,6 +141,9 @@ pub struct Buildspec {
     /// The names in `env/exported-variables`, whose values the build reports once it
     /// has run.
     pub exported_variables: Vec<String>,
+    /// The runtimes the install phase's `runtime-versions` selects, as the runtime and the
+    /// version each entry names, in declaration order.
+    pub runtime_versions: Vec<(String, String)>,
     /// The phases that declare commands, in the order they run.
     pub phases: Vec<DeclaredPhase>,
     /// Whether the buildspec declares an `artifacts` section at all, which is what says
@@ -194,6 +207,18 @@ pub fn read_buildspec(buildspec: &str) -> Result<Buildspec, UnreadableBuildspec>
             let abort_on_failure = mapping_get(phase, ON_FAILURE_KEY)
                 .and_then(scalar_string)
                 .is_none_or(|on_failure| !on_failure.eq_ignore_ascii_case(ON_FAILURE_CONTINUE));
+            if key == INSTALL_PHASE_KEY {
+                if let Some(runtimes) =
+                    mapping_get(phase, RUNTIME_VERSIONS_KEY).and_then(::yaml_rust2::Yaml::as_hash)
+                {
+                    read.runtime_versions = runtimes
+                        .iter()
+                        .filter_map(|(runtime, version)| {
+                            Some((runtime.as_str()?.to_string(), scalar_string(version)?))
+                        })
+                        .collect();
+                }
+            }
             read.phases.push(DeclaredPhase {
                 phase_type,
                 commands,
@@ -225,6 +250,23 @@ fn yaml_file_error_context(message: &str) -> PhaseContext {
     PhaseContext {
         status_code: Some(YAML_FILE_ERROR.to_string()),
         message: Some(message.to_string()),
+    }
+}
+
+/// What the source-download phase reports about a runtime selection the build environment
+/// could not satisfy.
+///
+/// A runtime NO build image has is the buildspec naming something that is not a runtime, so
+/// it carries the same classification as a buildspec CodeBuild could not make a
+/// specification of; a version of a known runtime the environment does not have is an
+/// installation that could not be performed, which is reported as the command failure it is.
+fn runtime_install_context(failure: &RuntimeInstallFailure) -> PhaseContext {
+    match failure {
+        RuntimeInstallFailure::UnknownRuntime(message) => yaml_file_error_context(message),
+        RuntimeInstallFailure::UnknownVersion(message) => PhaseContext {
+            status_code: Some(COMMAND_EXECUTION_ERROR.to_string()),
+            message: Some(message.clone()),
+        },
     }
 }
 
@@ -307,6 +349,28 @@ pub fn run_build(build: &Build, start_millis: i64, due_millis: i64) -> BuildRun 
             };
         }
     };
+    // The runtimes the buildspec selected are installed from what the build environment
+    // has, in the phase that prepares the build from its specification: a selection it
+    // cannot satisfy leaves the build nothing to run, reported as
+    // [`runtime_install_context`] states.
+    let installed = match install_runtimes(&read.runtime_versions) {
+        Ok(installed) => installed,
+        Err(failure) => {
+            phases.push(finished_phase(
+                PHASE_DOWNLOAD_SOURCE,
+                BUILD_STATUS_FAILED,
+                due_millis,
+                due_millis,
+                Some(vec![runtime_install_context(&failure)]),
+            ));
+            phases.push(open_phase(PHASE_COMPLETED, due_millis));
+            return BuildRun {
+                status: BUILD_STATUS_FAILED.to_string(),
+                phases,
+                exported_variables: None,
+            };
+        }
+    };
     // The buildspec was obtained and read, which is the work of this phase.
     phases.push(finished_phase(
         PHASE_DOWNLOAD_SOURCE,
@@ -316,7 +380,7 @@ pub fn run_build(build: &Build, start_millis: i64, due_millis: i64) -> BuildRun 
         None,
     ));
 
-    let mut shell = BuildShell::new(session_variables(build, &read, start_millis));
+    let mut shell = BuildShell::new(session_variables(build, &read, start_millis), installed);
     let mut failed = false;
     let mut aborted = false;
     for declared in &read.phases {

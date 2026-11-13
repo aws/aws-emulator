@@ -5,14 +5,16 @@
 //! serves: `POST /` with `X-Amz-Target: CodeBuild_20161006.<Operation>` on awsJson1_1.
 //!
 //! RULE under test: the build environment runs IN THIS PROCESS, so the commands it
-//! provides are the ones whose whole effect is inside the build's own session, and every
-//! other command is answered the way a shell answers a command it has no program for —
-//! status 127 — which fails the phase that ran it rather than being reported as a command
-//! that succeeded. Nothing a command does here starts a process or reaches a host.
+//! provides are the ones whose whole effect is inside the build's own session, plus the
+//! programs the runtimes the build installed provide, and every other command is answered
+//! the way a shell answers a command it has no program for — status 127 — which fails the
+//! phase that ran it rather than being reported as a command that succeeded. Nothing a
+//! command does here starts a process or reaches a host.
 //!
 //! The catalog is the one `crate::state`'s build shell declares (`BUILT_IN_COMMANDS`);
 //! each row below names a command of it or a program outside it, and asserts the status
-//! the phase context reports.
+//! the phase context reports. What an INSTALLED runtime's programs answer is the subject of
+//! `runtime_versions`.
 
 use serde_json::{json, Value};
 
@@ -33,8 +35,10 @@ fn command_failure(command: &str, status: i32) -> Value {
 /// form this environment does not perform.
 ///
 /// One row per containment the shell states: a compound command, a function definition, an
-/// input redirection, a command substitution, an arithmetic expansion, a tilde prefix and
-/// an appending assignment.
+/// input redirection, a redirection of another descriptor, an arithmetic expansion, a tilde
+/// prefix and an appending assignment. (A command SUBSTITUTION is performed — in this
+/// session, over the same catalog — and what it answers is `command_substitution.rs`'s
+/// subject.)
 #[tokio::test]
 async fn a_command_form_this_environment_does_not_perform_is_refused() {
     let router = emulator();
@@ -45,8 +49,6 @@ async fn a_command_form_this_environment_does_not_perform_is_refused() {
         ("a function definition", "run() { echo hi; }"),
         ("a redirection reading a file", "echo marker < /etc/hostname"),
         ("a redirection of another descriptor", "echo marker 2> errors.txt"),
-        ("a command substitution", "echo $(date)"),
-        ("a command substitution, backquoted", "echo `date`"),
         ("an arithmetic expansion", "echo $((1 + 1))"),
         ("a tilde prefix", "echo ~/build"),
         ("an appending assignment", "PATH+=/opt/bin"),

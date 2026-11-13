@@ -54,11 +54,14 @@ mod build_shell;
 mod buildspec;
 /// The SHAPE of the identifiers the operations that take one as a plain string accept.
 mod identifiers;
+/// The runtimes a build environment has, and the ones a build's buildspec installs.
+mod runtime_versions;
 
 pub use artifacts::*;
 pub use batchspec::*;
 pub use buildspec::*;
 pub use identifiers::*;
+pub use runtime_versions::*;
 
 /// The ARN service segment for this service, as `emulator_arn`'s first argument
 /// (`arn:aws:codebuild:<region>:<account>:<resource>`). Taken from the model's

@@ -24,20 +24,22 @@
 //! reimplementation of it. An engine's whole purpose is to run what the shell language can
 //! express: it resolves a command name against the host's `PATH` and starts a host PROCESS
 //! for it, opens the host files a redirection names, and expands a command substitution by
-//! running that command. Those are exactly the primitives this module has none of, and the
-//! crate exposes no seam to replace them with an in-memory volume or an in-process
-//! dispatcher — its command resolution and its redirections go straight to the host through
-//! the standard library — so there is no configuration of it that could be confined here:
-//! taking it would hand a caller's program the developer's machine.
+//! starting that command as one. A host process and a host file are exactly the primitives
+//! this module has none of, and the crate exposes no seam to replace them with an in-memory
+//! volume or an in-process dispatcher — its command resolution and its redirections go
+//! straight to the host through the standard library — so there is no configuration of it
+//! that could be confined here: taking it would hand a caller's program the developer's
+//! machine.
 //!
 //! What this module does instead is narrower than a shell by construction, and it is not an
 //! implementation of the shell LANGUAGE: there is no evaluator for the language's constructs
 //! here, and none is approximated. It PERFORMS a fixed catalog of session-local utilities
-//! ([`BUILT_IN_COMMANDS`]) over the real grammar's tree, and every other command, and every
-//! command FORM and expansion it does not perform, fails closed with the status a shell
-//! answers for a command it cannot run ([`Statuses::could_not_run`]). There is therefore no
-//! language subset to keep in step with a specification: a command either names one of those
-//! utilities, or it did not run.
+//! ([`BUILT_IN_COMMANDS`]) over the real grammar's tree, beside the programs the caller's
+//! own environment declares it provides ([`EnvironmentPrograms`]), and every other command,
+//! and every command FORM and expansion it does not perform, fails closed with the status a
+//! shell answers for a command it cannot run ([`Statuses::could_not_run`]). There is
+//! therefore no language subset to keep in step with a specification: a command either names
+//! one of those, or it did not run.
 //!
 //! # What a session provides
 //!
@@ -71,7 +73,6 @@
 //! * the file utilities ([`VOLUME_COMMANDS`]) beside the session-local catalog;
 //! * the redirections that reach the tree's other descriptors: standard error to a file or a
 //!   device, and standard input from one;
-//! * command substitution, whose commands run in this same session;
 //! * arithmetic expansion ([`super::posix_shell_arithmetic`]), which is how such a program
 //!   computes what it writes.
 //!
@@ -81,21 +82,52 @@
 //! and every other redirection form (another file descriptor, a duplication, a
 //! here-document) is one no session performs.
 //!
+//! # The programs the ENVIRONMENT provides
+//!
+//! A shell's own utilities are not the only commands a program names: the rest are programs
+//! the environment the session runs in has installed, and which ones those are is the
+//! caller's fact, not this module's — a build environment installs what its build
+//! specification selected, and a session with nothing installed provides nothing beyond the
+//! catalog. A caller that has such programs hands this session an
+//! [`EnvironmentPrograms`], which is asked for a command the catalog does not name and
+//! answers either the status and output of the program it provides for it, or `None` for a
+//! name it provides none for — and `None` is the same closed failure as before. Nothing here
+//! resolves a command against a host `PATH`, and an [`EnvironmentPrograms`] is handed no way
+//! to reach a process, a file or the host: it answers out of what its own caller holds.
+//!
+//! # Command substitution
+//!
+//! `$(…)` is a command whose OUTPUT is a word of another command, so EVERY session performs
+//! it the way the shell specifies — it is the shell's own form rather than a machine's: the
+//! substituted text is read by the same grammar and performed in this session, and what it
+//! wrote, with trailing newlines removed, is the word. It is performed in a SUBSHELL: the
+//! variables it sets and an `exit` it performs do not reach the session that substituted it,
+//! rolled back off a log of what it CHANGED rather than off a copy of the store. Performing
+//! one spends a command of the same budget before anything else — so how many a line may open
+//! is bounded whatever their text performs — the commands inside it spend their own, what it
+//! captures is bounded by [`Bounds::substitution_bytes`], how many one session performs by
+//! [`Bounds::substitutions`], and how deeply they may nest by
+//! [`Bounds::substitution_depth`]: a substituted command is no wider, and no cheaper, than a
+//! command written on the line itself, and the catalogs and the environment's programs are
+//! all it can name either.
+//!
 //! # Bounds
 //!
 //! Every bound is the emulator's, held in code the program cannot reach, and every one of
 //! them is a field of [`Bounds`]: how many commands one run performs (latched — past it a
-//! line performs nothing), how long a line may be and how deeply it may nest (checked
-//! WITHOUT parsing, which is what keeps the grammar's own recursion in range), how much one
-//! word and one line may expand to, how many variables and how many bytes of them the
-//! session holds, and — for a caller that KEEPS what the program wrote
-//! ([`OutputLimits`]) — how many lines and how many bytes per line it may keep.
+//! line performs nothing, and performing a command substitution spends one too), how long a
+//! line may be and how deeply it may nest (checked WITHOUT parsing, which is what keeps the
+//! grammar's own recursion in range), how much one word and one line may expand to, how many
+//! variables and how many bytes of them the session holds — which holds for the variables it
+//! is HANDED exactly as for the ones its program sets — and, for a caller that KEEPS what the
+//! program wrote ([`OutputLimits`]), how many lines and how many bytes per line it may keep.
 //!
 //! # The services that drive it
 //!
 //! * `service-com-amazonaws-codebuild-codebuild-20161006`'s `state::build_shell` performs a
 //!   buildspec's command lines for an exit status and keeps no output, which is this module
-//!   with [`OutputLimits`] absent;
+//!   with [`OutputLimits`] absent, and hands it the programs of the runtimes that build
+//!   installed as its [`EnvironmentPrograms`];
 //! * `service-com-amazonaws-sagemaker-sagemaker`'s `state::notebook_lifecycle_hook` performs
 //!   a notebook instance's lifecycle hook and keeps its output, which it publishes to that
 //!   hook's CloudWatch Logs stream.
@@ -139,10 +171,37 @@ struct Redirections {
 /// process: `echo` writes a line of the program's output, `cat` writes a file this session
 /// holds, `true`, `false` and `:` answer a status, `exit` ends the session, and
 /// `export`/`unset` change its variables. A command that is not one of these needs a
-/// program, a host tree or a network a session does not have.
+/// program, which is the environment's to provide ([`EnvironmentPrograms`]) and not the
+/// shell's, and is answered as a command that could not be run when the environment provides
+/// none of that name.
 pub const BUILT_IN_COMMANDS: &[&str] = &[
     "echo", "cat", "true", "false", ":", "exit", "export", "unset",
 ];
+
+/// What one program of the environment a session runs in answered: the status it exited
+/// with and the lines it wrote.
+#[derive(Debug, Clone)]
+pub struct ProgramOutcome {
+    /// The status the program exited with, which is the status the command carrying it
+    /// answers.
+    pub status: i32,
+    /// The lines the program wrote, in the order it wrote them.
+    pub output: Vec<String>,
+}
+
+/// The programs the ENVIRONMENT a session runs in provides, beyond the shell's own
+/// utilities ([`BUILT_IN_COMMANDS`]).
+///
+/// A session asks this for a command whose name the catalog does not hold. An
+/// implementation answers only out of state its own caller holds — there is no process to
+/// start, no host `PATH` to resolve against and no file to open here — and answers `None`
+/// for every name it provides no program for, which the session then reports as a command
+/// it could not run.
+pub trait EnvironmentPrograms: ::std::fmt::Debug + Send + Sync {
+    /// What this environment's program `name` answers for `arguments`, or `None` when this
+    /// environment provides no program called `name`.
+    fn run(&self, name: &str, arguments: &[String]) -> Option<ProgramOutcome>;
+}
 
 /// The commands a session given a MACHINE's tree provides on top of
 /// [`BUILT_IN_COMMANDS`], as their names.
@@ -383,9 +442,12 @@ pub struct ShellSession {
     /// The status `exit` ended this session with, once a command asked for one: every later
     /// line is then not performed at all, the way a shell stops at `exit`.
     exit_status: Option<i32>,
-    /// What the program wrote, one entry per performed `echo`, kept only when the
-    /// configuration asks for it.
+    /// What the program wrote, one entry per performed command that wrote a line, kept only
+    /// when the configuration asks for it.
     output: Vec<String>,
+    /// The programs the environment this session runs in provides, asked for a command
+    /// neither catalog names; `None` for a session whose environment provides none.
+    programs: Option<Box<dyn EnvironmentPrograms>>,
     /// The tree this session's commands read and write when it runs in a MACHINE's one
     /// ([`Self::in_volume`]) — `None` for a session whose tree is its own
     /// ([`Self::files`]), which performs neither the file utilities nor the forms that reach
@@ -394,6 +456,14 @@ pub struct ShellSession {
     /// The command substitutions being captured, innermost last: while one is open, what a
     /// command writes to standard output is ITS value rather than the session's output.
     captures: Vec<Capture>,
+    /// For each command substitution being performed, innermost last, what the session's
+    /// variable store has to be put back to when it ends: the value it held for each name the
+    /// substituted commands touched, before they did. A substitution is a SUBSHELL, and this
+    /// is what rolls one back — which costs what it changed rather than a copy of the store.
+    substitution_undo: Vec<BTreeMap<String, Option<String>>>,
+    /// The status of the last command substitution performed for the simple command being
+    /// run, which is the status of a command that has no command name at all.
+    last_substitution_status: Option<i32>,
     /// How many more substitutions and `sh -c` programs this session performs.
     substitutions_left: usize,
     /// How many `sh -c` programs are running inside one another right now, counted beside
@@ -410,28 +480,54 @@ pub struct ShellSession {
 }
 
 impl ShellSession {
-    /// A session holding `variables`, with the whole command budget `config` allows left.
+    /// A session holding `variables`, with the whole command budget `config` allows left,
+    /// whose environment provides no program beyond the catalog.
+    ///
+    /// The store's ceilings ([`Bounds::session_variables`], [`Bounds::session_bytes`]) hold
+    /// for the variables a session STARTS with exactly as they do for the ones its program
+    /// sets, so a caller handing it more than a session may hold hands it what fits: the rest
+    /// are not in the environment the program is given.
     #[must_use]
     pub fn new(variables: BTreeMap<String, String>, config: SessionConfig) -> Self {
-        let held_bytes = variables
-            .iter()
-            .map(|(name, value)| name.len().saturating_add(value.len()))
-            .sum();
-        Self {
-            variables,
-            held_bytes,
+        let mut session = Self {
+            variables: BTreeMap::new(),
+            held_bytes: 0,
             expansion_left: config.bounds.line_expansion_bytes,
             commands_left: config.bounds.commands,
             exit_status: None,
             output: Vec::new(),
+            programs: None,
             volume: None,
             captures: Vec::new(),
+            substitution_undo: Vec::new(),
+            last_substitution_status: None,
             substitutions_left: config.bounds.substitutions,
             nested_programs: 0,
             files: BTreeMap::new(),
             tree_bytes: 0,
             redirect_failed: false,
             config,
+        };
+        for (name, value) in variables {
+            if !session.set_variable(name, value) {
+                break;
+            }
+        }
+        session
+    }
+
+    /// [`Self::new`] for a session whose environment provides `programs` as well: a command
+    /// the catalog does not name is asked of them before it is reported as one this session
+    /// could not run.
+    #[must_use]
+    pub fn with_programs(
+        variables: BTreeMap<String, String>,
+        config: SessionConfig,
+        programs: Box<dyn EnvironmentPrograms>,
+    ) -> Self {
+        Self {
+            programs: Some(programs),
+            ..Self::new(variables, config)
         }
     }
 
@@ -622,6 +718,10 @@ impl ShellSession {
             return self.config.statuses.could_not_run;
         }
         self.commands_left = self.commands_left.saturating_sub(1);
+        // The status of a command with no command name is the status of the last command
+        // substitution ITS OWN words performed, so what an earlier command's words
+        // substituted is not read here.
+        self.last_substitution_status = None;
         let mut assignments: Vec<(String, String)> = Vec::new();
         let mut words: Vec<String> = Vec::new();
         let mut redirections = Redirections::default();
@@ -685,8 +785,13 @@ impl ShellSession {
         let status = match name {
             Some(name) => self.run_built_in(&name, &words, &redirections),
             // Nothing but assignments, or a redirection alone: they have been applied, which
-            // is the whole command.
-            None => self.config.statuses.success,
+            // is the whole command. "If there is no command name, but the command contained a
+            // command substitution, the command shall complete with the exit status of the
+            // last command substitution performed."
+            None => self
+                .last_substitution_status
+                .take()
+                .unwrap_or(self.config.statuses.success),
         };
         if let Some((path, append)) = redirected {
             // The file a redirection names is written whatever the command answered, the way
@@ -803,6 +908,35 @@ impl ShellSession {
         true
     }
 
+    /// Perform the program the ENVIRONMENT this session runs in provides for `name`, when it
+    /// provides one ([`EnvironmentPrograms`]).
+    ///
+    /// What that program answered is what the command answers, and each line it wrote is
+    /// written the way a command writes one — so a redirection takes it, a command
+    /// substitution captures it, and nothing else keeps it. A name the environment provides
+    /// no program for is a command this session could not run, which is the same closed
+    /// failure as a command neither catalog names.
+    fn run_environment_program(
+        &mut self,
+        name: &str,
+        arguments: &[String],
+        redirections: &Redirections,
+    ) -> i32 {
+        let Some(outcome) = self
+            .programs
+            .as_ref()
+            .and_then(|programs| programs.run(name, arguments))
+        else {
+            return self.config.statuses.could_not_run;
+        };
+        for line in outcome.output {
+            if !self.write_stdout(&format!("{line}\n"), redirections) {
+                return self.config.statuses.failure;
+            }
+        }
+        outcome.status
+    }
+
     /// One assignment of a simple command as the name and value it sets, or `None` when it
     /// is a form this session does not perform — an array assignment, an appending
     /// assignment, or a value whose expansion it cannot resolve.
@@ -825,6 +959,10 @@ impl ShellSession {
     /// Set `name` to `value` in this session, unless it is already holding
     /// [`Bounds::session_bytes`] or [`Bounds::session_variables`] — `false` is then a
     /// command this session did not perform, which is what its caller reports.
+    ///
+    /// A change made while a command substitution is open is recorded on that substitution's
+    /// undo log first ([`OpenSubstitution`]), so it can be rolled back when the subshell
+    /// ends.
     fn set_variable(&mut self, name: String, value: String) -> bool {
         let displaced = self
             .variables
@@ -841,6 +979,7 @@ impl ShellSession {
         if would_hold > self.config.bounds.session_bytes {
             return false;
         }
+        self.record_for_rollback(&name);
         self.held_bytes = would_hold;
         self.variables.insert(name, value);
         true
@@ -848,10 +987,21 @@ impl ShellSession {
 
     /// Remove `name` from this session, with the bytes it held.
     fn unset_variable(&mut self, name: &str) {
+        self.record_for_rollback(name);
         if let Some(value) = self.variables.remove(name) {
             self.held_bytes = self
                 .held_bytes
                 .saturating_sub(name.len().saturating_add(value.len()));
+        }
+    }
+
+    /// Record what the innermost open command substitution has to put `name` back to, when
+    /// one is open and has not recorded it already — the FIRST touch is the one that names
+    /// the value to go back to.
+    fn record_for_rollback(&mut self, name: &str) {
+        let held = self.variables.get(name).cloned();
+        if let Some(undo) = self.substitution_undo.last_mut() {
+            undo.entry(name.to_string()).or_insert(held);
         }
     }
 
@@ -951,20 +1101,22 @@ impl ShellSession {
     /// utilities do. `exit` ends the session with the status its argument names, defaulting
     /// to success, and a status outside 0..=255 is taken modulo 256 the way a shell takes an
     /// exit status. `export` sets the variables its `NAME=VALUE` arguments name and `unset`
-    /// removes them. The machine commands are [`Self::run_volume_command`]'s.
+    /// removes them. The machine commands are [`Self::run_volume_command`]'s, and a command
+    /// neither catalog names is the ENVIRONMENT's to provide
+    /// ([`Self::run_environment_program`]).
     fn run_built_in(
         &mut self,
         name: &str,
         arguments: &[String],
         redirections: &Redirections,
     ) -> i32 {
-        // The catalog is what this session provides: a command outside it needs a program, a
-        // host tree or a network this session does not have.
+        // The catalogs are what this session provides: a command outside them needs a
+        // program, which is the environment's to provide and not the shell's.
         if !BUILT_IN_COMMANDS.contains(&name) {
             if self.volume.is_some() && VOLUME_COMMANDS.contains(&name) {
                 return self.run_volume_command(name, arguments, redirections);
             }
-            return self.config.statuses.could_not_run;
+            return self.run_environment_program(name, arguments, redirections);
         }
         match name {
             "echo" => {
@@ -1323,13 +1475,13 @@ impl ShellSession {
     /// The pieces come from `brush-parser`'s word parser, so what is quoted, what is a
     /// parameter expansion and what is literal text is the shell's own reading of the word.
     /// A parameter this session holds nothing for expands to nothing, which is what an unset
-    /// parameter expands to. A command substitution and an arithmetic expansion are resolved
-    /// only by a session that runs in a volume ([`Self::expand_substitution`],
-    /// [`Self::expand_arithmetic`]); for a session with no tree, and for a tilde prefix
-    /// whichever session carries it — there is no home directory here — the word has no
-    /// expansion and the command carrying it is not run. Nor has a word that expands past
-    /// [`Bounds::expansion_bytes`], or one whose expansion would take the line past
-    /// [`Bounds::line_expansion_bytes`].
+    /// parameter expands to. A command substitution is performed by every session
+    /// ([`Self::expand_substitution`]); an arithmetic expansion is resolved only by a session
+    /// that runs in a volume ([`Self::expand_arithmetic`]), so for a session with no tree —
+    /// and for a tilde prefix whichever session carries it, there is no home directory here —
+    /// the word has no expansion and the command carrying it is not run. Nor has a word that
+    /// expands past [`Bounds::expansion_bytes`], or one whose expansion would take the line
+    /// past [`Bounds::line_expansion_bytes`].
     fn expand_word(&mut self, word: &str) -> Option<String> {
         let options = ::brush_parser::ParserOptions::default();
         let pieces = ::brush_parser::word::parse(word, &options).ok()?;
@@ -1386,28 +1538,50 @@ impl ShellSession {
     /// specifies.
     ///
     /// The commands run in THIS session — the same variables, the same tree, the same
-    /// budget — so a substitution costs commands of [`Bounds::commands`] like any other
-    /// command and cannot reach anything its session cannot. An `exit` inside one ends the
-    /// substitution rather than the session, the way it ends a subshell.
+    /// budget, the same catalogs and the same environment programs — so a substitution
+    /// cannot reach anything its session cannot. It is a SUBSHELL: an `exit` inside one ends
+    /// the substitution rather than the session, and the variables it set or removed are put
+    /// back off the undo log it recorded ([`Self::record_for_rollback`]), which costs what it
+    /// changed rather than a copy of the store.
     ///
-    /// `None` is a substitution with no value: a session that was given no machine's tree
-    /// does not perform the form at all, one past [`Bounds::substitutions`] or
-    /// [`Bounds::substitution_depth`] does not run it, and one whose output went past
-    /// [`Bounds::substitution_bytes`] has no value rather than a clipped one.
+    /// Its own cost comes out of the same budgets: performing one spends a command of
+    /// [`Bounds::commands`] before anything else — so how many a line may open is bounded
+    /// whatever the text they carry performs — and the commands inside it spend their own.
+    ///
+    /// `None` is a substitution with no value: one past [`Bounds::substitutions`],
+    /// [`Bounds::substitution_depth`] or the command budget does not run, and one whose
+    /// output went past [`Bounds::substitution_bytes`] has no value rather than a clipped
+    /// one.
     fn expand_substitution(&mut self, program: &str) -> Option<String> {
-        self.volume.as_ref()?;
-        if self.substitutions_left == 0 || self.nesting_depth() >= self.config.bounds.substitution_depth
+        if self.substitutions_left == 0
+            || self.commands_left == 0
+            || self.nesting_depth() >= self.config.bounds.substitution_depth
         {
             return None;
         }
         self.substitutions_left = self.substitutions_left.saturating_sub(1);
+        self.commands_left = self.commands_left.saturating_sub(1);
         self.captures.push(Capture {
             limit: self.config.bounds.substitution_bytes,
             ..Capture::default()
         });
+        self.substitution_undo.push(BTreeMap::new());
         let held_exit = self.exit_status.take();
-        let _ = self.run_program(program);
+        let held_bytes = self.held_bytes;
+        let status = self.run_program(program);
         self.exit_status = held_exit;
+        for (name, held) in self.substitution_undo.pop().unwrap_or_default() {
+            match held {
+                Some(value) => self.variables.insert(name, value),
+                None => self.variables.remove(&name),
+            };
+        }
+        // The store is back to what it was, so what it holds is back to what it held.
+        self.held_bytes = held_bytes;
+        // The LAST substitution performed is the one a command with no command name answers
+        // with, so this replaces what a substitution performed earlier in the same command
+        // left.
+        self.last_substitution_status = Some(status);
         let capture = self.captures.pop()?;
         if capture.overflowed {
             return None;
@@ -1532,8 +1706,8 @@ fn formatted(format: &str, arguments: &[String]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Bounds, OutputLimits, SessionConfig, ShellSession, ShellVolume, Statuses,
-        BUILT_IN_COMMANDS,
+        Bounds, EnvironmentPrograms, OutputLimits, ProgramOutcome, SessionConfig, ShellSession,
+        ShellVolume, Statuses, BUILT_IN_COMMANDS,
     };
     use std::collections::BTreeMap;
 
@@ -1593,8 +1767,8 @@ mod tests {
                 &[],
             ),
             (
-                "a command substitution",
-                "echo $(whoami)",
+                "another host program, which the environment provides none of either",
+                "whoami",
                 statuses.could_not_run,
                 &[],
             ),
@@ -1841,6 +2015,288 @@ mod tests {
                 held.output()
             );
         }
+    }
+
+    /// RULE: `$(…)` is performed by this session — over the same catalog, the same
+    /// environment programs and the same budget — and what it wrote, with its trailing
+    /// newlines removed, is the word. It is a subshell: what it sets and an `exit` it
+    /// performs do not reach the session that substituted it. The status of a command with
+    /// no command name is the last substitution's; every other command answers for itself.
+    #[test]
+    fn command_substitution_is_performed_in_a_subshell() {
+        let statuses = Statuses::default();
+        // (case, the program, the line it wrote last)
+        let written: [(&str, &str, &str); 7] = [
+            ("output becomes the word", "A=$(echo one)\necho [$A]", "[one]"),
+            (
+                "trailing newlines are removed, inner ones kept",
+                "A=$(echo one; echo two)\necho \"[$A]\"",
+                "[one\ntwo]",
+            ),
+            (
+                "a substitution nested in a substitution",
+                "A=$(echo $(echo deep))\necho [$A]",
+                "[deep]",
+            ),
+            (
+                "a substituted command the session does not perform substitutes nothing",
+                "A=$(whoami)\necho [$A]",
+                "[]",
+            ),
+            (
+                "the variables it sets are its own",
+                "export KEPT=outer\nA=$(export KEPT=inner)\necho [$KEPT]",
+                "[outer]",
+            ),
+            (
+                "and so are the ones it removes",
+                "export KEPT=outer\nA=$(unset KEPT)\necho [$KEPT]",
+                "[outer]",
+            ),
+            (
+                "the backquoted spelling of the same substitution",
+                "A=`echo one`\necho [$A]",
+                "[one]",
+            ),
+        ];
+        for (case, program, expected) in written {
+            let held = run(program);
+            // What the program wrote, as the one text it wrote: a value carrying a newline is
+            // kept as two lines of the session's output, and it is the TEXT the word became
+            // that each row is about.
+            let wrote = held.output().join("\n");
+            assert_eq!(
+                wrote, expected,
+                "case {case:?}: expected {expected:?}, got {wrote:?}"
+            );
+        }
+
+        // An `exit` inside a substitution ends that subshell alone: the session goes on.
+        let held = run("A=$(exit 3)\necho after");
+        assert_eq!(
+            held.exit_status(),
+            None,
+            "case \"an exit inside a substitution\": expected the session to go on, got {:?}",
+            held.exit_status()
+        );
+        assert_eq!(
+            held.output(),
+            ["after"],
+            "case \"an exit inside a substitution\": expected the next line to be performed, \
+             got {:?}",
+            held.output()
+        );
+
+        // (case, the line, the status it answers)
+        let answered: [(&str, String, i32); 5] = [
+            (
+                "a command with a name of its own answers for itself",
+                "echo $(false)".to_string(),
+                statuses.success,
+            ),
+            (
+                "a command with no name answers with its substitution's status",
+                "A=$(false)".to_string(),
+                statuses.failure,
+            ),
+            (
+                "… and with its LAST substitution's status",
+                "A=$(false) B=$(true)".to_string(),
+                statuses.success,
+            ),
+            (
+                "… including a substituted command the session does not perform",
+                "A=$(whoami)".to_string(),
+                statuses.could_not_run,
+            ),
+            (
+                "a word nesting more substitutions than one word may",
+                format!("A={}true{}", "$(".repeat(12), ")".repeat(12)),
+                statuses.could_not_run,
+            ),
+        ];
+        for (case, line, expected) in answered {
+            let mut held = session();
+            let status = held.run(&line);
+            assert_eq!(
+                status, expected,
+                "case {case:?}: expected status {expected}, got {status}"
+            );
+        }
+
+        // The substituted commands come out of the SAME command budget, and performing a
+        // substitution AT ALL spends one of it, so neither the commands inside one nor the
+        // number of them a line opens can outrun the budget.
+        let two_commands = SessionConfig {
+            bounds: Bounds {
+                commands: 2,
+                ..Bounds::default()
+            },
+            output: Some(OutputLimits {
+                lines: 8,
+                line_bytes: 64,
+            }),
+            ..SessionConfig::default()
+        };
+        let mut held = ShellSession::new(BTreeMap::new(), two_commands);
+        held.run("A=$(echo one)");
+        held.run("echo [$A]");
+        assert!(
+            held.output().is_empty(),
+            "case \"the shared command budget\": expected the budget to be spent by the \
+             substitution, got {:?}",
+            held.output()
+        );
+
+        // A substitution whose text performs no command at all still spends one, so a line
+        // carrying many of them is bounded by the same budget.
+        // (case, the whole command budget, the line, the status it answers)
+        for (case, commands, line, expected) in [
+            (
+                "a budget the command and its substitution spend between them",
+                2,
+                "A=$(true)",
+                statuses.could_not_run,
+            ),
+            (
+                "a budget for the command, the substitution and the command inside it",
+                3,
+                "A=$(true)",
+                statuses.success,
+            ),
+            (
+                "a second substitution on the same line, past the budget",
+                3,
+                "echo $(true) $(true)",
+                statuses.could_not_run,
+            ),
+        ] {
+            let mut held = ShellSession::new(
+                BTreeMap::new(),
+                SessionConfig {
+                    bounds: Bounds {
+                        commands,
+                        ..Bounds::default()
+                    },
+                    ..SessionConfig::default()
+                },
+            );
+            let status = held.run(line);
+            assert_eq!(
+                status, expected,
+                "case {case:?}: expected status {expected}, got {status}"
+            );
+        }
+
+        // The variables a session STARTS with are held to the store's own ceilings, so what
+        // its caller hands it cannot grow the session past them.
+        let handed: BTreeMap<String, String> = ["A", "B", "C"]
+            .into_iter()
+            .map(|name| (name.to_string(), "value".to_string()))
+            .collect();
+        let held = ShellSession::new(
+            handed,
+            SessionConfig {
+                bounds: Bounds {
+                    session_variables: 2,
+                    ..Bounds::default()
+                },
+                ..SessionConfig::default()
+            },
+        );
+        let kept = ["A", "B", "C"]
+            .into_iter()
+            .filter(|name| held.variable(name).is_some())
+            .count();
+        assert_eq!(
+            kept, 2,
+            "case \"the variables a session starts with\": expected the store's ceiling to \
+             hold for them too, got {kept} of them"
+        );
+    }
+
+    /// An environment that provides ONE program, so a session's catalog is not all it can
+    /// name — and that program answers only the one invocation it is given.
+    #[derive(Debug)]
+    struct OneProgram;
+
+    impl EnvironmentPrograms for OneProgram {
+        fn run(&self, name: &str, arguments: &[String]) -> Option<ProgramOutcome> {
+            let queried: Vec<&str> = arguments.iter().map(String::as_str).collect();
+            (name == "report" && queried == ["--version"]).then(|| ProgramOutcome {
+                status: 0,
+                output: vec!["report 1.2.3".to_string()],
+            })
+        }
+    }
+
+    /// RULE: a command the catalog does not name is asked of the programs the ENVIRONMENT
+    /// provides, and what that program answered — its status and the lines it wrote — is what
+    /// the command answers; a name, or an invocation, the environment provides no program
+    /// for is still a command that could not be run.
+    #[test]
+    fn the_environments_programs_answer_beside_the_catalog() {
+        let statuses = Statuses::default();
+        let configured = SessionConfig {
+            output: Some(OutputLimits {
+                lines: 8,
+                line_bytes: 64,
+            }),
+            ..SessionConfig::default()
+        };
+        // (case, the line, the status it answers, the lines it wrote)
+        let rows: [(&str, &str, i32, &[&str]); 4] = [
+            (
+                "the invocation the environment provides",
+                "report --version",
+                statuses.success,
+                &["report 1.2.3"],
+            ),
+            (
+                "the same program, invoked another way",
+                "report --help",
+                statuses.could_not_run,
+                &[],
+            ),
+            (
+                "a program this environment provides none of",
+                "other --version",
+                statuses.could_not_run,
+                &[],
+            ),
+            (
+                "the catalog's own utilities still answer first",
+                "echo one",
+                statuses.success,
+                &["one"],
+            ),
+        ];
+        for (case, line, expected_status, expected_output) in rows {
+            let mut held =
+                ShellSession::with_programs(BTreeMap::new(), configured, Box::new(OneProgram));
+            let status = held.run(line);
+            assert_eq!(
+                status, expected_status,
+                "case {case:?}: expected status {expected_status}, got {status}"
+            );
+            assert_eq!(
+                held.output(),
+                expected_output,
+                "case {case:?}: expected {expected_output:?}, got {:?}",
+                held.output()
+            );
+        }
+
+        // What such a program wrote is substitutable, like any other command's output.
+        let mut held =
+            ShellSession::with_programs(BTreeMap::new(), configured, Box::new(OneProgram));
+        held.run("V=$(report --version)");
+        assert_eq!(
+            held.variable("V"),
+            Some("report 1.2.3"),
+            "case \"a substituted environment program\": expected its line as the word, got {:?}",
+            held.variable("V")
+        );
     }
 
     /// RULE: every bound is the session's own — the command budget, the line size, the
@@ -2226,13 +2682,14 @@ mod tests {
     /// RULE: a session that was given no MACHINE's tree performs none of the forms a machine's
     /// program is written in — there is no device to write, no descriptor to report on and no
     /// storage of the machine to read — so what such a session performs is its own catalog
-    /// over its own tree.
+    /// over its own tree. (A command SUBSTITUTION is not one of those forms: it is the
+    /// shell's own, performed by every session over whatever that session performs, which
+    /// `command_substitution_is_performed_in_a_subshell` is the subject of.)
     #[test]
     fn a_session_with_no_volume_performs_none_of_them() {
         let statuses = Statuses::default();
         // (case, the line a program of a machine is written with)
         let rows = [
-            ("a command substitution", "echo $(cat out.txt)"),
             ("an arithmetic expansion", "echo $((1 + 1))"),
             ("a redirection reading a file", "cat < out.txt"),
             ("a redirection of standard error", "cat missing 2> err.txt"),

@@ -177,7 +177,8 @@ mod tests {
     };
 
     /// RULE: what a hook publishes is what its `echo` commands wrote — a command needing a
-    /// host program, a redirection, a command substitution or a compound form writes nothing.
+    /// host program, a redirection or a compound form writes nothing, and a command
+    /// substitution writes whatever the command it substitutes wrote.
     #[test]
     fn only_the_catalog_writes_output() {
         // One script per shape a lifecycle script can carry, and the lines performing it
@@ -200,9 +201,12 @@ mod tests {
                 vec!["plain"],
             ),
             (
-                "a command substitution is not performed",
+                // The substitution is performed in the session; `whoami` is a command it
+                // has no program for, so it substitutes nothing and `echo` writes the
+                // empty line that leaves.
+                "a substituted command the session has no program for substitutes nothing",
                 "echo $(whoami)\necho plain",
-                vec!["plain"],
+                vec!["", "plain"],
             ),
             (
                 "a compound command is not performed",

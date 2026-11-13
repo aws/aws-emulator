@@ -50,3 +50,28 @@ These checks need the buildspec's commands to RUN and exit 0, with the installed
 * Short of that, nothing may report SUCCEEDED, FAILED, an exit code, command output or a duration for commands nothing ran: that would be a status for work no engine performed, which is a worse defect than the honest FAULT this report is about. The emulator's current answer is therefore left exactly as it is until the substrate exists.
 
 So this is a PLATFORM blocker, not a wording or state-machine defect: it is re-filed here, with its keys, rather than closed.
+
+## Fix status
+
+FIXED. The premise above ("no maintained crate executes POSIX shell in-process") no longer
+holds in this checkout: `services/common/src/posix_shell_session.rs` is the workspace's one
+bounded, session-local POSIX/bash session over `brush-parser`'s grammar, and
+`src/state/buildspec.rs` already runs a buildspec's command lines through it, so a build no
+longer FAULTs. What remained was the INSTALL phase of these three checks:
+
+* `services/common/src/posix_shell_session.rs` now performs a COMMAND SUBSTITUTION — the
+  substituted text is read by the same grammar and performed in the same session (same
+  catalog, same command budget, bounded expansion, a substitution-depth bound, variables and
+  `exit` rolled back as a subshell's) — and asks an `EnvironmentPrograms` the caller hands it
+  for a command its catalog does not name. No host process, path or file is reachable either
+  way.
+* `services/.../codebuild.../src/state/runtime_versions.rs` holds the runtimes a build
+  environment has and the versions of each a buildspec may select, installs the ones
+  `phases.install.runtime-versions` names, and is what the build's shell asks for a command
+  the catalog does not name: an installed runtime's program answers its version query with
+  the version installed, and every other invocation of it is a command this environment did
+  not run. A runtime no image has fails the preparing phase with `YAML_FILE_ERROR`; a version
+  of a known runtime the environment does not have fails it with `COMMAND_EXECUTION_ERROR`
+  and CodeBuild's unknown-runtime-version sentence.
+* Pinned by `tests/all/runtime_versions.rs` and `tests/all/command_substitution.rs`; the
+  three replay keys above pass.
