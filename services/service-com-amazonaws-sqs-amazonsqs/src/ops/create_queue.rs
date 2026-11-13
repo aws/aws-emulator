@@ -298,7 +298,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut attributes: ::std::collections::BTreeMap<String, String> =
             state::SETTABLE_ATTRIBUTES
                 .iter()
-                .filter(|spec| fifo || !spec.fifo_only)
+                .filter(|spec| state::applies_to_queue(spec, fifo))
                 .filter_map(|spec| {
                     spec.default
                         .map(|value| (spec.name.to_string(), value.to_string()))

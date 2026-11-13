@@ -616,6 +616,22 @@ pub fn settable_attribute(name: &str) -> Option<&'static AttributeSpec> {
     SETTABLE_ATTRIBUTES.iter().find(|spec| spec.name == name)
 }
 
+/// Whether `spec` is an attribute a queue of this kind HAS at all — `fifo` says whether that
+/// queue is a FIFO queue.
+///
+/// Two ways of belonging to the FIFO kind of queue and to no other: an attribute that
+/// "applies only to FIFO (first-in-first-out) queues" (`fifo_only`), and the attribute that
+/// DESIGNATES a queue as FIFO ([`AttributeKind::Designator`]) — a standard queue carries no
+/// attribute saying it is FIFO, which is why a read of one reports none. Stated once, because
+/// it decides both which defaults a create materialises and whether a call naming the
+/// attribute named one the queue it addresses does not have
+/// ([`validate_attributes`]).
+pub fn applies_to_queue(spec: &AttributeSpec, fifo: bool) -> bool {
+    let designates_the_fifo_kind =
+        matches!(spec.kind, AttributeKind::Designator(designating) if designating == DESIGNATES_FIFO_QUEUE);
+    fifo || !(spec.fifo_only || designates_the_fifo_kind)
+}
+
 // The message-plane attributes the message handlers read, named once so a handler
 // never spells one as a literal.
 pub const DELAY_SECONDS: &str = "DelaySeconds";
@@ -4095,37 +4111,36 @@ pub fn invalid_attribute_value(attribute: &str) -> InvalidAttributeValue {
 /// queue attribute name list, or a message system attribute name list — so two
 /// operations cannot drift on how they word the same defect. Amazon SQS reports every name
 /// it does not HAVE for the call as an UNKNOWN one, whatever made it unacceptable: a name
-/// outside the value set, one the service only ever reports and one that belongs to the
-/// other kind of queue are all refused in this single sentence, with the name exactly as
-/// the request spelled it.
+/// outside the value set, one the service only ever reports and one the queue the call
+/// addresses does not have at all — a FIFO-only attribute, or the designator of the FIFO
+/// kind, on a standard queue — are all refused in this single sentence, with the name
+/// exactly as the request spelled it.
 ///
-/// An attribute the service does have and a call may not CHANGE is a different class: see
-/// [`unmodifiable_attribute_value`].
+/// An attribute the queue the call addresses DOES have and the call may not CHANGE is a
+/// different class: see [`unmodifiable_attribute_value`].
 pub fn unknown_attribute_name(name: &str) -> InvalidAttributeName {
     InvalidAttributeName {
         message: Some(format!("Unknown Attribute {name}.")),
     }
 }
 
-/// The rule a refusal states for an attribute the service accepts only while the queue is
-/// being MADE: "You can provide this attribute only during queue creation. You can't
-/// change it for an existing queue."
-///
-/// Stated as the change that is not supported, because that is what the call asked for.
-/// The one create-only attribute of this service designates what KIND of queue it is
-/// ([`FIFO_QUEUE_ATTRIBUTE`], an [`AttributeKind::Designator`]), so the property the
-/// sentence names is the queue's type.
+/// The rule a refusal states for a write that would change what KIND of queue an existing
+/// queue is: "You can provide this attribute only during queue creation. You can't change
+/// it for an existing queue" ([`FIFO_QUEUE_ATTRIBUTE`]'s own documentation), stated as the
+/// change that is not supported, because that is what such a call asked for.
 pub const QUEUE_TYPE_NOT_MODIFIABLE: &str = "Modifying queue type is not supported.";
 
-/// The modelled refusal for a create-only attribute supplied to a call that changes an
-/// EXISTING queue.
+/// The modelled refusal for an attribute the queue a call addresses HAS and only a create
+/// may supply.
 ///
-/// Such an attribute is one the service has and publishes: a call naming it has not named
-/// an attribute that does not exist, it has asked for a change the attribute's value
-/// cannot carry — so the refusal is the one for an attribute VALUE
-/// ([`invalid_attribute_value`]'s class), in the same template, with the rule it broke
-/// stated in the `Reason:` clause every refusal of this service that has a rule to state
-/// carries.
+/// Such an attribute is one that queue carries and reports: a call naming it has not named
+/// an attribute that does not exist, it has asked for a change the attribute's value cannot
+/// carry — so the refusal is the one for an attribute VALUE ([`invalid_attribute_value`]'s
+/// class), in the same template, with the rule it broke stated in the `Reason:` clause every
+/// refusal of this service that has a rule to state carries.
+///
+/// A queue that does NOT have the attribute is the other case: there the call named a name
+/// outside that queue's own vocabulary ([`unknown_attribute_name`]).
 pub fn unmodifiable_attribute_value(attribute: &str) -> InvalidAttributeValue {
     InvalidAttributeValue {
         message: Some(invalid_value_message_with_reason(
@@ -4139,10 +4154,11 @@ pub fn unmodifiable_attribute_value(attribute: &str) -> InvalidAttributeValue {
 /// error variant, so the wire code is the one that operation declares.
 #[derive(Debug)]
 pub enum AttributeRefusal {
-    /// The map named an attribute that does not exist, or one no call sets.
+    /// The map named an attribute the call does not have for the queue it addresses: one
+    /// that does not exist, one no call sets, or one that queue does not carry at all.
     Name(InvalidAttributeName),
-    /// The map gave an attribute a value outside what that attribute accepts, or asked an
-    /// attribute only a create supplies to change on an existing queue.
+    /// The map gave an attribute that queue DOES have a value outside what the attribute
+    /// accepts, or asked an attribute only a create supplies to change on an existing queue.
     Value(InvalidAttributeValue),
 }
 
@@ -4153,17 +4169,19 @@ pub enum AttributeRefusal {
 /// queue, which is what makes the FIFO-only attributes applicable. Names are visited
 /// in order, so a map with two bad attributes is always refused for the same one.
 ///
-/// A name no call of this service has is an UNKNOWN attribute whichever rule put it out of
-/// reach ([`unknown_attribute_name`]): the set of names a call accepts depends on the call,
-/// on the queue it addresses and on what the value asks for, so an attribute only
-/// `GetQueueAttributes` reports, one that applies only to the other kind of queue, and a
-/// designator ([`AttributeKind::Designator`]) given a value that designates nothing are each
-/// simply not an attribute THIS call has.
+/// A name the queue this call addresses does not HAVE is an UNKNOWN attribute whichever rule
+/// put it out of reach ([`unknown_attribute_name`]): an attribute only `GetQueueAttributes`
+/// reports, one that applies only to the other kind of queue, the designator of a kind the
+/// addressed queue is not ([`AttributeKind::Designator`] — a standard queue carries no
+/// attribute saying it is FIFO), and a designator given a value that designates nothing are
+/// each simply not an attribute THAT queue has.
 ///
-/// A `create_only` attribute is the one case that is NOT about the name: the service has the
-/// attribute and publishes it with the create that may supply it, so a later call naming it
-/// is refused for the change its value asks for and not for the name
-/// ([`unmodifiable_attribute_value`]).
+/// A `create_only` attribute of a queue that DOES have it is the one case that is not about
+/// the name: the queue carries the attribute and reports it, so a later call naming it is
+/// refused for the change its value asks for ([`unmodifiable_attribute_value`]). Which of
+/// the two a call draws therefore follows the kind of queue it addresses, and the order the
+/// checks below are written in is that rule: whether the queue HAS the attribute is settled
+/// before whether this call may change it.
 pub fn validate_attributes(
     supplied: &HashMap<String, String>,
     on_create: bool,
@@ -4181,17 +4199,18 @@ pub fn validate_attributes(
         let Some(spec) = settable_attribute(name) else {
             return Err(AttributeRefusal::Name(unknown_attribute_name(name)));
         };
-        // Create-only on a later call: the attribute exists and this call may not CHANGE
-        // what it fixed, so the refusal is about the value, not about the name.
-        if spec.create_only && !on_create {
-            return Err(AttributeRefusal::Value(unmodifiable_attribute_value(
-                spec.name,
-            )));
-        }
-        // FIFO-only on a standard queue: a modelled name the queue this call addresses
-        // does not have.
-        if spec.fifo_only && !fifo {
+        // An attribute of the FIFO kind of queue on a queue that is not of that kind: a
+        // modelled name the queue this call addresses does not have, whether it applies
+        // only to FIFO queues or DESIGNATES one — a standard queue carries no attribute
+        // saying it is FIFO, which is why a read of one reports none.
+        if !applies_to_queue(spec, fifo) {
             return Err(AttributeRefusal::Name(unknown_attribute_name(name)));
+        }
+        // Create-only on a later call, for a queue that HAS the attribute: the queue
+        // carries it and reports it, so this call has asked for a change the attribute's
+        // value cannot carry, and the refusal is about the value rather than the name.
+        if spec.create_only && !on_create {
+            return Err(AttributeRefusal::Value(unmodifiable_attribute_value(name)));
         }
         check_attribute_value(spec, value)?;
     }

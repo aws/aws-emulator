@@ -16,10 +16,12 @@
 //! covers every way of being outside it, and why a client classifying a refusal by its
 //! message is not told that an attribute exists-but-is-read-only.
 //!
-//! The attribute only a create may supply is the one name OUTSIDE this rule: the service has
-//! it and publishes it, so a later call naming it is refused for the change it asks for
-//! rather than as a name that does not exist — [`super::queue_type_immutability`] owns that
-//! rule, and the rows here assert only that it is not answered as an unknown name.
+//! The attribute only a create may supply is inside this rule for the queue that does not
+//! HAVE it and outside it for the queue that does: a standard queue carries no attribute
+//! saying it is FIFO, so a name refusal covers it there, while a FIFO queue carries and
+//! reports it, so a later call naming it is refused for the change it asks for —
+//! [`super::queue_type_immutability`] owns that half of the rule, and the rows here assert
+//! which of the two each kind of queue draws.
 //!
 //! The table spans the class the rule generalises over rather than one example: every name
 //! the model's `QueueAttributeName` enum declares is driven against a standard queue and a
@@ -95,9 +97,9 @@ const REPORTED_ONLY_NAMES: &[&str] = &[
 /// The refusal class every unacceptable attribute NAME carries.
 const INVALID_ATTRIBUTE_NAME: &str = "InvalidAttributeName";
 
-/// The refusal class an attribute the service HAS but this call may not CHANGE carries
-/// instead — the sibling class, held apart here and asserted in full by
-/// [`super::queue_type_immutability`].
+/// The refusal class an attribute the queue the call addresses HAS but no later call may
+/// CHANGE carries instead — the sibling class, held apart here by the kind of queue and
+/// asserted in full by [`super::queue_type_immutability`].
 const INVALID_ATTRIBUTE_VALUE: &str = "InvalidAttributeValue";
 
 /// The one sentence Amazon SQS refuses an unacceptable attribute name with, spelled out here
@@ -166,10 +168,10 @@ fn settable_on(name: &str, fifo: bool) -> bool {
     true
 }
 
-/// `SetQueueAttributes` answers every name the service does not have for it with the one
+/// `SetQueueAttributes` answers every name the queue it addresses does not have with the one
 /// unknown-attribute sentence, on a standard queue and on a FIFO queue, and leaves the queue
-/// untouched — the create-only attribute being the one name refused for the change it asks
-/// for instead.
+/// untouched — the create-only attribute being refused as a name on the queue that does not
+/// carry it and for the change it asks for on the queue that does.
 #[tokio::test]
 async fn set_queue_attributes_refuses_every_name_it_cannot_accept_as_an_unknown_attribute() {
     for fifo in [false, true] {
@@ -206,11 +208,12 @@ async fn set_queue_attributes_refuses_every_name_it_cannot_accept_as_an_unknown_
                 );
                 continue;
             }
-            // The create-only attribute is one the service HAS, so a call that may not
-            // change it is refused for the change its value asks for rather than as a name
-            // that does not exist: the two classes are held apart here and the rule behind
-            // the second is asserted in full by the sibling suite.
-            let expected = if *name == CREATE_ONLY_NAME {
+            // The create-only attribute is one a FIFO queue HAS, so there a call that may
+            // not change it is refused for the change its value asks for rather than as a
+            // name; a standard queue does not carry it at all, so there it is a name like
+            // any other the queue does not have. The two classes are held apart here and the
+            // rule behind the second is asserted in full by the sibling suite.
+            let expected = if *name == CREATE_ONLY_NAME && fifo {
                 (400, INVALID_ATTRIBUTE_VALUE, not_modifiable_message(name))
             } else {
                 (400, INVALID_ATTRIBUTE_NAME, unknown_attribute_message(name))
