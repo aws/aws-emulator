@@ -50,12 +50,20 @@ aws-sdk-ec2 = { version = "1", default-features = false }
 # Reads a subnet's CIDR block, so a directory server's address is counted out of the block
 # its subnet really carries (`state::directory_network::server_address`).
 ipnet = "2"
+# The engine behind a modelled `@pattern` at the boundary, used in
+# `service::model_pattern_refusals` to ask whether the boundary validator can compile one.
+regex = "1.13"
+# Evaluates a modelled `@pattern` that uses look-around, which the boundary's engine cannot
+# compile (`service::model_pattern_refusals`).
+fancy-regex = "0.16"
+# Derives the verifier a directory account's password is checked against
+# (`state::account_credentials`), so no password is held.
+sha2 = { workspace = true }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
-sha2 = { workspace = true }
 # The CloudWatch Logs service a directory's log subscription forwards into, so the
 # forwarding suite mounts it beside this one on the same engine and reads the delivered
 # records back through that service's own `FilterLogEvents` / `DescribeLogStreams`.

@@ -53,7 +53,9 @@
 //! below and [`stated_enum_values`] (the order an enum's admissible values are listed in). A
 //! refusal of a constraint a LIST's ELEMENTS break is stated at the list member instead of at
 //! the element, which needs the request as well as the violations and so is answered in that
-//! same operation wrapper ([`list_element_refusals`]).
+//! same operation wrapper ([`list_element_refusals`]) — and so is the one CONSTRAINT the
+//! framework's own walk cannot apply, a `@pattern` whose look-around its regex engine does
+//! not compile ([`model_pattern_refusals`]).
 //!
 //! [`authorization`] is not a seam at all: it is the IAM decision the operations whose
 //! model declares `AccessDeniedException` take before they touch the store, held beside
@@ -61,6 +63,7 @@
 
 pub mod authorization;
 pub mod list_element_refusals;
+pub mod model_pattern_refusals;
 pub mod request_id_header;
 
 use request_id_header::RequestIdHeaderOperation;
@@ -127,14 +130,17 @@ fn stated_refusal(refusal: &Refusal) -> Option<Refused> {
 ///
 /// A `@pattern` is quoted as the MODEL declares it, anchors and all: the `^`/`$` a Smithy
 /// `@pattern` wraps a whole-value expression in are part of the expression a recorded
-/// Directory Service refusal quotes back, per-member clause and nested element set alike.
+/// Directory Service refusal quotes back, per-member clause and nested element set alike —
+/// and the same holds for a clause built where the framework's own walk could not apply the
+/// expression at all ([`model_pattern_refusals`]), so one rendering serves every member
+/// whatever found it.
 /// `CreateAlias`' `Alias` is the one member whose recorded refusal drops the trailing `$`,
 /// and its clause is built in the handler (`crate::ops::create_alias`), which is why this
 /// rendering does not reach it.
 ///
-/// THE one place that restating is made, so the two paths it is applied on (the boundary
-/// refusal this file words, and the list-element clause [`list_element_refusals`] words)
-/// cannot disagree about it.
+/// THE one place that restating is made, so the three paths it is applied on (the boundary
+/// refusal this file words, the list-element clause [`list_element_refusals`] words, and the
+/// skipped-`@pattern` clause [`model_pattern_refusals`] words) cannot disagree about it.
 fn stated_violation(violation: &Violation) -> Violation {
     let kind = match &violation.kind {
         ViolationKind::EnumValue(allowed) => ViolationKind::EnumValue(stated_enum_values(allowed)),

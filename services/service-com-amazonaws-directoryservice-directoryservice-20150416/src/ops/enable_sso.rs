@@ -16,14 +16,19 @@
 //! Two preconditions stand between a resolved directory and the flag, in the order a
 //! service that authenticates before it evaluates applies them:
 //!
-//! * `UserName`/`Password` are an ALTERNATE directory account's credentials, which the
-//!   service authenticates against the directory itself before it acts on its behalf.
-//!   This emulator holds no directory account credentials at all — the administrator
-//!   password `CreateDirectory` is called with is deliberately not stored, and no
-//!   operation of this service reports or verifies one — so an alternate account can
-//!   never be authenticated and a request that supplies one is refused with the modelled
-//!   `AuthenticationFailedException`. A request that supplies neither member asks the
-//!   service to act as its own service account, which needs no authentication.
+//! * `UserName`/`Password` are a directory account's credentials, which the service
+//!   authenticates against the directory itself before it acts on that account's behalf. A
+//!   pair the directory holds — an account of its own, presented with the password that
+//!   account's password was set to, which for the administrative account its create made is
+//!   the create's own `Password` and after a reset the password that reset set — is
+//!   admitted; one it does not hold is refused with the modelled
+//!   `AuthenticationFailedException`, which is the class for credentials the directory does
+//!   not accept. The decision is `crate::state::credential_defect`, shared with `DisableSso`
+//!   so the two cannot authenticate differently; neither member is stored, logged or
+//!   reported back, and what the directory holds to check the password against is a verifier
+//!   of it rather than the password (`crate::state::PasswordVerifier`). A request that
+//!   supplies neither member asks the service to act as its own service account, which needs
+//!   no authentication.
 //! * single sign-on needs the directory's access URL, which exists only once an alias
 //!   has been assigned: `CreateAlias` is what assigns one, and until then the directory's
 //!   `Alias` is the directory id itself. Of the errors this operation models that is the
@@ -203,18 +208,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 ))
             })?;
 
-        // `UserName`/`Password` name an ALTERNATE directory account, which has to be
-        // authenticated against the directory before this service acts on its behalf,
-        // and this emulator holds no directory account credentials to authenticate one
-        // against — see this module's documentation. Neither member is stored, logged or
-        // reported back.
+        // `UserName`/`Password` name a directory account to act on behalf of, which has to
+        // be authenticated against the directory before this service acts for it. The
+        // decision is the shared one, so an enable and a disable admit exactly the same
+        // pairs; neither member is stored, logged or reported back. Evaluated BEFORE the
+        // access-URL precondition below, the order a service that authenticates before it
+        // evaluates applies them in.
         if input.user_name.is_some() || input.password.is_some() {
-            return Err(
-                EnableSsoErrorModeled::AuthenticationFailedException(crate::state::refusal(
-                    crate::state::AUTHENTICATION_FAILED,
-                ))
-                .into(),
-            );
+            if let Some(defect) = crate::state::credential_defect(
+                directory,
+                input.user_name.as_deref(),
+                input.password.as_deref(),
+            ) {
+                return Err(
+                    EnableSsoErrorModeled::AuthenticationFailedException(crate::state::refusal(
+                        defect,
+                    ))
+                    .into(),
+                );
+            }
         }
 
         // The access URL single sign-on signs users in at is derived from the directory's

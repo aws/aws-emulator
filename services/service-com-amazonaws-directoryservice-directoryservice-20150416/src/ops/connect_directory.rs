@@ -200,12 +200,29 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // WHERE the connector's servers go: the subnets the request names, resolved against
-        // the service that OWNS subnets, so each connector server can be given an address
-        // out of its own subnet's block — the `ConnectIps` this directory reports — and so
-        // the other half of the placement rule can be decided. Asked ONCE, BEFORE the store
-        // lock below is taken, so no guard is held across the hop; an identifier the owner
-        // reports no subnet for contributes nothing, and the create still stores the
-        // placement the request named.
+        // the service that OWNS subnets, so each connector server can be given an address out
+        // of its own subnet's block — the `ConnectIps` this directory reports — and so the
+        // other half of the placement rule can be decided. Asked ONCE, BEFORE the store lock
+        // below is taken, so no guard is held across the hop; an identifier the owner
+        // reports no subnet for contributes nothing, and the create still stores the placement
+        // the request named.
+        //
+        // The VPC those subnets sit in is resolved first, against that same owner: a
+        // placement naming a VPC the account does not have names a resource that does not
+        // exist, which is the resource-semantics failure class (`ClientException`). Nothing is
+        // refused where EC2 could not be asked.
+        if let Some(defect) = crate::state::vpc_absence(
+            ctx,
+            &crate::state::region_from_request(ctx.parts()),
+            &input.connect_settings.vpc_id,
+        )
+        .await
+        {
+            return Err(
+                ConnectDirectoryErrorModeled::ClientException(crate::state::refusal(defect))
+                    .into(),
+            );
+        }
         let subnet_networks = crate::state::resolve_subnet_networks(
             ctx,
             &crate::state::region_from_request(ctx.parts()),
@@ -347,8 +364,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             update_activities: Vec::new(),
             next_computer_rid: crate::state::FIRST_COMPUTER_RID,
             // The accounts an AD Connector serves live in the self-managed directory it
-            // connects to, so it holds none of its own.
-            users: crate::state::initial_users(crate::state::TYPE_AD_CONNECTOR, now),
+            // connects to, so it holds none of its own — and so holds no password of one
+            // either, which is why no credential pair can be authenticated as an account of
+            // this directory type (`crate::state::credential_defect`).
+            users: crate::state::initial_users(crate::state::TYPE_AD_CONNECTOR, None, now),
             // Configurable settings are a Managed Microsoft AD feature (see
             // `crate::state::SETTINGS_DIRECTORY_TYPES`), so an AD Connector carries none.
             settings: crate::state::initial_settings(crate::state::TYPE_AD_CONNECTOR, now),

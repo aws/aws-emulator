@@ -27,7 +27,9 @@
 //! ([`crate::state::password_policy_defect`]) and refused with the modelled
 //! `InvalidPasswordException` when it does not meet it. The password itself is never
 //! stored: it is `@sensitive`, no operation reports it back, and what the reset changes
-//! about the account — when its password was last set — is what the record keeps.
+//! about the account — when its password was last set, and the verifier a credentialed call
+//! is authenticated against ([`crate::state::PasswordVerifier`]) — is what the record
+//! keeps.
 //!
 //! ## Shape of an operation
 //!
@@ -245,9 +247,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .users
             .get_mut(&crate::state::Directory::user_key(&input.user_name))
         {
-            // What the reset changes about the account: its password was last set now.
-            // The password itself is dropped with the request.
+            // What the reset changes about the account: its password was last set now,
+            // and what a credentialed call is authenticated against is the verifier of
+            // the NEW password — so the password this reset set is the one that account's
+            // credentials now carry. The password itself is dropped with the request.
             Some(user) => {
+                user.password = Some(crate::state::PasswordVerifier::of(
+                    &input.user_name,
+                    &input.new_password,
+                ));
                 user.password_last_set = now;
                 let account_name = user.user_name.clone();
                 drop(store);

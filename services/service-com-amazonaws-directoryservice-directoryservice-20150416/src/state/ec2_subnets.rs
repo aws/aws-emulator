@@ -10,6 +10,11 @@
 //! that contract, and the services that already place a resource in a subnet keep this hop
 //! in a module of this name).
 //!
+//! The VPC those subnets sit in is EC2's resource too, and [`vpc_absence`] is the same hop
+//! asked about it: a create that places a directory in a VPC the account does not have is
+//! naming a resource that does not exist, which is not something this service can decide on
+//! its own either.
+//!
 //! What the answer is KEPT as, and what a server's address is counted out of it, is
 //! [`super::directory_network`]; this module only asks.
 
@@ -70,6 +75,55 @@ fn ec2(
         .stalled_stream_protection(::aws_sdk_ec2::config::StalledStreamProtectionConfig::disabled())
         .build();
     Some(::aws_sdk_ec2::Client::from_conf(config))
+}
+
+/// The `DescribeVpcs` filter that selects VPCs BY ID (`vpc-id`, listed by that operation's
+/// own `Filters` documentation).
+///
+/// A filter rather than `VpcIds`: an identifier the account has no VPC for is then an empty
+/// result instead of a failure of the whole call, so "the account does not have this VPC"
+/// and "the owner of VPCs could not be asked" stay two different answers.
+const VPC_ID_FILTER: &str = "vpc-id";
+
+/// Why `vpc_id` cannot hold a directory's servers — that the account has no such VPC in
+/// `region` — or `None` when it has one, and `None` when the owner of VPCs could not be
+/// asked at all.
+///
+/// A VPC is not a resource of this service either, so whether the account has the one a
+/// create names is EC2's answer, asked over the same in-process hop the subnets are resolved
+/// through. Nothing is refused where EC2 could not be asked: that is the same direction
+/// [`resolve_subnet_networks`] takes, so an emulator mounted without the owner of VPCs still
+/// serves a create rather than refusing every one of them.
+///
+/// Called by a create BEFORE it takes this service's store, so no guard is held across the
+/// hop. ONE hop about ONE identifier, whatever the request body carries.
+pub async fn vpc_absence(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    vpc_id: &str,
+) -> Option<&'static str> {
+    let client = ec2(ctx, region)?;
+    let by_id = ::aws_sdk_ec2::types::Filter::builder()
+        .name(VPC_ID_FILTER)
+        .values(vpc_id)
+        .build();
+    match client.describe_vpcs().filters(by_id).send().await {
+        Ok(output) => output
+            .vpcs()
+            .iter()
+            .all(|vpc| vpc.vpc_id() != Some(vpc_id))
+            .then_some(super::INVALID_VPC_ID),
+        Err(error) => {
+            // At `warn` for the same reason the subnet hop logs one: a create served without
+            // the owner of VPCs having been asked is worth seeing, and this IS why.
+            ::tracing::warn!(
+                %region,
+                error = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
+                "the VPC a directory is placed in could not be resolved against EC2"
+            );
+            None
+        }
+    }
 }
 
 /// The network of every subnet of `subnet_ids` the account has in `region`, keyed by

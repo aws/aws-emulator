@@ -215,6 +215,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // it is (`ClientException`), and nothing is refused where EC2 could not be asked.
         // Asked before the store lock is taken: this is an in-process call to another
         // service.
+        // The VPC the replica's subnets sit in is resolved against that same owner first,
+        // in the Region the replication is being added to: a placement naming a VPC the
+        // account does not have there names a resource that does not exist, which is the
+        // resource-semantics failure class (`ClientException`). Nothing is refused where EC2
+        // could not be asked.
+        if let Some(defect) =
+            crate::state::vpc_absence(ctx, &input.region_name, &input.vpc_settings.vpc_id).await
+        {
+            return Err(
+                AddRegionErrorModeled::ClientException(crate::state::refusal(defect)).into(),
+            );
+        }
+
         let subnet_networks = crate::state::resolve_subnet_networks(
             ctx,
             &input.region_name,

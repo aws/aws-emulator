@@ -218,6 +218,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // is taken, so no guard is held across the hop; an identifier the owner reports no
         // subnet for contributes nothing, and the create still stores the placement the
         // request named.
+        //
+        // The VPC those subnets sit in is resolved first, against that same owner: a
+        // placement naming a VPC the account does not have names a resource that does not
+        // exist, which is the resource-semantics failure class (`ClientException`) and not a
+        // malformed identifier. Nothing is refused where EC2 could not be asked.
+        if let Some(requested) = input.vpc_settings.as_ref() {
+            if let Some(defect) =
+                crate::state::vpc_absence(ctx, &primary_region, &requested.vpc_id).await
+            {
+                return Err(CreateDirectoryErrorModeled::ClientException(
+                    crate::state::refusal(defect),
+                )
+                .into());
+            }
+        }
         let subnet_networks = match input.vpc_settings.as_ref() {
             Some(requested) => {
                 crate::state::resolve_subnet_networks(ctx, &primary_region, &requested.subnet_ids)
@@ -355,8 +370,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             update_activities: Vec::new(),
             next_computer_rid: crate::state::FIRST_COMPUTER_RID,
             // The create makes the directory's administrator account, the one its
-            // `Password` is the password of; `ResetUserPassword` is what resets it.
-            users: crate::state::initial_users(crate::state::TYPE_SIMPLE_AD, now),
+            // `Password` is the password of; what is kept of that password is a verifier a
+            // credentialed call can be authenticated against, never the password itself,
+            // and `ResetUserPassword` is what resets it.
+            users: crate::state::initial_users(
+                crate::state::TYPE_SIMPLE_AD,
+                Some(&input.password),
+                now,
+            ),
             // Configurable settings are a Managed Microsoft AD feature (see
             // `crate::state::SETTINGS_DIRECTORY_TYPES`), so a Simple AD directory carries
             // none for `DescribeSettings` to report.

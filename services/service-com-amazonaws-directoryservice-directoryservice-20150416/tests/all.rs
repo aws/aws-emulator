@@ -95,6 +95,8 @@ mod log_subscriptions;
 mod microsoft_ad;
 #[path = "all/pagination_token_refusal.rs"]
 mod pagination_token_refusal;
+#[path = "all/pattern_constraint_refusals.rs"]
+mod pattern_constraint_refusals;
 #[path = "all/polled_lifecycles.rs"]
 mod polled_lifecycles;
 #[path = "all/refusal_classification_rules.rs"]
@@ -117,6 +119,8 @@ mod shared_directories;
 mod sharing_and_tagging_guards;
 #[path = "all/single_sign_on.rs"]
 mod single_sign_on;
+#[path = "all/single_sign_on_credentials.rs"]
+mod single_sign_on_credentials;
 #[path = "all/single_sign_on_disable.rs"]
 mod single_sign_on_disable;
 #[path = "all/snapshot_deletion.rs"]
@@ -147,3 +151,5 @@ mod trusts;
 mod user_passwords;
 #[path = "all/validation_pattern_wording.rs"]
 mod validation_pattern_wording;
+#[path = "all/vpc_resolution.rs"]
+mod vpc_resolution;

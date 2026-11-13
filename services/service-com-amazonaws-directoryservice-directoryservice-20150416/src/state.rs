@@ -64,12 +64,19 @@
 //!
 //! The administrator `Password` `CreateDirectory` is called with is deliberately NOT a
 //! field here: the model marks it `@sensitive`, no operation reports it back, and state
-//! this emulator does not need is state it must not hold.
+//! this emulator does not need is state it must not hold. What a directory does hold for
+//! the account that password belongs to is a VERIFIER of it ([`account_credentials`]),
+//! which is what authenticating a credentialed `EnableSso`/`DisableSso` needs and which no
+//! password can be read back out of.
 
 /// The sentences this service words a refusal with, kept together so two operations
 /// cannot word one failure two ways. Re-exported below, so every one of them is still
 /// reached as `crate::state::<name>`.
 mod diagnostics;
+/// What a directory holds instead of an account's password, and how a credentialed call is
+/// authenticated against it. Re-exported below, so both operations that take a credential
+/// pair reach one decision as `crate::state::<name>`.
+mod account_credentials;
 /// The teardown `DeleteDirectory` starts, and the clock that finishes it. Re-exported
 /// below, so its stages are reached as `crate::state::<name>` like every other stage.
 mod directory_deletion;
@@ -80,13 +87,14 @@ pub mod ec2_subnets;
 pub mod security_log;
 pub mod subnet_zones;
 
+pub use account_credentials::{credential_defect, PasswordVerifier};
 pub use diagnostics::*;
 pub use directory_deletion::{STAGE_DELETED, STAGE_DELETING};
 pub use directory_updates::UpdateActivityRecord;
 
 pub use directory_network::{server_address, SubnetNetwork};
 pub use directory_servers::{os_version_of, MICROSOFT_AD_OS_VERSION};
-pub use ec2_subnets::resolve_subnet_networks;
+pub use ec2_subnets::{resolve_subnet_networks, vpc_absence};
 pub use subnet_zones::single_zone_defect;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -338,6 +346,18 @@ pub fn subnet_pair_defect(subnet_ids: &[String]) -> Option<String> {
 pub const INVALID_SUBNET_IDS: &str =
     "Invalid subnet ID(s). They must correspond to two subnets in different Availability \
      Zones.";
+
+/// The diagnostic Directory Service refuses a placement whose VPC the account does not have
+/// with.
+///
+/// FIXED text, the rule the placement broke: it quotes neither the identifier it rejected nor
+/// the account, so every caller that names a VPC that is not there reads the same sentence —
+/// the wording a recorded refusal of a create against an absent VPC carries.
+/// [`refusal`] appends the request id, once. It is the resource-semantics failure class
+/// (`ClientException`), the class [`subnet_zones::single_zone_defect`] is refused in, and not
+/// the validation refusal a malformed identifier gets: the identifier is well formed and the
+/// resource it names does not exist.
+pub const INVALID_VPC_ID: &str = "Invalid VPC ID.";
 
 /// The number of domain controllers a Managed Microsoft AD directory is created with.
 ///
@@ -1790,7 +1810,17 @@ pub fn administrator_user_name(directory_type: &str) -> Option<&'static str> {
 
 /// The accounts a freshly created directory of `directory_type` holds: the administrator
 /// account its create made ([`administrator_user_name`]), and nothing else.
-pub fn initial_users(directory_type: &str, now: SystemTime) -> BTreeMap<String, UserRecord> {
+///
+/// `administrator_password` is the `Password` that create was called with — the password
+/// the administrator account it makes is created WITH — and what is kept of it is a
+/// verifier a presented password can be checked against ([`PasswordVerifier`]), never the
+/// password. A create that makes no account of its own (an AD Connector, whose accounts
+/// live in the self-managed directory it connects to) passes `None` and holds nothing.
+pub fn initial_users(
+    directory_type: &str,
+    administrator_password: Option<&str>,
+    now: SystemTime,
+) -> BTreeMap<String, UserRecord> {
     let mut users = BTreeMap::new();
     if let Some(administrator) = administrator_user_name(directory_type) {
         users.insert(
@@ -1798,6 +1828,8 @@ pub fn initial_users(directory_type: &str, now: SystemTime) -> BTreeMap<String, 
             UserRecord {
                 user_name: administrator.to_string(),
                 administrator: true,
+                password: administrator_password
+                    .map(|password| PasswordVerifier::of(administrator, password)),
                 password_last_set: now,
             },
         );
@@ -1810,8 +1842,11 @@ pub fn initial_users(directory_type: &str, now: SystemTime) -> BTreeMap<String, 
 ///
 /// The password itself is deliberately NOT a field: `CreateDirectoryRequest$Password` and
 /// `ResetUserPasswordRequest$NewPassword` are both `@sensitive`, no operation reports
-/// either back, and state this emulator does not need is state it must not hold. When the
-/// password was last set IS held, because that is what a reset changes about the account.
+/// either back, and state this emulator does not need is state it must not hold. What IS
+/// held is a [`PasswordVerifier`] — what the account's password was set to can be CHECKED,
+/// which is what authenticating a credentialed call needs, and cannot be read back out —
+/// and when that password was last set, because that is what a reset changes about the
+/// account.
 #[derive(Debug, Clone)]
 pub struct UserRecord {
     /// The account name, spelled the way the account was created with it — the spelling a
@@ -1819,6 +1854,10 @@ pub struct UserRecord {
     pub user_name: String,
     /// Whether this is the directory's own administrative account.
     pub administrator: bool,
+    /// What this account's password was last set TO, as a verifier that admits it and
+    /// discloses nothing ([`PasswordVerifier`]); `None` for an account this store holds no
+    /// password for at all, which no credential pair can then authenticate as.
+    pub password: Option<PasswordVerifier>,
     /// When this account's password was last set: at the create that made the account,
     /// and at every `ResetUserPassword` since.
     pub password_last_set: SystemTime,

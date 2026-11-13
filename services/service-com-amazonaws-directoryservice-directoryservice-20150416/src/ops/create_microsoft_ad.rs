@@ -230,6 +230,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(invalid_parameter(defect));
         }
 
+        // The VPC those subnets sit in is resolved against that same owner first: a
+        // placement naming a VPC the account does not have names a resource that does not
+        // exist, which is the resource-semantics failure class (`ClientException`) and not a
+        // malformed identifier. Nothing is refused where EC2 could not be asked.
+        if let Some(defect) = crate::state::vpc_absence(
+            ctx,
+            &crate::state::region_from_request(ctx.parts()),
+            &input.vpc_settings.vpc_id,
+        )
+        .await
+        {
+            return Err(
+                CreateMicrosoftADErrorModeled::ClientException(crate::state::refusal(defect))
+                    .into(),
+            );
+        }
+
         // The other half of that rule: two DIFFERENT subnets still have to be in two
         // different zones, which only the service that owns subnets can answer. WHERE the
         // directory's servers go is resolved once, here, and the answer serves both the
@@ -386,8 +403,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             update_activities: Vec::new(),
             next_computer_rid: crate::state::FIRST_COMPUTER_RID,
             // The create makes the directory's administrator account, the one its
-            // `Password` is the password of; `ResetUserPassword` is what resets it.
-            users: crate::state::initial_users(crate::state::TYPE_MICROSOFT_AD, now),
+            // `Password` is the password of; what is kept of that password is a verifier a
+            // credentialed call can be authenticated against, never the password itself,
+            // and `ResetUserPassword` is what resets it.
+            users: crate::state::initial_users(
+                crate::state::TYPE_MICROSOFT_AD,
+                Some(&input.password),
+                now,
+            ),
             // A Managed Microsoft AD directory carries the configurable settings this
             // service publishes, each at its default value until `UpdateSettings`
             // requests another; `DescribeSettings` reports them.

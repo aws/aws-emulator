@@ -15,14 +15,15 @@
 //!
 //! One precondition stands between a resolved directory and the flag:
 //!
-//! * `UserName`/`Password` are an ALTERNATE directory account's credentials, which the
-//!   service authenticates against the directory itself before it acts on its behalf.
-//!   This emulator holds no directory account credentials at all — the administrator
-//!   password `CreateDirectory` is called with is deliberately not stored, and no
-//!   operation of this service reports or verifies one — so an alternate account can
-//!   never be authenticated and a request that supplies one is refused with the modelled
-//!   `AuthenticationFailedException`. A request that supplies neither member asks the
-//!   service to act as its own service account, which needs no authentication.
+//! * `UserName`/`Password` are a directory account's credentials, which the service
+//!   authenticates against the directory itself before it acts on that account's behalf. A
+//!   pair the directory holds — an account of its own, presented with the password that
+//!   account's password was set to — is admitted; one it does not hold is refused with the
+//!   modelled `AuthenticationFailedException`, which is the class for credentials the
+//!   directory does not accept. The decision is `crate::state::credential_defect`, shared
+//!   with `EnableSso` so the two cannot authenticate differently; neither member is stored,
+//!   logged or reported back. A request that supplies neither member asks the service to act
+//!   as its own service account, which needs no authentication.
 //!
 //! Nothing else is required of the directory. Unlike `EnableSso`, which needs the access
 //! URL an alias provides, turning the switch OFF asks the directory to stop signing users
@@ -199,19 +200,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 ))
             })?;
 
-        // `UserName`/`Password` name an ALTERNATE directory account, which has to be
-        // authenticated against the directory before this service acts on its behalf,
-        // and this emulator holds no directory account credentials to authenticate one
-        // against — see this module's documentation. Neither member is stored, logged or
-        // reported back, and the refusal is the class `EnableSso` answers for the same
-        // pair.
+        // `UserName`/`Password` name a directory account to act on behalf of, which has to
+        // be authenticated against the directory before this service acts for it. The
+        // decision is the shared one, so a disable and an enable admit exactly the same
+        // pairs; neither member is stored, logged or reported back.
         if input.user_name.is_some() || input.password.is_some() {
-            return Err(
-                DisableSsoErrorModeled::AuthenticationFailedException(crate::state::refusal(
-                    crate::state::AUTHENTICATION_FAILED,
-                ))
-                .into(),
-            );
+            if let Some(defect) = crate::state::credential_defect(
+                directory,
+                input.user_name.as_deref(),
+                input.password.as_deref(),
+            ) {
+                return Err(
+                    DisableSsoErrorModeled::AuthenticationFailedException(crate::state::refusal(
+                        defect,
+                    ))
+                    .into(),
+                );
+            }
         }
 
         // Whether the switch was on or off, the directory is left with it off: asking for

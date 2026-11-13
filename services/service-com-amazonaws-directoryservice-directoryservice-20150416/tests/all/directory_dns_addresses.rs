@@ -25,6 +25,7 @@
 use std::collections::BTreeSet;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use ipnet::Ipv4Net;
 use serde_json::{json, Value};
@@ -33,7 +34,7 @@ use smithy_server_runtime::{EmbeddedEmulator, MultiServiceRouter};
 
 use crate::ad_connector::connect_directory;
 use crate::directory_lifecycle::{
-    create_directory, descriptions, ok, string, PASSWORD, PAST_ONE_SPAN, REGION, STAGE_ACTIVE,
+    create_directory, descriptions, ok, string, PASSWORD, REGION, STAGE_ACTIVE,
 };
 use crate::microsoft_ad::create_microsoft_ad;
 
@@ -55,24 +56,112 @@ const CUSTOMER_DNS_IPS: [&str; 2] = ["10.7.0.10", "10.7.1.10"];
 /// reaches the create's resolution and resolves to nothing.
 const ABSENT_SUBNET: &str = "subnet-00000000deadbeef0";
 
+/// How long a polled state may take to settle before a case fails: far longer than any span
+/// this service publishes, and well inside what a client's waiter allows.
+const SETTLE_DEADLINE: Duration = Duration::from_secs(20);
+
+/// How often one of the waits below asks again.
+const POLL_INTERVAL: Duration = Duration::from_millis(25);
+
+/// Wait until `DescribeDirectories` reports `directory_id` in service, the way a client with
+/// a waiter does: ask, and ask again until the stage chain the create owes has settled or a
+/// generous deadline passes.
+async fn in_service(router: &MultiServiceRouter, directory_id: &str, case: &str) {
+    let started = Instant::now();
+    loop {
+        let described = describe_one(router, directory_id, case).await;
+        let stage = string(&described, "Stage", case);
+        if stage == STAGE_ACTIVE {
+            return;
+        }
+        assert!(
+            started.elapsed() < SETTLE_DEADLINE,
+            "case {case:?}: expected {directory_id} to report itself in service within \
+             {SETTLE_DEADLINE:?}, last observed stage {stage:?}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// Wait until the directory reports `expected` DNS addresses — the servers a create placed or
+/// a resize added come up on the clock, so a client reads the settled set by asking again —
+/// and return them.
+async fn dns_addresses_settling_at(
+    router: &MultiServiceRouter,
+    directory_id: &str,
+    expected: usize,
+    case: &str,
+) -> Vec<String> {
+    let started = Instant::now();
+    loop {
+        let described = describe_one(router, directory_id, case).await;
+        let addresses = dns_ip_addrs(&described, case);
+        if addresses.len() == expected {
+            return addresses;
+        }
+        assert!(
+            started.elapsed() < SETTLE_DEADLINE,
+            "case {case:?}: expected {expected} DNS address(es) within {SETTLE_DEADLINE:?}, last \
+             observed {addresses:?}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// The status a domain controller that is in service reports: the `Active` value of the
+/// modelled `DomainControllerStatus` enum.
+const CONTROLLER_ACTIVE: &str = "Active";
+
+/// Wait until a resize has RUN: `expected` controllers, every one of them in service. A
+/// controller with a transition still owed is a resize still running — the operation's own
+/// documentation says another update cannot be made during one — so this is the condition a
+/// client waits for before asking for the next number.
+async fn resize_settled(
+    router: &MultiServiceRouter,
+    directory_id: &str,
+    expected: usize,
+    case: &str,
+) {
+    let started = Instant::now();
+    loop {
+        let listed = controllers(router, directory_id, case).await;
+        let settled = listed.len() == expected
+            && listed
+                .iter()
+                .all(|controller| controller["Status"] == json!(CONTROLLER_ACTIVE));
+        if settled {
+            return;
+        }
+        assert!(
+            started.elapsed() < SETTLE_DEADLINE,
+            "case {case:?}: expected {expected} controller(s) in service within \
+             {SETTLE_DEADLINE:?}, last observed {listed:?}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
 /// One subnet the account HAS, as EC2 — the service that owns subnets — reports it.
 ///
 /// Nothing here is written by this suite: the identifier, the block and the zone are all
 /// read back from the owner, which is also where the service under test resolves them.
 #[derive(Debug, Clone)]
-struct AccountSubnet {
-    id: String,
+pub(crate) struct AccountSubnet {
+    pub(crate) id: String,
     cidr: String,
     zone: String,
 }
 
 /// The emulator one case runs against: this service and EC2 on one engine, plus the subnets
 /// the account has.
-struct Network {
-    router: MultiServiceRouter,
+pub(crate) struct Network {
+    pub(crate) router: MultiServiceRouter,
+    /// The VPC `ec2:CreateVpc` minted, the one the account really holds: a create that names
+    /// another is naming a VPC the owner of VPCs reports nothing for.
+    pub(crate) vpc: String,
     /// The subnets `ec2:CreateSubnet` minted in a VPC of the client's own, in the order
     /// [`CLIENT_SUBNET_BLOCKS`] names their blocks.
-    client: Vec<AccountSubnet>,
+    pub(crate) client: Vec<AccountSubnet>,
     /// The subnets EC2 materialises for the account's default VPC in this Region, in zone
     /// order — blocks this suite never writes.
     default: Vec<AccountSubnet>,
@@ -98,7 +187,10 @@ const ZONES: [&str; 4] = ["us-east-1a", "us-east-1b", "us-east-1c", "us-east-1a"
 
 /// Stand this service up beside EC2 on one engine and build the account's network through
 /// EC2's own API.
-async fn network() -> Network {
+///
+/// Shared with the sibling suite that needs the OWNER of VPCs and subnets mounted beside this
+/// service (`crate::vpc_resolution`), rather than stood up a second time there.
+pub(crate) async fn network() -> Network {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     // The tests exercise the services, not SigV4: requests carry a credential scope so the
@@ -169,6 +261,7 @@ async fn network() -> Network {
 
     Network {
         router,
+        vpc,
         client,
         default,
     }
@@ -291,13 +384,14 @@ async fn controllers(router: &MultiServiceRouter, directory_id: &str, case: &str
         .clone()
 }
 
-/// A `CreateMicrosoftAD` body placing a directory in `subnets`.
-fn microsoft_ad_in(name: &str, subnets: &[AccountSubnet]) -> Value {
+/// A `CreateMicrosoftAD` body placing a directory in `subnets` of the VPC `vpc` — the one
+/// the account really holds, which the create resolves against the owner of VPCs.
+fn microsoft_ad_in(name: &str, vpc: &str, subnets: &[AccountSubnet]) -> Value {
     json!({
         "Name": name,
         "Password": PASSWORD,
         "VpcSettings": {
-            "VpcId": "vpc-0a1b2c3d",
+            "VpcId": vpc,
             "SubnetIds": subnets.iter().map(|subnet| subnet.id.clone()).collect::<Vec<_>>(),
         }
     })
@@ -335,8 +429,11 @@ async fn a_microsoft_ad_serves_one_dns_address_per_chosen_subnet_inside_its_bloc
 
     for (index, (case, subnets)) in rows.iter().enumerate() {
         let name = format!("dns{index}.example.com");
-        let directory_id = create_microsoft_ad(router, microsoft_ad_in(&name, subnets), case).await;
-        tokio::time::sleep(PAST_ONE_SPAN).await;
+        let directory_id =
+            create_microsoft_ad(router, microsoft_ad_in(&name, &network.vpc, subnets), case).await;
+        // The servers a create places come up on the clock, so the description is read once
+        // the directory reports itself in service rather than after a fixed wait.
+        in_service(router, &directory_id, case).await;
 
         let described = describe_one(router, &directory_id, case).await;
         assert_eq!(
@@ -445,12 +542,14 @@ async fn a_simple_ad_serves_one_dns_address_per_chosen_subnet_inside_its_block()
             "Password": PASSWORD,
             "Size": "Small",
             "VpcSettings": {
-                "VpcId": "vpc-0a1b2c3d",
+                "VpcId": &network.vpc,
                 "SubnetIds": subnets.iter().map(|subnet| subnet.id.clone()).collect::<Vec<_>>(),
             }
         });
         let directory_id = create_directory(router, body, case).await;
-        tokio::time::sleep(PAST_ONE_SPAN).await;
+        // The servers a create places come up on the clock, so the description is read once
+        // the directory reports itself in service rather than after a fixed wait.
+        in_service(router, &directory_id, case).await;
 
         let described = describe_one(router, &directory_id, case).await;
         let addresses = dns_ip_addrs(&described, case);
@@ -475,9 +574,15 @@ async fn every_domain_controller_of_a_directory_adds_its_own_dns_address() {
     let case = "a resize past the subnet count";
     let subnets = vec![network.client[0].clone(), network.client[2].clone()];
 
-    let directory_id =
-        create_microsoft_ad(router, microsoft_ad_in("resize.example.com", &subnets), case).await;
-    tokio::time::sleep(PAST_ONE_SPAN).await;
+    let directory_id = create_microsoft_ad(
+        router,
+        microsoft_ad_in("resize.example.com", &network.vpc, &subnets),
+        case,
+    )
+    .await;
+    // The servers a create places come up on the clock, so the addresses are read once the
+    // directory reports itself in service rather than after a fixed wait.
+    in_service(router, &directory_id, case).await;
     let created = dns_ip_addrs(&describe_one(router, &directory_id, case).await, case);
 
     // The rows walk the server count up past the number of subnets, so a subnet has to carry
@@ -491,14 +596,17 @@ async fn every_domain_controller_of_a_directory_adds_its_own_dns_address() {
             case,
         )
         .await;
-        tokio::time::sleep(PAST_ONE_SPAN).await;
 
+        let wanted = usize::try_from(desired).unwrap_or_default();
+        // The resize has to RUN before the next number can be asked for, and before the
+        // addresses it adds are the settled set.
+        resize_settled(router, &directory_id, wanted, case).await;
+        let addresses = dns_addresses_settling_at(router, &directory_id, wanted, case).await;
         let described = describe_one(router, &directory_id, case).await;
-        let addresses = dns_ip_addrs(&described, case);
         assert_eq!(
             i64::try_from(addresses.len()).unwrap_or_default(),
             desired,
-            "case {case:?}: expected one DNS address per server, got {addresses:?}"
+            "case {case:?}: expected one DNS address per server, got {addresses:?} ({described})"
         );
         assert_eq!(
             addresses.iter().collect::<BTreeSet<_>>().len(),
@@ -543,14 +651,16 @@ async fn an_ad_connector_serves_the_self_managed_directorys_dns_servers() {
         "Password": "Sim2Real-Connect-Pw1!",
         "Size": "Small",
         "ConnectSettings": {
-            "VpcId": "vpc-0a1b2c3d",
+            "VpcId": &network.vpc,
             "SubnetIds": subnets.iter().map(|subnet| subnet.id.clone()).collect::<Vec<_>>(),
             "CustomerDnsIps": CUSTOMER_DNS_IPS,
             "CustomerUserName": "ad-connector-svc",
         }
     });
     let directory_id = connect_directory(router, body, case).await;
-    tokio::time::sleep(PAST_ONE_SPAN).await;
+    // The connector's servers come up on the clock, so the description is read once the
+    // connector reports itself in service rather than after a fixed wait.
+    in_service(router, &directory_id, case).await;
 
     let described = describe_one(router, &directory_id, case).await;
     assert_eq!(
@@ -613,11 +723,13 @@ async fn a_directory_placed_in_subnets_the_account_does_not_have_serves_no_addre
         let body = json!({
             "Name": format!("absent{index}.example.com"),
             "Password": PASSWORD,
-            "VpcSettings": { "VpcId": "vpc-0a1b2c3d", "SubnetIds": subnet_ids }
+            "VpcSettings": { "VpcId": &network.vpc, "SubnetIds": subnet_ids }
         });
         let answer = ok(router, "CreateMicrosoftAD", body, case).await;
         let directory_id = string(&answer, "DirectoryId", case);
-        tokio::time::sleep(PAST_ONE_SPAN).await;
+        // The servers a create places come up on the clock, so the description is read once
+        // the directory reports itself in service rather than after a fixed wait.
+        in_service(router, &directory_id, case).await;
 
         let described = describe_one(router, &directory_id, case).await;
         // The placement the request named is still reported back as the request spelled it:
