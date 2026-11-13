@@ -95,7 +95,15 @@ pub(crate) fn router() -> MultiServiceRouter {
 }
 
 /// One awsQuery call to IAM, answered with the HTTP status and the XML body.
-async fn iam(router: &MultiServiceRouter, action: &str, params: &[(&str, &str)]) -> (u16, String) {
+///
+/// `pub(crate)`: the suite that pins the replication role a write is copied under
+/// ([`super::replication_role_write_paths`]) makes its role and its trust policy through
+/// IAM's own API over this same harness rather than standing up a second one.
+pub(crate) async fn iam(
+    router: &MultiServiceRouter,
+    action: &str,
+    params: &[(&str, &str)],
+) -> (u16, String) {
     let mut body = format!("Action={action}&Version=2010-05-08");
     for (name, value) in params {
         body.push('&');

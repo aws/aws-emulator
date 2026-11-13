@@ -373,6 +373,8 @@ mod refused_change_publishes_no_event;
 mod rename_object_query_parameter;
 #[path = "all/replication_role_trust.rs"]
 mod replication_role_trust;
+#[path = "all/replication_role_write_paths.rs"]
+mod replication_role_write_paths;
 #[path = "all/reserved_tag_key_prefix.rs"]
 mod reserved_tag_key_prefix;
 #[path = "all/role_session_object_authorization.rs"]

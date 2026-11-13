@@ -50,7 +50,12 @@ const MAX_PART_NUMBER: i32 = 10_000;
 
 /// `POST /<bucket>/<key>?uploads` — `CreateMultipartUpload`, answering the upload id the
 /// store minted.
-async fn initiate(router: &MultiServiceRouter, name: &str, key: &str) -> String {
+///
+/// `pub(crate)`, like [`upload_part`] and [`complete`] beside it: the suite that pins the
+/// replication role a write is copied under
+/// ([`super::replication_role_write_paths`]) drives one of its write paths through this
+/// loop rather than keeping a second copy of it.
+pub(crate) async fn initiate(router: &MultiServiceRouter, name: &str, key: &str) -> String {
     initiate_with(router, name, key, &[]).await
 }
 
@@ -84,7 +89,7 @@ async fn initiate_with(
 
 /// `PUT /<bucket>/<key>?partNumber=<n>&uploadId=<id>` — `UploadPart`, answering the entity
 /// tag the store recorded for the part.
-async fn upload_part(
+pub(crate) async fn upload_part(
     router: &MultiServiceRouter,
     name: &str,
     key: &str,
@@ -114,7 +119,7 @@ async fn upload_part(
 
 /// `POST /<bucket>/<key>?uploadId=<id>` — `CompleteMultipartUpload`, with the parts list as
 /// the payload.
-async fn complete(
+pub(crate) async fn complete(
     router: &MultiServiceRouter,
     name: &str,
     key: &str,
