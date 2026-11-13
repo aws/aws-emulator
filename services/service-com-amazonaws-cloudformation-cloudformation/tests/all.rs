@@ -335,6 +335,8 @@ mod rds_generated_resource_names;
 mod rds_proxy_stack_resources;
 #[path = "all/rds_published_name_identity.rs"]
 mod rds_published_name_identity;
+#[path = "all/rds_refused_resource_sdk_diagnostic.rs"]
+mod rds_refused_resource_sdk_diagnostic;
 #[path = "all/rds_stack_resources.rs"]
 mod rds_stack_resources;
 #[path = "all/refusals_name_their_modelled_taxonomy.rs"]

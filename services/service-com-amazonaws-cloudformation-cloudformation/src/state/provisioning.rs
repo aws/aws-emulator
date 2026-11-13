@@ -3883,6 +3883,16 @@ const SDK_SERVICE_NAMES: &[(&str, &str, SdkDiagnostic)] = &[
     ("es", "OpenSearch", SdkDiagnostic::Attempts),
     ("iam", "Iam", SdkDiagnostic::Attempts),
     ("lambda", "Lambda", SdkDiagnostic::Attempts),
+    // Amazon RDS's SDK names it by that model's own `sdkId` (`RDS`) written as one word with
+    // a capital initial, and words the bare ENVELOPE — the service, the status and the call's
+    // id, with nothing after it — as the recorded `ResourceStatusReason` of an
+    // `AWS::RDS::DBSubnetGroup` whose subnets cover too few Availability Zones carries it (in
+    // the behavioral corpus, check
+    // `cloudformation__ec2__rds.cfn-rds-db-subnet-group-single-az-rejected-negative`, whose
+    // reason reads `Resource handler returned message: "<the service's sentence> (Service:
+    // Rds, Status Code: 400, Request ID: …)" (RequestToken: …, HandlerErrorCode:
+    // InvalidRequest)`).
+    ("rds", "Rds", SdkDiagnostic::Envelope),
     // Amazon Route 53's SDK names it by its `sdkId` without the space, exactly as
     // Application Auto Scaling's does (`smithy_query(query="service_info")`: `sdkId:
     // "Route 53"`). The shape is the ATTEMPT-counting one, as the recorded
@@ -3896,7 +3906,7 @@ const SDK_SERVICE_NAMES: &[(&str, &str, SdkDiagnostic)] = &[
 /// The SHAPE of the parenthesis an SDK appends to the message of the exception it raises for
 /// a refused call.
 ///
-/// Both name the service and the HTTP status; what differs is what else they carry and how
+/// Each names the service and the HTTP status; what differs is what else they carry and how
 /// the parts are separated. Which of them a called service's SDK words is that SDK's, and it
 /// is not derivable from the service, so it is RECORDED per service in
 /// [`SDK_SERVICE_NAMES`] — each entry citing where that shape was read from — and a service
