@@ -31,3 +31,50 @@ Actual (emulator): elbv2__lambda.malformed-lambda-target-response-becomes-a-502-
 1. Create an ALB, a target group with TargetType=lambda, and register a function whose handler returns a payload with no statusCode.
 2. Send an HTTP request to the listener.
 3. Expected: 502 Bad Gateway, with the invocation recorded. Observed: the request never resolves within the 60 s budget.
+
+## Resolution
+
+The rule — *a request a load balancer forwards to a `lambda` target group is served by
+INVOKING the registered function, the client is answered from the object that function
+returned only while it satisfies the Lambda-target response contract, and every other
+outcome is the load balancer's OWN HTTP 502 with the payload never passed on, the
+invocation having already happened* — holds on this code base, and now holds under test
+over the one leg a client really uses: a real connection to the address the load balancer
+publishes.
+
+The report was filed against a code base in which an Application Load Balancer published an
+address nothing answered on; since then the load balancer opens a listener of the emulator's
+own and publishes it (`src/service/listener_socket.rs`), and the `forward`-to-`lambda` half
+of the plane invokes the registered function (`src/service/lambda_target.rs`). What was
+missing was coverage of that leg: every suite drove the data plane by dispatching the
+client's request into the router by the published NAME, so the socket, its framing and the
+leg it hands the plane were exercised nowhere, and no suite drove a `lambda` target group on
+the ASSEMBLED service set at all.
+
+Two suites now pin it, each a table over the classes of response the contract refuses (no
+status code, a payload that is no response object, a status outside the HTTP range, a
+response past the size such a target may answer with, a run that raised) beside well-formed
+answers:
+
+* `services/service-com-amazonaws-elasticloadbalancingv2-elasticloadbalancing-v10/tests/all/alb_lambda_target_published_address.rs`
+  — a real TCP connection to the published authority, with the function created through
+  Lambda's own API and run as a session of an execution role IAM holds.
+* `core/router/tests/all/elbv2_lambda_target_published_address.rs` — the same rule on the
+  WHOLE assembled emulator (`build_router`), with the queue, the role and the function
+  deployed by CloudFormation and the data port's published URLs in the form they take in
+  service.
+
+That the function RAN is asserted where this service cannot fake it: the handler reports
+every invocation to an Amazon SQS queue through its own SDK — authorized by the one grant its
+execution role carries — before it decides what to return, and the event it reports carries
+the path the CLIENT asked for.
+
+What the recorded check still cannot get past is the FORM of the published address rather
+than the answer: `LoadBalancer$DNSName` is a `host:port` authority, so a client that composes
+the documented `http://<DNSName>:<listener port>/…` builds an unusable URL. That cause is
+owned by `20261110T220525Z-elbv2-5-net-new-data-plane-causes-dnsname.md`, which closed it as
+a core-listener blocker: the core owns the socket, the interface and the port
+(`vendor/server/src/listeners.rs`, `tcp_plaintext`, which takes no requested port), so a bare
+host that answers on 80/443 needs a listener API that accepts a requested port or a
+per-resource loopback address.
+

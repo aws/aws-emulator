@@ -144,6 +144,12 @@ service-com-amazonaws-s3-amazons3 = { workspace = true }
 # (`service_common::s3_client`): only the generated client is needed, the emulator supplies
 # the transport.
 aws-sdk-s3 = { version = "1", default-features = false }
+# A Lambda target runs as its execution ROLE, so the suite that drives the published address
+# end to end creates that role through IAM's own API and the session the run's SDK calls are
+# signed with is minted by the token service: both are mounted beside this service on the
+# suite's own engine (`tests/all/alb_lambda_target_published_address.rs`). TEST-ONLY.
+service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
+service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true }
 
 [lints]
 workspace = true
