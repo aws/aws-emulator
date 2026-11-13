@@ -173,6 +173,11 @@ http-body-util = "0.1"
 rustls = { workspace = true }
 rustls-pemfile = "2"
 tokio-rustls = "0.26"
+# Draws the identifiers this control plane ASSIGNS (`state::identifier`): an id a record is
+# addressed by is one opaque handle per record, drawn independently rather than derived from
+# how many have been minted. The maintained generator the sibling services in this tree draw
+# their assigned identifiers with, at the same version.
+rand = "0.9"
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

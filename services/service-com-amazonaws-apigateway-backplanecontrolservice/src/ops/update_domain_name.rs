@@ -382,8 +382,8 @@ fn apply_endpoint_type_patch(
 /// the Region's API Gateway endpoint, so the migrated record carries the names of the
 /// endpoint it is served by NOW and none of the one it left. A record moved to a REGIONAL
 /// endpoint publishes the address of the socket this update opened for it (`published`), as
-/// a created one does; otherwise the new endpoint's host label is minted from the store's own
-/// id bijection, as the create mints it, and stored, so every later read reports the same
+/// a created one does; otherwise the new endpoint's host label is drawn by the store's own
+/// identifier mint, as the create mints it, and stored, so every later read reports the same
 /// name. The migration itself is a transition the CLOCK
 /// owes: until it is due the record reports [`DOMAIN_NAME_UPDATING`], and
 /// `AVAILABLE` after it.

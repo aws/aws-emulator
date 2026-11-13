@@ -502,8 +502,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let domain_name_id = private.then(|| store.mint_id());
         let key = domain_name_key(&input.domain_name, domain_name_id.as_deref());
 
-        // The host label of the endpoint name, from the store's own id bijection: it is
-        // assigned once and stored, so every later read reports the same endpoint. Minted
+        // The host label of the endpoint name, drawn by the store's own identifier mint: it
+        // is assigned once and stored, so every later read reports the same endpoint. Minted
         // only for a record that HAS a public endpoint alias — an edge-optimized or a
         // regional one.
         let endpoint_id = if private {

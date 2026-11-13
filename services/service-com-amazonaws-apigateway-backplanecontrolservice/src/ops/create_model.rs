@@ -294,8 +294,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let mut store = state.lock();
         // Every refusal is decided BEFORE an identifier is minted, so a refused create
-        // leaves the store's counters where they were as well as its records: the id and
-        // the creation rank are taken only once this request is known to store a model.
+        // leaves the store's records and its creation-rank counter where they were: the id
+        // is drawn and the rank taken only once this request is known to store a model.
         // Checking and writing go through ONE lookup of the API, so what was checked and
         // what is written can never be two different records.
         {

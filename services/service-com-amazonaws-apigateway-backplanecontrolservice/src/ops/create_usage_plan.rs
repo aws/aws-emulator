@@ -340,9 +340,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             sequence,
         };
 
-        // `id` comes from the store's own id bijection, so it names no existing plan and
-        // this inserts. Reading the entry back means what the caller is told is what a
-        // later `GetUsagePlan` will report.
+        // `id` is freshly drawn by the store's own identifier mint, so it names no existing
+        // plan and this inserts. Reading the entry back means what the caller is told is
+        // what a later `GetUsagePlan` will report.
         store.usage_plans.insert(id.clone(), entry);
         let stored = store
             .usage_plans

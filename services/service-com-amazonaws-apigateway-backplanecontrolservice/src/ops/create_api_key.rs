@@ -396,9 +396,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             sequence,
         };
 
-        // `id` comes from the store's own id bijection, so it names no existing key and
-        // this inserts. Reading the entry back means what the caller is told is what a
-        // later `GetApiKey` will report.
+        // `id` is freshly drawn by the store's own identifier mint, so it names no existing
+        // key and this inserts. Reading the entry back means what the caller is told is what
+        // a later `GetApiKey` will report.
         store.api_keys.insert(id.clone(), entry);
         let stored = store
             .api_keys

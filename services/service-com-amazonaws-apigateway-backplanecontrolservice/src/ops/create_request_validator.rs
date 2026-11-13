@@ -191,9 +191,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let mut store = state.lock();
-        // The id and the creation rank come off the store's own counters, so they are
-        // taken before the API is borrowed for writing; a refused request simply leaves
-        // the counters advanced, which no caller can observe.
+        // The id is drawn and the creation rank comes off the store's own counter, so both
+        // are taken before the API is borrowed for writing; a refused request simply draws
+        // an id nothing is stored under and leaves the rank counter advanced, neither of
+        // which any caller can observe.
         let id = store.mint_id();
         let sequence = store.next_sequence();
         // ONE lookup of the API, for both the bound and the insert, so what is checked

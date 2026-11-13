@@ -592,3 +592,8 @@ mod stage_authorizer_deny_blocks_the_backend;
 // document class that refused the call.
 #[path = "all/stage_invoke_denial_sentence.rs"]
 mod stage_invoke_denial_sentence;
+// Appended for the reason the note above gives: WHERE a minted identifier comes from — that
+// each one is drawn for the record it names rather than from the count of records created
+// before it, and that the record keeps it.
+#[path = "all/minted_identifier_independence.rs"]
+mod minted_identifier_independence;

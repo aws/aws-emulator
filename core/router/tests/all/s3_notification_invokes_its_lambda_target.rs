@@ -61,6 +61,41 @@ const LOOK_INTERVAL: Duration = Duration::from_millis(100);
 /// past the span a delivered row takes to leave its marker.
 const QUIET_WINDOW: Duration = Duration::from_secs(8);
 
+/// The stack the emulator's own boot path gives the thread that assembles the router
+/// (`core/router/src/main.rs`), kept at or above the size `boot_serve.rs` uses — the sibling
+/// `s3_notification_pipeline_lifecycle` suite drives itself on the same size for the same
+/// reason. Assembling every service and then dispatching a CHAIN of in-process calls through
+/// it — CloudFormation into S3, S3's delivery into Lambda, the handler's own SDK call back
+/// into S3 — nests more future than the default stack of a test thread holds.
+const BOOT_STACK_SIZE: usize = 64 * 1024 * 1024;
+
+/// Run `body` to completion on a thread with [`BOOT_STACK_SIZE`], on the current-thread
+/// runtime this suite's deliveries are made on: a notification delivery is a task of its own,
+/// so it runs on this same thread and needs the same depth.
+///
+/// One copy for both cases of this suite, so neither can drift onto a thread the chain it
+/// drives does not fit on.
+fn driven<Body>(name: &'static str, body: Body)
+where
+    Body: FnOnce() -> ::std::pin::Pin<Box<dyn ::std::future::Future<Output = ()>>>
+        + Send
+        + 'static,
+{
+    ::std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(BOOT_STACK_SIZE)
+        .spawn(move || {
+            let runtime = ::tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build a current-thread runtime");
+            runtime.block_on(body());
+        })
+        .expect("spawn the sized thread")
+        .join()
+        .expect("the suite thread runs to completion");
+}
+
 /// The body every row writes, which the handler reads back off the object the event named.
 const OBJECT_BODY: &str = "the object the event named";
 
@@ -542,8 +577,16 @@ const ROWS: &[Row] = &[
 
 /// Every row: the write the configuration names reaches the function, whose handler leaves a
 /// marker carrying what the event said — and a write the filter excludes leaves none.
-#[tokio::test]
-async fn an_object_write_runs_the_function_the_bucket_notifies() {
+///
+/// Driven on a sized thread; see [`driven`].
+#[test]
+fn an_object_write_runs_the_function_the_bucket_notifies() {
+    driven("s3-notification-invokes-its-lambda-target", || {
+        Box::pin(an_object_write_runs_the_function_the_bucket_notifies_body())
+    });
+}
+
+async fn an_object_write_runs_the_function_the_bucket_notifies_body() {
     let router = build_router();
     let markers = "notify-markers";
     create_bucket(&router, "the shared wiring", markers).await;
@@ -591,8 +634,16 @@ async fn an_object_write_runs_the_function_the_bucket_notifies() {
 /// The DEPLOYED form of the same wiring: a stack that declares the bucket, its
 /// `NotificationConfiguration`, the function, the role and the grant reaches
 /// `CREATE_COMPLETE`, and a write into the declared bucket runs the declared function.
-#[tokio::test]
-async fn a_deployed_notification_configuration_runs_its_function() {
+///
+/// Driven on a sized thread; see [`driven`].
+#[test]
+fn a_deployed_notification_configuration_runs_its_function() {
+    driven("s3-deployed-notification-runs-its-function", || {
+        Box::pin(a_deployed_notification_configuration_runs_its_function_body())
+    });
+}
+
+async fn a_deployed_notification_configuration_runs_its_function_body() {
     let case = "a stack-declared notification configuration";
     let router = build_router();
     let markers = "deployed-markers";

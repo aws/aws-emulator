@@ -111,8 +111,6 @@ pub struct ComAmazonawsApigatewayBackplanecontrolserviceState {
     /// which is what a delete of the domain name (or a migration to another endpoint type)
     /// does.
     pub custom_domain_endpoints: BTreeMap<String, CustomDomainEndpoint>,
-    /// Drives [`ComAmazonawsApigatewayBackplanecontrolserviceState::mint_id`]; see there for how an id is derived from it.
-    pub id_seed: u64,
     /// Drives [`ComAmazonawsApigatewayBackplanecontrolserviceState::next_sequence`]: the creation rank stamped on each
     /// record so a listing can report creation order rather than id order.
     pub sequence_counter: u64,
@@ -1719,7 +1717,7 @@ pub const DOMAIN_NAME_UPDATING: &str = "UPDATING";
 /// The `distributionDomainName` of an edge-optimized custom domain name: the CloudFront
 /// distribution API Gateway puts in front of it, which is "the domain name of the Amazon
 /// CloudFront distribution associated with this custom domain name" the caller points a
-/// DNS record at. `id` is minted from the store's own id bijection and stored on the
+/// DNS record at. `id` is drawn by the store's own identifier mint and stored on the
 /// record, so the name is assigned once and reported unchanged by every later read.
 pub fn edge_distribution_domain_name(id: &str) -> String {
     format!("d{id}.cloudfront.net")
@@ -2150,55 +2148,6 @@ pub fn no_such_sdk_type(id: &str) -> String {
     format!("No SDK generator for '{id}'")
 }
 
-/// The characters an API Gateway id is built from: lowercase alphanumerics.
-const ID_ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
-
-/// The length of an API Gateway id that names a record of the ACCOUNT — a `RestApi`, an
-/// `ApiKey`, a `UsagePlan`, an `Authorizer`, a `RequestValidator` — or the ROOT RESOURCE a
-/// REST API is created with, which is minted with the API: ten characters.
-const ID_LEN: u32 = 10;
-
-/// The length of an API Gateway id that names a `Resource`, a `Model` or a `Deployment`
-/// created INSIDE one REST API: six characters, which is the width those records' ids are
-/// recorded at and the width a client that length-bounds one expects.
-const SUB_RESOURCE_ID_LEN: u32 = 6;
-
-/// The bijection's constant term, so the first id minted is not a run of leading `a`s.
-const ID_OFFSET: u128 = 734_291;
-
-/// The stride `seed -> seed * STRIDE + [`ID_OFFSET`] (mod 36^len)` advances by, for an id
-/// of `len` characters.
-///
-/// It is coprime with `36^len = 2^(2·len) · 3^(2·len)` — odd, and not a multiple of three
-/// — which makes the mapping a BIJECTION: distinct seeds can never mint the same id. It is
-/// also close to `36^len / φ`, so consecutive seeds land far apart across the WHOLE space
-/// and every character of a minted id varies, rather than the leading ones staying at the
-/// alphabet's first letter for every seed a smaller stride cannot reach past.
-fn id_stride(space: u128) -> u128 {
-    // `| 1` makes it odd, and a single step of two clears the one remaining case, a
-    // multiple of three (which stepping by two cannot land on again while staying odd).
-    // The multiplication precedes the division, so the stride is 0.618 of the space at
-    // every width rather than truncating to nothing for a narrow one.
-    let mut stride = (space * 618 / 1000) | 1;
-    if stride.is_multiple_of(3) {
-        stride += 2;
-    }
-    stride
-}
-
-/// The id a `seed` renders as, in `len` lowercase alphanumeric characters; see
-/// [`id_stride`] for the bijection and [`ComAmazonawsApigatewayBackplanecontrolserviceState::mint_id`] for the counter.
-fn rendered_id(seed: u64, len: u32) -> String {
-    let space = 36u128.pow(len);
-    let mut scrambled = (u128::from(seed) * id_stride(space) + ID_OFFSET) % space;
-    let mut id = Vec::with_capacity(len as usize);
-    for _ in 0..len {
-        let digit = usize::try_from(scrambled % 36).unwrap_or(0);
-        id.push(ID_ALPHABET[digit]);
-        scrambled /= 36;
-    }
-    String::from_utf8(id).unwrap_or_default()
-}
 
 /// API Gateway's documented default page size: "The maximum number of returned results
 /// per page. The default value is 25 and the maximum value is 500."
@@ -2867,20 +2816,18 @@ impl ComAmazonawsApigatewayBackplanecontrolserviceState {
     /// `RestApi`, an `ApiKey`, a `UsagePlan`, and the root resource a `RestApi` is created
     /// with — ten lowercase alphanumeric characters.
     ///
-    /// The id is derived from a counter through the bijection described on
-    /// [`id_stride`], so it is unpredictable-looking yet never repeats until the counter
-    /// has walked the whole space.
+    /// Every id is DRAWN character by character ([`identifier::drawn_id`]), so it is a
+    /// function of nothing a caller can see: not of this record, not of how many records
+    /// were created before it. The caller keeps it by storing it with the record.
     pub fn mint_id(&mut self) -> String {
-        self.id_seed = self.id_seed.wrapping_add(1);
-        rendered_id(self.id_seed, ID_LEN)
+        identifier::drawn_id(identifier::ACCOUNT_RECORD_ID_LEN)
     }
 
     /// Mint a fresh id of the shape API Gateway assigns a record created INSIDE one REST
     /// API — a `Resource`, a `Model`, a `Deployment` — six lowercase alphanumeric
-    /// characters; see [`Self::mint_id`] for how an id is derived.
+    /// characters; see [`Self::mint_id`] for how an id is drawn.
     pub fn mint_sub_resource_id(&mut self) -> String {
-        self.id_seed = self.id_seed.wrapping_add(1);
-        rendered_id(self.id_seed, SUB_RESOURCE_ID_LEN)
+        identifier::drawn_id(identifier::SUB_RESOURCE_ID_LEN)
     }
 
     /// The next creation rank. Stamped on a record when it is created, so a listing
@@ -4381,3 +4328,7 @@ pub use client_certificates::*;
 /// `crate::state::…`.
 mod custom_domain_endpoint;
 pub use custom_domain_endpoint::*;
+
+/// How the identifiers this service ASSIGNS are drawn, and the width each kind of record's
+/// id is spelled at; see that module.
+pub mod identifier;
