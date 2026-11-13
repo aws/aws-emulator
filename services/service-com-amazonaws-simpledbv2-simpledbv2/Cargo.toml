@@ -8,6 +8,10 @@ build = "build.rs"
 
 [dependencies]
 engine = { workspace = true }
+# `aws_validation_refusal`: the shared wording of a boundary constraint refusal on a
+# JSON protocol, so this service carries no copy of its own of how AWS quotes a
+# `@pattern` requirement (`src/service.rs`, `override_refusal`).
+service-common = { path = "../common" }
 smithy-macros = { workspace = true }
 aws-smithy-schema = { workspace = true }
 aws-smithy-schema-server = { workspace = true }

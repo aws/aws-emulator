@@ -15,5 +15,7 @@
 mod domain_existence;
 #[path = "all/domain_export_lifecycle.rs"]
 mod domain_export_lifecycle;
+#[path = "all/refusal_message_wording.rs"]
+mod refusal_message_wording;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;

@@ -187,7 +187,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 access(ctx, "refused-no-such-domain", 0);
                 return Err(ListExportsErrorModeled::NoSuchDomainException(
                     NoSuchDomainException {
-                        message: crate::state::NO_SUCH_DOMAIN_MESSAGE.to_string(),
+                        message: crate::state::refusal_message::no_such_resource(
+                            crate::state::refusal_message::DOMAIN_RESOURCE,
+                        ),
                     },
                 )
                 .into());
@@ -198,7 +200,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // which filter it got there under. A token this service did not issue — one
         // naming a position the store no longer has, or one issued under a different
         // filter, which would continue a stream this caller never started — is the
-        // modelled `InvalidNextTokenException`; its own text is not echoed back.
+        // modelled `InvalidNextTokenException`, stated with the sentence that shape's
+        // own documentation gives it; its own text is not echoed back.
         let start = match input.next_token.as_deref() {
             Some(token) => {
                 crate::state::decode_page_token(token, store.export_count(), domain_filter)
@@ -206,10 +209,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         access(ctx, "refused-invalid-next-token", 0);
                         ListExportsErrorModeled::InvalidNextTokenException(
                             InvalidNextTokenException {
-                                message:
-                                    "nextToken is not a pagination token issued by ListExports \
-                                     for this request"
-                                        .to_string(),
+                                message: crate::state::refusal_message::INVALID_NEXT_TOKEN_MESSAGE
+                                    .to_string(),
                             },
                         )
                     })?

@@ -97,16 +97,25 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
 
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {
         // The centralized walk calls this on a framework-level refusal (an absent
-        // required member, or a value outside a declared bound) to let this
-        // service reword it. Returning `None` keeps the framework's default
-        // wording. To state a refusal the way the emulated service states it,
-        // replace this body with a `match refusal { .. }` that returns
-        // `Some(Refused { code, message })` for the cases you reword and `None`
-        // for the rest. Replace BOTH the code and the message: a client branches
-        // on the code, so a message without its matching code is worse than
-        // leaving both alone.
-        let _ = refusal;
-        None
+        // required member, or a value outside a declared `@length`, `@range` or
+        // `@pattern`) to let this service word it its own way.
+        //
+        // This service answers the very `ValidationException` envelope the framework
+        // already renders — same 400, same code, same `N validation error(s)
+        // detected:` prefix, same member paths, same echoed value, same requirement
+        // clauses — with ONE rendering of its own: a `@pattern` requirement is quoted
+        // as the expression a value has to satisfy, WITHOUT the `^` / `$` the model
+        // wraps it in to turn Smithy's find into a whole-value match. The anchoring is
+        // how the model spells that match, not part of the character grammar the
+        // service publishes, so a client that lifts the expression out of the message
+        // and re-validates locally gets the expression the service advertises. The
+        // CHECK is untouched: it still runs the model's pattern exactly as written.
+        //
+        // That rendering is shared by every service on a JSON protocol (this one
+        // answers restJson1), so it lives in `service-common` rather than being
+        // spelled here, and it reaches every `@pattern` of every operation this
+        // service models rather than the one a recording happened to break.
+        ::service_common::validation_message::aws_validation_refusal(refusal)
     }
 
     fn override_routing_error(

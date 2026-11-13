@@ -18,6 +18,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::ops::types::ExportSummary;
 
+/// The sentences this service refuses a request with, stated in ONE place so no two
+/// handlers word the same refusal differently.
+pub mod refusal_message;
+
 /// The ARN namespace, endpoint prefix and sigv4 signing name of this service — all
 /// three are `sdb`, from the model's `aws.api#service` / `aws.auth#sigv4` traits.
 pub const ARN_SERVICE: &str = "sdb";
@@ -35,17 +39,9 @@ pub const DEFAULT_REGION: &str = "us-east-1";
 /// operations — `GetExport`, `ListExports` and `StartDomainExport` — so NOTHING on
 /// this wire creates a domain. An account nobody declared a domain for therefore has
 /// none, which is exactly what `StartDomainExport` and a `ListExports` domain filter
-/// answer [`NO_SUCH_DOMAIN_MESSAGE`] for. Nothing is invented: unset means no domains
-/// at all.
+/// answer the modelled `NoSuchDomainException` for. Nothing is invented: unset means
+/// no domains at all.
 pub const EXISTING_DOMAINS_ENV: &str = "SIMPLEDB_EXISTING_DOMAINS";
-
-/// The `message` every `NoSuchDomainException` this service raises carries.
-///
-/// It is the sentence the shape's own documentation states — source:
-/// `smithy_query(query="shape",shape="NoSuchDomainException")` → doc "The specified
-/// domain does not exist." — so the wording is the model's rather than this
-/// emulator's, and it echoes no caller-supplied value back.
-pub const NO_SUCH_DOMAIN_MESSAGE: &str = "The specified domain does not exist.";
 
 /// The domain names `setting` declares: comma-separated, surrounding space trimmed.
 ///
@@ -460,7 +456,8 @@ pub fn is_export_arn(candidate: &str) -> bool {
     keyword == EXPORT_ARN_RESOURCE_KEYWORD && !id.is_empty()
 }
 
-/// Why a `domainName` cannot be exported, or `None` when it can.
+/// Why a `domainName` cannot be exported — the `message` of the refusal it earns — or
+/// `None` when it can.
 ///
 /// `DomainName` carries only `@length(min: 1)`, so the centralized walk admits any
 /// text; the rule enforced here is the one the minted ARN imposes. An `exportArn` is
@@ -469,26 +466,43 @@ pub fn is_export_arn(candidate: &str) -> bool {
 /// character — which would make the minted ARN name a different resource, or none —
 /// cannot be exported, and nor can one long enough to push the ARN past
 /// [`MAX_EXPORT_ARN_LEN`].
+///
+/// Both refusals are stated as the service states an invalid parameter
+/// ([`refusal_message::invalid_parameter_value`]), which names the parameter and its
+/// requirement and echoes nothing the caller sent — not even the offending character.
 pub fn domain_name_rejection(region: &str, domain_name: &str) -> Option<String> {
-    if let Some(offending) = domain_name
+    if domain_name
         .chars()
-        .find(|c| *c == '/' || *c == ':' || c.is_control())
+        .any(|c| c == '/' || c == ':' || c.is_control())
     {
-        return Some(format!(
-            "domainName may not contain {offending:?}: it would name a different export \
-             resource in the exportArn this service mints"
+        return Some(refusal_message::invalid_parameter_value(
+            DOMAIN_NAME_MEMBER,
+            DOMAIN_NAME_CHARACTER_REQUIREMENT,
         ));
     }
     // The id segment is a hyphenated UUID, whose length is fixed, so the ARN's length
     // is known before one is minted.
     let arn_len = export_arn(region, domain_name, &"0".repeat(UUID_LEN)).len();
     (arn_len > MAX_EXPORT_ARN_LEN).then(|| {
-        format!(
-            "domainName is too long: the export ARN it names would be {arn_len} characters, \
-             more than the {MAX_EXPORT_ARN_LEN} an exportArn may carry"
+        refusal_message::invalid_parameter_value(
+            DOMAIN_NAME_MEMBER,
+            &format!(
+                "be short enough for the export ARN naming it to stay within the \
+                 {MAX_EXPORT_ARN_LEN} characters an exportArn may carry"
+            ),
         )
     })
 }
+
+/// The modelled member a [`domain_name_rejection`] faults, as the model names it.
+const DOMAIN_NAME_MEMBER: &str = "domainName";
+
+/// The requirement a `domainName` has to meet for the minted `exportArn` to name the
+/// export and nothing else. Stated as the characters it may not carry rather than as
+/// the one the request carried.
+const DOMAIN_NAME_CHARACTER_REQUIREMENT: &str =
+    "be free of '/', ':' and ASCII control characters, each of which would make the \
+     exportArn this service mints name a different export resource";
 
 /// Characters in the hyphenated RFC 4122 rendering of an identifier, which is what
 /// an export id and a generated client token are.

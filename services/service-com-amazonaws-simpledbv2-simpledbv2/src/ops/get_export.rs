@@ -176,10 +176,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             access(ctx, "refused-invalid-parameter-value");
             return Err(GetExportErrorModeled::InvalidParameterValueException(
                 InvalidParameterValueException {
-                    message: format!(
-                        "exportArn '{}' is not an ARN naming a {} export",
-                        input.export_arn,
-                        crate::state::ARN_SERVICE
+                    message: crate::state::refusal_message::invalid_parameter_value(
+                        EXPORT_ARN_MEMBER,
+                        crate::state::refusal_message::EXPORT_ARN_REQUIREMENT,
                     ),
                 },
             )
@@ -197,7 +196,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             access(ctx, "refused-no-such-export");
             return Err(GetExportErrorModeled::NoSuchExportException(
                 NoSuchExportException {
-                    message: format!("no export exists with ARN '{}'", input.export_arn),
+                    message: crate::state::refusal_message::no_such_resource(
+                        crate::state::refusal_message::EXPORT_RESOURCE,
+                    ),
                 },
             )
             .into());
@@ -225,6 +226,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })
     }
 }
+
+/// The modelled member this operation's own refusal faults, as the model names it.
+const EXPORT_ARN_MEMBER: &str = "exportArn";
 
 /// Access record for this reporting operation: who asked and how it ended.
 ///

@@ -191,9 +191,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 audit(ctx, "refused-invalid-parameter-value", None);
                 return Err(StartDomainExportErrorModeled::InvalidParameterValueException(
                     InvalidParameterValueException {
-                        message: format!(
-                            "s3SseAlgorithm must be one of [{}], got '{supplied}'",
-                            S3_SSE_ALGORITHM_VALUES.join(", ")
+                        message: crate::state::refusal_message::invalid_parameter_value(
+                            S3_SSE_ALGORITHM_MEMBER,
+                            &format!("be one of [{}]", S3_SSE_ALGORITHM_VALUES.join(", ")),
                         ),
                     },
                 )
@@ -204,7 +204,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `s3SseKmsKeyId` "is only expected with KMS as the S3 SSE algorithm", so
         // naming a key with any other algorithm — or with none — is the parameter
         // combination the model's own `InvalidParameterCombinationException` exists
-        // for.
+        // for, stated with the sentence that shape's own documentation gives it.
         if input.s3_sse_kms_key_id.is_some()
             && input.s3_sse_algorithm.as_deref() != Some(SSE_ALGORITHM_KMS)
         {
@@ -212,13 +212,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(
                 StartDomainExportErrorModeled::InvalidParameterCombinationException(
                     InvalidParameterCombinationException {
-                        message: format!(
-                            "s3SseKmsKeyId is only expected with s3SseAlgorithm {SSE_ALGORITHM_KMS}, \
-                             but the request named {}",
-                            input
-                                .s3_sse_algorithm
-                                .as_deref()
-                                .unwrap_or("no s3SseAlgorithm")
+                        message: crate::state::refusal_message::parameter_only_provided_when(
+                            S3_SSE_KMS_KEY_ID_MEMBER,
+                            &format!("{S3_SSE_ALGORITHM_IN_PROSE} is {SSE_ALGORITHM_KMS}"),
                         ),
                     },
                 )
@@ -258,7 +254,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             audit(ctx, "refused-no-such-domain", None);
             return Err(StartDomainExportErrorModeled::NoSuchDomainException(
                 NoSuchDomainException {
-                    message: crate::state::NO_SUCH_DOMAIN_MESSAGE.to_string(),
+                    message: crate::state::refusal_message::no_such_resource(
+                        crate::state::refusal_message::DOMAIN_RESOURCE,
+                    ),
                 },
             )
             .into());
@@ -297,10 +295,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             audit(ctx, "refused-conflict", Some(&existing.export_arn));
             return Err(StartDomainExportErrorModeled::ConflictException(
                 ConflictException {
-                    message: format!(
-                        "clientToken '{client_token}' was already used to start an export with \
-                         different parameters"
-                    ),
+                    message: crate::state::refusal_message::CONFLICT_MESSAGE.to_string(),
                 },
             )
             .into());
@@ -352,10 +347,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             audit(ctx, "refused-quota-exceeded", None);
             return Err(StartDomainExportErrorModeled::NumberExportsLimitExceeded(
                 NumberExportsLimitExceeded {
-                    message: format!(
-                        "this account already holds the maximum of {} exports",
-                        crate::state::MAX_EXPORTS
-                    ),
+                    message: crate::state::refusal_message::EXPORTS_LIMIT_MESSAGE.to_string(),
                 },
             )
             .into());
@@ -368,6 +360,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
 /// The `S3SseAlgorithm` value that `s3SseKmsKeyId` is documented to accompany.
 const SSE_ALGORITHM_KMS: &str = "KMS";
+
+/// The modelled member the enum backstop above faults, as the model names it.
+const S3_SSE_ALGORITHM_MEMBER: &str = "s3SseAlgorithm";
+
+/// The modelled member the combination rule above faults, as the model names it.
+const S3_SSE_KMS_KEY_ID_MEMBER: &str = "s3SseKmsKeyId";
+
+/// How the service's own prose spells the `s3SseAlgorithm` member when a sentence
+/// states a condition on it, rather than faulting it: the server-side-encryption
+/// algorithm for S3, hyphenated the way the documentation writes it.
+const S3_SSE_ALGORITHM_IN_PROSE: &str = "S3-SSE Algorithm";
 
 /// Audit record for this state-changing operation: who asked, what changed, and how
 /// it ended.

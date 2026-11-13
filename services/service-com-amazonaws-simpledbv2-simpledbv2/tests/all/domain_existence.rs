@@ -6,8 +6,9 @@
 //! The rule under test: an export operation that names a SimpleDB domain resolves that
 //! name against the account's domain registry before it mints or enumerates anything,
 //! and a name the registry does not hold is the modelled `NoSuchDomainException`
-//! (client error, HTTP 400, `x-amzn-errortype: NoSuchDomainException`, the message the
-//! shape's own documentation states) rather than a success. That covers
+//! (client error, HTTP 400, `x-amzn-errortype: NoSuchDomainException`, the sentence
+//! this service states for a resource that does not exist) rather than a success. That
+//! covers
 //! `StartDomainExport`'s required `domainName` and `ListExports`' optional `domainName`
 //! filter; `GetExport` names no domain (it is keyed by `exportArn`) and models only
 //! `NoSuchExportException`, so it is not part of the rule.
@@ -25,9 +26,12 @@ use std::time::SystemTime;
 
 use serde_json::{json, Value};
 
+use service_com_amazonaws_simpledbv2_simpledbv2::state::refusal_message::{
+    no_such_resource, DOMAIN_RESOURCE,
+};
 use service_com_amazonaws_simpledbv2_simpledbv2::state::{
     parse_existing_domains, ComAmazonawsSimpledbv2Simpledbv2State, StoredExport, IN_PROGRESS_SPAN,
-    MAX_EXPORT_ARN_LEN, NO_SUCH_DOMAIN_MESSAGE, STATUS_PENDING, SUCCEEDED_SPAN,
+    MAX_EXPORT_ARN_LEN, STATUS_PENDING, SUCCEEDED_SPAN,
 };
 
 use crate::domain_export_lifecycle::{
@@ -87,6 +91,7 @@ fn header_error_shape(header: Option<&str>) -> String {
 /// Assert that `(status, header, body)` is the modelled `NoSuchDomainException`.
 fn assert_no_such_domain(case: &str, answered: (u16, Option<String>, Value)) {
     let (status, error_type, body) = answered;
+    let documented = no_such_resource(DOMAIN_RESOURCE);
     assert_eq!(
         status, 400,
         "case {case}: expected HTTP 400, got {status} with {body:?}"
@@ -104,9 +109,9 @@ fn assert_no_such_domain(case: &str, answered: (u16, Option<String>, Value)) {
     );
     assert_eq!(
         member(&body, "message").as_deref(),
-        Some(NO_SUCH_DOMAIN_MESSAGE),
-        "case {case}: expected the message the shape documents ({NO_SUCH_DOMAIN_MESSAGE:?}), \
-         got {body:?}"
+        Some(documented.as_str()),
+        "case {case}: expected the sentence the service states for a domain that does not \
+         exist ({documented:?}), got {body:?}"
     );
 }
 
