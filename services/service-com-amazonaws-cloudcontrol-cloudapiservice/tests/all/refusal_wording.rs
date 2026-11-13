@@ -215,8 +215,8 @@ async fn a_not_found_refusal_carries_the_owning_handlers_whole_verdict() {
     ];
 
     for (case, type_name, identifier, detail) in rows {
-        // Every resource-level operation refuses the same way: the verdict belongs to
-        // the type's handler, not to the operation that asked it.
+        // Both SYNCHRONOUS resource-level operations refuse the same way: the verdict
+        // belongs to the type's handler, not to the operation that asked it.
         let answers = [
             ("GetResource", emulator.get(type_name, identifier).await),
             (
@@ -224,10 +224,6 @@ async fn a_not_found_refusal_carries_the_owning_handlers_whole_verdict() {
                 emulator
                     .update(type_name, identifier, &inert_patch(), None)
                     .await,
-            ),
-            (
-                "DeleteResource",
-                emulator.delete(type_name, identifier).await,
             ),
         ];
         let mut tokens = Vec::new();
@@ -261,6 +257,30 @@ async fn a_not_found_refusal_carries_the_owning_handlers_whole_verdict() {
             tokens.len(),
             distinct,
             "case {case:?}: each refusal must name its own failing request, got {tokens:?}"
+        );
+
+        // The delete is ASYNCHRONOUS, so the same verdict is reported on the request
+        // record it minted: the handler's own diagnostic in `StatusMessage` and the
+        // handler error code in `ErrorCode`, each in its own member.
+        let case = format!("{case} (DeleteResource)");
+        let (status, body) = emulator.delete(type_name, identifier).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected HTTP 200, got {status} with body {body:?}"
+        );
+        let failed = emulator
+            .terminal(&text(&progress(&body), "RequestToken"))
+            .await;
+        assert_eq!(
+            text(&failed, "OperationStatus"),
+            STATUS_FAILED,
+            "case {case:?}: the delete of an absent resource must fail, got {failed:?}"
+        );
+        detail.check(&text(&failed, "StatusMessage"), &case);
+        assert_eq!(
+            text(&failed, "ErrorCode"),
+            "NotFound",
+            "case {case:?}: unexpected handler error code in {failed:?}"
         );
     }
 }

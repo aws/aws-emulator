@@ -470,7 +470,8 @@ async fn a_client_token_replays_its_request_and_refuses_a_different_one() {
 async fn unknown_identifiers_and_tokens_are_the_modelled_refusals() {
     let emulator = Emulator::new();
 
-    // Nothing has been created, so every operation that names a resource refuses.
+    // Nothing has been created, so every SYNCHRONOUS operation that names a resource
+    // refuses.
     let rows = [
         ("GetResource", emulator.get(TABLE, "absent-table").await),
         (
@@ -478,10 +479,6 @@ async fn unknown_identifiers_and_tokens_are_the_modelled_refusals() {
             emulator
                 .update(TABLE, "absent-table", &inert_patch(), None)
                 .await,
-        ),
-        (
-            "DeleteResource",
-            emulator.delete(TABLE, "absent-table").await,
         ),
     ];
     for (case, (status, body)) in rows {
@@ -501,6 +498,37 @@ async fn unknown_identifiers_and_tokens_are_the_modelled_refusals() {
             case,
         );
     }
+
+    // The delete is asynchronous: it is ADMITTED and the same verdict arrives on the
+    // request record it minted, which is the token a caller polls.
+    let (status, body) = emulator.delete(TABLE, "absent-table").await;
+    assert_eq!(
+        status, 200,
+        "DeleteResource of an absent resource: expected HTTP 200, got {status} with body \
+         {body:?}"
+    );
+    let accepted = progress(&body);
+    assert_eq!(
+        text(&accepted, "Identifier"),
+        "absent-table",
+        "DeleteResource must report the identifier the request carried, got {accepted:?}"
+    );
+    let failed = emulator.terminal(&text(&accepted, "RequestToken")).await;
+    assert_eq!(
+        text(&failed, "OperationStatus"),
+        STATUS_FAILED,
+        "DeleteResource of an absent resource must fail, got {failed:?}"
+    );
+    assert_eq!(
+        text(&failed, "StatusMessage"),
+        table_not_found("absent-table"),
+        "DeleteResource of an absent resource: unexpected handler diagnostic"
+    );
+    assert_eq!(
+        text(&failed, "ErrorCode"),
+        "NotFound",
+        "DeleteResource of an absent resource: unexpected handler error code in {failed:?}"
+    );
 
     // A request token this service never minted names no request at all, and the refusal
     // names the token it was handed.

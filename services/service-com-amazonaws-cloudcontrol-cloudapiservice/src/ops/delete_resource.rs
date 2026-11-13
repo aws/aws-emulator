@@ -315,32 +315,36 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if let Some(holding) = store.in_flight_request(&input.type_name, &input.identifier) {
             return Err(contention(&input.identifier, holding));
         }
-        let Some(resolved) = store.resolve(&native, &region, &input.type_name, &input.identifier)
-        else {
-            // A not-found is the OWNING handler's verdict, so the refusal carries that
-            // handler's whole answer: its diagnostic, the handler error code it failed
-            // with and the token of the invocation that failed.
-            return Err(DeleteResourceErrorModeled::ResourceNotFoundException(
-                ResourceNotFoundException {
-                    message: Some(crate::state::resource_not_found_refusal(
-                        &input.type_name,
-                        &input.identifier,
-                    )),
-                },
-            )
-            .into());
-        };
-        // And asked again under the identifier the RESOURCE answers to: a type whose
-        // owning service assigns that identifier resolves more than one reference to one
-        // resource, and the operation already running on it was recorded under that one
-        // identifier ([`crate::state::ComAmazonawsCloudcontrolCloudapiserviceState::in_flight_request_on_either`]).
-        if let Some((contended, holding)) = store.in_flight_request_on_either(
-            &input.type_name,
-            &input.identifier,
-            &resolved.identifier,
-        ) {
-            return Err(contention(contended, holding));
+        // A delete is ASYNCHRONOUS: "after you have initiated a resource deletion request,
+        // you can monitor the progress of your request by calling
+        // GetResourceRequestStatus using the RequestToken of the ProgressEvent returned by
+        // DeleteResource". Whether the resource is there at all is the owning HANDLER's
+        // verdict, which the request record reports when the work falls due — so a
+        // syntactically valid request is admitted either way, and a request naming a
+        // resource nothing holds is answered with the event the caller polls rather than
+        // refused at the front door.
+        let resolved = store.resolve(&native, &region, &input.type_name, &input.identifier);
+        // Where the resource resolves, the guard is asked again under the identifier the
+        // RESOURCE answers to: a type whose owning service assigns that identifier
+        // resolves more than one reference to one resource, and the operation already
+        // running on it was recorded under that one identifier
+        // ([`crate::state::ComAmazonawsCloudcontrolCloudapiserviceState::in_flight_request_on_either`]).
+        if let Some(resolved) = resolved.as_ref() {
+            if let Some((contended, holding)) = store.in_flight_request_on_either(
+                &input.type_name,
+                &input.identifier,
+                &resolved.identifier,
+            ) {
+                return Err(contention(contended, holding));
+            }
         }
+        // The request acts on the resource's OWN primary identifier where one resolves, so
+        // the event it reports names the resource the way every other answer does, and on
+        // the identifier the request carried where nothing resolves — which is what the
+        // handler's not-found verdict is then about.
+        let acting_on = resolved
+            .map(|resolved| resolved.identifier)
+            .unwrap_or_else(|| input.identifier.clone());
 
         let Some(request_token) = store.allocate_request_token() else {
             return Err(DeleteResourceErrorModeled::ServiceInternalErrorException(
@@ -356,9 +360,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let record = crate::state::RequestRecord::accepted(
             request_token.clone(),
             input.type_name.clone(),
-            // The request is recorded against the resource's OWN primary identifier, so the
-            // event it reports names the resource the way every other answer does.
-            Some(resolved.identifier),
+            Some(acting_on),
             crate::state::OPERATION_DELETE,
             now,
             crate::state::ResourceEffect::Delete {

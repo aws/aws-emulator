@@ -137,7 +137,8 @@ async fn a_type_a_provider_stands_behind_is_served() {
     // must report: for a type whose resources live in the OWNING service's store
     // (`AWS::Logs::LogGroup` is a CloudWatch Logs log group) that is the model that service
     // holds, read-only properties included.
-    let topic_arn = engine::emulator_arn("sns", super::emulator::SIGNING_REGION, "provisionable-topic");
+    let topic_arn =
+        engine::emulator_arn("sns", super::emulator::SIGNING_REGION, "provisionable-topic");
     let rows = [
         (
             "AWS::SNS::Topic",

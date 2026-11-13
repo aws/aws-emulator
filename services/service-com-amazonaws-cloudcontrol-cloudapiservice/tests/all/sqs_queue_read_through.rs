@@ -9,7 +9,9 @@
 //! those resources were provisioned using Cloud Control API" (`GetResource`) — so an
 //! `AWS::SQS::Queue` reads as the queue Amazon SQS holds, a write through Cloud Control
 //! API is a write to that queue, and an identifier Amazon SQS holds no queue for is
-//! refused with the modelled `ResourceNotFoundException` (HTTP 404).**
+//! refused with the modelled `ResourceNotFoundException` (HTTP 404) by the synchronous
+//! operations, and failed with the handler's `NotFound` verdict by the asynchronous
+//! delete.**
 //!
 //! The rows differ along what the rule generalises over: which API the queue came into
 //! being through, which attributes it carries and in which form (a count, a flag, a
@@ -829,15 +831,12 @@ async fn an_identifier_no_queue_answers_to_is_refused_as_not_found() {
     ];
     let patch = json!([{ "op": "add", "path": "/VisibilityTimeout", "value": 30 }]);
     for (case, identifier) in identifiers {
+        // The two SYNCHRONOUS resource operations refuse the identifier outright.
         let answers = [
             ("GetResource", emulator.get(QUEUE, &identifier).await),
             (
                 "UpdateResource",
                 emulator.update(QUEUE, &identifier, &patch, None).await,
-            ),
-            (
-                "DeleteResource",
-                emulator.delete(QUEUE, &identifier).await,
             ),
         ];
         for (operation, (status, body)) in answers {
@@ -852,5 +851,28 @@ async fn an_identifier_no_queue_answers_to_is_refused_as_not_found() {
                 code(&body)
             );
         }
+
+        // A delete is asynchronous, so the same identifier is ADMITTED and the owning
+        // handler's not-found verdict surfaces on the request record it minted.
+        let (status, body) = emulator.delete(QUEUE, &identifier).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?} (DeleteResource): expected HTTP 200, got {status} with body \
+             {body:?}"
+        );
+        let failed = emulator
+            .terminal(&text(&progress(&body), "RequestToken"))
+            .await;
+        assert_eq!(
+            text(&failed, "OperationStatus"),
+            STATUS_FAILED,
+            "case {case:?} (DeleteResource): the delete of an absent queue must fail, got \
+             {failed:?}"
+        );
+        assert_eq!(
+            text(&failed, "ErrorCode"),
+            "NotFound",
+            "case {case:?} (DeleteResource): unexpected handler error code in {failed:?}"
+        );
     }
 }

@@ -70,7 +70,7 @@ async fn the_primary_identifier_is_the_value_of_the_types_own_identifier_propert
             name: "the type's own ARN property",
             type_name: "AWS::StepFunctions::StateMachine",
             desired: json!({
-                "StateMachineArn": "arn:aws:states:us-east-1:123456789012:stateMachine:orders",
+                "Arn": "arn:aws:states:us-east-1:123456789012:stateMachine:orders",
                 "StateMachineType": "STANDARD",
             }),
             expected: Some("arn:aws:states:us-east-1:123456789012:stateMachine:orders"),

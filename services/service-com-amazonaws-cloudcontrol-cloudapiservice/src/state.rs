@@ -29,8 +29,10 @@
 //! resource can live.
 
 pub mod native;
+mod primary_identifiers;
 mod request_listing;
 
+pub use primary_identifiers::handler_rendered_identifier;
 pub use request_listing::{
     decode_request_page_token, request_page_token, RequestFilter, RequestPosition,
     INVALID_NEXT_TOKEN,
@@ -622,7 +624,14 @@ impl ComAmazonawsCloudcontrolCloudapiserviceState {
                 Ok(Some(rendered_properties(&stored.properties)))
             }
             ResourceEffect::Delete { .. } => {
-                self.resources.remove(&key);
+                // A delete is accepted before the resource is looked for — the existence
+                // of the resource is the owning HANDLER's verdict, which is reported when
+                // the work falls due — so a delete that finds nothing to remove FAILS
+                // with that handler's not-found rather than reporting a removal nothing
+                // performed.
+                self.resources
+                    .remove(&key)
+                    .ok_or(EffectFailure::ResourceGone)?;
                 Ok(None)
             }
         }
@@ -1778,16 +1787,13 @@ const HANDLER_ALREADY_EXISTS_DIAGNOSTICS: &[(&str, &str)] = &[(
 const HANDLER_NOT_FOUND_STATUS: u16 = 404;
 
 /// How every operation of this service words "a resource with the specified identifier
-/// can't be found", with the type the request named and the resource's PRIMARY IDENTIFIER
-/// as a resource of that type is addressed by it.
-///
-/// A type whose `primaryIdentifier` names ONE property is addressed — and so named here —
-/// by that property's value alone, which is the identifier a request carries and the one
-/// every answer of this service reports. (Only a COMPOSITE primary identifier, whose value
-/// no single string spells, is named as the registry's pointer map; every type this
-/// emulator stands behind declares one property.)
+/// can't be found", with the type the request named and the resource as the owning
+/// handler names it ([`handler_rendered_identifier`]).
 pub fn resource_not_found_message(type_name: &str, identifier: &str) -> String {
-    format!("Resource of type '{type_name}' with identifier '{identifier}' was not found.")
+    format!(
+        "Resource of type '{type_name}' with identifier '{}' was not found.",
+        handler_rendered_identifier(type_name, identifier)
+    )
 }
 
 /// The diagnostic the handler that owns `type_name` states for a resource it cannot
@@ -1825,7 +1831,11 @@ fn owning_not_found_detail(type_name: &str, identifier: &str) -> Option<String> 
 }
 
 /// How a create words "the resource with the name requested already exists", naming the
-/// resource the same way a not-found does ([`resource_not_found_message`]).
+/// resource by the identifier the request carried.
+///
+/// The recorded refusals this sentence is held to name the resource that way for every
+/// type, so no type renders a schema map here ([`handler_rendered_identifier`] is about the
+/// not-found diagnostic the recordings DO cover).
 pub fn already_exists_message(type_name: &str, identifier: &str) -> String {
     format!("Resource of type '{type_name}' with identifier '{identifier}' already exists.")
 }
