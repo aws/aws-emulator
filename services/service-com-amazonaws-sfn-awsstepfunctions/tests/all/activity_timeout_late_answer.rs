@@ -32,7 +32,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use service_com_amazonaws_sfn_awsstepfunctions::state::{asl::TIMEOUT_ERROR, observability};
+use service_com_amazonaws_sfn_awsstepfunctions::state::{
+    asl::TIMEOUT_ERROR, observability, task_timed_out_message,
+};
 
 use crate::activity_tasks::activity_definition;
 use crate::state_machine_lifecycle::{error_code, string};
@@ -57,10 +59,6 @@ const LATE_OUTPUT: &str = r#"{"late":true}"#;
 /// The error a worker's own failure report carries, for the row whose failure arrives
 /// too late to be recorded.
 const LATE_ERROR: &str = "WorkerFailed";
-
-/// The fixed text the refusal of a reply to a closed task carries, before the value it
-/// quotes: the condition `TaskTimedOut` names, as the service words that error class.
-const TASK_TIMED_OUT_TEXT: &str = "Task Timed Out";
 
 /// When the worker that claimed the task answers it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,7 +139,12 @@ fn reply_request(operation: &str, token: &str) -> Value {
 }
 
 /// Create an activity that must succeed, and answer its ARN.
-async fn create_activity(metered: &Metered, case: &str, name: &str) -> String {
+///
+/// `pub(crate)`, not private: `tests/all.rs` is this binary's crate root, so the suite
+/// that drives SEVERAL executions through ONE activity's queue
+/// (`crate::bounded_activity_task_outcomes`) reaches these three helpers rather than
+/// carrying a second copy of them.
+pub(crate) async fn create_activity(metered: &Metered, case: &str, name: &str) -> String {
     let created = metered
         .ok(case, "CreateActivity", &json!({ "name": name }))
         .await;
@@ -149,7 +152,12 @@ async fn create_activity(metered: &Metered, case: &str, name: &str) -> String {
 }
 
 /// Start one execution on `input`, and answer its ARN.
-async fn start_execution(metered: &Metered, case: &str, machine: &str, input: &str) -> String {
+pub(crate) async fn start_execution(
+    metered: &Metered,
+    case: &str,
+    machine: &str,
+    input: &str,
+) -> String {
     let started = metered
         .ok(
             case,
@@ -168,7 +176,7 @@ async fn start_execution(metered: &Metered, case: &str, machine: &str, input: &s
 /// the CONDITION rather than for a span of time. A task no worker holds is bounded by
 /// nothing — an activity task's own clock starts when a poll takes it — so however long
 /// this takes, the task a row claims is still there to be claimed.
-async fn claimed(metered: &Metered, case: &str, activity_arn: &str) -> (String, Value) {
+pub(crate) async fn claimed(metered: &Metered, case: &str, activity_arn: &str) -> (String, Value) {
     let began = Instant::now();
     loop {
         let answered = metered
@@ -267,10 +275,10 @@ async fn a_late_answer_is_refused_and_only_the_timed_out_series_move() {
                     "case {case:?}: expected {operation} on the stale token to be refused 400 \
                      TaskTimedOut, got {refused_status} {code} with {refusal}"
                 );
-                // The refusal's wording: the condition's own fixed text, then the
-                // activity the closed task belonged to — which the token itself names,
-                // and so comes from the emulator's state rather than from the request.
-                let message = format!("{TASK_TIMED_OUT_TEXT}: '{activity}'");
+                // The refusal's wording: the one construction every `SendTask*` answers
+                // this condition with, which states the condition and carries nothing of
+                // the request, the token or the store.
+                let message = task_timed_out_message();
                 assert_eq!(
                     refusal.get("message").and_then(Value::as_str),
                     Some(message.as_str()),

@@ -76,7 +76,8 @@ const WORKER: &str = "metered-worker";
 ///
 /// `pub(crate)`, not private: `tests/all.rs` is this binary's crate root, so a suite that
 /// reads the same `AWS/States` series — the activity-timeout hand-off
-/// (`crate::activity_timeout_late_answer`) — drives them through this harness rather
+/// (`crate::activity_timeout_late_answer`) and the shared-queue ledger
+/// (`crate::bounded_activity_task_outcomes`) — drives them through this harness rather
 /// than carrying a second copy of it.
 pub(crate) struct Metered {
     router: MultiServiceRouter,

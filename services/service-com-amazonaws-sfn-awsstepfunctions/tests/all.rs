@@ -39,6 +39,8 @@ mod alias_traffic_split_series;
 mod arn_validation;
 #[path = "all/backup_task_integration.rs"]
 mod backup_task_integration;
+#[path = "all/bounded_activity_task_outcomes.rs"]
+mod bounded_activity_task_outcomes;
 #[path = "all/callback_service_integration.rs"]
 mod callback_service_integration;
 #[path = "all/caller_identity_authorization.rs"]
