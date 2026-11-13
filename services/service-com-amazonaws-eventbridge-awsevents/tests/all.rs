@@ -37,6 +37,8 @@ mod bus_forward_authorization;
 mod bus_forward_failure_accounting;
 #[path = "all/bus_forward_refusal_telemetry.rs"]
 mod bus_forward_refusal_telemetry;
+#[path = "all/bus_policy_deny_precedence.rs"]
+mod bus_policy_deny_precedence;
 #[path = "all/bus_policy_publication_authorization.rs"]
 mod bus_policy_publication_authorization;
 #[path = "all/client_error_wording.rs"]
