@@ -27,12 +27,19 @@ hex = { workspace = true }
 # the account's IAM records, which every `Start*Job` operation resolves `DataAccessRoleArn`
 # through before it records a job.
 service-common = { path = "../common" }
+# The Amazon S3 client an asynchronous job's run reads its input documents with and
+# writes its analysed output back through, over the in-process callback into this same
+# emulator (no network client feature is enabled: the transport is the emulator's own).
+aws-sdk-s3 = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
+# The digest of a start call's parameters, which is what tells a REPEAT of one submission
+# (the same `ClientRequestToken` with the same request) from another submission that
+# reuses its token.
+sha2 = { workspace = true }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
-sha2 = { workspace = true }
 # The AWS SDK for IAM, used by the test harness to CREATE the roles a job's
 # `DataAccessRoleArn` names, over the same in-process callback the handler resolves them
 # through.
@@ -41,6 +48,10 @@ aws-sdk-iam = { version = "1", default-features = false }
 # holds the account's roles, so the resolution can only be driven end to end with it on the
 # same engine. DEV-ONLY: this crate depends on no other service's crate outside its tests.
 service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
+# The owner of the documents an asynchronous job reads and the output it writes, mounted
+# beside this service in the batch-run suite: a job's run calls object storage in process,
+# so a run can only be driven end to end with it on the same engine. DEV-ONLY, as above.
+service-com-amazonaws-s3-amazons3 = { workspace = true }
 
 [lints]
 workspace = true

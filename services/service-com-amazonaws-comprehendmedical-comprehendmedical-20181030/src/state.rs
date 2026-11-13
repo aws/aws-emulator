@@ -9,14 +9,21 @@
 //! implemented today and the ICD-10-CM / RxNorm / SNOMED CT families reuse these
 //! structures when they are implemented.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use ::aws_smithy_types::DateTime;
+use ::sha2::{Digest, Sha256};
 
 use crate::ops::types::{
     ComprehendMedicalAsyncJobFilter, ComprehendMedicalAsyncJobProperties, InputDataConfig,
     OutputDataConfig,
 };
+
+// What a job's RUN does — reading the submitted input documents out of this account's
+// object storage, analysing each one and writing the analysed output back under the
+// submitted output prefix — and what it reports to the record here.
+mod job_run;
+pub use job_run::*;
 
 /// The version this emulator reports for the model behind an asynchronous job.
 /// The model documents the shape of the value ("The version number looks like X.X.X"),
@@ -172,6 +179,11 @@ pub struct AsyncJob {
     pub kms_key: Option<String>,
     pub model_version: String,
     pub client_request_token: Option<String>,
+    /// [`JobSubmission::digest`] of the request this job was created by, so a repeated
+    /// `ClientRequestToken` can be told apart from a repeated REQUEST.
+    pub request_digest: String,
+    /// What is known about this job's run, which is what its terminal status reports.
+    pub run: JobRun,
     /// When a caller asked for the stop, which is what the move to `STOPPED` is due
     /// from. `None` until a stop is requested.
     pub stop_requested_time: Option<DateTime>,
@@ -193,11 +205,64 @@ pub struct JobSubmission {
     pub client_request_token: Option<String>,
 }
 
+impl JobSubmission {
+    /// What makes two start calls the SAME submission, beside the request token they
+    /// carry: every member the caller set on this one, rendered as one string.
+    ///
+    /// `ClientRequestToken` is the model's `@idempotencyToken`, which makes a repeat of
+    /// ONE submission answerable with the job it already created; a request that reuses a
+    /// token for DIFFERENT parameters is another submission, and the model declares no
+    /// error for it, so the two are told apart by this digest.
+    ///
+    /// Every part is length-prefixed and an optional member renders its presence, so no
+    /// two different requests can render alike by splitting their values differently.
+    /// Each structural member is rendered from ITS OWN members, named one by one — never
+    /// through a `Debug` rendering, which is no serialization contract: a derive or model
+    /// change would silently move every digest and turn a second submission into a
+    /// retry.
+    pub fn digest(&self) -> String {
+        let input_data_config = [
+            self.input_data_config.s3_bucket.clone(),
+            rendered(self.input_data_config.s3_key.as_deref()),
+        ]
+        .join("|");
+        let output_data_config = [
+            self.output_data_config.s3_bucket.clone(),
+            rendered(self.output_data_config.s3_key.as_deref()),
+        ]
+        .join("|");
+        let parts = [
+            rendered(self.job_name.as_deref()),
+            input_data_config,
+            output_data_config,
+            self.language_code.clone(),
+            self.data_access_role_arn.clone(),
+            rendered(self.kms_key.as_deref()),
+        ];
+        let mut hasher = Sha256::new();
+        for part in &parts {
+            hasher.update((part.len() as u64).to_be_bytes());
+            hasher.update(part.as_bytes());
+        }
+        hex::encode(hasher.finalize())
+    }
+}
+
+/// An optional value rendered so a present empty string cannot render like an absent
+/// member.
+fn rendered(value: Option<&str>) -> String {
+    match value {
+        Some(value) => format!("present:{value}"),
+        None => "absent".to_string(),
+    }
+}
+
 impl AsyncJob {
     /// The record a start call creates for `job_id`: exactly what the caller asked for,
     /// in the non-terminal status a job AWS has accepted but not finished is reported
     /// in, with the instant its metadata expires already fixed.
-    pub fn submitted(job_id: String, now: f64, request: JobSubmission) -> Self {
+    pub fn submitted(job_id: String, now: f64, request: JobSubmission, run: JobRun) -> Self {
+        let request_digest = request.digest();
         Self {
             job_id,
             job_name: request.job_name,
@@ -219,6 +284,8 @@ impl AsyncJob {
             kms_key: request.kms_key,
             model_version: ASYNC_JOB_MODEL_VERSION.to_string(),
             client_request_token: request.client_request_token,
+            request_digest,
+            run,
             stop_requested_time: None,
         }
     }
@@ -230,12 +297,13 @@ impl AsyncJob {
     /// anybody called, so applying it on read changes nothing a later caller would
     /// otherwise have seen.
     ///
-    /// The terminal status of a started job is `FAILED`: running the job means reading
-    /// the input documents from the Amazon S3 location the caller named and writing
-    /// analysed output back, and this emulator serves no object storage for batch jobs,
-    /// so no document is ever read and no output is ever written. The job therefore ends
-    /// in the modelled failure state with a `Message` that says exactly that, rather
-    /// than reporting a `COMPLETED` run that nothing performed.
+    /// The terminal status is WHAT THE RUN DID: a run that read the submitted input
+    /// documents, analysed them and wrote its output back reports `COMPLETED` (with the
+    /// path of the file describing those results), and the modelled failure state is
+    /// reserved for a run that could not be carried out — including a job of a family
+    /// whose analysis this emulator performs for no document, for which no run is
+    /// performed at all. While a run is still in flight the clock reveals no terminal
+    /// status, since there is nothing yet to report.
     pub fn advance(&mut self, now: f64) {
         let submitted_at = epoch_secs(&self.submit_time);
 
@@ -247,9 +315,27 @@ impl AsyncJob {
         if self.job_status == JobStatus::InProgress {
             let due = submitted_at + JOB_SUBMITTED_SPAN_SECS + JOB_RUNNING_SPAN_SECS;
             if now >= due {
-                self.job_status = JobStatus::Failed;
-                self.end_time = Some(date_time(due));
-                self.message = Some(self.unreadable_input_message());
+                // Resolved before anything is written, so the message of a run that was
+                // never performed is read off the record that is about to change.
+                let resolved = match &self.run {
+                    // The run is still going, so what it did is not known yet: there is
+                    // no terminal status to reveal.
+                    JobRun::InFlight => None,
+                    JobRun::Reported(outcome) => Some((
+                        outcome.job_status,
+                        outcome.message.clone(),
+                        outcome.manifest_file_path.clone(),
+                    )),
+                    JobRun::NotPerformed => {
+                        Some((JobStatus::Failed, Some(self.unperformed_run_message()), None))
+                    }
+                };
+                if let Some((job_status, message, manifest_file_path)) = resolved {
+                    self.job_status = job_status;
+                    self.end_time = Some(date_time(due));
+                    self.message = message;
+                    self.manifest_file_path = manifest_file_path;
+                }
             }
         }
 
@@ -313,14 +399,15 @@ impl AsyncJob {
         }
     }
 
-    /// Why a started job fails: the input it was pointed at was never read.
-    fn unreadable_input_message(&self) -> String {
+    /// Why a job NO run was performed for ends in the modelled failure state: nothing
+    /// read its input documents, so nothing was analysed and nothing was written.
+    fn unperformed_run_message(&self) -> String {
         let input_key = self.input_data_config.s3_key.as_deref().unwrap_or("");
         let output_key = self.output_data_config.s3_key.as_deref().unwrap_or("");
         format!(
-            "Could not read the input documents from s3://{}/{}: this emulator does not serve \
-             object storage for asynchronous batch jobs, so no document was analyzed and no \
-             output was written to s3://{}/{}.",
+            "Could not analyze the input documents at s3://{}/{}: no analysis run was \
+             performed for this job, so no document was analyzed and no output was written \
+             to s3://{}/{}.",
             self.input_data_config.s3_bucket,
             input_key,
             self.output_data_config.s3_bucket,
@@ -343,23 +430,60 @@ pub struct JobFamilyStore {
     /// the map's key order IS submit order, which is the order a list operation pages
     /// through.
     pub jobs: BTreeMap<String, AsyncJob>,
-    /// `ClientRequestToken` -> the `JobId` it created, so repeating a start call with
-    /// one token returns the first job instead of creating a second.
-    pub idempotency_tokens: HashMap<String, String>,
+    /// One SUBMISSION — a `ClientRequestToken` together with the request it was used
+    /// with — to the `JobId` it created, so repeating that submission returns the first
+    /// job instead of creating a second, while the same token carrying a different
+    /// request is the distinct submission it is.
+    pub idempotency_tokens: HashMap<SubmissionKey, String>,
+}
+
+/// What a start call is indexed under, so a REPEAT of one submission resolves to the job
+/// it already created while another submission that reuses its token does not.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SubmissionKey {
+    /// The request's `ClientRequestToken`; a request carrying none is never indexed.
+    pub client_request_token: String,
+    /// [`JobSubmission::digest`] of the request the token was used with.
+    pub request_digest: String,
 }
 
 impl JobFamilyStore {
-    /// The job a `ClientRequestToken` already created, if it created one.
-    pub fn job_for_token(&self, token: &str) -> Option<&str> {
-        self.idempotency_tokens.get(token).map(String::as_str)
+    /// The job this exact submission already created, if it created one: the token AND
+    /// the request it was used with have to match, since a token reused for a different
+    /// request is a submission of its own.
+    pub fn job_for_submission(&self, token: &str, request_digest: &str) -> Option<&str> {
+        self.idempotency_tokens
+            .get(&SubmissionKey {
+                client_request_token: token.to_string(),
+                request_digest: request_digest.to_string(),
+            })
+            .map(String::as_str)
     }
 
-    /// Store a started job, remembering the request token that created it.
+    /// Store a started job, remembering the submission that created it.
     pub fn record(&mut self, job: AsyncJob) {
         if let Some(token) = job.client_request_token.clone() {
-            self.idempotency_tokens.insert(token, job.job_id.clone());
+            self.idempotency_tokens.insert(
+                SubmissionKey {
+                    client_request_token: token,
+                    request_digest: job.request_digest.clone(),
+                },
+                job.job_id.clone(),
+            );
         }
         self.jobs.insert(job.job_id.clone(), job);
+    }
+
+    /// Record against the job `job_id` what its run reported, WITHOUT materialising any
+    /// status the clock owes: the report is the run's own, and the clock reveals it on
+    /// the next call that reads the job.
+    ///
+    /// A job the store no longer holds — one whose metadata aged out while its run was in
+    /// flight — takes no report: there is nothing left to report against.
+    pub fn record_run_outcome(&mut self, job_id: &str, outcome: JobRunOutcome) {
+        if let Some(job) = self.jobs.get_mut(job_id) {
+            job.run = JobRun::Reported(outcome);
+        }
     }
 
     /// The job `job_id` names, with everything the clock already owes it applied —
@@ -396,16 +520,10 @@ impl JobFamilyStore {
     /// model says stops them appearing in a list, along with the request tokens that
     /// named them.
     fn expire(&mut self, now: f64) {
-        let dropped_tokens: Vec<String> = self
-            .jobs
-            .values()
-            .filter(|job| job.is_expired(now))
-            .filter_map(|job| job.client_request_token.clone())
-            .collect();
-        for token in dropped_tokens {
-            self.idempotency_tokens.remove(&token);
-        }
         self.jobs.retain(|_, job| !job.is_expired(now));
+        let held: HashSet<String> = self.jobs.keys().cloned().collect();
+        self.idempotency_tokens
+            .retain(|_, job_id| held.contains(job_id));
     }
 }
 

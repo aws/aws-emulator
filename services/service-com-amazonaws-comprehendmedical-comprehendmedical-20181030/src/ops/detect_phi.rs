@@ -1834,6 +1834,41 @@ fn detect_phi(text: &str) -> Vec<Entity> {
         .collect()
 }
 
+/// The JSON one analysed document contributes to a PHI-detection job's output: the
+/// entities this pass placed in THAT document's text, as the synchronous answer reports
+/// them, beside the version of the model that placed them.
+///
+/// One function, so a batch job's output and the synchronous answer are the same
+/// analysis of the same text and cannot drift: the member names are the model's own
+/// (`smithy_query(query="shape",shape="Entity")`).
+pub(crate) fn phi_analysis_entry(text: &str) -> ::serde_json::Value {
+    let entities: Vec<::serde_json::Value> = detect_phi(text).iter().map(entity_json).collect();
+    ::serde_json::json!({
+        "Entities": entities,
+        "ModelVersion": MODEL_VERSION,
+    })
+}
+
+/// One placed entity as the model spells it on the wire.
+fn entity_json(entity: &Entity) -> ::serde_json::Value {
+    let traits: Vec<::serde_json::Value> = entity
+        .traits
+        .iter()
+        .flatten()
+        .map(|carried| ::serde_json::json!({"Name": carried.name, "Score": carried.score}))
+        .collect();
+    ::serde_json::json!({
+        "Id": entity.id,
+        "BeginOffset": entity.begin_offset,
+        "EndOffset": entity.end_offset,
+        "Score": entity.score,
+        "Text": entity.text,
+        "Category": entity.category,
+        "Type": entity.r#type,
+        "Traits": traits,
+    })
+}
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the

@@ -3,11 +3,24 @@
 //! @op StartPHIDetectionJob
 //!
 //! IMPLEMENTED. The call records one PHI-detection job in this service's own PHI job
-//! store and answers with the `JobId` it minted; `ClientRequestToken` is the model's
-//! idempotency key, so repeating a start with a token that already created a job names
-//! that job instead of starting a second. The stored record is
+//! store, RUNS it, and answers with the `JobId` it minted. The stored record is
 //! [`crate::state::AsyncJob`], the same record every job family keeps, so
-//! `ListPHIDetectionJobs` reports exactly what this call was given.
+//! `DescribePHIDetectionJob` and `ListPHIDetectionJobs` report exactly what this call was
+//! given.
+//!
+//! Running the job is the work the job's terminal status reports: every document under
+//! the submitted `InputDataConfig` is read from this account's own object storage,
+//! analysed by the SAME protected-health-information pass the synchronous `DetectPHI`
+//! answers with, and its entities written back under the submitted `OutputDataConfig`
+//! prefix ([`crate::state::run_detection_job`]). What the run did is RECORDED against the
+//! job; the clock reveals it once the job's running span is over, so a job is reported
+//! `COMPLETED` only because its output really was written, and the modelled failure state
+//! is reserved for a run that could not be carried out.
+//!
+//! `ClientRequestToken` is the model's `@idempotencyToken`: the same token presented with
+//! the SAME request names the job that request already created, while the same token
+//! presented with a DIFFERENT request is another submission, which starts its own job and
+//! leaves the first one untouched (the model declares no error for a reused token).
 //!
 //! The job RUNS AS the `DataAccessRoleArn` it is given, so that role is resolved against
 //! this account's IAM records BEFORE a `JobId` is minted or anything is recorded: a role
@@ -202,34 +215,82 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let now = crate::state::now_epoch_secs();
-        let mut state = store.lock();
-        state.expire_jobs(now);
+        // What this submission ASKED FOR, beside the token it carries: the pair is what
+        // makes a second call a repeat of this one rather than a submission of its own.
+        let submission = crate::state::JobSubmission {
+            job_name: input.job_name,
+            input_data_config: input.input_data_config,
+            output_data_config: input.output_data_config,
+            language_code: input.language_code,
+            data_access_role_arn: input.data_access_role_arn,
+            kms_key: input.kms_key,
+            client_request_token: input.client_request_token,
+        };
+        let request_digest = submission.digest();
+        // The job's run reads and writes object storage, which is awaited with NO store
+        // guard held, so the guard below is scoped to the recording alone.
+        let (job_id, input_data_config, output_data_config) = {
+            let mut state = store.lock();
+            state.expire_jobs(now);
 
-        // `ClientRequestToken` is the model's @idempotencyToken: the same token must
-        // name the job the first call created, never start a second one.
-        if let Some(token) = input.client_request_token.as_deref() {
-            if let Some(job_id) = state.phi_detection_jobs.job_for_token(token) {
-                return Ok(StartPHIDetectionJobOutput {
-                    job_id: Some(job_id.to_string()),
-                });
+            // `ClientRequestToken` is the model's @idempotencyToken: the same token
+            // presented with the SAME request names the job that request already
+            // created, which is what an SDK retrying a submission needs. The same token
+            // presented with a DIFFERENT request is another submission — the pair
+            // identifies the submission, and the model declares no error for a token
+            // reused on another request — so it starts its own job and leaves the first
+            // one exactly as it was.
+            if let Some(token) = submission.client_request_token.as_deref() {
+                if let Some(job_id) = state
+                    .phi_detection_jobs
+                    .job_for_submission(token, &request_digest)
+                {
+                    return Ok(StartPHIDetectionJobOutput {
+                        job_id: Some(job_id.to_string()),
+                    });
+                }
             }
-        }
 
-        let job_id = state.mint_job_id(now);
-        let job = crate::state::AsyncJob::submitted(
+            let job_id = state.mint_job_id(now);
+            let input_data_config = submission.input_data_config.clone();
+            let output_data_config = submission.output_data_config.clone();
+            // The record is persisted BEFORE the run starts, so the job exists — and its
+            // submission is claimed — from the instant the submission is accepted. What
+            // its run did is unknown until the run reports, which is exactly what a job
+            // still being processed has.
+            let job = crate::state::AsyncJob::submitted(
+                job_id.clone(),
+                now,
+                submission,
+                crate::state::JobRun::InFlight,
+            );
+            state.phi_detection_jobs.record(job);
+            (job_id, input_data_config, output_data_config)
+        };
+
+        // From here on the job exists, so whatever the run does — including this handler
+        // never getting to report it — is recorded against that job by the recorder's
+        // `Drop`. The run is the job's own work: what it could not do is the job's
+        // modelled failure state, never a failure of this request.
+        let mut recorder = crate::state::RunOutcomeRecorder::new(
+            store.clone(),
+            crate::state::JobFamily::PhiDetection,
             job_id.clone(),
-            now,
-            crate::state::JobSubmission {
-                job_name: input.job_name,
-                input_data_config: input.input_data_config,
-                output_data_config: input.output_data_config,
-                language_code: input.language_code,
-                data_access_role_arn: input.data_access_role_arn,
-                kms_key: input.kms_key,
-                client_request_token: input.client_request_token,
-            },
         );
-        state.phi_detection_jobs.record(job);
+        let outcome = crate::state::run_detection_job(
+            ctx,
+            &region,
+            crate::state::JobFamily::PhiDetection,
+            &job_id,
+            &input_data_config,
+            &output_data_config,
+            crate::ops::detect_phi::phi_analysis_entry,
+        )
+        .await;
+        // RECORDED, not revealed: the clock owes the terminal status (and, with it, the
+        // path of the file describing the results) only once the job's running span is
+        // over, which `AsyncJob::advance` applies.
+        recorder.report(outcome);
 
         Ok(StartPHIDetectionJobOutput {
             job_id: Some(job_id),

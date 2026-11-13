@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op StopPHIDetectionJob
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `StopPHIDetectionJob`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`StopPHIDetectionJob::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! IMPLEMENTED. The call resolves the `JobId` against this service's own PHI job store
+//! and asks the job it names to stop: a job still running moves to the non-terminal
+//! `STOP_REQUESTED` the model declares, and the clock owes it `STOPPED` a span later, so
+//! a caller observes the state its own request produced before the job reaches its end.
+//! A `JobId` this family holds no job for is refused as a not-found resource, and a job
+//! that had already finished has nothing left to stop, so that request is refused with
+//! the modelled client error rather than answered as though it took effect.
+//!
+//! Both readings are [`crate::state::JobFamilyStore::job_mut`] and
+//! [`crate::state::AsyncJob::request_stop`], which every job family's stop operation
+//! shares, so no two families word or time a stop differently.
 //!
 //! ## Shape of an operation
 //!
@@ -144,17 +147,42 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `StopPHIDetectionJob` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(StopPHIDetectionJobErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("StopPHIDetectionJob"))
+        // request metadata only, and this operation needs none of it.
+        let _ = ctx;
+        let Some(store) = crate::state::service_state(&*self.engine) else {
+            return Err(StopPHIDetectionJobErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: Some("The service's job store is unavailable.".to_string()),
+                },
+            )
+            .into());
+        };
+        let now = crate::state::now_epoch_secs();
+        let mut state = store.lock();
+        // The lookup materialises what the CLOCK already made due at instants fixed when
+        // the jobs were started — metadata expiry and this job's status progression — so a
+        // job that finished before the stop could take effect keeps the status it reached.
+        // An id this family holds no job for — never minted, minted by another family, or
+        // aged out with its metadata — is refused with the service's own fixed sentence,
+        // which echoes nothing of the request.
+        let job = match state.phi_detection_jobs.job_mut(&input.job_id, now) {
+            Ok(job) => job,
+            Err(absent) => return Err(crate::service::job_refusal::refuse(absent)),
+        };
+        // A stop naming a job that already finished is refused rather than answered as
+        // though it took effect. "Stops a protected health information (PHI) detection
+        // job in progress" — only a job still running has a stop to request.
+        if let Err(already_terminal) = job.request_stop(now) {
+            return Err(StopPHIDetectionJobErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    message: Some(already_terminal.message().to_string()),
+                },
+            )
+            .into());
+        }
+
+        Ok(StopPHIDetectionJobOutput {
+            job_id: Some(input.job_id),
+        })
     }
 }

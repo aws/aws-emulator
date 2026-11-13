@@ -238,7 +238,8 @@ async fn a_bad_value_is_refused_with_the_services_own_error() {
 }
 
 /// A started job is recorded: the describe reports exactly what the start call was
-/// given, and the same `ClientRequestToken` never starts a second job.
+/// given, and repeating that same submission — one `ClientRequestToken` with the same
+/// parameters — never starts a second job.
 #[tokio::test]
 async fn a_started_job_is_read_back_and_its_request_token_is_idempotent() {
     let router = router();
@@ -262,12 +263,13 @@ async fn a_started_job_is_read_back_and_its_request_token_is_idempotent() {
         vec![
             ("JobName", json!("demo-job")),
             ("ClientRequestToken", json!("tok-1")),
+            ("KMSKey", json!("alias/cm")),
         ],
     )
     .await;
     assert_eq!(
         repeated, job_id,
-        "case {:?}: a repeated ClientRequestToken must name the first job, got {repeated:?}",
+        "case {:?}: repeating one submission must name the first job, got {repeated:?}",
         "tok-1"
     );
 
@@ -364,9 +366,10 @@ async fn an_unknown_job_is_refused() {
 }
 
 /// A started job moves out of `SUBMITTED` on its own, and ends in a terminal status
-/// with an `EndTime` and a `Message` saying why — the batch input it was pointed at is
-/// never read, so the run ends in the modelled failure state rather than reporting a
-/// run nothing performed.
+/// with an `EndTime` and a `Message` saying why — this emulator performs the medical
+/// entities analysis of a document for no document, so no run is performed for a job of
+/// this family and it ends in the modelled failure state naming the input nothing
+/// analysed, rather than reporting a run nothing performed.
 #[tokio::test]
 async fn a_started_job_progresses_on_the_clock() {
     let router = router();

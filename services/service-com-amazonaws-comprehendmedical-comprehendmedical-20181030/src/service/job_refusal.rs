@@ -61,6 +61,12 @@ impl CarriesJobNotFound
     }
 }
 
+impl CarriesJobNotFound for crate::ops::stop_phi_detection_job::StopPHIDetectionJobErrorModeled {
+    fn job_not_found(error: ResourceNotFoundException) -> Self {
+        Self::ResourceNotFoundException(error)
+    }
+}
+
 /// The refusal `absent` states, as the operation's error channel carries it: the modelled
 /// not-found shape with the service's one fixed sentence — which echoes nothing of the
 /// request — answered with [`JOB_NOT_FOUND_STATUS`].

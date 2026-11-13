@@ -206,13 +206,32 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let now = crate::state::now_epoch_secs();
+        // What this submission ASKED FOR, beside the token it carries: the pair is what
+        // makes a second call a repeat of this one rather than a submission of its own.
+        let submission = crate::state::JobSubmission {
+            job_name: input.job_name,
+            input_data_config: input.input_data_config,
+            output_data_config: input.output_data_config,
+            language_code: input.language_code,
+            data_access_role_arn: input.data_access_role_arn,
+            kms_key: input.kms_key,
+            client_request_token: input.client_request_token,
+        };
+        let request_digest = submission.digest();
         let mut state = store.lock();
         state.expire_jobs(now);
 
-        // `ClientRequestToken` is the model's @idempotencyToken: the same token must
-        // name the job the first call created, never start a second one.
-        if let Some(token) = input.client_request_token.as_deref() {
-            if let Some(job_id) = state.entities_detection_v2_jobs.job_for_token(token) {
+        // `ClientRequestToken` is the model's @idempotencyToken: the same token presented
+        // with the SAME request names the job that request already created, while the
+        // same token presented with a DIFFERENT request is another submission — the pair
+        // identifies the submission, and the model declares no error for a token reused
+        // on another request — so it starts its own job and leaves the first one exactly
+        // as it was.
+        if let Some(token) = submission.client_request_token.as_deref() {
+            if let Some(job_id) = state
+                .entities_detection_v2_jobs
+                .job_for_submission(token, &request_digest)
+            {
                 return Ok(StartEntitiesDetectionV2JobOutput {
                     job_id: Some(job_id.to_string()),
                 });
@@ -220,18 +239,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let job_id = state.mint_job_id(now);
+        // This emulator performs the medical-entities analysis of a document for no
+        // document — `DetectEntitiesV2`, the pass a run of this family would apply, is
+        // itself not implemented here — so NO run is performed for this job and its
+        // terminal status says exactly that, rather than reporting results nothing
+        // produced.
         let job = crate::state::AsyncJob::submitted(
             job_id.clone(),
             now,
-            crate::state::JobSubmission {
-                job_name: input.job_name,
-                input_data_config: input.input_data_config,
-                output_data_config: input.output_data_config,
-                language_code: input.language_code,
-                data_access_role_arn: input.data_access_role_arn,
-                kms_key: input.kms_key,
-                client_request_token: input.client_request_token,
-            },
+            submission,
+            crate::state::JobRun::NotPerformed,
         );
         state.entities_detection_v2_jobs.record(job);
 

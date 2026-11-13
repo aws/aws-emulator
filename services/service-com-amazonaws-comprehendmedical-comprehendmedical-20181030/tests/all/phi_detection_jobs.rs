@@ -124,7 +124,8 @@ fn listed_ids(answer: &Value) -> Vec<String> {
 }
 
 /// A started PHI job is reported by the list with exactly what the start call was given,
-/// and the same `ClientRequestToken` never starts a second job.
+/// and repeating that same submission — one `ClientRequestToken` with the same
+/// parameters — never starts a second job.
 #[tokio::test]
 async fn a_started_phi_job_is_listed_with_what_start_was_given() {
     let router = router();
@@ -150,12 +151,13 @@ async fn a_started_phi_job_is_listed_with_what_start_was_given() {
         vec![
             ("JobName", json!("phi-demo")),
             ("ClientRequestToken", json!("tok-1")),
+            ("KMSKey", json!("alias/cm")),
         ],
     )
     .await;
     assert_eq!(
         repeated, job_id,
-        "case {:?}: a repeated ClientRequestToken must name the first job, got {repeated:?}",
+        "case {:?}: repeating one submission must name the first job, got {repeated:?}",
         "tok-1"
     );
 
@@ -163,7 +165,7 @@ async fn a_started_phi_job_is_listed_with_what_start_was_given() {
     assert_eq!(
         listed_ids(&answer),
         vec![job_id.clone()],
-        "two starts with one request token must leave one job, got {answer}"
+        "two starts of one submission must leave one job, got {answer}"
     );
     let properties = answer["ComprehendMedicalAsyncJobPropertiesList"][0].clone();
     for (member, expected) in [

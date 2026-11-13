@@ -27,6 +27,8 @@ mod ontology_candidate_ranking;
 mod phi_detection;
 #[path = "all/phi_detection_job_describe.rs"]
 mod phi_detection_job_describe;
+#[path = "all/phi_detection_job_run.rs"]
+mod phi_detection_job_run;
 #[path = "all/phi_detection_jobs.rs"]
 mod phi_detection_jobs;
 #[path = "all/refusal_messages.rs"]
