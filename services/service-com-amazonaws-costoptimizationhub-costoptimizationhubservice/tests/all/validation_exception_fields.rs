@@ -23,7 +23,8 @@ use serde_json::{json, Value};
 use service_com_amazonaws_costoptimizationhub_costoptimizationhubservice as cost_optimization_hub;
 
 use crate::cost_optimization_hub::{
-    call, error_code, monthly_period, router, FIELD_VALIDATION_FAILED,
+    call, compute_optimizer_opted_in_router, error_code, monthly_period, router,
+    FIELD_VALIDATION_FAILED,
 };
 
 /// The model's enum value sets, as the generated catalogue holds them — the same
@@ -459,9 +460,14 @@ async fn a_handler_raised_refusal_names_its_member_too() {
 /// published bound of a `@range`, every value of an enum, a list at its minimum
 /// length, and a 12-digit account id — the refusal layer added for the field
 /// list must not turn a valid request into a 400.
+///
+/// The account is opted into AWS Compute Optimizer, which the efficiency-metrics
+/// read below needs before it is served at all: this suite is about the
+/// constraint layer, so the precondition that read states is established rather
+/// than asserted here (`efficiency_metrics_compute_optimizer_gate` owns it).
 #[tokio::test]
 async fn every_request_inside_its_constraints_is_served() {
-    let router = router();
+    let router = compute_optimizer_opted_in_router().await;
 
     // (case, operation, request, the status the request must get)
     let mut cases: Vec<(String, &str, Value, u16)> = vec![

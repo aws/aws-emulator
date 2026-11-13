@@ -23,6 +23,10 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 # Encodes/decodes the opaque `nextToken` this service's paginated operations issue.
 hex = { workspace = true }
+# The account's AWS Compute Optimizer opt-in, which that service owns and its
+# `UpdateEnrollmentStatus` writes: the precondition of every read of this service whose
+# figures are derived from Compute Optimizer's analysis.
+service-com-amazonaws-computeoptimizer-computeoptimizerservice = { workspace = true }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

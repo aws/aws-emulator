@@ -13,6 +13,7 @@
 use std::sync::Arc;
 
 use serde_json::{json, Value};
+use service_com_amazonaws_computeoptimizer_computeoptimizerservice as compute_optimizer;
 use service_com_amazonaws_costoptimizationhub_costoptimizationhubservice as cost_optimization_hub;
 use service_com_amazonaws_costoptimizationhub_costoptimizationhubservice::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
@@ -33,13 +34,78 @@ pub(crate) fn router() -> MultiServiceRouter {
 
 /// A router over `engine`, so a suite that has to reach the store builds the
 /// engine itself and still drives the service through the one assembly.
+///
+/// AWS Compute Optimizer is mounted beside this service, over the SAME engine:
+/// the account's opt-in to that service is the precondition of every read of
+/// this one whose figures are derived from its analysis, and that opt-in is
+/// written by Compute Optimizer's own `UpdateEnrollmentStatus`
+/// ([`opt_into_compute_optimizer`]) rather than recorded into a store by a test.
 fn router_over(engine: Arc<engine::InMemoryEngine>) -> MultiServiceRouter {
     let mut router = MultiServiceRouter::new();
     // In-process tests sign with a placeholder key; signature verification is a
     // front-door setting, not part of what these tests are about.
     router.set_request_authentication(false);
+    router.register_service(compute_optimizer::EmulatedService::new(Arc::clone(&engine)));
     router.register_service(EmulatedService::new(engine));
     router
+}
+
+/// Opt the caller's account into AWS Compute Optimizer, the way a client does:
+/// through that service's own `UpdateEnrollmentStatus`, over the wire, on the
+/// router the suite is driving.
+pub(crate) async fn opt_into_compute_optimizer(router: &MultiServiceRouter) {
+    let (status, payload) = call_compute_optimizer(
+        router,
+        "UpdateEnrollmentStatus",
+        &json!({"status": "Active", "includeMemberAccounts": false}),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "case opt into Compute Optimizer: expected HTTP 200, got {status} with {payload}"
+    );
+}
+
+/// A [`router`] whose account is opted into AWS Compute Optimizer and has done
+/// nothing else: it has not enrolled in Cost Optimization Hub, so it holds the
+/// precondition of the efficiency-metrics read without holding a catalog.
+pub(crate) async fn compute_optimizer_opted_in_router() -> MultiServiceRouter {
+    let router = router();
+    opt_into_compute_optimizer(&router).await;
+    router
+}
+
+/// Call one AWS Compute Optimizer operation (`awsJson1_0`) on `router`, which
+/// mounts that service beside this one.
+pub(crate) async fn call_compute_optimizer(
+    router: &MultiServiceRouter,
+    operation: &str,
+    body: &Value,
+) -> (u16, Value) {
+    let request = http::Request::builder()
+        .method("POST")
+        .uri("https://compute-optimizer.us-east-1.amazonaws.com/")
+        .header("content-type", "application/x-amz-json-1.0")
+        .header("x-amz-target", format!("ComputeOptimizerService.{operation}"))
+        .header(
+            "authorization",
+            "AWS4-HMAC-SHA256 \
+             Credential=AKIDEMULATOR/20260101/us-east-1/compute-optimizer/aws4_request, \
+             SignedHeaders=host;x-amz-target, Signature=0000",
+        )
+        .body(bytes::Bytes::from(
+            serde_json::to_vec(body).expect("the request body serializes"),
+        ))
+        .expect("the request builds");
+
+    let response = router.dispatch(request).await;
+    let status = response.status().as_u16();
+    let payload = if response.body().is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(response.body()).unwrap_or(Value::Null)
+    };
+    (status, payload)
 }
 
 /// A router whose store records the caller as the MANAGEMENT account of the
@@ -405,7 +471,13 @@ pub(crate) async fn enrolled_router_with_discounts_visible() -> MultiServiceRout
 }
 
 /// Enroll `router`'s account and wait for the analysis the enrollment starts.
+///
+/// The account is opted into AWS Compute Optimizer here too: the efficiency and
+/// savings series this service derives from that service's analysis is served to
+/// an opted-in account alone, so a router that stands for "this account's data
+/// is readable" has to hold that opt-in as well as the enrollment.
 async fn enrolled(router: MultiServiceRouter) -> MultiServiceRouter {
+    opt_into_compute_optimizer(&router).await;
     ok(
         &router,
         "UpdateEnrollmentStatus",

@@ -21,8 +21,8 @@
 use serde_json::{json, Value};
 
 use crate::cost_optimization_hub::{
-    call, error_code, fields, monthly_period, router, FIELD_VALIDATION_FAILED,
-    FIELD_VALIDATION_SUMMARY,
+    call, compute_optimizer_opted_in_router, error_code, fields, monthly_period, router,
+    FIELD_VALIDATION_FAILED, FIELD_VALIDATION_SUMMARY,
 };
 
 /// One paginated operation: its name, the rest of a well-formed request for it,
@@ -78,9 +78,14 @@ fn paginated_operations() -> Vec<Paginated> {
 /// A `maxResults` at either published bound of the operation's own `@range` is
 /// served — including the documented maximum, which is the page size a client
 /// paging at the limit sends on every call.
+///
+/// The account is opted into AWS Compute Optimizer, the precondition the
+/// efficiency-metrics read of the table states before it is served at all
+/// (`efficiency_metrics_compute_optimizer_gate` owns that rule): this suite is
+/// about the page-size bound, so the request must reach it.
 #[tokio::test]
 async fn each_operation_accepts_its_own_published_page_size() {
-    let router = router();
+    let router = compute_optimizer_opted_in_router().await;
 
     for op in paginated_operations() {
         // Both bounds, and a value strictly inside the range.

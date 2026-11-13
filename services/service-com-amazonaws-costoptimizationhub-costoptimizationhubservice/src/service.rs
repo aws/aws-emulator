@@ -62,21 +62,28 @@
 //! the model cannot express (an unknown `nextToken`, an `orderBy` dimension that
 //! names no member) fills the same two members through
 //! [`stated_validation_exception`], the one place that envelope is built. The
-//! model's other reason (`Other`) names a refusal no field accounts for, and no
-//! operation of this service raises one: every rule a handler of this service
-//! enforces — including the organization rules over a preference write — rejects
-//! a MEMBER the request carries, so every refusal it can answer is attributed to
-//! one.
+//! model's other reason (`Other`) names a refusal no field accounts for. Every
+//! rule a handler of this service enforces over the REQUEST — including the
+//! organization rules over a preference write — rejects a MEMBER the request
+//! carries, so each of those refusals is attributed to one; a PRECONDITION on
+//! the calling account rather than on the request is not, and carries neither
+//! member ([`compute_optimizer_opt_in_required`]).
 //!
 //! # What the top-level `message` of a refusal says
 //!
-//! Two classes of refusal, two messages, because what is known about the request
-//! differs:
+//! Three classes of refusal, three messages, because what is known about the
+//! request differs:
 //!
 //! - a member outside a constraint the MODEL declares (a `@pattern`, a `@range`,
 //!   an enum value set) is answered with [`FIELD_VALIDATION_SUMMARY`], the fixed
 //!   summary that points at the field list the constraint walk produced
 //!   ([`field_validation_exception`]);
+//! - a precondition on the calling ACCOUNT that no member of the request can
+//!   satisfy — the AWS Compute Optimizer opt-in a read of that service's
+//!   analysis needs ([`compute_optimizer_opt_in_required`]) — states the
+//!   operation called and what to enable, and carries no field list, because a
+//!   well-formed request earns it and there is no member for a client to
+//!   correct;
 //! - a refusal a HANDLER raises for a rule of the operation the model cannot
 //!   express — a filter member the operation does not support, a dimension that
 //!   names no member, a pagination token this service never issued, a
@@ -347,6 +354,32 @@ pub(crate) fn organization_view_denied() -> String {
     "Cannot get enrollment statuses for member accounts of the organization. This is because \
      your account is not the management account of the organization."
         .to_string()
+}
+
+/// How this service words the refusal of a read whose figures come from AWS
+/// Compute Optimizer's analysis when the calling account is not opted into that
+/// service: the operation cannot be served at all until the account opts in, so
+/// the message names the operation that was called and the service to enable.
+///
+/// `operation` is the operation serving the read — its [`Operation::NAME`] — and
+/// is the only part of the sentence that varies: no account id, period or other
+/// per-call value appears in it, because the precondition is the same whatever
+/// the request asked for.
+///
+/// This refusal is attributed to NO member: the request can be perfectly
+/// well-formed and still be refused, so it carries the statement alone rather
+/// than the `reason`/`fields` diagnosis a rejected member earns
+/// ([`stated_validation_exception`]).
+pub(crate) fn compute_optimizer_opt_in_required(operation: &str) -> ValidationException {
+    ValidationException {
+        message: format!(
+            "{operation} requires your account to be opted into AWS Compute Optimizer. Please \
+             enable Compute Optimizer in the AWS Compute Optimizer console or via the Compute \
+             Optimizer API."
+        ),
+        reason: None,
+        fields: None,
+    }
 }
 
 /// This service's refusal of a numeric member outside the range the calling

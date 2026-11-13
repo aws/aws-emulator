@@ -41,7 +41,15 @@
 //! A group whose resources have no spend over the period has nothing to compute
 //! a score or a share from, so it reports no `metricsByTime` and carries the
 //! `message` explaining why instead — which is how an account that is not
-//! enrolled, or whose analysis is not due yet, reads.
+//! enrolled in Cost Optimization Hub, or whose analysis is not due yet, reads.
+//!
+//! All of that is reported only to an account that is opted into AWS COMPUTE
+//! OPTIMIZER: these figures are derived from that service's analysis of the
+//! account's resources, which it produces for an opted-in account alone, so a
+//! caller that has not opted in is refused (400 `ValidationException`) rather
+//! than served a series with no analysis behind it. The opt-in belongs to
+//! Compute Optimizer, so it is read from that service's own store
+//! ([`crate::state::opted_into_compute_optimizer`]).
 //!
 //! ## Shape of an operation
 //!
@@ -279,6 +287,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 }
             }
         };
+
+        // The analysis these figures are derived from belongs to AWS Compute
+        // Optimizer, and that service analyses an account only once it has opted
+        // in, so the opt-in is this read's precondition: a caller that is not
+        // opted in is refused rather than served an efficiency and savings
+        // series computed from an analysis that does not exist. The opt-in is
+        // read from Compute Optimizer's own store, which its
+        // `UpdateEnrollmentStatus` is the only call that writes
+        // (`crate::state::opted_into_compute_optimizer`), so the two services
+        // cannot disagree about whether the account opted in.
+        if !crate::state::opted_into_compute_optimizer(
+            &*self.engine,
+            crate::state::caller_account_id(),
+        ) {
+            return Err(ListEfficiencyMetricsErrorModeled::ValidationException(
+                crate::service::compute_optimizer_opt_in_required(Self::NAME),
+            )
+            .into());
+        }
 
         // The rows this caller may read, under its effective savings estimation
         // mode: the one view every recommendation reader of this service is

@@ -30,6 +30,16 @@
 //!   [`ComAmazonawsCostoptimizationhubCostoptimizationhubserviceState::readable_recommendation_view`].
 //!   The catalog is part of the store's initial value, so both readers see the
 //!   same rows and neither has to write anything to serve a read.
+//!
+//! One fact these reads depend on is deliberately NOT stored here: whether the
+//! account is opted into AWS Compute Optimizer, the service whose analysis the
+//! efficiency and savings series is derived from. That record belongs to Compute
+//! Optimizer, and is read from its store through
+//! [`opted_into_compute_optimizer`].
+
+mod compute_optimizer;
+
+pub use compute_optimizer::opted_into_compute_optimizer;
 
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};

@@ -12158,6 +12158,7 @@ dependencies = [
  "hex",
  "http",
  "serde_json",
+ "service-com-amazonaws-computeoptimizer-computeoptimizerservice",
  "sha2 0.10.9",
  "tokio",
  "tracing",

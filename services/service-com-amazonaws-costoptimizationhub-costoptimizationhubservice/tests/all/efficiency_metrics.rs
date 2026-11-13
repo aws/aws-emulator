@@ -32,9 +32,9 @@ use service_com_amazonaws_costoptimizationhub_costoptimizationhubservice as cost
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::cost_optimization_hub::{
-    assert_stated_rule_refusal, call, daily_period, day_text, enrolled_router,
-    enrolled_router_with_discounts_visible, month_text, monthly_period, months_before, ok, router,
-    today,
+    assert_stated_rule_refusal, call, compute_optimizer_opted_in_router, daily_period, day_text,
+    enrolled_router, enrolled_router_with_discounts_visible, month_text, monthly_period,
+    months_before, ok, today,
 };
 
 /// The dimensions cost efficiency metrics can be grouped by, each paired with
@@ -564,11 +564,17 @@ async fn the_ungrouped_savings_are_the_summaries_deduped_total() {
 
 /// A group whose resources have no spend over the period has nothing to compute
 /// a score or a share from, so it reports no series and the message saying why —
-/// which is how an account that has not enrolled reads, whatever granularity it
-/// asks for. Once its analysis is due the same request reports the series.
+/// which is how an account that has not enrolled in Cost Optimization Hub reads,
+/// whatever granularity it asks for. Once its analysis is due the same request
+/// reports the series.
+///
+/// The account is opted into AWS Compute Optimizer throughout: that opt-in is
+/// what gets the read served at all, and what it then reports is decided by this
+/// service's own enrollment (`efficiency_metrics_compute_optimizer_gate` owns the
+/// precondition itself).
 #[tokio::test]
 async fn a_group_with_no_cost_and_usage_data_reports_no_series_and_says_why() {
-    let not_enrolled = router();
+    let not_enrolled = compute_optimizer_opted_in_router().await;
 
     for granularity in ["Daily", "Monthly"] {
         let case = format!("not enrolled, {granularity}");
