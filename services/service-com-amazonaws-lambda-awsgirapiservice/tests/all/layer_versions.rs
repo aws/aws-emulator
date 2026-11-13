@@ -18,6 +18,10 @@ use service_com_amazonaws_lambda_awsgirapiservice::EmulatedService;
 use sha2::Digest as _;
 use smithy_server_runtime::MultiServiceRouter;
 
+// The announced-link concern, stated once, in the suite that owns it: a download link is
+// presigned afresh by every read, so two reads are compared on the object it addresses.
+use crate::announced_download_locations::record;
+
 /// The router picks a service by the SigV4 credential scope's service field, so every
 /// request carries one naming `lambda` in `us-east-1`. Neither the key id nor the
 /// signature is a credential: this harness turns request authentication off below,
@@ -459,16 +463,16 @@ async fn publish_layer_version_stores_the_archive_and_reports_it() {
             first.text()
         );
         assert_eq!(
-            first.json(),
-            published,
+            record(case.name, &first.json()),
+            record(case.name, &published),
             "case {:?}: expected GetLayerVersion to report the published version, got {}",
             case.name,
             first.text()
         );
         let second = get_layer_version(&router, case.name, 1).await;
         assert_eq!(
-            second.json(),
-            first.json(),
+            record(case.name, &second.json()),
+            record(case.name, &first.json()),
             "case {:?}: expected two reads to report the same version, got {} then {}",
             case.name,
             first.text(),

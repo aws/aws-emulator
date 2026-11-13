@@ -9,6 +9,16 @@
 //! admits is refused for that constraint, and a well-formed one naming a version this
 //! account holds none of is reported missing.
 //!
+//! One member of that record is not stored state: `Content.Location` is "A link to the
+//! layer archive in Amazon S3 that is valid for 10 minutes", so every read presigns one
+//! afresh and the link carries the instant of THAT read (`X-Amz-Date`, the date in the
+//! credential scope) and a signature over it. Those belong to the read; the object the
+//! link addresses and the link's terms come from the stored version. So the record
+//! comparisons below set the signing instant and its signature aside — see
+//! [`addressed_object`] — and assert separately that each read announced a presigned link
+//! to the same object. A comparison that included the instant would answer by whether two
+//! reads happened to land in the same second, which is how fast the host runs.
+//!
 //! Every suite drives real HTTP requests through the router, so the assertions are about
 //! the wire behaviour (status, body) rather than about any handler's internals.
 
@@ -18,6 +28,9 @@ use base64::Engine as _;
 use serde_json::{json, Value};
 use service_com_amazonaws_lambda_awsgirapiservice::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
+
+// The announced-link concern, stated once, in the suite that owns it.
+use crate::announced_download_locations::{addressed_object, record};
 
 /// The router picks a service by the SigV4 credential scope's service field, so every
 /// request carries one naming `lambda` in `us-east-1`. Neither the key id nor the
@@ -187,6 +200,8 @@ struct Published {
     layer: &'static str,
     /// The version number the publish assigned.
     version: i64,
+    /// What the publish itself answered, which announces a download link of its own.
+    announced: Value,
 }
 
 /// Publish the table of layer versions every read suite below addresses, spanning what
@@ -281,6 +296,7 @@ async fn published_versions(router: &MultiServiceRouter) -> Vec<Published> {
             case,
             layer,
             version,
+            announced: answer.json(),
         });
     }
     published
@@ -330,7 +346,8 @@ async fn get_layer_version_by_arn_reports_the_version_the_arn_names() {
         );
 
         // The rule: the two reads address the same stored record, so they report it
-        // member for member.
+        // member for member — the announced link by the object it addresses, since the
+        // link is presigned afresh per read (see `addressed_object`).
         let by_name = get_layer_version(&router, row.layer, row.version).await;
         assert_eq!(
             by_name.status,
@@ -340,8 +357,8 @@ async fn get_layer_version_by_arn_reports_the_version_the_arn_names() {
             by_name.text()
         );
         assert_eq!(
-            reported,
-            by_name.json(),
+            record(case, &reported),
+            record(case, &by_name.json()),
             "case {case:?}: expected GetLayerVersionByArn to report what GetLayerVersion \
              reports, got {} against {}",
             answer.text(),
@@ -351,8 +368,8 @@ async fn get_layer_version_by_arn_reports_the_version_the_arn_names() {
         // A read changes nothing a later caller sees.
         let again = get_layer_version_by_arn(&router, &arn).await;
         assert_eq!(
-            again.json(),
-            reported,
+            record(case, &again.json()),
+            record(case, &reported),
             "case {case:?}: expected two reads to report the same version, got {} then {}",
             answer.text(),
             again.text()
@@ -363,11 +380,86 @@ async fn get_layer_version_by_arn_reports_the_version_the_arn_names() {
         let by_layer_arn = get_layer_version(&router, &encoded(&layer_arn(row.layer)), row.version)
             .await;
         assert_eq!(
-            by_layer_arn.json(),
-            reported,
+            record(case, &by_layer_arn.json()),
+            record(case, &reported),
             "case {case:?}: expected the layer-ARN read to report the same version, got {}",
             by_layer_arn.text()
         );
+    }
+}
+
+/// Every read that reports one layer version announces a link to the SAME archive object
+/// on the same terms, presigned at the instant of that read: the object and the terms come
+/// from the stored version, so they do not move between reads, while the instant and the
+/// signature over it belong to each read.
+///
+/// The rows are the published table, so they differ along what the rule generalises over:
+/// where the archive came from, which optional members the version carries, and which
+/// version number of a layer is addressed. The reads differ along which operation
+/// announced the link: the publish itself, the name-and-number read, and the ARN read
+/// twice over.
+#[tokio::test]
+async fn every_read_of_one_layer_version_announces_a_link_to_the_same_archive() {
+    let engine = Arc::new(engine::InMemoryEngine::new());
+    let router = router_on(&engine);
+
+    let mut objects: Vec<(&'static str, String)> = Vec::new();
+    for row in published_versions(&router).await {
+        let case = row.case;
+        let arn = layer_version_arn(row.layer, row.version);
+
+        let by_arn = get_layer_version_by_arn(&router, &arn).await;
+        let by_arn_again = get_layer_version_by_arn(&router, &arn).await;
+        let by_name = get_layer_version(&router, row.layer, row.version).await;
+        for (read, answer) in [
+            ("GetLayerVersionByArn", &by_arn),
+            ("GetLayerVersionByArn a second time", &by_arn_again),
+            ("GetLayerVersion", &by_name),
+        ] {
+            assert_eq!(
+                answer.status,
+                200,
+                "case {case:?}: expected 200 from {read} on {arn}, got {} {}",
+                answer.status,
+                answer.text()
+            );
+        }
+        let announced = [
+            ("the publish", row.announced.clone()),
+            ("GetLayerVersionByArn", by_arn.json()),
+            ("GetLayerVersionByArn a second time", by_arn_again.json()),
+            ("GetLayerVersion", by_name.json()),
+        ];
+
+        let object = addressed_object(case, &row.announced["Content"]["Location"]);
+        for (read, body) in &announced {
+            let reported = addressed_object(case, &body["Content"]["Location"]);
+            assert_eq!(
+                reported, object,
+                "case {case:?}: expected {read} to announce a link to {object}, got {reported}"
+            );
+        }
+        // The address is the stored version's own: its key names the layer and the version
+        // number the publish assigned.
+        let key_suffix = format!("/{}-{}", row.layer, row.version);
+        let address = object.split('?').next().unwrap_or_default().to_string();
+        assert!(
+            address.ends_with(&key_suffix),
+            "case {case:?}: expected an address whose key ends with {key_suffix:?}, got \
+             {address:?}"
+        );
+        objects.push((case, address));
+    }
+
+    // Two versions are two archives, so no two of the published versions share an address.
+    for (index, (case, address)) in objects.iter().enumerate() {
+        for (other_case, other) in objects.iter().skip(index + 1) {
+            assert_ne!(
+                address, other,
+                "case {case:?}: expected its own archive address, got the one case \
+                 {other_case:?} is served from: {address:?}"
+            );
+        }
     }
 }
 

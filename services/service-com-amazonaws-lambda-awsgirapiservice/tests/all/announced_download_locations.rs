@@ -204,6 +204,95 @@ fn query_field(query: &str, name: &str) -> Option<String> {
     })
 }
 
+/// The JSON pointers a read carries an announced download link at: a layer version's
+/// `Content.Location` and a function's `Code.Location`.
+pub(crate) const ANNOUNCED_LINK_POINTERS: [&str; 2] = ["/Content/Location", "/Code/Location"];
+
+/// What an announced download link says about the OBJECT it addresses and on what TERMS,
+/// with the signing instant of the read that announced it — and the signature over that
+/// instant — set aside.
+///
+/// A link is "valid for 10 minutes" from the read that announced it, so every read presigns
+/// one afresh: `X-Amz-Date`, the signing date in the credential scope and `X-Amz-Signature`
+/// belong to that read, while the address the object is held at, the algorithm, the expiry
+/// and the Region and service the scope names come from stored state. Two reads of one
+/// stored resource therefore agree on this reduction and need not agree on the link's text,
+/// which is why a comparison of two reads is made over this rather than over the URL: the
+/// URL answers by which second each read was served in, that is, by how fast the host runs.
+///
+/// Asserts along the way that the link really is presigned: a non-empty instant, a
+/// non-empty signature and a scope carrying a signing date — what is being set aside.
+pub(crate) fn addressed_object(case: &str, location: &Value) -> String {
+    let url = location
+        .as_str()
+        .unwrap_or_else(|| panic!("case {case:?}: expected a location string, got {location}"));
+    let (address, query) = url.split_once('?').unwrap_or((url, ""));
+    let mut terms: Vec<String> = Vec::new();
+    let mut carries_instant = false;
+    let mut carries_signature = false;
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (field, value) = pair.split_once('=').unwrap_or((pair, ""));
+        match field {
+            "X-Amz-Date" | "X-Amz-Signature" => {
+                assert!(
+                    !value.is_empty(),
+                    "case {case:?}: expected a presigned location, got an empty {field} in \
+                     {url}"
+                );
+                carries_instant |= field == "X-Amz-Date";
+                carries_signature |= field == "X-Amz-Signature";
+            }
+            // `<key id>/<signing date>/<region>/<service>/aws4_request`: the date is the
+            // read's, the rest is not.
+            "X-Amz-Credential" => {
+                let scope = value.replace("%2F", "/");
+                let mut segments = scope.split('/');
+                let key_id = segments.next().unwrap_or_default().to_string();
+                let signing_date = segments.next().unwrap_or_default();
+                assert!(
+                    !signing_date.is_empty(),
+                    "case {case:?}: expected a credential scope carrying a signing date, got \
+                     {scope:?}"
+                );
+                let rest: Vec<&str> = segments.collect();
+                terms.push(format!("{field}={key_id}/{}", rest.join("/")));
+            }
+            _ => terms.push(format!("{field}={value}")),
+        }
+    }
+    assert!(
+        carries_instant && carries_signature,
+        "case {case:?}: expected a presigned location carrying an instant and a signature, \
+         got {url}"
+    );
+    terms.sort();
+    format!("{address}?{}", terms.join("&"))
+}
+
+/// One read's answer as the RECORD it reports: every announced download link it carries is
+/// reduced to the object it addresses ([`addressed_object`]), so comparing two answers
+/// compares what the store holds rather than which second each read was served in.
+pub(crate) fn record(case: &str, body: &Value) -> Value {
+    let mut body = body.clone();
+    let announced: Vec<(&str, String)> = ANNOUNCED_LINK_POINTERS
+        .iter()
+        .filter_map(|pointer| {
+            let location = body.pointer(pointer)?;
+            Some((*pointer, addressed_object(case, location)))
+        })
+        .collect();
+    assert!(
+        !announced.is_empty(),
+        "case {case:?}: expected a read carrying an announced download link, got {body}"
+    );
+    for (pointer, object) in announced {
+        if let Some(slot) = body.pointer_mut(pointer) {
+            *slot = Value::String(object);
+        }
+    }
+    body
+}
+
 /// One announced download location under test.
 struct Announced {
     /// The case name, which every assertion reports.
