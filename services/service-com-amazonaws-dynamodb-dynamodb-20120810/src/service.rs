@@ -20,18 +20,19 @@
 //!   request's resolved route key against this service's signing name. Edit it
 //!   for anything the model does not express: a signing name shared by several
 //!   services, or routing that keys on the access-key id.
-//! - `override_operation` — EDITED HERE. It still serves the operation the generated
-//!   routing table names; what it adds is the SERVED OPERATION in scope for that
-//!   operation's whole run, which is what tells [`Service::override_refusal`] which
-//!   form a constraint clause takes (see "Which form a constraint clause takes").
-//!   The routing decision itself is not overridden.
+//! - `override_operation` — EDITED HERE. It serves the endpoint's own HTTP surface for a
+//!   request no operation of this model serves (see "The endpoint's own HTTP surface"), and
+//!   otherwise the operation the generated routing table names; what it adds to that is the
+//!   SERVED OPERATION in scope for that operation's whole run, which is what tells
+//!   [`Service::override_refusal`] which form a constraint clause takes (see "Which form a
+//!   constraint clause takes"). The routing decision among the MODELLED operations is not
+//!   overridden.
 //! - `override_refusal` — how this service words a request the framework refused
 //!   before any handler ran. The default returns `None`, keeping the framework's
 //!   wording. See the inline note on that method for how to reword.
-//! - `override_routing_error` — how this service words a request that reached it
-//!   but named no modeled operation. The default returns `None`, so the entry
-//!   renders the protocol-correct default (query -> 400 InvalidAction, awsJson ->
-//!   404, …). Return `Some(resp)` to answer in your own envelope if desired.
+//! - `override_routing_error` — EDITED HERE. A request that reached this service and named
+//!   no modelled operation is a target this ENDPOINT binds nothing for, which its front
+//!   door refuses in its own vocabulary (see "The endpoint's own HTTP surface").
 //! - `override_framework_error` — how this service words a transport-level
 //!   failure the orchestrator detects up front (e.g. a malformed `aws-chunked`
 //!   body). The default returns `None`, keeping the entry's protocol-correct
@@ -41,6 +42,22 @@
 //! table, and the default error renderers — lives in the generated `ServiceDefinition`
 //! and is reached, not edited, through the one `definition` method below. You
 //! do not write it; editing the entry would let this file drift from the model.
+//!
+//! ## The endpoint's own HTTP surface
+//!
+//! A DynamoDB endpoint is an HTTP endpoint before it is an API: its root has a method
+//! surface of its own, it serves its API under the JSON media types alone, and a target it
+//! cannot bind to an operation is refused ahead of every operation in a vocabulary that is
+//! the front door's rather than this model's. That whole layer lives in [`front_door`], and
+//! is wired at the two seams a request can meet it through — [`Service::override_operation`]
+//! (the surface itself) and [`Service::override_routing_error`] (a target naming no bound
+//! operation).
+//!
+//! ## What every response reports about itself
+//!
+//! Two things every response of this service carries, whichever layer produced it, are
+//! stamped by [`reported`]: the request it answered (below) and the CRC-32 of its own body
+//! ([`body_checksum`]), which an SDK validates every DynamoDB response against.
 //!
 //! ## Naming the request a response answers
 //!
@@ -101,10 +118,32 @@ use std::sync::Arc;
 /// rule (see "Naming the request a response answers").
 mod request_id;
 
+/// The checksum every response of this service reports its own body under
+/// (`x-amz-crc32`), stamped at the two layers below every response passes through.
+mod body_checksum;
+
+/// The endpoint's own HTTP surface: the root's method surface, the media types the API is
+/// served under, and what a target naming no bound operation is refused with.
+mod front_door;
+
 /// The `AWS/DynamoDB` `SuccessfulRequestLatency` series this service publishes for each
 /// table request it serves, under the `{TableName, Operation}` dimension pair that family is
 /// reported on.
 mod request_latency_metrics;
+
+/// Everything every response of this service reports about ITSELF, whichever layer
+/// produced it: the request it answered ([`request_id`]) and the checksum of its own body
+/// ([`body_checksum`]).
+///
+/// This is the [`service_common::query_error_envelope::Report`] both layers of this service
+/// take, so a response an operation produced and a response no operation produced report
+/// the same two things. A response the FRONT DOOR produced is not a document of this API
+/// and takes the first of them alone ([`front_door::EndpointSurface`]).
+fn reported(
+    resp: aws_smithy_runtime_api::http::Response,
+) -> aws_smithy_runtime_api::http::Response {
+    body_checksum::with_body_checksum_header(with_request_id_header(resp))
+}
 
 /// The error code this service answers an input-constraint violation with: the
 /// `ValidationException` (HTTP 400) every DynamoDB operation refuses a malformed
@@ -546,7 +585,7 @@ impl<Eng: Send + Sync + 'static> ErasedOperation for OperationScopedClauseForm<E
                 .ok()
                 .and_then(|key| Some((key, svc.definition().routing_table().get(key)?)));
             let Some((operation, op)) = routed else {
-                return svc.definition().routing_error_response(req);
+                return reported(front_door::unknown_operation_response(req));
             };
             // What serving this request TAKES is measured around the operation's own run,
             // which is the elapsed time its latency series reports
@@ -566,12 +605,15 @@ impl<Eng: Send + Sync + 'static> ErasedOperation for OperationScopedClauseForm<E
                 .await;
             let took = started.elapsed();
             // This is the ONE place every response an operation of this service produces
-            // passes through, so no operation can answer without naming the request it
-            // answered — and each attempt gets its own id, because each attempt is served
-            // here once. It is also where the throughput the request consumed is published:
-            // what it charged the table is taken under the store's lock, and the series it
-            // belongs to is CloudWatch's own, so the publish happens here, with that lock
-            // released and the request already served.
+            // passes through, so no operation can answer without reporting the request it
+            // answered and the checksum of its own body — and each attempt gets its own id,
+            // because each attempt is served here once. It is also where the response
+            // announces the media type the REQUEST named this endpoint's API under (see
+            // `front_door`), which is the one layer that has both the request and the
+            // rendered response in hand. It is also where the throughput the request
+            // consumed is published: what it charged the table is taken under the store's
+            // lock, and the series it belongs to is CloudWatch's own, so the publish happens
+            // here, with that lock released and the request already served.
             crate::state::publish_pending_consumed(&*self.engine);
             // And where the request itself is counted: a served table request is an
             // observation of its operation's latency on that table, published into the same
@@ -584,7 +626,7 @@ impl<Eng: Send + Sync + 'static> ErasedOperation for OperationScopedClauseForm<E
                 &answered,
                 took,
             );
-            with_request_id_header(answered)
+            front_door::announced(req, reported(answered))
         })
     }
 
@@ -885,6 +927,10 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     /// on the response. Held on the service because that seam returns a borrow of
     /// `self`.
     clause_form_scope: OperationScopedClauseForm<Eng>,
+    /// The endpoint's own HTTP surface, served in place of an operation for a request no
+    /// operation of this service serves (see [`front_door`]). Held here for the same
+    /// reason: that seam returns a borrow of `self`.
+    endpoint_surface: front_door::EndpointSurface,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -898,9 +944,10 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
                     crate::ServiceDefinition::new(Arc::clone(&engine)),
                     AUTHENTICATION_REFUSAL,
                 ),
-                with_request_id_header,
+                reported,
             ),
             clause_form_scope: OperationScopedClauseForm { engine },
+            endpoint_surface: front_door::EndpointSurface,
         }
     }
 }
@@ -934,12 +981,19 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         &self,
         req: &aws_smithy_runtime_api::http::Request,
     ) -> Option<&dyn ErasedOperation> {
-        // Serve the operation the generated routing table names, through the scope
-        // that carries its clause form into `override_refusal` (see "Which form a
+        // The endpoint's own HTTP surface comes first, because it is what a request meets
+        // before any operation of this model is named: the root's method surface and the
+        // media types the API is served under are decided from the request line and the
+        // headers alone (see [`front_door`]), and a request this endpoint routes nothing
+        // for is answered there rather than by an operation.
+        if front_door::unserved(req).is_some() {
+            return Some(&self.endpoint_surface);
+        }
+        // Otherwise serve the operation the generated routing table names, through the
+        // scope that carries its clause form into `override_refusal` (see "Which form a
         // constraint clause takes"). The routing decision itself is NOT overridden:
         // the key is resolved by the model's own protocol, and a request the table
-        // cannot serve is declined here so the framework's routing-error path stays
-        // exactly as it was.
+        // cannot serve is declined here so the front door's refusal below answers it.
         let operation = self.definition().protocol().routing_key(req).ok()?;
         self.definition().routing_table().get(operation)?;
         Some(&self.clause_form_scope)
@@ -972,14 +1026,18 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         &self,
         req: &aws_smithy_runtime_api::http::Request,
     ) -> Option<aws_smithy_runtime_api::http::Response> {
-        // The router calls this when a request reached this service but named no
-        // modeled operation — neither `override_operation` nor the generated
-        // routing table resolved it. Returning `None` renders the protocol-correct
-        // default for this service's envelope (query -> 400 InvalidAction text/xml,
-        // awsJson -> 404, rpcv2Cbor -> 404, rest -> 501). Return `Some(resp)` to
-        // word that routing failure in your own envelope instead.
-        let _ = req;
-        None
+        // The router calls this when a request reached this service but named no modeled
+        // operation — neither `override_operation` nor the generated routing table
+        // resolved it. For this endpoint that is one thing: an `x-amz-target` naming no
+        // operation the front door binds, including one that does not parse as
+        // `Service.Operation` at all. The front door refuses it in its OWN vocabulary
+        // ([`front_door::unknown_operation_response`]) rather than in the framework's
+        // "modelled but not registered" wording, because no operation was identified and
+        // this endpoint has no notion of an operation it declines to serve.
+        //
+        // A request the endpoint's own surface owns never reaches this seam:
+        // `override_operation` is asked first and claims it there.
+        Some(reported(front_door::unknown_operation_response(req)))
     }
 
     fn override_framework_error(

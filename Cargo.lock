@@ -12388,6 +12388,7 @@ dependencies = [
  "aws-smithy-types",
  "bigdecimal",
  "bytes",
+ "crc32fast",
  "csv",
  "flate2",
  "hex",

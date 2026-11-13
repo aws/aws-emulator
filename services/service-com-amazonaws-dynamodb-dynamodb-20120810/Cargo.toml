@@ -40,6 +40,9 @@ uuid = { version = "1", features = ["v4"] }
 # stands for the same set across retries (`state::multi_item`), and fingerprints a PartiQL
 # statement (`state::partiql`).
 sha2 = { workspace = true }
+# The CRC-32 every response reports its own body under (`x-amz-crc32`), which an SDK
+# validates each DynamoDB response against (`service::body_checksum`).
+crc32fast = "1"
 # Hex rendering for those digests, and for the opaque pagination tokens the list
 # operations mint (`ops::list_exports`, `ops::list_imports`).
 hex = { workspace = true }

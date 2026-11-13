@@ -71,6 +71,8 @@ mod enable_kinesis_streaming_destination;
 mod enum_value_set_order;
 #[path = "all/endpoint_discovery.rs"]
 mod endpoint_discovery;
+#[path = "all/endpoint_front_door.rs"]
+mod endpoint_front_door;
 #[path = "all/export_conflicts_and_capacity_no_ops.rs"]
 mod export_conflicts_and_capacity_no_ops;
 #[path = "all/export_recovery_precondition.rs"]
