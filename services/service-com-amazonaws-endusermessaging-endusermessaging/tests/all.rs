@@ -13,5 +13,7 @@
 // points it into `tests/all/`.
 #[path = "all/brand_profile_lifecycle.rs"]
 mod brand_profile_lifecycle;
+#[path = "all/brand_profile_refusal_bodies.rs"]
+mod brand_profile_refusal_bodies;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;

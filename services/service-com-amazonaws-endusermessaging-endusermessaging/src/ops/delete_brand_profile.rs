@@ -181,15 +181,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .expect("the id just resolved against this store");
             if profile.deletion_protection_enabled {
                 return Err(DeleteBrandProfileErrorModeled::ConflictException(
-                    ConflictException {
-                        message: format!(
-                            "Brand profile {id} cannot be deleted while deletion protection is enabled."
-                        ),
-                        resource_id: Some(id.clone()),
-                        resource_type: Some(
-                            crate::state::BRAND_PROFILE_RESOURCE_TYPE.to_string(),
-                        ),
-                    },
+                    crate::state::brand_profile_deletion_protection_conflict(&id),
                 )
                 .into());
             }

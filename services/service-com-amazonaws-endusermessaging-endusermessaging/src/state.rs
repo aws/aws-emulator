@@ -219,18 +219,70 @@ pub const NO_STORE: &str =
 /// `crate::ops::types::STATUS_VALUES`.
 pub const ACTIVE_STATUS: &str = "ACTIVE";
 
-/// The `resourceType` a brand-profile error reports, in the service's own
-/// vocabulary (`JobResourceType` spells the brand-profile resource this way).
-pub const BRAND_PROFILE_RESOURCE_TYPE: &str = "BRAND_PROFILE";
+/// The `resourceType` a brand-profile error reports: the hyphenated resource
+/// vocabulary this API names the resource by, the same spelling it takes in a
+/// brand-profile ARN. `ConflictException`/`ResourceNotFoundException` model
+/// `resourceType` as a free `String`, not as the `JobResourceType` enum, so the
+/// resource segment — not that enum's `BRAND_PROFILE` — is the token reported
+/// here and quoted in the refusal messages below.
+pub const BRAND_PROFILE_RESOURCE_TYPE: &str = BRAND_PROFILE_RESOURCE;
+
+/// The conflict `Reason` token for a request refused because the resource it
+/// names has deletion protection switched on.
+pub const DELETION_PROTECTION_ENABLED_REASON: &str = "DELETION_PROTECTION_ENABLED";
+
+/// `ResourceNotFoundException` for an identifier that names no stored resource of
+/// `resource_type`.
+///
+/// The message is this error class's fixed template; its only variable parts are
+/// the resource type and the identifier, which is the value the request gave.
+pub fn resource_not_found(
+    resource_type: &str,
+    resource_id: &str,
+) -> crate::ops::types::ResourceNotFoundException {
+    crate::ops::types::ResourceNotFoundException {
+        message: format!(
+            "Resource not found - ResourceType=\"{resource_type}\" ResourceId=\"{resource_id}\""
+        ),
+        resource_id: Some(resource_id.to_string()),
+        resource_type: Some(resource_type.to_string()),
+    }
+}
+
+/// `ConflictException` for a request the current state of `resource_id` forbids.
+///
+/// The message is this error class's fixed template: the quoted `Reason` token
+/// names the state that caused the conflict and the quoted `ResourceType` the
+/// resource's type; no request-supplied value appears in it, so the identifier is
+/// reported in the `resourceId` member alone.
+pub fn resource_conflict(
+    reason: &str,
+    resource_type: &str,
+    resource_id: &str,
+) -> crate::ops::types::ConflictException {
+    crate::ops::types::ConflictException {
+        message: format!("Conflict occurred - Reason=\"{reason}\" ResourceType=\"{resource_type}\""),
+        resource_id: Some(resource_id.to_string()),
+        resource_type: Some(resource_type.to_string()),
+    }
+}
 
 /// `ResourceNotFoundException` for a `BrandProfileIdOrArn` that names no stored
 /// profile. The message is built from the request, so it names the value given.
 pub fn brand_profile_not_found(id_or_arn: &str) -> crate::ops::types::ResourceNotFoundException {
-    crate::ops::types::ResourceNotFoundException {
-        message: format!("Brand profile {id_or_arn} was not found."),
-        resource_id: Some(id_or_arn.to_string()),
-        resource_type: Some(BRAND_PROFILE_RESOURCE_TYPE.to_string()),
-    }
+    resource_not_found(BRAND_PROFILE_RESOURCE_TYPE, id_or_arn)
+}
+
+/// `ConflictException` for a brand-profile request refused by that profile's
+/// deletion protection.
+pub fn brand_profile_deletion_protection_conflict(
+    brand_profile_id: &str,
+) -> crate::ops::types::ConflictException {
+    resource_conflict(
+        DELETION_PROTECTION_ENABLED_REASON,
+        BRAND_PROFILE_RESOURCE_TYPE,
+        brand_profile_id,
+    )
 }
 
 fn nanos_since_epoch() -> u128 {
