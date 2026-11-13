@@ -1720,3 +1720,9 @@ mod aoss_vpc_endpoint_placement_resolves_in_ec2;
 // (which records the VPC it is bound to) and Amazon S3 (which decides the request), so no
 #[path = "all/s3_access_point_vpc_network_origin.rs"]
 mod s3_access_point_vpc_network_origin;
+// Declared in this same head region, for the reason the entry above records: a backup job's
+// state change reaching the queue ONE template's rule, topic, subscription and policies wire
+// up spans CloudFormation, AWS Backup, Amazon DynamoDB, IAM, EventBridge, SNS and Amazon SQS
+// at once, so no single service crate's test target can deploy it.
+#[path = "all/cfn_deployed_backup_pipeline_delivers_job_events.rs"]
+mod cfn_deployed_backup_pipeline_delivers_job_events;
