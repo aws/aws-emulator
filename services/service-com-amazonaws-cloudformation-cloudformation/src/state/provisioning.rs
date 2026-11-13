@@ -3835,6 +3835,17 @@ const UNNAMED_CODE_PREFIX: &str = "HTTP ";
 /// Each entry also carries the SHAPE that service's SDK words the diagnostic in
 /// ([`SdkDiagnostic`]), which is the SDK's and cannot be derived from the service.
 const SDK_SERVICE_NAMES: &[(&str, &str, SdkDiagnostic)] = &[
+    // AWS AppConfig's SDK names it by that model's own `sdkId`, which is also the
+    // `cloudFormationName` the type names of its resources carry
+    // (`smithy_query(query="service_info")` on that service's model: `sdkId: "AppConfig"`,
+    // `cloudFormationName: AppConfig`). The shape is the bare ENVELOPE, with no attempt count
+    // after it, as the recorded `ResourceStatusReason` of an `AWS::AppConfig::Application`
+    // whose declared name is longer than that service's maximum carries it (`"<the service's
+    // sentence> (Service: AppConfig, Status Code: 400, Request ID: …)"`, where Amazon Route 53's
+    // below carries `(SDK Attempt Count: …)` past the closing parenthesis). The four resource
+    // types this emulator provisions over this signing name are all that service's
+    // ([`provisioning::appconfig_resources`]).
+    ("appconfig", "AppConfig", SdkDiagnostic::Envelope),
     // Application Auto Scaling's SDK names it by its `sdkId` without the spaces, which is
     // also the `cloudFormationName` the type names of its resources carry
     // (`smithy_query(query="service_info")`).

@@ -15,6 +15,8 @@ mod account_limits;
 mod agentcore_stack_outputs;
 #[path = "all/appconfig_estate_provisioning.rs"]
 mod appconfig_estate_provisioning;
+#[path = "all/appconfig_refused_create_exception.rs"]
+mod appconfig_refused_create_exception;
 #[path = "all/appconfig_resource_types.rs"]
 mod appconfig_resource_types;
 #[path = "all/apigateway_vpc_link_resources.rs"]

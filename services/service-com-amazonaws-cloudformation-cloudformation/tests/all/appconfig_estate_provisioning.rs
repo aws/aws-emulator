@@ -54,7 +54,7 @@ fn is_appconfig_id(value: &str) -> bool {
 /// One AWS AppConfig call over the `restJson1` wire its model declares, on the method and URI
 /// that operation's own `@http` binding names, signed for `appconfig` — that model's own
 /// `sigv4Name` — in the Region the stack's resources live in.
-async fn appconfig(
+pub(crate) async fn appconfig(
     router: &MultiServiceRouter,
     method: &str,
     uri: &str,
