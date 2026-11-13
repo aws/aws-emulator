@@ -242,9 +242,16 @@ impl Reader {
 }
 
 /// Tokens this service did not issue: a token is the hex of `<epoch nanoseconds>:<id>`, so
-/// each row breaks one part of that — the hex, its length, the colon, the number before it
-/// — plus the degenerate empty one.
+/// each row breaks one part of that — the hex, its length, its case, the colon, the number
+/// before it, the id after it — plus the degenerate empty one.
+///
+/// The last four rows are the ones that name a WELL-FORMED key the service never spelled
+/// that way: the instant it mints is a plain unsigned decimal and the hex is lower case, so
+/// a sign, a zero pad or an upper-case rendering is no token of its own, and an id carrying
+/// no characters names no record, since no door of this service mints one under such a
+/// name.
 fn tokens_this_service_did_not_issue() -> Vec<(&'static str, String)> {
+    let instant = 1_762_000_000_000_000_000_u128;
     vec![
         ("empty", String::new()),
         ("not hex at all", "zzzz".to_string()),
@@ -257,6 +264,22 @@ fn tokens_this_service_did_not_issue() -> Vec<(&'static str, String)> {
         (
             "hex of an instant past what a count of nanoseconds can be",
             ::hex::encode(format!("{}0:some-record", u128::MAX)),
+        ),
+        (
+            "hex of a plus-signed instant",
+            ::hex::encode(format!("+{instant}:some-record")),
+        ),
+        (
+            "hex of a zero-padded instant",
+            ::hex::encode(format!("000000{instant}:some-record")),
+        ),
+        (
+            "hex of a key with no id",
+            ::hex::encode(format!("{instant}:")),
+        ),
+        (
+            "upper-case hex of a key",
+            ::hex::encode(format!("{instant}:some-record")).to_uppercase(),
         ),
     ]
 }

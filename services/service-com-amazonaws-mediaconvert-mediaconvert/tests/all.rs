@@ -85,6 +85,8 @@ mod jobs_query_output_codecs;
 mod list_jobs_queue_filter;
 #[path = "all/local_refusals_cost_no_input_read.rs"]
 mod local_refusals_cost_no_input_read;
+#[path = "all/next_token_spelling.rs"]
+mod next_token_spelling;
 #[path = "all/optional_free_text.rs"]
 mod optional_free_text;
 #[path = "all/output_preset_reference.rs"]

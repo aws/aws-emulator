@@ -2066,17 +2066,36 @@ pub const DEFAULT_PAGE_SIZE: i32 = 20;
 /// Defined ONCE here, so every listing in this service issues and reads the same cursor
 /// format.
 pub fn encode_cursor(created_at: SystemTime, id: &str) -> String {
-    ::hex::encode(format!("{}:{id}", epoch_nanos(created_at)))
+    cursor_of_key(epoch_nanos(created_at), id)
+}
+
+/// The cursor of an ordering key already in its stored form, which is all
+/// [`encode_cursor`] does once the instant is a count of nanoseconds — and the rendering
+/// [`decode_cursor`] compares a token against, so the two cannot drift.
+fn cursor_of_key(nanos: u128, id: &str) -> String {
+    ::hex::encode(format!("{nanos}:{id}"))
 }
 
 /// The `(creation instant, id)` ordering key inside a cursor, or `None` when the token is
 /// not one [`encode_cursor`] produced — which a handler answers with its modelled
 /// `BadRequestException`. Decoded with `ok()?` throughout, so a hostile token cannot
 /// panic.
+///
+/// A token is this service's own only when it is byte for byte what the minting site
+/// writes, so the decoded key is RE-RENDERED and compared to the token handed in: that
+/// turns away every other spelling of the same key, which no page was ever issued under —
+/// a signed or zero-padded instant (Rust's integer `FromStr` takes both) and upper-case
+/// hex. The id half is checked separately because it is the one part the re-rendering
+/// cannot catch: a stored id always carries characters, since no door of this service
+/// mints a record under a name that carries none, so an empty one names no record.
 pub fn decode_cursor(token: &str) -> Option<(u128, String)> {
     let decoded = String::from_utf8(::hex::decode(token).ok()?).ok()?;
     let (nanos, id) = decoded.split_once(':')?;
-    Some((nanos.parse().ok()?, id.to_string()))
+    let nanos: u128 = nanos.parse().ok()?;
+    if id.is_empty() || cursor_of_key(nanos, id) != token {
+        return None;
+    }
+    Some((nanos, id.to_string()))
 }
 
 /// What this service says of a `nextToken` it did not issue, as the two refusals below
