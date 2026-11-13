@@ -201,15 +201,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .get(&crate::state::metric_stream_key(&region, &input.name))
             .ok_or_else(|| {
                 // "The named resource does not exist." is what the SHAPE documents, and the
-                // refusal itself carries an EMPTY message: the recorded refusal's `Message`
-                // member is present and empty, and the resource is named by the two members
-                // that carry it rather than by a sentence. The `Some(String::new())` is that
-                // empty member rather than an absent one.
+                // refusal itself carries NO message: the resource is named by the two members
+                // that carry it — the type of resource and the id that was looked up — and
+                // nothing states a sentence about it, so `message` is absent rather than
+                // present and empty. A client testing whether a human-readable reason came
+                // with the refusal has to be able to tell "no reason" from "an empty reason".
                 GetMetricStreamErrorModeled::ResourceNotFoundException(
                     ResourceNotFoundException {
                         resource_type: Some("MetricStream".to_string()),
                         resource_id: Some(input.name.clone()),
-                        message: Some(String::new()),
+                        message: None,
                     },
                 )
             })?;

@@ -233,6 +233,10 @@ mod put_metric_data_validation;
 mod query_compatible_error_envelope;
 #[path = "all/query_form_metrics.rs"]
 mod query_form_metrics;
+#[path = "all/query_protocol_metric_streams.rs"]
+mod query_protocol_metric_streams;
+#[path = "all/query_protocol_probe_tmp.rs"]
+mod query_protocol_probe_tmp;
 #[path = "all/rds_alarm_action_delivery.rs"]
 mod rds_alarm_action_delivery;
 #[path = "all/replay_probe.rs"]

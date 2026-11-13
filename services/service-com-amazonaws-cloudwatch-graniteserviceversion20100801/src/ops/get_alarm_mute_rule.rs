@@ -184,15 +184,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ))
             .ok_or_else(|| {
                 // "The named resource does not exist." is what the SHAPE documents, and the
-                // refusal itself carries an EMPTY message: this error class is answered by its
+                // refusal itself carries NO message: this error class is answered by its
                 // code alone, and the resource is named by the two members that carry it rather
                 // than by a sentence — the same body every other not-found of this class in this
-                // service answers with.
+                // service answers with, the member absent rather than present and empty.
                 GetAlarmMuteRuleErrorModeled::ResourceNotFoundException(
                     ResourceNotFoundException {
                         resource_type: Some(ALARM_MUTE_RULE_RESOURCE_TYPE.to_string()),
                         resource_id: Some(input.alarm_mute_rule_name.clone()),
-                        message: Some(String::new()),
+                        message: None,
                     },
                 )
             })?;

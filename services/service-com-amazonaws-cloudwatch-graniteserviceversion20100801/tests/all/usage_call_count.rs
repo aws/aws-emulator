@@ -32,7 +32,10 @@ const USAGE_PERIOD: i64 = 60;
 
 /// The dimension set of this service's API call count, with `operation` as the resource used:
 /// `Service`, `Class`, `Type` and `Resource`, the four dimensions a usage series carries.
-fn usage_dimensions(operation: &str) -> Value {
+///
+/// `pub(crate)` so the suite that asserts the same counting for a call made on this service's
+/// OTHER wire protocol reads the series through this one definition of it.
+pub fn usage_dimensions(operation: &str) -> Value {
     json!([
         {"Name": "Service", "Value": "CloudWatch"},
         {"Name": "Class", "Value": "None"},
@@ -46,7 +49,9 @@ fn usage_dimensions(operation: &str) -> Value {
 ///
 /// The window is several periods wide and summed across them, because a run of calls can
 /// straddle a minute boundary: how many calls were counted is the total, not one window's.
-async fn counted_calls(router: &MultiServiceRouter, operation: &str) -> (f64, usize) {
+///
+/// `pub(crate)`, for the same reason [`usage_dimensions`] is.
+pub async fn counted_calls(router: &MultiServiceRouter, operation: &str) -> (f64, usize) {
     let now = now_secs();
     let body = ok(
         router,

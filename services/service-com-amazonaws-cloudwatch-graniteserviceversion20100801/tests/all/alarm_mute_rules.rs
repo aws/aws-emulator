@@ -572,14 +572,14 @@ async fn a_name_no_mute_rule_carries_is_refused_by_its_code_alone() {
             "case {case:?}: expected HTTP 404 ResourceNotFoundException, got {status} with {body}"
         );
         // The class is answered by its code alone: the resource is named by the two members that
-        // carry it, and the message is present and empty.
+        // carry it, and no message member is sent at all.
         assert_eq!(
             (
                 body.get("ResourceType").and_then(Value::as_str),
                 body.get("ResourceId").and_then(Value::as_str),
                 body.get("Message").and_then(Value::as_str),
             ),
-            (Some("AlarmMuteRule"), Some(name), Some("")),
+            (Some("AlarmMuteRule"), Some(name), None),
             "case {case:?}: expected the resource named and no message, got {body}"
         );
     }
@@ -957,7 +957,7 @@ async fn a_listing_the_store_cannot_serve_is_refused() {
                 body.get("ResourceId").and_then(Value::as_str),
                 body.get("Message").and_then(Value::as_str),
             ),
-            (Some("Alarm"), Some(alarm_name), Some("")),
+            (Some("Alarm"), Some(alarm_name), None),
             "case {case:?}: expected the alarm named and no message, got {body}"
         );
     }

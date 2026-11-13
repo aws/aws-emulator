@@ -5,7 +5,8 @@
 //! The rule under test: the text a refusal carries belongs to the error class the service
 //! answers that call with, so an emulator reproduces exactly the text the service words for
 //! that class — and where the class is answered by its CODE alone, the refusal carries no
-//! text at all rather than an explanatory sentence the service never sends.
+//! text at all rather than an explanatory sentence the service never sends, with the member
+//! that would carry it ABSENT rather than present and empty.
 //!
 //! Both halves are tabled. The first table's rows differ along what the rule generalises
 //! over — which operation refuses (`SetAlarmState`, `GetMetricStream` and the three
@@ -96,14 +97,14 @@ async fn a_not_found_answered_by_its_code_alone_carries_no_message() {
     let router = build_router();
     given_resources(&router).await;
 
-    // (case, operation, request, expected error code, the member the empty message rides on).
+    // (case, operation, request, expected error code).
     //
-    // The last column pins the WIRE SHAPE of "no text", which the two error shapes spell
-    // differently: `ResourceNotFoundException$Message` targets `FaultDescription`, which bounds
-    // no length, and the recorded refusal of that class carries the member present and empty;
+    // Both error shapes spell "no text" the same way — the member ABSENT:
     // `ResourceNotFound$message` is constrained to 1..255 characters, so an empty value is not
-    // one it can hold at all and its empty message is an ABSENT member (`None` below).
-    let mut cases: Vec<(String, &str, Value, &str, Option<&str>)> = vec![];
+    // one it can hold at all, and the `ResourceNotFoundException` this service answers by its
+    // code alone leaves its `Message` out rather than sending an empty one, so a client testing
+    // for a human-readable reason is not given an empty one.
+    let mut cases: Vec<(String, &str, Value, &str)> = vec![];
 
     // `SetAlarmState` on a name no alarm of either kind carries. Rows differ along how the
     // name misses and along the state the request asks for, which is the other member the
@@ -120,7 +121,6 @@ async fn a_not_found_answered_by_its_code_alone_carries_no_message() {
                 "SetAlarmState",
                 json!({"AlarmName": name, "StateValue": state, "StateReason": "probe"}),
                 "ResourceNotFound",
-                None,
             ));
         }
     }
@@ -137,7 +137,6 @@ async fn a_not_found_answered_by_its_code_alone_carries_no_message() {
             "GetMetricStream",
             json!({"Name": name}),
             "ResourceNotFoundException",
-            Some("Message"),
         ));
     }
 
@@ -168,38 +167,30 @@ async fn a_not_found_answered_by_its_code_alone_carries_no_message() {
                 operation,
                 tagging_request(operation, &arn),
                 "ResourceNotFoundException",
-                Some("Message"),
             ));
         }
     }
 
-    for (case, operation, request, code, empty_member) in cases {
+    for (case, operation, request, code) in cases {
         let (status, body) = call(&router, operation, &request).await;
         assert_eq!(
             (status, error_code(&body).as_str()),
             (404, code),
             "case {case:?}: expected HTTP 404 {code}, got {status} with {body}"
         );
-        // What a client reads is empty whichever shape the refusal is.
+        // What a client reads is empty whichever shape the refusal is …
         let message = error_message(&body);
         assert!(
             message.is_empty(),
             "case {case:?}: this refusal is answered by its code alone, so it must carry no \
              message, got {message:?} in {body}"
         );
-        // And the member carrying it has the shape that error shape allows.
-        match empty_member {
-            Some(member) => assert_eq!(
-                body.get(member).and_then(Value::as_str),
-                Some(""),
-                "case {case:?}: expected {member} present and empty, got {body}"
-            ),
-            None => assert!(
-                body.get("message").is_none() && body.get("Message").is_none(),
-                "case {case:?}: this shape's message cannot hold an empty value, so the member \
-                 must be absent, got {body}"
-            ),
-        }
+        // … and the member that would carry it is absent rather than present and empty.
+        assert!(
+            body.get("message").is_none() && body.get("Message").is_none(),
+            "case {case:?}: a refusal answered by its code alone states no reason, so the \
+             message member must be absent rather than empty, got {body}"
+        );
     }
 
     // The resources the store does hold are untouched by the misses: a refused read neither

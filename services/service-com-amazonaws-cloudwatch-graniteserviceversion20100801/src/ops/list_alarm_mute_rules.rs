@@ -195,9 +195,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // (`ListAlarmMuteRulesInput$AlarmName`) — the filter names an ALARM, so a name no alarm of
         // any kind carries names no resource to filter by: the not-found this operation models
         // ("The named resource does not exist."), answered by its code alone with the resource
-        // named by the two members that carry it, like every other not-found of this class in this
-        // service. A rule TARGETS an alarm by name, so the filter keeps the rules whose
-        // `MuteTargets` name it.
+        // named by the two members that carry it and NO message member, like every other
+        // not-found of this class in this service. A rule TARGETS an alarm by name, so the
+        // filter keeps the rules whose `MuteTargets` name it.
         if let Some(alarm_name) = input.alarm_name.as_deref() {
             if store.alarm_kind(alarm_name).is_none() {
                 return Err(ListAlarmMuteRulesErrorModeled::ResourceNotFoundException(
@@ -206,7 +206,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                             crate::state::TaggableKind::Alarm.resource_type().to_string(),
                         ),
                         resource_id: Some(alarm_name.to_string()),
-                        message: Some(String::new()),
+                        message: None,
                     },
                 )
                 .into());

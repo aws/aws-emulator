@@ -590,6 +590,64 @@ pub async fn call_in_query_mode(
     answered(router, request_for(DEFAULT_REGION, operation, body, true)).await
 }
 
+/// The API version an `awsQuery` client of this service sends in its form body: the version
+/// of the service's own model (`Action=<Operation>&Version=2010-08-01`).
+pub const QUERY_API_VERSION: &str = "2010-08-01";
+
+/// One `awsQuery` form call against this service — the second protocol its model declares —
+/// answering the HTTP status, the response `content-type` and the body as answered.
+///
+/// `content_type` and `extra_headers` are what a row varies: the media type a client spells
+/// the form body with, and any other header it sends beside it. `params` are the form fields
+/// after `Action` and `Version`, including the indexed ones a list arrives on
+/// (`ExcludeFilters.member.1.Namespace`), percent-encoded by the ONE encoder of this
+/// harness's form bodies.
+pub async fn query_call(
+    router: &MultiServiceRouter,
+    content_type: &str,
+    extra_headers: &[(&str, &str)],
+    action: &str,
+    params: &[(&str, &str)],
+) -> (u16, String, String) {
+    let mut body = format!("Action={action}&Version={QUERY_API_VERSION}");
+    for (name, value) in params {
+        body.push('&');
+        body.push_str(name);
+        body.push('=');
+        body.push_str(&form_value(value));
+    }
+    let mut builder = http::Request::builder()
+        .method("POST")
+        .uri("/")
+        .header("host", format!("monitoring.{DEFAULT_REGION}.amazonaws.com"))
+        .header("content-type", content_type)
+        // The SigV4 credential scope is what routes the request to the `monitoring` signing
+        // name, exactly as it does for the JSON calls above.
+        .header(
+            "authorization",
+            format!(
+                "AWS4-HMAC-SHA256 Credential=AKIDTEST/20260101/{DEFAULT_REGION}/monitoring/\
+                 aws4_request, SignedHeaders=host;x-amz-date, Signature=deadbeef"
+            ),
+        );
+    for (name, value) in extra_headers {
+        builder = builder.header(*name, *value);
+    }
+    let request = builder
+        .body(bytes::Bytes::from(body))
+        .expect("a well-formed request");
+    let response = router.dispatch(request).await;
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let text = String::from_utf8_lossy(response.body()).to_string();
+    (status, content_type, text)
+}
+
 /// One request as this service's wire protocol carries it: `awsJson1_0` over `POST /`, with
 /// `query_mode` adding the header a query-compatible SDK sends.
 fn request_for(

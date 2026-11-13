@@ -23,10 +23,12 @@
 //! - `override_operation` — EDITED HERE: not a re-route. The key and the handler stay the
 //!   generated routing table's, but every operation is served through [`Metering`], so each
 //!   call this service answers is counted into the usage telemetry it publishes about its own
-//!   API, and through [`QueryCompatibleErrors`], so whatever failure it answers names its
+//!   API, through [`QueryCompatibleErrors`], so whatever failure it answers names its
 //!   error class the way an `awsQueryCompatible` service names one — the qualified shape id in
 //!   the body and the legacy query code in the `x-amzn-query-error` header
-//!   ([`query_compatible_errors`]); `PutMetricData` is served through
+//!   ([`query_compatible_errors`]) — and through [`ReportingTheRequestId`], so a failure it
+//!   answers on the query wire names the request it answered ([`request_protocol`]);
+//!   `PutMetricData` is served through
 //!   [`ReportingDroppedEntities`], so an accepted call
 //!   whose entity this service could not hold says so in its response header, and
 //!   `GetMetricStatistics` through [`JudgingTheValuesThisServiceEnforces`], so a value outside
@@ -35,6 +37,8 @@
 //!   other three metric operations a namespace is submitted to — and
 //!   `PutMetricStream` through [`RefusingAValueFirst`], so the two members CloudWatch judges
 //!   as parameter VALUES are judged before the model's own shape checks.
+//!   The key itself is read through the protocol THIS REQUEST is served in, so a call in any
+//!   of the three protocols this service's model declares is served by the same wrappers.
 //! - `override_refusal` — how this service words a request the framework refused
 //!   before any handler ran. The default returns `None`, keeping the framework's
 //!   wording. See the inline note on that method for how to reword.
@@ -50,19 +54,35 @@
 //! The model-derived half of this service — its identity, wire protocol, routing
 //! table, and the default error renderers — lives in the generated `ServiceDefinition`
 //! and is reached, not edited, through the one `definition` method below. You
-//! do not write it; editing the entry would let this file drift from the model.
+//! do not write it; editing the entry would let this file drift from the model. What this
+//! file DOES own there is a pair of wrappers round it ([`ServedDefinition`]): the protocol
+//! each request is served in, which follows from the request's content type, and the
+//! `<RequestId>` an `awsQuery` error envelope carries ([`request_protocol`]).
 
 use smithy_server_runtime::{
-    http, BoxFuture, DeserializableStruct, ErasedOperation, Operation, OperationContext,
-    OperationError, OperationRoutingTable, Refusal, Refused, ServerHttpProtocol, Service,
+    http, BoxFuture, DeserializableStruct, ErasedOperation, ErasedServiceDefinition, Operation,
+    OperationContext, OperationError, OperationRoutingTable, Refusal, Refused, ServerHttpProtocol,
+    Service,
 };
 use std::sync::Arc;
 
 pub mod query_compatible_errors;
+pub mod request_protocol;
 
 use query_compatible_errors::{
     QueryCompatibleErrors, MISSING_PARAMETER, PARAMETER_VALUE, VALIDATION,
 };
+use request_protocol::{ReportingTheRequestId, TheProtocolOfTheRequest};
+
+/// This service's model-derived half as it is SERVED: the generated entry, serving each
+/// request in the protocol that request itself names, under the error envelope an `awsQuery`
+/// failure carries ([`request_protocol`]).
+///
+/// Nothing model-derived is restated by either wrapper — identity, the routing table and the
+/// declared protocols are the generated entry's, reached through them.
+type ServedDefinition<Eng> = service_common::query_error_envelope::RequestIdEnvelopeDefinition<
+    TheProtocolOfTheRequest<crate::ServiceDefinition<Eng>>,
+>;
 
 /// Run `work` without occupying an async worker.
 ///
@@ -86,7 +106,7 @@ pub(crate) fn off_the_async_worker<T>(work: impl FnOnce() -> T) -> T {
 /// Generic over the engine type `Eng` so this file names no concrete engine; the
 /// router builds one shared engine and hands it to `new`.
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
-    entry: crate::ServiceDefinition<Eng>,
+    entry: ServedDefinition<Eng>,
     /// The operations whose ANSWER this file owns a part of — the one whose accepted response
     /// carries something its body cannot ([`ReportingDroppedEntities`]), the four metric
     /// operations a namespace is submitted to, whose request values are judged by what this
@@ -104,7 +124,7 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     /// every request passes through rather than a line in each handler. The whole chain sits
     /// inside [`QueryCompatibleErrors`], for the same reason: naming the class of a failure is
     /// owed by every answer, whichever layer built it.
-    metered: QueryCompatibleErrors<Metering<Eng, TheModelledOperation>>,
+    metered: ReportingTheRequestId<QueryCompatibleErrors<Metering<Eng, TheModelledOperation>>>,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -121,13 +141,13 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         // ([`ReportingDroppedEntities`]), over whichever of the two layers answered.
         overridden.add_operation(
             "PutMetricData",
-            Box::new(QueryCompatibleErrors::new(Metering::new(
-                Arc::clone(&engine),
+            served(
+                &engine,
                 ReportingDroppedEntities::new(JudgingTheValuesThisServiceEnforces::new(
                     crate::ops::put_metric_data::PutMetricData::new(Arc::clone(&engine)),
                     parameter_fault_for,
                 )),
-            ))) as Box<dyn ErasedOperation>,
+            ),
         );
         // `GetMetricStatistics` validates the SAME enumerated types as the retrieving read and
         // answers a value outside one as one of the parameter faults its model declares, which
@@ -136,15 +156,15 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         // own validation code ([`scalar_enum_refusal`]).
         overridden.add_operation(
             "GetMetricStatistics",
-            Box::new(QueryCompatibleErrors::new(Metering::new(
-                Arc::clone(&engine),
+            served(
+                &engine,
                 JudgingTheValuesThisServiceEnforces::new(
                     crate::ops::get_metric_statistics::GetMetricStatistics::new(Arc::clone(
                         &engine,
                     )),
                     parameter_fault_for,
                 ),
-            ))) as Box<dyn ErasedOperation>,
+            ),
         );
         // The other two reads of the metric data plane take a namespace from the caller too —
         // the one a query names and the one a catalogue listing filters by — so they are served
@@ -154,23 +174,23 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         // into one can be retrieved and listed.
         overridden.add_operation(
             "GetMetricData",
-            Box::new(QueryCompatibleErrors::new(Metering::new(
-                Arc::clone(&engine),
+            served(
+                &engine,
                 JudgingTheValuesThisServiceEnforces::new(
                     crate::ops::get_metric_data::GetMetricData::new(Arc::clone(&engine)),
                     the_service_wide_refusal,
                 ),
-            ))) as Box<dyn ErasedOperation>,
+            ),
         );
         overridden.add_operation(
             "ListMetrics",
-            Box::new(QueryCompatibleErrors::new(Metering::new(
-                Arc::clone(&engine),
+            served(
+                &engine,
                 JudgingTheValuesThisServiceEnforces::new(
                     crate::ops::list_metrics::ListMetrics::new(Arc::clone(&engine)),
                     listing_value_fault,
                 ),
-            ))) as Box<dyn ErasedOperation>,
+            ),
         );
         // `PutMetricStream` judges the two members CloudWatch judges as parameter VALUES —
         // the IAM role the stream delivers through and the stream's own name — BEFORE the
@@ -178,13 +198,13 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         // constraint the walk would otherwise answer first ([`RefusingAValueFirst`]).
         overridden.add_operation(
             "PutMetricStream",
-            Box::new(QueryCompatibleErrors::new(Metering::new(
-                Arc::clone(&engine),
+            served(
+                &engine,
                 RefusingAValueFirst::new(
                     crate::ops::put_metric_stream::PutMetricStream::new(Arc::clone(&engine)),
                     crate::ops::put_metric_stream::parameter_value_refusal,
                 ),
-            ))) as Box<dyn ErasedOperation>,
+            ),
         );
         // The Contributor Insights rule operations state a refusal about ONE request member in
         // CloudWatch's coded form, under the parameter fault the class belongs to: a required
@@ -194,49 +214,74 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         // because it cannot see which operation was called.
         overridden.add_operation(
             "DescribeInsightRules",
-            Box::new(QueryCompatibleErrors::new(Metering::new(
-                Arc::clone(&engine),
+            served(
+                &engine,
                 JudgingTheValuesThisServiceEnforces::new(
                     crate::ops::describe_insight_rules::DescribeInsightRules::new(Arc::clone(
                         &engine,
                     )),
                     coded_member_fault,
                 ),
-            ))) as Box<dyn ErasedOperation>,
+            ),
         );
         overridden.add_operation(
             "ListManagedInsightRules",
-            Box::new(QueryCompatibleErrors::new(Metering::new(
-                Arc::clone(&engine),
+            served(
+                &engine,
                 JudgingTheValuesThisServiceEnforces::new(
                     crate::ops::list_managed_insight_rules::ListManagedInsightRules::new(
                         Arc::clone(&engine),
                     ),
                     coded_member_fault,
                 ),
-            ))) as Box<dyn ErasedOperation>,
+            ),
         );
         overridden.add_operation(
             "PutManagedInsightRules",
-            Box::new(QueryCompatibleErrors::new(Metering::new(
-                Arc::clone(&engine),
+            served(
+                &engine,
                 JudgingTheValuesThisServiceEnforces::new(
                     crate::ops::put_managed_insight_rules::PutManagedInsightRules::new(
                         Arc::clone(&engine),
                     ),
                     coded_member_fault,
                 ),
-            ))) as Box<dyn ErasedOperation>,
+            ),
         );
         Self {
-            metered: QueryCompatibleErrors::new(Metering::new(
-                Arc::clone(&engine),
-                TheModelledOperation,
-            )),
-            entry: crate::ServiceDefinition::new(engine),
+            metered: the_way_every_operation_is_served(Arc::clone(&engine), TheModelledOperation),
+            entry: service_common::query_error_envelope::RequestIdEnvelopeDefinition::new(
+                TheProtocolOfTheRequest::new(crate::ServiceDefinition::new(engine)),
+            ),
             overridden,
         }
     }
+}
+
+/// `operation` served the way EVERY operation of this service is: counted into the usage
+/// telemetry this service publishes about its own API ([`Metering`]), naming the class of
+/// whatever failure it answers in full ([`QueryCompatibleErrors`]), and naming the request it
+/// answered in the `awsQuery` error envelope ([`ReportingTheRequestId`]).
+///
+/// The three are owed by every answer, whichever layer built it, so the chain is stated here
+/// once rather than at each of the operations whose answer this file owns a part of.
+fn the_way_every_operation_is_served<Eng: Send + Sync + 'static, O: ErasedOperation>(
+    engine: Arc<Eng>,
+    operation: O,
+) -> ReportingTheRequestId<QueryCompatibleErrors<Metering<Eng, O>>> {
+    ReportingTheRequestId::new(QueryCompatibleErrors::new(Metering::new(engine, operation)))
+}
+
+/// The same chain as a table entry: [`the_way_every_operation_is_served`] boxed for
+/// [`OperationRoutingTable::add_operation`].
+fn served<Eng: Send + Sync + 'static, O: ErasedOperation + 'static>(
+    engine: &Arc<Eng>,
+    operation: O,
+) -> Box<dyn ErasedOperation> {
+    Box::new(the_way_every_operation_is_served(
+        Arc::clone(engine),
+        operation,
+    ))
 }
 
 /// The refusal classes CloudWatch answers as one of its own parameter faults, and the whole
@@ -831,16 +876,18 @@ where
     ) -> aws_smithy_runtime_api::http::Response {
         // The protocol is read, used and dropped inside each statement below:
         // `&dyn ErasedServiceDefinition` is not `Sync`, so holding it across the await between
-        // them would make this future non-`Send`.
+        // them would make this future non-`Send`. It is the protocol THIS REQUEST is served in
+        // ([`request_protocol`]), so a query-protocol call is read and answered in the query
+        // protocol here exactly as it is in the framework's own sequence.
         let read = {
-            let protocol = svc.definition().protocol();
+            let protocol = svc.definition().wire_protocol(req).protocol();
             read_input::<O>(protocol, req)
         };
         let Some(input) = read else {
             return self.operation.run(svc, req, ctx).await;
         };
         let answered = self.operation.handle(input, ctx).await;
-        let protocol = svc.definition().protocol();
+        let protocol = svc.definition().wire_protocol(req).protocol();
         match answered {
             Ok(output) => protocol
                 .serialize_output(&output, O::OUTPUT_SCHEMA, O::NAME, O::SUCCESS_STATUS)
@@ -867,7 +914,7 @@ where
             // The protocol is read, used and dropped inside this one statement, for the reason
             // [`Self::served_past_the_walk`] states.
             let judgement = {
-                let protocol = svc.definition().protocol();
+                let protocol = svc.definition().wire_protocol(req).protocol();
                 // The violations come from the framework's OWN deserializer and constraint
                 // walk, collected by the one shared helper every service that words its own
                 // pre-handler refusal uses, so this and the walk that follows it cannot find
@@ -1015,7 +1062,7 @@ where
             // `&dyn ErasedServiceDefinition` is not `Sync`, so holding it across the await
             // below would make this future non-`Send`.
             let refused = {
-                let protocol = svc.definition().protocol();
+                let protocol = svc.definition().wire_protocol(req).protocol();
                 read_input::<O>(protocol, req)
                     .and_then(|input| (self.refusal)(&input))
                     .map(|refusal| modelled_error_response(protocol, req, &refusal.into()))
@@ -1173,7 +1220,7 @@ where
             let dropped = service_common::event_stream::deserialize_request::<
                 crate::ops::types::PutMetricDataInput,
             >(
-                svc.definition().protocol(),
+                svc.definition().wire_protocol(req).protocol(),
                 req,
                 crate::ops::types::PUT_METRIC_DATA_INPUT_SCHEMA,
             )
@@ -1249,6 +1296,7 @@ where
             // below would make this future non-`Send`.
             let operation = svc
                 .definition()
+                .wire_protocol(req)
                 .protocol()
                 .routing_key(req)
                 .ok()
@@ -1291,6 +1339,7 @@ impl ErasedOperation for TheModelledOperation {
             let modelled = {
                 let definition = svc.definition();
                 definition
+                    .wire_protocol(req)
                     .protocol()
                     .routing_key(req)
                     .ok()
@@ -1349,7 +1398,11 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // ([`TheModelledOperation`]), metered. A key the table does not name at all resolves to
         // `None`, exactly as it would in an unedited service, and falls through to the
         // framework's routing failure.
-        let key = self.entry.protocol().routing_key(req).ok()?;
+        //
+        // The key is read through the protocol THIS REQUEST is served in ([`request_protocol`]),
+        // which for a query-protocol call is the `Action` field of its form body: a request in
+        // one of this service's protocols is served by the same wrappers as one in another.
+        let key = self.entry.wire_protocol(req).protocol().routing_key(req).ok()?;
         if let Some(operation) = self.overridden.get(key) {
             return Some(operation);
         }

@@ -599,9 +599,9 @@ async fn get_metric_stream_reports_a_stream_that_was_never_configured_as_missing
             (404, "ResourceNotFoundException"),
             "case {name:?}: expected HTTP 404 ResourceNotFoundException, got {status} {body}"
         );
-        // The refusal names the resource through the two members that carry it, and its
-        // message is empty whichever name was asked for: nothing of the request is echoed
-        // back in a sentence.
+        // The refusal names the resource through the two members that carry it and states no
+        // reason at all: nothing of the request is echoed back in a sentence, and the member
+        // that would carry one is absent rather than present and empty.
         assert_eq!(
             (
                 text(&body, "ResourceType"),
@@ -611,10 +611,10 @@ async fn get_metric_stream_reports_a_stream_that_was_never_configured_as_missing
             (
                 Some("MetricStream".to_string()),
                 Some(name.to_string()),
-                Some(String::new())
+                None
             ),
-            "case {name:?}: expected the refusal to name the missing stream with an empty \
-             message, got {body}"
+            "case {name:?}: expected the refusal to name the missing stream and carry no \
+             message member, got {body}"
         );
     }
 }

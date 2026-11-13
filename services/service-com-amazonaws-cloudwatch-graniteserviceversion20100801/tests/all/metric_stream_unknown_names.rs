@@ -80,12 +80,12 @@ async fn assert_absent(router: &MultiServiceRouter, case: &str, name: &str) {
         "case {case:?}: this refusal is answered by its code alone, so {name:?} must come back \
          with no message, got {message:?} in {body}"
     );
-    // `ResourceNotFoundException$Message` targets `FaultDescription`, which bounds no length,
-    // so "no text" rides on the member PRESENT and empty rather than on an absent member.
+    // A refusal answered by its code alone states no reason, so the member that would carry one
+    // is ABSENT rather than present and empty.
     assert_eq!(
         body.get("Message").and_then(Value::as_str),
-        Some(""),
-        "case {case:?}: expected the refusal of {name:?} to carry Message present and empty, \
+        None,
+        "case {case:?}: expected the refusal of {name:?} to carry no Message member, \
          got {body}"
     );
 }

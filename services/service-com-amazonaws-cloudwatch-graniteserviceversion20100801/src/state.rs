@@ -2627,10 +2627,10 @@ pub fn taggable_resource(arn: &str) -> Result<TaggableResource<'_>, String> {
 /// taking a `ResourceARN` refuses an ARN this store holds no resource for with.
 ///
 /// The resource is identified by the error's own `ResourceType` and `ResourceId` members, and
-/// the refusal's `Message` is EMPTY: this error class is answered by its code alone, so there
+/// the refusal carries NO `Message`: this error class is answered by its code alone, so there
 /// is no text to reproduce and inventing a sentence would put text on the wire the service
-/// never sends. The member is present and empty, as the recorded refusal of this class
-/// carries it — `FaultDescription` bounds no length, so an empty value is one it can hold.
+/// never sends — and "no text" is the member ABSENT rather than present and empty, so a client
+/// testing whether a human-readable reason came with the refusal can tell one from the other.
 /// Every operation that resolves a `ResourceARN` builds the body here, so they cannot
 /// disagree about it.
 pub fn unknown_taggable_resource(
@@ -2640,7 +2640,7 @@ pub fn unknown_taggable_resource(
     ResourceNotFoundException {
         resource_type: Some(resource.kind.resource_type().to_string()),
         resource_id: Some(arn.to_string()),
-        message: Some(String::new()),
+        message: None,
     }
 }
 
