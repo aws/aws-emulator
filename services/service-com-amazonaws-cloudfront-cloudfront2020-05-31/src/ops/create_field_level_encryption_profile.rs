@@ -305,8 +305,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         // Read from the record just built, never from the request.
         let profile = stored.to_profile();
-        let location =
-            crate::state::location_uri(&crate::state::field_level_encryption_profile_path(&id));
+        let location = crate::state::location_uri(
+            ctx,
+            &crate::state::field_level_encryption_profile_path(&id),
+        );
         store.field_level_encryption_profiles.insert(id, stored);
 
         Ok(CreateFieldLevelEncryptionProfileOutput {

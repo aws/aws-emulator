@@ -9,9 +9,10 @@
 //!
 //! * a LIST WRAPPER the request omits is the wrapper stating `Quantity` 0;
 //! * a member with a documented default takes that default (the origin's connection
-//!   attempts and timeouts, a custom origin's read and keepalive timeouts and SSL
-//!   protocols, the legacy TTLs, `PriceClass`, `HttpVersion`, `Logging`'s four `@default`
-//!   members, the geo restriction type, the allowed and cached methods);
+//!   attempts and timeouts, an S3 origin's read timeout, a custom origin's read and
+//!   keepalive timeouts and SSL protocols, the legacy TTLs, `PriceClass`, `HttpVersion`,
+//!   `Logging`'s four `@default` members, the geo restriction type, the allowed and cached
+//!   methods);
 //! * a member whose absence has exactly one meaning takes that meaning
 //!   (`DefaultRootObject`, `OriginPath`, `OriginAccessControlId`, `WebACLId`,
 //!   `FieldLevelEncryptionId` and `ContinuousDeploymentPolicyId` name nothing;
@@ -237,14 +238,21 @@ fn rows() -> Vec<Row> {
         active_key_groups: ("false", "0", Vec::new()),
     });
 
-    // An S3 origin: the origin-level members resolve the same way, and the custom-origin
-    // timeouts belong to a custom origin, so none of them is invented here.
+    // An S3 origin: the origin-level members resolve the same way, and the S3 origin's own
+    // response timeout takes the value the model documents for it — "the default (if you
+    // don't specify otherwise) is 30 seconds" (`S3OriginConfig$OriginReadTimeout`), the same
+    // response timeout a custom origin carries. The custom-origin members a bucket origin
+    // has none of (the SSL protocols, the keepalive timeout) are not invented here.
     let mut expected = distribution_level_defaults();
     expected.extend(origin_defaults());
     expected.extend(behavior_defaults("DefaultCacheBehavior"));
     expected.push(at(
         "Origins/Items/Origin/S3OriginConfig/OriginAccessIdentity",
         "",
+    ));
+    expected.push(at_num(
+        "Origins/Items/Origin/S3OriginConfig/OriginReadTimeout",
+        i64::from(DEFAULT_ORIGIN_READ_TIMEOUT),
     ));
     rows.push(Row {
         case: "s3-origin",
@@ -266,6 +274,51 @@ fn rows() -> Vec<Row> {
         )],
         absent: vec![
             "Origins/Items/Origin/CustomOriginConfig",
+            "Origins/Items/Origin/S3OriginConfig/OriginKeepaliveTimeout",
+            "DefaultCacheBehavior/ForwardedValues",
+            "DefaultCacheBehavior/DefaultTTL",
+        ],
+        active_key_groups: ("false", "0", Vec::new()),
+    });
+
+    // The same S3 origin STATING a response timeout of its own: a member the request names
+    // is the one the distribution runs under and reports back, so resolution supplies a
+    // default and never overrides a stated value. The value is inside the published range
+    // the member documents ("The minimum timeout is 1 second, the maximum is 120 seconds")
+    // and is not the default, which is what makes the row tell the two apart.
+    let mut expected = distribution_level_defaults();
+    expected.extend(origin_defaults());
+    expected.extend(behavior_defaults("DefaultCacheBehavior"));
+    expected.push(at(
+        "Origins/Items/Origin/S3OriginConfig/OriginAccessIdentity",
+        "",
+    ));
+    expected.push(at_num(
+        "Origins/Items/Origin/S3OriginConfig/OriginReadTimeout",
+        120,
+    ));
+    rows.push(Row {
+        case: "s3-origin-stating-its-read-timeout",
+        config: config_xml(
+            "defaults-s3-read-timeout",
+            "<Origins><Quantity>1</Quantity><Items><Origin><Id>bucket</Id>\
+             <DomainName>bucket.s3.amazonaws.com</DomainName>\
+             <S3OriginConfig><OriginAccessIdentity></OriginAccessIdentity>\
+             <OriginReadTimeout>120</OriginReadTimeout></S3OriginConfig>\
+             </Origin></Items></Origins>\
+             <DefaultCacheBehavior><TargetOriginId>bucket</TargetOriginId>\
+             <ViewerProtocolPolicy>redirect-to-https</ViewerProtocolPolicy></DefaultCacheBehavior>\
+             <Comment>s3 read timeout</Comment><Enabled>false</Enabled>",
+        ),
+        expected,
+        lists: vec![(
+            "DefaultCacheBehavior/AllowedMethods/Items",
+            "Method",
+            vec!["HEAD", "GET"],
+        )],
+        absent: vec![
+            "Origins/Items/Origin/CustomOriginConfig",
+            "Origins/Items/Origin/S3OriginConfig/OriginKeepaliveTimeout",
             "DefaultCacheBehavior/ForwardedValues",
             "DefaultCacheBehavior/DefaultTTL",
         ],
@@ -821,17 +874,25 @@ fn trusted_key_groups_xml(count: usize) -> String {
 }
 
 #[tokio::test]
-async fn the_location_names_the_service_endpoint_whatever_host_the_caller_used() {
-    // CloudFront's control API has ONE endpoint, so the URI of the resource a create just
-    // made is at that endpoint — not at whatever authority the request was addressed to.
-    let hosts = [
-        "cloudfront.amazonaws.com",
-        "localhost:9297",
-        "127.0.0.1:443",
-        "cloudfront.us-east-1.amazonaws.com",
+async fn the_location_is_rooted_at_the_endpoint_the_request_reached() {
+    // The `Location` is an address the CALLER then follows, so it is rooted at the endpoint
+    // this emulator answered the create on: a request that reached the emulator's own
+    // endpoint — which is the only address a client on this machine can dial — is answered
+    // that same address, port included, and a caller that resolves AWS's own hostnames (a
+    // request addressed to one of this service's published hosts, on an emulator served at
+    // no address of its own) is answered the service's published endpoint.
+    //
+    // The rows span what the rule generalises over: the service's global host, its regional
+    // spelling, and the emulator's own endpoint as a loopback NAME and as a loopback LITERAL,
+    // each with a port of its own.
+    let cases = [
+        ("cloudfront.amazonaws.com", SERVICE_ENDPOINT.to_string()),
+        ("cloudfront.us-east-1.amazonaws.com", SERVICE_ENDPOINT.to_string()),
+        ("localhost:9297", "localhost:9297".to_string()),
+        ("127.0.0.1:443", "127.0.0.1:443".to_string()),
     ];
     let router = emulator();
-    for (index, host) in hosts.iter().enumerate() {
+    for (index, (host, authority)) in cases.iter().enumerate() {
         let config = config_xml(
             &format!("location-{index}"),
             &format!(
@@ -865,7 +926,7 @@ async fn the_location_names_the_service_endpoint_whatever_host_the_caller_used()
             .and_then(|(_, rest)| rest.split_once("</Id>"))
             .map(|(id, _)| id.to_string())
             .unwrap_or_default();
-        let expected = format!("https://{SERVICE_ENDPOINT}/{API_VERSION}/distribution/{id}");
+        let expected = format!("https://{authority}/{API_VERSION}/distribution/{id}");
         assert_eq!(
             location, expected,
             "case host={host}: expected Location {expected:?}, got {location:?}"

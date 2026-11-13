@@ -235,7 +235,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         // Read from the record just built, never from the request.
         let public_key = stored.to_public_key();
-        let location = crate::state::location_uri(&crate::state::public_key_path(&id));
+        let location = crate::state::location_uri(ctx, &crate::state::public_key_path(&id));
         store.public_keys.insert(id, stored);
 
         Ok(CreatePublicKeyOutput {

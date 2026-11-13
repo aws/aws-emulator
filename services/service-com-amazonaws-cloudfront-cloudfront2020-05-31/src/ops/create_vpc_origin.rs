@@ -243,7 +243,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         // Read from the record just built, never from the request.
         let vpc_origin = stored.to_vpc_origin();
-        let location = crate::state::location_uri(&crate::state::vpc_origin_path(&stored.id));
+        let location =
+            crate::state::location_uri(ctx, &crate::state::vpc_origin_path(&stored.id));
         store.vpc_origins.insert(stored.id.clone(), stored);
 
         Ok(CreateVpcOriginOutput {

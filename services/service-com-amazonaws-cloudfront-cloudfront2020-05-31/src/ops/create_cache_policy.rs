@@ -282,7 +282,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         // Read from the record just built, never from the request.
         let cache_policy = stored.to_cache_policy();
-        let location = crate::state::location_uri(&crate::state::cache_policy_path(&id));
+        let location = crate::state::location_uri(ctx, &crate::state::cache_policy_path(&id));
         store.cache_policies.insert(id, stored);
 
         Ok(CreateCachePolicyOutput {

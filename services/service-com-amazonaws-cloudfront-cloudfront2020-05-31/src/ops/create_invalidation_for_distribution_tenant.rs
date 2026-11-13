@@ -254,6 +254,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             if crate::state::same_batch(&existing.batch, &batch) {
                 return Ok(CreateInvalidationForDistributionTenantOutput {
                     location: Some(crate::state::location_uri(
+                        ctx,
                         &crate::state::distribution_tenant_invalidation_path(
                             &tenant_id,
                             &existing.id,
@@ -316,6 +317,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // "The location for the invalidation": the URI the tenant's invalidation is
             // addressed by, including its id.
             location: Some(crate::state::location_uri(
+                ctx,
                 &crate::state::distribution_tenant_invalidation_path(&tenant_id, &id),
             )),
             invalidation: Some(reported),

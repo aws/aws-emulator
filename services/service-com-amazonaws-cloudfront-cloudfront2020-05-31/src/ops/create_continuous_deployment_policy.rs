@@ -278,8 +278,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             config,
         };
         let policy = stored.to_policy();
-        let location =
-            crate::state::location_uri(&crate::state::continuous_deployment_policy_path(&id));
+        let location = crate::state::location_uri(
+            ctx,
+            &crate::state::continuous_deployment_policy_path(&id),
+        );
         store.continuous_deployment_policies.insert(id, stored);
 
         Ok(CreateContinuousDeploymentPolicyOutput {

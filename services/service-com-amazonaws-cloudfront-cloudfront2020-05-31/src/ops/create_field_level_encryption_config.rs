@@ -280,6 +280,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 return Ok(CreateFieldLevelEncryptionConfigOutput {
                     field_level_encryption: Some(existing.to_field_level_encryption()),
                     location: Some(crate::state::location_uri(
+                        ctx,
                         &crate::state::field_level_encryption_config_path(&existing.id),
                     )),
                     e_tag: Some(existing.etag.clone()),
@@ -357,8 +358,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         // Read from the record just built, never from the request.
         let field_level_encryption = stored.to_field_level_encryption();
-        let location =
-            crate::state::location_uri(&crate::state::field_level_encryption_config_path(&id));
+        let location = crate::state::location_uri(
+            ctx,
+            &crate::state::field_level_encryption_config_path(&id),
+        );
         store.field_level_encryption_configs.insert(id, stored);
 
         Ok(CreateFieldLevelEncryptionConfigOutput {

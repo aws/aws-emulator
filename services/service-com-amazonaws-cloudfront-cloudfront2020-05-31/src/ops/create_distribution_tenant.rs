@@ -255,6 +255,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // ---- The store ------------------------------------------------------------
         let now = SystemTime::now();
+        // "When you first create a distribution tenant and you don't specify a connection
+        // group, CloudFront will automatically create a default connection group for you" —
+        // and a connection group publishes the address of the listener it is served on, so
+        // the listener for THAT group is opened here, before the store lock is taken
+        // (binding a socket is asynchronous). A create that names a group of its own needs
+        // none, and a request that finds the default group already created drops this
+        // handle, which closes the port.
+        let default_group_endpoint = match input.connection_group_id {
+            Some(_) => None,
+            None => {
+                crate::state::open_connection_group_endpoint(&*self.engine, ctx.callback().clone())
+                    .await
+            }
+        };
         let mut store = state.lock();
         store.settle(now);
 
@@ -426,7 +440,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let connection_group_id = match input.connection_group_id {
             Some(named) => named,
-            None => store.default_connection_group(now),
+            None => store.default_connection_group(now, default_group_endpoint),
         };
         let id = store.allocate_distribution_tenant_id();
         let etag = store.next_etag();

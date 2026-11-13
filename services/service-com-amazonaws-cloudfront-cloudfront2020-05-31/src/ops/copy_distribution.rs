@@ -535,9 +535,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         Ok(CopyDistributionOutput {
             distribution: Some(created.distribution),
             // "The URL of the staging distribution."
-            location: Some(crate::state::location_uri(&crate::state::distribution_path(
-                &created.id,
-            ))),
+            location: Some(crate::state::location_uri(
+                ctx,
+                &crate::state::distribution_path(&created.id),
+            )),
             // "The version identifier for the current version of the staging
             // distribution."
             e_tag: Some(created.etag),

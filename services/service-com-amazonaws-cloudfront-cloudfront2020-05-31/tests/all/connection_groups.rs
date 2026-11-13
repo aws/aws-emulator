@@ -9,7 +9,8 @@
 //!
 //! * a connection group is PERSISTED by the call that creates it, which MINTS its identity
 //!   (the `Id`, the ARN built from it, the routing endpoint "assigned to the connection
-//!   group" and a version token), so a later `GetConnectionGroup` and a later
+//!   group" — the address of the listener the group is served on, which a viewer can dial —
+//!   and a version token), so a later `GetConnectionGroup` and a later
 //!   `ListConnectionGroups` both answer from that one record — down to the members the
 //!   create left out, which take their documented defaults (`Ipv6Enabled`'s "default is
 //!   `true`");
@@ -48,7 +49,8 @@ use service_com_amazonaws_cloudfront_cloudfront2020_05_31::state::{
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::distribution_lifecycle::{
-    call, emulator, is_version_token, Answer, Node, ACCOUNT_ID, API_VERSION,
+    call, emulator, is_reachable_authority, is_version_token, Answer, Node, ACCOUNT_ID,
+    API_VERSION,
 };
 use crate::distribution_tenant_lifecycle::{
     create_distribution_tenant, encode_label, managed_certificate_request,
@@ -396,11 +398,9 @@ async fn each_create_persists_the_group_every_read_then_reports() {
             &answer.raw,
         );
         assert!(
-            routing_endpoint.starts_with('d')
-                && routing_endpoint.ends_with(".cloudfront.net")
-                && routing_endpoint == routing_endpoint.to_lowercase(),
-            "case {case}: expected a generated cloudfront.net routing endpoint, got \
-             {routing_endpoint:?}"
+            is_reachable_authority(&routing_endpoint),
+            "case {case}: expected a routing endpoint a viewer can dial - the address of \
+             the listener this group is served on - got {routing_endpoint:?}"
         );
         assert_eq!(
             text(group, "Enabled", case, "the created group", &answer.raw),

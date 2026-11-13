@@ -289,8 +289,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         // Read from the record just built, never from the request.
         let response_headers_policy = stored.to_response_headers_policy();
-        let location =
-            crate::state::location_uri(&crate::state::response_headers_policy_path(&id));
+        let location = crate::state::location_uri(
+            ctx,
+            &crate::state::response_headers_policy_path(&id),
+        );
         store.response_headers_policies.insert(id, stored);
 
         Ok(CreateResponseHeadersPolicyOutput {

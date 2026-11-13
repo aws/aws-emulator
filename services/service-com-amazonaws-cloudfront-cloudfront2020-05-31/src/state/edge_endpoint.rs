@@ -1,18 +1,22 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! The ADDRESS a distribution's edge is reached at, and the listener that answers there.
+//! The ADDRESSES this service publishes for the traffic it serves, and the listeners that
+//! answer there.
 //!
-//! `Distribution$DomainName` is "the domain name that CloudFront assigns when you create a
-//! distribution", and it is the address a VIEWER is handed: a client takes that name and
-//! fetches `https://<DomainName>/<object>`. A name under a zone this emulator does not
-//! serve resolves to nothing on the machine it runs on, so a distribution that reported one
-//! would publish an address no client could reach — the one thing a published endpoint must
-//! never be. So each distribution that serves traffic of its own gets a listener of the
-//! EMULATOR's own, opened through the core (`engine.listeners().tcp_plaintext(..)`, which
-//! owns the socket and the bind interface), and reports the `host:port` that listener
-//! answers on as its domain name. A viewer dials exactly what it was told.
+//! Two members are such an address. `Distribution$DomainName` is "the domain name that
+//! CloudFront assigns when you create a distribution", and
+//! `ConnectionGroup$RoutingEndpoint` is "the routing endpoint (also known as the DNS name)
+//! that is assigned to the connection group" — the name a distribution TENANT's own domain
+//! is pointed at. Each is the address a VIEWER is handed: a client takes it and fetches
+//! `https://<it>/<object>`. A name under a zone this emulator does not serve resolves to
+//! nothing on the machine it runs on, so a resource that reported one would publish an
+//! address no client could reach — the one thing a published endpoint must never be. So each
+//! of them gets a listener of the EMULATOR's own, opened through the core
+//! (`engine.listeners().tcp_plaintext(..)`, which owns the socket and the bind interface),
+//! and publishes the `host:port` that listener answers on. A viewer dials exactly what it
+//! was told.
 //!
-//! A viewer reaches a distribution over HTTP or over HTTPS — "viewers can use HTTP or
+//! A viewer reaches either address over HTTP or over HTTPS — "viewers can use HTTP or
 //! HTTPS" is what `ViewerProtocolPolicy` is about — so both are served at that one address:
 //! the connection's first byte says which the client opened with, and a TLS record is handed
 //! to the core's own TLS server before the request is read
@@ -24,17 +28,22 @@
 //! cache and the origin fetch — stays in [`crate::service::edge`], which serves the same
 //! request however it was addressed. So the handler here hands the request it accepts to
 //! that one data plane, through the in-process transport this emulator reaches itself over,
-//! addressed as the RESERVED data-plane path of the distribution this listener was opened
-//! for (`/_aws/cloudfront/{id}/{viewer-path}`): one serving path, reached from two
+//! addressed as the RESERVED data-plane path of the distribution it resolved
+//! (`/_aws/cloudfront/{id}/{viewer-path}`): one serving path, reached from several
 //! addressings.
 //!
-//! A multi-tenant distribution gets none: it "has no traffic domain of its own" — its
-//! viewers reach it through a connection group — so there is no address to publish and no
-//! listener to open for it.
+//! WHICH distribution that is, is the only thing the two addresses differ in
+//! ([`EdgeTarget`]): a distribution's own address serves the one distribution it was opened
+//! for, and a connection group's serves the tenant whose DOMAIN the viewer addressed, among
+//! the tenants that group routes.
 //!
-//! The listener's life is the distribution's: the handle is held on the store under the
-//! distribution's id, and dropping it (the delete) closes the port and severs every
-//! connection in flight on it.
+//! A multi-tenant distribution gets no address of its own: it "has no traffic domain of its
+//! own" — its viewers reach it through a connection group — so there is nothing to publish
+//! and no listener to open for it.
+//!
+//! A listener's life is its resource's: the handle is held on the store under that
+//! resource's id, and dropping it (the delete) closes the port and severs every connection
+//! in flight on it.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -84,44 +93,136 @@ const EDGE_PATH_PREFIX: &str = "/_aws/cloudfront";
 /// instead), and the two framing headers describe a body this leg re-frames itself.
 const HEADERS_NOT_FORWARDED: [&str; 3] = ["host", "content-length", "transfer-encoding"];
 
-/// One distribution's edge listener: the address it answers on, and the handle that keeps
-/// it open.
+/// WHICH distribution a viewer request this address accepted is served from — the one
+/// thing the two addresses of this service differ in.
 ///
-/// Dropping it closes the port, so the record is held for exactly as long as the
-/// distribution it belongs to.
-pub struct EdgeEndpoint {
-    /// The `host:port` a viewer dials, which is what the distribution reports as its
-    /// `DomainName`.
-    authority: String,
-    /// The distribution this listener serves, published to the handler once the create that
-    /// opened the listener has minted the id. A request that arrives before then is
-    /// answered as a request for no distribution.
+/// A DISTRIBUTION's own edge domain serves exactly the distribution it was opened for,
+/// whatever the viewer addressed it as ([`ServedDistribution`]). A CONNECTION GROUP's
+/// routing endpoint serves the tenants routed through that group, and a viewer reaches one
+/// of them by the DOMAIN it addressed — "the routing endpoint (also known as the DNS name)
+/// that is assigned to the connection group" is the address a tenant's own domain is
+/// pointed at — so the request is resolved against this service's own records
+/// ([`ServedConnectionGroup`]). Everything else about serving the request is the data
+/// plane's and is shared.
+trait EdgeTarget: Send + Sync + 'static {
+    /// The distribution whose data plane serves a request addressed to `host`, or `None`
+    /// when this address serves none for it — a listener whose resource has not been minted
+    /// yet, or a host this address routes to no tenant.
+    fn distribution_of(&self, host: Option<&str>) -> Option<String>;
+
+    /// Whether `host` is a name this address ROUTES, beside the addresses of the interface
+    /// it is bound on ([`host_allowed`]): a connection group's viewers address the TENANT's
+    /// domain, which is a name this service holds a record for rather than an address of
+    /// this machine.
+    fn routes_host(&self, host: &str) -> bool;
+}
+
+/// The target of a DISTRIBUTION's own edge address: the one distribution the create that
+/// opened the listener minted, whatever host the viewer addressed it by.
+struct ServedDistribution {
+    /// Published to the handler once the create that opened the listener has minted the id.
+    /// A request that arrives before then is answered as a request for no distribution.
     distribution: Arc<OnceLock<String>>,
+}
+
+impl EdgeTarget for ServedDistribution {
+    fn distribution_of(&self, _host: Option<&str>) -> Option<String> {
+        self.distribution.get().cloned()
+    }
+
+    /// A viewer reaches this address by DIALLING it, so the only hosts it serves are the
+    /// addresses of the interface it is bound on.
+    fn routes_host(&self, _host: &str) -> bool {
+        false
+    }
+}
+
+/// The target of a CONNECTION GROUP's routing endpoint: the distribution of the tenant
+/// whose domain the viewer addressed, among the tenants this group routes.
+///
+/// The store is read, never written: resolving a viewer request changes nothing a later
+/// caller sees.
+struct ServedConnectionGroup {
+    /// Published to the handler once the create that opened the listener has minted the
+    /// group's id, exactly as [`ServedDistribution`]'s is.
+    group: Arc<OnceLock<String>>,
+    /// This service's own records, the single source of truth for which tenant a domain is
+    /// routed to.
+    state: ::engine::ServiceState<super::ComAmazonawsCloudfrontCloudfront20200531State>,
+}
+
+impl EdgeTarget for ServedConnectionGroup {
+    /// The distribution of the tenant `host` names: the tenant this service routes that
+    /// domain to (`distribution_tenant_by_domain`, which answers only for a domain whose
+    /// certificate is validated), provided it is routed through THIS group and its own
+    /// `Enabled` says it serves traffic — "whether the distribution tenant is enabled".
+    ///
+    /// The host is read AS ADDRESSED first and then without its port, the same order
+    /// [`crate::service::edge`] reads a distribution's published name in: a domain this
+    /// emulator published for a resource carries a PORT, which is part of the name a viewer
+    /// was handed, while a customer's own domain does not and is addressed with whatever
+    /// port the viewer dialled.
+    ///
+    /// `None` for every other host, so one group's address never serves another group's
+    /// tenant and a disabled tenant serves nothing.
+    fn distribution_of(&self, host: Option<&str>) -> Option<String> {
+        let group = self.group.get()?;
+        let addressed = host?;
+        let store = self.state.lock();
+        let tenant = store
+            .distribution_tenant_by_domain(addressed)
+            .or_else(|| {
+                store.distribution_tenant_by_domain(
+                    ::service_common::data_plane_addressing::host_only(addressed),
+                )
+            })?;
+        (&tenant.connection_group_id == group && tenant.enabled)
+            .then(|| tenant.distribution_id.clone())
+    }
+
+    fn routes_host(&self, host: &str) -> bool {
+        self.distribution_of(Some(host)).is_some()
+    }
+}
+
+/// One address of this service: the `host:port` it answers on, the resource it was opened
+/// for, and the handle that keeps the port open.
+///
+/// Dropping it closes the port, so the record is held for exactly as long as the resource
+/// it belongs to.
+pub struct EdgeEndpoint {
+    /// The `host:port` a viewer dials, which is what the resource publishes — a
+    /// distribution's `DomainName`, a connection group's `RoutingEndpoint`.
+    authority: String,
+    /// The resource this listener serves, published to the handler once the create that
+    /// opened the listener has minted its id.
+    resource: Arc<OnceLock<String>>,
     /// The listener itself. Never read: it is held because dropping it closes the port.
     _listener: ::emulator_server::ResourceListener,
 }
 
 impl std::fmt::Debug for EdgeEndpoint {
     /// Everything about this record that is not a live socket: the address it answers on
-    /// and the distribution it serves. `ResourceListener` is not `Debug`.
+    /// and the resource it serves. `ResourceListener` is not `Debug`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EdgeEndpoint")
             .field("authority", &self.authority)
-            .field("distribution", &self.distribution.get())
+            .field("resource", &self.resource.get())
             .finish()
     }
 }
 
 impl EdgeEndpoint {
-    /// The `host:port` a viewer reaches this distribution at — its `DomainName`.
+    /// The `host:port` a viewer reaches this resource at — a distribution's `DomainName`,
+    /// a connection group's `RoutingEndpoint`.
     pub fn authority(&self) -> &str {
         &self.authority
     }
 
-    /// Bind this listener to the distribution it was opened for, once the create that
-    /// opened it has minted the id. Called once; a second call changes nothing.
-    pub fn serves(&self, distribution_id: &str) {
-        let _ = self.distribution.set(distribution_id.to_string());
+    /// Bind this listener to the resource it was opened for, once the create that opened it
+    /// has minted the id. Called once; a second call changes nothing.
+    pub fn serves(&self, resource_id: &str) {
+        let _ = self.resource.set(resource_id.to_string());
     }
 }
 
@@ -137,10 +238,45 @@ pub async fn open_edge_endpoint<Eng: Send + Sync + 'static>(
     callback: EmbeddedEmulator,
 ) -> Option<EdgeEndpoint> {
     let shared = (engine as &dyn ::std::any::Any).downcast_ref::<::engine::InMemoryEngine>()?;
-    let distribution: Arc<OnceLock<String>> = Arc::new(OnceLock::new());
+    let resource: Arc<OnceLock<String>> = Arc::new(OnceLock::new());
+    let target = ServedDistribution {
+        distribution: Arc::clone(&resource),
+    };
+    open(shared, callback, resource, Arc::new(target)).await
+}
+
+/// Open the listener one CONNECTION GROUP's routing endpoint is served on, and report the
+/// address it answers at — or `None` on an engine that vends no listeners, exactly as
+/// [`open_edge_endpoint`] answers for a distribution.
+///
+/// The address serves the tenants this group routes: a viewer dials it with the TENANT's
+/// own domain as the host it addressed, and the request is served from the distribution
+/// that tenant belongs to ([`ServedConnectionGroup`]).
+pub async fn open_connection_group_endpoint<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    callback: EmbeddedEmulator,
+) -> Option<EdgeEndpoint> {
+    let shared = (engine as &dyn ::std::any::Any).downcast_ref::<::engine::InMemoryEngine>()?;
+    let resource: Arc<OnceLock<String>> = Arc::new(OnceLock::new());
+    let target = ServedConnectionGroup {
+        group: Arc::clone(&resource),
+        state: shared.state(),
+    };
+    open(shared, callback, resource, Arc::new(target)).await
+}
+
+/// Open one address of this service, serving `target`: the ONE place a listener of this
+/// module is bound, so a distribution's edge domain and a connection group's routing
+/// endpoint are opened, bounded and torn down alike.
+async fn open(
+    shared: &::engine::InMemoryEngine,
+    callback: EmbeddedEmulator,
+    resource: Arc<OnceLock<String>>,
+    target: Arc<dyn EdgeTarget>,
+) -> Option<EdgeEndpoint> {
     let listeners = shared.listeners();
     let handler = EdgeFrontDoor {
-        distribution: Arc::clone(&distribution),
+        target,
         callback,
         // The core's own TLS server, lent to this plaintext listener so the `https://`
         // half of the address is terminated by the core rather than here. A listener
@@ -156,16 +292,16 @@ pub async fn open_edge_endpoint<Eng: Send + Sync + 'static>(
     let listener = opened.ok().flatten()?;
     Some(EdgeEndpoint {
         authority: ::service_common::data_plane_addressing::listener_authority(&listener),
-        distribution,
+        resource,
         _listener: listener,
     })
 }
 
-/// Serves one distribution's edge domain: it hands every request it accepts to this
-/// service's own data plane, over the in-process transport, and answers with what that
-/// data plane answered.
+/// Serves one address of this service: it hands every request it accepts to this service's
+/// own data plane, over the in-process transport, and answers with what that data plane
+/// answered.
 struct EdgeFrontDoor {
-    distribution: Arc<OnceLock<String>>,
+    target: Arc<dyn EdgeTarget>,
     callback: EmbeddedEmulator,
     upgrader: Option<TlsUpgrader>,
 }
@@ -174,10 +310,10 @@ impl ::emulator_server::NativeHandler for EdgeFrontDoor {
     /// One call per accepted connection. The handles are cloned into the connection's own
     /// future, which is what the core's `'static` handler contract asks for.
     fn serve(&self, conn: ListenerConn) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        let distribution = Arc::clone(&self.distribution);
+        let target = Arc::clone(&self.target);
         let callback = self.callback.clone();
         let upgrader = self.upgrader.clone();
-        Box::pin(serve_connection(distribution, callback, upgrader, conn))
+        Box::pin(serve_connection(target, callback, upgrader, conn))
     }
 }
 
@@ -191,7 +327,7 @@ impl ::emulator_server::NativeHandler for EdgeFrontDoor {
 /// core's, so a viewer that dribbles a request line or sends more than one connection may
 /// carry cannot hold the connection permit the core issued for it.
 async fn serve_connection(
-    distribution: Arc<OnceLock<String>>,
+    target: Arc<dyn EdgeTarget>,
     callback: EmbeddedEmulator,
     upgrader: Option<TlsUpgrader>,
     conn: ListenerConn,
@@ -207,7 +343,7 @@ async fn serve_connection(
     };
     let io = ::hyper_util::rt::TokioIo::new(conn);
     let service = ::hyper::service::service_fn(move |request: ::http::Request<_>| {
-        let distribution = Arc::clone(&distribution);
+        let target = Arc::clone(&target);
         let callback = callback.clone();
         async move {
             // A panic anywhere behind this address — in the dispatch machinery or in the
@@ -220,7 +356,7 @@ async fn serve_connection(
             Ok::<_, ::std::convert::Infallible>(
                 ::emulator_server::contain_panics(
                     facts,
-                    answer(distribution, callback, request, encrypted),
+                    answer(target, callback, request, encrypted),
                 )
                 .await,
             )
@@ -234,7 +370,7 @@ async fn serve_connection(
     {
         // A connection the viewer dropped, or a request this emulator could not frame, ends
         // here and takes nothing else with it: the next connection is served normally.
-        ::tracing::debug!(%error, "a connection to a distribution's edge ended before its response");
+        ::tracing::debug!(%error, "a connection to an address of this service ended before its response");
     }
 }
 
@@ -251,24 +387,31 @@ fn body_ceiling() -> usize {
     usize::try_from(listener_caps::MAX_BYTES_PER_CONN).unwrap_or(usize::MAX)
 }
 
-/// Answer one viewer request from the data plane of the distribution this listener was
-/// opened for.
+/// Answer one viewer request from the data plane of the distribution this address resolves
+/// it to ([`EdgeTarget`]).
 async fn answer(
-    distribution: Arc<OnceLock<String>>,
+    target: Arc<dyn EdgeTarget>,
     callback: EmbeddedEmulator,
     request: ::http::Request<::hyper::body::Incoming>,
     encrypted: bool,
 ) -> ::http::Response<Full<Bytes>> {
-    let Some(distribution) = distribution.get().cloned() else {
-        // The create that opened this listener has not named its distribution yet, so there
-        // is nothing here to serve: reported as the edge reports a request it can resolve
-        // to no distribution.
-        return generated(BAD_GATEWAY, NO_DISTRIBUTION);
-    };
     let (parts, body) = request.into_parts();
-    if let Some(refused) = refused_before_the_edge(&parts) {
+    let addressed = parts
+        .headers
+        .get(::http::header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+        .or_else(|| parts.uri.host().map(str::to_string));
+    if let Some(refused) = refused_before_the_edge(&parts, target.as_ref()) {
         return refused;
     }
+    let Some(distribution) = target.distribution_of(addressed.as_deref()) else {
+        // Either the create that opened this listener has not named its resource yet, or
+        // this address routes the host the viewer addressed to no tenant: there is nothing
+        // here to serve, reported as the edge reports a request it can resolve to no
+        // distribution.
+        return generated(BAD_GATEWAY, NO_DISTRIBUTION);
+    };
     // One permit per request IN FLIGHT, taken BEFORE a byte of the body is read: what the
     // bodies being read hold at once is then the in-flight cap times the ceiling below,
     // rather than the connection cap (or the number of distributions) times it.
@@ -387,8 +530,17 @@ fn within_the_distribution(path: &str) -> Option<&str> {
 /// from the core's own predicates so this address and a core listener decide them alike:
 /// the `Host` allowlist (the DNS-rebinding guard a browser needs), the WebSocket refusal,
 /// and the browser check. `None` lets the request through to the data plane.
+///
+/// `target` widens the `Host` allowlist by exactly the names this address ROUTES
+/// ([`EdgeTarget::routes_host`]): a connection group's viewers address the TENANT's own
+/// domain rather than the loopback address they dialled, so a name this service holds a
+/// routed tenant record for is served there, and every other name is refused as before. The
+/// admitted names are this service's own records — the same names the emulator's front door
+/// already serves a viewer request on host-style — never a name taken from the request, and
+/// the browser check below still decides what a browser may do with any of them.
 fn refused_before_the_edge(
     parts: &::http::request::Parts,
+    target: &dyn EdgeTarget,
 ) -> Option<::http::Response<Full<Bytes>>> {
     let header = |name: &str| parts.headers.get(name).and_then(|value| value.to_str().ok());
 
@@ -398,7 +550,8 @@ fn refused_before_the_edge(
     let Some(host) = header("host").or_else(|| parts.uri.host()) else {
         return Some(generated(MISDIRECTED_REQUEST, HOST_REQUIRED));
     };
-    if !host_allowed(::service_common::data_plane_addressing::host_only(host)) {
+    let bare = ::service_common::data_plane_addressing::host_only(host);
+    if !host_allowed(bare) && !target.routes_host(host) {
         return Some(generated(MISDIRECTED_REQUEST, HOST_NOT_ALLOWED));
     }
     if ::emulator_server::is_websocket_upgrade(

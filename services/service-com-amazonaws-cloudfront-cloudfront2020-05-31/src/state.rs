@@ -103,7 +103,8 @@ use crate::ops::types::{
     PublicKey, PublicKeyConfig, PublicKeySummary, QueryArgProfile, QueryArgProfileConfig,
     QueryArgProfiles, ResponseHeadersPolicy,
     ResponseHeadersPolicyAlreadyExists, ResponseHeadersPolicyConfig, Restrictions,
-    SessionStickinessConfig, Signer, StreamingDistribution, StreamingDistributionConfig,
+    S3OriginConfig, SessionStickinessConfig, Signer, StreamingDistribution,
+    StreamingDistributionConfig,
     StreamingDistributionSummary, StreamingLoggingConfig, StringSchemaConfig, Tag, Tags,
     TrafficConfig, TrustedKeyGroups, TrustedSigners, ValidationTokenDetail, ViewerCertificate,
     WebAclCustomization,
@@ -3692,6 +3693,11 @@ pub struct ComAmazonawsCloudfrontCloudfront20200531State {
     /// created ONCE, by the first call that needs it, and every later tenant that names no
     /// connection group is routed through it.
     pub connection_groups: BTreeMap<String, StoredConnectionGroup>,
+    /// The listener each connection group's ROUTING ENDPOINT is served on, keyed by
+    /// connection group id: the address it published as its `RoutingEndpoint` and the handle
+    /// that keeps the port open ([`EdgeEndpoint`]). A group created on an engine that vends
+    /// no listeners has no entry, and dropping an entry (the delete) closes that port.
+    pub connection_group_endpoints: BTreeMap<String, EdgeEndpoint>,
     /// Every origin access identity this emulator holds, keyed by its id. A `BTreeMap`
     /// for the same reason as `distributions`: one stable total order for a listing to
     /// page through.
@@ -3904,3 +3910,10 @@ pub use lambda_edge_execution_role::*;
 /// is one; `pub use` keeps every name reachable as `crate::state::<name>`.
 mod edge_endpoint;
 pub use edge_endpoint::*;
+
+/// The absolute URI this service ANNOUNCES for a resource it has just created: the host it
+/// is rooted on is the endpoint the request reached, and the path beneath it is the
+/// resource's own. A SUBMODULE for the same reason [`functions`] is one; `pub use` keeps
+/// every name reachable as `crate::state::<name>`.
+mod announced_url;
+pub use announced_url::*;

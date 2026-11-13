@@ -572,6 +572,20 @@ async fn published_domain(router: &MultiServiceRouter, reference: &str) -> Strin
 /// `pub(crate)` so every suite that reads a published domain name dials it the same way
 /// rather than carrying its own copy of this client.
 pub(crate) async fn dial(authority: &str, method: &str, path: &str) -> String {
+    dial_as(authority, method, path, authority).await
+}
+
+/// [`dial`] with the HOST the viewer addressed stated separately from the authority it
+/// DIALLED.
+///
+/// The two are the same for a distribution's own edge domain, which a viewer reaches by
+/// dialling the name it published. They differ wherever the published address serves
+/// traffic for a name of its own: a distribution tenant is reached through its connection
+/// group's routing endpoint under the TENANT's domain, which is the name its DNS record
+/// points at that endpoint.
+///
+/// `pub(crate)` so every suite that dials a published address uses this one client.
+pub(crate) async fn dial_as(authority: &str, method: &str, path: &str, host: &str) -> String {
     let port = authority
         .parse::<std::net::SocketAddr>()
         .unwrap_or_else(|error| panic!("the published address {authority} is no address: {error}"))
@@ -584,7 +598,7 @@ pub(crate) async fn dial(authority: &str, method: &str, path: &str) -> String {
     .unwrap_or_else(|_| panic!("the published address {authority} did not accept a connection"))
     .unwrap_or_else(|error| panic!("the published address {authority} refused a connection: {error}"));
     let request =
-        format!("{method} {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n");
+        format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
     stream
         .write_all(request.as_bytes())
         .await

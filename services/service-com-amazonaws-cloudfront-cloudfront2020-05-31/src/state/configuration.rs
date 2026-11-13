@@ -4078,7 +4078,21 @@ pub(super) fn resolve_origin(mut origin: Origin) -> Origin {
     origin.custom_origin_config = origin
         .custom_origin_config
         .map(resolve_custom_origin_config);
+    origin.s3_origin_config = origin.s3_origin_config.map(resolve_s3_origin_config);
     origin
+}
+
+/// Resolve the members the service supplies on an S3 origin's configuration.
+///
+/// `S3OriginConfig$OriginReadTimeout` is "how long, in seconds, CloudFront waits for a
+/// response from the origin ... the default (if you don't specify otherwise) is 30
+/// seconds", the same response timeout a custom origin carries
+/// ([`DEFAULT_ORIGIN_READ_TIMEOUT`]) — so an S3 origin that names none runs under that
+/// value and reports it, exactly as [`resolve_custom_origin_config`] does for the member of
+/// the same name. `OriginAccessIdentity` is required, so nothing is supplied for it.
+pub(super) fn resolve_s3_origin_config(mut s3: S3OriginConfig) -> S3OriginConfig {
+    s3.origin_read_timeout = Some(s3.origin_read_timeout.unwrap_or(DEFAULT_ORIGIN_READ_TIMEOUT));
+    s3
 }
 
 /// Resolve every member of a submitted `CachePolicyConfig` that the SERVICE supplies.

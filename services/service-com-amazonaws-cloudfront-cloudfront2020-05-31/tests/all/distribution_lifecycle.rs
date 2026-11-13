@@ -49,8 +49,9 @@ pub(crate) const AUTHORIZATION: &str = "AWS4-HMAC-SHA256 \
      Credential=AKIDEXAMPLE/20260101/us-east-1/cloudfront/aws4_request, \
      SignedHeaders=host, Signature=abc";
 
-/// The host every request below is addressed to, and so the authority a `Location`
-/// header names.
+/// The host every request below is addressed to: this service's own published host, which
+/// is what a client that resolves AWS's own hostnames addresses. A suite that needs another
+/// host (the emulator's own endpoint, say) calls [`call_from_host`].
 pub(crate) const HOST: &str = "cloudfront.amazonaws.com";
 
 /// The account id every emulated ARN carries (`engine::EMULATOR_ACCOUNT_ID`), spelled
@@ -354,10 +355,26 @@ pub(crate) async fn call_with_headers(
     body: Option<&str>,
     headers: &[(&str, &str)],
 ) -> Answer {
+    call_from_host(router, HOST, method, uri, body, headers).await
+}
+
+/// Send one request through the router, addressed to `host`.
+///
+/// The one request path again, with the `Host` the request carries as a parameter: which
+/// host a request ADDRESSED is what decides the endpoint a `Location` URI is rooted at, so a
+/// suite about announced addresses varies it rather than standing up a second harness.
+pub(crate) async fn call_from_host(
+    router: &MultiServiceRouter,
+    host: &str,
+    method: &str,
+    uri: &str,
+    body: Option<&str>,
+    headers: &[(&str, &str)],
+) -> Answer {
     let mut request = ::http::Request::builder()
         .method(method)
         .uri(uri)
-        .header("host", HOST)
+        .header("host", host)
         .header("authorization", AUTHORIZATION);
     if body.is_some() {
         request = request.header("content-type", "application/xml");

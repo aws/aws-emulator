@@ -233,6 +233,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             if crate::state::same_batch(&existing.batch, &batch) {
                 return Ok(CreateInvalidationOutput {
                     location: Some(crate::state::location_uri(
+                        ctx,
                         &crate::state::invalidation_path(&input.distribution_id, &existing.id),
                     )),
                     invalidation: Some(existing.to_invalidation()),
@@ -294,6 +295,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // "The fully qualified URI of the distribution and invalidation batch
             // request, including the Invalidation ID."
             location: Some(crate::state::location_uri(
+                ctx,
                 &crate::state::invalidation_path(&input.distribution_id, &id),
             )),
             invalidation: Some(reported),

@@ -1829,9 +1829,20 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
     ///
     /// The group this creates is the only one carrying
     /// [`StoredConnectionGroup::is_default`], and it is created exactly as
-    /// `CreateConnectionGroup` creates one: a minted id, a minted routing endpoint and a
-    /// minted version token, `InProgress` until the clock owes it `Deployed`.
-    pub fn default_connection_group(&mut self, now: SystemTime) -> String {
+    /// `CreateConnectionGroup` creates one: a minted id, the address of the listener its
+    /// routing endpoint is served on and a minted version token, `InProgress` until the
+    /// clock owes it `Deployed`.
+    ///
+    /// `endpoint` is that listener, opened by the handler before it took this lock (the
+    /// same way a distribution's is), or `None` on an engine that vends none — in which
+    /// case the group carries the name CloudFront's own zone would give it. A call that
+    /// finds the default group already created keeps that group's address and drops this
+    /// one, which closes the port it had opened.
+    pub fn default_connection_group(
+        &mut self,
+        now: SystemTime,
+        endpoint: Option<EdgeEndpoint>,
+    ) -> String {
         if let Some(group) = self.connection_groups.values().find(|group| group.is_default) {
             return group.id.clone();
         }
@@ -1843,7 +1854,7 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
             None => DEFAULT_CONNECTION_GROUP_NAME.to_string(),
             Some(_) => format!("{DEFAULT_CONNECTION_GROUP_NAME}-{id}"),
         };
-        let routing_endpoint = self.allocate_domain_name();
+        let routing_endpoint = self.minted_routing_endpoint(endpoint.as_ref());
         let etag = self.next_etag();
         let stored = StoredConnectionGroup {
             arn: connection_group_arn(&id),
@@ -1865,7 +1876,27 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
             tags: TagSet::new(),
         };
         self.connection_groups.insert(id.clone(), stored);
+        // The listener now has a group to serve, and its handle is held for as long as that
+        // group is: dropping it closes the port.
+        if let Some(endpoint) = endpoint {
+            endpoint.serves(&id);
+            self.connection_group_endpoints.insert(id.clone(), endpoint);
+        }
         id
+    }
+
+    /// The routing endpoint a connection group PUBLISHES: the address of the listener it is
+    /// served on ([`EdgeEndpoint`]), so a viewer that dials what the group announced reaches
+    /// this emulator — and the name CloudFront's own zone would give it on an engine that
+    /// vends no listener.
+    ///
+    /// The ONE derivation, read by `CreateConnectionGroup` and by the automatic creation of
+    /// the account's default group, so the two cannot publish addresses of different kinds.
+    pub fn minted_routing_endpoint(&mut self, endpoint: Option<&EdgeEndpoint>) -> String {
+        match endpoint {
+            Some(endpoint) => endpoint.authority().to_string(),
+            None => self.allocate_domain_name(),
+        }
     }
 
     /// Allocate the Amazon S3 canonical user id of an origin access identity, in the

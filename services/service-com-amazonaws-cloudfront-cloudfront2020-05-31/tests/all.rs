@@ -17,6 +17,8 @@ mod absent_identifier_namespaces;
 mod admission_preconditions;
 #[path = "all/alias_viewer_certificate.rs"]
 mod alias_viewer_certificate;
+#[path = "all/announced_location_uri.rs"]
+mod announced_location_uri;
 #[path = "all/anycast_ip_list_lifecycle.rs"]
 mod anycast_ip_list_lifecycle;
 #[path = "all/anycast_ip_list_list.rs"]
@@ -261,6 +263,8 @@ mod precondition_family_wording;
 mod published_address_every_mint;
 #[path = "all/published_edge_address.rs"]
 mod published_edge_address;
+#[path = "all/published_routing_endpoint.rs"]
+mod published_routing_endpoint;
 #[path = "all/public_key_delete.rs"]
 mod public_key_delete;
 #[path = "all/public_key_id_is_resolved_against_the_store.rs"]

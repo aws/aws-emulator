@@ -236,7 +236,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         // Read from the record just built, never from the request.
         let key_group = stored.to_key_group();
-        let location = crate::state::location_uri(&crate::state::key_group_path(&id));
+        let location = crate::state::location_uri(ctx, &crate::state::key_group_path(&id));
         store.key_groups.insert(id, stored);
 
         Ok(CreateKeyGroupOutput {

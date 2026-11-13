@@ -244,6 +244,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the ARN, the name nor the routing endpoint resolves to a group afterwards, and a
         // later create may claim that name again.
         store.connection_groups.remove(&input.id);
+        // Dropping the listener handle closes the port the group's routing endpoint was
+        // served on and severs every connection in flight on it, so the address the group
+        // published stops answering with the group that published it.
+        store.connection_group_endpoints.remove(&input.id);
 
         Ok(DeleteConnectionGroupOutput)
     }

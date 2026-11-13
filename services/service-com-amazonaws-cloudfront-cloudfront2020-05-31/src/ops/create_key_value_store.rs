@@ -252,7 +252,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "The location of the resulting key value store": the new resource addressed by
         // the identifier this create MINTED for it — the store's ARN, whose own last
         // segment is the `Id` the payload reports — never by the caller-supplied `Name`.
-        let location = crate::state::location_uri(&crate::state::key_value_store_path(&stored.arn));
+        let location =
+            crate::state::location_uri(ctx, &crate::state::key_value_store_path(&stored.arn));
         store.key_value_stores.insert(input.name, stored);
 
         Ok(CreateKeyValueStoreOutput {

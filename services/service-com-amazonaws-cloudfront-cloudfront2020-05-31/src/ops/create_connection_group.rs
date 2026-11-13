@@ -137,6 +137,22 @@ fn invalid_argument(reason: String) -> CreateConnectionGroupError {
     .into()
 }
 
+/// This operation's modelled refusal for a create that would take this emulator past the
+/// connection groups it holds — "The entity limit has been exceeded."
+///
+/// Read twice: once before a socket is opened for the new group, and once under the lock
+/// the insert is made beneath, so the bound is the same sentence either way.
+fn entity_limit_exceeded() -> CreateConnectionGroupError {
+    CreateConnectionGroupErrorModeled::EntityLimitExceeded(EntityLimitExceeded {
+        message: Some(format!(
+            "This emulator holds at most {} connection groups; delete one before creating \
+             another",
+            crate::state::MAX_CONNECTION_GROUPS
+        )),
+    })
+    .into()
+}
+
 /// The `CreateConnectionGroup` operation.
 ///
 /// Owns the shared engine (the constructor seam) and implements
@@ -176,7 +192,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(crate::state::store_unavailable());
         };
-        let _ = ctx;
 
         // ---- Request shape, decided BEFORE the store lock is taken ----------------
 
@@ -206,6 +221,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // ---- The store ------------------------------------------------------------
         let now = SystemTime::now();
+        // The listener this group's routing endpoint is served on, opened BEFORE the store
+        // lock is taken (binding a socket is asynchronous), exactly as a distribution's edge
+        // address is. The handle is held by this function until the store takes it, so every
+        // path out of here that stores no group drops it, which closes the port. The one
+        // bound a caller could otherwise spend host resources against is read FIRST, so a
+        // create this emulator will refuse for capacity opens no socket at all.
+        if state.lock().connection_groups.len() >= crate::state::MAX_CONNECTION_GROUPS {
+            return Err(entity_limit_exceeded());
+        }
+        let endpoint =
+            crate::state::open_connection_group_endpoint(&*self.engine, ctx.callback().clone())
+                .await;
         let mut store = state.lock();
         // Materialise whatever the clock already owes the rest of this service's state,
         // so this call never leaves another resource reporting a stale status.
@@ -238,20 +265,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // automatic creation of the account's default group, so the bound is an entry
         // count refused before the insert.
         if store.connection_groups.len() >= crate::state::MAX_CONNECTION_GROUPS {
-            return Err(CreateConnectionGroupErrorModeled::EntityLimitExceeded(
-                EntityLimitExceeded {
-                    message: Some(format!(
-                        "This emulator holds at most {} connection groups; delete one before \
-                         creating another",
-                        crate::state::MAX_CONNECTION_GROUPS
-                    )),
-                },
-            )
-            .into());
+            return Err(entity_limit_exceeded());
         }
 
         let id = store.allocate_connection_group_id();
-        let routing_endpoint = store.allocate_domain_name();
+        // The address a VIEWER is routed through: the listener this group is served on, so a
+        // tenant whose domain points at what the group announced reaches this emulator
+        // ([`crate::state::EdgeEndpoint`]).
+        let routing_endpoint = store.minted_routing_endpoint(endpoint.as_ref());
         let etag = store.next_etag();
         let stored = crate::state::StoredConnectionGroup {
             arn: crate::state::connection_group_arn(&id),
@@ -279,7 +300,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             tags,
         };
         let connection_group = stored.to_connection_group();
-        store.connection_groups.insert(id, stored);
+        store.connection_groups.insert(id.clone(), stored);
+        // The listener now has a group to serve, and its handle is held for as long as that
+        // group is: dropping it closes the port.
+        if let Some(endpoint) = endpoint {
+            endpoint.serves(&id);
+            store.connection_group_endpoints.insert(id, endpoint);
+        }
 
         Ok(CreateConnectionGroupOutput {
             // "The connection group that you created" — read from the record just stored,

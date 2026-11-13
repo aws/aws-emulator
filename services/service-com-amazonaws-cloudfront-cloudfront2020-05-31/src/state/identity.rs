@@ -765,16 +765,6 @@ pub fn field_level_encryption_config_path(id: &str) -> String {
     format!("/2020-05-31/field-level-encryption/{id}")
 }
 
-/// The fully qualified URI a `Location` header reports for `path`.
-///
-/// CloudFront's control API is GLOBAL and served on one endpoint
-/// ([`SERVICE_ENDPOINT`]), so the URI of a resource it just created is that resource's
-/// path under that endpoint — the same URI for every caller, rather than one derived
-/// from the `Host` header the request happened to carry.
-pub fn location_uri(path: &str) -> String {
-    format!("https://{SERVICE_ENDPOINT}{path}")
-}
-
 /// Whether `value` has the shape of a distribution id this service mints (`E` followed
 /// by [`ID_BODY_LEN`] uppercase alphanumerics).
 ///

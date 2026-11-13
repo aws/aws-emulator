@@ -274,7 +274,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         // Read from the record just built, never from the request.
         let origin_request_policy = stored.to_origin_request_policy();
-        let location = crate::state::location_uri(&crate::state::origin_request_policy_path(&id));
+        let location =
+            crate::state::location_uri(ctx, &crate::state::origin_request_policy_path(&id));
         store.origin_request_policies.insert(id, stored);
 
         Ok(CreateOriginRequestPolicyOutput {

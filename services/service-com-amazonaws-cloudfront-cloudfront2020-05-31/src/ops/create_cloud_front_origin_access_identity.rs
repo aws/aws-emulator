@@ -199,6 +199,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 return Ok(CreateCloudFrontOriginAccessIdentityOutput {
                     cloud_front_origin_access_identity: Some(existing.to_identity()),
                     location: Some(crate::state::location_uri(
+                        ctx,
                         &crate::state::origin_access_identity_path(&existing.id),
                     )),
                     e_tag: Some(existing.etag.clone()),
@@ -249,7 +250,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             config,
         };
         let identity = stored.to_identity();
-        let location = crate::state::location_uri(&crate::state::origin_access_identity_path(&id));
+        let location =
+            crate::state::location_uri(ctx, &crate::state::origin_access_identity_path(&id));
         store.origin_access_identities.insert(id, stored);
 
         Ok(CreateCloudFrontOriginAccessIdentityOutput {

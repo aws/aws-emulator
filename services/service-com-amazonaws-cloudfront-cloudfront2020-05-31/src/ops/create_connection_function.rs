@@ -152,10 +152,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        _ctx: &smithy_server_runtime::OperationContext<'_>,
+        ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); this operation
-        // needs nothing from the request metadata the context carries.
+        // The engine is reachable from `&self` (constructor-injected); the context is read
+        // for the endpoint this request arrived on, which the `Location` is rooted at.
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(crate::state::store_unavailable());
         };
@@ -299,7 +299,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let summary = stored
             .development
             .to_summary(&stored.name, &stored.id, &stored.arn);
-        let location = crate::state::location_uri(&crate::state::connection_function_path(&id));
+        let location =
+            crate::state::location_uri(ctx, &crate::state::connection_function_path(&id));
         store.connection_functions.insert(id, stored);
 
         Ok(CreateConnectionFunctionOutput {

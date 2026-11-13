@@ -267,6 +267,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 return Ok(CreateStreamingDistributionOutput {
                     streaming_distribution: Some(existing.to_streaming_distribution()),
                     location: Some(crate::state::location_uri(
+                        ctx,
                         &crate::state::streaming_distribution_path(&existing.id),
                     )),
                     e_tag: Some(existing.etag.clone()),
@@ -325,8 +326,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             tags: crate::state::TagSet::new(),
         };
         let streaming_distribution = stored.to_streaming_distribution();
-        let location =
-            crate::state::location_uri(&crate::state::streaming_distribution_path(&id));
+        let location = crate::state::location_uri(
+            ctx,
+            &crate::state::streaming_distribution_path(&id),
+        );
         store.streaming_distributions.insert(id, stored);
 
         Ok(CreateStreamingDistributionOutput {

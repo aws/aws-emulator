@@ -526,6 +526,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             distribution: Some(created.distribution),
             // "The fully qualified URI of the new distribution resource just created."
             location: Some(crate::state::location_uri(
+                ctx,
                 &crate::state::distribution_path(&created.id),
             )),
             // "The current version of the distribution created."

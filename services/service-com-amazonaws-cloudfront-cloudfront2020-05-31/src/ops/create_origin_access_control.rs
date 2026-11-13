@@ -216,7 +216,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Read from the record just built, never from the request.
         let origin_access_control = stored.to_origin_access_control();
         let location =
-            crate::state::location_uri(&crate::state::origin_access_control_path(&id));
+            crate::state::location_uri(ctx, &crate::state::origin_access_control_path(&id));
         store.origin_access_controls.insert(id, stored);
 
         Ok(CreateOriginAccessControlOutput {
