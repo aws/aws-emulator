@@ -1025,12 +1025,16 @@ pub fn is_region(value: &str) -> bool {
 /// Region field their pattern leaves open, so the partition is a function of the
 /// Region and never a constant.
 ///
-/// The prefixes and partition names are AWS's own. The isolated Regions AWS
-/// added after this service's patterns were published get their own partition
-/// too — the Region decides, and naming the commercial partition for a Region
-/// outside it is the very disagreement this function exists to prevent. The
-/// longer `us-isob-` / `us-isof-` prefixes are matched before `us-iso-` so each
-/// lands in its own partition.
+/// The prefixes and partition names are AWS's own, and the table carries EVERY
+/// partition AWS publishes a Region prefix for — the Regions AWS added after this
+/// service's patterns were published (the European Sovereign Cloud's `eusc-de-`
+/// and the later isolated prefixes) get their own partition too. The Region
+/// decides, and naming the commercial partition for a Region outside it is the
+/// very disagreement this function exists to prevent; it is also what would make
+/// this service contradict the AWS Outposts control plane its Outposts come out
+/// of ([`outpost_inventory`]), which reads the same published table for the ARNs
+/// it reports those very Outposts under. The longer `us-isob-` / `us-isof-`
+/// prefixes are matched before `us-iso-` so each lands in its own partition.
 ///
 /// This is the partition the Region belongs to, which is not the same question
 /// as whether an ARN member can name it: [`admitted_arn_partition`] answers
@@ -1040,6 +1044,7 @@ pub fn arn_partition(region: &str) -> &'static str {
     const PARTITION_PREFIXES: &[(&str, &str)] = &[
         ("cn-", "aws-cn"),
         ("us-gov-", "aws-us-gov"),
+        ("eusc-de-", "aws-eusc"),
         ("us-isob-", "aws-iso-b"),
         ("us-isof-", "aws-iso-f"),
         ("eu-isoe-", "aws-iso-e"),

@@ -32,7 +32,8 @@ use crate::endpoint_lifecycle::{
 /// (`smithy_query(query="shape", shape="OutpostArn,S3OutpostArn,EndpointArn")`); `None`
 /// marks a Region whose partition that alternation does not list, for which no member of
 /// this service has a legal value. The Region codes come from the emulator's own catalog
-/// (`emulator_telemetry::policy::KNOWN_REGIONS`).
+/// (`emulator_telemetry::policy::KNOWN_REGIONS`), plus `eusc-de-east-1`, which the models'
+/// own Region value sets publish.
 struct RegionRow {
     case: &'static str,
     region: &'static str,
@@ -69,6 +70,11 @@ const REGIONS: &[RegionRow] = &[
     RegionRow {
         case: "a partition outside the published alternation",
         region: "us-isof-east-1",
+        partition: None,
+    },
+    RegionRow {
+        case: "the European Sovereign Cloud, also outside it",
+        region: "eusc-de-east-1",
         partition: None,
     },
     RegionRow {

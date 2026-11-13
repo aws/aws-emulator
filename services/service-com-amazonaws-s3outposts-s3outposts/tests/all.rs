@@ -21,6 +21,8 @@ mod arn_partitions;
 mod arn_patterns;
 #[path = "all/control_plane_inventory.rs"]
 mod control_plane_inventory;
+#[path = "all/control_plane_partition_agreement.rs"]
+mod control_plane_partition_agreement;
 #[path = "all/endpoint_commitment_conflict.rs"]
 mod endpoint_commitment_conflict;
 #[path = "all/endpoint_cursor_scope.rs"]

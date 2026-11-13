@@ -30,7 +30,8 @@ use crate::endpoint_lifecycle::{
 /// A Region and the partition its ARNs belong to.
 ///
 /// The Region codes are taken from the emulator's own Region catalog
-/// (`emulator_telemetry::policy::KNOWN_REGIONS`, "every AWS region the wire may carry") and
+/// (`emulator_telemetry::policy::KNOWN_REGIONS`, "every AWS region the wire may carry",
+/// plus `eusc-de-east-1`, which the models' own Region value sets publish) and
 /// the partition names from this service's ARN patterns
 /// (smithy_query(query="shape", shape="EndpointArn,OutpostArn,S3OutpostArn")), whose
 /// alternation lists `aws`, `aws-cn`, `aws-us-gov`, `aws-iso` and `aws-iso-b` and nothing
@@ -96,6 +97,11 @@ const ROWS: &[Row] = &[
         case: "the second isolated partition, whose prefix extends the first",
         region: "us-isob-east-1",
         partition: Some("aws-iso-b"),
+    },
+    Row {
+        case: "the European Sovereign Cloud, outside the alternation",
+        region: "eusc-de-east-1",
+        partition: None,
     },
     Row {
         case: "an isolated partition the ARN patterns' alternation does not list",
