@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
-use super::cloud_map_core::{emulator, namespace, ok, service};
+use super::cloud_map_core::{emulator, failure, namespace, ok, service};
 
 /// How many characters the leading segment of an `OperationId` carries.
 ///
@@ -217,6 +217,142 @@ async fn every_asynchronous_call_answers_an_operation_id_of_the_published_form()
             reported, id,
             "case {case:?}: GetOperation must report the id it was asked about, got {filed}"
         );
+    }
+}
+
+/// Which form of the `Arn`-modelled `DeleteNamespaceRequest$Id` names the namespace a
+/// delete removes (`smithy_query(query="operation", operation="DeleteNamespace")`: `Id`
+/// targets `Arn`, "the ID or Amazon Resource Name (ARN) of the namespace").
+#[derive(Debug, Clone, Copy)]
+enum Reference {
+    Id,
+    Arn,
+}
+
+/// The same rule read through the delete, the call the id is most often split by: the
+/// `OperationId` `DeleteNamespace` answers carries the two-segment form whichever kind of
+/// namespace it removed and whichever form named it, and the WHOLE token is the handle —
+/// neither segment on its own resolves.
+///
+/// The rows span the namespace kind and the reference form, the two things this call
+/// varies along; the form itself belongs to the store's operation-id generator, so it
+/// cannot depend on either.
+#[tokio::test]
+async fn a_delete_answers_an_operation_id_of_the_published_form_for_every_namespace_kind() {
+    let router = emulator();
+
+    let rows: Vec<(&str, &str, Value, Reference)> = vec![
+        (
+            "an http namespace named by id",
+            "CreateHttpNamespace",
+            json!({ "Name": "opid-del-http-id" }),
+            Reference::Id,
+        ),
+        (
+            "an http namespace named by ARN",
+            "CreateHttpNamespace",
+            json!({ "Name": "opid-del-http-arn" }),
+            Reference::Arn,
+        ),
+        (
+            "a private dns namespace named by id",
+            "CreatePrivateDnsNamespace",
+            json!({ "Name": "opid-del-private-id.example.com", "Vpc": VPC }),
+            Reference::Id,
+        ),
+        (
+            "a private dns namespace named by ARN",
+            "CreatePrivateDnsNamespace",
+            json!({ "Name": "opid-del-private-arn.example.com", "Vpc": VPC }),
+            Reference::Arn,
+        ),
+        (
+            "a public dns namespace named by id",
+            "CreatePublicDnsNamespace",
+            json!({ "Name": "opid-del-public-id.example.com" }),
+            Reference::Id,
+        ),
+        (
+            "a public dns namespace named by ARN",
+            "CreatePublicDnsNamespace",
+            json!({ "Name": "opid-del-public-arn.example.com" }),
+            Reference::Arn,
+        ),
+    ];
+
+    let mut seen = BTreeSet::new();
+    for (case, create, body, reference) in rows {
+        let name = body["Name"]
+            .as_str()
+            .expect("every row names its namespace")
+            .to_string();
+        let created = operation_id(&router, create, body).await;
+        let namespace_id = target(&router, &created, "NAMESPACE").await;
+        let arn = ok(&router, "GetNamespace", json!({ "Id": namespace_id.clone() })).await
+            ["Namespace"]["Arn"]
+            .as_str()
+            .unwrap_or_else(|| panic!("case {case:?}: a stored namespace carries its ARN"))
+            .to_string();
+
+        let named = match reference {
+            Reference::Id => namespace_id.clone(),
+            Reference::Arn => arn.clone(),
+        };
+        let deleted = operation_id(&router, "DeleteNamespace", json!({ "Id": named })).await;
+
+        assert_operation_id_form(case, &deleted);
+        assert!(
+            seen.insert(deleted.clone()),
+            "case {case:?}: every delete files its own id, but {deleted:?} was already answered"
+        );
+
+        // The token is what a later poll is keyed on: it must name the record the delete
+        // filed, for the namespace it removed.
+        let filed = ok(
+            &router,
+            "GetOperation",
+            json!({ "OperationId": deleted.clone() }),
+        )
+        .await;
+        assert_eq!(
+            filed["Operation"]["Id"],
+            json!(deleted),
+            "case {case:?}: GetOperation must report the id it was asked about, got {filed}"
+        );
+        assert_eq!(
+            filed["Operation"]["Type"],
+            json!("DELETE_NAMESPACE"),
+            "case {case:?}: the filed operation is the delete, got {filed}"
+        );
+        assert_eq!(
+            filed["Operation"]["Targets"]["NAMESPACE"],
+            json!(namespace_id),
+            "case {case:?}: the operation targets the namespace that was deleted, got {filed}"
+        );
+
+        // The hyphen joins two segments of ONE handle rather than separating two usable
+        // ones, so a client that splits the id and polls with a piece resolves nothing.
+        let (body_segment, suffix_segment) = deleted
+            .split_once('-')
+            .unwrap_or_else(|| panic!("case {case:?}: the form was asserted above"));
+        for partial in [body_segment, suffix_segment] {
+            let (status, code) =
+                failure(&router, "GetOperation", json!({ "OperationId": partial })).await;
+            assert_eq!(
+                (status, code.as_str()),
+                (400, "OperationNotFound"),
+                "case {case:?}: one segment {partial:?} of {deleted:?} is not an operation id"
+            );
+        }
+
+        // Opaque: no part of the id is a value the request or the resource carried.
+        for carried in [namespace_id.as_str(), name.as_str(), arn.as_str()] {
+            assert!(
+                !deleted.contains(carried),
+                "case {case:?}: an OperationId carries nothing from the request, \
+                 but {deleted:?} contains {carried:?}"
+            );
+        }
     }
 }
 
