@@ -467,12 +467,12 @@ async fn a_create_that_cannot_be_served_is_refused_and_stores_nothing() {
             "InvalidLaunchTemplateId.Malformed",
         ),
         (
-            "a well-formed id no template of the account carries",
+            "a well-formed id no mint of this service ever reached",
             vec![
                 p("LaunchTemplateId", "lt-0ffffffffffffffff"),
                 data("ImageId", "ami-00000000000000002"),
             ],
-            "InvalidLaunchTemplateId.NotFound",
+            "InvalidLaunchTemplateId.Malformed",
         ),
         (
             "a name no template of the account carries",

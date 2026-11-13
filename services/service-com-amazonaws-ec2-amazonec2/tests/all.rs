@@ -2063,3 +2063,10 @@ mod update_security_group_rule_descriptions_egress;
 // give it. Declared at the tail of this file, which is where every new ec2 suite lands.
 #[path = "all/instance_eni_and_volume_projections.rs"]
 mod instance_eni_and_volume_projections;
+// How a launch template's KEY and its VERSION resolve across every operation that takes one: an
+// id no mint of this service reached is unreadable where one it issued whose template is gone is
+// absent, a launch pins a version the template holds or is refused naming it, and a version's
+// data reads back as the data its writer submitted. Declared at the tail of this file, which is
+// where every new ec2 suite lands.
+#[path = "all/launch_template_key_and_version_resolution.rs"]
+mod launch_template_key_and_version_resolution;

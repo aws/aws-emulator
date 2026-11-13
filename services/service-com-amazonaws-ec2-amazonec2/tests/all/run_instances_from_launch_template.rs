@@ -16,11 +16,12 @@
 //!    resolves it: a number, `$Latest`, `$Default`, and the DEFAULT version for a request that
 //!    names none at all ("Default: The default version of the launch template",
 //!    `LaunchTemplateSpecification$Version`).
-//! 3. A TEMPLATE THE ACCOUNT DOES NOT HOLD launches nothing: the launch is refused
-//!    `InvalidLaunchTemplateId.NotFound` and no instance is minted — for an id no template was
-//!    ever created under and for one whose template has since been deleted — while a version
-//!    the template does not hold is `InvalidLaunchTemplateId.VersionNotFound` and a version
-//!    that is neither a number nor an alias is `InvalidParameterValue`.
+//! 3. A TEMPLATE THE ACCOUNT DOES NOT HOLD launches nothing: an id this service ITSELF minted
+//!    whose template has since been deleted is refused `InvalidLaunchTemplateId.NotFound`,
+//!    while an id no mint of it ever reached is not an id of a launch template at all and is
+//!    refused `InvalidLaunchTemplateId.Malformed`; a version the template does not hold is
+//!    `InvalidLaunchTemplateId.VersionNotFound` and a version that is neither a number nor an
+//!    alias is `InvalidParameterValue`. No instance is minted for any of them.
 //!
 //! Each table row is a distinct input along what the rules generalise over — which member the
 //! template carries, which the request carries, which key the template is named by, which
@@ -569,15 +570,13 @@ async fn a_template_the_account_does_not_hold_launches_nothing() {
             format!("The specified launch template, with template ID {deleted}, does not exist."),
         ),
         (
-            "an id no template of the account was created under".to_string(),
+            "an id no mint of this service ever reached".to_string(),
             vec![p(
                 "LaunchTemplate.LaunchTemplateId",
                 "lt-0fedcba987654321f",
             )],
-            "InvalidLaunchTemplateId.NotFound",
-            "The specified launch template, with template ID lt-0fedcba987654321f, \
-             does not exist."
-                .to_string(),
+            "InvalidLaunchTemplateId.Malformed",
+            "Malformed launch template Id: lt-0fedcba987654321f".to_string(),
         ),
         (
             "a name no template of the account carries".to_string(),
@@ -594,8 +593,8 @@ async fn a_template_the_account_does_not_hold_launches_nothing() {
             ],
             "InvalidLaunchTemplateId.VersionNotFound",
             format!(
-                "Launch template version '9' does not exist for launch template \
-                 '{launch_template_id}'"
+                "Could not find the specified version 9 for the launch template with \
+                 ID {launch_template_id}."
             ),
         ),
         (

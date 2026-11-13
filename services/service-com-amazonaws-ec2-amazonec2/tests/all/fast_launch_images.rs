@@ -51,8 +51,9 @@ const PARTNER_ACCOUNT: &str = "111122223333";
 /// A well-formed AMI id no image of the account is stored under.
 const UNKNOWN_IMAGE_ID: &str = "ami-0ffffffffffffffff";
 
-/// A well-formed launch template id no template of the account is stored under.
-const UNKNOWN_LAUNCH_TEMPLATE_ID: &str = "lt-0ffffffffffffffff";
+/// A launch template id of the right printed shape that no mint of this service ever
+/// reached, so it is not an id of a launch template at all.
+const UNISSUED_LAUNCH_TEMPLATE_ID: &str = "lt-0ffffffffffffffff";
 
 /// The name the one launch template these tests create is held under.
 const LAUNCH_TEMPLATE_NAME: &str = "fast-launch-template";
@@ -652,17 +653,17 @@ async fn a_value_the_model_does_not_document_is_refused_and_stores_nothing() {
             "MissingParameter",
         ),
         (
-            "a launch template id no template of the account has",
+            "a launch template id no mint of this service ever reached",
             "EnableFastLaunch",
             enable(vec![
                 p(
                     "LaunchTemplate.LaunchTemplateId",
-                    UNKNOWN_LAUNCH_TEMPLATE_ID,
+                    UNISSUED_LAUNCH_TEMPLATE_ID,
                 ),
                 p("LaunchTemplate.Version", "1"),
             ]),
             400,
-            "InvalidLaunchTemplateId.NotFound",
+            "InvalidLaunchTemplateId.Malformed",
         ),
         (
             "a launch template version the template does not hold",

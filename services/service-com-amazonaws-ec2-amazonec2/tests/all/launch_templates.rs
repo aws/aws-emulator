@@ -578,14 +578,14 @@ async fn a_delete_resolves_one_key_and_refuses_the_rest() {
             "InvalidLaunchTemplateId.Malformed",
         ),
         (
-            "a well-formed long id nothing was created for",
+            "a well-formed long id no mint of this service ever reached",
             vec![p("LaunchTemplateId", "lt-0fedcba987654321f")],
-            "InvalidLaunchTemplateId.NotFound",
+            "InvalidLaunchTemplateId.Malformed",
         ),
         (
-            "a well-formed short id nothing was created for",
+            "a well-formed short id no mint of this service ever reached",
             vec![p("LaunchTemplateId", "lt-0fedcba9")],
-            "InvalidLaunchTemplateId.NotFound",
+            "InvalidLaunchTemplateId.Malformed",
         ),
         (
             "a name nothing was created under",
@@ -679,12 +679,12 @@ async fn dry_run_reports_the_permitted_outcome_without_writing() {
     .await;
     assert_eq!(
         status, 400,
-        "dry-run delete of an unknown template: got {status} with body {body}"
+        "dry-run delete of an unreadable template id: got {status} with body {body}"
     );
     assert_eq!(
         error_code(&body),
-        "InvalidLaunchTemplateId.NotFound",
-        "dry-run delete of an unknown template: got body {body}"
+        "InvalidLaunchTemplateId.Malformed",
+        "dry-run delete of an unreadable template id: got body {body}"
     );
 
     let (status, body) = api(
@@ -1316,6 +1316,27 @@ mod describe_launch_template_versions {
     async fn a_dry_run_reports_the_permission_check_and_describes_nothing() {
         let (router, engine) = crate::ec2_query::emulator();
         let launch_template_id = template_with_five_versions(&router, &engine, "dry.run.five").await;
+        // A template this service MINTED and then took away: an id it really issued, so the
+        // dry run is answered before the lookup that would have found nothing — where an id
+        // no mint of it ever reached is screened out ahead of the flag, that value naming
+        // nothing for a permission check to be about.
+        let gone = create_template(
+            &router,
+            "dry.run.gone",
+            &[data("ImageId", "ami-00000000000000001")],
+        )
+        .await;
+        let (status, body) = api(
+            &router,
+            "DeleteLaunchTemplate",
+            &[p("LaunchTemplateId", gone.clone())],
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "the template the dry run names must have been taken away, got {status} with \
+             body {body}"
+        );
 
         // Rows differ along WHAT the dry run would have described: one template, one version
         // of it, an account-wide alias, and a template that does not exist at all.
@@ -1337,8 +1358,8 @@ mod describe_launch_template_versions {
                 indexed("LaunchTemplateVersion", &["$Default"]),
             ),
             (
-                "a template no account carries",
-                vec![p("LaunchTemplateId", "lt-00000000000000099")],
+                "a template the account no longer carries",
+                vec![p("LaunchTemplateId", gone.clone())],
             ),
         ];
 
@@ -1538,9 +1559,9 @@ mod describe_launch_template_versions {
                 "InvalidLaunchTemplateId.Malformed",
             ),
             (
-                "a well-formed id no template carries",
+                "a well-formed id no mint of this service ever reached",
                 vec![p("LaunchTemplateId", "lt-00000000000000099")],
-                "InvalidLaunchTemplateId.NotFound",
+                "InvalidLaunchTemplateId.Malformed",
             ),
             (
                 "a name no template carries",

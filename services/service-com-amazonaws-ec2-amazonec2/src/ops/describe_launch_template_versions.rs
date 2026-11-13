@@ -192,14 +192,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         use crate::scaffolded::Scaffolded;
         use crate::state::{
-            CompiledFilter, LAUNCH_TEMPLATE_VERSION_DEFAULT, LAUNCH_TEMPLATE_VERSION_LATEST,
-            LaunchTemplateRecord, MAX_FILTER_MATCH_STEPS, MAX_FILTER_VALUE_BYTES,
-            MAX_FILTER_VALUES, MAX_FILTERS, MAX_RESOURCE_IDS, MatchBudget, decode_page_token,
-            encode_page_token, invalid_launch_template_id_malformed,
-            invalid_launch_template_id_not_found, invalid_launch_template_name_not_found,
-            invalid_pagination_token_for, launch_template_id_is_well_formed, matches_every_filter,
+            CompiledFilter, LAUNCH_TEMPLATE_ID_PREFIX, LAUNCH_TEMPLATE_VERSION_DEFAULT,
+            LAUNCH_TEMPLATE_VERSION_LATEST, LaunchTemplateRecord, MAX_FILTER_MATCH_STEPS,
+            MAX_FILTER_VALUE_BYTES, MAX_FILTER_VALUES, MAX_FILTERS, MAX_RESOURCE_IDS,
+            MatchBudget, decode_page_token, encode_page_token,
+            invalid_launch_template_id_malformed, invalid_launch_template_name_not_found,
+            invalid_pagination_token_for, matches_every_filter,
             max_results_outside_published_range, require_service_state,
-            resolve_launch_template_version,
+            resolve_launch_template_version, specified_launch_template_id_not_found,
         };
 
         // A launch template version carries no Region member and this operation reads no
@@ -333,12 +333,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                      specified, but not both",
                 ));
             }
-            (Some(id), None) => {
-                if !launch_template_id_is_well_formed(id) {
-                    return Err(invalid_launch_template_id_malformed(id));
-                }
-                TemplateSelector::Id(id)
-            }
+            (Some(id), None) => TemplateSelector::Id(id),
             (None, Some(name)) => TemplateSelector::Name(name),
             // "To describe all launch templates in your account that are defined as the
             // latest version, the valid value is $Latest. … You can specify $Latest and
@@ -373,27 +368,45 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         };
 
+        let state = require_service_state(&*self.engine)?;
+        let store = state.lock();
+
+        // A launch template id is a value the service ITSELF issued, so it is SCREENED before
+        // anything is looked up under it: one no issue of the kind could have produced is not
+        // an id of a launch template at all, and is refused as malformed — the screen
+        // [`crate::state::resolve_launch_template_id`] and `DescribeLaunchTemplates` apply to
+        // an id as well. The screen sits HERE, ahead of the dry run below, because a value the
+        // operation cannot read names nothing for a permission check to be about; only an
+        // ISSUED id goes on to the lookup, which is what keeps the not-found half of the pair
+        // reachable: the template an issued id named may since have been deleted.
+        if let TemplateSelector::Id(id) = selector {
+            if !store.id_was_issued(LAUNCH_TEMPLATE_ID_PREFIX, id) {
+                return Err(invalid_launch_template_id_malformed(id));
+            }
+        }
+
         // "Checks whether you have the required permissions for the action, WITHOUT
         // ACTUALLY MAKING THE REQUEST, and provides an error response. If you have the
         // required permissions, the error response is DryRunOperation"
         // (`DescribeLaunchTemplateVersionsRequest$DryRun`). Every caller of this emulator
         // is permitted, so a well-formed dry run reports that outcome and reads nothing —
         // but a request that is not well formed is answered with ITS OWN refusal, never
-        // getting as far as the permission check it asks about.
+        // getting as far as the permission check it asks about. Nothing above this point
+        // writes, so a dry run leaves the store as it found it.
         if input.dry_run.unwrap_or(false) {
             return Err(Scaffolded::dry_run_operation());
         }
 
-        let state = require_service_state(&*self.engine)?;
-        let store = state.lock();
-
         // The templates the selector names, read out of the store.
         let described: Vec<&LaunchTemplateRecord> = match selector {
             TemplateSelector::Id(id) => {
+                // The id was screened against the mint above, so a lookup that misses here is
+                // a template that has GONE: a caller that deleted a template and read its
+                // versions back is told that the template it specified does not exist.
                 let record = store
                     .launch_templates
                     .get(id)
-                    .ok_or_else(invalid_launch_template_id_not_found)?;
+                    .ok_or_else(|| specified_launch_template_id_not_found(id))?;
                 vec![record]
             }
             TemplateSelector::Name(name) => {
@@ -796,24 +809,23 @@ pub(crate) fn launch_template_version_view(
     }
 }
 
-/// `LaunchTemplateInstanceMetadataOptionsState`'s `applied` member: "the metadata options
-/// have been successfully applied"
-/// (`smithy_query(query="doc",shape="LaunchTemplateInstanceMetadataOptions",member="State")`).
-const LAUNCH_TEMPLATE_METADATA_OPTIONS_APPLIED: &str = "applied";
-
 /// The launch parameters of a stored version as a READER reports them: the modelled
 /// `ResponseLaunchTemplateData` built from the `RequestLaunchTemplateData` the writer gave.
 ///
 /// The two shapes carry the same members under the same names — the request side is simply
 /// the mutable mirror of the response side — so this is a member-for-member projection and
-/// nothing a caller set is dropped or invented. The three places the response side says
-/// MORE than the request side are the only decisions here, and each is taken from that
-/// member's own documentation:
+/// nothing a caller set is dropped or invented. A member the response side carries and the
+/// request side does not is reported only where the STORE holds the answer to it, never
+/// filled in from a default, so the data a reader reports is the data the writer submitted
+/// and handing it back to `CreateLaunchTemplateVersion` asks for the version it describes:
 ///
-/// * `LaunchTemplateInstanceMetadataOptions$State` — "`applied` - The metadata options have
-///   been successfully applied" — is reported for a version that carries metadata options
-///   at all: a stored version's options are the selection itself, with no update in flight
-///   for `pending` to describe.
+/// * `LaunchTemplateInstanceMetadataOptions$State` is "the state of the metadata option
+///   changes" — a fact of APPLYING metadata options to a running instance, which
+///   `LaunchTemplateInstanceMetadataOptionsRequest` carries no member for and a stored
+///   version therefore says nothing about — so a version's metadata options report exactly
+///   the members the request set. An INSTANCE's own metadata options do report it, off the
+///   transition the clock owes that instance
+///   (`crate::state::ComAmazonawsEc2Amazonec2State::metadata_options_state_at`).
 /// * `OperatorResponse$Managed` is "`true` if the resource is managed by a service
 ///   provider", so data naming a principal is managed data, and `HiddenByDefault` follows
 ///   the account's managed-resource visibility settings, which nothing in this emulator
@@ -1047,7 +1059,7 @@ fn response_launch_template_data(
         }),
         metadata_options: data.metadata_options.as_ref().map(|options| {
             LaunchTemplateInstanceMetadataOptions {
-                state: Some(LAUNCH_TEMPLATE_METADATA_OPTIONS_APPLIED.to_string()),
+                state: None,
                 http_tokens: options.http_tokens.clone(),
                 http_put_response_hop_limit: options.http_put_response_hop_limit,
                 http_endpoint: options.http_endpoint.clone(),

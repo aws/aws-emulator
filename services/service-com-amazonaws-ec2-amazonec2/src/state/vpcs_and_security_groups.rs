@@ -2947,8 +2947,16 @@ pub fn launch_template_key<'request, E>(
 /// Resolve the one launch template a request names, by id or by name.
 ///
 /// The key is read first ([`launch_template_key`]), before either half is looked up. An id is
-/// checked for shape next, the way EC2 orders a malformed id ahead of an unknown one; a name
-/// has no shape to be wrong, so an unknown name is simply not found.
+/// SCREENED next, the way EC2 orders a malformed id ahead of an unknown one: a launch template
+/// id is a value the service ITSELF issued
+/// ([`ComAmazonawsEc2Amazonec2State::id_was_issued`]), so one no issue of the kind could have
+/// produced is not an id of a launch template at all and is refused
+/// [`INVALID_LAUNCH_TEMPLATE_ID_MALFORMED`] before any lookup — the same screen
+/// `DescribeLaunchTemplates` applies to each id of its list. Only an ISSUED id is looked up,
+/// which is what keeps the not-found half of the pair reachable: the template an issued id
+/// named may since have been deleted, and that is
+/// [`specified_launch_template_id_not_found`], the sentence EC2 words for the ONE id a
+/// request named. A name has no shape to be wrong, so an unknown name is simply not found.
 pub fn resolve_launch_template_id<E>(
     store: &ComAmazonawsEc2Amazonec2State,
     launch_template_id: Option<&str>,
@@ -2956,11 +2964,11 @@ pub fn resolve_launch_template_id<E>(
 ) -> Result<String, crate::scaffolded::Scaffolded<E>> {
     match launch_template_key(launch_template_id, launch_template_name)? {
         LaunchTemplateKey::Id(id) => {
-            if !launch_template_id_is_well_formed(id) {
+            if !store.id_was_issued(LAUNCH_TEMPLATE_ID_PREFIX, id) {
                 return Err(invalid_launch_template_id_malformed(id));
             }
             if !store.launch_templates.contains_key(id) {
-                return Err(invalid_launch_template_id_not_found());
+                return Err(specified_launch_template_id_not_found(id));
             }
             Ok(id.to_string())
         }
@@ -2984,11 +2992,13 @@ pub fn launch_template_limit_exceeded<E>(
 /// The sentence is EC2's, and it is FIXED: `At least one of the launch templates specified in
 /// the request does not exist.` names neither the request's values nor how many of them could
 /// not be resolved — a request may name several, and the service reports that at least one of
-/// them is absent rather than which. It is the SAME sentence
-/// [`invalid_launch_template_name_not_found`] carries under the name code, a template a caller
-/// named by either key being absent in exactly one way. Recorded by the corpus unit
-/// `ec2.ec2-run-from-launch-template`, which deletes a launch template and then reads and
-/// launches from it.
+/// them is absent rather than which. So it is the answer for a member that takes a LIST of
+/// launch template ids (`DescribeLaunchTemplates$LaunchTemplateIds`); an operation that names
+/// ONE id answers [`specified_launch_template_id_not_found`], which says which id. It is the
+/// SAME sentence [`invalid_launch_template_name_not_found`] carries under the name code, a
+/// template a caller named by either key being absent in exactly one way. Recorded by the
+/// corpus unit `ec2.ec2-run-from-launch-template`, which deletes a launch template and then
+/// reads and launches from it.
 pub fn invalid_launch_template_id_not_found<E>() -> crate::scaffolded::Scaffolded<E> {
     crate::scaffolded::Scaffolded::service_error(
         INVALID_LAUNCH_TEMPLATE_ID_NOT_FOUND,
@@ -2999,13 +3009,23 @@ pub fn invalid_launch_template_id_not_found<E>() -> crate::scaffolded::Scaffolde
 
 /// Refuse a request that named something that is not a launch template id at all: HTTP 400
 /// `InvalidLaunchTemplateId.Malformed`.
+///
+/// The sentence is EC2's: the fixed text `Malformed launch template Id: ` followed by the id
+/// the request sent — the one variable part, cut to length by [`echoed_resource_id`] the way
+/// every refusal of this crate bounds a value it repeats back. Recorded for a
+/// `DescribeLaunchTemplateVersions` naming a launch template id of the right printed shape
+/// that no mint ever produced, and the same sentence Auto Scaling surfaces for a launch
+/// template id EC2 could not read.
 pub fn invalid_launch_template_id_malformed<E>(
     launch_template_id: &str,
 ) -> crate::scaffolded::Scaffolded<E> {
     crate::scaffolded::Scaffolded::service_error(
         INVALID_LAUNCH_TEMPLATE_ID_MALFORMED,
         400,
-        format!("Invalid launch template ID: '{launch_template_id}'"),
+        format!(
+            "Malformed launch template Id: {}",
+            echoed_resource_id(launch_template_id)
+        ),
     )
 }
 
@@ -3015,7 +3035,7 @@ pub fn invalid_launch_template_id_malformed<E>(
 /// malformed.`
 ///
 /// A SECOND wording of that code beside [`invalid_launch_template_id_malformed`] (which says
-/// `Invalid launch template ID: '<id>'`) and [`launch_template_ids_malformed`] (which names a
+/// `Malformed launch template Id: <id>`) and [`launch_template_ids_malformed`] (which names a
 /// LIST of them), and a named constructor rather than a literal at a call site for the reason
 /// [`crate::scaffolded::Scaffolded::instance_id_is_malformed`] is one: EC2's per-operation
 /// validators do not agree about an id they cannot resolve, and WHICH wording an operation

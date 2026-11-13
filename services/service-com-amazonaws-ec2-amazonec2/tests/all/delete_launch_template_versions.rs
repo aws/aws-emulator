@@ -644,7 +644,18 @@ async fn a_request_outside_the_parameters_deletes_nothing() {
             [vec![p("LaunchTemplateId", "lt-nothex")], versions(&["2"])].concat(),
             400,
             "InvalidLaunchTemplateId.Malformed",
-            "Invalid launch template ID: 'lt-nothex'".to_string(),
+            "Malformed launch template Id: lt-nothex".to_string(),
+        ),
+        (
+            "a well-formed id no mint of this service ever reached".to_string(),
+            [
+                vec![p("LaunchTemplateId", "lt-0123456789abcdef0")],
+                versions(&["2"]),
+            ]
+            .concat(),
+            400,
+            "InvalidLaunchTemplateId.Malformed",
+            "Malformed launch template Id: lt-0123456789abcdef0".to_string(),
         ),
         (
             "the id of a template that has since been deleted".to_string(),
@@ -655,8 +666,10 @@ async fn a_request_outside_the_parameters_deletes_nothing() {
             .concat(),
             400,
             "InvalidLaunchTemplateId.NotFound",
-            "At least one of the launch templates specified in the request does not exist."
-                .to_string(),
+            format!(
+                "The specified launch template, with template ID {deleted_template_id}, \
+                 does not exist."
+            ),
         ),
         (
             "a name no template carries".to_string(),

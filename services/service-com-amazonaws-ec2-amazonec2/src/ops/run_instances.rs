@@ -415,29 +415,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     let store = state.lock();
                     // The template is resolved the way every reader of one resolves it, which
                     // is what settles the key combination (both, or neither), the id's
-                    // grammar and a name's lookup. Only its NOT-FOUND verdict is re-worded
-                    // here, in this operation's own recorded sentence
-                    // (`crate::state::specified_launch_template_id_not_found`): a caller that
-                    // deleted a template and launched from it is told that the template it
-                    // specified does not exist, where the describes of a template say that at
-                    // least one of the templates named is absent.
-                    let resolved = crate::state::resolve_launch_template_id(
+                    // screen — an id no mint of this service produced is not an id of a
+                    // launch template at all — and a name's lookup, as well as the sentence
+                    // an id that named a template the account no longer holds is refused
+                    // with.
+                    let launch_template_id = crate::state::resolve_launch_template_id(
                         &store,
                         specification.launch_template_id.as_deref(),
                         specification.launch_template_name.as_deref(),
-                    );
-                    let launch_template_id = match resolved {
-                        Ok(launch_template_id) => launch_template_id,
-                        Err(crate::scaffolded::Scaffolded::ServiceError(refusal))
-                            if refusal.code
-                                == crate::state::INVALID_LAUNCH_TEMPLATE_ID_NOT_FOUND =>
-                        {
-                            return Err(crate::state::specified_launch_template_id_not_found(
-                                specification.launch_template_id.as_deref().unwrap_or_default(),
-                            ));
-                        }
-                        Err(refusal) => return Err(refusal),
-                    };
+                    )?;
                     let record =
                         store.launch_templates.get(&launch_template_id).ok_or_else(|| {
                             Scaffolded::internal_error(format!(
@@ -445,18 +431,38 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                                  stored"
                             ))
                         })?;
-                    // "A value of $Latest uses the latest version of the launch template. A
-                    // value of $Default uses the default version of the launch template.
-                    // Default: The default version of the launch template"
-                    // (`LaunchTemplateSpecification$Version`), resolved through the one
-                    // reading of that member this crate has.
                     let requested_version = specification
                         .version
                         .as_deref()
                         .filter(|version| !version.is_empty())
                         .unwrap_or(crate::state::LAUNCH_TEMPLATE_VERSION_DEFAULT);
-                    let version =
-                        crate::state::resolve_launch_template_version(record, requested_version)?;
+                    // "A value of $Latest uses the latest version of the launch template. A
+                    // value of $Default uses the default version of the launch template.
+                    // Default: The default version of the launch template"
+                    // (`LaunchTemplateSpecification$Version`), resolved through the one
+                    // reading of that member this crate has. Only its VERSION-NOT-FOUND
+                    // verdict is re-worded here, in this operation's own recorded sentence
+                    // (`crate::state::specified_launch_template_version_not_found`): a
+                    // launch that pinned a version the template never minted is told which
+                    // version of which template could not be found.
+                    let version = match crate::state::resolve_launch_template_version(
+                        record,
+                        requested_version,
+                    ) {
+                        Ok(version) => version,
+                        Err(crate::scaffolded::Scaffolded::ServiceError(refusal))
+                            if refusal.code
+                                == crate::state::INVALID_LAUNCH_TEMPLATE_ID_VERSION_NOT_FOUND =>
+                        {
+                            return Err(
+                                crate::state::specified_launch_template_version_not_found(
+                                    &launch_template_id,
+                                    requested_version,
+                                ),
+                            );
+                        }
+                        Err(refusal) => return Err(refusal),
+                    };
                     record
                         .versions
                         .get(&version)

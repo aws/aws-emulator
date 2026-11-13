@@ -1997,6 +1997,35 @@ pub fn resolve_launch_template_version<E>(
         })
 }
 
+/// Refuse a launch that named a version the launch template does not hold, in the wording an
+/// operation that LAUNCHES from the template answers: HTTP 400
+/// [`INVALID_LAUNCH_TEMPLATE_ID_VERSION_NOT_FOUND`], `Could not find the specified version
+/// <version> for the launch template with ID <id>.`
+///
+/// A SECOND wording of that code beside the one [`resolve_launch_template_version`] carries,
+/// and a named constructor rather than a literal at a call site for the reason
+/// [`crate::state::specified_launch_template_id_not_found`] is one: EC2's per-operation
+/// validators do not agree about a version they cannot resolve, and WHICH wording an
+/// operation answers is a fact of that operation, recorded by its caller — the recorded
+/// `RunInstances` naming a version its launch template never minted pins this sentence. The
+/// two variable parts are the version the request named and the template's id, each cut to
+/// length by [`echoed_resource_id`] the way every refusal of this crate bounds a value it
+/// repeats back.
+pub fn specified_launch_template_version_not_found<E>(
+    launch_template_id: &str,
+    version: &str,
+) -> Scaffolded<E> {
+    Scaffolded::service_error(
+        INVALID_LAUNCH_TEMPLATE_ID_VERSION_NOT_FOUND,
+        400,
+        format!(
+            "Could not find the specified version {} for the launch template with ID {}.",
+            echoed_resource_id(version),
+            echoed_resource_id(launch_template_id)
+        ),
+    )
+}
+
 // =============================================================================
 // Elastic IP addresses
 // =============================================================================
