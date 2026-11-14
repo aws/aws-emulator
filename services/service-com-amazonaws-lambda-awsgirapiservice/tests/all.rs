@@ -535,6 +535,8 @@ mod invocation_logs;
 mod handler_eventbridge_publication;
 #[path = "all/sqs_event_source_record_attributes.rs"]
 mod sqs_event_source_record_attributes;
+#[path = "all/sqs_event_source_secret_relay_pipeline.rs"]
+mod sqs_event_source_secret_relay_pipeline;
 #[path = "all/xray_daemon_datagram.rs"]
 mod xray_daemon_datagram;
 #[path = "all/xray_daemon_trace_store.rs"]

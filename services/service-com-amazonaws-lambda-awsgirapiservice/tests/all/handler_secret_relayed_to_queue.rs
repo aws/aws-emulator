@@ -347,7 +347,17 @@ fn relay_router() -> MultiServiceRouter {
 
 /// One Secrets Manager operation over its `awsJson1_1` wire, made as the account's own
 /// credential — the secret's owner, whose calls no row's grant decides.
-async fn secrets(router: &MultiServiceRouter, case: &str, operation: &str, body: &Value) -> Value {
+///
+/// `pub(crate)` because the suite over the SAME relay reached through an event source mapping
+/// writes its secret through this one wire too
+/// (`tests/all/sqs_event_source_secret_relay_pipeline.rs`), rather than carrying a second
+/// spelling of it.
+pub(crate) async fn secrets(
+    router: &MultiServiceRouter,
+    case: &str,
+    operation: &str,
+    body: &Value,
+) -> Value {
     let host = format!("secretsmanager.{REGION}.amazonaws.com");
     let request = http::Request::builder()
         .method("POST")
@@ -480,7 +490,10 @@ async fn drained(router: &MultiServiceRouter, case: &str, url: &str, wanted: usi
 /// The partial form of a secret ARN: the complete one without the hyphen and the six
 /// characters Secrets Manager appends to the name ("Finding a secret from a partial ARN",
 /// `GetSecretValueRequest$SecretId`).
-fn partial_arn(arn: &str) -> String {
+///
+/// `pub(crate)` for the same reason as [`secrets`]: the suite driving this relay through an
+/// event source mapping names its secret by this form too.
+pub(crate) fn partial_arn(arn: &str) -> String {
     arn[..arn.len().saturating_sub(7)].to_string()
 }
 
