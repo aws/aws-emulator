@@ -18,9 +18,9 @@
 //! * a page the collection holds nothing after reports no cursor, which is what ends a
 //!   walk, and no echoed page size either; a page it does hold something after echoes the
 //!   page size the request asked for, and nothing when the request asked for none;
-//! * a collection that holds no element leaves the member that reports the page UNSET,
-//!   while the page past the last element of a collection that does hold elements is the
-//!   present-but-empty page;
+//! * a collection that holds no element reports the page member as the EMPTY list, the
+//!   same shape as the page past the last element of a collection that does hold
+//!   elements;
 //! * the documentation-part collection is ordered by the ADDRESS of the API entity each
 //!   part documents, which is the address its cursor spells.
 //!
@@ -292,19 +292,19 @@ async fn a_listing_that_asks_for_no_page_size_is_told_none() {
 }
 
 #[tokio::test]
-async fn a_collection_that_holds_nothing_leaves_the_page_member_unset() {
+async fn a_collection_that_holds_nothing_reports_the_empty_page() {
     for collection in COLLECTIONS {
         let gateway = Gateway::new();
 
-        // A collection that holds NO element has no page of elements to report, so the
-        // member is left out of the answer rather than written as the empty list.
+        // A collection that holds NO element reports the page it was asked for as the
+        // page it is: present, and empty.
         let empty = stand_up(&gateway, collection, 0).await;
         let case = format!("{collection}(the empty collection)");
         let answer = page(&gateway, &empty, "", &case).await;
         assert_eq!(
             answer.body.get("item"),
-            None,
-            "case {case}: a collection with no element reports no page member, got {:?}",
+            Some(&Value::Array(Vec::new())),
+            "case {case}: a collection with no element reports the empty page, got {:?}",
             answer.body
         );
         assert!(

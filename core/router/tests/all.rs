@@ -1887,12 +1887,6 @@ mod cloudformation_provisions_cloudfront_resources;
 // branches landing at once each re-added the pair here.)
 // are declared in the head region above: a module may be declared only once.)
 // are declared further up this tail already: a module may be declared only once.)
-// Declared in the appended tail, which is where every new suite inserts its lines: a deployed
-// method whose integration is an `AWS` call on an SNS TOPIC, served by making that call —
-// asked of the router that mounts every service at once, which is where the hop between the
-// stage, the topic and the topic's queue subscriber is observable end to end.
-#[path = "all/apigateway_sns_service_integration.rs"]
-mod apigateway_sns_service_integration;
 // (`cloudformation_provisions_cloudfront_resources`,
 // `cloudformation_monitored_alb_search_estate`, `cloudformation_domain_endpoint_outputs`,
 // `cloudformation_stack_clock` and `elbv2_lambda_target_published_address` are each
@@ -1942,11 +1936,6 @@ mod cloudformation_metric_stream_estate_is_drainable;
 mod redshift_health_alarms_evaluate;
 // (`cloudwatch_alarm_ssm_ops_item_action` is declared once, in the head region above: a
 // module may be declared only once.)
-// stack-deployed metric-stream pipeline exports before and after an update rewrites its filter
-// spans CloudFormation, IAM, CloudWatch, Firehose and Amazon S3 at once, so no single service
-// crate's test target can deploy the pipeline and then read the objects it delivered.
-#[path = "all/cloudformation_metric_stream_filter_update.rs"]
-mod cloudformation_metric_stream_filter_update;
 // (`zz_probe` is declared once, further up this tail: a module may be declared only once.)
 // (`zz_probe` is declared once further up this tail: a module may be declared only once.)
 // (`zz_probe` is declared ONCE, further up this tail: it was appended here as well while two
@@ -2028,7 +2017,6 @@ mod cloudformation_scripted_queue_deploy;
 mod cloudformation_domain_endpoint_is_dialled_by_consumers;
 // (`cloudformation_metric_stream_estate_is_drainable` is declared once, above.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared ONCE, in the span above:
-// a module may be declared only once.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared once, in the head region
 // above: a module may be declared only once, and two branches landing at once appended it
 // here as well.)
@@ -2050,10 +2038,6 @@ mod cognito_vended_session_is_bounded_by_its_role_policy;
 // the mapping vended.
 #[path = "all/cognito_rules_role_mapping.rs"]
 mod cognito_rules_role_mapping;
-// `cloudformation_provisions_cloudfront_resources` is declared once, just below: two `mod`
-// items for one name is a redefinition that compiles neither.
-// are declared further up this tail already: a module may be declared only once.)
-// are declared in the head region above: a module may be declared only once.)
 // envelope an identity-based authorization refusal travels in is read by comparing IAM's
 // awsQuery answer with Secrets Manager's awsJson1_1 one for ONE principal, so neither
 // crate's own test target can ask it.
@@ -2061,7 +2045,6 @@ mod cognito_rules_role_mapping;
 mod iam_secretsmanager_denial_envelope_by_protocol;
 // (`apigateway_cognito_authorizer_app_client_audience` is declared in the head region above:
 // (`zz_probe` is declared further up this tail already: a module may be declared only once.)
-// (`zz_probe` is declared once, further up this tail: a module may be declared only once.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared once, further up this
 // file: a module may be declared only once.)
 // (That suite is declared ONCE, in the sorted span at the head of this file: a module may be
@@ -2102,10 +2085,7 @@ mod lambda_durable_execution_status_events_reach_sqs;
 // (`cloudformation_stack_clock` and `elbv2_lambda_target_published_address` are each declared
 // once in the spans above: a module declared twice in this file compiles its suite twice.)
 // are declared once each, further up this tail, for the same reason.)
-// (`apigateway_cognito_authorizer_app_client_audience` is declared once, in the head region
 // above, for the reason the note above records.)
-// (`cloudwatch_alarm_ssm_ops_item_action` is declared once, in the head region above: a
-// module may be declared only once.)
 // (`zz_probe` is declared once, in the span above.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared once, in the span above.)
 // above: two branches landing at once appended it here as well, which declared it twice and
@@ -2113,7 +2093,6 @@ mod lambda_durable_execution_status_events_reach_sqs;
 // (`zz_probe` is declared once, further up this tail: two branches landing at once appended
 // it here as well, which declared it twice and compiled neither.)
 // (`apigateway_cognito_authorizer_app_client_audience` is declared ONCE, in the head region
-// above: two `mod` items for one name is a redefinition that compiles neither.)
 // (`zz_probe` is declared ONCE, further up this tail: two `mod` items for one name is a
 // (`cloudformation_metric_stream_estate_is_drainable` is declared ONCE, further up this tail:
 // two `mod` items for one name is a redefinition that compiles neither.)
@@ -2189,3 +2168,13 @@ mod ses_delivery_event_advances_the_subscribed_queue;
 // (`zz_probe` is declared once, in the head region above: a module may be declared only
 // once, and two branches landing at once had appended a second declaration of it here.)
 // above: two branches landing at once had appended a second declaration of it here.)
+// (The suite that reads which app client's token a COGNITO_USER_POOLS authorizer admits is
+// declared in the head region at the top of this file already: a module may be declared only
+// once.)
+// (`zz_probe.rs` is declared further up this tail already: a module may be declared only
+// once. This was a second declaration of it, which compiled neither. The note it carried
+// stands unchanged at that one declaration: the file is EMPTY, is declared only because the
+// build script requires every file under `tests/all/` to be declared, and held a throwaway
+// probe for the pre-existing stack overflow in
+// `all/s3_notification_invokes_its_lambda_target.rs` — neither the probe nor that standing
+// abort is touched here.)

@@ -11,9 +11,11 @@
 //!
 //! The rules asserted here, each over a SET of inputs rather than one call:
 //!
-//! * a collection that holds no element reports no page of elements at all — the member
-//!   is left unset, and with no cursor and no echoed page size beside it the whole answer
-//!   is `{}` — across every listing of this service, whatever the collection is of;
+//! * a collection that holds no element reports the EMPTY page — the member is written as
+//!   the empty list, with no cursor and no echoed page size beside it — across every
+//!   listing of this service but the base path mappings of a domain name, the one
+//!   collection whose empty answer leaves the member unset so that the whole answer is
+//!   `{}`;
 //! * a limited page of an API's documentation parts holds the parts at the first
 //!   ADDRESSES the request's filters select, and reports the address of the part it
 //!   carries on at as its cursor, so the part a page reports and the cursor beside it
@@ -71,7 +73,7 @@ fn reported_addresses(body: &Value, case: &str) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn a_collection_that_holds_no_element_reports_no_page_of_elements() {
+async fn a_collection_that_holds_no_element_reports_the_empty_page() {
     let gateway = Gateway::new();
     // A record each of the API-scoped and domain-name-scoped collections hangs off; both
     // are created with none of the collections below.
@@ -80,11 +82,11 @@ async fn a_collection_that_holds_no_element_reports_no_page_of_elements() {
     created_domain(&gateway, domain_name, json!({})).await;
 
     // Rows span the collections of this service whose elements a caller creates — the
-    // account's own, an API's children, and a domain name's mappings, which is the one the
-    // recorded body `{}` was observed on — so what is asserted is the envelope rather than
-    // one listing's handler. Left out: the collections an account or an API is CREATED
-    // holding (a REST API's models and gateway responses, the SDK-type catalog), which
-    // never hold nothing.
+    // account's own, an API's children, and a domain name's mappings, the one collection
+    // whose empty answer omits the page member — so what is asserted is the envelope
+    // rather than one listing's handler. Left out: the collections an account or an API is
+    // CREATED holding (a REST API's models and gateway responses, the SDK-type catalog),
+    // which never hold nothing.
     let rows: Vec<(&str, String)> = vec![
         ("GetApiKeys", "/apikeys".to_string()),
         ("GetUsagePlans", "/usageplans".to_string()),
@@ -116,17 +118,18 @@ async fn a_collection_that_holds_no_element_reports_no_page_of_elements() {
 
     for (case, uri) in &rows {
         let answer = listed(&gateway, uri, case).await;
+        // The base path mappings of a domain name are the one collection of this service
+        // whose empty answer leaves the page member out; every other one writes it as the
+        // empty list.
+        let expected = if *case == "GetBasePathMappings" {
+            json!({})
+        } else {
+            json!({ "item": [] })
+        };
         assert_eq!(
-            answer.body,
-            json!({}),
-            "case {case}: a collection that holds no element reports nothing at all, got \
-             {:?}",
-            answer.body
-        );
-        assert_eq!(
-            answer.body.get("item"),
-            None,
-            "case {case}: expected no page member, got {:?}",
+            answer.body, expected,
+            "case {case}: expected {expected:?} for a collection that holds no element, \
+             got {:?}",
             answer.body
         );
         assert!(
@@ -152,9 +155,9 @@ async fn a_collection_that_holds_no_element_reports_no_page_of_elements() {
         let answer = listed(&empty, uri, case).await;
         assert_eq!(
             answer.body,
-            json!({}),
-            "case {case}: a collection that holds no element reports nothing at all, got \
-             {:?}",
+            json!({ "item": [] }),
+            "case {case}: expected the empty page for a collection that holds no element, \
+             got {:?}",
             answer.body
         );
     }

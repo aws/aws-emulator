@@ -186,13 +186,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         Ok(Paged::new(
             GetBasePathMappingsOutput {
-                // Always reported, and empty for a domain name that carries no mapping:
-                // "the current page of elements from this collection" is an answer a
-                // client can read.
-                // A domain name that carries no mapping has no collection to report, so
-                // the member is left unset rather than written as the empty list; see
-                // `crate::state::Page::reported_items`.
-                items: page.reported_items(items),
+                // A domain name that carries no mapping at all reports NO page: this is
+                // the one collection of this service whose empty answer leaves the member
+                // unset rather than writing the empty list; see
+                // `crate::state::Page::items_absent_while_the_collection_is_empty`. A page
+                // past the last mapping of a domain name that does carry mappings stays
+                // present and empty.
+                items: page.items_absent_while_the_collection_is_empty(items),
                 position: page.next_position.clone(),
             },
             page.echoed_limit(),

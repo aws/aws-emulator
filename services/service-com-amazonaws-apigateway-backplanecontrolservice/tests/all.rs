@@ -620,3 +620,7 @@ mod minted_identifier_independence;
 // backend's own `aws:SourceVpce` invoke gate.
 #[path = "all/private_proxy_backend_answer.rs"]
 mod private_proxy_backend_answer;
+// Appended for the reason the note above gives: the member a `position`/`limit` collection
+// reports its page under once the collection has been emptied.
+#[path = "all/emptied_collection_page_member.rs"]
+mod emptied_collection_page_member;

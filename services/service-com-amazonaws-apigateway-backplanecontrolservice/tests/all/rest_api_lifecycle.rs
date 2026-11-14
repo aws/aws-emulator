@@ -363,9 +363,9 @@ pub(crate) fn string_member(body: &Value, member: &str, case: &str) -> String {
 }
 
 /// The elements on one page of a paginated collection. The member's `jsonName` is
-/// `item`, and a collection that holds no element at all leaves it unset — so no element
-/// is reported as no element, whether the member is absent (the empty collection) or
-/// present and empty (the page past the last element of a collection that holds some).
+/// `item`, and the base-path-mapping collection of a domain name leaves it unset while the
+/// domain name carries no mapping — so no element is reported as no element, whether the
+/// member is absent or present and empty (every other collection's empty page).
 pub(crate) fn page_items(body: &Value, case: &str) -> Vec<Value> {
     match body.get("item") {
         None | Some(Value::Null) => Vec::new(),
