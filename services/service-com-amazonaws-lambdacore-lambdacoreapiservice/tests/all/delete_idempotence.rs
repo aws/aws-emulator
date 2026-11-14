@@ -38,6 +38,7 @@ use super::network_connector_lifecycle::{
     at, create, delete, emulator, expected_arn, get, list, minimal_configuration, minimal_create,
     text, update, vpc_egress, wait_for_the_clock, Answer, OPERATOR_ROLE,
 };
+use super::not_found_message::expected_message;
 
 /// The state `DeleteNetworkConnectorResponse$State` reports — "the State field is typically
 /// `DELETING` after this call" — and the state a connector whose deletion completed last
@@ -117,9 +118,10 @@ fn assert_accepted(case: &str, answer: &Answer, arn: &str, name: &str, id: &str)
 
 /// Assert `answer` is the modelled 404 for `identifier`.
 ///
-/// The refusal names the resource the identifier addressed by its ARN, which is the one
-/// form every answer about a connector carries (`crate::not_found_message` states that
-/// rule over every identifier form).
+/// The refusal names the resource the identifier DETERMINES — the connector's ARN for an
+/// id or an ARN, the value as supplied for a name, which determines no ARN
+/// (`crate::not_found_message` states that rule over every identifier form and every
+/// operation addressed by one).
 fn assert_not_found(case: &str, answer: &Answer, identifier: &str) {
     assert_eq!(
         answer.status, 404,
@@ -132,7 +134,7 @@ fn assert_not_found(case: &str, answer: &Answer, identifier: &str) {
         "case {case:?}: expected the error code ResourceNotFoundException, got {code:?}"
     );
     let message = text(&answer.body, "/Message");
-    let expected = format!("Network connector not found: {identifier}");
+    let expected = expected_message(identifier);
     assert_eq!(
         message, expected,
         "case {case:?}: expected the message {expected:?}, got {message:?}"
@@ -399,12 +401,11 @@ async fn a_freed_name_rebinds_while_the_old_id_names_nothing() {
         at(&by_name.body, "/Id")
     );
 
-    // The dead id is refused by the reporting operations … and `GetNetworkConnector`,
-    // which REPORTS on a connector, names the resource that id determines (its ARN) where
-    // the acting operations echo the identifier — the rule
-    // `crate::not_found_message` states over every form.
+    // The dead id is refused by every operation addressed by one, each naming the resource
+    // that id determines (its ARN), which is the rule `crate::not_found_message` states
+    // over every form.
     let dead = get(&router, &first_id).await;
-    assert_not_found("the dead id through Get", &dead, &expected_arn(&first_id));
+    assert_not_found("the dead id through Get", &dead, &first_id);
     let dead_update = update(
         &router,
         &first_id,

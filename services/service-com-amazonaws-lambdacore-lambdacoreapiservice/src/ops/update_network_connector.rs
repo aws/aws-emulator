@@ -295,7 +295,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
             let Some((connector, _)) = store.settled_mut(&input.identifier, now) else {
                 return Err(UpdateNetworkConnectorErrorModeled::ResourceNotFoundException(
-                    crate::state::connector_not_found(&input.identifier),
+                    crate::state::connector_not_found(&region, &input.identifier),
                 )
                 .into());
             };
@@ -314,7 +314,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
             let Some(current) = connector.version(None).cloned() else {
                 return Err(UpdateNetworkConnectorErrorModeled::ResourceNotFoundException(
-                    crate::state::connector_not_found(&input.identifier),
+                    crate::state::connector_not_found(&region, &input.identifier),
                 )
                 .into());
             };
@@ -416,7 +416,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut store = state.lock();
         let Some((connector, _)) = store.settled_mut(&input.identifier, now) else {
             return Err(UpdateNetworkConnectorErrorModeled::ResourceNotFoundException(
-                crate::state::connector_not_found(&input.identifier),
+                crate::state::connector_not_found(&region, &input.identifier),
             )
             .into());
         };

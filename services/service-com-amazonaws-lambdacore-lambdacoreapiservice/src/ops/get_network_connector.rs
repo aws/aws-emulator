@@ -241,7 +241,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // anybody called; nothing else here writes.
         let Some((connector, qualified)) = store.settled_mut(&input.identifier, now) else {
             return Err(GetNetworkConnectorErrorModeled::ResourceNotFoundException(
-                crate::state::connector_not_found_resource(&region, &input.identifier),
+                crate::state::connector_not_found(&region, &input.identifier),
             )
             .into());
         };
@@ -251,7 +251,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // version", which must be a version the connector still holds.
         let Some(version) = connector.version(qualified) else {
             return Err(GetNetworkConnectorErrorModeled::ResourceNotFoundException(
-                crate::state::connector_not_found_resource(&region, &input.identifier),
+                crate::state::connector_not_found(&region, &input.identifier),
             )
             .into());
         };

@@ -32,6 +32,9 @@ mod not_found_message;
 #[path = "all/referenced_resources.rs"]
 mod referenced_resources;
 
+#[path = "all/removed_connector_refusal.rs"]
+mod removed_connector_refusal;
+
 #[path = "all/state_gate_refusal_wording.rs"]
 mod state_gate_refusal_wording;
 
