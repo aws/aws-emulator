@@ -89,6 +89,10 @@ mod parameter_last_modified_user;
 mod parameter_metadata;
 #[path = "all/parameter_not_found_payload.rs"]
 mod parameter_not_found_payload;
+#[path = "all/parameter_page_tokens.rs"]
+mod parameter_page_tokens;
+#[path = "all/parameter_path_requirements.rs"]
+mod parameter_path_requirements;
 #[path = "all/parameter_read_payload_shape.rs"]
 mod parameter_read_payload_shape;
 #[path = "all/parameter_refusal_messages.rs"]
@@ -121,6 +125,8 @@ mod resource_data_syncs;
 mod resource_policies;
 #[path = "all/resource_tags.rs"]
 mod resource_tags;
+#[path = "all/restricted_parameter_hierarchy.rs"]
+mod restricted_parameter_hierarchy;
 #[path = "all/run_command.rs"]
 mod run_command;
 #[path = "all/secretsmanager_reference.rs"]

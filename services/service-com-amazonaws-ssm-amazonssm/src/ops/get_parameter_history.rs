@@ -19,11 +19,13 @@
 //!
 //! A page carries at most `MaxResults` entries, up to the modelled maximum
 //! ([`crate::state::parameter_history_page_size`]). When versions are left over, the
-//! answer carries the version the next page starts at as its `NextToken`: a version
+//! answer carries a `NextToken` holding the version the next page starts at: a version
 //! number, so a second page resumes at the right change even if a put appended another
-//! version in between, which an offset into a list could not. A token naming a version
-//! past the newest one the parameter has could have started no page, so it is the
-//! modelled `InvalidNextToken` rather than a silently empty page.
+//! version in between, which an offset into a list could not. The token is opaque, and
+//! carries that version behind an authenticator only this store can produce
+//! ([`crate::state::parameter_pagination`]), so a value this read did not ISSUE is the
+//! modelled `InvalidNextToken` rather than a page the caller was never offered — and so is
+//! a token of this read's whose version the parameter no longer reaches.
 //!
 //! ## `WithDecryption` and `SecureString`
 //!
@@ -199,9 +201,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ) -> Result<Self::Output, Self::Error> {
         // The engine is reachable from `&self` (constructor-injected); `ctx` carries
         // request metadata. Both are bound here so an implementer has them in scope.
+        use crate::state::parameter_pagination::{page_cursor, page_token, PagedRead};
         use crate::state::{
-            parameter_history_page_size, parse_parameter_query, request_region, trimmed_name,
-            INVALID_NEXT_TOKEN,
+            invalid_next_token_message, parameter_history_page_size, parse_parameter_query,
+            request_region, trimmed_name,
         };
 
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
@@ -256,21 +259,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let page_size = parameter_history_page_size(input.max_results)
             .map_err(crate::scaffolded::Scaffolded::validation)?;
 
-        // The token is the version the next page starts at — a version number, not an
-        // offset into a list that may have grown between two pages — so a token that is
-        // not one was not issued here.
+        // The token is this read's own continuation token, which carries the version the
+        // next page starts at — a version number, not an offset into a list that may have
+        // grown between two pages — behind an authenticator only this store can produce
+        // ([`crate::state::parameter_pagination`]). A value this read did not issue names
+        // no position at all, however exactly it is shaped like one.
+        let page_key = state.lock().page_token_key();
+        let unissued_token = |token: &str| {
+            GetParameterHistoryErrorModeled::InvalidNextToken(InvalidNextToken {
+                message: Some(invalid_next_token_message(token)),
+            })
+        };
         let resume_from = match input.next_token.as_deref() {
             None | Some("") => None,
-            Some(token) => match token.parse::<i64>() {
-                Ok(version) if version > 0 => Some(version),
-                _ => {
-                    return Err(GetParameterHistoryErrorModeled::InvalidNextToken(
-                        InvalidNextToken {
-                            message: Some(INVALID_NEXT_TOKEN.to_string()),
-                        },
-                    )
-                    .into())
-                }
+            Some(token) => match page_cursor(&page_key, PagedRead::History, token)
+                .and_then(|cursor| cursor.parse::<i64>().ok())
+            {
+                Some(version) if version > 0 => Some(version),
+                _ => return Err(unissued_token(token).into()),
             },
         };
 
@@ -309,12 +315,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             if resume_from
                 .is_some_and(|from| record.latest().is_none_or(|last| from > last.version))
             {
-                return Err(GetParameterHistoryErrorModeled::InvalidNextToken(
-                    InvalidNextToken {
-                        message: Some(INVALID_NEXT_TOKEN.to_string()),
-                    },
-                )
-                .into());
+                return Err(
+                    unissued_token(input.next_token.as_deref().unwrap_or_default()).into(),
+                );
             }
 
             let mut parameters = Vec::new();
@@ -325,10 +328,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     continue;
                 }
                 if parameters.len() == page_size {
-                    // The page is full and a version is still waiting: hand the caller the
-                    // version it resumes at, so the next request continues where this
-                    // stopped.
-                    next_token = Some(version.version.to_string());
+                    // The page is full and a version is still waiting: hand the caller a
+                    // token naming the version it resumes at, so the next request
+                    // continues where this stopped.
+                    next_token = Some(page_token(
+                        &page_key,
+                        PagedRead::History,
+                        &version.version.to_string(),
+                    ));
                     break;
                 }
                 parameters.push(version.to_parameter_history(record));

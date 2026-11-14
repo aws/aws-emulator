@@ -105,9 +105,18 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-ssm-amazonssm.json");
 // here — hence the `UnlabelParameterVersionError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.ssm#UnlabelParameterVersion")]
+//
+// `AccessDeniedException` is widened in through `extra_errors`: this SERVICE models it
+// ("The requester doesn't have permissions to perform the requested operation") and other
+// operations of this slice declare it, and it is the refusal a call addressing the
+// hierarchy AWS reserves for its own published parameters answers with.
+#[smithy_macros::operation_error(
+    "com.amazonaws.ssm#UnlabelParameterVersion",
+    extra_errors = ["AccessDeniedException"]
+)]
 #[derive(Debug)]
 pub enum UnlabelParameterVersionErrorModeled {
+    AccessDeniedException(AccessDeniedException),
     InternalServerError(InternalServerError),
     ParameterNotFound(ParameterNotFound),
     ParameterVersionNotFound(ParameterVersionNotFound),
@@ -201,6 +210,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A parameter lives in the Region its endpoint names, which is the signed
         // credential scope's — never a Region the request body chose.
         let region = crate::state::request_region(ctx.parts());
+
+        // The `/aws` hierarchy holds AWS's own published parameters and no parameter of
+        // this account ([`crate::state::public_parameters`]), so an unlabel call addressing
+        // a name in it asks to change data that is not the account's: the refusal is a
+        // denial and not a miss. Decided before the store is read, because nothing in it
+        // could hold such a name.
+        if crate::state::public_parameters::is_published_name(query.name) {
+            return Err(UnlabelParameterVersionErrorModeled::AccessDeniedException(
+                AccessDeniedException {
+                    message: crate::state::RESTRICTED_PARAMETER_MESSAGE.to_string(),
+                },
+            )
+            .into());
+        }
 
         // The labels one call carries are a set: a label named twice names the one label,
         // so it is removed — or reported unattached — once rather than being reported both

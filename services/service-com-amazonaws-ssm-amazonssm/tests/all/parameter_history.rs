@@ -624,14 +624,16 @@ async fn a_page_this_service_cannot_serve_is_refused() {
         }
     }
 
-    // A token is the version the next page starts at, so anything that is not one was
-    // never issued here.
+    // A token is this read's own, so anything it did not mint names no page of this
+    // history: a value shaped like a version number is no more a token than prose is.
     for (case, token) in [
         ("prose", "not-a-version"),
         ("version zero", "0"),
         ("a negative version", "-3"),
         ("a name", name),
         ("a fraction", "1.5"),
+        ("a version this history holds", "2"),
+        ("the newest version in the clear", "3"),
     ] {
         let (status, response) =
             history_in_region(&router, REGION, &json!({ "Name": name, "NextToken": token })).await;
@@ -646,38 +648,27 @@ async fn a_page_this_service_cannot_serve_is_refused() {
         );
     }
 
-    // A token naming a version past the newest one this parameter has could start no
-    // page of its history, so it was never issued here either.
-    for (case, token) in [
-        ("one past the newest version", "4"),
-        ("far past the newest version", "99"),
-    ] {
-        let (status, response) =
-            history_in_region(&router, REGION, &json!({ "Name": name, "NextToken": token })).await;
-        assert_eq!(
-            status, 400,
-            "case {case}: the token {token} starts no page of this history, got {status} \
-             {response}"
-        );
-        assert_eq!(
-            error_code(&response),
-            "InvalidNextToken",
-            "case {case}: a token past the newest version is the modelled token error, got \
-             {response}"
-        );
-    }
-
-    // The newest version IS a page start, so a token naming it serves that one entry.
+    // The token this read DID hand out resumes the walk where the page stopped.
+    let first = history_ok(
+        &router,
+        "the first page of two",
+        &json!({ "Name": name, "MaxResults": 2 }),
+    )
+    .await;
+    let issued = first["NextToken"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a page that left a version over hands out a token: {first}"))
+        .to_string();
     let response = history_ok(
         &router,
-        "a token naming the newest version",
-        &json!({ "Name": name, "NextToken": "3" }),
+        "the token the first page handed out",
+        &json!({ "Name": name, "NextToken": issued }),
     )
     .await;
     assert_eq!(
-        reported_versions("a token naming the newest version", &response),
+        reported_versions("the token the first page handed out", &response),
         vec![3],
-        "a token naming the newest version serves that version, got {response}"
+        "the token the first page handed out serves the version it stopped at, got {response}"
     );
 }
 

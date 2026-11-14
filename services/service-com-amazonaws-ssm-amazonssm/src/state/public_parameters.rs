@@ -64,6 +64,39 @@ pub fn is_published_hierarchy(path: &str) -> bool {
     is_published_name(path)
 }
 
+/// Whether canonical `path` names a NAMESPACE of the reserved hierarchy — one this endpoint
+/// serves names in, or a level above one.
+///
+/// The reserved hierarchy is not an empty tree a caller may walk wherever it likes: it is
+/// the namespaces AWS publishes in. `published` is the catalog as this endpoint publishes
+/// it, so a path is a namespace when some published name lies at or under it; the reserved
+/// Secrets Manager reference namespace counts too, because a read of Parameter Store does
+/// serve names from it ([`super::secretsmanager_reference`]), even though no parameter is
+/// published there.
+///
+/// A path anywhere else in the reserved hierarchy names nothing this endpoint has — and
+/// nothing the account may have, since no caller can write there — so a read of it is
+/// refused ([`invalid_namespace_message`]) rather than answered with an empty page.
+pub fn is_reserved_namespace(path: &str, published: &[ParameterRecord]) -> bool {
+    let holds = |name: &str| name == path || super::is_under_path(name, path, true);
+    holds(super::secretsmanager_reference::REFERENCE_PATH)
+        || published
+            .iter()
+            .any(|record| holds(canonical_name(&record.name)))
+}
+
+/// What a hierarchy read of a path in the reserved hierarchy that names no namespace of it
+/// ([`is_reserved_namespace`]) is refused with.
+///
+/// The sentence names the reserved hierarchy and the path that is not one of its
+/// namespaces, as the path reads canonically — without the leading separator, which is how
+/// a parameter name's store key spells it ([`canonical_name`]).
+pub fn invalid_namespace_message(path: &str) -> String {
+    format!(
+        "No access to \"/{PUBLISHED_ROOT}/\" namespace: {path} is not a valid namespace"
+    )
+}
+
 /// Every parameter AWS publishes at this endpoint, in ascending canonical-name order — the
 /// order a hierarchy read's resume cursor is total in.
 pub fn published_records<Eng: Send + Sync + 'static>(

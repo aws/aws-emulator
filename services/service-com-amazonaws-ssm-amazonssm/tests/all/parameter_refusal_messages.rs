@@ -584,9 +584,10 @@ async fn a_rejected_filter_key_lists_the_operations_own_keys() {
 }
 
 /// A filter option a key does not accept is refused with a sentence naming the option and
-/// THAT key's legal options. Source: the `ParameterStringFilter$Option` doc — `Equals` and
-/// `BeginsWith` in general, `Contains` additionally for `Name`, `Recursive` and `OneLevel`
-/// for `Path`, and `Equals` alone for `Label`.
+/// THAT key's legal options, listed in ascending order the way the service lists them.
+/// Source: the `ParameterStringFilter$Option` doc — `Equals` and `BeginsWith` in general,
+/// `Contains` additionally for `Name`, `Recursive` and `OneLevel` for `Path`, and `Equals`
+/// alone for `Label`.
 #[tokio::test]
 async fn a_rejected_filter_option_lists_the_keys_own_options() {
     let router = router();
@@ -609,25 +610,25 @@ async fn a_rejected_filter_option_lists_the_keys_own_options() {
             "GetParametersByPath",
             "Type",
             "Contains",
-            "Equals, BeginsWith",
+            "BeginsWith, Equals",
         ),
         (
             "DescribeParameters",
             "Path",
             "Equals",
-            "Recursive, OneLevel",
+            "OneLevel, Recursive",
         ),
         (
             "DescribeParameters",
             "Name",
             "Recursive",
-            "Equals, BeginsWith, Contains",
+            "BeginsWith, Contains, Equals",
         ),
         (
             "DescribeParameters",
             "Tier",
             "Contains",
-            "Equals, BeginsWith",
+            "BeginsWith, Equals",
         ),
     ];
     for (operation, key, option, listed) in rows {

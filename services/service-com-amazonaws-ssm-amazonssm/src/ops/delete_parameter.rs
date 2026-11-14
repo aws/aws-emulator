@@ -13,6 +13,12 @@
 //! A name the store does not hold is the modelled `ParameterNotFound` rather than a
 //! success: "the parameter couldn't be found. Verify the name and try again."
 //!
+//! A name in the hierarchy AWS reserves for its OWN published parameters
+//! ([`crate::state::public_parameters`]) is not the account's to delete, and this refusal
+//! is not that it is missing: such a call is denied
+//! ([`crate::state::RESTRICTED_PARAMETER_MESSAGE`]), so a caller learns to stop rather
+//! than to retry or recreate the name.
+//!
 //! The documented wait after a delete ("wait for at least 30 seconds to create a parameter
 //! with the same name") is AWS's own propagation guidance, not a refusal this operation
 //! models, so nothing here holds a name back.
@@ -70,6 +76,8 @@
 //! * `ParameterNotFound` (HTTP 400) — The parameter couldn't be found. Verify the name and
 //!   try again. For the DeleteParameter and GetParameter actions, if the specified parameter
 //!   doesn't exist, the ParameterNotFound exception is not recorded in CloudTrail event logs.
+//! * `AccessDeniedException` (HTTP 400, widened in from the service's own errors) — The
+//!   requester doesn't have permissions to perform the requested operation.
 
 #[allow(unused_imports)]
 use super::types::*;
@@ -85,9 +93,18 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-ssm-amazonssm.json");
 // here — hence the `DeleteParameterError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.ssm#DeleteParameter")]
+//
+// `AccessDeniedException` is widened in through `extra_errors`: this SERVICE models it
+// ("The requester doesn't have permissions to perform the requested operation") and other
+// operations of this slice declare it, and it is the refusal a delete addressing the
+// hierarchy AWS reserves for its own published parameters answers with.
+#[smithy_macros::operation_error(
+    "com.amazonaws.ssm#DeleteParameter",
+    extra_errors = ["AccessDeniedException"]
+)]
 #[derive(Debug)]
 pub enum DeleteParameterErrorModeled {
+    AccessDeniedException(AccessDeniedException),
     InternalServerError(InternalServerError),
     ParameterNotFound(ParameterNotFound),
 }
@@ -176,6 +193,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A parameter lives in the Region its endpoint names, which is the signed
         // credential scope's — never a Region the request body chose.
         let region = crate::state::request_region(ctx.parts());
+
+        // The `/aws` hierarchy holds AWS's own published parameters and no parameter of
+        // this account ([`crate::state::public_parameters`]), so a delete addressing a name
+        // in it asks to change data that is not the account's: the refusal is a denial and
+        // not a miss. Decided before the store is read, because nothing in it could hold
+        // such a name.
+        if crate::state::public_parameters::is_published_name(query.name) {
+            return Err(DeleteParameterErrorModeled::AccessDeniedException(
+                AccessDeniedException {
+                    message: crate::state::RESTRICTED_PARAMETER_MESSAGE.to_string(),
+                },
+            )
+            .into());
+        }
+
         let mut store = state.lock();
         // `query.name` is already the canonical form the store keys a parameter under.
         let key = (region, query.name.to_string());

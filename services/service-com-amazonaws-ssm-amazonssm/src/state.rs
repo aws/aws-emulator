@@ -182,6 +182,10 @@ pub mod public_parameters;
 /// Store serves an Amazon Web Services Secrets Manager secret.
 pub mod secretsmanager_reference;
 
+/// The opaque continuation tokens Parameter Store's paginated reads hand out, and how each
+/// of them tells a token it ISSUED from one a caller assembled.
+pub mod parameter_pagination;
+
 /// A command a caller sent to the managed nodes of one Region, and the invocation each of
 /// those nodes holds of it.
 pub mod commands;
@@ -638,6 +642,33 @@ const ADVANCED_PARAMETERS_GUIDE: &str =
 /// already exists. You can't create duplicate parameters", `ParameterAlreadyExists`).
 pub const PARAMETER_ALREADY_EXISTS_MESSAGE: &str = "The parameter already exists. To \
      overwrite this value, set the overwrite option in the request to true.";
+
+/// What a `Path` or a name that does not meet Parameter Store's parameter-name
+/// requirements is refused with: the one paragraph the service states those requirements
+/// in.
+///
+/// Wholly fixed text with no variable part — it echoes neither the rejected value nor the
+/// single rule that value broke, because what it has to say is the whole of what a name
+/// has to satisfy, ending in an example of one that does.
+pub const PARAMETER_NAME_REQUIREMENTS: &str = concat!(
+    r#"The parameter doesn't meet the parameter name requirements. "#,
+    r#"The parameter name must begin with a forward slash "/". "#,
+    r#"It can't be prefixed with \"aws\" or \"ssm\" (case-insensitive). "#,
+    r#"It must use only letters, numbers, or the following symbols: . (period), "#,
+    r#"- (hyphen), _ (underscore). Special characters are not allowed. "#,
+    r#"All sub-paths, if specified, must use the forward slash symbol "/". "#,
+    r#"Valid example: /get/parameters2-/by1./path0_."#,
+);
+
+/// What a call that would change a parameter in the hierarchy AWS reserves for its own
+/// published parameters is refused with.
+///
+/// Fixed text naming nothing of the request: the refusal is not that the hierarchy holds
+/// no such parameter — it is that the hierarchy is not the account's to change at all
+/// ([`public_parameters`]), so a caller learns to stop rather than to retry under another
+/// name.
+pub const RESTRICTED_PARAMETER_MESSAGE: &str =
+    "Cannot access/update data for the restricted parameter.";
 
 /// What a value that does not satisfy the request's `AllowedPattern` is refused with.
 ///
@@ -1683,10 +1714,16 @@ pub fn invalid_filter_key_message(key: &str, valid: &[&str]) -> String {
 
 /// What a `ParameterFilters` entry naming an option its key does not accept is refused
 /// with, where `valid` is the option vocabulary of THAT key.
+///
+/// The options are listed in ascending order rather than in the order the vocabulary is
+/// declared in: the declaration order here follows the documentation's prose, and the
+/// service lists the options it accepts sorted.
 pub fn invalid_filter_option_message(option: &str, valid: &[&str]) -> String {
+    let mut listed: Vec<&str> = valid.to_vec();
+    listed.sort_unstable();
     format!(
         "The following filter option is not valid: {option}. Valid options include: [{}].",
-        valid.join(", ")
+        listed.join(", ")
     )
 }
 
@@ -1975,15 +2012,21 @@ pub fn describe_parameters_page_size(max_results: Option<i32>) -> Result<usize, 
 ///
 /// "The hierarchy for the parameter. Hierarchies start with a forward slash (/)"
 /// (`GetParametersByPath`'s `Path` doc), so a path that carries no leading separator
-/// names no hierarchy and is refused. The spaces rule is the name rule
-/// ([`trimmed_name`]): the path is a parameter-name prefix.
+/// names no hierarchy; and a path is a parameter-name PREFIX, so every level of it is
+/// spelled with the characters a name may carry ([`is_name_char`]) — which is also the
+/// spaces rule, since no whitespace is one of them. A path breaking either is refused
+/// with [`PARAMETER_NAME_REQUIREMENTS`], the paragraph the service states those
+/// requirements in.
+///
+/// The reserved-prefix rule that paragraph also states bounds what a caller may CREATE,
+/// not what it may read: AWS's own published hierarchy is reached by naming it
+/// ([`public_parameters`]), so a path in it resolves rather than being refused.
 pub fn parameter_path(path: &str) -> Result<&str, String> {
-    let trimmed = trimmed_name(path)?;
-    if !trimmed.starts_with('/') {
-        return Err(format!(
-            "Path '{path}' doesn't start with a forward slash (/): a parameter hierarchy starts \
-             with a forward slash (/)"
-        ));
+    // The service "removes any spaces specified for the beginning or end of a parameter
+    // name" ([`trimmed_name`]), and a name is the path's own rule here.
+    let trimmed = path.trim();
+    if !trimmed.starts_with('/') || !trimmed.chars().all(is_name_char) {
+        return Err(PARAMETER_NAME_REQUIREMENTS.to_string());
     }
     Ok(canonical_name(trimmed).trim_end_matches('/'))
 }
@@ -3191,6 +3234,16 @@ pub fn node_page_size(max_results: Option<i32>) -> Result<usize, String> {
 /// documentation is "The specified token isn't valid".
 pub const INVALID_NEXT_TOKEN: &str = "The NextToken value is not valid";
 
+/// How a Parameter Store read states a `NextToken` it did not issue: the same class, worded
+/// with the rejected token, so a paginating client can see WHICH of the tokens it holds was
+/// refused.
+///
+/// The token is the caller's own value, echoed back; nothing of the store is in the
+/// sentence.
+pub fn invalid_next_token_message(token: &str) -> String {
+    format!("The following token is invalid: {token}.")
+}
+
 /// The name this service is reported by in the envelope that follows a refusal worded by
 /// the service's own validation: the name its wire protocol carries as the `X-Amz-Target`
 /// prefix (`OPERATIONS.md`, "Wire protocol").
@@ -3408,6 +3461,13 @@ pub struct ComAmazonawsSsmAmazonssmState {
     /// is drawn from ([`ComAmazonawsSsmAmazonssmState::next_maintenance_window_id`]) — so
     /// two windows of one store never carry one id.
     pub maintenance_window_sequence: u64,
+
+    /// The secret this store's Parameter Store continuation tokens are authenticated
+    /// under, drawn from the system's randomness when the store is created
+    /// ([`parameter_pagination`]): it is what lets a paginated read tell a token it ISSUED
+    /// from one a caller assembled. Never reported and never logged — its own `Debug`
+    /// renders nothing of it, so this state's derived one carries nothing of it either.
+    page_token_key: parameter_pagination::PageTokenKey,
 }
 
 impl Default for ComAmazonawsSsmAmazonssmState {
@@ -3446,11 +3506,22 @@ impl Default for ComAmazonawsSsmAmazonssmState {
             access_request_sequence: 0,
             maintenance_windows: BTreeMap::new(),
             maintenance_window_sequence: 0,
+            // One key per store, from the system's randomness: see `parameter_pagination`.
+            page_token_key: parameter_pagination::PageTokenKey::new(),
         }
     }
 }
 
 impl ComAmazonawsSsmAmazonssmState {
+    /// The secret this store's Parameter Store continuation tokens are authenticated
+    /// under.
+    ///
+    /// Handed out by value — `PageTokenKey` is `Copy` — so a read takes the key off the
+    /// store and goes on to borrow the records it is about to report in the same call.
+    pub fn page_token_key(&self) -> parameter_pagination::PageTokenKey {
+        self.page_token_key
+    }
+
     /// Materialise every transition the clock already owes at `now`, so a read reports
     /// what was due whether or not anybody called (see [`DOCUMENT_TRANSITION_DELAY`]).
     pub fn materialize_due(&mut self, now: SystemTime) {

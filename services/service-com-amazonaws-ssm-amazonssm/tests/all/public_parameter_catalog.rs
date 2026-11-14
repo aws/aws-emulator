@@ -230,8 +230,9 @@ pub(super) async fn describe_image(router: &MultiServiceRouter, image_id: &str) 
 
 /// RULE: a recursive read of a hierarchy inside AWS's published namespace reports the
 /// parameters AWS publishes under it, and reports nothing that is not under it; a path
-/// inside that namespace that nothing is published under is an empty page rather than a
-/// refusal (the operation models no "path does not exist" error at all).
+/// inside that namespace that is no NAMESPACE of it — nothing this endpoint serves a name
+/// at or under — is refused as denied rather than answered with an empty page, because the
+/// reserved hierarchy holds only what AWS publishes there and no caller can write it.
 #[tokio::test]
 async fn every_published_namespace_resolves_under_its_own_path() {
     let router = emulator();
@@ -241,8 +242,8 @@ async fn every_published_namespace_resolves_under_its_own_path() {
     enum Expect {
         /// AWS publishes parameters under this path.
         Published,
-        /// Nothing is published under it, so the read reports an empty page.
-        Nothing,
+        /// The path is no namespace of the reserved hierarchy, so the read is denied.
+        Denied,
     }
 
     let rows: &[(&str, Expect)] = &[
@@ -251,26 +252,30 @@ async fn every_published_namespace_resolves_under_its_own_path() {
         (PCS_NAMESPACE, Expect::Published),
         (AMAZON_LINUX_NAMESPACE, Expect::Published),
         (WINDOWS_NAMESPACE, Expect::Published),
-        // A namespace of the published hierarchy nothing is published under, and a leaf
-        // that IS published read as if it were a hierarchy: both are empty pages.
-        ("/aws/service/no-such-published-namespace", Expect::Nothing),
-        ("/aws/no-such-level", Expect::Nothing),
+        // Namespaces of the reserved hierarchy nothing is published under, at two levels.
+        ("/aws/service/no-such-published-namespace", Expect::Denied),
+        ("/aws/no-such-level", Expect::Denied),
     ];
 
     for (path, expect) in rows {
         let case = format!("recursive listing of {path}");
+        if *expect == Expect::Denied {
+            let (status, refused) =
+                by_path(&router, &json!({ "Path": path, "Recursive": true })).await;
+            assert_eq!(
+                (status, error_code(&refused)),
+                (400, "AccessDeniedException".to_string()),
+                "case {case}: a path that is no namespace of the reserved hierarchy is \
+                 denied, got {status} {refused}"
+            );
+            continue;
+        }
         let reported = recursive_listing(&router, &case, path).await;
         let reported_names = names(&reported);
-        match expect {
-            Expect::Published => assert!(
-                !reported_names.is_empty(),
-                "case {case}: expected AWS's published parameters under {path}, got none"
-            ),
-            Expect::Nothing => assert!(
-                reported_names.is_empty(),
-                "case {case}: expected an empty page for {path}, got {reported_names:?}"
-            ),
-        }
+        assert!(
+            !reported_names.is_empty(),
+            "case {case}: expected AWS's published parameters under {path}, got none"
+        );
         for name in &reported_names {
             assert!(
                 name.starts_with(&format!("{path}/")),

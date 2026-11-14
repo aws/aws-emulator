@@ -20,6 +20,13 @@
 //! ascending name order, so filtering, paging and the resume cursor are the same for
 //! either.
 //!
+//! That hierarchy is NAMESPACES rather than an empty tree a caller may walk: a path in it
+//! that this endpoint serves no name at or under is refused with `AccessDeniedException`
+//! ([`crate::state::public_parameters::invalid_namespace_message`]) rather than answered
+//! with an empty page, which a caller would read as a namespace that exists and holds
+//! nothing. Nothing of the account is hidden by that refusal — no parameter of the account
+//! can be in that hierarchy at all.
+//!
 //! One hierarchy of that AWS-owned namespace is the reserved path a single read serves an
 //! Amazon Web Services Secrets Manager secret through
 //! ([`crate::state::secretsmanager_reference`]). A hierarchy read never enumerates it: what
@@ -49,11 +56,13 @@
 //!
 //! ## Paging
 //!
-//! The token this operation hands out is the `Name` of the parameter the next page
+//! The token this operation hands out carries the `Name` of the parameter the next page
 //! starts at, so a resume is a position in the store's own total order rather than an
-//! offset into a list that may have changed between two pages. A token that is not
-//! shaped like a parameter name was not issued here: that is the modelled
-//! `InvalidNextToken`.
+//! offset into a list that may have changed between two pages. It is opaque, and carries
+//! that position behind an authenticator only this store can produce
+//! ([`crate::state::parameter_pagination`]): a token this read did not ISSUE names no
+//! position, and is the modelled `InvalidNextToken` rather than a page the caller was
+//! never offered.
 //!
 //! ## Shape of an operation
 //!
@@ -235,12 +244,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        use crate::state::parameter_pagination::{page_cursor, page_token, PagedRead};
         use crate::state::{
             canonical_name, invalid_filter_key_message, invalid_filter_option_message,
-            is_parameters_by_path_filter_key, is_under_path, name_rejection, parameter_path,
-            parameters_by_path_filter_options, parameters_by_path_page_size, request_region,
-            FILTER_KEY_TYPE, FILTER_OPTION_EQUALS, INVALID_NEXT_TOKEN,
-            PARAMETERS_BY_PATH_FILTER_KEYS,
+            invalid_next_token_message, is_parameters_by_path_filter_key, is_under_path,
+            parameter_path, parameters_by_path_filter_options, parameters_by_path_page_size,
+            request_region, FILTER_KEY_TYPE, FILTER_OPTION_EQUALS, PARAMETERS_BY_PATH_FILTER_KEYS,
         };
 
         let Some(state) = crate::state::service_state(&*self.engine) else {
@@ -310,27 +319,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let page_size = parameters_by_path_page_size(input.max_results)
             .map_err(crate::scaffolded::Scaffolded::validation)?;
 
-        // The token is the name of the parameter the next page starts at, so a token
-        // that is not a parameter name at all was not issued here. A name AWS publishes is
-        // such a name too, even though [`name_rejection`] — which states what a CALLER may
-        // create — refuses the hierarchy AWS reserves for itself: a page of the published
-        // catalog resumes at the published name it stopped at.
+        // The token is this read's own continuation token, which carries the name the next
+        // page starts at behind an authenticator only this store can produce
+        // ([`crate::state::parameter_pagination`]) — so a value this read did not issue
+        // names no position at all, however exactly it is shaped like one, and is refused
+        // rather than silently restarting the scan.
+        let page_key = state.lock().page_token_key();
         let resume_from = match input.next_token.as_deref() {
             None | Some("") => None,
-            Some(token)
-                if name_rejection(token).is_none()
-                    || crate::state::public_parameters::is_published_name(token) =>
-            {
-                Some(canonical_name(token))
-            }
-            Some(_) => {
-                return Err(GetParametersByPathErrorModeled::InvalidNextToken(
-                    InvalidNextToken {
-                        message: Some(INVALID_NEXT_TOKEN.to_string()),
-                    },
-                )
-                .into())
-            }
+            Some(token) => match page_cursor(&page_key, PagedRead::Hierarchy, token) {
+                Some(cursor) => Some(cursor),
+                None => {
+                    return Err(GetParametersByPathErrorModeled::InvalidNextToken(
+                        InvalidNextToken {
+                            message: Some(invalid_next_token_message(token)),
+                        },
+                    )
+                    .into())
+                }
+            },
         };
 
         // Parameter Store is regional: a parameter is reached through the endpoint it
@@ -346,7 +353,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // account wrote. Projected BEFORE the store guard is taken, so no state of this
         // service is held while the catalog's own store is read.
         let published = if crate::state::public_parameters::is_published_hierarchy(path) {
-            crate::state::public_parameters::published_records(&*self.engine, &region)
+            let published =
+                crate::state::public_parameters::published_records(&*self.engine, &region);
+            // Inside AWS's hierarchy a read reaches the NAMESPACES AWS publishes in, and
+            // nothing else: no parameter of this account can live there, so a path that is
+            // no namespace of it names nothing any caller could reach — which is a refusal
+            // and not an empty page.
+            if !crate::state::public_parameters::is_reserved_namespace(path, &published) {
+                return Err(GetParametersByPathErrorModeled::AccessDeniedException(
+                    AccessDeniedException {
+                        message: crate::state::public_parameters::invalid_namespace_message(
+                            path,
+                        ),
+                    },
+                )
+                .into());
+            }
+            published
         } else {
             Vec::new()
         };
@@ -369,7 +392,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .collect();
             candidates.sort_by_key(|(name, _)| *name);
             for (name, record) in candidates {
-                if resume_from.is_some_and(|from| name < from) {
+                if resume_from.as_deref().is_some_and(|from| name < from) {
                     continue;
                 }
                 if !is_under_path(name, path, recursive) {
@@ -383,9 +406,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 }
                 if parameters.len() == page_size {
                     // The page is full and a parameter is still waiting: hand the caller
-                    // the name it resumes at, so the next request continues where this
-                    // stopped.
-                    next_token = Some(record.name.clone());
+                    // a token naming the parameter it resumes at, so the next request
+                    // continues where this stopped.
+                    next_token = Some(page_token(
+                        &page_key,
+                        PagedRead::Hierarchy,
+                        canonical_name(&record.name),
+                    ));
                     break;
                 }
                 // The request named no `name:selector`, so the reported parameter carries

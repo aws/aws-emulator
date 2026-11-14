@@ -40,11 +40,12 @@
 //!
 //! ## Paging
 //!
-//! As for `GetParametersByPath`: the token this operation hands out is the `Name` of the
-//! parameter the next page starts at, so a resume is a position in the store's own total
-//! order rather than an offset into a list that may have changed between two pages. A
-//! token that is not shaped like a parameter name was not issued here: that is the
-//! modelled `InvalidNextToken`.
+//! As for `GetParametersByPath`: the token this operation hands out carries the `Name` of
+//! the parameter the next page starts at, so a resume is a position in the store's own
+//! total order rather than an offset into a list that may have changed between two pages.
+//! It is opaque, and carries that position behind an authenticator only this store can
+//! produce ([`crate::state::parameter_pagination`]), so a token this read did not ISSUE —
+//! including one a hierarchy read issued — is the modelled `InvalidNextToken`.
 //!
 //! ## Shape of an operation
 //!
@@ -208,14 +209,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        use crate::state::parameter_pagination::{page_cursor, page_token, PagedRead};
         use crate::state::{
             canonical_name, describe_filter_enum_values, describe_parameter_matches,
             describe_parameters_default_filter_option, describe_parameters_filter_options,
             describe_parameters_page_size, invalid_filter_key_message,
-            invalid_filter_option_message, is_describe_parameters_filter_key, name_rejection,
-            parameter_path, request_region, DESCRIBE_PARAMETERS_FILTER_KEYS, FILTER_KEY_PATH,
-            FILTER_OPTION_EQUALS, INVALID_NEXT_TOKEN, LEGACY_PARAMETERS_FILTER_KEYS,
-            MAX_DESCRIBE_PARAMETERS_FILTERS,
+            invalid_filter_option_message, invalid_next_token_message,
+            is_describe_parameters_filter_key, parameter_path, request_region,
+            DESCRIBE_PARAMETERS_FILTER_KEYS, FILTER_KEY_PATH, FILTER_OPTION_EQUALS,
+            LEGACY_PARAMETERS_FILTER_KEYS, MAX_DESCRIBE_PARAMETERS_FILTERS,
         };
 
         let Some(state) = crate::state::service_state(&*self.engine) else {
@@ -335,19 +337,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let page_size = describe_parameters_page_size(input.max_results)
             .map_err(crate::scaffolded::Scaffolded::validation)?;
 
-        // The token is the name of the parameter the next page starts at, so a token
-        // that is not a parameter name at all was not issued here.
+        // The token is this read's own continuation token, which carries the name the next
+        // page starts at behind an authenticator only this store can produce
+        // ([`crate::state::parameter_pagination`]) — so a value this read did not issue
+        // names no position at all, however exactly it is shaped like one.
+        let page_key = state.lock().page_token_key();
         let resume_from = match input.next_token.as_deref() {
             None | Some("") => None,
-            Some(token) if name_rejection(token).is_none() => Some(canonical_name(token)),
-            Some(_) => {
-                return Err(DescribeParametersErrorModeled::InvalidNextToken(
-                    InvalidNextToken {
-                        message: Some(INVALID_NEXT_TOKEN.to_string()),
-                    },
-                )
-                .into())
-            }
+            Some(token) => match page_cursor(&page_key, PagedRead::Metadata, token) {
+                Some(cursor) => Some(cursor),
+                None => {
+                    return Err(DescribeParametersErrorModeled::InvalidNextToken(
+                        InvalidNextToken {
+                            message: Some(invalid_next_token_message(token)),
+                        },
+                    )
+                    .into())
+                }
+            },
         };
 
         // Parameter Store is regional, and a parameter is reached through the endpoint it
@@ -370,7 +377,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // parameters.
         if !input.shared.unwrap_or(false) {
             for (name, record) in store.parameters_of_region(&region) {
-                if resume_from.is_some_and(|from| name < from) {
+                if resume_from.as_deref().is_some_and(|from| name < from) {
                     continue;
                 }
                 // A metadata listing names no `name:selector`, so each parameter is
@@ -384,10 +391,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     continue;
                 }
                 if parameters.len() == page_size {
-                    // The page is full and a parameter is still waiting: hand the caller
-                    // the name it resumes at, so the next request continues where this
-                    // stopped.
-                    next_token = Some(record.name.clone());
+                    // The page is full and a parameter is still waiting: hand the caller a
+                    // token naming the parameter it resumes at, so the next request
+                    // continues where this stopped.
+                    next_token = Some(page_token(
+                        &page_key,
+                        PagedRead::Metadata,
+                        canonical_name(&record.name),
+                    ));
                     break;
                 }
                 parameters.push(version.to_parameter_metadata(record));

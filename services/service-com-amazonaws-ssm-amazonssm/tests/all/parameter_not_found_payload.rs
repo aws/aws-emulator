@@ -15,6 +15,11 @@
 //! delete of the slice that answers this error for a name it holds no parameter for. A name
 //! the store DOES hold is read back in the same pass, so no row passes against a handler that
 //! refuses everything.
+//!
+//! A name in the hierarchy AWS reserves for its own published parameters is the one row a
+//! DELETE does not answer this way: that hierarchy is not the account's to change, so the
+//! delete is denied rather than reported absent (`all/restricted_parameter_hierarchy.rs`),
+//! while a read of a name AWS publishes nothing under is still a miss.
 
 use serde_json::{json, Value};
 
@@ -30,32 +35,41 @@ const OPERATIONS: &[&str] = &["GetParameter", "GetParameterHistory", "DeletePara
 struct Row {
     case: &'static str,
     name: &'static str,
+    /// Whether a DELETE of this name is a miss too. It is, for every name that is simply
+    /// absent; a name in the hierarchy AWS reserves for its own published parameters is
+    /// denied instead, because the hierarchy is not the account's to change.
+    deletable: bool,
 }
 
 const MISSING: &[Row] = &[
     Row {
         case: "a plain name nobody wrote",
         name: "no-such-parameter",
+        deletable: true,
     },
     Row {
         case: "a hierarchy path nobody wrote",
         name: "/team/service/absent",
+        deletable: true,
     },
     Row {
         case: "a hierarchy path addressed without its leading slash",
         name: "team/service/absent",
+        deletable: true,
     },
     // "PutParameter refuses a name prefixed with aws or ssm", so no caller can have
-    // created one of these — and AWS publishes nothing under this one, so every read of it
+    // created one of these — and AWS publishes nothing under this one, so every READ of it
     // is a miss (a name AWS DOES publish resolves against its catalog instead; see
     // `all/public_parameter_catalog.rs`).
     Row {
         case: "the AWS-managed namespace no caller can write",
         name: "/aws/service/ami-amazon-linux-latest/no-such-published-alias",
+        deletable: false,
     },
     Row {
         case: "a name whose every character is part of the path",
         name: "/a/b/c/d/e/f",
+        deletable: true,
     },
 ];
 
@@ -81,6 +95,9 @@ async fn parameter_not_found_carries_no_message() {
 
     for row in MISSING {
         for operation in OPERATIONS {
+            if *operation == "DeleteParameter" && !row.deletable {
+                continue;
+            }
             let (status, body) = call(&router, operation, &json!({ "Name": row.name })).await;
             assert_not_found(row.case, operation, status, &body);
         }
