@@ -35,6 +35,12 @@ mod http_proxy_function_url;
 mod proxy_event_repeated_names;
 #[path = "all/test_invoke_method_lambda_permission.rs"]
 mod test_invoke_method_lambda_permission;
+// Declared here, at the head, for the reason the entry at the top of this file records: the
+// DIFFERENTIAL between the two paths into one proxy method — a deployed request and a
+// simulation — decided out of the one function resource policy, spans API Gateway and AWS
+// Lambda at once.
+#[path = "all/test_invoke_stage_grant_differential.rs"]
+mod test_invoke_stage_grant_differential;
 // Declared here, at the head, for the reason the entry at the top of this file records: which
 // STAGE of one deployment the integration's function admits, and what the stage's execution
 // log records about a request it refused, spans API Gateway, AWS Lambda and Amazon CloudWatch
