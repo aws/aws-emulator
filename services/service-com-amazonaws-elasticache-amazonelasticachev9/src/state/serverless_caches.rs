@@ -654,6 +654,17 @@ pub struct ServerlessCacheSnapshotRecord {
     pub serverless_cache_name: String,
     pub engine: String,
     pub major_engine_version: String,
+    /// The source cache's DATA SET as it stood when the snapshot was taken — the
+    /// "cache data set [that] was obtained for the snapshot"
+    /// (`ServerlessCacheSnapshot$CreateTime`), which is what makes this a copy of
+    /// the cache rather than a note that one was taken.
+    ///
+    /// It is the snapshot's OWN copy ([`copied_keyspace`]), so a later write to
+    /// the source cache does not reach it and a `DeleteServerlessCache` cannot
+    /// take it away with the cache — which is what lets a cache created from this
+    /// snapshot answer what was stored before it, and what
+    /// `ServerlessCacheSnapshot$BytesUsedForCache` reports the size of.
+    pub data: SharedKeyspace,
     /// The tags the create was given. The ONE copy of this snapshot's tags; see
     /// [`SnapshotRecord::tags`].
     pub tags: Vec<(String, String)>,
@@ -685,6 +696,7 @@ impl ServerlessCacheSnapshotRecord {
             serverless_cache_name: cache.name.clone(),
             engine: cache.engine.clone(),
             major_engine_version: cache.major_engine_version.clone(),
+            data: new.data,
             tags: new.tags,
         }
     }
@@ -721,11 +733,11 @@ impl ServerlessCacheSnapshotRecord {
             // limit and so has an instant it expires at, and none is ever stored
             // (see [`SERVERLESS_SNAPSHOT_TYPE_MANUAL`]).
             expiry_time: None,
-            // "The total size of a serverless cache snapshot, in bytes": this
-            // emulator serves no cache data plane, so it holds no data set whose
-            // size it could report rather than invent — the same reason
-            // [`NodeSnapshotRecord::to_modeled`] reports no cache size.
-            bytes_used_for_cache: None,
+            // "The total size of a serverless cache snapshot, in bytes": the
+            // bytes the data set this snapshot captured holds, read off that
+            // copy rather than invented. A snapshot of an empty cache reports
+            // `0`, which is its size.
+            bytes_used_for_cache: Some(lock_keyspace(&self.data).used_bytes().to_string()),
             serverless_cache_configuration: Some(ServerlessCacheConfiguration {
                 serverless_cache_name: Some(self.serverless_cache_name.clone()),
                 engine: Some(self.engine.clone()),
@@ -742,6 +754,9 @@ pub struct NewServerlessCacheSnapshot {
     /// The stored (lowercased) `ServerlessCacheSnapshotName`.
     pub name: String,
     pub kms_key_id: Option<String>,
+    /// The source cache's data set, captured at this instant
+    /// ([`captured_serverless_cache_data`]).
+    pub data: SharedKeyspace,
     pub tags: Vec<(String, String)>,
     pub now: SystemTime,
 }

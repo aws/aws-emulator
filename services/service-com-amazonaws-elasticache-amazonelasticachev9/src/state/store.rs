@@ -495,6 +495,30 @@ impl ComAmazonawsElasticacheAmazonelasticachev9State {
         self.serverless_cache_snapshots.get_mut(name)
     }
 
+    /// The serverless cache snapshot whose ARN is `arn`, with any status change
+    /// the clock owes it already materialised.
+    ///
+    /// A request names a snapshot by its ARN where the member carries one rather
+    /// than a name — `CreateServerlessCache$SnapshotArnsToRestore` is "the ARN(s)
+    /// of the snapshot that the new serverless cache will be created from" — so
+    /// the lookup is over the ARNs the stored snapshots were minted with, which
+    /// are the SAME records [`Self::settled_serverless_cache_snapshot_mut`]
+    /// reads rather than a second copy of them. Bounded by
+    /// [`SERVERLESS_CACHE_SNAPSHOT_QUOTA`], which is what bounds the map.
+    pub fn settled_serverless_cache_snapshot_by_arn_mut(
+        &mut self,
+        arn: &str,
+        now: SystemTime,
+    ) -> Option<&mut ServerlessCacheSnapshotRecord> {
+        let wanted = arn.trim();
+        let name = self
+            .serverless_cache_snapshots
+            .values()
+            .find(|snapshot| snapshot.arn == wanted)
+            .map(|snapshot| snapshot.name.clone())?;
+        self.settled_serverless_cache_snapshot_mut(&name, now)
+    }
+
     /// Drop every snapshot whose removal the clock already owes — the snapshots
     /// a `DeleteSnapshot` put into [`STATUS_DELETING`] at least
     /// [`SNAPSHOT_TRANSITION`] ago.

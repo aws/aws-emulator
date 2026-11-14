@@ -230,6 +230,31 @@ impl Keyspace {
         }
     }
 
+    /// Lay the keys `other` holds over the ones this keyspace already holds, the later
+    /// copy of a key winning — what restoring a cache from more than one snapshot does.
+    ///
+    /// Bounded exactly as a write is: a key that would take the keyspace past
+    /// [`MAX_KEYS`] or [`MAX_KEYSPACE_BYTES`] is NOT loaded, so a restore from however
+    /// many snapshots cannot grow one keyspace past the ceiling the host is protected
+    /// by. Nothing is evicted to make room: a restore loads what fits, and the keys it
+    /// could not load are the ones over the ceiling.
+    pub fn overlay(&mut self, other: &Keyspace) {
+        for (key, entry) in &other.entries {
+            let replaced = self.entries.get(key).map(Entry::bytes).unwrap_or_default();
+            let would_hold = self
+                .bytes
+                .saturating_sub(replaced)
+                .saturating_add(entry.bytes());
+            if would_hold > MAX_KEYSPACE_BYTES
+                || (replaced == 0 && self.entries.len() >= MAX_KEYS)
+            {
+                continue;
+            }
+            self.entries.insert(key.clone(), entry.clone());
+            self.bytes = would_hold;
+        }
+    }
+
     /// How many keys the keyspace holds, with the expiries the clock has made due already
     /// materialised — what `DBSIZE` answers.
     pub fn len(&mut self, now: SystemTime) -> usize {

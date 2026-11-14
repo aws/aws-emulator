@@ -249,16 +249,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // The final snapshot is taken of the cache as it stands NOW, before the
         // delete begins: "the final snapshot to be taken before the serverless
-        // cache is deleted". It outlives the cache, so a later
+        // cache is deleted", which is its configuration AND its data set. It
+        // outlives the cache — the data set is the snapshot's own copy
+        // (`crate::state::captured_serverless_cache_data`), so closing the
+        // cache's socket below does not take it away — and a later
         // `DescribeServerlessCacheSnapshots` still reports it.
+        let source = cache.clone();
         let final_snapshot = final_snapshot_name.map(|snapshot_name| {
             crate::state::ServerlessCacheSnapshotRecord::from_cache(
-                cache,
+                &source,
                 crate::state::NewServerlessCacheSnapshot {
                     name: snapshot_name,
                     // This request names no KMS key and no tags of its own, so
                     // the snapshot carries the source cache's key and no tags.
                     kms_key_id: None,
+                    data: crate::state::captured_serverless_cache_data(&store, &name, now),
                     tags: Vec::new(),
                     now,
                 },
@@ -268,6 +273,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The cache is leaving: it answers `DELETING` now, and the clock owes its
         // removal, so a caller reading it straight after this call still sees it
         // going away and a later one sees it gone.
+        let Some(cache) = store.serverless_caches.get_mut(&name) else {
+            // Unreachable: resolved under this same lock above.
+            return Err(crate::scaffolded::Scaffolded::validation(
+                crate::state::STORE_UNAVAILABLE,
+            ));
+        };
         cache.begin_deletion(now);
         let serverless_cache = cache.to_modeled();
         if let Some(record) = final_snapshot {

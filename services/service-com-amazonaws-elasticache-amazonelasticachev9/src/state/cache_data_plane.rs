@@ -42,6 +42,7 @@ pub mod resp_wire;
 use std::collections::BTreeMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::SystemTime;
 
 use access_control::AccessRules;
 use keyspace::{Keyspace, Limits};
@@ -155,6 +156,39 @@ impl CacheDataPlanes {
 
     pub fn is_empty(&self) -> bool {
         self.open.is_empty()
+    }
+}
+
+/// A COPY of what `source` holds, with the expiries the clock has already made due left
+/// out of it.
+///
+/// This is what a SNAPSHOT of a cache is — "a copy of an entire cache at a specific moment
+/// in time" — and what a cache RESTORED from one starts with: an independent keyspace, so a
+/// later write to either side does not reach the other, and a key whose expiry had passed
+/// when the copy was taken was already gone and is not captured.
+pub fn copied_keyspace(source: &SharedKeyspace, now: SystemTime) -> SharedKeyspace {
+    let mut copy = Keyspace::copied_from(&lock_keyspace(source));
+    copy.expire_due(now);
+    Arc::new(Mutex::new(copy))
+}
+
+/// The data set the serverless cache `name` holds at `now`, as a snapshot of it: a copy of
+/// the keyspace behind its socket, or an empty one for a cache this emulator serves no data
+/// plane for.
+///
+/// The LIVE keyspace is only read here: the copy is what the expiry sweep and every later
+/// write happen on, so taking a snapshot changes nothing a client of the source cache sees.
+pub fn captured_serverless_cache_data(
+    store: &super::ComAmazonawsElasticacheAmazonelasticachev9State,
+    name: &str,
+    now: SystemTime,
+) -> SharedKeyspace {
+    let identity = CacheIdentity::ServerlessCache {
+        name: name.to_string(),
+    };
+    match store.cache_data_planes.get(&identity) {
+        Some(plane) => copied_keyspace(plane.keyspace(), now),
+        None => Arc::new(Mutex::new(Keyspace::default())),
     }
 }
 
@@ -727,10 +761,15 @@ pub async fn serve_replication_group<Eng: Send + Sync + 'static>(
 ///
 /// A serverless cache is always served TLS, because that is the only way ElastiCache
 /// serves one.
+///
+/// `restored` is the data set the cache starts with: the keyspace a snapshot the create
+/// named was taken of, so a client's first `GET` on a restored cache answers what was
+/// stored before the snapshot. `None` for a cache created from nothing, which starts empty.
 pub async fn serve_serverless_cache<Eng: Send + Sync + 'static>(
     engine: &Eng,
     state: &::engine::ServiceState<super::ComAmazonawsElasticacheAmazonelasticachev9State>,
     name: &str,
+    restored: Option<SharedKeyspace>,
 ) {
     let identity = CacheIdentity::ServerlessCache {
         name: name.to_string(),
@@ -745,7 +784,7 @@ pub async fn serve_serverless_cache<Eng: Send + Sync + 'static>(
             return;
         }
     }
-    let Some(plane) = open_cache_data_plane(engine, state, identity.clone(), true, None).await
+    let Some(plane) = open_cache_data_plane(engine, state, identity.clone(), true, restored).await
     else {
         return;
     };

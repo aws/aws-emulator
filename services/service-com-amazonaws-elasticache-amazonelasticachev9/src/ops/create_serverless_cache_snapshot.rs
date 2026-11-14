@@ -299,14 +299,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
-        // The snapshot copies the cache as it stands at this instant. The cache
-        // itself is not disturbed: `ServerlessCache$Status` has no snapshotting
-        // value, so the cache stays `AVAILABLE` while the snapshot is taken.
+        // The snapshot copies the cache as it stands at this instant — its
+        // configuration AND its data set, which is what makes it "a copy of an
+        // entire ServerlessCache at a specific moment in time". The cache itself
+        // is not disturbed: `ServerlessCache$Status` has no snapshotting value,
+        // so the cache stays `AVAILABLE` while the snapshot is taken, and the
+        // data set is COPIED rather than taken over.
+        let cache = cache.clone();
+        let data = crate::state::captured_serverless_cache_data(&store, &cache_name, now);
         let record = crate::state::ServerlessCacheSnapshotRecord::from_cache(
-            cache,
+            &cache,
             crate::state::NewServerlessCacheSnapshot {
                 name: snapshot_name,
                 kms_key_id,
+                data,
                 tags,
                 now,
             },

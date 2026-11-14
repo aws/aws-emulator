@@ -279,11 +279,16 @@ mod serverless_usage_limit_envelope;
 // name.
 #[path = "all/serverless_cache_snapshot_not_found_sentence.rs"]
 mod serverless_cache_snapshot_not_found_sentence;
-// Appended for the same reason: the suite about what a REPORT answers while the clock
-// still owes the resource a change it has already scheduled.
-#[path = "all/lifecycle_convergence.rs"]
-mod lifecycle_convergence;
 // Appended for the same reason: the suite about the engine-version FLOOR an RBAC
 // record reports (`User` and `UserGroup`'s `MinimumEngineVersion`).
 #[path = "all/rbac_minimum_engine_version.rs"]
 mod rbac_minimum_engine_version;
+// Appended for the same reason: the suite about the DATA CONSEQUENCE of the two multi-step
+// flows — a serverless cache restored from a snapshot, and a shard scaled and failed over —
+// which drives the RESP client of the data-plane suite declared above.
+#[path = "all/cache_data_consequences.rs"]
+mod cache_data_consequences;
+// Appended for the same reason: the suite about what a REPORT answers while the clock
+// still owes the resource a change it has already scheduled.
+#[path = "all/lifecycle_convergence.rs"]
+mod lifecycle_convergence;

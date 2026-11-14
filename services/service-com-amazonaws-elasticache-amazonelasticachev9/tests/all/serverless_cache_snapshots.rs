@@ -267,17 +267,25 @@ fn assert_snapshot(case: &SnapshotCase, reply: &Reply, status: &str, major_engin
         case.case,
         reply.body
     );
-    // A manual snapshot does not expire, and this emulator serves no cache data
-    // plane, so neither member is reported rather than invented.
-    for absent in ["ExpiryTime", "BytesUsedForCache"] {
-        assert_eq!(
-            reply.text(absent),
-            None,
-            "case {}: {absent} must not be reported, got {:?}",
-            case.case,
-            reply.text(absent)
-        );
-    }
+    // A manual snapshot does not expire, so that member is not reported rather
+    // than invented.
+    assert_eq!(
+        reply.text("ExpiryTime"),
+        None,
+        "case {}: ExpiryTime must not be reported, got {:?}",
+        case.case,
+        reply.text("ExpiryTime")
+    );
+    // The size it DOES report is the one of the data set it captured, read off
+    // that copy: nothing has been written to any of these caches, so the data set
+    // a snapshot of one holds is empty and its size is zero.
+    assert_eq!(
+        reply.text("BytesUsedForCache"),
+        Some("0"),
+        "case {}: a snapshot of a cache holding nothing must report size 0, got {:?}",
+        case.case,
+        reply.text("BytesUsedForCache")
+    );
 }
 
 #[tokio::test]

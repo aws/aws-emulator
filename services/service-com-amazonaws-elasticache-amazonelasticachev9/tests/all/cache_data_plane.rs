@@ -25,15 +25,19 @@ use tokio::net::TcpStream;
 use crate::harness::{params, poll_until, Emulator, Reply, REGION};
 
 /// A byte stream a RESP session runs on: a plaintext socket, or the TLS stream over one.
-type Session = Box<dyn Stream>;
+///
+/// `pub(crate)` with the three helpers below, for the reason the harness module gives: a
+/// second suite that opens a RESP session on a published endpoint drives it through THIS
+/// client rather than carrying a second copy of one.
+pub(crate) type Session = Box<dyn Stream>;
 
 /// What a session needs of its connection.
-trait Stream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+pub(crate) trait Stream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> Stream for T {}
 
 /// One RESP reply, as a client reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Resp {
+pub(crate) enum Resp {
     Status(String),
     Error(String),
     Integer(i64),
@@ -57,7 +61,7 @@ impl Resp {
 /// The assertion is what pins the endpoint to this machine: the core binds its listeners
 /// on the operator-chosen interface, loopback by default, so the address a cache publishes
 /// is this machine's own loopback address — and that is the address dialled.
-async fn open(case: &str, address: &str, port: &str) -> Session {
+pub(crate) async fn open(case: &str, address: &str, port: &str) -> Session {
     assert_eq!(
         address, "127.0.0.1",
         "case {case}: the published endpoint must be this machine's loopback address, got \
@@ -76,7 +80,7 @@ async fn open(case: &str, address: &str, port: &str) -> Session {
 
 /// Open a RESP session over TLS, which is how a client reaches a cache with in-transit
 /// encryption — the wire the core terminates for such a cache.
-async fn open_tls(case: &str, address: &str, port: &str) -> Session {
+pub(crate) async fn open_tls(case: &str, address: &str, port: &str) -> Session {
     let conn = open(case, address, port).await;
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     let config = rustls::ClientConfig::builder_with_provider(Arc::clone(&provider))
@@ -151,7 +155,7 @@ impl rustls::client::danger::ServerCertVerifier for AcceptTheEmulatorsCertificat
 
 /// Send one command as a RESP array of bulk strings — the form every client library sends
 /// — and read the one reply it is answered with.
-async fn command(case: &str, session: &mut Session, arguments: &[&str]) -> Resp {
+pub(crate) async fn command(case: &str, session: &mut Session, arguments: &[&str]) -> Resp {
     let mut request = format!("*{}\r\n", arguments.len());
     for argument in arguments {
         request.push_str(&format!("${}\r\n{argument}\r\n", argument.len()));
@@ -256,7 +260,7 @@ async fn cluster_endpoint(emulator: &Emulator, id: &str, extra: &[(&str, &str)])
 }
 
 /// The `(address, port)` pair one reply reports under the two element names.
-fn endpoint_of(reply: &Reply, address: &str, port: &str, what: &str) -> (String, String) {
+pub(crate) fn endpoint_of(reply: &Reply, address: &str, port: &str, what: &str) -> (String, String) {
     (
         reply
             .text(address)

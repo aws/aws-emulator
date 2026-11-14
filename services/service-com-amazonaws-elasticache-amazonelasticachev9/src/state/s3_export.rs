@@ -87,11 +87,11 @@ pub fn exported_object_key(snapshot_name: &str) -> String {
 ///
 /// An RDB file of an EMPTY key space: the magic, the file-format version, the
 /// end-of-key-space opcode and the no-checksum trailer, with no key between
-/// them. This emulator serves no cache data plane, so a snapshot holds no data
-/// set to write — the same reason the snapshot reports no
-/// `BytesUsedForCache` ([`super::ServerlessCacheSnapshotRecord::to_modeled`]) —
-/// and the absence is exported as an absence rather than filled with keys
-/// nothing ever stored.
+/// them. A snapshot does hold the source cache's data set
+/// ([`super::ServerlessCacheSnapshotRecord::data`], whose size it reports as
+/// `BytesUsedForCache`), but this emulator writes no RDB ENCODING of a key, so
+/// the file states an empty key space rather than one whose framing claims keys
+/// the bytes do not carry.
 #[must_use]
 pub fn exported_data_set() -> Vec<u8> {
     let mut file = Vec::with_capacity(

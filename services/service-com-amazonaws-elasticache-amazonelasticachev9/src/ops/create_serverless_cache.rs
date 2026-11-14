@@ -366,18 +366,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
-        // A cache can only be restored from a snapshot that exists, and none
-        // can: `CreateServerlessCacheSnapshot` / `CopyServerlessCacheSnapshot`
-        // are scaffolded 501s, and an S3 snapshot ARN would have to be read out
-        // of Amazon S3, which this emulator does not reach.
-        if let Some(arn) = input
-            .snapshot_arns_to_restore
-            .as_deref()
-            .unwrap_or_default()
-            .first()
-        {
+        // "The ARN(s) of the snapshot that the new serverless cache will be
+        // created from": WHICH snapshots those ARNs name is resolved against the
+        // store below, under the one lock this create takes. The LIST itself is
+        // bounded here, before anything is resolved — a request cannot name more
+        // snapshots than this account is able to hold
+        // (`SERVERLESS_CACHE_SNAPSHOT_QUOTA`), so the resolution is bounded by
+        // that quota rather than by the size of the request.
+        let restore_from = input.snapshot_arns_to_restore.unwrap_or_default();
+        if restore_from.len() > crate::state::SERVERLESS_CACHE_SNAPSHOT_QUOTA {
             return Err(invalid_value(format!(
-                "Invalid value {arn} for SnapshotArnsToRestore: no such snapshot exists."
+                "{} snapshot ARNs were supplied; this account holds at most {} serverless cache \
+                 snapshots.",
+                restore_from.len(),
+                crate::state::SERVERLESS_CACHE_SNAPSHOT_QUOTA
             )));
         }
 
@@ -487,7 +489,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Everything this create writes happens under ONE lock, and the socket the
         // cache is served on is opened after it: opening one is async, and no await
         // may happen while the store is held.
-        let (cache_name, serverless_cache) = {
+        let (cache_name, serverless_cache, restored) = {
         let mut store = state.lock();
         // A user group that has become active since it was created is active
         // now, so the status read below is the settled one.
@@ -548,6 +550,30 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
+        // The DATA SET the new cache starts with: the keyspace each snapshot the
+        // request named captured, laid over the previous one in the order the
+        // ARNs were given, so a client's first read on the new cache answers what
+        // the source cache held when the snapshot was taken. Each is the
+        // snapshot's own copy copied again (`crate::state::copied_keyspace`), so
+        // the new cache's writes do not reach the snapshot and a second restore
+        // from the same snapshot starts from the same data. An ARN that resolves
+        // to no snapshot this account holds is a value this member cannot take.
+        let mut restored: Option<crate::state::SharedKeyspace> = None;
+        for arn in &restore_from {
+            let Some(snapshot) = store.settled_serverless_cache_snapshot_by_arn_mut(arn, now)
+            else {
+                return Err(invalid_value(format!(
+                    "Invalid value {arn} for SnapshotArnsToRestore: no such snapshot exists."
+                )));
+            };
+            let captured = crate::state::copied_keyspace(&snapshot.data, now);
+            match restored {
+                None => restored = Some(captured),
+                Some(ref into) => crate::state::lock_keyspace(into)
+                    .overlay(&crate::state::lock_keyspace(&captured)),
+            }
+        }
+
         let new = crate::state::NewServerlessCache {
             name,
             region,
@@ -590,12 +616,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             "Serverless cache created",
             now,
         );
-        (cache_name, serverless_cache)
+        (cache_name, serverless_cache, restored)
         };
         // The cache's own data plane: the `Endpoint` this cache publishes has to be
         // one a client can reach, so the socket is opened here and its address
-        // written onto the record (`crate::state::serve_serverless_cache`).
-        crate::state::serve_serverless_cache(&*self.engine, &state, &cache_name).await;
+        // written onto the record (`crate::state::serve_serverless_cache`), over the
+        // data set the snapshots this create restored from carry.
+        crate::state::serve_serverless_cache(&*self.engine, &state, &cache_name, restored).await;
         // Read back once the socket is open, so this answer publishes the address
         // the cache really answers on rather than the one its record carried before
         // it was served.
