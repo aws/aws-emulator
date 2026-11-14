@@ -164,23 +164,27 @@ const DEFAULT_MAX_RESULTS: usize = MAX_MAX_RESULTS;
 ///
 /// The token is POSITIONAL rather than the last ARN returned, because
 /// `BillingViewSourceViewsList` is a list in which nothing collapses a repeated
-/// ARN, so an ARN does not identify a page boundary. Hex keeps the token inside
-/// the modeled `PageToken` pattern (`^[-a-zA-Z0-9+=/_]+$`) and length (1..4095).
+/// ARN, so an ARN does not identify a page boundary. Only that payload is this
+/// operation's own: the transcoding is the crate's one page-token codec,
+/// [`crate::state::encode_page_token`], which keeps the token inside the modeled
+/// `PageToken` pattern (`^[-a-zA-Z0-9+=/_]+$`) and length (1..4095) and is
+/// shared with this service's other paginated reads, so the minting rule lives
+/// in one place.
 /// It is encoded, not unforgeable: a caller that hand-builds one resumes at that
 /// position of the view it already named, which is bounded by the slice below
 /// and reaches nothing the same caller could not list page by page.
 fn encode_page_token(returned: usize) -> String {
-    hex::encode(returned.to_string().as_bytes())
+    crate::state::encode_page_token(&returned.to_string())
 }
 
 /// The number of entries a `nextToken` resumes after, or a `ValidationException`
-/// when the token is not one this service issued. The refusal's wording is the
-/// one in `crate::state`, shared with this service's other paginated reads so a
-/// client sees the same refusal for an unusable token whichever read answered it.
+/// when the token is not one this service issued. The transcoding and the
+/// refusal's wording are both the ones in `crate::state`, shared with this
+/// service's other paginated reads so a client sees the same acceptance rule and
+/// the same refusal for an unusable token whichever read answered it; only the
+/// decoded payload — a position in the view's list — is parsed here.
 fn decode_page_token(token: &str) -> Result<usize, ListSourceViewsForBillingViewError> {
-    hex::decode(token)
-        .ok()
-        .and_then(|bytes| String::from_utf8(bytes).ok())
+    crate::state::decode_page_token(token)
         .and_then(|text| text.parse::<usize>().ok())
         .ok_or_else(|| {
             ListSourceViewsForBillingViewErrorModeled::ValidationException(ValidationException {

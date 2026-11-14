@@ -65,3 +65,5 @@ mod tag_set_duplicate_keys;
 mod untag_resource;
 #[path = "all/enterprise_support_contract_details.rs"]
 mod enterprise_support_contract_details;
+#[path = "all/page_token_codec.rs"]
+mod page_token_codec;

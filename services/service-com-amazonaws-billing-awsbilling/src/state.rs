@@ -1423,8 +1423,8 @@ pub fn billing_view_arn(view_id: &str) -> String {
 /// The opaque `nextToken` for a page that ended at `last`, where the page
 /// boundary is a VALUE the store is keyed by (`ListBillingViews` walks
 /// `billing_views`, a map keyed and ordered by ARN). A read whose page boundary
-/// is a position in a list keeps its own token — see
-/// `ops::list_source_views_for_billing_view`.
+/// is a position in a list carries its own PAYLOAD through this same pair,
+/// rather than a second codec — see `ops::list_source_views_for_billing_view`.
 ///
 /// Hex keeps the token inside the modeled `PageToken` pattern
 /// (`^[-a-zA-Z0-9+=/_]+$`) and length (1..4095) for every ARN the service mints,
