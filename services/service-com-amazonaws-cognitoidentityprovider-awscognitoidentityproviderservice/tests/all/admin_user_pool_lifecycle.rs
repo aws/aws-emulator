@@ -1719,55 +1719,65 @@ async fn resending_an_invitation_is_the_only_second_create_a_username_accepts() 
 #[tokio::test]
 async fn the_pool_store_is_bounded_and_a_delete_makes_room_again() {
     use service_com_amazonaws_cognitoidentityprovider_awscognitoidentityproviderservice::state::{
-        new_user_pool, service_state, PoolSigningKeys, MAX_USER_POOLS,
+        service_state, MAX_USER_POOLS, SIGNING_NAME,
     };
 
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let router = router_on(Arc::clone(&engine));
     let store = service_state(&*engine).expect("the cognito-idp store is reachable");
 
-    // Fill the store to one short of its bound by SEEDING it, not by driving
-    // `CreateUserPool` once per slot: each create mints a pool's RSA key pairs,
-    // so the bound is reached here in a moment instead of in minutes of key
-    // generation, and the requests below still cross the bound over the wire.
-    // The seeded pools share one key set, which nothing in this suite reads.
-    let seed_keys = PoolSigningKeys::generate();
+    // The pool whose slot is freed further down, created over the wire while the
+    // store is still empty — and the record every seeded slot below is cloned
+    // from, so filling the store costs no key generation at all.
+    let created = ok(
+        &router,
+        "CreateUserPool",
+        &json!({ "PoolName": "the-slot-to-free" }),
+    )
+    .await;
+    let freed_id = created["UserPool"]["Id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the first pool must be created, got {created}"))
+        .to_string();
+
+    // Fill the rest of the store to its bound by SEEDING it, not by driving
+    // `CreateUserPool` once per slot: a create mints that pool's two RSA key
+    // pairs and issues its X.509 SAML signing certificate, so the bound is
+    // reached here in milliseconds instead of in minutes of key generation,
+    // while the requests below still cross it over the wire.
+    //
+    // Each seeded slot is a CLONE of the pool created above under a fresh pool
+    // id, for that same reason: a slot filler only has to occupy a key of the
+    // store, and nothing in this suite reads a seeded pool — every assertion
+    // below is about a pool created or deleted over the wire.
     {
         let mut guard = store.lock();
+        let template = guard
+            .pool(&freed_id)
+            .expect("the created pool is stored")
+            .clone();
         let mut seeded = 0;
-        while guard.user_pools.len() < MAX_USER_POOLS - 1 {
-            let pool = new_user_pool(
-                format!("seeded-{seeded}"),
-                REGION,
-                std::time::SystemTime::now(),
-                seed_keys.clone(),
-            );
-            guard.user_pools.entry(pool.id.clone()).or_insert(pool);
+        while guard.user_pools.len() < MAX_USER_POOLS {
             seeded += 1;
+            // `^[\w-]+_[0-9a-zA-Z]+$`, the modelled `UserPoolIdType` form a
+            // stored pool is keyed by, one id per seeded slot.
+            let id = format!("{REGION}_seeded{seeded}");
+            let mut pool = template.clone();
+            pool.name = format!("seeded-{seeded}");
+            pool.arn = engine::emulator_arn(SIGNING_NAME, REGION, &format!("userpool/{id}"));
+            pool.id = id.clone();
+            guard.user_pools.insert(id, pool);
         }
         assert_eq!(
             guard.user_pools.len(),
-            MAX_USER_POOLS - 1,
-            "case \"seeded to one short of the bound\": the store must hold \
-             {} pools before the bound is crossed over the wire",
-            MAX_USER_POOLS - 1
+            MAX_USER_POOLS,
+            "case \"seeded to the bound\": the store must hold {MAX_USER_POOLS} pools \
+             before the bound is crossed over the wire"
         );
     }
 
     // This emulator keeps its pools in memory, so the store has a maximum: the
-    // request past it is refused rather than growing the process. The create
-    // that takes the last free slot is served...
-    let created = ok(
-        &router,
-        "CreateUserPool",
-        &json!({ "PoolName": "the-last-slot" }),
-    )
-    .await;
-    let last_id = created["UserPool"]["Id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("the pool in the last free slot must be created, got {created}"))
-        .to_string();
-    // ...and the one past the bound is not.
+    // request past it is refused rather than growing the process.
     let (status, payload) = call(
         &router,
         "CreateUserPool",
@@ -1780,8 +1790,10 @@ async fn the_pool_store_is_bounded_and_a_delete_makes_room_again() {
         "case \"one past the bound\": the store is bounded, got {payload}"
     );
 
-    // And the bound is on what is STORED, not on how many calls were made.
-    ok(&router, "DeleteUserPool", &json!({ "UserPoolId": last_id })).await;
+    // And the bound is on what is STORED, not on how many calls were made: a
+    // delete frees one slot, and the create that takes that last free slot is
+    // served.
+    ok(&router, "DeleteUserPool", &json!({ "UserPoolId": freed_id })).await;
     let created = ok(
         &router,
         "CreateUserPool",
@@ -1791,6 +1803,21 @@ async fn the_pool_store_is_bounded_and_a_delete_makes_room_again() {
     assert!(
         created["UserPool"]["Id"].is_string(),
         "case \"after a delete\": freeing a slot must let the next create in, got {created}"
+    );
+
+    // One freed slot admits exactly one pool, so the store is at its bound
+    // again and the create after that one is refused again.
+    let (status, payload) = call(
+        &router,
+        "CreateUserPool",
+        &json!({ "PoolName": "one-too-many-again" }),
+    )
+    .await;
+    assert_eq!(
+        (status, error_code(&payload)),
+        (400, "LimitExceededException"),
+        "case \"one past the refilled bound\": a served create fills the freed slot, \
+         got {payload}"
     );
 }
 
