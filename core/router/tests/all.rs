@@ -1899,6 +1899,8 @@ mod apigateway_sns_service_integration;
 // crate's test target can drive it.
 #[path = "all/lambda_signed_write_to_an_aoss_collection_endpoint.rs"]
 mod lambda_signed_write_to_an_aoss_collection_endpoint;
+// (The suite over which app client's token a COGNITO_USER_POOLS authorizer admits is declared
+// ONCE, in the head region above: a module may be declared only once.)
 // (`apigateway_cognito_authorizer_app_client_audience` is declared at line 30, in the sorted
 // block above: a module may be declared only once, and two branches landing at once declared
 // it twice.)
@@ -1930,6 +1932,7 @@ mod redshift_health_alarms_evaluate;
 // crate's test target can deploy the pipeline and then read the objects it delivered.
 #[path = "all/cloudformation_metric_stream_filter_update.rs"]
 mod cloudformation_metric_stream_filter_update;
+// (`zz_probe` is declared ONCE, further up this tail: a module may be declared only once.)
 // (`zz_probe` is declared in the head region above: a module may be declared only once, and
 // two branches landing at once appended it twice.)
 // `zz_probe` is declared ONCE, in the span above: two landings each appended their own copy
@@ -1964,6 +1967,8 @@ mod cloudformation_domain_endpoint_is_dialled_by_consumers;
 // which only this target links.
 #[path = "all/https_front_door_concurrent_pooled_producer.rs"]
 mod https_front_door_concurrent_pooled_producer;
+// (The suite over whether a stack-deployed metric-stream estate is drainable is declared
+// ONCE, in the sorted span above: a module may be declared only once.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared in the head region above:
 // a module may be declared only once, and two branches landing at once appended it twice.)
 // `cloudformation_metric_stream_estate_is_drainable` is declared ONCE, further up this tail:
@@ -1985,6 +1990,13 @@ mod cognito_rules_role_mapping;
 // crate's own test target can ask it.
 #[path = "all/iam_secretsmanager_denial_envelope_by_protocol.rs"]
 mod iam_secretsmanager_denial_envelope_by_protocol;
+// `apigateway_cognito_authorizer_app_client_audience` is declared ONCE, in the head region
+// above: two landings each appended their own copy here, and a module declared twice loads
+// the same file twice, which compiles neither.
+// `zz_probe` is declared ONCE, in the span above: two landings each appended their own copy
+// here, and a module declared twice loads the same file twice, which compiles neither.
+// `cloudformation_metric_stream_estate_is_drainable` is declared ONCE, further up this tail:
+// two landings each appended their own copy, and a module declared twice compiles neither.
 // (`apigateway_cognito_authorizer_app_client_audience` is declared in the head region above:
 // a module may be declared only once.)
 // (`zz_probe` is declared further up this tail already: a module may be declared only once.)

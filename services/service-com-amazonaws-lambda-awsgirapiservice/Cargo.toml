@@ -110,6 +110,12 @@ uuid = { version = "1", features = ["v4"] }
 aws-sdk-kinesis = { version = "1", default-features = false }
 aws-sdk-dynamodbstreams = { version = "1", default-features = false }
 aws-sdk-lambda = { version = "1", default-features = false }
+# The concurrent fan-out one pass of the queue poller makes: a mapping configured for several
+# concurrent instances hands that many batches to its function AT ONCE
+# (`state::sqs_poller`), which is this crate's `join_all` over the attempts rather than a
+# hand-rolled poll loop. Only the combinator is needed, so the executor and the I/O half of
+# the `futures` facade are left out.
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 # Amazon S3 binds every operation to a method, a path, a query and headers of its own
 # rather than carrying an input document in the body, so a handler's `boto3.client("s3")`
 # call cannot be built by the AWS JSON path the other reachable services share: this is the

@@ -768,9 +768,13 @@ async fn a_completion_delivers_its_record_to_the_slot_its_outcome_names() {
             let stated: &[(&str, Value)] = &[
                 ("/version", json!("1.0")),
                 (
+                    // The record names the function QUALIFIED by the qualifier the event was
+                    // addressed to, which for an event addressed to none is the unpublished
+                    // version: the configuration the record was written for is held per
+                    // qualifier, so the record says which one it belongs to.
                     "/requestContext/functionArn",
                     json!(format!(
-                        "arn:aws:lambda:{REGION}:{ACCOUNT}:function:{}",
+                        "arn:aws:lambda:{REGION}:{ACCOUNT}:function:{}:$LATEST",
                         row.function
                     )),
                 ),
@@ -1148,8 +1152,11 @@ async fn a_function_destination_is_invoked_unless_it_names_the_function_itself()
     assert_eq!(
         record.pointer("/requestContext/functionArn").and_then(Value::as_str),
         Some(
-            format!("arn:aws:lambda:{REGION}:{ACCOUNT}:function:function-destination-source")
-                .as_str()
+            // Qualified by the qualifier the event was addressed to, as every record is.
+            format!(
+                "arn:aws:lambda:{REGION}:{ACCOUNT}:function:function-destination-source:$LATEST"
+            )
+            .as_str()
         ),
         "case {other:?}: expected the record of the source function's invocation, got {record}"
     );

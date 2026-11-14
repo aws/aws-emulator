@@ -127,17 +127,46 @@ const CONDITION_EVENT_AGE_EXCEEDED: &str = "EventAgeExceeded";
 /// returned or raised, because the failure is reported in `functionError` beside it.
 const INVOKED_STATUS: i64 = 200;
 
-/// The message attribute a dead letter records the invocation's own request id in.
+/// The message attribute a dead letter records the invocation's own request id in, whose
+/// value is text.
 const REQUEST_ID_ATTRIBUTE: &str = "RequestID";
 
-/// The message attribute a dead letter records the status of the invocation that failed in.
+/// The message attribute a dead letter records the status of the invocation that failed in,
+/// whose value is a NUMBER: it is the status an invocation that executed answers
+/// ([`INVOKED_STATUS`]) rather than a word, so it carries the numeric data type.
 const ERROR_CODE_ATTRIBUTE: &str = "ErrorCode";
 
-/// The message attribute a dead letter records the failure's own message in.
+/// The message attribute a dead letter records the failure's own message in, whose value is
+/// text.
 const ERROR_MESSAGE_ATTRIBUTE: &str = "ErrorMessage";
+
+/// How much of that message a dead letter carries: AWS records the error message of a
+/// dead-lettered event truncated to the first kilobyte of it, so a handler that raised with a
+/// long message does not put an unbounded value on the queue's message attributes.
+const MAX_ERROR_MESSAGE_BYTES: usize = 1_024;
 
 /// The `DataType` a textual message attribute carries (`MessageAttributeValue$DataType`).
 const STRING_ATTRIBUTE_TYPE: &str = "String";
+
+/// The `DataType` a numeric one carries, the other of the two that attribute's documented
+/// types name for a value that is not bytes: "Number" (`MessageAttributeValue$DataType`).
+const NUMBER_ATTRIBUTE_TYPE: &str = "Number";
+
+/// One message attribute a dead letter records beside the event: its name, the `DataType`
+/// its value IS, and the value.
+///
+/// The type travels WITH the value because it is a property of that value and not of the
+/// delivery: the status of the failed invocation is a number and the request id and the
+/// message are text, so each is recorded as what it is rather than as one type chosen for
+/// all of them.
+struct Attribute {
+    /// The name the attribute is recorded under.
+    name: &'static str,
+    /// The `DataType` of its value.
+    data_type: &'static str,
+    /// The value itself.
+    value: String,
+}
 
 /// What the LAST delivery attempt of one accepted asynchronous event came to, and everything
 /// the deliveries that follow it are built from.
@@ -364,7 +393,7 @@ async fn deliver(
     }
     match vendor {
         "sqs" => send_to_queue(completion, destination, body, &[]).await,
-        "sns" => publish_to_topic(completion, destination, body).await,
+        "sns" => publish_to_topic(completion, destination, body, &[]).await,
         "events" => put_to_bus(completion, destination, body).await,
         "lambda" => invoke_function(completion, destination, body).await,
         other => Err(Undeliverable::Unsupported(format!(
@@ -384,17 +413,25 @@ async fn deliver_dead_letter(
     target: &str,
 ) -> Result<(), Undeliverable> {
     let body = String::from_utf8_lossy(&completion.invocation.payload).into_owned();
-    let mut attributes: Vec<(&str, String)> = vec![(
-        REQUEST_ID_ATTRIBUTE,
-        completion.invocation.request_id.clone(),
-    )];
+    let mut attributes: Vec<Attribute> = vec![Attribute {
+        name: REQUEST_ID_ATTRIBUTE,
+        data_type: STRING_ATTRIBUTE_TYPE,
+        value: completion.invocation.request_id.clone(),
+    }];
     if let Ok(invoked) = completion.run {
         if let Some(function_error) = invoked.function_error.as_deref() {
-            attributes.push((ERROR_CODE_ATTRIBUTE, INVOKED_STATUS.to_string()));
-            attributes.push((
-                ERROR_MESSAGE_ATTRIBUTE,
-                failure_message(invoked).unwrap_or_else(|| function_error.to_string()),
-            ));
+            attributes.push(Attribute {
+                name: ERROR_CODE_ATTRIBUTE,
+                data_type: NUMBER_ATTRIBUTE_TYPE,
+                value: INVOKED_STATUS.to_string(),
+            });
+            attributes.push(Attribute {
+                name: ERROR_MESSAGE_ATTRIBUTE,
+                data_type: STRING_ATTRIBUTE_TYPE,
+                value: first_kilobyte(
+                    &failure_message(invoked).unwrap_or_else(|| function_error.to_string()),
+                ),
+            });
         }
     }
     let Some(vendor) = ::service_common::arn::vendor(target) else {
@@ -404,7 +441,7 @@ async fn deliver_dead_letter(
     };
     match vendor {
         "sqs" => send_to_queue(completion, target, &body, &attributes).await,
-        "sns" => publish_to_topic(completion, target, &body).await,
+        "sns" => publish_to_topic(completion, target, &body, &attributes).await,
         other => Err(Undeliverable::Unsupported(format!(
             "this emulator binds no request to {other} for a dead-letter target, so the event \
              was not written to {target}"
@@ -412,22 +449,68 @@ async fn deliver_dead_letter(
     }
 }
 
-/// `Publish` the body to the Amazon SNS topic the ARN `topic` names.
+/// `Publish` the body to the Amazon SNS topic the ARN `topic` names, with `attributes` as the
+/// message's own attributes.
 ///
 /// Through the same seam as every other delivery here: Amazon SNS's own protocol is the
 /// legacy `awsQuery`, which that seam binds a request for with that service's own client
 /// ([`super::execution::aws_api`]), so the publish is signed as the function's execution role
 /// like the rest and the topic reached is one of this emulator's own.
+///
+/// The attributes travel as the published message's `MessageAttributes`, which is the only
+/// place a topic can carry them: "Message attributes for Publish action" (`Publish`), and a
+/// subscriber receives them as its own endpoint's attributes. A dead letter's request id and
+/// error are recorded this way whether the target is a queue or a topic, so the same
+/// bookkeeping reaches the operator whichever kind of target the configuration names.
 async fn publish_to_topic(
     completion: &Completion<'_>,
     topic: &str,
     body: &str,
+    attributes: &[Attribute],
 ) -> Result<(), Undeliverable> {
     let parsed = ::service_common::arn::parse(topic).ok_or_else(|| {
         Undeliverable::Refused(format!("{topic} is no topic ARN"))
     })?;
-    let input = ::serde_json::json!({ "TopicArn": topic, "Message": body });
+    let mut input = ::serde_json::json!({ "TopicArn": topic, "Message": body });
+    if !attributes.is_empty() {
+        input["MessageAttributes"] = ::serde_json::Value::Object(stated_attributes(attributes));
+    }
     called(completion, "sns", "Publish", parsed.region, &input.to_string()).await
+}
+
+/// `attributes` as the `MessageAttributes` map both Amazon SQS's `SendMessage` and Amazon
+/// SNS's `Publish` take: each name bound to its value's `DataType` and `StringValue`.
+///
+/// One rendering for both, because the member is the same shape on either call
+/// (`MessageAttributeValue`): the `DataType` of each attribute is the one that attribute
+/// carries ([`Attribute`]), so a value that is a number is recorded as a number whichever
+/// kind of target the configuration names.
+fn stated_attributes(attributes: &[Attribute]) -> ::serde_json::Map<String, ::serde_json::Value> {
+    attributes
+        .iter()
+        .map(|attribute| {
+            (
+                attribute.name.to_string(),
+                ::serde_json::json!({
+                    "DataType": attribute.data_type,
+                    "StringValue": attribute.value,
+                }),
+            )
+        })
+        .collect()
+}
+
+/// The first kilobyte of `message`, cut on a character boundary so the value stays the text
+/// it is; see [`MAX_ERROR_MESSAGE_BYTES`].
+fn first_kilobyte(message: &str) -> String {
+    if message.len() <= MAX_ERROR_MESSAGE_BYTES {
+        return message.to_string();
+    }
+    let mut end = MAX_ERROR_MESSAGE_BYTES;
+    while end > 0 && !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    message[..end].to_string()
 }
 
 /// `SendMessage` the body to the queue the ARN `queue` names.
@@ -440,7 +523,7 @@ async fn send_to_queue(
     completion: &Completion<'_>,
     queue: &str,
     body: &str,
-    attributes: &[(&str, String)],
+    attributes: &[Attribute],
 ) -> Result<(), Undeliverable> {
     let parsed = ::service_common::arn::parse(queue).ok_or_else(|| {
         Undeliverable::Refused(format!("{queue} is no queue ARN"))
@@ -451,19 +534,7 @@ async fn send_to_queue(
     );
     let mut input = ::serde_json::json!({ "QueueUrl": url, "MessageBody": body });
     if !attributes.is_empty() {
-        let stated: ::serde_json::Map<String, ::serde_json::Value> = attributes
-            .iter()
-            .map(|(name, value)| {
-                (
-                    (*name).to_string(),
-                    ::serde_json::json!({
-                        "DataType": STRING_ATTRIBUTE_TYPE,
-                        "StringValue": value,
-                    }),
-                )
-            })
-            .collect();
-        input["MessageAttributes"] = ::serde_json::Value::Object(stated);
+        input["MessageAttributes"] = ::serde_json::Value::Object(stated_attributes(attributes));
     }
     called(completion, "sqs", "SendMessage", parsed.region, &input.to_string()).await
 }
@@ -594,7 +665,7 @@ fn invocation_record(completion: &Completion<'_>) -> ::serde_json::Value {
         "timestamp": iso8601(SystemTime::now()),
         "requestContext": {
             "requestId": invocation.request_id,
-            "functionArn": invocation.invoked_function_arn,
+            "functionArn": qualified_function_arn(completion),
             "condition": completion.condition(),
             "approximateInvokeCount": completion.attempts,
         },
@@ -620,6 +691,28 @@ fn invocation_record(completion: &Completion<'_>) -> ::serde_json::Value {
         );
     }
     record
+}
+
+/// The `requestContext.functionArn` of an invocation record: the ARN the invocation was
+/// addressed by, QUALIFIED by the qualifier the event was addressed to where that ARN carries
+/// none of its own.
+///
+/// A record names the qualifier whose configuration delivered it — the documented record of
+/// an unqualified asynchronous invocation carries the unpublished version
+/// (`…:function:<name>:$LATEST`) — because an asynchronous-invocation configuration is held
+/// per qualifier ([`super::EventInvokeConfigRecord`]), so the function ARN of the record says
+/// which one's `DestinationConfig` this record was written for. An ARN the caller already
+/// addressed WITH a qualifier is left exactly as it was: that qualifier is the invocation's.
+fn qualified_function_arn(completion: &Completion<'_>) -> String {
+    let arn = &completion.invocation.invoked_function_arn;
+    let Some(parsed) = ::service_common::arn::parse(arn) else {
+        return arn.clone();
+    };
+    let unqualified = parsed.vendor == "lambda" && parsed.resource.split(':').count() == 2;
+    if unqualified && !completion.qualifier.is_empty() {
+        return format!("{arn}:{}", completion.qualifier);
+    }
+    arn.clone()
 }
 
 /// `bytes` as the JSON document they are, and as the text they are when they are not a JSON

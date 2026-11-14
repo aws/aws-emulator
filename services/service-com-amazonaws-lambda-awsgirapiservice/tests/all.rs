@@ -45,6 +45,8 @@ mod announced_download_locations;
 mod async_completion_destinations;
 #[path = "all/async_delivery.rs"]
 mod async_delivery;
+#[path = "all/async_destination_record_shape.rs"]
+mod async_destination_record_shape;
 #[path = "all/async_event_delivery_ownership.rs"]
 mod async_event_delivery_ownership;
 #[path = "all/async_invocation.rs"]
@@ -145,6 +147,8 @@ mod event_source_mapping_processing_visibility;
 mod event_source_mapping_queue_visibility;
 #[path = "all/event_source_mapping_role_access.rs"]
 mod event_source_mapping_role_access;
+#[path = "all/event_source_mapping_scaling_concurrency.rs"]
+mod event_source_mapping_scaling_concurrency;
 #[path = "all/event_source_mapping_shard_refusal_wording.rs"]
 mod event_source_mapping_shard_refusal_wording;
 #[path = "all/event_source_mapping_source_shape_and_window.rs"]

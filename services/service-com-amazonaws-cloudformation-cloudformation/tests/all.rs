@@ -255,6 +255,8 @@ mod in_place_resource_updates;
 mod kept_failed_create;
 #[path = "all/lambda_backed_custom_resources.rs"]
 mod lambda_backed_custom_resources;
+#[path = "all/lambda_event_invoke_config_stack.rs"]
+mod lambda_event_invoke_config_stack;
 #[path = "all/lambda_function_stack_tags.rs"]
 mod lambda_function_stack_tags;
 #[path = "all/lambda_layer_version_reference.rs"]

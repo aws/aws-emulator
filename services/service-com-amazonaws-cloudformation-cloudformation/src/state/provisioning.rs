@@ -240,6 +240,7 @@ mod iam_policy;
 /// itself ([`iot_authorizer`]).
 pub(super) mod iot_authorizer;
 mod lambda_alias;
+mod lambda_event_invoke_config;
 mod lambda_event_source_mapping;
 mod lambda_function;
 mod lambda_layer_version;
@@ -900,6 +901,9 @@ pub(super) enum Owner {
     IamPolicy(iam_policy::Kind),
     /// `AWS::Lambda::Alias`, whose arms are [`lambda_alias`]'s.
     LambdaAlias,
+    /// `AWS::Lambda::EventInvokeConfig`, whose arms are
+    /// [`lambda_event_invoke_config`]'s.
+    LambdaEventInvokeConfig,
     /// `AWS::Lambda::EventSourceMapping`, whose arms are
     /// [`lambda_event_source_mapping`]'s.
     LambdaEventSourceMapping,
@@ -994,6 +998,9 @@ pub(super) fn owner_for(resource_type: &str) -> Option<Owner> {
     }
     if resource_type == lambda_alias::LAMBDA_ALIAS {
         return Some(Owner::LambdaAlias);
+    }
+    if resource_type == lambda_event_invoke_config::LAMBDA_EVENT_INVOKE_CONFIG {
+        return Some(Owner::LambdaEventInvokeConfig);
     }
     if resource_type == lambda_event_source_mapping::LAMBDA_EVENT_SOURCE_MAPPING {
         return Some(Owner::LambdaEventSourceMapping);

@@ -46,8 +46,12 @@
 //! * INVOKE. The messages the filter admits are handed to the mapping's function as ONE
 //!   event, over the in-process callback into the `Invoke` surface of this same emulator
 //!   ([`smithy_server_runtime::EmbeddedEmulator`]), so nothing is delivered that this
-//!   emulator does not serve itself.
-//! * DELETE. A message leaves the queue only once the invocation it was handed to has
+//!   emulator does not serve itself. A pass hands over as many batches AT ONCE as the
+//!   mapping may have invocations in flight ([`in_flight_batches`]) — "Limits the number of
+//!   concurrent instances that the Amazon SQS event source can invoke"
+//!   (`ScalingConfig$MaximumConcurrency`) — so a mapping draining a backlog really does run
+//!   batches concurrently up to what it configures, and the drain rate a client sized that
+//!   setting for is the one it gets.//! * DELETE. A message leaves the queue only once the invocation it was handed to has
 //!   succeeded. A batch whose invocation did not succeed is left exactly where it was: its
 //!   messages come back when their visibility timeout lapses, which is precisely the case a
 //!   queue's `RedrivePolicy` exists for, and the mapping reports what the attempt came to as
@@ -139,6 +143,21 @@ const MAX_MESSAGES_PER_BATCH: usize = 1_000;
 /// POLLER relies on it, since the value is read back out of stored state.
 const MAX_BATCHING_WINDOW_SECONDS: i32 = 300;
 
+/// The most concurrent invocations an `@range`-bounded `ScalingConfig` may ask a queue
+/// mapping to scale to, and the fewest: `MaximumConcurrency`'s own
+/// `@range(min: 2, max: 1000)`
+/// (`smithy_query(query="shape", shape="MaximumConcurrency")`). The boundary validator
+/// already refuses a request outside it; this is that same bound applied where the POLLER
+/// relies on it, since the value is read back out of stored state.
+const MAX_SOURCE_CONCURRENCY: i32 = 1_000;
+/// The other end of that range; see [`MAX_SOURCE_CONCURRENCY`].
+const MIN_SOURCE_CONCURRENCY: i32 = 2;
+
+/// How many batches one pass of a mapping that configures NO concurrency hands over: the one
+/// this poller has always handed over per wake-up, which is its own cadence rather than
+/// anything AWS publishes.
+const ONE_BATCH_PER_PASS: usize = 1;
+
 /// The `eventSource` each record of the event a queue mapping hands its function carries.
 const SQS_EVENT_SOURCE: &str = "aws:sqs";
 
@@ -190,6 +209,9 @@ struct PollTarget {
     /// `BatchSize`: "the maximum number of records in each batch that Lambda pulls from
     /// your stream or queue".
     batch_size: usize,
+    /// How many batches this mapping may have in flight at ONE instant, which is how many
+    /// invocations of its function one pass hands over concurrently ([`in_flight_batches`]).
+    in_flight_batches: usize,
     /// `MaximumBatchingWindowInSeconds`: "the maximum amount of time, in seconds, that
     /// Lambda spends gathering records before invoking the function" — so a mapping that
     /// configures one holds a batch it has not filled for up to that long, taking up what
@@ -413,21 +435,14 @@ pub async fn poll_due<Eng: Send + Sync + 'static>(
         // How long one delivery of this queue's messages hides them for, which is also the
         // span the hold on the batch is renewed by while the attempt runs.
         let hold_seconds = batch_hold(&queues, &target);
-        let polled = take_batch(
-            &queues,
-            &target,
-            now,
-            gathering_room(session, &target),
-            hold_seconds,
-        );
-        // What this mapping has to hand over NOW: what one poll found, or — for a mapping
-        // with a batching window — what it has gathered over that window.
-        let polled = match gathered(session, &target, polled, now) {
-            Gathered::Due(polled) => polled,
+        // What this mapping has to hand over NOW: as many batches as it may have invocations
+        // in flight, each of at most its `BatchSize` messages.
+        let batches = match due_batches(&queues, session, &target, now, hold_seconds) {
+            Due::Batches(batches) => batches,
             // Still gathering: the messages are held, so nothing is invoked, deleted or
             // metered for them yet. The pass that hands them over reports all of it.
-            Gathered::Gathering => continue,
-            Gathered::Nothing => {
+            Due::Gathering => continue,
+            Due::Nothing => {
                 // Nothing was waiting, so no processing attempt was made and there is no
                 // result of one to report. The poll itself is still a measurement: a mapping
                 // that polled an empty queue says so, at most once a minute.
@@ -438,50 +453,48 @@ pub async fn poll_due<Eng: Send + Sync + 'static>(
                 continue;
             }
         };
-        let (invoking, filtered_out) = partition_by_filters(&target, &polled);
-        // A message the filter rejected is removed from the queue: nothing else would, and
-        // the mapping would otherwise be handed it again at every poll.
-        delete_messages(&queues, &target, &filtered_out);
+        // What the filter admits of each batch, decided before any of them is handed over: a
+        // message the filter rejected is removed from the queue, because nothing else would
+        // and the mapping would otherwise be handed it again at every poll.
         let mut counts = EventCounts {
-            polled: count_of(polled.len()),
-            filtered_out: count_of(filtered_out.len()),
+            polled: 0,
+            filtered_out: 0,
             invoked: 0,
-            deleted: count_of(filtered_out.len()),
+            deleted: 0,
         };
-        if invoking.is_empty() {
-            // The filter rejected every message this pass polled, so the pass handled the
-            // whole batch and there is no invocation to make for it: that is a processing
-            // attempt that succeeded.
-            record_attempt(&mappings, &target, LAST_PROCESSING_RESULT_OK);
-        } else {
-            let payload = queue_event(&invoking, &polled);
-            // What the attempt came to for the batch's messages: the ones it PROCESSED, or
-            // why it processed none of them. The report reading below answers a non-empty set
-            // for every report it could read, so the guard on an empty one is belt and
-            // braces: it keeps this pass from recording a successful attempt that consumed
-            // nothing, whatever a future reading answers.
-            let attempt = attempt_batch(
-                callback,
-                session,
-                &target,
-                &payload,
-                &invoking,
-                &HeldBatch {
-                    queues: &queues,
-                    messages: &polled,
-                    hold_seconds,
-                },
-            )
-            .await
-            .and_then(|processed| {
-                if processed.is_empty() {
-                    return Err(format!(
-                        "{} processed no message of the batch it was handed",
-                        target.function_arn
-                    ));
+        let admitted: Vec<AdmittedBatch> = batches
+            .into_iter()
+            .map(|polled| {
+                let (invoking, filtered_out) = partition_by_filters(&target, &polled);
+                delete_messages(&queues, &target, &filtered_out);
+                counts.polled = counts.polled.saturating_add(count_of(polled.len()));
+                counts.filtered_out = counts
+                    .filtered_out
+                    .saturating_add(count_of(filtered_out.len()));
+                counts.deleted = counts.deleted.saturating_add(count_of(filtered_out.len()));
+                AdmittedBatch {
+                    payload: queue_event(&invoking, &polled),
+                    polled,
+                    invoking,
                 }
-                Ok(processed)
-            });
+            })
+            .collect();
+        // The client every attempt of this pass is made through, resolved ONCE: the
+        // invocations below are in flight together, so none of them may hold the session the
+        // client is built on.
+        let client = session.clients.lambda(callback, &target.region).clone();
+        // CONCURRENTLY: each batch the mapping may have in flight is handed to the function
+        // while the others are, so a mapping configured for several concurrent instances
+        // really runs several at once (see this module's documentation).
+        let attempts = ::futures_util::future::join_all(
+            admitted
+                .iter()
+                .map(|batch| batch_attempt(&client, &target, batch, &queues, hold_seconds)),
+        )
+        .await;
+        // What each attempt came to, recorded one at a time: the queue writes and this
+        // session's own bookkeeping are the pass's, not an attempt's.
+        for (batch, attempt) in admitted.iter().zip(attempts) {
             match attempt {
                 Ok(processed) => {
                     // The messages the attempt PROCESSED leave the queue — that is what a
@@ -489,7 +502,9 @@ pub async fn poll_due<Eng: Send + Sync + 'static>(
                     // its function reported it did not process stay exactly where they were,
                     // so each comes back when its visibility timeout lapses and is handed
                     // over again.
-                    counts.invoked = count_of(invoking.len());
+                    counts.invoked = counts
+                        .invoked
+                        .saturating_add(count_of(batch.invoking.len()));
                     delete_messages(&queues, &target, &processed);
                     counts.deleted = counts.deleted.saturating_add(count_of(processed.len()));
                     session.failures.remove(&target.uuid);
@@ -527,6 +542,74 @@ pub async fn poll_due<Eng: Send + Sync + 'static>(
             session.idle_minute.remove(&target.uuid);
         }
     }
+}
+
+/// One batch of a pass, with what its mapping's filter criteria admitted of it: the messages
+/// the poll took out of the queue, the ids of the ones the function is invoked with, and the
+/// event they are handed over as.
+struct AdmittedBatch {
+    /// Every message this batch took out of the queue, in the order the queue handed them
+    /// over — the ones the hold covers.
+    polled: Vec<PolledMessage>,
+    /// The ids of the messages the filter admitted, which is what the attempt reports on.
+    invoking: Vec<String>,
+    /// The event the function is invoked with: the records of the admitted messages.
+    payload: Value,
+}
+
+/// What a mapping has to hand its function at `now`.
+enum Due {
+    /// These batches: hand each of them over.
+    Batches(Vec<Vec<PolledMessage>>),
+    /// The mapping is still gathering its first batch — it holds messages, and neither its
+    /// `BatchSize` nor its batching window is up yet.
+    Gathering,
+    /// Nothing is held and the queue had nothing to hand over.
+    Nothing,
+}
+
+/// Take the batches `target` may have in flight at once out of its queue at `now`, each
+/// hidden from every other consumer for `hold_seconds` ([`batch_hold`]).
+///
+/// One poll per batch, up to [`PollTarget::in_flight_batches`] of them, stopping as soon as
+/// the queue has nothing more to hand over — so a mapping with no backlog takes exactly the
+/// one batch a serial pass would, and one draining a backlog takes as many as it may invoke
+/// its function with concurrently. A mapping GATHERING a batch over a batching window holds
+/// it as it did ([`gathered`]): the window is what decides when that batch goes, and the
+/// batches beside it are the ones a later poll of this same pass found room for.
+fn due_batches(
+    queues: &::engine::ServiceState<sqs::state::ComAmazonawsSqsAmazonsqsState>,
+    session: &mut PollSession,
+    target: &PollTarget,
+    now: SystemTime,
+    hold_seconds: i64,
+) -> Due {
+    let mut batches: Vec<Vec<PolledMessage>> = Vec::new();
+    while batches.len() < target.in_flight_batches {
+        let polled = take_batch(
+            queues,
+            target,
+            now,
+            gathering_room(session, target),
+            hold_seconds,
+        );
+        match gathered(session, target, polled, now) {
+            Gathered::Due(polled) => batches.push(polled),
+            Gathered::Gathering => break,
+            Gathered::Nothing => break,
+        }
+    }
+    if batches.is_empty() {
+        // Which of the two it is matters: a mapping holding a batch it has not finished
+        // gathering polled something, and one whose queue was empty polled nothing and is the
+        // idle poll a mapping meters.
+        return if session.gathering.contains_key(&target.uuid) {
+            Due::Gathering
+        } else {
+            Due::Nothing
+        };
+    }
+    Due::Batches(batches)
 }
 
 /// Why the reads this pass would make on `target`'s queue are WITHHELD — from the execution
@@ -605,6 +688,45 @@ fn invisible_for_seconds(
         .max(function_timeout_seconds)
         .saturating_add(gathering_window_seconds)
         .clamp(floor, ceiling)
+}
+
+/// How many batches a mapping may have in flight at ONE instant, which is how many
+/// invocations of its function one pass hands over concurrently.
+///
+/// "Limits the number of concurrent instances that the Amazon SQS event source can invoke"
+/// (`ScalingConfig$MaximumConcurrency`) is what a mapping configuring one scales to: that
+/// many batches are handed over together, read inside the range the member admits
+/// ([`MAX_SOURCE_CONCURRENCY`]) however the value got into the store. A mapping configuring
+/// none keeps this poller's own cadence of [`ONE_BATCH_PER_PASS`], which is what it has
+/// always handed over per wake-up.
+///
+/// Two further bounds hold whatever a mapping configures, because neither is the mapping's to
+/// raise:
+///
+/// * "The number of simultaneous executions to reserve for the function"
+///   (`PutFunctionConcurrency`) is all the concurrency the function has, so a mapping cannot
+///   have more invocations of it in flight than that reservation admits;
+/// * the runs this process can hold at once ([`super::execution::MAX_CONCURRENT_RUNS`]),
+///   since a batch taken for an invocation that would wait for run memory is a batch held
+///   invisible to every other consumer for no gain.
+///
+/// Never zero: a pass always hands over the one batch it would have handed over anyway, and
+/// an invocation the function's reservation has no room for is refused by the admission that
+/// counts it ([`super::execution_slot`]) rather than by the poll that polled for it.
+#[must_use]
+pub fn in_flight_batches(
+    maximum_concurrency: Option<i32>,
+    reserved_concurrent_executions: Option<i32>,
+) -> usize {
+    let Some(configured) = maximum_concurrency else {
+        return ONE_BATCH_PER_PASS;
+    };
+    let configured = configured.clamp(MIN_SOURCE_CONCURRENCY, MAX_SOURCE_CONCURRENCY);
+    let reserved = reserved_concurrent_executions.unwrap_or(i32::MAX);
+    let host = i32::try_from(super::execution::MAX_CONCURRENT_RUNS).unwrap_or(i32::MAX);
+    usize::try_from(configured.min(reserved).min(host))
+        .unwrap_or(ONE_BATCH_PER_PASS)
+        .max(ONE_BATCH_PER_PASS)
 }
 
 /// How many more messages `target` may take out of its queue on this pass: its `BatchSize`,
@@ -992,6 +1114,44 @@ fn queue_record(
     record
 }
 
+/// What ONE batch of a pass came to: the ids of the messages the attempt PROCESSED, or why
+/// none of them was.
+///
+/// A batch whose filter criteria admitted NOTHING is an attempt that succeeded having
+/// processed no message of the queue: the pass handled the whole batch by removing what the
+/// filter rejected, so there is no invocation to make for it — which is the one case this
+/// answers without handing anything to the function.
+async fn batch_attempt(
+    client: &::aws_sdk_lambda::Client,
+    target: &PollTarget,
+    batch: &AdmittedBatch,
+    queues: &::engine::ServiceState<sqs::state::ComAmazonawsSqsAmazonsqsState>,
+    hold_seconds: i64,
+) -> Result<Vec<String>, String> {
+    if batch.invoking.is_empty() {
+        return Ok(Vec::new());
+    }
+    let held = HeldBatch {
+        queues,
+        messages: &batch.polled,
+        hold_seconds,
+    };
+    // The report reading below answers a non-empty set for every report it could read, so the
+    // guard on an empty one is belt and braces: it keeps this pass from recording a successful
+    // attempt that consumed nothing, whatever a future reading answers.
+    attempt_batch(client, target, &batch.payload, &batch.invoking, &held)
+        .await
+        .and_then(|processed| {
+            if processed.is_empty() {
+                return Err(format!(
+                    "{} processed no message of the batch it was handed",
+                    target.function_arn
+                ));
+            }
+            Ok(processed)
+        })
+}
+
 /// Hand one batch to the function and read what became of the messages it held: the ids of
 /// the ones the attempt PROCESSED, or why none of them was.
 ///
@@ -1000,13 +1160,12 @@ fn queue_record(
 /// `FunctionResponseTypes` says (see [`super::batch_item_failures`]): a report that names
 /// messages leaves exactly those behind, and one that cannot be read leaves the whole batch.
 async fn hand_over_batch(
-    callback: &smithy_server_runtime::EmbeddedEmulator,
-    session: &mut PollSession,
+    client: &::aws_sdk_lambda::Client,
     target: &PollTarget,
     payload: &Value,
     invoking: &[String],
 ) -> Result<Vec<String>, String> {
-    let answered = invoke_function(callback, session, target, payload).await?;
+    let answered = invoke_function(client, target, payload).await?;
     if !target.reports_batch_item_failures {
         return Ok(invoking.to_vec());
     }
@@ -1030,16 +1189,13 @@ async fn hand_over_batch(
 /// renewal left runs out on the queue's own bookkeeping, so a message the attempt did not
 /// process comes back for another delivery one hold span later.
 async fn attempt_batch(
-    callback: &smithy_server_runtime::EmbeddedEmulator,
-    session: &mut PollSession,
+    client: &::aws_sdk_lambda::Client,
     target: &PollTarget,
     payload: &Value,
     invoking: &[String],
     held: &HeldBatch<'_>,
 ) -> Result<Vec<String>, String> {
-    let mut attempt = ::std::pin::pin!(hand_over_batch(
-        callback, session, target, payload, invoking
-    ));
+    let mut attempt = ::std::pin::pin!(hand_over_batch(client, target, payload, invoking));
     let renew_every = hold_renewal(held.hold_seconds);
     loop {
         // No store is locked across the attempt: the renewal takes the queue store, finishes
@@ -1054,14 +1210,11 @@ async fn attempt_batch(
 /// Hand one batch to the function, synchronously, as a queue event source's invocation is,
 /// and answer with the response document it returned.
 async fn invoke_function(
-    callback: &smithy_server_runtime::EmbeddedEmulator,
-    session: &mut PollSession,
+    client: &::aws_sdk_lambda::Client,
     target: &PollTarget,
     payload: &Value,
 ) -> Result<Option<Vec<u8>>, String> {
-    let answer = session
-        .clients
-        .lambda(callback, &target.region)
+    let answer = client
         .invoke()
         .function_name(&target.function_arn)
         .payload(::aws_sdk_lambda::primitives::Blob::new(
@@ -1209,6 +1362,13 @@ fn polling_targets(store: &ComAmazonawsLambdaAwsgirapiserviceState) -> Vec<PollT
                 batch_size: usize::try_from(mapping.batch_size)
                     .unwrap_or(1)
                     .clamp(1, MAX_MESSAGES_PER_BATCH),
+                in_flight_batches: in_flight_batches(
+                    mapping
+                        .scaling_config
+                        .as_ref()
+                        .and_then(|scaling| scaling.maximum_concurrency),
+                    function.reserved_concurrent_executions,
+                ),
                 // "The maximum amount of time, in seconds, that Lambda spends gathering
                 // records before invoking the function": a mapping that states none gathers
                 // for no time at all, which is the default for a queue source.

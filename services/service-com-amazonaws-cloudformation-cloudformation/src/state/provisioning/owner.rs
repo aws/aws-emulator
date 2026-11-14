@@ -50,6 +50,12 @@ impl Owner {
             Self::LambdaEventSourceMapping => {
                 lambda_event_source_mapping::create(ctx, region, resource, propagated).await
             }
+            // An asynchronous-invocation configuration carries no tags of its own: it is not
+            // a resource, but the configuration of a qualifier of the function it names, so
+            // CloudFormation propagates none to it.
+            Self::LambdaEventInvokeConfig => {
+                lambda_event_invoke_config::create(ctx, region, resource).await
+            }
             Self::LambdaFunction => {
                 lambda_function::create(ctx, region, resource, propagated).await
             }
@@ -203,6 +209,7 @@ impl Owner {
             // already reports settled.
             Self::LambdaAlias | Self::LambdaVersion => Ok(Readiness::Ready),
             Self::LambdaEventSourceMapping => Ok(lambda_event_source_mapping::readiness()),
+            Self::LambdaEventInvokeConfig => Ok(lambda_event_invoke_config::readiness()),
             Self::LambdaFunction => Ok(lambda_function::readiness()),
             // The version exists, and a function may name it, the moment
             // `PublishLayerVersion` answers.
@@ -312,8 +319,12 @@ impl Owner {
             // an inline policy publishes no attribute at all.
             // An alias's and a version's identifiers are the ones their own create
             // answered with, so there is nothing left to read for either.
+            // An asynchronous-invocation configuration publishes no attribute at all: the
+            // type's only return value is the pair that addresses it, which the resource
+            // already carries as its physical id.
             Self::IamPolicy(_)
             | Self::LambdaAlias
+            | Self::LambdaEventInvokeConfig
             | Self::LambdaEventSourceMapping
             | Self::LambdaFunction
             | Self::LambdaLayerVersion
@@ -437,6 +448,9 @@ impl Owner {
             Self::LambdaLayerVersion => Ok(Removal::Gone),
             // `RemovePermission` takes the statement away, so there is nothing to wait for.
             Self::LambdaPermission => Ok(Removal::Gone),
+            // `DeleteFunctionEventInvokeConfig` takes the configuration away as it answers,
+            // so there is nothing to wait for either.
+            Self::LambdaEventInvokeConfig => Ok(Removal::Gone),
             // Each of these deletes takes the resource away as it answers: neither
             // CloudWatch Logs nor AWS IoT reports a state a removed one is still being
             // deleted in.
@@ -552,6 +566,14 @@ impl Owner {
             Self::LambdaVersion => Ok(None),
             Self::LambdaEventSourceMapping => {
                 lambda_event_source_mapping::update(ctx, region, resource, declared).await
+            }
+            // `PutFunctionEventInvokeConfig` writes the WHOLE configuration of the qualifier
+            // it addresses, so a changed declaration is applied by putting it
+            // ([`lambda_event_invoke_config::update`]).
+            Self::LambdaEventInvokeConfig => {
+                lambda_event_invoke_config::update(ctx, region, resource, declared)
+                    .await
+                    .map(Some)
             }
             Self::LambdaFunction => lambda_function::update(ctx, region, resource, declared)
                 .await
@@ -690,8 +712,11 @@ impl Owner {
             // default).
             // Neither an alias nor a published version is taggable either: Lambda's tagging
             // calls address functions, so nothing is asked about their tags.
+            // An asynchronous-invocation configuration is not taggable either: Lambda's
+            // tagging calls address functions, so nothing is asked about its tags.
             Self::IamPolicy(_)
             | Self::LambdaAlias
+            | Self::LambdaEventInvokeConfig
             | Self::LambdaEventSourceMapping
             | Self::LambdaLayerVersion
             | Self::LambdaPermission
@@ -786,6 +811,12 @@ impl Owner {
             Self::LambdaVersion => lambda_version::delete(ctx, region, resource).await,
             Self::LambdaEventSourceMapping => {
                 lambda_event_source_mapping::delete(ctx, region, resource).await
+            }
+            // Lambda takes no snapshot of an asynchronous-invocation configuration on the way
+            // out either: there is no such call, so a `Snapshot` deletion policy on this type
+            // takes the configuration off with no snapshot invented for it.
+            Self::LambdaEventInvokeConfig => {
+                lambda_event_invoke_config::delete(ctx, region, resource).await
             }
             Self::LambdaFunction => lambda_function::delete(ctx, region, resource).await,
             // `DeleteLayerVersion` takes no snapshot of a version on the way out either.
@@ -936,6 +967,9 @@ impl Owner {
                 )
                 .await?
             }
+            Self::LambdaEventInvokeConfig => {
+                lambda_event_invoke_config::actual_configuration(ctx, region, resource).await?
+            }
             Self::LambdaFunction => {
                 lambda_function::actual_configuration(
                     ctx,
@@ -1029,6 +1063,7 @@ impl Owner {
             Self::IamPolicy(_) => message.to_string(),
             // AWS Lambda's resource provider reports the service's own message as it came.
             Self::LambdaAlias
+            | Self::LambdaEventInvokeConfig
             | Self::LambdaEventSourceMapping
             | Self::LambdaFunction
             | Self::LambdaLayerVersion
