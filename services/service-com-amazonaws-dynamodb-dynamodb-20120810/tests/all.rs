@@ -281,6 +281,8 @@ mod time_to_live;
 mod transactional_consumed_capacity_metrics;
 #[path = "all/transactional_undefined_expression_tokens.rs"]
 mod transactional_undefined_expression_tokens;
+#[path = "all/transactional_write_capacity_arm.rs"]
+mod transactional_write_capacity_arm;
 #[path = "all/transaction_token_fingerprints.rs"]
 mod transaction_token_fingerprints;
 #[path = "all/transitional_status_span.rs"]

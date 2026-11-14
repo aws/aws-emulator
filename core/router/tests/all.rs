@@ -2053,3 +2053,14 @@ mod lambda_durable_execution_status_events_reach_sqs;
 // redefinition that compiles neither.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared ONCE, further up this tail:
 // two `mod` items for one name is a redefinition that compiles neither.)
+// Declared here, in this same head region, for the reason the entry above records: the chain
+// from a table's write traffic through the AWS/DynamoDB consumption series, the alarm over that
+// series and its SNS action to a subscribed queue spans DynamoDB, CloudWatch, SNS and SQS at
+// once, so no single service crate's test target can drive it end to end.
+#[path = "all/dynamodb_write_capacity_metrics_drive_the_alarm_chain.rs"]
+mod dynamodb_write_capacity_metrics_drive_the_alarm_chain;
+// above: two branches each added it here as well, and a module declared twice compiles
+// neither.)
+// (`zz_probe` is declared ONCE, further up this tail: two branches each added it here as well,
+// and a module declared twice compiles neither.)
+// two branches each added it here as well, and a module declared twice compiles neither.)
