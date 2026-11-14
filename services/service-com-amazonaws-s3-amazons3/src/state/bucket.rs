@@ -2028,6 +2028,17 @@ impl Bucket {
         self.stored_version(key, version_id)?.as_object()
     }
 
+    /// The DELETE MARKER version of `key` that `version_id` names, or `None` when the bucket
+    /// holds no such version or that version holds an object.
+    ///
+    /// The read seam for the refusal every object-level operation answers a version that is a
+    /// marker with ([`crate::scaffolded::Scaffolded::delete_marker_method_not_allowed`]),
+    /// which has to NAME the marker it refused — so the marker itself is resolved here rather
+    /// than each handler asking whether the version merely is one.
+    pub fn delete_marker_version(&self, key: &str, version_id: &str) -> Option<&DeleteMarker> {
+        self.stored_version(key, version_id)?.as_delete_marker()
+    }
+
     /// The object version a request ADDRESSES: the one `version_id` names, or the key's
     /// current object when the request names no version.
     ///

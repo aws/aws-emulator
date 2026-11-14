@@ -505,13 +505,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // names the marker in its headers, the way the 404 for a key a marker
                 // hides does (see `crate::service::wire`'s delete-marker note).
                 if let Some(marker) = held.as_delete_marker() {
-                    crate::service::wire::note_addressed_delete_marker(
-                        marker.version_id.as_deref(),
-                        marker.last_modified,
-                    );
-                    return Err(crate::scaffolded::Scaffolded::method_not_allowed(
+                    return Err(crate::scaffolded::Scaffolded::delete_marker_method_not_allowed(
                         GET_METHOD,
-                        crate::state::DELETE_MARKER_RESOURCE_TYPE,
+                        marker,
                     ));
                 }
                 held.as_object()

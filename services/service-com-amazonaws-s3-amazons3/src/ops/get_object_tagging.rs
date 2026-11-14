@@ -216,15 +216,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         // A delete marker is no object, so it carries no tag set to report: 405, the status
         // S3 answers an object-level call addressed to a marker with, as every other
-        // version-addressed subresource of this service answers it.
-        if version_id.is_some_and(|named| {
-            bucket
-                .stored_version(&input.key, named)
-                .is_some_and(|held| held.as_delete_marker().is_some())
-        }) {
-            return Err(crate::scaffolded::Scaffolded::method_not_allowed(
+        // version-addressed subresource of this service answers it — naming the marker in
+        // the refusal's two headers (see `crate::service::wire`'s delete-marker note).
+        if let Some(marker) =
+            version_id.and_then(|named| bucket.delete_marker_version(&input.key, named))
+        {
+            return Err(crate::scaffolded::Scaffolded::delete_marker_method_not_allowed(
                 TAGGING_READ_METHOD,
-                crate::state::DELETE_MARKER_RESOURCE_TYPE,
+                marker,
             ));
         }
         let Some(object) = bucket.addressed_object(&input.key, version_id) else {

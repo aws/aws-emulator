@@ -219,15 +219,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         // A delete marker has no object behind it to carry an ACL: 405, the status S3
         // answers an object-level call on a marker with, as `GetObjectLegalHold` answers it
-        // for the same cause.
-        if version_id.is_some_and(|named| {
-            bucket
-                .stored_version(&input.key, named)
-                .is_some_and(|stored| stored.as_delete_marker().is_some())
-        }) {
-            return Err(crate::scaffolded::Scaffolded::method_not_allowed(
+        // for the same cause. The refusal NAMES the marker in its two headers, the way every
+        // other answer of this service about one does (see `crate::service::wire`'s
+        // delete-marker note), so a client walking a versioned listing can tell this 405
+        // from any other and learns which version it is about.
+        if let Some(marker) =
+            version_id.and_then(|named| bucket.delete_marker_version(&input.key, named))
+        {
+            return Err(crate::scaffolded::Scaffolded::delete_marker_method_not_allowed(
                 OBJECT_ACL_READ_METHOD,
-                crate::state::DELETE_MARKER_RESOURCE_TYPE,
+                marker,
             ));
         }
         // "By default, GET returns ACL information about the current version of an object.

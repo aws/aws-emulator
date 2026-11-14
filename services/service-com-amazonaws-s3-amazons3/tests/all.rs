@@ -161,6 +161,8 @@ mod directory_bucket_renames;
 mod directory_bucket_session_constraints;
 #[path = "all/delete_marker_refusal_headers.rs"]
 mod delete_marker_refusal_headers;
+#[path = "all/delete_marker_subresource_refusal_headers.rs"]
+mod delete_marker_subresource_refusal_headers;
 #[path = "all/directory_bucket_sessions_and_appends.rs"]
 mod directory_bucket_sessions_and_appends;
 #[path = "all/error_message_envelope.rs"]

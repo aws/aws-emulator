@@ -261,21 +261,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> PutObjectTagging<
         match store.bucket(&input.bucket).map(|bucket| {
             (
                 bucket.addressed_object(&input.key, version_id).is_some(),
-                version_id.is_some_and(|named| {
-                    bucket
-                        .stored_version(&input.key, named)
-                        .is_some_and(|held| held.as_delete_marker().is_some())
-                }),
+                version_id
+                    .and_then(|named| bucket.delete_marker_version(&input.key, named))
+                    .cloned(),
             )
         }) {
             None => return Err(PutObjectTaggingErrorModeled::NoSuchBucket(NoSuchBucket {}).into()),
             // A delete marker is no object, so no tag set can be placed on it: 405, the
-            // status S3 answers an object-level call addressed to a marker with.
-            Some((_, true)) => {
-                return Err(crate::scaffolded::Scaffolded::method_not_allowed(
-                    TAGGING_WRITE_METHOD,
-                    crate::state::DELETE_MARKER_RESOURCE_TYPE,
-                ))
+            // status S3 answers an object-level call addressed to a marker with, naming the
+            // marker in the refusal's two headers (see `crate::service::wire`'s
+            // delete-marker note).
+            Some((_, Some(marker))) => {
+                return Err(
+                    crate::scaffolded::Scaffolded::delete_marker_method_not_allowed(
+                        TAGGING_WRITE_METHOD,
+                        &marker,
+                    ),
+                )
             }
             Some((false, _)) => {
                 return Err(match version_id {

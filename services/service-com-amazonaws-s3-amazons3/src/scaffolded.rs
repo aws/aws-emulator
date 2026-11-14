@@ -1602,6 +1602,25 @@ impl<E> Scaffolded<E> {
         })
     }
 
+    /// The same refusal for the one resource type whose answer also NAMES the resource it was
+    /// refused against: a DELETE MARKER the request addressed by its own version id.
+    ///
+    /// `MethodNotAllowed` carries the method and the resource type and nothing else, so the
+    /// two delete-marker headers are what tell a client that the version it addressed is a
+    /// marker — and which one — exactly as they do on the `GetObject` answer about one (see
+    /// [`crate::service::wire::note_addressed_delete_marker`]). The ONE place that refusal is
+    /// built, so every object-level operation addressed at a marker answers identically.
+    pub fn delete_marker_method_not_allowed(
+        method: &str,
+        marker: &crate::state::DeleteMarker,
+    ) -> Self {
+        crate::service::wire::note_addressed_delete_marker(
+            marker.version_id.as_deref(),
+            marker.last_modified,
+        );
+        Self::method_not_allowed(method, crate::state::DELETE_MARKER_RESOURCE_TYPE)
+    }
+
     /// The answer a READ gets when the representation the caller already holds is the
     /// current one: HTTP 304 with no document at all
     /// ([`crate::service::wire::NOT_MODIFIED_STATUS`] carries the rule), and the validators

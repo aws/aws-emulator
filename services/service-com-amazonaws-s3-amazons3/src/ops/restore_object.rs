@@ -304,15 +304,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> RestoreObject<Eng
         };
         // A delete marker is a version with no object behind it, so there is nothing to
         // restore: 405, the status S3 answers an object-level call on a marker with, as
-        // `HeadObject` and `PutObjectRetention` already answer it for the same cause.
-        if version_id.is_some_and(|named| {
-            bucket
-                .stored_version(&input.key, named)
-                .is_some_and(|held| held.as_delete_marker().is_some())
-        }) {
-            return Err(crate::scaffolded::Scaffolded::method_not_allowed(
+        // `HeadObject` and `PutObjectRetention` already answer it for the same cause —
+        // naming the marker in the refusal's two headers (see `crate::service::wire`'s
+        // delete-marker note).
+        if let Some(marker) =
+            version_id.and_then(|named| bucket.delete_marker_version(&input.key, named))
+        {
+            return Err(crate::scaffolded::Scaffolded::delete_marker_method_not_allowed(
                 RESTORE_METHOD,
-                crate::state::DELETE_MARKER_RESOURCE_TYPE,
+                marker,
             ));
         }
         let Some(object) = bucket.addressed_object(&input.key, version_id) else {

@@ -324,13 +324,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // one.
         if version_id.is_some() {
             if let Some(marker) = held.and_then(crate::state::StoredVersion::as_delete_marker) {
-                crate::service::wire::note_addressed_delete_marker(
-                    marker.version_id.as_deref(),
-                    marker.last_modified,
-                );
-                return Err(crate::scaffolded::Scaffolded::method_not_allowed(
+                return Err(crate::scaffolded::Scaffolded::delete_marker_method_not_allowed(
                     ATTRIBUTES_METHOD,
-                    crate::state::DELETE_MARKER_RESOURCE_TYPE,
+                    marker,
                 ));
             }
         }
