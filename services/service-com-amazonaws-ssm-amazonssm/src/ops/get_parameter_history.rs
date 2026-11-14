@@ -244,14 +244,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A full ARN names the account and the Region its parameter lives in, and a
         // parameter is reached through the endpoint it was created against: an ARN naming
         // another account or another Region than this request was signed for names
-        // nothing reachable here. The Region therefore comes from the signed credential
-        // scope, never from the request body.
+        // nothing reachable here, while a field the ARN leaves EMPTY names neither and
+        // resolves here — the spelling the ARN of a parameter AWS publishes carries. The
+        // Region therefore comes from the signed credential scope, never from the request
+        // body.
         let region = request_region(ctx.parts());
-        if query
-            .account
-            .is_some_and(|account| account != ::engine::emulator_account_id())
-            || query.region.is_some_and(|named| named != region)
-        {
+        if !query.names_this_endpoint(&region) {
             return Err(not_found().into());
         }
 

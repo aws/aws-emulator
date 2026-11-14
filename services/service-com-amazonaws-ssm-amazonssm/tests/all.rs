@@ -73,6 +73,8 @@ mod ops_item_related_items;
 mod ops_item_updates;
 #[path = "all/ops_items.rs"]
 mod ops_items;
+#[path = "all/parameter_arn_spellings.rs"]
+mod parameter_arn_spellings;
 #[path = "all/parameter_deletion.rs"]
 mod parameter_deletion;
 #[path = "all/parameter_deletion_visibility.rs"]

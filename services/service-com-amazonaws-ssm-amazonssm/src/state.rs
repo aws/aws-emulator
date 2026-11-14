@@ -1134,6 +1134,38 @@ pub fn parse_parameter_query(name: &str) -> Option<ParameterQuery<'_>> {
     })
 }
 
+/// Whether the account and the Region an ARN NAMED are reachable through the endpoint the
+/// request was sent to — the one rule behind every member of this service that takes "a
+/// name or an Amazon Resource Name".
+///
+/// A resource is reached through the endpoint it is asked for, so an ARN naming another
+/// account or another Region than the request was signed for names nothing reachable here:
+/// `region` comes from the signed credential scope ([`request_region`]) and never from the
+/// request body. A field an ARN leaves EMPTY names no account and no Region AT ALL — the
+/// spelling AWS writes an account-less or partition-global resource in
+/// ([`::service_common::arn`]), and the spelling the ARN of a resource AWS itself PUBLISHES
+/// in every account and Region carries ([`parameter_arn`]) — so it constrains nothing and
+/// the value resolves through the endpoint it was asked for rather than resolving to
+/// nothing. `None` is a bare name, which names no ARN field either.
+pub fn arn_names_this_endpoint(
+    account: Option<&str>,
+    region: Option<&str>,
+    request_region: &str,
+) -> bool {
+    let reaches = |named: Option<&str>, here: &str| {
+        named.is_none_or(|named| named.is_empty() || named == here)
+    };
+    reaches(account, ::engine::emulator_account_id()) && reaches(region, request_region)
+}
+
+impl ParameterQuery<'_> {
+    /// Whether what this query named is reachable through `region`'s endpoint
+    /// ([`arn_names_this_endpoint`]).
+    pub fn names_this_endpoint(&self, region: &str) -> bool {
+        arn_names_this_endpoint(self.account, self.region, region)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SSM documents
 // ---------------------------------------------------------------------------
@@ -1381,6 +1413,14 @@ pub fn parse_resource_query<'a>(value: &'a str, prefix: &str) -> Option<Resource
         region: Some(arn.region),
         account: Some(arn.account),
     })
+}
+
+impl ResourceQuery<'_> {
+    /// Whether what this query named is reachable through `region`'s endpoint
+    /// ([`arn_names_this_endpoint`]).
+    pub fn names_this_endpoint(&self, region: &str) -> bool {
+        arn_names_this_endpoint(self.account, self.region, region)
+    }
 }
 
 /// What `value` names, or `None` when it is an ARN that names no `ssm` document.
@@ -3630,13 +3670,7 @@ impl ComAmazonawsSsmAmazonssmState {
         now: SystemTime,
     ) -> Option<DocumentRecord> {
         let query = parse_document_query(name)?;
-        if query
-            .account
-            .is_some_and(|account| !account.is_empty() && account != ::engine::emulator_account_id())
-            || query
-                .region
-                .is_some_and(|named| !named.is_empty() && named != region)
-        {
+        if !query.names_this_endpoint(region) {
             return None;
         }
         self.materialize_due(now);

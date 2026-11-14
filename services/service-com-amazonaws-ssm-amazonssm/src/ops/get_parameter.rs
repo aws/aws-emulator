@@ -43,7 +43,10 @@
 //! neither holds is `ParameterNotFound`. What the catalog publishes is read out of the
 //! state that OWNS it — the public parameter names Amazon EC2's image catalog publishes an
 //! AMI under, and the id of that image — so the value a read reports is the id of an image
-//! this account can really launch rather than an invented one.
+//! this account can really launch rather than an invented one. Such a parameter belongs to
+//! no account, so the ARN a read reports for it names none, and reading it back by that ARN
+//! resolves it: a field an ARN leaves EMPTY names no account and no Region at all, so it
+//! constrains nothing ([`crate::state::arn_names_this_endpoint`]).
 //!
 //! ## Secrets, read through Parameter Store
 //!
@@ -261,15 +264,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A full ARN names the account and the Region its parameter lives in, and a
         // parameter is resolved through the endpoint it is asked for: an ARN naming
         // another account or another Region than this request was signed for names
-        // nothing reachable here. The Region therefore never comes from the request
-        // body — only from the signed credential scope, which [`request_region`]
-        // constrains.
+        // nothing reachable here, while a field the ARN leaves EMPTY names neither and
+        // resolves here — which is the spelling the ARN of a parameter AWS publishes
+        // carries. The Region therefore never comes from the request body — only from the
+        // signed credential scope, which [`request_region`] constrains.
         let region = crate::state::request_region(ctx.parts());
-        if query
-            .account
-            .is_some_and(|account| account != ::engine::emulator_account_id())
-            || query.region.is_some_and(|named| named != region)
-        {
+        if !query.names_this_endpoint(&region) {
             return Err(not_found().into());
         }
 

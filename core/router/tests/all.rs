@@ -2157,3 +2157,5 @@ mod ses_delivery_event_advances_the_subscribed_queue;
 // (The API Gateway/Cognito authorizer-audience suite and the metric-stream estate suite are
 // declared ONCE each, in the sorted span above: both were appended here as well while two
 // branches were landing at once, which declared each a second time and compiled neither.)
+// a module may be declared only once. Declaring it again here compiled nothing and broke this
+// target's build, which is what the duplicate below was removed for too.)

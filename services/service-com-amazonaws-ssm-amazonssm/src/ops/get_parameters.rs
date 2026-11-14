@@ -248,15 +248,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // comes from the request body — only from the signed credential scope, which
         // [`request_region`] constrains.
         let region = crate::state::request_region(ctx.parts());
-        let account = ::engine::emulator_account_id();
 
         // AWS's own published parameters ([`crate::state::public_parameters`]) are resolved
         // beside the account's: a name in the hierarchy AWS owns is in no account's store,
         // so it is resolved against the catalog and only a name NEITHER holds is reported
-        // as one this read could not resolve. Projected BEFORE the store guard is taken, so
-        // no state of this service is held while the catalog's own store is read.
+        // as one this read could not resolve. The catalog is asked for the CANONICAL name
+        // each asked-for value names — read through the same parse the resolution below
+        // uses — so a published parameter asked for by its ARN is looked up under the name
+        // that ARN names rather than under the ARN's own text. A name naming another
+        // account's or another Region's endpoint is left out, so the projection carries only
+        // names this endpoint could resolve at all. Projected BEFORE the store
+        // guard is taken, so no state of this service is held while the catalog's own store
+        // is read.
+        let canonical: Vec<&str> = asked
+            .iter()
+            .copied()
+            .filter_map(crate::state::parse_parameter_query)
+            .filter(|query| query.names_this_endpoint(&region))
+            .map(|query| query.name)
+            .collect();
         let published =
-            crate::state::public_parameters::published_among(&*self.engine, &region, &asked);
+            crate::state::public_parameters::published_among(&*self.engine, &region, &canonical);
 
         // A name in the hierarchy reserved for Secrets Manager references names a SECRET
         // rather than a parameter, so each such name is resolved against that service, its
@@ -309,17 +321,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // Each arm below is a name this read cannot resolve, which the batch read
                 // REPORTS rather than refuses: a name an ARN of another service or a
                 // dangling `name:` makes no parameter query at all, an ARN naming another
-                // account or Region names nothing reachable at this endpoint, a name this
-                // Region holds no parameter for names none, and a selector the parameter
-                // does not carry names no version of it.
+                // account or Region names nothing reachable at this endpoint (one whose
+                // account or Region field is EMPTY names neither and resolves here), a
+                // name this Region holds no parameter for names none, and a selector the
+                // parameter does not carry names no version of it.
                 let Some(query) = crate::state::parse_parameter_query(name) else {
                     invalid.push(name.to_string());
                     continue;
                 };
-                if query.selector == Some("")
-                    || query.account.is_some_and(|named| named != account)
-                    || query.region.is_some_and(|named| named != region)
-                {
+                if query.selector == Some("") || !query.names_this_endpoint(&region) {
                     invalid.push(name.to_string());
                     continue;
                 }

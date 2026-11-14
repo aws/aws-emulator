@@ -695,13 +695,7 @@ impl ComAmazonawsSsmAmazonssmState {
     /// from the request body, so an ARN naming another endpoint resolves to nothing here.
     pub fn patch_baseline_query(&self, region: &str, value: &str) -> Option<String> {
         let query = parse_resource_query(value, ARN_PATCH_BASELINE_RESOURCE_PREFIX)?;
-        if query
-            .account
-            .is_some_and(|account| !account.is_empty() && account != ::engine::emulator_account_id())
-            || query
-                .region
-                .is_some_and(|named| !named.is_empty() && named != region)
-        {
+        if !query.names_this_endpoint(region) {
             return None;
         }
         Some(query.name.to_string())
