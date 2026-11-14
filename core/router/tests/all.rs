@@ -1861,8 +1861,6 @@ mod logs_vended_group_lambda_subscriber_permission;
 mod apigateway_sns_service_integration;
 // `cloudformation_provisions_cloudfront_resources` is declared once, just below: two `mod`
 // items for one name is a redefinition that compiles neither.
-#[path = "all/cloudformation_provisions_cloudfront_resources.rs"]
-mod cloudformation_provisions_cloudfront_resources;
 // are declared ONCE, in the head region above beside the other `cloudformation_…` suites.
 // Two branches each re-declared the pair in this tail, which compiles neither: a suite is
 // declared in exactly one place.
@@ -1890,17 +1888,6 @@ mod cloudformation_stack_clock;
 // can ask whether the address the assembled emulator publishes answers at all.
 #[path = "all/elbv2_lambda_target_published_address.rs"]
 mod elbv2_lambda_target_published_address;
-// are declared ONCE each, in the head region above: a module declared twice in this file
-// compiles the suite twice, which the workspace's lints refuse.
-// are declared once, in the span above: two branches each re-added the pair here after both
-// had removed it, which declares each of them twice and compiles nowhere.
-// Declared in the appended tail, which is where every new suite inserts its lines. Both
-// suites exist under tests/all/ and had lost their declaration when two branches removed
-// the same duplicated pair, which compiles them nowhere.
-#[path = "all/cloudformation_monitored_alb_search_estate.rs"]
-mod cloudformation_monitored_alb_search_estate;
-#[path = "all/cloudformation_domain_endpoint_outputs.rs"]
-mod cloudformation_domain_endpoint_outputs;
 // (`cloudformation_monitored_alb_search_estate` and `cloudformation_domain_endpoint_outputs`
 // are declared further up this tail already: a module may be declared only once.)
 // Declared at the end of the appended tail, which is where every new suite inserts its lines:
@@ -1910,12 +1897,6 @@ mod cloudformation_domain_endpoint_outputs;
 #[path = "all/redshift_health_alarms_evaluate.rs"]
 mod redshift_health_alarms_evaluate;
 // are declared in the head region above: a module may be declared only once.)
-// Declared here, in this same head region, for the reason the entry above records: the work
-// item an alarm's Systems Manager OpsItem action opens has to be read where a client reads it
-// — through OpsCenter's own query — so neither CloudWatch's nor Systems Manager's own test
-// target can drive the transition and then read what it opened.
-#[path = "all/cloudwatch_alarm_ssm_ops_item_action.rs"]
-mod cloudwatch_alarm_ssm_ops_item_action;
 // stack-deployed metric-stream pipeline exports before and after an update rewrites its filter
 // spans CloudFormation, IAM, CloudWatch, Firehose and Amazon S3 at once, so no single service
 // crate's test target can deploy the pipeline and then read the objects it delivered.
@@ -1931,9 +1912,6 @@ mod zz_probe;
 // Both suites below are declared ONCE, in the sorted span above beside the other
 // CloudFormation suites: the pair was appended here as well while two branches were landing
 // at once, which declared each of them a second time and compiled neither.
-// are declared ONCE, in the head region above beside the other `cloudformation_…` suites.
-// Two branches each re-declared the pair in this tail, which compiles neither: a suite is
-// declared in exactly one place.
 // Declared in the appended tail, which is where every new suite inserts its lines: a vector
 // knowledge base built on an index created through the collection's OWN published endpoint
 // spans OpenSearch Serverless (which serves that endpoint's OpenSearch REST data plane), the
@@ -1968,3 +1946,8 @@ mod cognito_vended_session_is_bounded_by_its_role_policy;
 // the mapping vended.
 #[path = "all/cognito_rules_role_mapping.rs"]
 mod cognito_rules_role_mapping;
+// envelope an identity-based authorization refusal travels in is read by comparing IAM's
+// awsQuery answer with Secrets Manager's awsJson1_1 one for ONE principal, so neither
+// crate's own test target can ask it.
+#[path = "all/iam_secretsmanager_denial_envelope_by_protocol.rs"]
+mod iam_secretsmanager_denial_envelope_by_protocol;
