@@ -213,9 +213,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 continue;
             };
             if instance.disable_api_termination && !instance.state.is_terminating() {
+                // The sentence EC2 answers for a protected instance, ending in the full
+                // stop it ends in: the only interpolated value is the instance the REQUEST
+                // named, and the attribute it names is the one to modify.
                 return Err(Scaffolded::operation_not_permitted(format!(
                     "The instance '{instance_id}' may not be terminated. Modify its \
-                     'disableApiTermination' instance attribute and try again"
+                     'disableApiTermination' instance attribute and try again."
                 )));
             }
         }

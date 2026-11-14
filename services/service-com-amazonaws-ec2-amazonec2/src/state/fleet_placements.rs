@@ -488,6 +488,10 @@ impl ComAmazonawsEc2Amazonec2State {
             // instance starts at the documented default.
             source_dest_check: DEFAULT_SOURCE_DEST_CHECK,
             ebs_optimized: launch.ebs_optimized.unwrap_or(false),
+            // A launch specification sets no enhanced networking of the instance's own, so
+            // it reports the AMI's until `ModifyInstanceAttribute` gives it a value.
+            sriov_net_support: None,
+            ena_support: None,
             // Hibernation is `InstanceInterruptionBehavior`'s business for a Spot Instance,
             // and a launch specification carries no hibernation member.
             hibernation_configured: false,

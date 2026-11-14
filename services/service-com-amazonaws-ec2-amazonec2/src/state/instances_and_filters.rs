@@ -1955,7 +1955,15 @@ impl ComAmazonawsEc2Amazonec2State {
     /// no longer holds reports the value every image this crate publishes carries
     /// ([`IMAGE_SRIOV_NET_SUPPORT_SIMPLE`]), the same fallback the instance's other
     /// AMI-derived facts take (`super::instance_detail`).
+    ///
+    /// An instance whose OWN `sriovNetSupport` a `ModifyInstanceAttribute` has written
+    /// ([`InstanceRecord::sriov_net_support`]) reports that value instead: the modify sets
+    /// the attribute of the instance, not of the image it was launched from, so the image's
+    /// is only what an unmodified instance inherits.
     pub fn instance_sriov_net_support(&self, instance: &InstanceRecord) -> Option<String> {
+        if instance.sriov_net_support.is_some() {
+            return instance.sriov_net_support.clone();
+        }
         let image = instance
             .image_id
             .as_deref()

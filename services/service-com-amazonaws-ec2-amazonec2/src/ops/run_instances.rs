@@ -1278,6 +1278,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // documented default and only `ModifyInstanceAttribute` moves it.
                 source_dest_check: DEFAULT_SOURCE_DEST_CHECK,
                 ebs_optimized: input.ebs_optimized.unwrap_or(false),
+                // Nothing in a launch sets the instance's OWN enhanced networking: it
+                // reports the AMI's until `ModifyInstanceAttribute` gives it a value.
+                sriov_net_support: None,
+                ena_support: None,
                 hibernation_configured: input
                     .hibernation_options
                     .as_ref()
@@ -2373,6 +2377,26 @@ fn take_launch_interfaces(
                     }
                     taken.push(address.clone());
                     addresses.push(address.clone());
+                }
+                // The number of addresses this interface asks for is bounded BEFORE any of
+                // them is minted: `wanted` is what
+                // [`crate::state::requested_private_ips`] answered for this entry, and that
+                // is the one place the per-interface ceiling
+                // [`crate::state::MAX_PRIVATE_IPS_PER_NETWORK_INTERFACE`] is applied to a
+                // request's `SecondaryPrivateIpAddressCount`. The ceiling is re-asked here —
+                // the belt-and-braces check this crate keeps where a bound decides how much
+                // work a request may cause — so the loop below cannot be driven past it by a
+                // count a caller chose, however wide the subnet's own range is.
+                if interface.request.addresses.wanted
+                    > crate::state::MAX_PRIVATE_IPS_PER_NETWORK_INTERFACE
+                {
+                    store.release_private_ips(&taken);
+                    return Err(crate::state::invalid_parameter_value(format!(
+                        "The request asks for {wanted} private IPv4 addresses, above the \
+                         maximum of {max} per network interface",
+                        wanted = interface.request.addresses.wanted,
+                        max = crate::state::MAX_PRIVATE_IPS_PER_NETWORK_INTERFACE,
+                    )));
                 }
                 while addresses.len() < interface.request.addresses.wanted {
                     let Some(free) = store.mint_private_ip_in_cidr(&interface.cidr_block) else {

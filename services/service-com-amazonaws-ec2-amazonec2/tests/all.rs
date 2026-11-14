@@ -15,6 +15,13 @@
 // exactly that. The lines above are the file header, which no landing edits.
 #[path = "all/prefix_lists.rs"]
 mod prefix_lists;
+// `ModifyInstanceAttribute`: the one attribute a modify writes onto the stored instance, read
+// back through the attribute read, the instance report and the interface or volume that
+// carries it, plus what it refuses. Declared beside `prefix_lists` for the reason the note
+// above gives: the sorted neighbourhood and the tail of this file are where every new ec2
+// suite inserts its lines.
+#[path = "all/modify_instance_attribute.rs"]
+mod modify_instance_attribute;
 // The published EBS-performance, instance-store, network and host-feature rows of a compute
 // optimized family with local NVMe devices and of a block storage optimized one: every
 // hardware member of a reported type is the figure AWS publishes for that one type. Declared
@@ -78,8 +85,6 @@ mod network_acl_entry_set_projection;
 // reports, a volume's snapshot/zone id/operator, a launch's reservation groups and the
 // member set of every instance, a launch template's version counters and operator, and
 // every tag an address carries. Declared beside `prefix_lists` for the reason the note
-// above gives: the sorted neighbourhood and the tail of this file are where every new ec2
-// suite inserts its lines.
 #[path = "all/modeled_response_members.rs"]
 mod modeled_response_members;
 // `RegisterImage`: the AMI a register mints from the request's own description — its members
@@ -420,11 +425,6 @@ mod request_validation_before_state;
 // export configurations, what the reader then counts, and what the delete refuses. Declared
 #[path = "all/capacity_manager_data_exports.rs"]
 mod capacity_manager_data_exports;
-// What `CreateCapacityManagerDataExport` stores for the account, what the describe and the
-// attributes then report of it, how a replayed `ClientToken` is answered, and what the create
-// refuses.
-#[path = "all/capacity_manager_data_export_creation.rs"]
-mod capacity_manager_data_export_creation;
 // The form an Amazon FPGA Image id is read in before any lookup, and the two answers an id
 // outside and inside it gets. Declared beside `prefix_lists` for the reason the note above
 #[path = "all/fpga_image_id_form.rs"]
@@ -2157,6 +2157,12 @@ mod delete_network_insights_access_scope;
 // to the same destination — is refused `FlowLogAlreadyExists` and stores nothing. Declared at
 #[path = "all/flow_log_duplicate_refusal.rs"]
 mod flow_log_duplicate_refusal;
+// (`published_accelerator_and_connection_facts` is declared ONCE, in the head region above:
+// a module may be declared only once, and two landings each appended their own copy here.)
+// What `CreateCapacityManagerDataExport` stores for the account, what the describe and the
+// attributes then report of it, how a replayed `ClientToken` is answered, and what the create
+#[path = "all/capacity_manager_data_export_creation.rs"]
+mod capacity_manager_data_export_creation;
 // What `DeleteDhcpOptions` takes out of the one DHCP options store — the set the request
 // names, with the bytes it held released — and how it READS the id it is given: a value this
 // service could never have issued is malformed, where one it did issue that names no set is

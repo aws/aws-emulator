@@ -1,15 +1,40 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ModifyInstanceAttribute
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ModifyInstanceAttribute`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ModifyInstanceAttribute::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Writes ONE attribute of one stored EC2 instance.
+//!
+//! "Modifies the specified attribute of the specified instance. You can specify only one
+//! attribute at a time": every member beside the instance id and `DryRun` names one
+//! attribute, and so does the legacy `Attribute`/`Value` pair, so the attributes a request
+//! NAMES are the ones it asks to modify — exactly one of them. The new value is written onto
+//! the record the reads of that attribute answer from
+//! (`crate::ops::describe_instance_attribute`, `DescribeInstances` and the volume or
+//! interface store that carries the attribute), so a later read reports it.
+//!
+//! "To modify some attributes, the instance must be stopped": the attributes that are part
+//! of the instance's hardware or boot configuration ([`STOPPED_ONLY_INSTANCE_ATTRIBUTES`])
+//! need a `stopped` instance, and the rest are modifiable in any state an instance still has
+//! attributes in — one on its way to `terminated` has none.
+//!
+//! The refusals, in the order this handler makes them:
+//!
+//! * `MissingParameter` (HTTP 400) for a request that names no attribute to modify, and for
+//!   a named attribute carrying no value to set it to.
+//! * `InvalidParameterCombination` (HTTP 400) for a request that names more than one
+//!   attribute ([`crate::state::fields_for_multiple_attribute_types`]), and for a `Value`
+//!   beside an attribute that takes none.
+//! * `InvalidParameterValue` (HTTP 400) for an attribute outside the modifiable set, and for
+//!   a member value outside its own documented catalog or bound.
+//! * `InvalidInstanceID.Malformed` / `InvalidInstanceID.NotFound` (HTTP 400) for an id this
+//!   account cannot resolve ([`crate::state::require_instance_record`]).
+//! * `IncorrectInstanceState` (HTTP 400) when the instance's state does not admit the
+//!   modification.
+//! * `InvalidInstanceAttributeValue` (HTTP 400) for an instance type the catalog does not
+//!   publish: "if the instance type is not valid, the error returned is
+//!   InvalidInstanceAttributeValue" (`InstanceType`).
+//! * `DryRunOperation` (HTTP 412) for a dry run of a request that would have succeeded,
+//!   which writes nothing.
 //!
 //! ## Shape of an operation
 //!
@@ -139,6 +164,627 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+use ::base64::Engine as _;
+
+use crate::state;
+use crate::state::{InstanceRecord, InstanceStateName, VolumeRecord};
+
+/// The `InstanceAttributeName` member a request names its `InstanceType` by.
+///
+/// The catalog of every member is the model's own
+/// (`crate::ops::types::INSTANCE_ATTRIBUTE_NAME_VALUES`); the ones this operation acts on
+/// are named here once each, so no arm of the resolution below spells an attribute as free
+/// text. The three a reset also reaches already have names in `crate::state`
+/// ([`crate::state::INSTANCE_ATTRIBUTE_KERNEL`] and the two beside it) and are used from
+/// there.
+pub const INSTANCE_ATTRIBUTE_INSTANCE_TYPE: &str = "instanceType";
+
+/// The `userData` member (see [`INSTANCE_ATTRIBUTE_INSTANCE_TYPE`]).
+pub const INSTANCE_ATTRIBUTE_USER_DATA: &str = "userData";
+
+/// The `disableApiTermination` member (see [`INSTANCE_ATTRIBUTE_INSTANCE_TYPE`]).
+pub const INSTANCE_ATTRIBUTE_DISABLE_API_TERMINATION: &str = "disableApiTermination";
+
+/// The `instanceInitiatedShutdownBehavior` member (see
+/// [`INSTANCE_ATTRIBUTE_INSTANCE_TYPE`]).
+pub const INSTANCE_ATTRIBUTE_SHUTDOWN_BEHAVIOR: &str = "instanceInitiatedShutdownBehavior";
+
+/// The `blockDeviceMapping` member (see [`INSTANCE_ATTRIBUTE_INSTANCE_TYPE`]).
+pub const INSTANCE_ATTRIBUTE_BLOCK_DEVICE_MAPPING: &str = "blockDeviceMapping";
+
+/// The `groupSet` member (see [`INSTANCE_ATTRIBUTE_INSTANCE_TYPE`]).
+pub const INSTANCE_ATTRIBUTE_GROUP_SET: &str = "groupSet";
+
+/// The `ebsOptimized` member (see [`INSTANCE_ATTRIBUTE_INSTANCE_TYPE`]).
+pub const INSTANCE_ATTRIBUTE_EBS_OPTIMIZED: &str = "ebsOptimized";
+
+/// The `sriovNetSupport` member (see [`INSTANCE_ATTRIBUTE_INSTANCE_TYPE`]).
+pub const INSTANCE_ATTRIBUTE_SRIOV_NET_SUPPORT: &str = "sriovNetSupport";
+
+/// The `enaSupport` member (see [`INSTANCE_ATTRIBUTE_INSTANCE_TYPE`]).
+pub const INSTANCE_ATTRIBUTE_ENA_SUPPORT: &str = "enaSupport";
+
+/// The `enclaveOptions` member (see [`INSTANCE_ATTRIBUTE_INSTANCE_TYPE`]).
+pub const INSTANCE_ATTRIBUTE_ENCLAVE_OPTIONS: &str = "enclaveOptions";
+
+/// The `disableApiStop` member (see [`INSTANCE_ATTRIBUTE_INSTANCE_TYPE`]).
+pub const INSTANCE_ATTRIBUTE_DISABLE_API_STOP: &str = "disableApiStop";
+
+/// Every attribute of an instance this operation modifies, in the order the request's own
+/// members name them.
+///
+/// "You can modify the following attributes only: disableApiTermination | instanceType |
+/// kernel | ramdisk | instanceInitiatedShutdownBehavior | blockDeviceMapping | userData |
+/// sourceDestCheck | groupSet | ebsOptimized | sriovNetSupport | enaSupport | nvmeSupport |
+/// disableApiStop | enclaveOptions" (`ModifyInstanceAttributeRequest$Attribute`): every
+/// member of the `InstanceAttributeName` catalog except `rootDeviceName` and `productCodes`,
+/// which are facts of the AMI the instance was launched from rather than settings of the
+/// instance, and `nvmeSupport`, which that sentence names but the model declares no member
+/// of the catalog for.
+pub const MODIFIABLE_INSTANCE_ATTRIBUTES: [&str; 14] = [
+    INSTANCE_ATTRIBUTE_INSTANCE_TYPE,
+    state::INSTANCE_ATTRIBUTE_KERNEL,
+    state::INSTANCE_ATTRIBUTE_RAMDISK,
+    INSTANCE_ATTRIBUTE_USER_DATA,
+    INSTANCE_ATTRIBUTE_DISABLE_API_TERMINATION,
+    INSTANCE_ATTRIBUTE_SHUTDOWN_BEHAVIOR,
+    INSTANCE_ATTRIBUTE_BLOCK_DEVICE_MAPPING,
+    state::INSTANCE_ATTRIBUTE_SOURCE_DEST_CHECK,
+    INSTANCE_ATTRIBUTE_GROUP_SET,
+    INSTANCE_ATTRIBUTE_EBS_OPTIMIZED,
+    INSTANCE_ATTRIBUTE_SRIOV_NET_SUPPORT,
+    INSTANCE_ATTRIBUTE_ENA_SUPPORT,
+    INSTANCE_ATTRIBUTE_ENCLAVE_OPTIONS,
+    INSTANCE_ATTRIBUTE_DISABLE_API_STOP,
+];
+
+/// The attributes the legacy `Attribute`/`Value` pair states a new value for: "a new value
+/// for the attribute. Use only with the kernel, ramdisk, userData, disableApiTermination, or
+/// instanceInitiatedShutdownBehavior attribute"
+/// (`ModifyInstanceAttributeRequest$Value`). Every other attribute is named by its own typed
+/// member, which is where its value comes from.
+pub const VALUE_BEARING_INSTANCE_ATTRIBUTES: [&str; 5] = [
+    state::INSTANCE_ATTRIBUTE_KERNEL,
+    state::INSTANCE_ATTRIBUTE_RAMDISK,
+    INSTANCE_ATTRIBUTE_USER_DATA,
+    INSTANCE_ATTRIBUTE_DISABLE_API_TERMINATION,
+    INSTANCE_ATTRIBUTE_SHUTDOWN_BEHAVIOR,
+];
+
+/// The attributes a `stopped` instance is needed for: "to modify some attributes, the
+/// instance must be stopped. For more information, see Modify a stopped instance in the
+/// Amazon EC2 User Guide" (`ModifyInstanceAttribute`).
+///
+/// They are the ones whose value is part of the machine the instance RUNS AS — its type, the
+/// kernel and RAM disk it boots, the data its first boot reads, its EBS optimization, its
+/// enhanced networking and its Nitro Enclaves support — none of which can be swapped under a
+/// running guest. Every other modifiable attribute is a policy of the instance (termination
+/// and stop protection, shutdown behaviour, source/destination checking, its security groups
+/// and the delete-on-termination of the volumes it holds) and is modifiable while it runs.
+pub const STOPPED_ONLY_INSTANCE_ATTRIBUTES: [&str; 8] = [
+    INSTANCE_ATTRIBUTE_INSTANCE_TYPE,
+    state::INSTANCE_ATTRIBUTE_KERNEL,
+    state::INSTANCE_ATTRIBUTE_RAMDISK,
+    INSTANCE_ATTRIBUTE_USER_DATA,
+    INSTANCE_ATTRIBUTE_EBS_OPTIMIZED,
+    INSTANCE_ATTRIBUTE_SRIOV_NET_SUPPORT,
+    INSTANCE_ATTRIBUTE_ENA_SUPPORT,
+    INSTANCE_ATTRIBUTE_ENCLAVE_OPTIONS,
+];
+
+/// The two words the legacy `Value` states a boolean attribute with, so `Value=true` is read
+/// through the same catalog check every other word of a request goes through
+/// ([`crate::state::requested_word`]) and a value outside it is refused in the same sentence.
+const BOOLEAN_WORDS: &[&str] = &[BOOLEAN_TRUE, "false"];
+
+/// The word of [`BOOLEAN_WORDS`] that means the attribute is turned ON.
+const BOOLEAN_TRUE: &str = "true";
+
+/// The one word `sriovNetSupport` takes: "set to `simple` to enable enhanced networking with
+/// the Intel 82599 Virtual Function interface for the instance. There is no way to disable
+/// enhanced networking with the Intel 82599 Virtual Function interface at this time"
+/// (`SriovNetSupport`) — so the value is the one an image carries for it
+/// ([`crate::state::IMAGE_SRIOV_NET_SUPPORT_SIMPLE`]) and nothing else.
+const SRIOV_NET_SUPPORT_WORDS: &[&str] = &[state::IMAGE_SRIOV_NET_SUPPORT_SIMPLE];
+
+/// EC2's error code for an instance attribute carrying a value the attribute cannot take:
+/// "if the instance type is not valid, the error returned is InvalidInstanceAttributeValue"
+/// (`ModifyInstanceAttributeRequest$InstanceType`).
+///
+/// It lives in this file rather than in `crate::state` because this is the only operation
+/// documented answering it, the same reason `crate::ops::describe_instance_attribute` keeps
+/// its own refusal beside its handler.
+fn invalid_instance_attribute_value<E>(message: String) -> crate::scaffolded::Scaffolded<E> {
+    crate::scaffolded::Scaffolded::service_error("InvalidInstanceAttributeValue", 400, message)
+}
+
+/// How this operation says an attribute was named with nothing to set it to: the attribute
+/// carries one optional value, and the attribute named without one says nothing about what
+/// to write — the same sentence `ModifyNetworkInterfaceAttribute` and `ModifyVpcAttribute`
+/// word that for.
+fn must_have_a_value<E>(attribute: &str) -> crate::scaffolded::Scaffolded<E> {
+    state::missing_parameter(format!("The parameter {attribute} must have a value"))
+}
+
+/// The caller-chosen bytes one change gives back to the store's budget and charges it.
+///
+/// Every attribute whose new value is caller-chosen TEXT replaces text the instance already
+/// holds, so the budget is asked about the NET change the way every other replacement path of
+/// this crate asks it: an attribute that stores no text at all leaves this at zero.
+#[derive(Debug, Default)]
+struct Bytes {
+    /// What the new value costs.
+    charge: usize,
+    /// What the value it replaces gives back.
+    refund: usize,
+}
+
+/// The ONE change a request asks for, resolved from the request and the store before
+/// anything is written.
+///
+/// Resolving first and writing second is what makes a refusal leave the instance untouched
+/// and a `DryRun` write nothing: every catalog, bound and lookup the request has to satisfy
+/// is answered while this value is built, and the write is then one assignment per attribute.
+#[derive(Debug)]
+enum Change {
+    /// The new instance type, a member of the published catalog.
+    InstanceType(String),
+    /// The new kernel id, or `None` for a member carrying no value — which clears it, the
+    /// way an instance whose launch named none and whose AMI carries none holds none.
+    Kernel(Option<String>),
+    /// The new RAM disk id, held the same way as [`Change::Kernel`].
+    Ramdisk(Option<String>),
+    /// The new user data as the base64 text the store holds, or `None` to clear it.
+    UserData(Option<String>),
+    /// Whether the instance is protected from termination through the API.
+    DisableApiTermination(bool),
+    /// The new instance-initiated shutdown behaviour, a member of its own catalog.
+    ShutdownBehavior(&'static str),
+    /// The `DeleteOnTermination` to write on the attachments the request named, as
+    /// `(volume id, device, value)` — the attachment lives on the VOLUME, which is the one
+    /// place an attachment is recorded.
+    BlockDeviceMappings(Vec<(String, String, bool)>),
+    /// Whether source/destination checking is enabled.
+    SourceDestCheck(bool),
+    /// The new set of security groups, resolved to the identifiers the instance reports.
+    Groups(Vec<GroupIdentifier>),
+    /// Whether the instance is optimized for Amazon EBS I/O.
+    EbsOptimized(bool),
+    /// The new enhanced-networking word.
+    SriovNetSupport(&'static str),
+    /// Whether enhanced networking with ENA is enabled.
+    EnaSupport(bool),
+    /// Whether the instance is enabled for Amazon Web Services Nitro Enclaves.
+    EnclaveOptions(bool),
+    /// Whether the instance is protected from being stopped through the API.
+    DisableApiStop(bool),
+}
+
+/// The attributes this request NAMES: one per member that carries a value, plus the one the
+/// legacy `Attribute` names, with no attribute counted twice.
+///
+/// "You can specify only one attribute at a time", so this is the whole of what decides which
+/// attribute a call modifies — a request naming none asks for no modification, and one naming
+/// two asks for a change this operation does not make in a single call.
+fn named_attributes(
+    input: &ModifyInstanceAttributeInput,
+) -> Result<Vec<&'static str>, ModifyInstanceAttributeError> {
+    let mut named: Vec<&'static str> = [
+        (INSTANCE_ATTRIBUTE_INSTANCE_TYPE, input.instance_type.is_some()),
+        (state::INSTANCE_ATTRIBUTE_KERNEL, input.kernel.is_some()),
+        (state::INSTANCE_ATTRIBUTE_RAMDISK, input.ramdisk.is_some()),
+        (INSTANCE_ATTRIBUTE_USER_DATA, input.user_data.is_some()),
+        (
+            INSTANCE_ATTRIBUTE_DISABLE_API_TERMINATION,
+            input.disable_api_termination.is_some(),
+        ),
+        (
+            INSTANCE_ATTRIBUTE_SHUTDOWN_BEHAVIOR,
+            input.instance_initiated_shutdown_behavior.is_some(),
+        ),
+        (
+            INSTANCE_ATTRIBUTE_BLOCK_DEVICE_MAPPING,
+            input
+                .block_device_mappings
+                .as_deref()
+                .is_some_and(|mappings| !mappings.is_empty()),
+        ),
+        (
+            state::INSTANCE_ATTRIBUTE_SOURCE_DEST_CHECK,
+            input.source_dest_check.is_some(),
+        ),
+        (
+            INSTANCE_ATTRIBUTE_GROUP_SET,
+            input.groups.as_deref().is_some_and(|groups| !groups.is_empty()),
+        ),
+        (INSTANCE_ATTRIBUTE_EBS_OPTIMIZED, input.ebs_optimized.is_some()),
+        (
+            INSTANCE_ATTRIBUTE_SRIOV_NET_SUPPORT,
+            input.sriov_net_support.is_some(),
+        ),
+        (INSTANCE_ATTRIBUTE_ENA_SUPPORT, input.ena_support.is_some()),
+        (
+            INSTANCE_ATTRIBUTE_ENCLAVE_OPTIONS,
+            input.enclave_options.is_some(),
+        ),
+        (
+            INSTANCE_ATTRIBUTE_DISABLE_API_STOP,
+            input.disable_api_stop.is_some(),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(attribute, named)| named.then_some(attribute))
+    .collect();
+    // `Attribute` names one attribute too, and the request may name it either way: the
+    // attribute it names is the one the legacy pair's `Value` carries a value for. A value
+    // outside the modifiable set is refused the way EC2 refuses an `attribute` parameter it
+    // cannot act on ([`crate::state::unknown_attribute_parameter_value`]) — the modelled enum
+    // constraint is already refused by the request walk, so this narrows that enum to the
+    // subset this operation documents.
+    if let Some(requested) = input.attribute.as_deref() {
+        let Some(attribute) = state::catalog_member(&MODIFIABLE_INSTANCE_ATTRIBUTES, requested)
+        else {
+            return Err(state::unknown_attribute_parameter_value(requested));
+        };
+        if !named.contains(&attribute) {
+            named.push(attribute);
+            named.sort_by_key(|attribute| {
+                MODIFIABLE_INSTANCE_ATTRIBUTES
+                    .iter()
+                    .position(|member| member == attribute)
+                    .unwrap_or(MODIFIABLE_INSTANCE_ATTRIBUTES.len())
+            });
+        }
+    }
+    Ok(named)
+}
+
+/// The new TEXT a request states for one attribute: the typed member's own `Value`, or the
+/// legacy `Value` for an attribute that takes one.
+///
+/// An empty text is no value: the member is how an attribute is CLEARED, so the two cases a
+/// caller can state are "this text" and "nothing at all".
+fn attribute_text(member: Option<&AttributeValue>, legacy: Option<&str>) -> Option<String> {
+    member
+        .and_then(|member| member.value.clone())
+        .or_else(|| legacy.map(str::to_string))
+        .filter(|text| !text.is_empty())
+}
+
+/// The new FLAG a request states for one attribute: the typed `AttributeBooleanValue`'s own
+/// `Value`, or the legacy `Value` read through the boolean catalog.
+fn attribute_flag(
+    attribute: &str,
+    member: Option<&AttributeBooleanValue>,
+    legacy: Option<&str>,
+) -> Result<bool, ModifyInstanceAttributeError> {
+    if let Some(value) = member.and_then(|member| member.value) {
+        return Ok(value);
+    }
+    match state::requested_word(attribute, legacy, BOOLEAN_WORDS)? {
+        Some(word) => Ok(word == BOOLEAN_TRUE),
+        None => Err(must_have_a_value(attribute)),
+    }
+}
+
+/// The ONE change `attribute` asks for, resolved against `store` and the instance it names.
+///
+/// Nothing is written while it is built, so every refusal below leaves the instance exactly
+/// as it stands; `bytes` collects the store budget the change costs and refunds.
+fn resolved_change(
+    attribute: &str,
+    input: &ModifyInstanceAttributeInput,
+    store: &state::ComAmazonawsEc2Amazonec2State,
+    instance: &InstanceRecord,
+    bytes: &mut Bytes,
+) -> Result<Change, ModifyInstanceAttributeError> {
+    // The legacy pair carries a value for five of the attributes and for no other, so the
+    // arms of the others resolve from their own typed member alone.
+    let legacy = input.value.as_deref();
+    let instance_id = instance.instance_id.as_str();
+    Ok(match attribute {
+        INSTANCE_ATTRIBUTE_INSTANCE_TYPE => {
+            // "Changes the instance type to the specified value … If the instance type is
+            // not valid, the error returned is InvalidInstanceAttributeValue"
+            // (`InstanceType`), judged against the catalog the model publishes — the one
+            // reading of a valid instance type this crate has — and worded as EC2 words a
+            // refused `InstanceType`.
+            let Some(requested) = attribute_text(input.instance_type.as_ref(), None) else {
+                return Err(must_have_a_value(attribute));
+            };
+            if !state::instance_type_is_modelled(&requested) {
+                return Err(invalid_instance_attribute_value(
+                    state::instance_type_refusal_message(&requested),
+                ));
+            }
+            bytes.charge = requested.len();
+            bytes.refund = instance.instance_type.len();
+            Change::InstanceType(requested)
+        }
+        state::INSTANCE_ATTRIBUTE_KERNEL => {
+            // "Changes the instance's kernel to the specified value" (`Kernel`). The id is
+            // held to the length an EC2 image id has, the one bound both launch paths hold
+            // the same member to.
+            let requested = attribute_text(input.kernel.as_ref(), legacy);
+            state::validate_kernel_or_ramdisk_id("Kernel", requested.as_deref())?;
+            bytes.charge = requested.as_ref().map_or(0, String::len);
+            bytes.refund = instance.kernel_id.as_ref().map_or(0, String::len);
+            Change::Kernel(requested)
+        }
+        state::INSTANCE_ATTRIBUTE_RAMDISK => {
+            // "Changes the instance's RAM disk to the specified value" (`Ramdisk`), held to
+            // the same bound as the kernel above.
+            let requested = attribute_text(input.ramdisk.as_ref(), legacy);
+            state::validate_kernel_or_ramdisk_id("Ramdisk", requested.as_deref())?;
+            bytes.charge = requested.as_ref().map_or(0, String::len);
+            bytes.refund = instance.ramdisk_id.as_ref().map_or(0, String::len);
+            Change::Ramdisk(requested)
+        }
+        INSTANCE_ATTRIBUTE_USER_DATA => {
+            // "Changes the instance's user data to the specified value. User data must be
+            // base64-encoded. Depending on the tool or SDK that you're using, the
+            // base64-encoding might be performed for you" (`UserData`): the member is a BLOB,
+            // which the protocol carries base64 and hands this handler decoded, so what is
+            // stored is that blob encoded back into the base64 TEXT a launch's own `UserData`
+            // leaves on the record — the one form `DescribeInstanceAttribute` reports it in
+            // and the guest's program is read out of.
+            let requested = match input
+                .user_data
+                .as_ref()
+                .and_then(|member| member.value.as_deref())
+            {
+                Some(blob) => Some(::base64::engine::general_purpose::STANDARD.encode(blob)),
+                None => legacy.map(str::to_string),
+            }
+            .filter(|text| !text.is_empty());
+            // The same bound every launch path holds the same member to, so user data cannot
+            // reach an instance this way that a launch could not have given it.
+            if requested
+                .as_ref()
+                .is_some_and(|text| text.len() > state::MAX_USER_DATA_BYTES)
+            {
+                return Err(state::invalid_parameter_value(format!(
+                    "User data accepts at most {} bytes",
+                    state::MAX_USER_DATA_BYTES
+                )));
+            }
+            bytes.charge = requested.as_ref().map_or(0, String::len);
+            bytes.refund = instance.user_data.as_ref().map_or(0, String::len);
+            Change::UserData(requested)
+        }
+        INSTANCE_ATTRIBUTE_DISABLE_API_TERMINATION => {
+            // "Enable or disable termination protection for the instance. If the value is
+            // true, you can't terminate the instance using the Amazon EC2 console, command
+            // line interface, or API. You can't enable termination protection for Spot
+            // Instances" (`DisableApiTermination`) — a protection an instance launched to
+            // fulfill a Spot Instance request cannot be given, which is an attribute OF that
+            // instance forbidding the action.
+            let value = attribute_flag(attribute, input.disable_api_termination.as_ref(), legacy)?;
+            if value && instance.spot_instance_request_id.is_some() {
+                return Err(crate::scaffolded::Scaffolded::operation_not_permitted(
+                    format!(
+                        "The instance '{instance_id}' is a Spot Instance, for which \
+                         termination protection cannot be enabled"
+                    ),
+                ));
+            }
+            Change::DisableApiTermination(value)
+        }
+        INSTANCE_ATTRIBUTE_SHUTDOWN_BEHAVIOR => {
+            // "Specifies whether an instance stops or terminates when you initiate shutdown
+            // from the instance" (`InstanceInitiatedShutdownBehavior`), resolved to a member
+            // of its own modelled catalog so the word stored on the instance is a catalog
+            // member rather than the request's text.
+            let requested = attribute_text(input.instance_initiated_shutdown_behavior.as_ref(), legacy);
+            let Some(word) = state::requested_word(
+                "InstanceInitiatedShutdownBehavior",
+                requested.as_deref(),
+                SHUTDOWN_BEHAVIOR_VALUES,
+            )?
+            else {
+                return Err(must_have_a_value(attribute));
+            };
+            Change::ShutdownBehavior(word)
+        }
+        INSTANCE_ATTRIBUTE_BLOCK_DEVICE_MAPPING => {
+            // "Modifies the DeleteOnTermination attribute for volumes that are currently
+            // attached. The volume must be owned by the caller. If no value is specified for
+            // DeleteOnTermination, the default is true and the volume is deleted when the
+            // instance is terminated. … To add instance store volumes to an Amazon EBS-backed
+            // instance, you must add them when you launch the instance"
+            // (`BlockDeviceMappings`): one entry per volume the instance ALREADY holds, named
+            // by the device it is attached at, and nothing else about the mapping is this
+            // call's to change.
+            let now = ::std::time::Instant::now();
+            let held: Vec<(String, AttachVolumeOutput)> = store
+                .volumes
+                .iter()
+                .flat_map(|(volume_id, volume)| {
+                    volume
+                        .attachments_to_instance_at(instance_id, now)
+                        .into_iter()
+                        .map(|attachment| (volume_id.clone(), attachment))
+                })
+                .collect();
+            let mut changes: Vec<(String, String, bool)> = Vec::new();
+            for mapping in input.block_device_mappings.iter().flatten() {
+                let Some(device) = mapping
+                    .device_name
+                    .as_deref()
+                    .filter(|device| !device.is_empty())
+                else {
+                    return Err(state::missing_parameter(
+                        "The request must contain the parameter blockDeviceMapping.deviceName",
+                    ));
+                };
+                let Some((volume_id, attachment)) = held
+                    .iter()
+                    .find(|(_, attachment)| attachment.device.as_deref() == Some(device))
+                else {
+                    return Err(state::invalid_parameter_value(format!(
+                        "Invalid value '{device}' for blockDeviceMapping.deviceName. The \
+                         instance '{instance_id}' holds no volume at that device",
+                        device = state::echoed_resource_id(device),
+                    )));
+                };
+                // "You can't modify the DeleteOnTermination attribute for volumes that are
+                // attached to Amazon Web Services-managed resources": the attachment is not
+                // the account's to change, whatever the request asks of it. The refusal and
+                // the resource its message names read the SAME marker, the one
+                // `DetachVolume` reads.
+                if let Some(managed_resource) = VolumeRecord::managed_resource_of(attachment) {
+                    return Err(state::unsupported_operation(format!(
+                        "Volume '{volume_id}' is attached to the Amazon Web Services-managed \
+                         resource '{managed_resource}', which this account cannot modify the \
+                         attachment of"
+                    )));
+                }
+                // "The ID of the EBS volume" (`EbsInstanceBlockDeviceSpecification$VolumeId`)
+                // where the entry names one: it has to be the volume the instance holds at
+                // that device, since the entry names one attachment.
+                let named_volume = mapping
+                    .ebs
+                    .as_ref()
+                    .and_then(|ebs| ebs.volume_id.as_deref())
+                    .filter(|volume| !volume.is_empty());
+                if named_volume.is_some_and(|volume| volume != volume_id.as_str()) {
+                    return Err(state::invalid_parameter_value(format!(
+                        "Invalid value '{volume}' for blockDeviceMapping.ebs.volumeId. The \
+                         instance '{instance_id}' holds '{volume_id}' at the device \
+                         '{device}'",
+                        volume = state::echoed_resource_id(named_volume.unwrap_or_default()),
+                    )));
+                }
+                changes.push((
+                    volume_id.clone(),
+                    device.to_string(),
+                    mapping
+                        .ebs
+                        .as_ref()
+                        .and_then(|ebs| ebs.delete_on_termination)
+                        .unwrap_or(true),
+                ));
+            }
+            Change::BlockDeviceMappings(changes)
+        }
+        state::INSTANCE_ATTRIBUTE_SOURCE_DEST_CHECK => {
+            // "Enable or disable source/destination checks … If the value is true,
+            // source/destination checks are enabled; otherwise, they are disabled"
+            // (`SourceDestCheck`), written onto the instance's own record — the one place
+            // `DescribeInstances`, `DescribeInstanceAttribute` and `ResetInstanceAttribute`
+            // read an INSTANCE's source/destination checking from.
+            Change::SourceDestCheck(attribute_flag(
+                attribute,
+                input.source_dest_check.as_ref(),
+                None,
+            )?)
+        }
+        INSTANCE_ATTRIBUTE_GROUP_SET => {
+            // "Replaces the security groups of the instance with the specified security
+            // groups. You must specify the ID of at least one security group, even if it's
+            // just the default security group for the VPC" (`Groups`). A group has to be a
+            // group of the instance's OWN VPC — a security group only applies within its VPC
+            // — and the set is held to the number AWS documents per instance, the same
+            // resolution `ModifyNetworkInterfaceAttribute` makes of the same member.
+            let requested = state::deduplicate_ids(input.groups.as_deref().unwrap_or_default());
+            if requested.is_empty() {
+                return Err(state::missing_parameter(format!(
+                    "The parameter {attribute} must name at least one security group"
+                )));
+            }
+            if requested.len() > state::MAX_SECURITY_GROUPS_PER_INSTANCE {
+                return Err(state::invalid_parameter_value(format!(
+                    "The request names {asked} security groups, above the maximum of {max} \
+                     per instance",
+                    asked = requested.len(),
+                    max = state::MAX_SECURITY_GROUPS_PER_INSTANCE,
+                )));
+            }
+            let vpc_id = store.instance_vpc_id(instance);
+            let mut groups: Vec<GroupIdentifier> = Vec::with_capacity(requested.len());
+            for group_id in &requested {
+                let Some(group) = store.security_groups.get(group_id).filter(|group| {
+                    vpc_id.is_none() || group.vpc_id.as_deref() == vpc_id.as_deref()
+                }) else {
+                    return Err(state::invalid_group_not_found(group_id));
+                };
+                groups.push(GroupIdentifier {
+                    group_id: group.group_id.clone(),
+                    group_name: group.group_name.clone(),
+                });
+            }
+            bytes.charge = group_identifier_bytes(&groups);
+            bytes.refund = instance
+                .security_groups
+                .iter()
+                .map(|(group_id, group_name)| {
+                    group_id.as_ref().map_or(0, String::len)
+                        + group_name.as_ref().map_or(0, String::len)
+                })
+                .sum();
+            Change::Groups(groups)
+        }
+        INSTANCE_ATTRIBUTE_EBS_OPTIMIZED => Change::EbsOptimized(attribute_flag(
+            attribute,
+            input.ebs_optimized.as_ref(),
+            None,
+        )?),
+        INSTANCE_ATTRIBUTE_SRIOV_NET_SUPPORT => {
+            let requested = attribute_text(input.sriov_net_support.as_ref(), None);
+            let Some(word) = state::requested_word(
+                "SriovNetSupport",
+                requested.as_deref(),
+                SRIOV_NET_SUPPORT_WORDS,
+            )?
+            else {
+                return Err(must_have_a_value(attribute));
+            };
+            Change::SriovNetSupport(word)
+        }
+        INSTANCE_ATTRIBUTE_ENA_SUPPORT => Change::EnaSupport(attribute_flag(
+            attribute,
+            input.ena_support.as_ref(),
+            None,
+        )?),
+        INSTANCE_ATTRIBUTE_ENCLAVE_OPTIONS => {
+            // "Enables or disables the instance for Amazon Web Services Nitro Enclaves"
+            // (`EnclaveOptions`), whose `Enabled` is what to set it to.
+            let Some(enabled) = input
+                .enclave_options
+                .as_ref()
+                .and_then(|options| options.enabled)
+            else {
+                return Err(must_have_a_value(attribute));
+            };
+            Change::EnclaveOptions(enabled)
+        }
+        INSTANCE_ATTRIBUTE_DISABLE_API_STOP => Change::DisableApiStop(attribute_flag(
+            attribute,
+            input.disable_api_stop.as_ref(),
+            None,
+        )?),
+        // The arms above are every member of [`MODIFIABLE_INSTANCE_ATTRIBUTES`], and the one
+        // attribute was selected from that list, so nothing else reaches here.
+        other => {
+            return Err(state::internal_error(format!(
+                "'{other}' is not a modifiable attribute of an instance"
+            )))
+        }
+    })
+}
+
+/// The caller-chosen bytes a set of resolved group identifiers holds, counted the way
+/// [`crate::state::instance_payload_bytes`] counts the pairs on a stored instance.
+fn group_identifier_bytes(groups: &[GroupIdentifier]) -> usize {
+    groups
+        .iter()
+        .map(|group| {
+            group.group_id.as_ref().map_or(0, String::len)
+                + group.group_name.as_ref().map_or(0, String::len)
+        })
+        .sum()
+}
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -225,18 +871,185 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ModifyInstanceAttribute` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ModifyInstanceAttributeErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ModifyInstanceAttribute"))
+        // `ctx` carries request metadata only; this operation reads none of it — the
+        // instance is named by id and every value it writes comes from the request.
+        let _ = ctx;
+
+        // "You can specify only one attribute at a time": the attributes the request NAMES
+        // are the ones it asks to modify, so a request naming none asks for no modification
+        // at all and one naming two asks for a change this operation does not make in a
+        // single call. Neither is answered with a 200 that wrote something else.
+        let named = named_attributes(&input)?;
+        if named.len() > 1 {
+            return Err(state::fields_for_multiple_attribute_types(&named));
+        }
+        let [attribute] = named.as_slice() else {
+            return Err(state::missing_parameter(format!(
+                "The request must name an attribute to modify: {attributes}",
+                attributes = MODIFIABLE_INSTANCE_ATTRIBUTES.join(" | "),
+            )));
+        };
+        let attribute = *attribute;
+
+        // "A new value for the attribute. Use only with the kernel, ramdisk, userData,
+        // disableApiTermination, or instanceInitiatedShutdownBehavior attribute" (`Value`):
+        // beside any other attribute the pair cannot hold together, which is what EC2's
+        // `InvalidParameterCombination` says.
+        if input.value.is_some() && !VALUE_BEARING_INSTANCE_ATTRIBUTES.contains(&attribute) {
+            return Err(state::invalid_parameter_combination(format!(
+                "The parameter value may only be used with the {attributes} attributes",
+                attributes = VALUE_BEARING_INSTANCE_ATTRIBUTES.join(" | "),
+            )));
+        }
+
+        let state_handle = state::require_service_state(&*self.engine)?;
+        let mut store = state_handle.lock();
+        // A move the clock already owed — a state change, an attachment, a detachment — fell
+        // due at its own instant whether or not anybody called, so it is applied before the
+        // instance is read: the state this modification is judged against is the one the same
+        // instant's `DescribeInstances` reports.
+        store.materialize_due_transitions();
+
+        // "The ID of the instance" (`InstanceId`), resolved through the one reading of those
+        // two refusals this crate has: malformed before not-found.
+        let instance = state::require_instance_record(&store, &input.instance_id)?;
+        let instance_state = instance.state;
+
+        // "To modify some attributes, the instance must be stopped" — and an instance on its
+        // way to (or already at) `terminated` has no attributes left to modify at all.
+        // `pending` and `stopping` are transient states on their way to exactly `running`
+        // and `stopped`, so a policy attribute is modifiable in them.
+        let admitted = if STOPPED_ONLY_INSTANCE_ATTRIBUTES.contains(&attribute) {
+            instance_state == InstanceStateName::Stopped
+        } else {
+            !instance_state.is_terminating()
+        };
+        if !admitted {
+            return Err(crate::scaffolded::Scaffolded::incorrect_instance_state(
+                &input.instance_id,
+                &format!("modified for the {attribute} attribute"),
+            ));
+        }
+
+        // The ONE change this request asks for, resolved against the store. Nothing is
+        // written while it is built, so every refusal above and below leaves the instance,
+        // its interfaces and its volumes exactly as they stand.
+        let mut bytes = Bytes::default();
+        let change = resolved_change(attribute, &input, &store, instance, &mut bytes)?;
+        // The interface that carries the instance's security groups — the one its launch
+        // attached at the primary device index, which is where the groups an instance reports
+        // are read from ([`crate::state::ComAmazonawsEc2Amazonec2State::instance_security_groups`]).
+        let primary_interface_id = store
+            .primary_network_interface_of_instance(&input.instance_id)
+            .and_then(|interface| interface.network_interface_id.clone());
+
+        // Caller-chosen text replacing caller-chosen text, so the store's byte budget is
+        // asked about the NET change the way every other replacement path of this crate asks
+        // it.
+        if store.would_exceed_stored_bytes_after_refund(bytes.charge, bytes.refund) {
+            return Err(crate::scaffolded::Scaffolded::tag_limit_exceeded(format!(
+                "This emulator holds {held} of at most {max} bytes of caller-supplied data, \
+                 so it cannot store a value of {asked} bytes",
+                held = store.stored_bytes(),
+                max = state::MAX_STORED_BYTES,
+                asked = bytes.charge,
+            )));
+        }
+
+        // The request is one that would have succeeded, so a dry run stops HERE, having
+        // resolved every value and written nothing: "If you have the required permissions,
+        // the error response is DryRunOperation" (`DryRun`).
+        if input.dry_run == Some(true) {
+            return Err(state::dry_run_operation());
+        }
+
+        // The two attributes whose value lives on a record BESIDE the instance: an
+        // attachment's `DeleteOnTermination` is held by the volume, which is the one place an
+        // attachment is recorded, and an instance's security groups by its primary network
+        // interface, which is where every reader of them looks.
+        match &change {
+            Change::Groups(groups) => {
+                let Some(interface) = primary_interface_id
+                    .as_deref()
+                    .and_then(|interface_id| store.network_interfaces.get_mut(interface_id))
+                else {
+                    return Err(state::internal_error(format!(
+                        "the instance '{}' holds no network interface to carry its security \
+                         groups",
+                        input.instance_id
+                    )));
+                };
+                interface.groups = Some(groups.clone());
+            }
+            Change::BlockDeviceMappings(entries) => {
+                for (volume_id, device, delete_on_termination) in entries {
+                    let Some(volume) = store.volumes.get_mut(volume_id) else {
+                        return Err(state::internal_error(format!(
+                            "the volume '{volume_id}' resolved a moment ago could not be read \
+                             back"
+                        )));
+                    };
+                    for attachment in volume.view.attachments.iter_mut().flatten() {
+                        if attachment.instance_id.as_deref() == Some(input.instance_id.as_str())
+                            && attachment.device.as_deref() == Some(device.as_str())
+                        {
+                            attachment.delete_on_termination = Some(*delete_on_termination);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        // The instance was read under this same lock a moment ago, so a miss here is the
+        // store losing a record between two reads of one lock.
+        let Some(instance) = store.instances.get_mut(&input.instance_id) else {
+            return Err(state::internal_error(
+                "the instance checked a moment ago could not be read back",
+            ));
+        };
+        // ONE assignment per attribute: exactly the attribute the request named moves, and
+        // every other one is left as it stands.
+        match change {
+            Change::InstanceType(instance_type) => {
+                // "The architecture of the image" an instance runs is a fact of its TYPE
+                // (`Instance$Architecture`, read through
+                // [`crate::state::architecture_for`]), so it follows the type rather than
+                // staying at the one the launch's type implied.
+                instance.architecture = state::architecture_for(&instance_type);
+                instance.instance_type = instance_type;
+            }
+            Change::Kernel(kernel_id) => instance.kernel_id = kernel_id,
+            Change::Ramdisk(ramdisk_id) => instance.ramdisk_id = ramdisk_id,
+            Change::UserData(user_data) => instance.user_data = user_data,
+            Change::DisableApiTermination(value) => instance.disable_api_termination = value,
+            Change::ShutdownBehavior(word) => {
+                instance.detail.instance_initiated_shutdown_behavior = word;
+            }
+            Change::SourceDestCheck(value) => instance.source_dest_check = value,
+            Change::Groups(groups) => {
+                instance.security_groups = groups
+                    .into_iter()
+                    .map(|group| (group.group_id, group.group_name))
+                    .collect();
+            }
+            Change::EbsOptimized(value) => instance.ebs_optimized = value,
+            Change::SriovNetSupport(word) => {
+                instance.sriov_net_support = Some(word.to_string());
+            }
+            Change::EnaSupport(value) => instance.ena_support = Some(value),
+            Change::EnclaveOptions(enabled) => instance.detail.enclave_enabled = enabled,
+            Change::DisableApiStop(value) => instance.detail.disable_api_stop = value,
+            // Written onto the volume store above, where the attachment it names lives.
+            Change::BlockDeviceMappings(_) => {}
+        }
+
+        // The budget follows the record, so it is charged once every write above has
+        // happened: the old value's bytes go back and the new one's are charged, and a
+        // refusal on the way here leaves the budget exactly as it was.
+        store.release_stored_bytes(bytes.refund);
+        store.add_stored_bytes(bytes.charge);
+
+        Ok(ModifyInstanceAttributeOutput)
     }
 }

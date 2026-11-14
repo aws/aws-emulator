@@ -568,6 +568,18 @@ pub struct InstanceRecord {
     /// also what `ResetInstanceAttribute` restores it to.
     pub source_dest_check: bool,
     pub ebs_optimized: bool,
+    /// The `sriovNetSupport` a `ModifyInstanceAttribute` wrote onto this instance, or `None`
+    /// to report the value its AMI carries.
+    ///
+    /// Enhanced networking reaches an instance through the image it was launched from
+    /// ([`ComAmazonawsEc2Amazonec2State::instance_sriov_net_support`]), so an instance
+    /// nobody has modified holds no value of its own and reports the image's; a modify of
+    /// the INSTANCE's own attribute is what fills this in, and that reader prefers it.
+    pub sriov_net_support: Option<String>,
+    /// The `enaSupport` a `ModifyInstanceAttribute` wrote onto this instance, held exactly
+    /// as [`InstanceRecord::sriov_net_support`] is: `None` reports the `Image$EnaSupport` of
+    /// the AMI the instance was launched from.
+    pub ena_support: Option<bool>,
     pub hibernation_configured: bool,
     /// The root block device this instance's LAUNCH resolved for it, where its launch path
     /// resolves one: the AMI's own root device mapping with the launch's

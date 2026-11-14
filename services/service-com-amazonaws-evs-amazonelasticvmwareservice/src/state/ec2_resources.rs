@@ -631,6 +631,10 @@ pub fn launch_host_instance<Eng: Send + Sync + 'static>(
         ramdisk_id: None,
         source_dest_check: ec2::DEFAULT_SOURCE_DEST_CHECK,
         ebs_optimized: false,
+        // A host carries no enhanced networking of its own: it reports the value its image
+        // carries until `ModifyInstanceAttribute` gives it one.
+        sriov_net_support: None,
+        ena_support: None,
         hibernation_configured: false,
         // The launch names no block device mapping, so the host's root device is the one
         // its image carries: there is nothing of a launch's own to override it with.

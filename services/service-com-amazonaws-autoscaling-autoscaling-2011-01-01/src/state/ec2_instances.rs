@@ -234,6 +234,10 @@ pub fn launch<Eng: Send + Sync + 'static>(
             ramdisk_id,
             source_dest_check: ec2::DEFAULT_SOURCE_DEST_CHECK,
             ebs_optimized: parameters.ebs_optimized,
+            // A launch sets no enhanced networking of the instance's own: the instance
+            // reports the AMI's until `ModifyInstanceAttribute` gives it a value.
+            sriov_net_support: None,
+            ena_support: None,
             hibernation_configured: parameters.hibernation_configured,
             // This launch names no block device mapping of its own, so the instance's root
             // device is the one its AMI carries (Amazon EC2 applies the Region's EBS

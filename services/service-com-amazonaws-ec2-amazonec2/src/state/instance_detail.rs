@@ -698,7 +698,17 @@ impl ComAmazonawsEc2Amazonec2State {
                 .and_then(|image| image.hypervisor.clone())
                 .unwrap_or_else(|| IMAGE_HYPERVISOR_XEN.to_string()),
         );
-        view.ena_support = Some(image.and_then(|image| image.ena_support).unwrap_or(true));
+        // "Indicates whether enhanced networking with ENA is enabled"
+        // (`Instance$EnaSupport`): a fact of the AMI the instance was launched from, unless
+        // a `ModifyInstanceAttribute` has written the INSTANCE's own `enaSupport`
+        // ([`InstanceRecord::ena_support`]) — the same reading
+        // [`ComAmazonawsEc2Amazonec2State::instance_sriov_net_support`] takes of the
+        // attribute beside it.
+        view.ena_support = Some(
+            instance
+                .ena_support
+                .unwrap_or_else(|| image.and_then(|image| image.ena_support).unwrap_or(true)),
+        );
         view.platform_details = Some(
             image
                 .and_then(|image| image.platform_details.clone())
