@@ -26,7 +26,9 @@
 //!   generated routing table.
 //! - `override_refusal` — how this service words a request the framework refused
 //!   before any handler ran. The default returns `None`, keeping the framework's
-//!   wording. See the inline note on that method for how to reword.
+//!   wording. KEPT at the default here: this service's two wordings for a value its model
+//!   does not admit depend on WHERE in the request that value travelled, which this seam
+//!   cannot tell (see "Two wordings" below and [`refusal`]).
 //! - `override_routing_error` — how this service words a request that reached it
 //!   but named no modeled operation. The default returns `None`, so the entry
 //!   renders the protocol-correct default (query -> 400 InvalidAction, awsJson ->
@@ -67,16 +69,62 @@
 //! the control plane alike, goes through [`private_ca`], and every question about a VPC
 //! endpoint a connector names goes to Amazon EC2 through [`vpc_endpoint`]; how it words a
 //! request its own model refused is in [`refusal`].
+//!
+//! ## Two wordings for a value the model does not admit
+//!
+//! This service answers a value outside a constraint its model declares in TWO wordings, one
+//! per layer that read the value: the body-schema validator's bracketed findings for a value
+//! the request carried in its JSON body, and the standard validation envelope for one it
+//! carried on its request line. [`refusal`] states the rule and the evidence for it.
+//!
+//! Neither can be chosen in [`Service::override_refusal`], which is handed the violations
+//! alone: this model binds `ConnectorArn` to a body, to a path and to a query string in
+//! different operations, so two refusals that are indistinguishable there are worded
+//! differently on the wire. Every modelled operation is therefore served wrapped in
+//! [`FrontDoor`], which reads each violated member's HTTP binding off THAT operation's own
+//! input schema and words the two halves through the two functions attached to the door.
 
 pub mod private_ca;
 pub mod refusal;
 pub mod scep;
 pub mod vpc_endpoint;
 
+use service_common::front_door::FrontDoor;
 use smithy_server_runtime::{
-    http, ErasedOperation, Refusal, Refused, Service,
+    http, ErasedOperation, Operation, OperationRoutingTable, Refusal, Refused, Service,
 };
 use std::sync::Arc;
+
+/// Serve `operation` behind this service's front door, under its own modelled name — the
+/// routing key the protocol resolves and the generated table is keyed by, read off the
+/// operation rather than spelled again here.
+///
+/// Both of this service's wordings are attached to every door: an operation that binds
+/// nothing to its body never has a body violation to find, and one that binds nothing to its
+/// request line never has a request-line violation, which the wrapper reads off that
+/// operation's own input schema.
+fn serve<O: Operation + ErasedOperation + 'static>(table: &mut OperationRoutingTable, operation: O) {
+    table.add_operation(
+        O::NAME,
+        Box::new(
+            FrontDoor::worded(operation, refusal::body_refusal)
+                .wording_uri(refusal::request_line_refusal),
+        ) as Box<dyn ErasedOperation>,
+    );
+}
+
+/// Wire one `crate::ops::<module>::<Operation>` per line into `table`, each served behind
+/// this service's front door ([`serve`]).
+macro_rules! serve_operations {
+    ($table:expr, $engine:expr, $($module:ident :: $operation:ident),+ $(,)?) => {
+        $(
+            serve(
+                &mut $table,
+                crate::ops::$module::$operation::new(::std::sync::Arc::clone(&$engine)),
+            );
+        )+
+    };
+}
 
 /// The `com-amazonaws-pcaconnectorscep-pcaconnectorscep` emulated service: the generated [`ServiceDefinition`] plus
 /// the behavioral seams this file owns.
@@ -90,6 +138,13 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     /// router a BORROW of one of its own operations, and it owns the shared engine so every
     /// answer is computed from the same store the control-plane handlers write.
     scep: scep::ScepDataPlane<Eng>,
+    /// The same modelled operations the generated table holds, each served behind this
+    /// service's front door so a value its model does not admit is worded by the layer that
+    /// read it. Keyed by the routing key the protocol resolves — the key the generated table
+    /// uses — and built from the SAME shared engine, so a wrapped operation reads and writes
+    /// the one store. Held on the service because [`Service::override_operation`] hands the
+    /// router a BORROW of one of its own operations.
+    front_door: OperationRoutingTable,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -97,8 +152,28 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// generated [`ServiceDefinition`], which constructs each operation from it; the
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
+        let mut front_door = OperationRoutingTable::new();
+        // EVERY modelled operation, so the rule is applied by one code path rather than per
+        // operation.
+        serve_operations!(
+            front_door,
+            engine,
+            create_challenge::CreateChallenge,
+            create_connector::CreateConnector,
+            delete_challenge::DeleteChallenge,
+            delete_connector::DeleteConnector,
+            get_challenge_metadata::GetChallengeMetadata,
+            get_challenge_password::GetChallengePassword,
+            get_connector::GetConnector,
+            list_challenge_metadata::ListChallengeMetadata,
+            list_connectors::ListConnectors,
+            list_tags_for_resource::ListTagsForResource,
+            tag_resource::TagResource,
+            untag_resource::UntagResource,
+        );
         Self {
             scep: scep::ScepDataPlane::new(Arc::clone(&engine)),
+            front_door,
             entry: crate::ServiceDefinition::new(engine),
         }
     }
@@ -140,17 +215,32 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         if self.scep.claims(req) {
             return Some(&self.scep);
         }
-        None
+        // NOT a re-route: the key is the one the generated table's own protocol resolves, and
+        // the operation it names is the one served — behind this service's front door, so a
+        // value its model does not admit is worded by the layer that read it. A key the model
+        // does not name resolves to `None` here exactly as it does in the generated table, so
+        // the router's routing-error path is unchanged, and the door declares the wrapped
+        // operation's own auth schemes, so wrapping cannot change which schemes sign it.
+        let key = self.entry.protocol().routing_key(req).ok()?;
+        self.front_door.get(key)
     }
 
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {
         // The centralized walk calls this on a framework-level refusal (an absent
         // required member, or a value outside a declared bound) to let this
-        // service reword it. This service words a value that fell outside a modelled
-        // `@pattern` the way its own API does, and leaves every other refusal to the
-        // framework's conventional wording — see [`refusal`] for the rule and the
-        // evidence for it.
-        refusal::override_refusal(refusal)
+        // service reword it.
+        //
+        // Nothing is reworded HERE, because nothing this service words differently can be
+        // placed from the violations alone: this model binds one member name to a body, to a
+        // path and to a query string in different operations, and the two wordings follow the
+        // BINDING (see [`refusal`]). Both are attached to the front door each operation is
+        // served behind, which is the only layer that knows which operation was addressed.
+        // What still reaches this seam is a refusal that door does not report — a body no
+        // codec can read, a refusal mixing a `@pattern` with another constraint class — and
+        // the framework's own wording, which states the constraint the value broke, is the
+        // right answer for it.
+        let _ = refusal;
+        None
     }
 
     fn override_routing_error(

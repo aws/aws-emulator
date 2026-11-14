@@ -1,19 +1,27 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! How this service states a value that fell outside a `@pattern` its model declares.
+//! How this service states a value its request BODY carried that fell outside a `@pattern`
+//! its model declares.
 //!
-//! The rule under test: a request refused by one of the model's own `@pattern` constraints is
-//! answered HTTP 400 `ValidationException` whose lower-case `message` is one bracketed list
-//! of the validation events the request produced — each event naming the expression the value
-//! had to match and the string the request sent, and nothing else. No member name, no count,
-//! and none of the "N validation error(s) detected" framing other AWS services use.
+//! The rule under test: a request whose JSON BODY is refused by one of the model's own
+//! `@pattern` constraints is answered HTTP 400 `ValidationException` whose lower-case
+//! `message` is one bracketed list of the findings the body-schema validator in front of this
+//! service produced — each finding naming the expression the value had to match and the string
+//! the request sent, and nothing else. No member name, no count, and none of the "N validation
+//! error(s) detected" framing.
 //!
-//! The event text is fixed; its two variable parts come from the model and from the request,
-//! so the rows below vary both: six members across five operations, each with its own
-//! published pattern, each sent its own malformed value, in a path label, a body member and a
-//! nested union member. The recorded `CreateConnector` refusal is ONE row.
+//! A value the request carried OUTSIDE its body — an `@httpLabel` path segment, an
+//! `@httpQuery` parameter — is in no body, so that validator never reads it and it is refused
+//! in the validation envelope instead. That half of the rule is `request_line_refusal`; the
+//! two together are what the one member name this model binds both ways distinguishes.
 //!
-//! Every pattern below is quoted from the model (smithy_query shape=ConnectorArn,ChallengeArn,
+//! The finding's text is fixed; its two variable parts come from the model and from the
+//! request, so the rows below vary both: five members across two operations, each with its own
+//! published pattern, each sent its own malformed value, as a top-level body member and as a
+//! member nested inside a union member of one. The recorded `CreateConnector` refusal is ONE
+//! row.
+//!
+//! Every pattern below is quoted from the model (smithy_query shape=ConnectorArn,
 //! CertificateAuthorityArn,VpcEndpointId,AzureApplicationId,AzureDomain) and every value is
 //! inside that member's own `@length` bounds, so the one constraint each row breaks is the
 //! pattern.
@@ -21,16 +29,13 @@
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::harness::{self, label, new_router, Answer};
+use crate::harness::{self, new_router, Answer};
 
 /// The Region these cases are signed for.
 const REGION: &str = "eu-west-2";
 
 /// `ConnectorArn`'s published pattern (length 5..200).
 const CONNECTOR_ARN_PATTERN: &str = r"^arn:aws(-[a-z]+)*:pca-connector-scep:[a-z]+(-[a-z]+)+-[1-9]\d*:\d{12}:connector\/[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$";
-
-/// `ChallengeArn`'s published pattern (length 5..200).
-const CHALLENGE_ARN_PATTERN: &str = r"^arn:aws(-[a-z]+)*:pca-connector-scep:[a-z]+(-[a-z]+)+-[1-9]\d*:\d{12}:connector\/[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}\/challenge\/[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$";
 
 /// `CertificateAuthorityArn`'s published pattern (length 5..200).
 const CERTIFICATE_AUTHORITY_ARN_PATTERN: &str = r"^arn:aws(-[a-z]+)*:acm-pca:[a-z]+(-[a-z]+)+-[1-9]\d*:\d{12}:certificate-authority\/[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$";
@@ -69,8 +74,6 @@ struct Row {
 }
 
 fn rows() -> Vec<Row> {
-    let bad_connector_arn = "not-an-arn";
-    let bad_challenge_arn = "not-a-challenge-arn";
     vec![
         // The recorded row: a create whose referenced CA ARN is not an ARN.
         Row {
@@ -126,23 +129,6 @@ fn rows() -> Vec<Row> {
             pattern: AZURE_DOMAIN_PATTERN,
             value: "not a domain",
         },
-        // A path label rather than a body member, on each of the two ARN shapes.
-        Row {
-            name: "DeleteConnector's ConnectorArn label",
-            method: "DELETE",
-            path: format!("/connectors/{}", label(bad_connector_arn)),
-            body: None,
-            pattern: CONNECTOR_ARN_PATTERN,
-            value: bad_connector_arn,
-        },
-        Row {
-            name: "GetChallengePassword's ChallengeArn label",
-            method: "GET",
-            path: format!("/challengePasswords/{}", label(bad_challenge_arn)),
-            body: None,
-            pattern: CHALLENGE_ARN_PATTERN,
-            value: bad_challenge_arn,
-        },
         // And a body member of another operation, so the rule is not one operation's.
         Row {
             name: "CreateChallenge's ConnectorArn",
@@ -159,8 +145,8 @@ async fn send(router: &MultiServiceRouter, row: &Row) -> Answer {
     harness::call(router, REGION, row.method, &row.path, row.body.clone()).await
 }
 
-/// Every member the model gives a `@pattern`, in every position one appears in, is refused
-/// with the one sentence the rule requires.
+/// Every member the model gives a `@pattern` and binds to the request BODY, at every depth
+/// one appears at, is refused with the one sentence the rule requires.
 #[tokio::test]
 async fn a_value_outside_a_modelled_pattern_is_refused_the_way_this_service_words_it() {
     let (router, _engine) = new_router();
@@ -180,8 +166,9 @@ async fn a_value_outside_a_modelled_pattern_is_refused_the_way_this_service_word
             expected_message(row.pattern, row.value),
             "case {case:?}: expected this service's own pattern refusal, got {message:?}"
         );
-        // The two framings this service does NOT use: the count-and-member envelope other
-        // AWS services answer with, and any mention of the member's own name.
+        // The two things a body finding does NOT carry: the count-and-member envelope this
+        // service answers a REQUEST-LINE value in (`request_line_refusal`), and any mention
+        // of the member's own name.
         assert!(
             !message.contains("validation error"),
             "case {case:?}: the refusal must not use the count envelope, got {message:?}"

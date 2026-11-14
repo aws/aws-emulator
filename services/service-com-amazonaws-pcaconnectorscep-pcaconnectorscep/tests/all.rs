@@ -57,6 +57,8 @@ mod model_pattern_refusal;
 mod region_isolation;
 #[path = "all/region_segment_rule.rs"]
 mod region_segment_rule;
+#[path = "all/request_line_refusal.rs"]
+mod request_line_refusal;
 #[path = "all/resource_arn_validation.rs"]
 mod resource_arn_validation;
 #[path = "all/resource_not_found_message.rs"]
