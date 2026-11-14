@@ -2494,3 +2494,9 @@ mod cloudformation_drift_detection_status_change_events;
 // `cloudformation_metric_stream_estate_is_drainable` are each declared ONCE above: a module
 // may be declared only once, and several landings appended a note here.)
 // (`apigateway_cognito_authorizer_app_client_audience`, `zz_probe` and
+// An object write on an EventBridge-enabled bucket drives a matched rule's permitted Lambda
+// target, whose CreateInvalidation becomes CloudFront's own invalidation and refreshes the
+// distribution's edge: Amazon S3, EventBridge, AWS Lambda, IAM, CloudFormation and CloudFront
+// have to agree for the chain to hold, so no single crate's test target can drive it.
+#[path = "all/s3_object_created_invalidates_the_distribution_edge.rs"]
+mod s3_object_created_invalidates_the_distribution_edge;
