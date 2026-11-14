@@ -289,11 +289,15 @@ fn refusals() -> Vec<Refusal> {
             code: ec2::state::INVALID_PARAMETER_VALUE.to_string(),
             status: 400,
         },
-        // Cause 8 — the dependency and state guards.
+        // Cause 8 — the dependency and state guards. `DeleteDhcpOptions` READS the id before
+        // it resolves anything, so a hand-written id this service never issued is answered
+        // with the `.Malformed` half of the pair rather than the not-found one its reads
+        // answer; the not-found half is pinned on an id the service DID issue by
+        // `a_dhcp_option_set_a_vpc_holds_cannot_be_deleted_until_it_is_released` below.
         Refusal {
             action: "DeleteDhcpOptions",
             params: vec![param("DhcpOptionsId", &dhcp_options)],
-            code: ec2::state::INVALID_DHCP_OPTION_ID_NOT_FOUND.to_string(),
+            code: ec2::state::INVALID_DHCP_OPTIONS_ID_MALFORMED.to_string(),
             status: 400,
         },
         Refusal {

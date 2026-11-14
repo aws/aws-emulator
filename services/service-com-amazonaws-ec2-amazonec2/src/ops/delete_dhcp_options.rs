@@ -10,6 +10,12 @@
 //! is still associated with is refused rather than deleted — the association being the VPC's
 //! own `DhcpOptionsId`, which is where `AssociateDhcpOptions` writes it.
 //!
+//! This delete READS the id it is given before it resolves anything: a value this service
+//! could never have issued as a DHCP options set id is answered
+//! `InvalidDhcpOptionsId.Malformed`, where one it could have issued but holds no set for is
+//! answered this operation's own not-found code ([`dhcp_options_id_not_found`]). See the
+//! `handle` body for which recorded refusals put this operation on that reading.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -163,25 +169,40 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 "The request must contain the parameter dhcpOptionsId",
             ));
         }
-        // A value that is not a dhcp-options id at all is refused BEFORE the lookup — the
-        // ordering every resource of this service keeps, so a caller can tell "not a
-        // dhcp-options id" from "no such options set".
-        if !state::dhcp_options_id_is_well_formed(&input.dhcp_options_id) {
-            return Err(state::invalid_dhcp_options_id_malformed(
-                &input.dhcp_options_id,
-            ));
-        }
-
         let state_handle = state::require_service_state(&*self.engine)?;
         let mut store = state_handle.lock();
         // A move the clock already owes a record of this store fell due whether or not
         // anybody called, so those moves are applied before this write reads it.
         store.materialize_due_transitions();
 
-        // A set this account holds no options set for has nothing to delete. The sentence is
-        // this operation's own: its recorded refusal names the resource in the SINGULAR
-        // (`dhcpOption`), where the describe of the sets names it in the plural — which of
-        // the two an operation answers is a fact of that operation.
+        // A `DhcpOptionsId` this service could never have ISSUED is not a value this
+        // operation can resolve at all, so it is refused BEFORE any lookup: this delete
+        // READS the id (EC2's long id form is an obfuscated identifier the service decodes
+        // ahead of the lookup) rather than looking it up blind, so a value no issue of this
+        // kind ever produced is `InvalidDhcpOptionsId.Malformed` and not a resource that is
+        // not there. The ids this service has issued are the long-form values its mint has
+        // counted ([`crate::state::ComAmazonawsEc2Amazonec2State::id_was_issued`]), so the
+        // all-zero placeholder a client reaches for, a value in no issued id form at all,
+        // and a hand-written id above everything the mint reached are each answered here.
+        //
+        // WHICH of the two readings an operation takes is a fact of that operation, recorded
+        // with it: the recorded refusals of THIS one (`ec2-dhcp-options-lifecycle#task#6` and
+        // the `ec2.op-contract-delete-dhcp-options` contract check) answer a hand-written
+        // long-form id and the all-zero id as malformed, while `DescribeDhcpOptions` and
+        // `AssociateDhcpOptions` are recorded answering the not-found code for an id in that
+        // same gap — so this is not generalised to them.
+        if !store.id_was_issued(state::DHCP_OPTIONS_ID_PREFIX, &input.dhcp_options_id) {
+            return Err(state::invalid_dhcp_options_id_malformed(
+                &input.dhcp_options_id,
+            ));
+        }
+
+        // Screening the value above is what keeps THIS half of the pair reachable: an id this
+        // service did issue names an options set that may since have gone, and a set this
+        // account holds none for has nothing to delete. The sentence is this operation's own:
+        // its recorded refusal names the resource in the SINGULAR (`dhcpOption`), where the
+        // describe of the sets names it in the plural — which of the two an operation answers
+        // is a fact of that operation.
         if !store.holds_dhcp_options(&input.dhcp_options_id) {
             return Err(dhcp_options_id_not_found(&input.dhcp_options_id));
         }

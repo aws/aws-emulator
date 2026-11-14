@@ -2153,6 +2153,12 @@ mod delete_network_insights_access_scope;
 // to the same destination — is refused `FlowLogAlreadyExists` and stores nothing. Declared at
 #[path = "all/flow_log_duplicate_refusal.rs"]
 mod flow_log_duplicate_refusal;
+// What `DeleteDhcpOptions` takes out of the one DHCP options store — the set the request
+// names, with the bytes it held released — and how it READS the id it is given: a value this
+// service could never have issued is malformed, where one it did issue that names no set is
+// absent. Declared at the tail of this file, which is where every new ec2 suite lands.
+#[path = "all/delete_dhcp_options.rs"]
+mod delete_dhcp_options;
 // How every operation that acts on ONE named volume reads its `VolumeId`: a value outside the
 // form EC2 ISSUES is the id-level malformed class before any lookup, and only a value inside
 // that form naming no volume is the not-found class. Declared at the tail of this file, which
