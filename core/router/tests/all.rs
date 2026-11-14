@@ -1926,6 +1926,13 @@ mod bedrock_knowledge_base_over_an_aoss_collection;
 // neither crate's own test target can observe both ends of it.
 #[path = "all/cloudformation_dynamodb_table_in_place_update.rs"]
 mod cloudformation_dynamodb_table_in_place_update;
+// Declared in the appended tail: whether the address a stack's DomainEndpoint output hands
+// its consumers is the one Amazon OpenSearch Service published for the domain — and answers
+// for it — spans CloudFormation (which resolves the output) and that service (which publishes
+// the address and serves the domain's data plane), so neither crate's own test target can
+// observe both ends of it.
+#[path = "all/cloudformation_domain_endpoint_is_dialled_by_consumers.rs"]
+mod cloudformation_domain_endpoint_is_dialled_by_consumers;
 // Declared in the appended tail, which is where every new suite inserts its lines: the HTTPS
 // front door, its TLS terminator and its per-connection accept loop are the router's own, not
 // any one service's, and the suite drives the BINARY this build produces over its data port,

@@ -111,7 +111,12 @@ pub(crate) fn build_router() -> MultiServiceRouter {
 
 /// A SigV4 `Authorization` header whose credential scope names `service`, which is what
 /// routes the request. The signature is never checked: request authentication is off.
-fn authorization(service: &str) -> String {
+///
+/// `pub(crate)` because a sibling suite dials the DATA plane at the address this stack's
+/// outputs published ([`crate::cloudformation_domain_endpoint_is_dialled_by_consumers`]),
+/// which is a host no helper here knows: one credential scope, named once, so two suites of
+/// the same estate cannot sign for two different Regions.
+pub(crate) fn authorization(service: &str) -> String {
     format!(
         "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20260101/{REGION}/{service}/aws4_request, \
          SignedHeaders=host, Signature=0000000000000000000000000000000000000000000000000000000000000000"
