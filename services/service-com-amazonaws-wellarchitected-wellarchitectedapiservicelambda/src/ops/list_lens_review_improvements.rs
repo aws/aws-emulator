@@ -251,9 +251,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // The improvement plan is a SELECTION over the lens's questions, in the ORDER the
-        // workload is reviewed in: the questions whose stored answer leaves a risk,
-        // narrowed further by the request's filters and paged through the service's shared
-        // question cursor. The question set is the LENS's own content — an AWS-official
+        // workload is reviewed in: the questions whose stored answer leaves a risk — the
+        // ones the review IDENTIFIED a risk in, through the one place that rule lives
+        // (`crate::state::identified_risk`) — narrowed further by the request's filters and
+        // paged through the service's shared question cursor. The question set is the LENS's own content — an AWS-official
         // lens's catalog entry or a custom lens's imported document — which is what
         // `crate::state::...::lens_review_questions` resolves, for the lens VERSION this
         // review is against. `PillarId` was resolved against that content above, so what it
@@ -287,7 +288,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         .pillar_id
                         .as_deref()
                         .is_none_or(|pillar| pillar == question.pillar_id)
-                    && improvement_risk(
+                    && crate::state::identified_risk(
                         question,
                         workload.answer(&input.lens_alias, &question.question_id),
                     )
@@ -302,7 +303,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .questions
             .iter()
             .filter_map(|question| {
-                let risk = improvement_risk(
+                let risk = crate::state::identified_risk(
                     question,
                     workload.answer(&input.lens_alias, &question.question_id),
                 )?;
@@ -329,28 +330,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             next_token: page.next_token,
         })
     }
-}
-
-/// The `Risk` one question contributes to the improvement plan, or `None` when it
-/// contributes nothing.
-///
-/// An improvement is a risk the review IDENTIFIED in a question, so the plan is made of
-/// the questions rated at one of the risks that leaves something to improve: `HIGH` and
-/// `MEDIUM` (`smithy_query(query="shape", shape="Risk")` publishes those beside `NONE`,
-/// `NOT_APPLICABLE` and `UNANSWERED`). A question whose answer leaves no best practice
-/// out is rated `NONE`, one the workload says does not apply is `NOT_APPLICABLE`, and one
-/// with no stored answer is `UNANSWERED` — none of the three is a risk the review
-/// identified in the workload, so none of them is an improvement item.
-///
-/// The risk is of the QUESTION, so it is derived against the question's own choice set
-/// (`crate::state::AnswerRecord::risk`), which is what the review's lens version asks
-/// about.
-fn improvement_risk(
-    question: &crate::state::ReviewQuestion,
-    answer: Option<&crate::state::AnswerRecord>,
-) -> Option<&'static str> {
-    let risk = answer?.risk(question);
-    matches!(risk, crate::state::RISK_HIGH | crate::state::RISK_MEDIUM).then_some(risk)
 }
 
 /// The `ImprovementSummary` for one question of a lens review: the question as the lens

@@ -241,19 +241,19 @@ async fn every_failure_names_its_shape_with_this_services_locator() {
     );
 }
 
-/// Rule, the half NO handler answers: a request a scaffolded operation cannot serve, and
-/// one that names no operation of this service at all, carry the qualified form too —
-/// whatever shape the framework names, since neither comes from a modelled handler.
+/// Rule, the half NO handler answers: a request refused at the boundary before any handler
+/// runs, and one that names no operation of this service at all, carry the qualified form
+/// too — whatever shape the framework names, since neither comes from a modelled handler.
 #[tokio::test]
 async fn a_failure_no_handler_answered_names_its_shape_the_same_way() {
     let client = Client::new();
     for (case, method, path) in [
-        // A well-formed request to an operation that is still a scaffold: nothing refuses
-        // it before the handler, and the handler answers the scaffold's 501.
+        // A request carrying a value no `ReportFormat` publishes: the boundary's constraint
+        // validation refuses it before the operation's handler runs.
         (
-            "a scaffolded operation",
+            "a value the boundary refuses",
             "GET",
-            "/consolidatedReport?Format=JSON",
+            "/consolidatedReport?Format=CSV",
         ),
         // A path no operation of this service is bound to: the answer is the framework's
         // routing failure, which no operation produced.

@@ -13,8 +13,8 @@
 //!
 //! Every request goes through the real `MultiServiceRouter`, so the boundary walk
 //! (deserialize, then constraint validation) and the handler are both exercised exactly
-//! as they are in production — including for operations that are still scaffolded,
-//! whose refusal envelope is the same one.
+//! as they are in production — including for a request no handler of this service can
+//! serve, whose refusal envelope is the same one.
 
 use serde_json::{json, Value};
 
@@ -580,18 +580,18 @@ async fn an_undecodable_next_token_cannot_be_parsed() {
     );
 }
 
-/// An operation that is still scaffolded answers 501 for a request it could serve, and
-/// the modelled 400 for one it could not — the refusal envelope does not depend on
-/// whether a handler exists.
+/// The 501 channel is for an operation NOBODY has written yet, and no operation of this
+/// service is one: a well-formed request is SERVED, and one carrying a value the model does
+/// not publish is refused with the modelled 400 — neither is answered from that channel.
 #[tokio::test]
-async fn a_scaffolded_operation_still_answers_501_for_a_valid_request() {
+async fn a_request_this_service_serves_is_never_answered_from_the_501_channel() {
     let client = Client::new();
-    for (case, method, path, body) in [
+    for (case, method, path, body, expected) in [
         // `GetConsolidatedReport` — the consolidated report over the account's workloads —
-        // is still a scaffold with its own issue. The rows this one replaced name
-        // operations since implemented: `GetLensReviewReport`
-        // (`super::lens_review_report`), `ListProfileNotifications`
-        // (`super::profile_notifications`), `ListNotifications`
+        // was the last scaffold of this service and is now served
+        // (`super::consolidated_report`), as are the operations the rows this one replaced
+        // named: `GetLensReviewReport` (`super::lens_review_report`),
+        // `ListProfileNotifications` (`super::profile_notifications`), `ListNotifications`
         // (`super::lens_notifications`) and `GetProfileTemplate`
         // (`super::profile_template`). The request is well formed — `Format` is a
         // published `ReportFormat` member — so nothing refuses it before the handler runs.
@@ -600,12 +600,22 @@ async fn a_scaffolded_operation_still_answers_501_for_a_valid_request() {
             "GET",
             "/consolidatedReport?Format=JSON".to_string(),
             None,
+            200,
+        ),
+        // The same operation with a value no `ReportFormat` publishes: refused at the
+        // boundary with the modelled 400, which is not the 501 channel either.
+        (
+            "GetConsolidatedReport / an unpublished Format",
+            "GET",
+            "/consolidatedReport?Format=CSV".to_string(),
+            None,
+            400,
         ),
     ] {
         let answer = client.send(method, &path, body).await;
         assert_eq!(
-            answer.status, 501,
-            "case {case:?}: a valid request to a scaffolded operation must be 501, got {answer:?}"
+            answer.status, expected,
+            "case {case:?}: expected HTTP {expected}, got {answer:?}"
         );
     }
 }

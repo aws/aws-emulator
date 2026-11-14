@@ -128,6 +128,13 @@ mod framework_lens;
 /// The document ONE lens review is REPORTED as (`GetLensReviewReport`), derived from the
 /// stored review exactly as the review's own projection is.
 mod lens_review_report;
+/// The metrics the CONSOLIDATED report over the account's workloads is made of
+/// (`GetConsolidatedReport`), derived from each stored workload exactly as a read of one of
+/// its lens reviews is.
+mod consolidated_report;
+/// The PDF DOCUMENT a report of this service is handed back as — the one place this
+/// service writes one, shared by the lens review report and the consolidated report.
+mod report_pdf;
 mod store;
 mod refusals;
 mod shares;
@@ -141,6 +148,8 @@ pub use shares::*;
 pub use refusals::*;
 pub use framework_lens::*;
 pub use lens_review_report::*;
+pub use consolidated_report::*;
+pub(crate) use report_pdf::*;
 
 pub use regions::{AWS_REGIONS, DEFAULT_REGION};
 
@@ -1164,6 +1173,29 @@ impl AnswerRecord {
         }
         RISK_NONE
     }
+}
+
+/// The `Risk` a review IDENTIFIED in one question, and `None` for a question it identified
+/// none in.
+///
+/// A risk is identified in a question when its answer rates it at one of the risks that
+/// leaves something to improve: `HIGH` or `MEDIUM` (`smithy_query(query="shape",
+/// shape="Risk")` publishes those beside `NONE`, `NOT_APPLICABLE` and `UNANSWERED`). A
+/// question whose answer leaves no best practice out is rated `NONE`, one the reviewed
+/// resource says does not apply is `NOT_APPLICABLE`, and one with no stored answer is
+/// `UNANSWERED` — none of the three is a risk the review identified.
+///
+/// The rating is of the QUESTION, so it is derived against that question's own choice set
+/// ([`AnswerRecord::risk`]). One place, because the improvement plan of a lens review
+/// (`ListLensReviewImprovements`) and the consolidated report over the account's workloads
+/// (`GetConsolidatedReport`) both select the questions a review identified a risk in, and
+/// the two cannot disagree about which questions those are.
+pub fn identified_risk(
+    question: &ReviewQuestion,
+    answer: Option<&AnswerRecord>,
+) -> Option<&'static str> {
+    let risk = answer?.risk(question);
+    matches!(risk, RISK_HIGH | RISK_MEDIUM).then_some(risk)
 }
 
 /// The `Answer` projection of one question of a lens review: the question as the LENS

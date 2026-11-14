@@ -360,3 +360,7 @@ mod schema_finding_wording;
 // sorted middle is what repeatedly refused to merge.
 #[path = "all/error_type_header_form.rs"]
 mod error_type_header_form;
+// Appended at the end for the reason the notes above give: an insertion into this list's
+// sorted middle is what repeatedly refused to merge.
+#[path = "all/consolidated_report.rs"]
+mod consolidated_report;

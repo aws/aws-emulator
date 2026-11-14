@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op GetConsolidatedReport
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `GetConsolidatedReport`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`GetConsolidatedReport::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports the CONSOLIDATED report over the workloads the calling account can see: one
+//! `WORKLOAD` metric per reported workload, derived from that workload's stored state by
+//! the one place that builds it
+//! ([`crate::state::ComAmazonawsWellarchitectedWellarchitectedapiservicelambdaState::consolidated_report_metric`]),
+//! paged over this store's workloads — as the metrics themselves for a request that asks
+//! for JSON, and as the Base64-encoded PDF of those same metrics for one that asks for PDF.
 //!
 //! ## Shape of an operation
 //!
@@ -158,18 +155,113 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `GetConsolidatedReport` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(GetConsolidatedReportErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("GetConsolidatedReport"))
+        let state = crate::state::service_state(&*self.engine, ctx.parts()).ok_or_else(|| {
+            GetConsolidatedReportErrorModeled::InternalServerException(InternalServerException {
+                message: "the Well-Architected Tool workload store is unavailable".to_string(),
+            })
+        })?;
+
+        // This operation's `MaxResults` member is `@range(min: 1, max: 15)`
+        // (`smithy_query(query="operation", operation="GetConsolidatedReport")`): the range
+        // is a MEMBER trait, so this read's ceiling is its own rather than the one most of
+        // this service's paginated reads carry. A request that omits the member asks for a
+        // full page.
+        let page_size = crate::state::page_size_up_to(
+            input.max_results,
+            crate::state::CONSOLIDATED_REPORT_MAX_RESULTS_CEILING,
+        );
+
+        // An opaque token this service did not issue is a bad request, not an empty page.
+        // A token is this service's own cursor, not a value a caller composes: it cannot
+        // be corrected, only obtained again, so the refusal is classified `CANNOT_PARSE`
+        // ("restart the pagination") rather than as a field rule to fix — and it still
+        // names the member whose value could not be decoded. The cursor carries a
+        // `WorkloadId`, the key this report is enumerated by, so it is the cursor the
+        // workload enumeration issues.
+        let cursor = match input.next_token.as_deref() {
+            None => None,
+            Some(token) => match crate::state::decode_next_token(token) {
+                Some(cursor) => Some(cursor),
+                None => return Err(invalid_next_token()),
+            },
+        };
+
+        // This emulator serves one account, so the caller is that account and it is the
+        // account a workload's ownership — and a share of one — is resolved against.
+        let caller = ::engine::emulator_account_id();
+        let store = state.lock();
+        // `state` resolves the store of the Region this request was signed for, so the
+        // report below covers that Region's workloads and no other's: a workload belongs to
+        // the Region whose endpoint created it. The order is `WorkloadId`, the order the
+        // workload enumeration pages over, so the cursor carries a key that is unique and
+        // fixed for a workload's whole life.
+        let order = store.workload_order();
+        // The cursor is start-EXCLUSIVE: the page resumes just past the id already served,
+        // so every workload is reported exactly once across the pages, and a workload
+        // renamed, created or deleted between two pages moves nothing already served.
+        let start = match &cursor {
+            Some(workload_id) => order.partition_point(|candidate| candidate <= workload_id),
+            None => 0,
+        };
+
+        let covered: Vec<&crate::state::WorkloadRecord> = order[start..]
+            .iter()
+            .filter_map(|workload_id| store.workloads.get(workload_id))
+            // "A consolidated report of YOUR workloads", plus the shared ones when the
+            // request asks for them — through the one place that rule lives
+            // (`crate::state::...::consolidated_report_covers`).
+            .filter(|record| {
+                store.consolidated_report_covers(
+                    record,
+                    caller,
+                    input.include_shared_resources.unwrap_or(false),
+                )
+            })
+            .collect();
+
+        let page = &covered[..covered.len().min(page_size)];
+        // A cursor is issued only when the selection did NOT fit in this page, so the last
+        // page omits `NextToken` and a caller following it terminates.
+        let next_token = match page.last() {
+            Some(record) if covered.len() > page.len() => {
+                Some(crate::state::encode_next_token(&record.workload_id))
+            }
+            _ => None,
+        };
+
+        let metrics: Vec<ConsolidatedReportMetric> = page
+            .iter()
+            .map(|record| store.consolidated_report_metric(record))
+            .collect();
+
+        // "The format of the consolidated report. For PDF, Base64String is returned. For
+        // JSON, Metrics is returned" (`Format` doc): one format reports the metrics
+        // themselves and the other the document those same metrics are set as, so the two
+        // formats of one page say the same thing and neither member is filled for the
+        // format that does not report it. `ReportFormat` publishes exactly these two
+        // members and the boundary refuses any other value before this handler runs, so
+        // nothing else reaches here.
+        let base64_string = (input.format == crate::state::REPORT_FORMAT_PDF).then(|| {
+            ::aws_smithy_types::base64::encode(crate::state::consolidated_report_document(
+                &metrics,
+            ))
+        });
+
+        Ok(GetConsolidatedReportOutput {
+            metrics: (input.format == crate::state::REPORT_FORMAT_JSON).then_some(metrics),
+            base64_string,
+            next_token,
+        })
     }
+}
+
+/// What a `NextToken` this service did not issue is answered with. The token is this
+/// service's own opaque cursor, so the only thing a caller can do is start the pagination
+/// again — which is what `CANNOT_PARSE` tells it.
+fn invalid_next_token() -> GetConsolidatedReportError {
+    GetConsolidatedReportErrorModeled::ValidationException(crate::state::cannot_parse_exception(
+        crate::state::NEXT_TOKEN_MEMBER,
+        crate::state::INVALID_NEXT_TOKEN_MESSAGE,
+    ))
+    .into()
 }
