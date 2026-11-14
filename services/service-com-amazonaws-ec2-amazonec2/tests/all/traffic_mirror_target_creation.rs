@@ -1351,8 +1351,8 @@ async fn the_report_pages_over_every_target() {
     );
     assert_eq!(
         error_message(&body),
-        "Next token 'not-a-token' is invalid",
-        "expected the message to name the token the request sent, got {body}"
+        ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE,
+        "expected EC2's own pagination-token sentence, got {body}"
     );
 }
 

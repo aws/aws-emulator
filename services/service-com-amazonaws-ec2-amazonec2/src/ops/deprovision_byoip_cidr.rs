@@ -183,9 +183,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // it is refused rather than looked up. The message names the value the request
         // sent, in EC2's own "the value you sent, in parentheses" form.
         let Ok(cidr) = state::canonical_byoip_cidr(requested) else {
-            return Err(state::invalid_parameter_value(format!(
-                "The CIDR ({requested}) is not valid."
-            )));
+            return Err(state::invalid_byoip_cidr(requested));
         };
 
         // "Checks whether you have the required permissions for the action, without

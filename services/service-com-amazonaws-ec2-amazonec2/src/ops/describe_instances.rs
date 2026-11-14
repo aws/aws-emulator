@@ -380,7 +380,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let start_at = match input.next_token.as_deref() {
             None => None,
             // A token this service did not mint is refused with EC2's own code and sentence
-            // for an unusable pagination token, which names the token the request sent
+            // for an unusable pagination token
             // ([`crate::state::invalid_pagination_token_for`]) — the one definition every
             // paged describe of this service answers it through.
             Some(token) => Some(

@@ -179,9 +179,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         if record.io_enabled {
             return Err(incorrect_state(format!(
-                "The I/O operations of volume '{}' are already enabled, so there is nothing \
-                 to enable",
-                input.volume_id
+                "Volume {volume_id} already has IO enabled.",
+                volume_id = input.volume_id,
             )));
         }
         record.io_enabled = true;

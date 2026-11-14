@@ -26,6 +26,7 @@
 
 use std::collections::BTreeSet;
 
+use service_com_amazonaws_ec2_amazonec2 as ec2;
 use smithy_server_runtime::MultiServiceRouter;
 
 use super::ec2_query::{call, element, error_code, error_message, filters};
@@ -681,7 +682,7 @@ async fn describe_tags_refuses_what_it_cannot_serve() {
             params: &[("NextToken", "not-a-token")],
             status: 400,
             code: "InvalidPaginationToken",
-            message: "Next token 'not-a-token' is invalid",
+            message: ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE,
         },
         RefusalRow {
             case: "a filter this operation does not document",

@@ -616,8 +616,8 @@ async fn a_token_this_service_did_not_mint_is_refused() {
         );
         assert_eq!(
             error_message(&body),
-            format!("Next token '{token}' is invalid"),
-            "case {case:?}: expected the refusal to name the token, got {body}"
+            ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE,
+            "case {case:?}: expected EC2's own pagination-token sentence, got {body}"
         );
     }
 }

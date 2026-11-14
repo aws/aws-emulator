@@ -190,9 +190,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // form the store keys ranges by is also what makes `198.51.100.7/24` and
         // `198.51.100.0/24` the one range they are.
         let Ok(cidr) = state::canonical_byoip_cidr(requested) else {
-            return Err(state::invalid_parameter_value(format!(
-                "The CIDR ({requested}) is not valid."
-            )));
+            return Err(state::invalid_byoip_cidr(requested));
         };
 
         // "Checks whether you have the required permissions for the action, WITHOUT ACTUALLY

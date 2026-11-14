@@ -751,18 +751,18 @@ async fn a_next_token_this_service_did_not_issue_is_refused() {
             "InvalidPaginationToken",
             "case {token:?}: expected InvalidPaginationToken, got {body}"
         );
-        // EC2's message for this refusal names the token the request sent, so it is built
-        // from the request rather than fixed.
+        // EC2's message for this refusal is one fixed sentence: it does not repeat the token
+        // the request sent back.
         let message = unescaped(&element(&body, "Message").unwrap_or_default());
         assert_eq!(
             message,
-            format!("Next token '{token}' is invalid"),
-            "case {token:?}: expected the message to name the token, got {message:?}"
+            ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE,
+            "case {token:?}: expected EC2's own pagination-token sentence, got {message:?}"
         );
     }
 
-    // A token longer than the message echoes is named only up to that bound, so a
-    // request's own bytes are never reflected in full.
+    // A token far longer than any this service mints earns the same fixed sentence, so a
+    // request's own bytes are never reflected at all.
     let oversize = "z".repeat(MAX_ECHOED_PAGE_TOKEN_CHARS * 4);
     let params = vec![("NextToken".to_string(), oversize.clone())];
     let (status, body) = describe(&router, &params).await;
@@ -773,12 +773,8 @@ async fn a_next_token_this_service_did_not_issue_is_refused() {
     let message = unescaped(&element(&body, "Message").unwrap_or_default());
     assert_eq!(
         message,
-        format!(
-            "Next token '{}' is invalid",
-            "z".repeat(MAX_ECHOED_PAGE_TOKEN_CHARS)
-        ),
-        "an oversize token: expected the echo bounded at MAX_ECHOED_PAGE_TOKEN_CHARS, got \
-         {message:?}"
+        ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE,
+        "an oversize token: expected EC2's own pagination-token sentence, got {message:?}"
     );
 }
 

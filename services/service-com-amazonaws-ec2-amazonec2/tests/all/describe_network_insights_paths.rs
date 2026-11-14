@@ -40,8 +40,8 @@ use ec2::ops::types::{FilterPortRange, PathFilter, Tag};
 use ec2::state::{
     ComAmazonawsEc2Amazonec2State as Ec2State, NetworkInsightsPathSpec, DRY_RUN_OPERATION,
     INVALID_FILTER, INVALID_NETWORK_INSIGHTS_PATH_ID_NOT_FOUND, INVALID_PAGINATION_TOKEN,
-    INVALID_PARAMETER_VALUE, MAX_FILTERS, MAX_RESOURCE_IDS, NETWORK_INSIGHTS_PATH_ID_PREFIX,
-    RESOURCE_TYPE_NETWORK_INSIGHTS_PATH,
+    INVALID_PAGINATION_TOKEN_MESSAGE, INVALID_PARAMETER_VALUE, MAX_FILTERS, MAX_RESOURCE_IDS,
+    NETWORK_INSIGHTS_PATH_ID_PREFIX, RESOURCE_TYPE_NETWORK_INSIGHTS_PATH,
 };
 use service_com_amazonaws_ec2_amazonec2 as ec2;
 use smithy_server_runtime::MultiServiceRouter;
@@ -1040,8 +1040,8 @@ async fn max_results_is_accepted_at_its_bounds_and_refused_past_them() {
 }
 
 /// RULE 5: a `NextToken` this service did not issue is refused with `InvalidPaginationToken`
-/// naming the token, rather than read as a cursor. The rows are free text, a path id, an
-/// almost-token and an empty value.
+/// and EC2's own sentence for it, rather than read as a cursor. The rows are free text, a
+/// path id, an almost-token and an empty value.
 #[tokio::test]
 async fn a_token_this_service_did_not_issue_is_refused() {
     let (router, engine) = super::ec2_query::emulator();
@@ -1061,8 +1061,8 @@ async fn a_token_this_service_did_not_issue_is_refused() {
         );
         assert_eq!(
             error_message(&body),
-            format!("Next token '{token}' is invalid"),
-            "case {case:?}: expected the refusal to name the token, got {body}"
+            INVALID_PAGINATION_TOKEN_MESSAGE,
+            "case {case:?}: expected EC2's own pagination-token sentence, got {body}"
         );
     }
 }

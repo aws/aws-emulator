@@ -1409,7 +1409,7 @@ async fn a_token_this_service_did_not_mint_is_refused() {
              {body}"
         );
         let message = error_message(&body);
-        let expected = format!("Next token '{token}' is invalid");
+        let expected = ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE;
         assert_eq!(
             message, expected,
             "case {case:?}: expected the message {expected:?}, got {message:?}"

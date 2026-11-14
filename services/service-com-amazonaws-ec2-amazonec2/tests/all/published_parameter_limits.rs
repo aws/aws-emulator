@@ -360,7 +360,7 @@ async fn a_paged_describes_other_parameter_refusals_carry_ec2s_own_sentences() {
             "a pagination token the service never issued",
             vec![p("NextToken", "r-nope")],
             "InvalidPaginationToken",
-            "Next token 'r-nope' is invalid",
+            ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE,
         ),
         (
             "a page size beside an explicit id selection",

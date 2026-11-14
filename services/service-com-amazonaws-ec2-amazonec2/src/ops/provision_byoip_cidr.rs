@@ -190,10 +190,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let block = match state::provisionable_byoip_cidr(requested, publicly_advertisable) {
             Ok(block) => block,
             Err(state::ByoipCidrProblem::Malformed) => {
-                return Err(state::invalid_parameter_value(format!(
-                    "Value ({requested}) for parameter cidr is invalid. \
-                     This is not a valid CIDR block."
-                )))
+                return Err(state::invalid_byoip_cidr(requested));
             }
             Err(state::ByoipCidrProblem::PrefixLength(most_specific)) => {
                 return Err(state::invalid_parameter_value(format!(

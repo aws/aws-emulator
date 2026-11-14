@@ -1047,7 +1047,7 @@ async fn the_report_pages_by_max_results_and_its_token() {
     let carried = token(&body).expect("a report of eight blocks leaves a token after five");
     let mut other = open_window();
     other.extend(recurrence("Weekly", Some(1), &[3], None));
-    other.push(p("NextToken", carried.clone()));
+    other.push(p("NextToken", carried));
     let (status, body) = call(&router, REGION, ACTION, &other).await;
     assert_eq!(
         status, 400,
@@ -1058,9 +1058,10 @@ async fn the_report_pages_by_max_results_and_its_token() {
         "InvalidPaginationToken",
         "expected the pagination refusal, got {body}"
     );
-    assert!(
-        error_message(&body).contains(&carried),
-        "the refusal names the token that was refused, got {body}"
+    assert_eq!(
+        error_message(&body),
+        ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE,
+        "expected EC2's own pagination-token sentence, got {body}"
     );
 }
 
@@ -1488,7 +1489,7 @@ async fn a_request_no_schedule_could_be_described_by_is_refused() {
             search(vec![p("NextToken", "AAAAAAAAAAE=")]),
             400,
             "InvalidPaginationToken",
-            "AAAAAAAAAAE=".to_string(),
+            ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE.to_string(),
         ),
         (
             "the DryRun probe on a search that would have been served".to_string(),

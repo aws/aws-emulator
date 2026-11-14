@@ -694,6 +694,23 @@ pub fn canonical_byoip_cidr(value: &str) -> Result<String, CidrProblem> {
     canonical_ipv4_cidr(value).or_else(|_| canonical_ipv6_cidr(value))
 }
 
+/// Refuse a value a BYOIP operation cannot read as an address range at all: HTTP 400
+/// `InvalidParameterValue`, `The CIDR (<value>) is not valid.`
+///
+/// The BYOIP surface words an unreadable `Cidr` with a sentence of its OWN — the range named
+/// in parentheses, the way [`invalid_cidr_not_found`] names a range it could not resolve —
+/// rather than with the `Value (…) for parameter cidr is invalid. …` of the parameter layer
+/// the VPC and route surfaces are validated by. ONE writer of it, so every operation that
+/// takes a BYOIP range (`ProvisionByoipCidr`, `AdvertiseByoipCidr`, `WithdrawByoipCidr`,
+/// `DeprovisionByoipCidr`, `MoveByoipCidrToIpam`) refuses an unreadable one the same way.
+/// The echo is bounded the way every refusal of this crate bounds a quoted range.
+pub fn invalid_byoip_cidr<E>(cidr: &str) -> Scaffolded<E> {
+    invalid_parameter_value(format!(
+        "The CIDR ({echoed}) is not valid.",
+        echoed = crate::ops::delete_coip_cidr::echoed_cidr(cidr),
+    ))
+}
+
 /// EC2's error code for an address range the request named that the account has not
 /// brought to AWS, so there is no range to act on.
 pub const INVALID_CIDR_NOT_FOUND: &str = "InvalidCidr.NotFound";

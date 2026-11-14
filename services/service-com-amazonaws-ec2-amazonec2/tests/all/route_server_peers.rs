@@ -1285,7 +1285,7 @@ async fn describe_route_server_peers_joins_values_with_or_and_matches_wildcards(
 }
 
 /// The rule: a `NextToken` this service did not mint is refused with
-/// `InvalidPaginationToken` naming the token the request sent, while a token it DID mint
+/// `InvalidPaginationToken` and EC2's own sentence for it, while a token it DID mint
 /// resumes the report; and a `DryRun` probe from a caller holding the action's permissions
 /// is answered `DryRunOperation` (HTTP 412) and reports nothing, whatever else the request
 /// selects, where `DryRun=false` is an ordinary call.
@@ -1374,7 +1374,7 @@ async fn describe_route_server_peers_refuses_a_foreign_token_and_performs_no_dry
             ec2::state::INVALID_PAGINATION_TOKEN
         );
         let message = error_message(&body);
-        let expected = format!("Next token '{token}' is invalid");
+        let expected = ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE;
         assert_eq!(
             message, expected,
             "case {case:?}: expected the message {expected:?}, got {message:?}"
@@ -1824,7 +1824,23 @@ async fn delete_route_server_peer_refuses_a_second_delete_and_performs_no_dry_ru
     ];
     for (case, wait, dry_run) in refusals {
         if wait {
-            tokio::time::sleep(Duration::from_millis(900)).await;
+            // Wait for the CONDITION the clock owes — the peer reported `deleted` — by
+            // looking again until it holds or a deadline far past the service's own
+            // transition span passes, so nothing here depends on how fast the host runs.
+            let deadline = std::time::Instant::now() + ec2::state::TRANSITION_DELAY * 40;
+            loop {
+                let state = described_state(case, &router, &doomed).await;
+                if state == ec2::state::ROUTE_SERVER_PEER_STATE_DELETED {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "case {case:?}: expected the clock to report the peer \
+                     {deleted:?}, it was still {state:?}",
+                    deleted = ec2::state::ROUTE_SERVER_PEER_STATE_DELETED
+                );
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
         }
         let mut params = vec![param("RouteServerPeerId", &doomed)];
         if dry_run {
@@ -1842,16 +1858,11 @@ async fn delete_route_server_peer_refuses_a_second_delete_and_performs_no_dry_ru
             "case {case:?}: expected {expected}, got {code:?} with body {body}",
             expected = ec2::state::INCORRECT_STATE
         );
-        let expected_state = if wait {
-            ec2::state::ROUTE_SERVER_PEER_STATE_DELETED
-        } else {
-            ec2::state::ROUTE_SERVER_PEER_STATE_DELETING
-        };
+        // The refusal is AWS's wording for this resource: the peer named, and that its state
+        // does not admit the request — the same sentence whichever state it had reached, so
+        // the row that waited for `deleted` and the rows that did not expect one message.
         let message = error_message(&body);
-        let expected = format!(
-            "{kind} '{doomed}' is in the '{expected_state}' state.",
-            kind = ec2::state::RESOURCE_TYPE_ROUTE_SERVER_PEER,
-        );
+        let expected = format!("Route Server Peer {doomed} is in an invalid state.");
         assert_eq!(
             message, expected,
             "case {case:?}: expected the message {expected:?}, got {message:?}"

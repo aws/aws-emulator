@@ -1185,7 +1185,7 @@ async fn describe_filters_the_groups_its_selectors_named() {
             ],
         )
         .await;
-        assert_unknown_group(case, named, status, &body);
+        assert_unknown_described_group(case, named, status, &body);
     }
 }
 
@@ -1414,7 +1414,17 @@ async fn delete_ok(case: &str, router: &MultiServiceRouter, group_name: &str) ->
 /// The refusal a request naming no stored placement group must get, asserted for the case
 /// and the group the request named: HTTP 400 `InvalidPlacementGroup.Unknown`, whose message
 /// names that group.
-fn assert_unknown_group(case: &str, named: &str, status: u16, body: &str) {
+///
+/// `spelling` is the resource as the answering operation spells it: EC2's describe plane
+/// capitalises it, where the operations that act on a group word it in lower case, so the
+/// plane the call belongs to decides which sentence is expected.
+fn assert_unknown_group_spelt(
+    case: &str,
+    spelling: &str,
+    named: &str,
+    status: u16,
+    body: &str,
+) {
     assert_eq!(
         status, 400,
         "case {case:?}: expected HTTP 400 for the group {named:?}, got {status} \
@@ -1427,11 +1437,23 @@ fn assert_unknown_group(case: &str, named: &str, status: u16, body: &str) {
          with body {body}"
     );
     let message = error_message(body);
-    let expected = format!("The Placement Group '{named}' is unknown.");
+    let expected = format!("The {spelling} '{named}' is unknown.");
     assert_eq!(
         message, expected,
         "case {case:?}: expected the message {expected:?}, got {message:?} with body {body}"
     );
+}
+
+/// [`assert_unknown_group_spelt`] for an operation that ACTS on the group it named — a
+/// delete, or a launch into one.
+fn assert_unknown_group(case: &str, named: &str, status: u16, body: &str) {
+    assert_unknown_group_spelt(case, "placement group", named, status, body);
+}
+
+/// [`assert_unknown_group_spelt`] for `DescribePlacementGroups`, whose refusal capitalises the
+/// resource.
+fn assert_unknown_described_group(case: &str, named: &str, status: u16, body: &str) {
+    assert_unknown_group_spelt(case, "Placement Group", named, status, body);
 }
 
 /// One row of the delete table: the case, the name of the group to create and delete, and
@@ -1542,10 +1564,10 @@ async fn a_deleted_group_is_no_longer_a_group_of_the_account() {
 
         // The name no longer resolves…
         let (status, body) = describe(&router, &[param("GroupName.1", &group_name)]).await;
-        assert_unknown_group(case, &group_name, status, &body);
+        assert_unknown_described_group(case, &group_name, status, &body);
         // …nor does the id the group was minted with…
         let (status, body) = describe(&router, &[param("GroupId.1", &group_id)]).await;
-        assert_unknown_group(case, &group_id, status, &body);
+        assert_unknown_described_group(case, &group_id, status, &body);
         // …and a second delete of the same name is refused rather than reported as a
         // deletion that happened.
         let (status, body) = delete(&router, &[param("GroupName", &group_name)]).await;
@@ -1743,7 +1765,7 @@ async fn a_dry_run_delete_removes_nothing() {
     );
     delete_ok(case, &router, "dry-delete").await;
     let (status, body) = describe(&router, &[param("GroupName.1", "dry-delete")]).await;
-    assert_unknown_group(case, "dry-delete", status, &body);
+    assert_unknown_described_group(case, "dry-delete", status, &body);
 }
 
 /// The direct children a successful `DeletePlacementGroup` envelope carries — and the only

@@ -198,9 +198,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // "The pagination token" (`NextToken`) — one this service issued, so anything else
-        // is refused rather than read as an id, by the message EC2 answers for it (which
-        // names the token the request sent), and before any other member is looked at, so
-        // whether a bogus token is caught never depends on the rest of the request.
+        // is refused rather than read as an id, by the message EC2 answers for it, and before
+        // any other member is looked at, so whether a bogus token is caught never depends on
+        // the rest of the request.
         let start_at = match input.next_token.as_deref() {
             None => None,
             Some(token) => Some(

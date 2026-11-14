@@ -154,14 +154,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // "The address range, in CIDR notation" (`Cidr`): a value that is not a CIDR block
         // of either family names no range, so there is nothing to look up. The range is
-        // canonicalised so one range cannot be named two ways.
-        let cidr = state::canonical_byoip_cidr(&input.cidr).map_err(|_| {
-            state::invalid_parameter_value(format!(
-                "Invalid value '{cidr}' for Cidr. It must be an IPv4 or IPv6 address range in \
-                 CIDR notation",
-                cidr = input.cidr,
-            ))
-        })?;
+        // canonicalised so one range cannot be named two ways, and the refusal is the BYOIP
+        // surface's own, written once in `crate::state`.
+        let cidr = state::canonical_byoip_cidr(&input.cidr)
+            .map_err(|_| state::invalid_byoip_cidr(&input.cidr))?;
 
         // "Checks whether you have the required permissions for the action, WITHOUT
         // ACTUALLY MAKING THE REQUEST, and provides an error response. If you have the

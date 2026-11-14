@@ -362,11 +362,11 @@ async fn an_image_id_the_recycle_bin_holds_no_entry_for_is_refused() {
             "case {image_id:?}: expected InvalidAMIID.Malformed, got {body}"
         );
         // The refusal is built from the request: it names the id the caller gave, in the
-        // one form this crate reports a malformed image id in.
+        // wording EC2's strict image-id validators answer an id they cannot resolve with.
         let message = unescaped(&element(&body, "Message").unwrap_or_default());
         assert_eq!(
             message,
-            format!("Invalid id: \"{image_id}\""),
+            format!("The image ID '{image_id}' is malformed"),
             "case {image_id:?}: the refusal must name the id the request gave, got {message:?}"
         );
         for untouched in [&partner_private, &partner_public] {

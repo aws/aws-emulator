@@ -1152,7 +1152,7 @@ async fn a_page_size_outside_the_published_range_is_refused() {
 }
 
 /// A `NextToken` this service did not mint is refused rather than read as an id, whatever else
-/// the request names, and the refusal names the token it rejected.
+/// the request names, and the refusal carries EC2's own sentence for an unusable token.
 #[tokio::test]
 async fn a_token_this_service_did_not_mint_is_refused() {
     let (router, _engine, ids, _other_kind) = seeded();
@@ -1173,9 +1173,10 @@ async fn a_token_this_service_did_not_mint_is_refused() {
             "case {case:?}: expected InvalidPaginationToken, got {body}"
         );
         let message = unescaped(&element(&body, "Message").unwrap_or_default());
-        assert!(
-            message.contains(token),
-            "case {case:?}: the refusal must name the token it rejected, got {message:?}"
+        assert_eq!(
+            message,
+            ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE,
+            "case {case:?}: expected EC2's own pagination-token sentence, got {message:?}"
         );
     }
 }

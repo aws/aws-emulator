@@ -184,7 +184,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             (None, Some(subnet_id)) => state::ExclusionTarget::Subnet(subnet_id.to_string()),
             (None, None) => {
                 return Err(state::missing_parameter(
-                    "Either 'subnetId' or 'vpcId' must be specified",
+                    "One of the following parameters must be provided: VpcId, SubnetId",
                 ));
             }
             (Some(_), Some(_)) => {

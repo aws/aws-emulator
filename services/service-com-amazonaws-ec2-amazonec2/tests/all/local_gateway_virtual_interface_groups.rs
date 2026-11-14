@@ -882,11 +882,10 @@ async fn a_next_token_this_service_did_not_issue_is_refused() {
             "InvalidPaginationToken",
             "case {token:?}: expected InvalidPaginationToken, got {body}"
         );
-        // EC2's message for this refusal is built from the request — it names the token
-        // that was refused — so a caller holding several can tell which one is bad.
+        // EC2's message for this refusal is one fixed sentence, naming no token.
         assert!(
-            unescaped(&body).contains(&format!("Next token '{token}' is invalid")),
-            "case {token:?}: the refusal must name the refused token, got {body}"
+            unescaped(&body).contains(ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE),
+            "case {token:?}: expected EC2's own pagination-token sentence, got {body}"
         );
     }
 }

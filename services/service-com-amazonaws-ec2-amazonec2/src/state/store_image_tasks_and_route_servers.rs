@@ -1205,6 +1205,20 @@ pub fn invalid_route_server_peer_id_not_found<E>(peer_id: &str) -> Scaffolded<E>
     )
 }
 
+/// Refuse a request whose route server peer is not in a state that admits it: HTTP 400
+/// `IncorrectState`, `Route Server Peer <id> is in an invalid state.`
+///
+/// This resource's refusal names the peer and says that its state does not admit the request,
+/// WITHOUT naming the state it is in or the states that would: the state a peer is in is what
+/// `DescribeRouteServerPeers` reports, and the refusal that a request came at the wrong time
+/// is the same sentence whichever state the peer had reached. That is why it is worded here
+/// rather than through the shared `<Kind> '<id>' is in the '<state>' state.`
+/// ([`super::incorrect_state_of`]), which every resource whose refusal DOES name its state
+/// keeps using.
+pub fn route_server_peer_incorrect_state<E>(peer_id: &str) -> Scaffolded<E> {
+    incorrect_state(format!("Route Server Peer {peer_id} is in an invalid state."))
+}
+
 // ---------------------------------------------------------------------------
 // Route server associations
 // ---------------------------------------------------------------------------

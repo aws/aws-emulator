@@ -1216,15 +1216,16 @@ async fn the_report_pages_by_max_results_and_its_token() {
     }
 
     let carried = "not-a-token-this-service-minted".to_string();
-    let (status, body) = call(&router, REGION, ACTION, &[p("NextToken", carried.clone())]).await;
+    let (status, body) = call(&router, REGION, ACTION, &[p("NextToken", carried)]).await;
     assert_eq!(
         (status, error_code(&body).as_str()),
         (400, "InvalidPaginationToken"),
         "a token this service did not mint is refused, got {status} with body {body}"
     );
-    assert!(
-        error_message(&body).contains(&carried),
-        "the refusal names the token that was refused, got {body}"
+    assert_eq!(
+        error_message(&body),
+        ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE,
+        "expected EC2's own pagination-token sentence, got {body}"
     );
     assert_eq!(
         stored(&engine),

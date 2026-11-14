@@ -251,7 +251,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .iter()
             .find(|id| !store.placement_groups.contains_key(id.as_str()))
         {
-            return Err(crate::state::invalid_placement_group_unknown(unknown));
+            return Err(crate::state::described_placement_group_unknown(unknown));
         }
         let wanted_names: HashSet<&str> = requested_names.iter().map(String::as_str).collect();
         if !wanted_names.is_empty() {
@@ -265,7 +265,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .iter()
                 .find(|name| !stored_names.contains(name.as_str()))
             {
-                return Err(crate::state::invalid_placement_group_unknown(unknown));
+                return Err(crate::state::described_placement_group_unknown(unknown));
             }
         }
 

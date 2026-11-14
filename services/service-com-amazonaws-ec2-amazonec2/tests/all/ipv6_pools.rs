@@ -634,6 +634,13 @@ async fn the_describe_refuses_what_it_cannot_serve() {
                 format!("Ipv6Pool '{echoed}' does not exist."),
                 "case {case:?}: unexpected not-found message"
             );
+        } else if expected_code == INVALID_PAGINATION_TOKEN {
+            // The pagination-token refusal is EC2's one fixed sentence: it names no token.
+            assert_eq!(
+                message,
+                ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE,
+                "case {case:?}: expected EC2's own pagination-token sentence, got {message:?}"
+            );
         } else {
             assert!(
                 message.contains(echoed),

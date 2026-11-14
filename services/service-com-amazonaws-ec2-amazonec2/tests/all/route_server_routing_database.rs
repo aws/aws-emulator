@@ -654,13 +654,13 @@ async fn a_filter_or_token_this_read_cannot_serve_is_refused() {
             "a token that is not hexadecimal",
             vec![p("NextToken", "not-a-token")],
             "InvalidPaginationToken",
-            "Next token 'not-a-token' is invalid".to_string(),
+            ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE.to_string(),
         ),
         (
             "a token that is hexadecimal but carries no cursor",
             vec![p("NextToken", "6162636465")],
             "InvalidPaginationToken",
-            "Next token '6162636465' is invalid".to_string(),
+            ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE.to_string(),
         ),
         (
             "a token minted for another route server's database",
@@ -669,10 +669,7 @@ async fn a_filter_or_token_this_read_cannot_serve_is_refused() {
                 ec2::state::encode_scoped_page_token(&second, "10.0.0.0/16"),
             )],
             "InvalidPaginationToken",
-            format!(
-                "Next token '{}' is invalid",
-                ec2::state::encode_scoped_page_token(&second, "10.0.0.0/16")
-            ),
+            ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE.to_string(),
         ),
     ];
 

@@ -2230,16 +2230,6 @@ pub enum AttachmentDecision {
     Reject,
 }
 
-impl AttachmentDecision {
-    /// The decision as the refusal below names it.
-    pub(super) fn verb(self) -> &'static str {
-        match self {
-            Self::Accept => "accepted",
-            Self::Reject => "rejected",
-        }
-    }
-}
-
 /// Act on the transit gateway attachment `attachment_id` names, and answer it as it now
 /// stands.
 ///
@@ -2291,19 +2281,26 @@ pub fn decide_transit_gateway_attachment<E>(
         })?;
     let states = record.view.states();
     if record.view.state() != Some(states.pending_acceptance) {
-        return Err(incorrect_state(format!(
-            "The transit gateway attachment '{attachment_id}' is in state '{state}'; only an \
-             attachment in state '{pending_acceptance}' can be {verb}",
-            state = record.view.state().unwrap_or_default(),
-            pending_acceptance = states.pending_acceptance,
-            verb = decision.verb(),
-        )));
+        return Err(transit_gateway_attachment_invalid_state(attachment_id));
     }
     match decision {
         AttachmentDecision::Accept => record.begin_move(states.accepting, states.available),
         AttachmentDecision::Reject => record.begin_move(states.rejecting, states.rejected),
     }
     Ok(record.view.clone())
+}
+
+/// Refuse a decision on a transit gateway attachment whose state does not admit it: HTTP 400
+/// `IncorrectState`, `<attachmentId> is in invalid state`.
+///
+/// The sentence is the attachment family's own: the id the REQUEST named followed by the fixed
+/// text, naming neither the state the attachment is in nor the state that would have admitted
+/// the decision. Which state it is in is what `DescribeTransitGatewayAttachments` reports, and
+/// a decision that came at the wrong time earns the same refusal whichever state the
+/// attachment had reached — which is why this is not worded through the shared
+/// `<Kind> '<id>' is in the '<state>' state.` ([`incorrect_state_of`]).
+pub fn transit_gateway_attachment_invalid_state<E>(attachment_id: &str) -> Scaffolded<E> {
+    incorrect_state(format!("{attachment_id} is in invalid state"))
 }
 
 /// The server error a handler answers when the attachment this module just resolved for it

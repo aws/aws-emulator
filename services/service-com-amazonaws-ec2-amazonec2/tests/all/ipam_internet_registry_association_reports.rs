@@ -759,8 +759,8 @@ async fn describing_pages_in_a_stable_order() {
     );
     assert_eq!(
         error_message(&body),
-        "Next token 'not-a-token' is invalid",
-        "the refusal names the token the request sent, got {body}"
+        ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE,
+        "the refusal carries EC2's own pagination-token sentence, got {body}"
     );
 }
 

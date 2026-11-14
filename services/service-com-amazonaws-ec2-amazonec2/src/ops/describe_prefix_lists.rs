@@ -255,7 +255,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // "The token for the next page of results"
         // (`DescribePrefixListsRequest$NextToken`) — anything else is refused rather
-        // than read as a cursor, with the refusal naming the token EC2 could not read
+        // than read as a cursor, with EC2's own sentence for a token it could not read
         // (`crate::state::invalid_pagination_token_for`).
         let start_at = match input.next_token.as_deref() {
             None => None,

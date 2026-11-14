@@ -321,7 +321,7 @@ async fn max_results_is_accepted_at_its_bounds_and_refused_past_them() {
 }
 
 /// A `NextToken` this service did not mint is refused with `InvalidPaginationToken`, in a
-/// message naming the token the request sent, rather than read as a position.
+/// message naming no token, rather than read as a position.
 #[tokio::test]
 async fn a_next_token_this_service_did_not_mint_is_refused() {
     let (router, engine) = super::ec2_query::emulator();
@@ -339,9 +339,10 @@ async fn a_next_token_this_service_did_not_mint_is_refused() {
             "case {token:?}: expected {INVALID_PAGINATION_TOKEN}, got {body}"
         );
         let message = error_message(&body);
-        assert!(
-            message.contains(token),
-            "case {token:?}: the message names the token the request sent, got {message:?}"
+        assert_eq!(
+            message,
+            ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE,
+            "case {token:?}: expected EC2's own pagination-token sentence, got {message:?}"
         );
     }
 }

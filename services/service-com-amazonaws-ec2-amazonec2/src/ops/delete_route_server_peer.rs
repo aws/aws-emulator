@@ -169,10 +169,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             current_state.as_str(),
             state::ROUTE_SERVER_PEER_STATE_DELETING | state::ROUTE_SERVER_PEER_STATE_DELETED
         ) {
-            return Err(state::incorrect_state_of(
-                state::RESOURCE_TYPE_ROUTE_SERVER_PEER,
+            return Err(state::route_server_peer_incorrect_state(
                 &input.route_server_peer_id,
-                &current_state,
             ));
         }
 

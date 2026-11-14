@@ -1192,50 +1192,51 @@ pub(super) const FILTER_PARAMETER: &str = "Filter";
 /// invalid`, while an operation whose `Filters` member is validated as a request parameter
 /// answers this one. The parameter layer appends a reason after the period, and a name that
 /// is simply not one of the operation's has none to add, so the message ends with that
-/// separating space and nothing after it.
+/// separating space and nothing after it. The name is a caller-chosen string the model puts
+/// no `@length` on, so the echo is held to [`MAX_ECHOED_PAGE_TOKEN_CHARS`] — the crate's one
+/// ceiling for repeating such a value back.
 pub fn invalid_filter_parameter_value<E>(name: &str) -> crate::scaffolded::Scaffolded<E> {
+    let echoed: String = name.chars().take(MAX_ECHOED_PAGE_TOKEN_CHARS).collect();
     invalid_parameter_value(format!(
-        "Value ({name}) for parameter {FILTER_PARAMETER} is invalid. "
+        "Value ({echoed}) for parameter {FILTER_PARAMETER} is invalid. "
     ))
 }
 
-/// The most characters of a refused `NextToken` its message repeats back.
+/// The most characters of a caller-chosen value a refusal of this crate repeats back.
 ///
-/// The message names the token so a caller holding several can tell which one was refused;
-/// it does not need the whole of an arbitrarily long one, and a bounded echo keeps a
-/// request's own bytes from being reflected in full. Far above any token this service mints
-/// ([`encode_page_token`]), so a real token is always named in full.
+/// The crate's ceiling for echoing a value the caller chose the length of — a filter name, or
+/// any other string the model puts no `@length` on — so a request's own bytes are never
+/// reflected in full. Far above any token this service mints ([`encode_page_token`]), which
+/// is the value it was first set for.
 pub const MAX_ECHOED_PAGE_TOKEN_CHARS: usize = 256;
 
-/// Refuse a `NextToken` this service did not issue: HTTP 400 `InvalidPaginationToken`,
-/// with EC2's own message for it — `Next token '<token>' is invalid`, which names the
-/// token the request sent, so the message is built from the request rather than fixed.
-/// Only the first [`MAX_ECHOED_PAGE_TOKEN_CHARS`] characters of the token are named.
-///
-/// This is the form to call: a handler always has the token it is refusing, and EC2's
-/// message for this refusal is a function of it. [`invalid_pagination_token`] is the
-/// token-less form kept beside it, for the call sites that have not moved yet.
-pub fn invalid_pagination_token_for<E>(token: &str) -> crate::scaffolded::Scaffolded<E> {
-    let echoed: String = token.chars().take(MAX_ECHOED_PAGE_TOKEN_CHARS).collect();
-    crate::scaffolded::Scaffolded::service_error(
-        INVALID_PAGINATION_TOKEN,
-        400,
-        format!("Next token '{echoed}' is invalid"),
-    )
-}
+/// EC2's message for [`INVALID_PAGINATION_TOKEN`]: one fixed sentence, naming no token.
+pub const INVALID_PAGINATION_TOKEN_MESSAGE: &str = "The passed pagination token is invalid";
 
-/// Refuse a `NextToken` this service did not issue without naming it: HTTP 400
-/// `InvalidPaginationToken`.
+/// Refuse a `NextToken` this service did not issue: HTTP 400 `InvalidPaginationToken`, with
+/// EC2's own sentence for that code — [`INVALID_PAGINATION_TOKEN_MESSAGE`].
 ///
-/// Kept so a handler landing on this helper keeps compiling;
-/// [`invalid_pagination_token_for`] is what a handler should call, because the message EC2
-/// answers with names the token.
+/// The sentence has NO variable part: EC2 answers a token it cannot read by saying that the
+/// token it was passed is invalid, and repeats no part of it back. This is the writer every
+/// paged read of this crate answers that refusal through.
 pub fn invalid_pagination_token<E>() -> crate::scaffolded::Scaffolded<E> {
     crate::scaffolded::Scaffolded::service_error(
         INVALID_PAGINATION_TOKEN,
         400,
-        "The NextToken is not a token this service issued",
+        INVALID_PAGINATION_TOKEN_MESSAGE,
     )
+}
+
+/// A SHIM for [`invalid_pagination_token`], kept only so the call sites that still pass the
+/// refused token keep compiling — it ignores `_refused_token`, because the sentence EC2
+/// answers this code with carries no part of it.
+///
+/// Nothing new should call this: a handler refusing a token calls
+/// [`invalid_pagination_token`]. It is not `#[deprecated]` only because this crate's lint
+/// settings deny warnings, which would make the attribute break the build at every call site
+/// that has not moved yet.
+pub fn invalid_pagination_token_for<E>(_refused_token: &str) -> crate::scaffolded::Scaffolded<E> {
+    invalid_pagination_token()
 }
 
 /// Report that the emulator itself could not serve the request: HTTP 500

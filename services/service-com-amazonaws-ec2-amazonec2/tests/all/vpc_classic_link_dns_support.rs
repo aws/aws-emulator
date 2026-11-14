@@ -569,7 +569,7 @@ async fn a_token_this_service_did_not_mint_and_a_page_size_outside_the_range_are
         );
         assert_eq!(
             error_message(&body),
-            format!("Next token '{token}' is invalid"),
+            ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE,
             "case {case:?}: unexpected message in {body}"
         );
     }

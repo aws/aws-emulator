@@ -49,8 +49,8 @@ use std::time::Duration;
 use ec2::state::{
     IAM_INSTANCE_PROFILE_ASSOCIATION_ID_PREFIX, IAM_INSTANCE_PROFILE_ASSOCIATION_STATE_ASSOCIATED,
     IAM_INSTANCE_PROFILE_ASSOCIATION_STATE_ASSOCIATING,
-    IAM_INSTANCE_PROFILE_ASSOCIATION_STATE_DISASSOCIATING, MAX_ECHOED_PAGE_TOKEN_CHARS,
-    MAX_IAM_INSTANCE_PROFILE_NAME_CHARACTERS, TRANSITION_DELAY,
+    IAM_INSTANCE_PROFILE_ASSOCIATION_STATE_DISASSOCIATING, INVALID_PAGINATION_TOKEN_MESSAGE,
+    MAX_ECHOED_PAGE_TOKEN_CHARS, MAX_IAM_INSTANCE_PROFILE_NAME_CHARACTERS, TRANSITION_DELAY,
 };
 use service_com_amazonaws_ec2_amazonec2 as ec2;
 use smithy_server_runtime::MultiServiceRouter;
@@ -1454,14 +1454,12 @@ async fn a_next_token_the_describe_did_not_mint_is_refused() {
             INVALID_PAGINATION_TOKEN,
             "case {case:?}: expected {INVALID_PAGINATION_TOKEN}, got {body}"
         );
-        // The message names the token the request sent, up to the characters the service
-        // repeats back of an arbitrarily long one.
-        let echoed: String = token.chars().take(MAX_ECHOED_PAGE_TOKEN_CHARS).collect();
+        // The message is EC2's one fixed sentence for this code: it repeats no part of the
+        // token the request sent, however long that token was.
         assert_eq!(
             error_message(&body),
-            format!("Next token '{echoed}' is invalid"),
-            "case {case:?}: expected the refusal to name the token it would not read, got \
-             {body}"
+            INVALID_PAGINATION_TOKEN_MESSAGE,
+            "case {case:?}: expected EC2's own pagination-token sentence, got {body}"
         );
         assert_eq!(
             reported_ids(case, &body),

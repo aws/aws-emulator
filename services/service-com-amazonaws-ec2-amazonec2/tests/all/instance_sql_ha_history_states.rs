@@ -1352,9 +1352,10 @@ async fn a_next_token_this_service_did_not_issue_is_refused() {
             "InvalidPaginationToken",
             "case {token:?}: expected InvalidPaginationToken, got {body}"
         );
-        assert!(
-            error_message(&body).contains(&format!("Next token '{token}' is invalid")),
-            "case {token:?}: the refusal must name the refused token, got {body}"
+        assert_eq!(
+            error_message(&body),
+            ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE,
+            "case {token:?}: expected EC2's own pagination-token sentence, got {body}"
         );
     }
 }

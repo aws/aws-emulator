@@ -178,9 +178,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut compiled: Vec<state::CompiledFilter> = Vec::with_capacity(filters.len());
         for filter in filters {
             let name = filter.name.as_deref().unwrap_or_default();
-            let canonical = canonical_filter_name(name).ok_or_else(|| {
-                state::invalid_parameter_value(format!("The filter '{name}' is invalid"))
-            })?;
+            let canonical = canonical_filter_name(name)
+                .ok_or_else(|| state::invalid_filter_parameter_value(name))?;
             let values: &[String] = filter.values.as_deref().unwrap_or_default();
             if values.len() > state::MAX_FILTER_VALUES {
                 return Err(state::invalid_parameter_value(format!(

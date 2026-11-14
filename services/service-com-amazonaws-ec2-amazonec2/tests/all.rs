@@ -2183,3 +2183,11 @@ mod modify_application_status_check;
 // of this file, which is where every new ec2 suite lands.
 #[path = "all/admission_checks.rs"]
 mod admission_checks;
+// The WORDING of eight refusal families — a BYOIP range that is no CIDR block, a pagination
+// token the service did not mint, an unsupported filter name in the transit gateway
+// describes, an unknown placement group in each of the two planes that word it, one subnet
+// attribute at a time, an already-enabled volume I/O, a decision on an attachment that is not
+// waiting for one, and an exclusion naming neither target: each carries AWS's sentence for its
+// error class, with only the parts AWS interpolates. Declared at the tail of this file, which
+#[path = "all/aws_worded_refusal_sentences.rs"]
+mod aws_worded_refusal_sentences;

@@ -168,10 +168,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // an address range names no range, so there is nothing to look up. The range is
         // canonicalised so one range cannot be named two ways.
         let Ok(cidr) = state::canonical_byoip_cidr(requested_cidr) else {
-            return Err(state::invalid_parameter_value(format!(
-                "Invalid value '{requested_cidr}' for Cidr. It must be an address range in \
-                 CIDR notation"
-            )));
+            return Err(state::invalid_byoip_cidr(requested_cidr));
         };
         let asn = input.asn.as_str();
 

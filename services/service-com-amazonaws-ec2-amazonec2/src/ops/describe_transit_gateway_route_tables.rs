@@ -176,9 +176,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         for filter in filters {
             let name = filter.name.as_deref().unwrap_or_default();
             if !is_documented_filter(name) {
-                return Err(state::invalid_parameter_value(format!(
-                    "The filter '{name}' is invalid"
-                )));
+                return Err(state::invalid_filter_parameter_value(name));
             }
             let values: &[String] = filter.values.as_deref().unwrap_or_default();
             if values.len() > state::MAX_FILTER_VALUES {

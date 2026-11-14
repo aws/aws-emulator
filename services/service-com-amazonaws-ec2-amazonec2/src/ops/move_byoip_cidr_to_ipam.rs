@@ -142,12 +142,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // "The BYOIP CIDR" (`Cidr`): a value that is not a CIDR block names no range. The
         // range is canonicalised so one range cannot be named two ways.
-        let cidr = state::canonical_byoip_cidr(&input.cidr).map_err(|_| {
-            state::invalid_parameter_value(format!(
-                "Invalid value '{cidr}' for Cidr. It must be an address range in CIDR notation",
-                cidr = input.cidr,
-            ))
-        })?;
+        let cidr = state::canonical_byoip_cidr(&input.cidr)
+            .map_err(|_| state::invalid_byoip_cidr(&input.cidr))?;
         // "The Amazon Web Services account ID of the owner of the IPAM pool"
         // (`IpamPoolOwner`) — an account id is twelve digits, so anything else names no
         // account.

@@ -196,16 +196,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Which attribute the request names, and the value to set it to. Every refusal a
         // bad REQUEST earns is made here, before the store is touched at all.
         let mut requested = requested_modifications(&input)?;
-        // "You can only modify one attribute at a time" (`ModifySubnetAttribute`).
+        // "You can only modify one attribute at a time" (`ModifySubnetAttribute`). The
+        // refusal names the attributes the request provided, as the WIRE spells them — the
+        // query protocol's member names, which is how the caller wrote them — in the order
+        // the request's members are declared.
         if requested.len() > 1 {
             let named = requested
                 .iter()
-                .map(|(name, _)| *name)
+                .map(|(name, _)| wire_member_name(name))
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(state::invalid_parameter_combination(format!(
-                "Only one attribute can be modified at a time, and this request names \
-                 {named}. Use separate requests for each attribute."
+                "Only one subnet attribute can be modified at a time. Provided attributes: \
+                 [{named}]"
             )));
         }
         let Some((_, modification)) = requested.pop() else {
@@ -231,6 +234,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // subnet exactly as it was.
         modification.apply(subnet);
         Ok(ModifySubnetAttributeOutput)
+    }
+}
+
+/// `member` as the WIRE spells it: the request member's name with its first character in
+/// lower case, which is how the ec2 query protocol writes every member of this request
+/// (`AssignIpv6AddressOnCreation` is sent as `assignIpv6AddressOnCreation`).
+///
+/// The refusals of this operation name an attribute the way the CALLER wrote it, so a client
+/// can match the text against the parameters it sent.
+fn wire_member_name(member: &str) -> String {
+    let mut characters = member.chars();
+    match characters.next() {
+        Some(first) => first.to_lowercase().chain(characters).collect(),
+        None => String::new(),
     }
 }
 

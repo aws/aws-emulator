@@ -767,7 +767,7 @@ async fn describe_route_server_endpoints_pages_in_id_order() {
 // ---------------------------------------------------------------------------
 
 /// The rule: a `NextToken` this service did not mint is refused with `InvalidPaginationToken`
-/// naming the token the request sent, while a token it DID mint resumes the report; and a
+/// and EC2's own sentence for it, while a token it DID mint resumes the report; and a
 /// `DryRun` probe from a caller holding the action's permissions is answered
 /// `DryRunOperation` (HTTP 412) and reports nothing, whatever else the request selects,
 /// where `DryRun=false` is an ordinary call.
@@ -843,7 +843,7 @@ async fn describe_route_server_endpoints_refuses_a_foreign_token_and_performs_no
             ec2::state::INVALID_PAGINATION_TOKEN
         );
         let message = error_message(&body);
-        let expected = format!("Next token '{token}' is invalid");
+        let expected = ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE;
         assert_eq!(
             message, expected,
             "case {case:?}: expected the message {expected:?}, got {message:?}"

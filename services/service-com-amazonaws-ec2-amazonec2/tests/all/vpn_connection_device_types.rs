@@ -467,12 +467,12 @@ async fn a_foreign_next_token_is_refused() {
             element(&body, "vpnConnectionDeviceTypeSet").is_none(),
             "case {case:?}: a refused request reports no devices, got {body}"
         );
-        // EC2's message for this refusal names the token the request sent, so it is
-        // built from the request rather than fixed.
+        // EC2's message for this refusal is one fixed sentence, naming no token.
         let message = unescaped(&element(&body, "Message").unwrap_or_default());
-        assert!(
-            message.contains(&format!("'{token}'")),
-            "case {case:?}: the refusal must name the token {token:?}, got {message:?}"
+        assert_eq!(
+            message,
+            ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE,
+            "case {case:?}: expected EC2's own pagination-token sentence, got {message:?}"
         );
     }
 }

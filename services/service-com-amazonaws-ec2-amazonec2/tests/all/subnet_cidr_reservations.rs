@@ -722,19 +722,20 @@ async fn an_overlapping_range_is_refused_and_a_disjoint_one_is_accepted() {
     // Rows: the held range itself, a block inside it, a block containing it, a non-canonical
     // spelling of it, and the first address of it — each overlapping; then the adjacent
     // block, the last block of the subnet, and a block of the subnet's lower half that the
-    // held range does not reach — each disjoint.
+    // held range does not reach — each disjoint. The third column is the range as the
+    // service reads it (host bits cleared), which is what its refusal names.
     let cases = [
-        ("the held range", "10.0.0.0/28", 400),
-        ("a block inside it", "10.0.0.4/30", 400),
-        ("a block containing it", "10.0.0.0/24", 400),
-        ("a non-canonical spelling of it", "10.0.0.9/28", 400),
-        ("one address of it", "10.0.0.3/32", 400),
-        ("the adjacent block", "10.0.0.16/28", 200),
-        ("the last block", "10.0.0.240/28", 200),
-        ("a /26 above it", "10.0.0.64/26", 200),
+        ("the held range", "10.0.0.0/28", "10.0.0.0/28", 400),
+        ("a block inside it", "10.0.0.4/30", "10.0.0.4/30", 400),
+        ("a block containing it", "10.0.0.0/24", "10.0.0.0/24", 400),
+        ("a non-canonical spelling of it", "10.0.0.9/28", "10.0.0.0/28", 400),
+        ("one address of it", "10.0.0.3/32", "10.0.0.3/32", 400),
+        ("the adjacent block", "10.0.0.16/28", "10.0.0.16/28", 200),
+        ("the last block", "10.0.0.240/28", "10.0.0.240/28", 200),
+        ("a /26 above it", "10.0.0.64/26", "10.0.0.64/26", 200),
     ];
     let mut accepted = 1;
-    for (case, cidr, expected_status) in cases {
+    for (case, cidr, canonical, expected_status) in cases {
         let (status, body) =
             reserve(&router, &reserve_params(&first_subnet, cidr, "explicit", &[])).await;
         assert_eq!(
@@ -747,10 +748,20 @@ async fn an_overlapping_range_is_refused_and_a_disjoint_one_is_accepted() {
                 "InvalidParameterValue",
                 "case {case:?}: expected InvalidParameterValue, got {body}"
             );
+            // The refusal names the range the request asked to reserve and what it collided
+            // with — not the id of the reservation already holding those addresses.
+            let message = error_message(&body);
+            assert_eq!(
+                message,
+                format!(
+                    "Reservation CIDR {canonical} has overlap with existing reserved CIDR block"
+                ),
+                "case {case:?}: unexpected overlap message, got {message:?}"
+            );
             assert!(
-                body.contains(&held_id),
-                "case {case:?}: the refusal must name the reservation in the way ({held_id}), \
-                 got {body}"
+                !body.contains(&held_id),
+                "case {case:?}: the refusal must not name the reservation in the way \
+                 ({held_id}), got {body}"
             );
         } else {
             accepted += 1;

@@ -949,10 +949,11 @@ async fn a_page_size_outside_the_published_range_is_refused() {
     }
 }
 
-/// A filter name this operation does not document is refused with the wording the describes
-/// of this family give an unrecognised filter — naming the filter the REQUEST sent, under
-/// EC2's `InvalidParameterValue`. Each name the operation DOES document is then served, so
-/// what is refused is membership of the catalog rather than filtering as such.
+/// A filter name this operation does not document is refused with the wording the transit
+/// gateway describes give an unrecognised filter — AWS's parameter-validation sentence,
+/// naming the filter the REQUEST sent, under EC2's `InvalidParameterValue`. Each name the
+/// operation DOES document is then served, so what is refused is membership of the catalog
+/// rather than filtering as such.
 #[tokio::test]
 async fn an_undocumented_filter_is_refused() {
     let fixture = Fixture::new().await;
@@ -980,7 +981,7 @@ async fn an_undocumented_filter_is_refused() {
         let message = error_message(&body);
         assert_eq!(
             message,
-            format!("The filter '{name}' is invalid"),
+            format!("Value ({name}) for parameter Filter is invalid. "),
             "case {case:?}: expected the refused filter named in the message, got {message:?}"
         );
     }

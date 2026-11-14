@@ -36,8 +36,8 @@ use crate::ops::types::{Image, ImageRecycleBinInfo};
 use crate::scaffolded::Scaffolded;
 
 use super::{
-    ComAmazonawsEc2Amazonec2State, invalid_ami_id_malformed, system_time_to_date_time,
-    tag_list_bytes,
+    ComAmazonawsEc2Amazonec2State, system_time_to_date_time, tag_list_bytes,
+    unresolvable_image_id,
 };
 
 impl ComAmazonawsEc2Amazonec2State {
@@ -204,15 +204,18 @@ pub fn recycled_image<'store>(
 /// therefore been permanently deleted. An entry another account owns is the same refusal
 /// too ([`recycled_image`]).
 ///
-/// The refusal is the crate's ONE malformed-AMI-id refusal
-/// ([`super::invalid_ami_id_malformed`]), built from the request's own id, so this code
-/// reads the same way whichever operation answers it.
+/// The refusal is the one the crate's STRICT image-id validators answer
+/// ([`super::unresolvable_image_id`]) — `The image ID '<id>' is malformed`, which names the
+/// resource KIND the id could not be read as — built from the request's own id. A Recycle Bin
+/// operation resolves its `ImageId` the strict way, so it words the refusal the strict way
+/// too, rather than through the resource-agnostic `Invalid id: "<id>"` template an operation
+/// whose id member is checked as a request parameter answers.
 pub fn require_recycled_image<E>(
     store: &ComAmazonawsEc2Amazonec2State,
     image_id: &str,
 ) -> Result<(), Scaffolded<E>> {
     if recycled_image(store, image_id).is_none() {
-        return Err(invalid_ami_id_malformed(image_id));
+        return Err(unresolvable_image_id(image_id));
     }
     Ok(())
 }

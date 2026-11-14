@@ -824,7 +824,8 @@ async fn a_request_the_contract_does_not_admit_is_refused() {
             vec![param("NextToken", "not-a-token-this-service-minted")],
             400,
             INVALID_PAGINATION_TOKEN,
-            "not-a-token-this-service-minted".to_string(),
+            // This refusal's sentence is fixed: it names no token.
+            ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE.to_string(),
         ),
         (
             "a permission check",

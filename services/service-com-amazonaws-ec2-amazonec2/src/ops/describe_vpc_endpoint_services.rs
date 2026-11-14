@@ -242,7 +242,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // "The token for the next set of items to return. (You received this token from a
         // prior call.)" (`NextToken`) — anything else is refused rather than read as a
-        // cursor, with the refusal naming the token that could not be read.
+        // cursor, with EC2's own sentence for a token that could not be read.
         let start_at = match input.next_token.as_deref() {
             None => None,
             Some(token) => Some(

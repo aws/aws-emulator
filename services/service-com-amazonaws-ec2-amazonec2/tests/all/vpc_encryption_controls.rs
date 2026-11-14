@@ -928,7 +928,7 @@ async fn a_bad_request_is_refused_with_ec2s_own_code_and_records_nothing() {
             "DescribeVpcEncryptionControls",
             vec![param("NextToken", "not-a-token")],
             "InvalidPaginationToken",
-            "Next token 'not-a-token' is invalid".to_string(),
+            ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE.to_string(),
         ),
     ];
 

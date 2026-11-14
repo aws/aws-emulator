@@ -672,13 +672,12 @@ async fn a_next_token_this_service_did_not_issue_is_refused() {
             "InvalidPaginationToken",
             "case {token:?}: expected InvalidPaginationToken, got {body}"
         );
-        // EC2's message for this refusal names the token the request sent, so it is built
-        // from the request rather than fixed.
+        // EC2's message for this refusal is one fixed sentence, naming no token.
         let message = unescaped(&element(&body, "Message").unwrap_or_default());
         assert_eq!(
             message,
-            format!("Next token '{token}' is invalid"),
-            "case {token:?}: expected the message to name the token, got {message:?}"
+            ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE,
+            "case {token:?}: expected EC2's own pagination-token sentence, got {message:?}"
         );
     }
 }

@@ -221,21 +221,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // so the same range reserved in another subnet is not one, and ranges of different
         // families never overlap ([`crate::state::cidr_blocks_overlap`]). EC2 documents no
         // error code of its own for this conflict, so it is refused as the parameter value it
-        // is, naming the reservation in the way.
-        if let Some(conflicting) = store
+        // is; the sentence names the range the REQUEST asked to reserve and states what it
+        // collided with, and NOT the id of the reservation it collided with — that
+        // reservation is one the caller can read for itself, and the id is not part of what
+        // the caller has to change.
+        let overlaps = store
             .subnet_cidr_reservations
             .values()
             .filter(|held| held.subnet_id.as_deref() == Some(input.subnet_id.as_str()))
-            .find(|held| {
+            .any(|held| {
                 held.cidr
                     .as_deref()
                     .is_some_and(|held_cidr| state::cidr_blocks_overlap(held_cidr, &cidr))
-            })
-            .and_then(|held| held.subnet_cidr_reservation_id.clone())
-        {
+            });
+        if overlaps {
             return Err(state::invalid_parameter_value(format!(
-                "Value ({cidr}) for parameter cidr is invalid. \
-                 The CIDR overlaps the existing subnet CIDR reservation '{conflicting}'."
+                "Reservation CIDR {cidr} has overlap with existing reserved CIDR block"
             )));
         }
 

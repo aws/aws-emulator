@@ -1402,7 +1402,29 @@ pub fn invalid_placement_group_duplicate<E>(group_name: &str) -> Scaffolded<E> {
 /// Refuse a placement group a request named that the account holds none of: HTTP 400
 /// [`INVALID_PLACEMENT_GROUP_UNKNOWN`]. `group` is the name or the id the request named,
 /// whichever could not be resolved.
+///
+/// The resource is spelt the way the operations that ACT on a group spell it — a create whose
+/// parent group is unknown, a delete, a launch into one — which is not how the describes spell
+/// it ([`described_placement_group_unknown`]). Each sentence is a complete one, terminating
+/// period included, the way [`invalid_placement_group_duplicate`] and
+/// [`invalid_placement_group_in_use`] are.
 pub fn invalid_placement_group_unknown<E>(group: &str) -> Scaffolded<E> {
+    Scaffolded::service_error(
+        INVALID_PLACEMENT_GROUP_UNKNOWN,
+        400,
+        format!("The placement group '{group}' is unknown."),
+    )
+}
+
+/// Refuse a `DescribePlacementGroups` selector that names a group the account holds none of:
+/// HTTP 400 [`INVALID_PLACEMENT_GROUP_UNKNOWN`], with the describe plane's own spelling of the
+/// resource — `The Placement Group '<group>' is unknown.`
+///
+/// EC2 does not spell this resource the same way in every operation's refusal, and WHICH
+/// spelling is a fact of the operation rather than of the group: a reporting call capitalises
+/// it, where the calls that act on a group use [`invalid_placement_group_unknown`]. Both carry
+/// the same code and the same variable part — the name or the id the REQUEST named.
+pub fn described_placement_group_unknown<E>(group: &str) -> Scaffolded<E> {
     Scaffolded::service_error(
         INVALID_PLACEMENT_GROUP_UNKNOWN,
         400,

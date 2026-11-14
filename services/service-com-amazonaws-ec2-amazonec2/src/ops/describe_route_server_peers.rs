@@ -168,7 +168,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "The token for the next page of results" (`NextToken`) — a token this service did
         // not mint is refused rather than read as an id, and it is refused before the store
         // is read, so whether a bogus token is caught never depends on what the store holds.
-        // The refusal NAMES the token the request sent, which is how EC2 words it
+        // The refusal carries EC2's own sentence for an unusable token
         // ([`crate::state::invalid_pagination_token_for`]).
         let start_at = match input.next_token.as_deref() {
             None => None,

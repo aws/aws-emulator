@@ -548,14 +548,14 @@ async fn the_report_refuses_what_it_cannot_serve() {
             vec![param("PoolId", &pool), param("NextToken", "not-a-token")],
             400,
             INVALID_PAGINATION_TOKEN,
-            "not-a-token".to_string(),
+            ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE.to_string(),
         ),
         (
             "a token minted while paging another pool",
             vec![param("PoolId", &other), param("NextToken", &minted)],
             400,
             INVALID_PAGINATION_TOKEN,
-            minted.clone(),
+            ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE.to_string(),
         ),
         (
             "a dry run",
@@ -593,6 +593,13 @@ async fn the_report_refuses_what_it_cannot_serve() {
                 message,
                 format!("Ipv6Pool '{named}' does not exist."),
                 "case {row:?}: unexpected not-found message"
+            );
+        } else if expected_code == INVALID_PAGINATION_TOKEN {
+            // The pagination-token refusal is EC2's one fixed sentence: it names no token,
+            // so no part of a caller-chosen value is reflected at all.
+            assert_eq!(
+                message, named,
+                "case {row:?}: expected EC2's own pagination-token sentence, got {message:?}"
             );
         } else if !named.is_empty() {
             // A refusal that echoes a caller-chosen value bounds that echo, so the message

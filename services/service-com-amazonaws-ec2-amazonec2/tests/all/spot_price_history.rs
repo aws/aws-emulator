@@ -1159,7 +1159,8 @@ async fn a_parameter_outside_what_the_service_serves_is_refused() {
             "a token this service did not mint",
             vec![field("NextToken", "not-a-token")],
             "InvalidPaginationToken",
-            "not-a-token".to_string(),
+            // This refusal's sentence is fixed: it names no token.
+            ec2::state::INVALID_PAGINATION_TOKEN_MESSAGE.to_string(),
         ),
     ];
 
