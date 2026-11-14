@@ -9,7 +9,10 @@
 //! while the detection operation's own status — read back by
 //! `DescribeStackDriftDetectionStatus` under the `StackDriftDetectionId` this answers
 //! with — is answered in progress and concludes a moment later, the way AWS answers a
-//! detection that is still running. A `StackName` no live stack carries is refused with
+//! detection that is still running. Every status that detection reaches is also published
+//! onto the account's default EventBridge bus ([`crate::state::drift_events`]), so a client
+//! that reacts to drift through a rule on that bus observes both the start and the
+//! conclusion without polling. A `StackName` no live stack carries is refused with
 //! `ValidationError`; `LogicalResourceIds` filters which resources are checked.
 //!
 //! ## Shape of an operation
@@ -203,6 +206,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             store.record_drift_detection(crate::state::StoredDriftDetection {
                 detection_id: detection_id.clone(),
                 stack_id: stack_id.clone(),
+                // The Region the stack belongs to: where its resources live, and where this
+                // detection's events are published.
+                region: stack_region.clone(),
                 initiated_at: now,
                 // "DETECTION_IN_PROGRESS: The stack drift detection operation is currently
                 // in progress" — which is what a caller monitoring the operation sees until
@@ -213,9 +219,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 stack_drift_status: None,
                 drifted_resource_count: None,
                 pending: None,
+                pending_events: Vec::new(),
             });
+            // Accepting the detection is its first status, and every status a drift
+            // detection reaches is published onto the account's default event bus
+            // ([`crate::state::drift_events`]) — so a client that reacts to drift through a
+            // rule on that bus, and never polls, observes the detection start. Queued here,
+            // where the status is written; published below, with this store's lock released.
+            if let Some(detection) = store.drift_detection_mut(&detection_id) {
+                detection.queue_event(now);
+            }
             (stack_id, stack_region, resources)
         };
+        crate::state::drift_events::publish_pending(
+            ::std::sync::Arc::clone(&self.engine),
+            ctx.callback().clone(),
+            stack_region.clone(),
+        );
 
         // The comparison itself: one read per covered resource, from the service that owns
         // it, in the stack's own Region — where its resources live.
@@ -251,6 +271,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 due_at: ::std::time::SystemTime::now() + crate::state::DRIFT_DETECTION_DELAY,
             });
         }
+
+        // What this detection still owes the default event bus: the conclusion the clock has
+        // made due by the time the settle below runs, published for the client that gates on
+        // these events and never polls. The store's lock is RELEASED first: the work that
+        // publishes and settles takes it itself, and this service's lock is not reentrant.
+        drop(store);
+        crate::state::drift_events::publish_and_settle(
+            &self.engine,
+            ctx.callback(),
+            crate::state::drift_events::SettlingDetection {
+                region: stack_region,
+                detection_id: detection_id.clone(),
+            },
+        );
 
         Ok(DetectStackDriftOutput {
             stack_drift_detection_id: detection_id,

@@ -78,7 +78,10 @@ pub const STACK_SET_STACK_INSTANCE_STATUS_CHANGE: &str =
 /// How many entries one `PutEvents` request carries: the bound the service published to
 /// declares (`PutEventsRequestEntryList` is `@length(min: 1, max: 10)`), so a claim holding
 /// more is published in several requests rather than one that service would refuse.
-const MAX_PUT_EVENTS_ENTRIES: usize = 10;
+///
+/// Shared with the sibling publisher ([`super::drift_events`]), which publishes onto the
+/// same bus through the same service.
+pub(super) const MAX_PUT_EVENTS_ENTRIES: usize = 10;
 
 /// How many unpublished events ONE stack set holds.
 ///
@@ -90,15 +93,17 @@ const MAX_PUT_EVENTS_ENTRIES: usize = 10;
 /// lifecycle loses an event to it.
 pub const MAX_PENDING_EVENTS: usize = 512;
 
-/// How many tasks this module may have outstanding at once across this process — the
-/// publications [`publish_pending`] starts and the settles [`settle_when_due`] does.
+/// How many tasks THIS SERVICE's event publishers may have outstanding at once across this
+/// process — the publications [`publish_pending`] starts and the settles
+/// [`settle_when_due`] does, here and in the sibling publisher ([`super::drift_events`]),
+/// which takes its slots from the same count.
 ///
 /// THIS CEILING IS THE EMULATOR'S: each task is one timer, one claim and one `PutEvents`,
-/// and a stream of stack-set calls must not leave unbounded work outstanding. A call that
+/// and a stream of calls must not leave unbounded work outstanding. A call that
 /// finds no slot free starts no task — its events stay on the (bounded) queue for the next
 /// publication, and its conclusion is settled by the next read of it, exactly as it was
 /// before this existed.
-const MAX_TASKS_IN_FLIGHT: usize = 64;
+pub(super) const MAX_TASKS_IN_FLIGHT: usize = 64;
 
 /// How long after the conclusion fell due [`settle_when_due`] settles it: enough that the
 /// settle runs with the due instant already past rather than racing it.
@@ -428,13 +433,15 @@ fn conclusion_due<Eng: Send + Sync + 'static>(
 /// ONE of the [`MAX_TASKS_IN_FLIGHT`] slots, held for as long as the task that took it runs.
 ///
 /// The slot is given back when this is DROPPED, so a task that ends early — or panics —
-/// cannot leak it; a task holds its slot by owning one of these.
-struct TaskSlot;
+/// cannot leak it; a task holds its slot by owning one of these. Shared with the sibling
+/// publisher ([`super::drift_events`]), so every event task of this service is counted
+/// against the one ceiling.
+pub(super) struct TaskSlot;
 
 impl TaskSlot {
     /// Take one slot, or `None` when they are all taken: the count is only ever raised from
     /// below the ceiling, so two callers cannot both take the last one.
-    fn claim() -> Option<Self> {
+    pub(super) fn claim() -> Option<Self> {
         TASKS_IN_FLIGHT
             .try_update(Ordering::SeqCst, Ordering::SeqCst, |held| {
                 (held < MAX_TASKS_IN_FLIGHT).then_some(held + 1)

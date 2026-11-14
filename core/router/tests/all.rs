@@ -2424,3 +2424,13 @@ mod sts_session_credential_refusals;
 // (`cloudformation_metric_stream_estate_is_drainable` and `redshift_health_alarms_evaluate`
 // are declared ONCE each, further up this file: a module may be declared only once, and two
 // branches landing at once appended each of them here as well.)
+// The drift-detection status-change events a stack's drift detection publishes onto the
+// default event bus, which span CloudFormation, EventBridge, Amazon SQS and Systems Manager
+// at once — Amazon SQS and Systems Manager both as a target and as the service that owns a
+// resource changed outside the stack.
+#[path = "all/cloudformation_drift_detection_status_change_events.rs"]
+mod cloudformation_drift_detection_status_change_events;
+// (`apigateway_sns_service_integration` is declared once, further up this tail: a module may
+// be declared only once, and two branches landing at once each re-added it here.)
+// (`cloudformation_metric_stream_filter_update` is declared once, in the head region above: a
+// module may be declared only once, and two branches landing at once each re-added it here.)

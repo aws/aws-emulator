@@ -446,6 +446,10 @@ pub mod stack_set_rollout;
 /// instance ([`stack_set_events`]).
 pub mod stack_set_events;
 
+/// The DRIFT DETECTION status-change events this service publishes onto the account's
+/// default EventBridge bus: one per status a drift detection reaches ([`drift_events`]).
+pub mod drift_events;
+
 /// The rule a CALLER's `Tags` are held to: the tag keys AWS reserves for itself, which no
 /// operation that takes a `Tags` list admits from a request.
 pub mod stack_tags;
@@ -2117,6 +2121,9 @@ pub struct StoredDriftDetection {
     pub detection_id: String,
     /// The stack the detection ran against, by stack id: "the ID of the stack".
     pub stack_id: String,
+    /// The Region that stack belongs to, which is the Region this detection's status-change
+    /// events are published in ([`drift_events`]).
+    pub region: String,
     /// `Timestamp`: "time at which the stack drift detection operation was initiated".
     pub initiated_at: SystemTime,
     /// [`drift_detection_status`].
@@ -2131,6 +2138,10 @@ pub struct StoredDriftDetection {
     pub drifted_resource_count: Option<i32>,
     /// The outcome computed for this detection, and the instant reporting it is due.
     pub pending: Option<PendingDriftOutcome>,
+    /// The status-change events this detection owes the account's default EventBridge bus,
+    /// queued oldest status first until a caller publishes them ([`drift_events`]). Bounded
+    /// at [`drift_events::MAX_PENDING_EVENTS`], oldest reclaimed first.
+    pub pending_events: Vec<drift_events::DriftDetectionEvent>,
 }
 
 /// What a drift detection found, held until the clock makes reporting the detection's own
@@ -2529,6 +2540,11 @@ impl ComAmazonawsCloudformationCloudformationState {
             detection.detection_status_reason = pending.detection_status_reason;
             detection.stack_drift_status = Some(pending.stack_drift_status);
             detection.drifted_resource_count = Some(pending.drifted_resource_count);
+            // The conclusion is a status change of the detection operation, so it owes the
+            // account's default event bus one event, stamped with the instant it fell due
+            // rather than the instant this settle ran ([`drift_events`]). Queued here, where
+            // the change is made; the call that publishes it holds no lock of this store.
+            detection.queue_event(pending.due_at);
         }
     }
 

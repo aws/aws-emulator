@@ -167,7 +167,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
         let Some(state) = crate::state::service_state(&*self.engine) else {
             // Not the shared in-memory engine: there are no detection results to read, so
             // this answers 501 rather than a status nothing stands behind.
@@ -192,7 +191,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
             })?;
 
-        Ok(DescribeStackDriftDetectionStatusOutput {
+        let answered = DescribeStackDriftDetectionStatusOutput {
             stack_id: detection.stack_id.clone(),
             stack_drift_detection_id: detection.detection_id.clone(),
             // "This value will be NULL for any stack drift detection operation that has
@@ -204,6 +203,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             drifted_stack_resource_count: detection.drifted_resource_count,
             // "Time at which the stack drift detection operation was initiated."
             timestamp: crate::state::timestamp(detection.initiated_at),
-        })
+        };
+        // The settle above is what concluded this detection, and that status change owes the
+        // account's default event bus one event
+        // ([`crate::state::drift_events`]) — this read publishes what the clock had already
+        // made due, and states nothing of its own. The store's lock is RELEASED first: the
+        // work that publishes takes it itself, and this service's lock is not reentrant.
+        let region = detection.region.clone();
+        drop(store);
+        crate::state::drift_events::publish_pending(
+            ::std::sync::Arc::clone(&self.engine),
+            ctx.callback().clone(),
+            region,
+        );
+        Ok(answered)
     }
 }
