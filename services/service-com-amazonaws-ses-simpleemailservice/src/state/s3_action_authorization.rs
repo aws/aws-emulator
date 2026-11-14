@@ -298,7 +298,7 @@ async fn key_policy(
     region: &str,
     key_id: &str,
 ) -> KeyPolicy {
-    let client = kms_client(ctx, region);
+    let client = kms_client(ctx.callback(), region);
     let described = match client.describe_key().key_id(key_id).send().await {
         Ok(described) => described,
         Err(failure) => {
@@ -407,20 +407,21 @@ fn key_policy_permits_encryption(
     })
 }
 
-/// The KMS client the action's key is read through: the AWS SDK driven over the emulator's own
-/// in-process transport, signing in the emulator's own name. Nothing here opens a socket or
-/// leaves the host — `ctx.callback()` is the framework's in-process channel into this same
-/// emulator's services — and the only caller-supplied value that reaches the client's
-/// authority is the signing Region, which is a Region LABEL by the time it gets here
-/// ([`crate::state::region_from_request`]), so no text of a request can steer the address.
-fn kms_client(
-    ctx: &::smithy_server_runtime::OperationContext<'_>,
+/// The KMS client the action's key is read through, and the one the message a saving action
+/// encrypts is sealed under a data key by ([`super::s3_encryption_envelope`]): the AWS SDK
+/// driven over the emulator's own in-process transport, signing in the emulator's own name.
+/// Nothing here opens a socket or leaves the host — the callback is the framework's in-process
+/// channel into this same emulator's services — and the only caller-supplied value that reaches
+/// the client's authority is the signing Region, which is a Region LABEL by the time it gets
+/// here ([`crate::state::region_from_request`]), so no text of a request can steer the address.
+pub(super) fn kms_client(
+    callback: &::smithy_server_runtime::EmbeddedEmulator,
     region: &str,
 ) -> ::aws_sdk_kms::Client {
     let config = ::aws_sdk_kms::Config::builder()
         .behavior_version(::aws_sdk_kms::config::BehaviorVersion::latest())
-        .http_client(ctx.callback().http_client())
-        .credentials_provider(ctx.callback().aws_credentials_provider())
+        .http_client(callback.http_client())
+        .credentials_provider(callback.aws_credentials_provider())
         .region(::aws_sdk_kms::config::Region::new(region.to_string()))
         .endpoint_url(format!("https://kms.{region}.amazonaws.com"))
         // The transport is in-process: there is nothing to retry, time out or watch for a

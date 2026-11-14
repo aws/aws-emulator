@@ -23,8 +23,8 @@
 //! somebody else), whether the rule is enabled, whether its set is the active one, whether the
 //! recipient is one this account receives mail for at all, how many rules match, and whether a
 //! `StopAction` ends the evaluation. The object's placement under the action's
-//! `ObjectKeyPrefix`, the bytes it carries, the header an `AddHeaderAction` adds and the key an
-//! `S3Action$KmsKeyArn` names are asserted beside it.
+//! `ObjectKeyPrefix`, the bytes it carries, the header an `AddHeaderAction` adds and the
+//! envelope an `S3Action$KmsKeyArn` has the message saved in are asserted beside it.
 //!
 //! A message is received AFTER it is accepted, so every assertion about an object waits for
 //! the CONDITION — the object the message's last step writes being there — rather than for a
@@ -799,13 +799,21 @@ async fn an_add_header_action_adds_its_header_to_the_message_a_later_action_save
     );
 }
 
-/// An `S3Action` naming a KMS key has the message saved under that key: the object the store
-/// holds reports the key the action named as the one it is encrypted under.
+/// An `S3Action` naming a KMS key has the message saved in the Amazon S3 encryption client's
+/// ENVELOPE under that key — "your mail is encrypted by Amazon SES using the Amazon S3
+/// encryption client before the mail is submitted to Amazon S3 for storage. It is not encrypted
+/// using Amazon S3 server-side encryption" (`S3Action$KmsKeyArn`).
+///
+/// What that makes the object: a body that is ciphertext — the message's own words are not in it
+/// — and user metadata holding the envelope a reader opens it from, whose wrapped data key KMS's
+/// OWN `Decrypt` opens under the material description the object carries, yielding the key that
+/// decrypts the body to exactly the message that was sent.
 #[tokio::test]
-async fn an_s3_action_naming_a_kms_key_saves_the_message_under_it() {
+async fn an_s3_action_naming_a_kms_key_saves_the_message_in_the_encryption_envelope() {
     let case = "an S3Action naming a customer managed key";
     let (router, engine) = emulator();
     let bucket = "encrypted-mail";
+    let rule = "to-s3-encrypted";
     given_verified_domain(&router, &engine, case).await;
     given_bucket(&router, case, bucket).await;
     // The key policy a bucket for inbound mail is given: the account root keeps `kms:*` — "the
@@ -831,18 +839,16 @@ async fn an_s3_action_naming_a_kms_key_saves_the_message_under_it() {
         &router,
         case,
         "encrypted",
-        &[Rule::saving(
-            "to-s3-encrypted",
-            &[],
-            &[Action::Save("sealed/")],
-        )],
+        &[Rule::saving(rule, &[], &[Action::Save("sealed/")])],
         bucket,
         Some(&key_arn),
     )
     .await;
     set_active_rule_set(&router, case, "encrypted").await;
 
-    let raw = plain_message(RECIPIENT, "a message saved under a key");
+    // A token no part of the envelope can carry unless the body is the plaintext.
+    let token = "the-plaintext-token-of-this-message";
+    let raw = plain_message(RECIPIENT, token);
     send_raw(&router, case, &[RECIPIENT], &raw).await;
     let key = settled_key(&router, case, bucket, "sealed/").await;
     let read = s3(&router)
@@ -852,16 +858,94 @@ async fn an_s3_action_naming_a_kms_key_saves_the_message_under_it() {
         .send()
         .await
         .unwrap_or_else(|error| panic!("case {case:?}: reading {bucket}/{key}: {error}"));
+    let metadata = read.metadata().cloned().unwrap_or_default();
+    let entry = |name: &str| {
+        metadata
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| panic!("case {case:?}: expected {name} in {metadata:?}"))
+    };
     assert_eq!(
-        read.server_side_encryption().map(|algorithm| algorithm.as_str()),
-        Some("aws:kms"),
-        "case {case:?}: expected the object to be encrypted under a KMS key, got {:?}",
-        read.server_side_encryption()
+        entry("x-amz-wrap-alg"),
+        "kms",
+        "case {case:?}: expected the data key to be wrapped by KMS, got {metadata:?}"
     );
     assert_eq!(
-        read.ssekms_key_id(),
+        entry("x-amz-cek-alg"),
+        "AES/GCM/NoPadding",
+        "case {case:?}: expected the content algorithm the envelope declares, got {metadata:?}"
+    );
+    let material: serde_json::Value = serde_json::from_str(&entry("x-amz-matdesc"))
+        .unwrap_or_else(|error| panic!("case {case:?}: the material description is JSON: {error}"));
+    assert_eq!(
+        material.get("kms_cmk_id").and_then(serde_json::Value::as_str),
         Some(key_arn.as_str()),
-        "case {case:?}: expected the key the action named, got {:?}",
-        read.ssekms_key_id()
+        "case {case:?}: expected the material description to name the action's key, got {material}"
+    );
+    assert_eq!(
+        material
+            .get("aws:ses:rule-name")
+            .and_then(serde_json::Value::as_str),
+        Some(rule),
+        "case {case:?}: expected the material description to name the triggering rule, got \
+         {material}"
+    );
+    let body = read
+        .body
+        .collect()
+        .await
+        .unwrap_or_else(|error| panic!("case {case:?}: reading the object's body: {error}"))
+        .to_vec();
+    assert!(
+        memchr::memmem::find(&body, token.as_bytes()).is_none(),
+        "case {case:?}: expected the stored body to be ciphertext, got {:?}",
+        String::from_utf8_lossy(&body)
+    );
+
+    // The envelope opens: KMS unwraps the data key under the material description the object
+    // carries, and that key decrypts the body to the message that was sent.
+    let wrapped = aws_smithy_types::base64::decode(entry("x-amz-key-v2"))
+        .unwrap_or_else(|error| panic!("case {case:?}: the wrapped key is base64: {error}"));
+    let context: std::collections::HashMap<String, String> = material
+        .as_object()
+        .unwrap_or_else(|| panic!("case {case:?}: the material description is an object"))
+        .iter()
+        .map(|(name, value)| (name.clone(), value.as_str().unwrap_or_default().to_string()))
+        .collect();
+    let unwrapped = kms(&router)
+        .decrypt()
+        .ciphertext_blob(aws_smithy_types::Blob::new(wrapped))
+        .set_encryption_context(Some(context))
+        .send()
+        .await
+        .unwrap_or_else(|error| panic!("case {case:?}: unwrapping the data key: {error}"));
+    let data_key = unwrapped
+        .plaintext()
+        .unwrap_or_else(|| panic!("case {case:?}: the unwrapped data key has plaintext"));
+    let iv = aws_smithy_types::base64::decode(entry("x-amz-iv"))
+        .unwrap_or_else(|error| panic!("case {case:?}: the IV is base64: {error}"));
+    let cipher = ring::aead::LessSafeKey::new(
+        ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, data_key.as_ref())
+            .unwrap_or_else(|error| panic!("case {case:?}: the data key is an AES-256 key: {error}")),
+    );
+    let mut opened = body.clone();
+    let plaintext = cipher
+        .open_in_place(
+            ring::aead::Nonce::try_assume_unique_for_key(&iv)
+                .unwrap_or_else(|error| panic!("case {case:?}: the IV is a nonce: {error}")),
+            ring::aead::Aad::empty(),
+            &mut opened,
+        )
+        .unwrap_or_else(|error| panic!("case {case:?}: opening the envelope: {error}"));
+    assert_eq!(
+        plaintext,
+        raw.as_slice(),
+        "case {case:?}: expected the envelope to open to the message that was sent, got {:?}",
+        String::from_utf8_lossy(plaintext)
+    );
+    assert_eq!(
+        entry("x-amz-unencrypted-content-length"),
+        raw.len().to_string(),
+        "case {case:?}: expected the plaintext length the envelope declares to be the message's"
     );
 }

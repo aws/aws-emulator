@@ -73,6 +73,8 @@ mod ses_identity_send_loop;
 mod ses_identity_verification_token;
 #[path = "all/ses_inbound_receipt_rule_delivery.rs"]
 mod ses_inbound_receipt_rule_delivery;
+#[path = "all/ses_inbound_scan_and_composition.rs"]
+mod ses_inbound_scan_and_composition;
 #[path = "all/ses_list_identities_cursor.rs"]
 mod ses_list_identities_cursor;
 #[path = "all/ses_missing_custom_verification_template_wording.rs"]

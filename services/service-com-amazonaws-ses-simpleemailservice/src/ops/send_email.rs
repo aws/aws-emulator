@@ -2,8 +2,11 @@
 
 //! @op SendEmail
 //!
-//! Accepts a message for sending: checks it the way SES does, appends it to this
-//! account's send log, and answers with the id it stored.
+//! Accepts a message for sending: checks it the way SES does, composes the RFC
+//! 5322 document Amazon SES assembles from the parts the request carries
+//! ([`crate::state::composed_message`]), appends it to this account's send log,
+//! hands it to the receive path for every recipient this account holds an identity
+//! for ([`crate::state::inbound_delivery`]), and answers with the id it stored.
 //!
 //! ## Shape of an operation
 //!
@@ -370,6 +373,57 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .as_ref()
             .or(input.message.body.html.as_ref())
             .map(|content| content.data.as_str());
+        // "You specify the sender, the recipient, and the message body, and Amazon
+        // SES assembles the message for you": the RFC 5322 document this send is,
+        // which is what the account's own receive path saves when one of the
+        // recipients is on an identity this account holds. Composed by the one
+        // composer of this service ([`crate::state::composed_message`]), signed for
+        // the sending identity where its Easy DKIM setup signs, and delivered on a
+        // task of its own below.
+        let composed = crate::state::composed_message::compose(
+            &crate::state::composed_message::Composition {
+                message_id: Some(&crate::state::composed_message::message_id_header(
+                    &message_id,
+                    &region,
+                )),
+                from: Some(&input.source),
+                to: input
+                    .destination
+                    .to_addresses
+                    .as_deref()
+                    .unwrap_or_default(),
+                cc: input
+                    .destination
+                    .cc_addresses
+                    .as_deref()
+                    .unwrap_or_default(),
+                reply_to: input.reply_to_addresses.as_deref().unwrap_or_default(),
+                subject: Some(input.message.subject.data.as_str()),
+                headers: &[],
+                text: input
+                    .message
+                    .body
+                    .text
+                    .as_ref()
+                    .map(|content| content.data.as_str()),
+                html: input
+                    .message
+                    .body
+                    .html
+                    .as_ref()
+                    .map(|content| content.data.as_str()),
+                composed_at: now,
+            },
+        );
+        let accepted = crate::state::inbound_delivery::accepted(
+            &mut state,
+            &region,
+            &message_id,
+            &source,
+            &destinations,
+            composed.as_bytes(),
+            now,
+        );
         state.log_sent_message(crate::state::SentMessage {
             message_id: message_id.clone(),
             source,
@@ -388,6 +442,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .collect(),
             sent_at: now,
         });
+
+        // The receive path runs behind the acceptance, on a task of its own: a
+        // message is RECEIVED after it has been accepted, so nothing a caller is
+        // told depends on it and nothing it does reaches this service's store.
+        crate::state::inbound_delivery::deliver_accepted(ctx, &region, &accepted);
 
         Ok(SendEmailOutput { message_id })
     }

@@ -33,6 +33,11 @@ use smithy_server_runtime::{Violation, ViolationKind};
 
 pub mod event_publication;
 
+/// What the ACCOUNT does with a message this surface has just accepted for one of its own
+/// recipients — the hand-off to Amazon SES email receiving, which the classic surface's store
+/// owns, and the document a send assembles for it.
+pub mod account_receiving;
+
 /// The configuration-set plane: one configuration set, its event destinations, and the
 /// wording every operation that addresses one refuses with. Re-exported below, so a
 /// handler reaches each item as `crate::state::…`.

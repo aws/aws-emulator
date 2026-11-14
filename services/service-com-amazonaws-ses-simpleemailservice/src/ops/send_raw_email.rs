@@ -218,11 +218,9 @@ const MAX_MULTIPART_CONTAINERS: usize = crate::state::MAX_MULTIPART_CONTAINERS;
 
 /// The media type every MIME container carries, which is what one level of
 /// nesting costs a message: `Content-Type: multipart/<subtype>; boundary=…`.
-const MULTIPART_MEDIA_TYPE: &[u8] = b"multipart/";
-
-/// The header field a part's media type is declared in, which is the only place
-/// a media type DECLARES anything: the same bytes in a body are prose.
-const CONTENT_TYPE_FIELD_NAME: &[u8] = b"content-type";
+/// Counted by the ONE pre-parse reading of a raw message this service applies
+/// ([`crate::state::mime_bounds`]).
+use crate::state::mime_bounds::multipart_containers;
 
 /// The header line naming the mailbox a message is from, which is where the
 /// sender comes from when the request names no `Source`: "If you do not provide a
@@ -283,116 +281,6 @@ fn header_addresses(value: &str) -> Option<Vec<String>> {
         }
     }
     Some(addresses)
-}
-
-/// How many times `needle` occurs in `line`, however either is cased.
-fn occurrences_ignore_ascii_case(line: &[u8], needle: &[u8]) -> usize {
-    let mut found = 0;
-    let mut at = 0usize;
-    while let Some(window) = line.get(at..at.saturating_add(needle.len())) {
-        if window.eq_ignore_ascii_case(needle) {
-            found += 1;
-            at += needle.len();
-        } else {
-            at += 1;
-        }
-    }
-    found
-}
-
-/// Whether `line` opens the header field named `Content-Type`.
-///
-/// A field name is the text before the first colon, and it "is case-insensitive"
-/// (RFC 5322); white space around it is not part of the name, which is how a
-/// reader of the message takes it, so `Content-Type :` names the same field as
-/// `content-type:`. A field NAME carries no RFC 2047 encoded word — encoded words
-/// occur in field VALUES — so the name is decided on the raw bytes.
-fn opens_content_type_field(line: &[u8]) -> bool {
-    line.iter()
-        .position(|byte| *byte == b':')
-        .and_then(|colon| line.get(..colon))
-        .is_some_and(|name| {
-            let name = name
-                .iter()
-                .position(|byte| !byte.is_ascii_whitespace())
-                .map_or(&[][..], |first| &name[first..]);
-            let name = name
-                .iter()
-                .rposition(|byte| !byte.is_ascii_whitespace())
-                .map_or(&[][..], |last| &name[..=last]);
-            name.eq_ignore_ascii_case(CONTENT_TYPE_FIELD_NAME)
-        })
-}
-
-/// How many `multipart` media types ONE `Content-Type` field declares.
-///
-/// Read through the same decoding the MIME reader applies, rather than off the
-/// raw bytes: `mailparse::parse_header` unfolds the field and decodes the RFC
-/// 2047 encoded words in its value, so a media type a caller wrote as an encoded
-/// word is counted here exactly as the parser will read it. A field this emulator
-/// cannot read at all is counted on its raw bytes instead, because this count
-/// must never report FEWER containers than the parser may descend into.
-fn multipart_declarations(field: &[u8]) -> usize {
-    match ::mailparse::parse_header(field) {
-        Ok((header, _)) => {
-            occurrences_ignore_ascii_case(header.get_value().as_bytes(), MULTIPART_MEDIA_TYPE)
-        }
-        Err(_) => occurrences_ignore_ascii_case(field, MULTIPART_MEDIA_TYPE),
-    }
-}
-
-/// How many `multipart` containers the raw message DECLARES.
-///
-/// Counted on the BYTES, before the message is parsed: parsing a MIME tree
-/// descends once per nesting level, and each level is one part declaring a
-/// `multipart` media type in its own `Content-Type` field, so this count is what
-/// stands between a caller's chosen nesting and the depth of that descent. It is
-/// an UPPER bound on that depth — every container it misses would be a level the
-/// descent could take unbidden — which is why an unreadable field is counted
-/// rather than skipped ([`multipart_declarations`]) and why the depth of the tree
-/// the parser actually built is checked again once it is in hand
-/// ([`nesting_depth`]).
-///
-/// Only a `Content-Type` field DECLARES a media type, so only those fields are
-/// counted — the same bytes in a body are prose, and a message that merely
-/// discusses MIME is not a deeply nested one. A field value may be folded over
-/// several lines (RFC 5322), so a continuation line, which opens with white
-/// space, stays inside the field it continues and is read as part of it. The scan
-/// is linear in the bytes, which [`MAX_MESSAGE_BYTES`] has already bounded.
-fn multipart_containers(data: &[u8]) -> usize {
-    let mut found = 0;
-    // The `Content-Type` field currently being collected, folded lines included,
-    // and `None` while the scan is not inside one.
-    let mut field: Option<Vec<u8>> = None;
-    for line in data.split(|byte| *byte == b'\n') {
-        // A line of a `CRLF`-delimited message keeps its carriage return when
-        // split on the line feed alone; it is part of the ending, not the field.
-        let line = match line.split_last() {
-            Some((last, rest)) if *last == b'\r' => rest,
-            _ => line,
-        };
-        let continuation = line
-            .first()
-            .is_some_and(|byte| matches!(byte, b' ' | b'\t'));
-        if continuation {
-            if let Some(collected) = field.as_mut() {
-                collected.push(b'\n');
-                collected.extend_from_slice(line);
-            }
-            continue;
-        }
-        // Any line that is not a continuation ends the field before it.
-        if let Some(collected) = field.take() {
-            found += multipart_declarations(&collected);
-        }
-        if opens_content_type_field(line) {
-            field = Some(line.to_vec());
-        }
-    }
-    if let Some(collected) = field {
-        found += multipart_declarations(&collected);
-    }
-    found
 }
 
 /// How deeply the parsed message NESTS: 0 for a single part, and one more for
@@ -742,10 +630,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // that was stored — never one computed from the request.
         let message_id = state.new_message_id();
         // And it is RECEIVED by this account too when one of its recipients is on
-        // an identity this account holds: what the active receipt rule set does
-        // with it is read here, while the store is held, and carried out below,
-        // on a task of its own.
-        let steps = crate::state::inbound_delivery::receipt_steps(&state, &destinations);
+        // an identity this account holds: the message as Amazon SES sends it — signed
+        // for the sending identity where that identity's Easy DKIM setup signs — and
+        // what the active receipt rule set does with it are read here, while the
+        // store is held, and carried out below, on a task of its own.
+        let accepted = crate::state::inbound_delivery::accepted(
+            &mut state,
+            &region,
+            &message_id,
+            &source,
+            &destinations,
+            raw,
+            now,
+        );
         state.log_sent_message(crate::state::SentMessage {
             message_id: message_id.clone(),
             source,
@@ -766,8 +663,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         });
         // The receive path runs behind the acceptance, on a task of its own: a
         // message is RECEIVED after it has been accepted, so nothing a caller is
-        // told depends on it and this service's store is not held across it.
-        crate::state::inbound_delivery::deliver(ctx, &region, &message_id, raw, &steps);
+        // told depends on it and nothing it does reaches this service's store.
+        crate::state::inbound_delivery::deliver_accepted(ctx, &region, &accepted);
 
         Ok(SendRawEmailOutput { message_id })
     }

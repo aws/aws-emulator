@@ -71,6 +71,26 @@ pub mod template_rendering;
 /// accepted for one of its own recipients — the receiving half of this service.
 pub mod inbound_delivery;
 
+/// The RFC 5322 document Amazon SES COMPOSES for a message a caller handed it as parts — the
+/// ONE composer every message of this service is written by.
+pub mod composed_message;
+
+/// The DKIM signature Amazon SES puts on a message it sends for an identity whose Easy DKIM
+/// setup is in place, and the verdict the receiving half reads off one.
+pub mod dkim;
+
+/// The authentication and scan RESULT headers Amazon SES stamps on a received message when the
+/// receipt rule that applies to it asks for the scan.
+pub mod received_scan;
+
+/// The Amazon S3 encryption client ENVELOPE a received message is saved in when the `S3Action`
+/// that saves it names a KMS key.
+pub mod s3_encryption_envelope;
+
+/// The bound a caller's MIME tree is held to BEFORE anything parses it — the ONE pre-parse
+/// reading of a raw message every path of this service that reads one applies.
+pub mod mime_bounds;
+
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -1254,6 +1274,15 @@ pub struct ComAmazonawsSesSimpleemailserviceState {
     /// counter, and the counter is never reused. Written only by
     /// [`Self::mint_token`].
     minted_tokens: u64,
+    /// The Easy DKIM signing key of each DOMAIN of the identity list that has signed a
+    /// message, keyed by [`identity_key`] — minted on first use and kept, so every message a
+    /// domain signs is signed with the one key the selector it published stands for
+    /// ([`dkim`]).
+    ///
+    /// Key MATERIAL, so it is private to this module and its descendants: no operation reports
+    /// it, exactly as Amazon SES publishes no Easy DKIM private key. Bounded by the identity
+    /// list, whose domains are the only keys it holds.
+    dkim_signing_keys: BTreeMap<String, dkim::SigningKey>,
 }
 
 impl ComAmazonawsSesSimpleemailserviceState {

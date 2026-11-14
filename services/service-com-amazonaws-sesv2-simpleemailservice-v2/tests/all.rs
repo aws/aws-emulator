@@ -145,6 +145,8 @@ mod import_job_capacity;
 mod import_job_listing;
 #[path = "all/import_jobs.rs"]
 mod import_jobs;
+#[path = "all/inbound_receipt_rule_delivery.rs"]
+mod inbound_receipt_rule_delivery;
 #[path = "all/json_wire.rs"]
 mod json_wire;
 #[path = "all/list_tenants.rs"]

@@ -72,6 +72,17 @@ aws-sdk-s3 = { version = "1", default-features = false, features = ["rt-tokio", 
 aws-sdk-kms = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
 aws-sdk-lambda = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
 aws-sdk-sns = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
+# `ring`: the cryptography behind the two things Amazon SES's receiving half really performs —
+# the Ed25519 signature a message from an Easy DKIM identity carries and the key pair it is made
+# with (`state::dkim`), and the AES-256-GCM content encryption of the Amazon S3 encryption
+# client envelope a received message is saved in, plus the randomness both draw from
+# (`state::s3_encryption_envelope`). The same crate the other services of this workspace seal
+# and sign with, already in its lock file.
+ring = "0.17"
+# `memchr`: linear-time substring search over BYTES, which is what scanning a received message
+# for a scan's published test signature costs the SUM of the two lengths rather than their
+# product (`state::received_scan`).
+memchr = "2"
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

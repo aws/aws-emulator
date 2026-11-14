@@ -11,7 +11,11 @@
 //! suppression list and that recipient's own mailbox decide, which is what the
 //! account's suppression list is written from and what the configuration set's event
 //! destinations are told about
-//! ([`crate::state::event_publication`]). This is the ONLY file to touch for this
+//! ([`crate::state::event_publication`]). The message is also handed to the ACCOUNT's
+//! own receive path, which is what the active receipt rule set does with a message
+//! addressed to a recipient the account holds an identity for
+//! ([`::service_com_amazonaws_ses_simpleemailservice::state::inbound_delivery`]).
+//! This is the ONLY file to touch for this
 //! operation.
 //!
 //! ## Shape of an operation
@@ -139,6 +143,7 @@
 
 #[allow(unused_imports)]
 use super::types::*;
+use crate::state::account_receiving::received_by_the_account;
 use crate::state::event_publication;
 use crate::state::SentMessage;
 
@@ -411,8 +416,35 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        let message_id = store.next_message_id(now);
+        // The RFC 5322 document this send IS, which is what the ACCOUNT's own receive
+        // path saves when the message is addressed to a recipient the account holds an
+        // identity for: the document a raw message carries exactly as it was submitted,
+        // and for every other form the one Amazon SES assembles from the parts the
+        // request sent ("you specify the sender, the recipient, and the message body, and
+        // Amazon SES assembles the message for you"). Composed by the ONE composer of the
+        // account's email service rather than by a second one here.
+        let delivered = match input.content.raw.as_ref() {
+            Some(raw) => raw.data.clone(),
+            None => crate::state::account_receiving::assembled_message(
+                &crate::state::account_receiving::AssembledParts {
+                    region: &region,
+                    message_id: &message_id,
+                    from: &from,
+                    to: &to,
+                    cc: &cc,
+                    reply_to: input.reply_to_addresses.as_deref().unwrap_or_default(),
+                    subject: parts.subject.as_deref(),
+                    headers: &parts.headers,
+                    text: parts.body.as_deref(),
+                    html: parts.html.as_deref(),
+                    composed_at: now,
+                },
+            ),
+        };
+        let sender = from.clone();
         let message = SentMessage {
-            message_id: store.next_message_id(now),
+            message_id: message_id.clone(),
             from: Some(from),
             to,
             cc,
@@ -442,7 +474,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             headers: parts.headers,
             sent_at: now,
         };
-        let message_id = message.message_id.clone();
         // The log keeps its newest `MAX_SENT_MESSAGES` entries. The copy kept here is
         // what the events of this send are built from, so they report the message
         // exactly as the log holds it even once the log has evicted it.
@@ -500,7 +531,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             account_id: crate::state::CallerScope::of(ctx.parts())
                 .account_id
                 .to_string(),
-            region,
+            region: region.clone(),
             destinations,
             message: published,
             outcomes,
@@ -514,6 +545,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // it reports is already recorded.
         drop(store);
         event_publication::notification::publish(ctx, publication);
+
+        // The account RECEIVES this message as well when it is addressed to a recipient the
+        // account holds an identity for. Amazon SES email receiving is one facility of the
+        // ACCOUNT, not of an API: the receipt rule sets and the actions they carry out live
+        // in the classic surface's store, so the accepted message is handed to that receive
+        // path rather than a second copy of it being kept here. Behind the acceptance, with
+        // no lock of this service held, and with nothing this call answers depending on it.
+        received_by_the_account(
+            &*self.engine,
+            ctx,
+            &crate::state::account_receiving::AcceptedSend {
+                region: &region,
+                message_id: &message_id,
+                sender: &sender,
+                recipients: &addressed,
+                message: &delivered,
+                accepted_at: now,
+            },
+        );
 
         Ok(SendEmailOutput {
             message_id: Some(message_id),

@@ -331,17 +331,28 @@ pub fn rendered_template(
     let data = rendering_data(template_data)?;
     let widest = widest_collection(&data);
     // One output budget across the parts, so the message as a whole is bounded rather than
-    // each part being bounded on its own.
+    // each part being bounded on its own, and ONE deadline across them: the whole rendering is
+    // what a request waits [`RENDER_DEADLINE`] for, so that is the span the sink the engine
+    // writes into accepts writes within ([`Capped`]) — which is what ends a rendering whose
+    // measured cost turned out to be an under-estimate instead of leaving it running.
     let mut budget = MAX_MESSAGE_BYTES;
-    let subject = rendered_part(subject_part, &data, widest, Escaping::None, &mut budget)?;
-    let text = rendered_part(text_part, &data, widest, Escaping::None, &mut budget)?;
-    let html = rendered_part(html_part, &data, widest, Escaping::Html, &mut budget)?;
-    let message = mime_message(
+    let deadline = ::std::time::Instant::now() + RENDER_DEADLINE;
+    let subject = rendered_part(
+        subject_part,
+        &data,
+        widest,
+        Escaping::None,
+        &mut budget,
+        deadline,
+    )?;
+    let text = rendered_part(text_part, &data, widest, Escaping::None, &mut budget, deadline)?;
+    let html = rendered_part(html_part, &data, widest, Escaping::Html, &mut budget, deadline)?;
+    let message = super::composed_message::compose(&super::composed_message::Composition::of_parts(
         subject.as_deref(),
         text.as_deref(),
         html.as_deref(),
         composed_at,
-    );
+    ));
     if message.len() > MAX_MESSAGE_BYTES {
         return Err(RenderingFailure::InvalidRenderingData(
             RENDERING_TOO_LARGE.to_string(),
@@ -393,6 +404,7 @@ fn rendered_part(
     widest: u64,
     escaping: Escaping,
     budget: &mut usize,
+    deadline: ::std::time::Instant,
 ) -> Result<Option<String>, RenderingFailure> {
     let Some(source) = source else {
         return Ok(None);
@@ -420,7 +432,7 @@ fn rendered_part(
     if cost.evaluations > MAX_RENDER_STEPS {
         return Err(too_large());
     }
-    let rendered = rendered_text(parsed, data, escaping, *budget)?;
+    let rendered = rendered_text(parsed, data, escaping, *budget, deadline)?;
     *budget = budget.saturating_sub(rendered.len());
     Ok(Some(rendered))
 }
@@ -438,6 +450,7 @@ fn rendered_text(
     data: &Value,
     escaping: Escaping,
     budget: usize,
+    deadline: ::std::time::Instant,
 ) -> Result<String, RenderingFailure> {
     let mut engine = ::handlebars::Handlebars::new();
     if escaping == Escaping::None {
@@ -445,7 +458,7 @@ fn rendered_text(
     }
     engine.set_strict_mode(true);
     engine.register_template(RENDERED, parsed);
-    let mut written = Capped::new(budget);
+    let mut written = Capped::new(budget, deadline);
     engine
         .render_to_write(RENDERED, data, &mut written)
         .map_err(|failed| {
@@ -515,11 +528,12 @@ impl RenderCost {
     /// The count is the PRODUCT of the two factors that make a rendering expensive, per body
     /// rather than per template: a body is evaluated once per element of whatever the block
     /// around it repeats over — at most `widest` elements per repeating block it sits inside —
-    /// and each of those evaluations evaluates every element the body holds. A body with no
-    /// elements still costs one, because evaluating it has a cost of its own even when it
-    /// writes nothing, which is the case neither the output ceiling nor a count of elements
-    /// alone would catch. Saturating throughout: the bound only has to be an over-estimate
-    /// that cannot wrap.
+    /// and each of those evaluations RESOLVES every value the body's elements name
+    /// ([`resolutions_of`]), which is the element itself and every parameter and hash argument
+    /// it carries. A body with no elements still costs one, because evaluating it has a cost of
+    /// its own even when it writes nothing, which is the case neither the output ceiling nor a
+    /// count of elements alone would catch. Saturating throughout: the bound only has to be an
+    /// over-estimate that cannot wrap.
     ///
     /// The walk is ITERATIVE over an explicit stack of the bodies still to visit, so a
     /// template the engine parsed costs no stack to measure, and it stops as soon as either
@@ -535,8 +549,13 @@ impl RenderCost {
         // at.
         let mut pending: Vec<(&::handlebars::Template, usize, u32)> = vec![(template, 0, 0)];
         while let Some((body, nesting, repeating)) = pending.pop() {
-            let elements = (body.elements.len() as u64).max(1);
-            let evaluations = elements.saturating_mul(widest.saturating_pow(repeating));
+            let resolutions = body
+                .elements
+                .iter()
+                .map(resolutions_of)
+                .fold(0_u64, u64::saturating_add)
+                .max(1);
+            let evaluations = resolutions.saturating_mul(widest.saturating_pow(repeating));
             cost.evaluations = cost.evaluations.saturating_add(evaluations);
             if cost.evaluations > MAX_RENDER_STEPS {
                 return Ok(cost);
@@ -585,6 +604,46 @@ impl RenderCost {
     }
 }
 
+/// How many values the engine RESOLVES to evaluate ONE element of a body.
+///
+/// The element itself, and every parameter, hash argument and subexpression it names: the
+/// engine resolves each of them on every evaluation of the body holding the element, whether or
+/// not the helper it hands them to reads them — a built-in conditional reads its first
+/// parameter and resolves the rest all the same — so a count of elements alone would measure an
+/// element carrying a long parameter list as costing what a bare one costs.
+///
+/// Walked ITERATIVELY over the parameters in hand, so measuring costs no stack however deeply a
+/// template nests its subexpressions, and saturating, because the count only has to be an
+/// over-estimate that cannot wrap.
+fn resolutions_of(element: &::handlebars::template::TemplateElement) -> u64 {
+    use ::handlebars::template::{Parameter, TemplateElement};
+
+    let mut resolutions = 1_u64;
+    let mut pending: Vec<&Parameter> = Vec::new();
+    match element {
+        TemplateElement::Expression(helper)
+        | TemplateElement::HtmlExpression(helper)
+        | TemplateElement::HelperBlock(helper) => {
+            pending.push(&helper.name);
+            pending.extend(helper.params.iter());
+            pending.extend(helper.hash.values());
+        }
+        _ => {}
+    }
+    while let Some(parameter) = pending.pop() {
+        resolutions = resolutions.saturating_add(1);
+        if let Parameter::Subexpression(subexpression) = parameter {
+            if let Some(params) = subexpression.params() {
+                pending.extend(params.iter());
+            }
+            if let Some(hash) = subexpression.hash() {
+                pending.extend(hash.values());
+            }
+        }
+    }
+    resolutions
+}
+
 /// Does `block` evaluate its body once per element of something?
 ///
 /// Read from the name the engine parsed, so it is the helper the engine will call. A block
@@ -599,140 +658,35 @@ fn repeats(block: &::handlebars::template::HelperTemplate) -> bool {
     }
 }
 
-/// The line ending a MIME message's headers and part delimiters are written with (RFC 5322).
-const CRLF: &str = "\r\n";
-
-/// The MIME message the rendered parts compose, which is what a rendering produces.
-///
-/// The subject line is the message's `Subject` header, and `composed_at` — the instant this
-/// message was composed — is its `Date` header, the origination date every mail message
-/// carries. A template carrying BOTH body parts composes a `multipart/alternative` message
-/// whose alternatives are the text part and then the HTML part — least rich first, as MIME
-/// orders alternatives — and one carrying a single body part composes a message that IS that
-/// part. A part is carried as the rendering produced it, under the UTF-8 character set its
-/// content may need, declared `7bit` when every byte of it is ASCII and `8bit` otherwise.
-fn mime_message(
-    subject: Option<&str>,
-    text: Option<&str>,
-    html: Option<&str>,
-    composed_at: SystemTime,
-) -> String {
-    let mut message = String::new();
-    message.push_str("Date: ");
-    message.push_str(&date_header(composed_at));
-    message.push_str(CRLF);
-    if let Some(subject) = subject {
-        message.push_str("Subject: ");
-        message.push_str(&header_text(subject));
-        message.push_str(CRLF);
-    }
-    message.push_str("MIME-Version: 1.0");
-    message.push_str(CRLF);
-    match (text, html) {
-        (Some(text), Some(html)) => {
-            let boundary = part_boundary(&[text, html]);
-            message.push_str(&format!(
-                "Content-Type: multipart/alternative; boundary=\"{boundary}\"{CRLF}{CRLF}"
-            ));
-            for (content_type, body) in [("text/plain", text), ("text/html", html)] {
-                message.push_str(&format!("--{boundary}{CRLF}"));
-                push_body(&mut message, content_type, body);
-                message.push_str(CRLF);
-            }
-            message.push_str(&format!("--{boundary}--{CRLF}"));
-        }
-        (Some(text), None) => push_body(&mut message, "text/plain", text),
-        (None, Some(html)) => push_body(&mut message, "text/html", html),
-        // A template with no body part at all still renders to a message, whose body is the
-        // nothing the template carries.
-        (None, None) => push_body(&mut message, "text/plain", ""),
-    }
-    message
-}
-
-/// Append one body — its content type, its transfer encoding and the body itself — to a
-/// message being composed.
-fn push_body(message: &mut String, content_type: &str, body: &str) {
-    message.push_str(&format!("Content-Type: {content_type}; charset=UTF-8{CRLF}"));
-    message.push_str(&format!(
-        "Content-Transfer-Encoding: {}{CRLF}{CRLF}",
-        transfer_encoding(body)
-    ));
-    message.push_str(body);
-}
-
-/// The content transfer encoding a body is declared under: `7bit` for a body every byte of
-/// which is ASCII, and `8bit` for one carrying text that is not — the body travels as the
-/// rendering produced it either way, so the declaration is what tells a reader which it is.
-fn transfer_encoding(body: &str) -> &'static str {
-    if body.is_ascii() {
-        "7bit"
-    } else {
-        "8bit"
-    }
-}
-
-/// `at` as a mail message's `Date` header states an instant: the date-and-time form RFC 5322
-/// lays out for it, in UTC, written by the maintained calendar crate rather than by laying the
-/// form out here.
-fn date_header(at: SystemTime) -> String {
-    ::chrono::DateTime::<::chrono::Utc>::from(at).to_rfc2822()
-}
-
-/// `text` as one header line: a header is a single line, so a line break the rendering
-/// produced inside one is carried as the space that folding leaves.
-fn header_text(text: &str) -> String {
-    text.replace("\r\n", " ").replace(['\r', '\n'], " ")
-}
-
-/// The delimiter the alternatives of one message are separated by: a value no part of this
-/// message carries, which is what a MIME boundary has to be.
-///
-/// Drawn from the system's randomness rather than from the request or from anything stored:
-/// the boundary names nothing, it only has to be absent from the content. A draw that does
-/// occur in the content is re-drawn, a bounded number of times.
-fn part_boundary(bodies: &[&str]) -> String {
-    let mut boundary = drawn_boundary();
-    for _ in 0..BOUNDARY_DRAWS {
-        if !bodies.iter().any(|body| body.contains(&boundary)) {
-            break;
-        }
-        boundary = drawn_boundary();
-    }
-    boundary
-}
-
-/// How many times a boundary is re-drawn before the composition carries on with the last
-/// draw: each draw carries 64 bits this process did not choose, so a single collision is
-/// already beyond reach.
-const BOUNDARY_DRAWS: usize = 4;
-
-/// One boundary draw, in the form a MIME multipart message delimits its parts with.
-fn drawn_boundary() -> String {
-    format!("----=_Part_{:016x}", super::system_entropy())
-}
-
 /// Where a rendering is written: the bytes it has produced so far, up to the budget it was
-/// given.
+/// given and up to the instant it was given.
 ///
-/// The ceiling is enforced HERE, as the renderer writes, so a template that would produce more
-/// is stopped at the ceiling rather than after this process has held all of it.
+/// Both ceilings are enforced HERE, as the renderer writes, which is the only place a running
+/// rendering can be stopped from: the engine has no interrupt, so a rendering whose measured
+/// cost ([`RenderCost`]) turned out to be an under-estimate would otherwise keep a thread and
+/// its permit ([`MAX_RENDERS_IN_FLIGHT`]) for as long as it kept going. A write past the budget
+/// is refused so the message is stopped at the ceiling rather than after this process has held
+/// all of it, and a write past the deadline is refused so the rendering ends when the request
+/// that waited for it already has.
 #[derive(Debug)]
 struct Capped {
     /// What has been written so far.
     text: Vec<u8>,
     /// The most bytes this sink accepts.
     budget: usize,
+    /// The instant past which this sink accepts nothing more.
+    deadline: ::std::time::Instant,
     /// Set once a write was refused for passing the budget, so the refusal names the ceiling
     /// rather than whatever the renderer made of the write failure.
     overflowed: bool,
 }
 
 impl Capped {
-    fn new(budget: usize) -> Self {
+    fn new(budget: usize, deadline: ::std::time::Instant) -> Self {
         Self {
             text: Vec::new(),
             budget,
+            deadline,
             overflowed: false,
         }
     }
@@ -745,6 +699,12 @@ impl Write for Capped {
             return Err(::std::io::Error::new(
                 ::std::io::ErrorKind::WriteZero,
                 "the rendering passed the ceiling this service composes a message within",
+            ));
+        }
+        if ::std::time::Instant::now() > self.deadline {
+            return Err(::std::io::Error::new(
+                ::std::io::ErrorKind::TimedOut,
+                "the rendering passed the deadline this service renders a template within",
             ));
         }
         self.text.extend_from_slice(buf);

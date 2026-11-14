@@ -87,6 +87,13 @@ base64 = "0.22"
 # not re-derived here. The same crate the other emulated services that publish a CSV
 # artifact write theirs with.
 csv = "1.3"
+# The classic Amazon SES surface, whose store owns what the ACCOUNT does with mail it
+# RECEIVES — its receipt rule sets, the active one, and the actions a matching rule carries
+# out — and which composes the RFC 5322 document a send assembles. Email receiving is one
+# facility of the account rather than of an API, so a message this surface accepts for one of
+# the account's own recipients is handed to that surface's receive path
+# (`ops::send_email`) rather than a second copy of either being kept here.
+service-com-amazonaws-ses-simpleemailservice = { workspace = true }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
@@ -110,6 +117,17 @@ aws-sdk-iam = { version = "1", default-features = false }
 # a page cursor a listing refuses is sent on the query string exactly as a client sends it,
 # including its `+`, `/`, `=` and `!`.
 percent-encoding = "2.3"
+# The object store a receipt rule's `S3Action` writes a received message into, mounted beside
+# this service on ONE engine in the receive-path suite: the object a message this surface
+# accepted produces is read back through Amazon S3's own operations, and the bucket and its
+# policy are made through them too.
+service-com-amazonaws-s3-amazons3 = { workspace = true }
+# The AWS SDK for Amazon S3, driven over the same in-process callback, which is how that suite
+# makes the bucket and reads the object back.
+aws-sdk-s3 = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
+# The reader of the stored message's header block in that suite — the same crate this service
+# reads a raw message's headers with.
+mailparse = "0.16"
 # EventBridge and Amazon SQS are mounted beside this service on one engine in the
 # EventBridge event-destination suite: the email events a send publishes are put on that
 # service's bus, and a rule's queue target is where a client reads the whole envelope back.

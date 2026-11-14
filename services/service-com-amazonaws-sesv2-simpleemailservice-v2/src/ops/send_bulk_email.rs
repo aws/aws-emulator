@@ -393,6 +393,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .to_string();
         let mut results = Vec::new();
         let mut publications = Vec::new();
+        // What the ACCOUNT does with each message this send accepts: read while the store is
+        // held, carried out once it has been released. Bounded by the request itself — at most
+        // `MAX_DESTINATIONS_PER_REQUEST` entries, each carrying one message whose parts the
+        // render ceiling (`crate::state::template_rendering::MAX_RENDERED_PART_BYTES`) already
+        // caps — which is the same bound the rendered messages above are held under.
+        let mut received: Vec<(String, Vec<String>, Vec<u8>)> = Vec::new();
         // The CloudWatch store a destination that counts events appends to, read once for
         // the whole request: every message of a bulk send publishes into the same store.
         let metric_store = event_publication::cloudwatch::metric_store(&*self.engine);
@@ -452,6 +458,35 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 sent_at: now,
             };
             let message_id = sent.message_id.clone();
+            // The RFC 5322 document this message IS, which is what the account's own receive
+            // path saves when it is addressed to a recipient the account holds an identity
+            // for: assembled from the rendered parts by the ONE composer of the account's
+            // email service.
+            let assembled = crate::state::account_receiving::assembled_message(
+                &crate::state::account_receiving::AssembledParts {
+                    region: &region,
+                    message_id: &message_id,
+                    from: &from,
+                    to: &sent.to,
+                    cc: &sent.cc,
+                    reply_to: &sent.reply_to,
+                    subject: sent.subject.as_deref(),
+                    headers: &sent.headers,
+                    text: sent.body.as_deref(),
+                    html: sent.body_html.as_deref(),
+                    composed_at: now,
+                },
+            );
+            received.push((
+                message_id.clone(),
+                sent.to
+                    .iter()
+                    .chain(&sent.cc)
+                    .chain(&sent.bcc)
+                    .cloned()
+                    .collect(),
+                assembled,
+            ));
             // The copy kept here is what the events of this message are built from, so they
             // report it exactly as the log holds it even once the log has evicted it.
             let published = sent.clone();
@@ -492,6 +527,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         drop(store);
         for publication in publications {
             event_publication::notification::publish(ctx, publication);
+        }
+        // The account RECEIVES each accepted message as well when it is addressed to a
+        // recipient the account holds an identity for. Amazon SES email receiving is one
+        // facility of the ACCOUNT, not of an API, so each message is handed to the receive
+        // path the classic surface owns ([`crate::state::account_receiving`]) — behind the
+        // acceptance, with no lock of this service held.
+        for (message_id, recipients, message) in &received {
+            crate::state::account_receiving::received_by_the_account(
+                &*self.engine,
+                ctx,
+                &crate::state::account_receiving::AcceptedSend {
+                    region: &region,
+                    message_id,
+                    sender: &from,
+                    recipients,
+                    message,
+                    accepted_at: now,
+                },
+            );
         }
 
         Ok(SendBulkEmailOutput {
