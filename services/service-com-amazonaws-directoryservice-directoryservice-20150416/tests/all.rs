@@ -137,6 +137,8 @@ mod snapshots;
 mod sso_access_url_assignment;
 #[path = "all/sso_access_url_prerequisite.rs"]
 mod sso_access_url_prerequisite;
+#[path = "all/sso_disable_preconditions.rs"]
+mod sso_disable_preconditions;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
 #[path = "all/tag_limit_diagnostic.rs"]
