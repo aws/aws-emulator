@@ -173,6 +173,8 @@ mod metric_data;
 mod metric_data_plane_identity;
 #[path = "all/metric_datum_rules.rs"]
 mod metric_datum_rules;
+#[path = "all/metric_identity_authorization.rs"]
+mod metric_identity_authorization;
 #[path = "all/metric_math.rs"]
 mod metric_math;
 #[path = "all/metric_math_alarm_advances.rs"]

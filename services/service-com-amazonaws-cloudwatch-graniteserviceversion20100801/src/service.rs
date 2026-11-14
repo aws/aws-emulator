@@ -66,9 +66,11 @@ use smithy_server_runtime::{
 };
 use std::sync::Arc;
 
+pub mod authorization;
 pub mod query_compatible_errors;
 pub mod request_protocol;
 
+use authorization::AuthorizedByIam;
 use query_compatible_errors::{
     QueryCompatibleErrors, MISSING_PARAMETER, PARAMETER_VALUE, VALIDATION,
 };
@@ -124,7 +126,7 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     /// every request passes through rather than a line in each handler. The whole chain sits
     /// inside [`QueryCompatibleErrors`], for the same reason: naming the class of a failure is
     /// owed by every answer, whichever layer built it.
-    metered: ReportingTheRequestId<QueryCompatibleErrors<Metering<Eng, TheModelledOperation>>>,
+    metered: TheWayEveryOperationIsServed<Eng, TheModelledOperation>,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -288,19 +290,30 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     }
 }
 
-/// `operation` served the way EVERY operation of this service is: counted into the usage
-/// telemetry this service publishes about its own API ([`Metering`]), naming the class of
-/// whatever failure it answers in full ([`QueryCompatibleErrors`]), and naming the request it
-/// answered in the `awsQuery` error envelope ([`ReportingTheRequestId`]).
+/// `operation` served the way EVERY operation of this service is: decided against the
+/// calling principal's own IAM policies before anything is read or written
+/// ([`authorization`]), counted into the usage telemetry this service publishes about its own
+/// API ([`Metering`]), naming the class of whatever failure it answers in full
+/// ([`QueryCompatibleErrors`]), and naming the request it answered in the `awsQuery` error
+/// envelope ([`ReportingTheRequestId`]).
 ///
-/// The three are owed by every answer, whichever layer built it, so the chain is stated here
-/// once rather than at each of the operations whose answer this file owns a part of.
+/// All four are owed by every answer, whichever layer built it, so the chain is stated here
+/// once rather than at each of the operations whose answer this file owns a part of. The
+/// authorization decision sits OUTSIDE the metering, because a call refused before it is
+/// dispatched is not a call this service served; it sits INSIDE the request-id writer, so its
+/// refusal names the request it answered like every other failure.
 fn the_way_every_operation_is_served<Eng: Send + Sync + 'static, O: ErasedOperation>(
     engine: Arc<Eng>,
     operation: O,
-) -> ReportingTheRequestId<QueryCompatibleErrors<Metering<Eng, O>>> {
-    ReportingTheRequestId::new(QueryCompatibleErrors::new(Metering::new(engine, operation)))
+) -> TheWayEveryOperationIsServed<Eng, O> {
+    let metered = QueryCompatibleErrors::new(Metering::new(Arc::clone(&engine), operation));
+    ReportingTheRequestId::new(AuthorizedByIam::new(engine, metered))
 }
+
+/// The chain [`the_way_every_operation_is_served`] builds, named so the field holding it and
+/// that function cannot state it differently.
+type TheWayEveryOperationIsServed<Eng, O> =
+    ReportingTheRequestId<AuthorizedByIam<Eng, QueryCompatibleErrors<Metering<Eng, O>>>>;
 
 /// The same chain as a table entry: [`the_way_every_operation_is_served`] boxed for
 /// [`OperationRoutingTable::add_operation`].

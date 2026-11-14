@@ -206,6 +206,7 @@ mod tests {
             invoke_identity_arn: Some("arn:aws:iam::000000000000:role/consume".to_string()),
             batch_size: MAX_RECORDS_PER_BATCH,
             reports_batch_item_failures: false,
+            attempts_allowed: None,
             cursors: std::collections::BTreeMap::new(),
             initial_cursor: ShardCursor::TrimHorizon,
         }

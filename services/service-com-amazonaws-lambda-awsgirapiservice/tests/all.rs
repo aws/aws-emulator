@@ -485,6 +485,8 @@ mod sqs_event_source_hold;
 mod state_roundtrip;
 #[path = "all/stream_mapping_iterator_age_series.rs"]
 mod stream_mapping_iterator_age_series;
+#[path = "all/stream_mapping_retry_allowance.rs"]
+mod stream_mapping_retry_allowance;
 #[path = "all/synchronous_invoke_run.rs"]
 mod synchronous_invoke_run;
 #[path = "all/tag_key_shape.rs"]

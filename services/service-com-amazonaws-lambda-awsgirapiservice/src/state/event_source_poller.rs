@@ -40,6 +40,14 @@
 //!   for its function's report of which records of the batch failed is checkpointed past
 //!   only the records at the head of the batch that report leaves out, so the first record
 //!   it names is where the next read starts (see [`super::batch_item_failures`]).
+//! * THE RETRIES A MAPPING ALLOWS ARE SPENT ON ONE BATCH. "Discard records after the
+//!   specified number of retries" (`MaximumRetryAttempts`): a mapping that states a finite
+//!   count gets the first attempt plus that many at one batch, and once they are spent the
+//!   shard is read on from PAST those records — so the records behind a batch its function
+//!   cannot process are still delivered. The count is a fact about the batch, so a shard
+//!   that has moved on starts it again. Between two attempts at one batch the wait GROWS
+//!   ([`undelivered_backoff`]), so a function that keeps failing is not invoked at the rate
+//!   a healthy mapping polls.
 //!
 //! * NOTHING IS READ FOR A FUNCTION THAT CANNOT BE INVOKED. "Lambda reads items from the
 //!   event source and invokes the function" (`CreateEventSourceMapping`), so a mapping
@@ -100,6 +108,16 @@ const RETRY_BACKOFF: Duration = Duration::from_millis(250);
 /// it recover when the resource comes back — but it does so at this interval rather than
 /// at the rate a healthy mapping polls.
 const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(5);
+
+/// The longest the poller waits between two attempts at a batch its FUNCTION did not
+/// process, which the wait grows towards by doubling ([`undelivered_backoff`]).
+///
+/// An EMULATOR bound, not an AWS number: what AWS states is that such a batch is retried
+/// until it is processed, it expires, or the mapping's `MaximumRetryAttempts` is spent, with
+/// the wait between attempts growing. The ceiling is chosen so a function that keeps failing
+/// is attempted at a minute scale rather than at the rate a healthy mapping polls, and so a
+/// function that starts succeeding again is still tried within a minute.
+const MAX_UNDELIVERED_BACKOFF: Duration = Duration::from_secs(60);
 
 /// How often a mapping that keeps failing says so: the first failure, and every this many
 /// after it, so one broken mapping cannot fill the log.
@@ -267,6 +285,10 @@ struct ShardSourcedMapping {
     /// Whether the mapping's `FunctionResponseTypes` asks for the function's report of which
     /// records of the batch failed to be read (see [`super::batch_item_failures`]).
     reports_batch_item_failures: bool,
+    /// How many attempts one batch of this mapping gets before its records are discarded,
+    /// from `MaximumRetryAttempts`; `None` for the infinite default
+    /// ([`attempts_allowed`]).
+    attempts_allowed: Option<u32>,
     /// Where the mapping reads next in each shard it has already read from.
     cursors: BTreeMap<String, ShardCursor>,
     /// Where it reads a shard it has not read from yet.
@@ -298,7 +320,17 @@ enum Outcome {
     Idle,
     /// A call failed, or an invocation did not succeed, for at least one shard. That
     /// shard was not checkpointed past, so its records are read again.
-    Failed(String),
+    Failed {
+        /// What went wrong, for the one log line a failing mapping writes.
+        detail: String,
+        /// Whether what failed was the FUNCTION's processing of a batch that was read and
+        /// handed over, rather than a read or a call this pass could not make. The two are
+        /// retried on different ladders: a batch whose function keeps failing is a property
+        /// of that batch, so the wait between attempts at it grows by doubling
+        /// ([`undelivered_backoff`]), while a pass that could not act at all keeps looking
+        /// at the interval a mapping waiting on a resource looks at ([`retry_backoff`]).
+        undelivered: bool,
+    },
 }
 
 /// Poll one mapping until it is gone.
@@ -314,7 +346,7 @@ async fn poll_mapping(
     let uuid = claim.uuid.clone();
     // A handle of its own, so the store can be locked while the claim is borrowed.
     let state = ::engine::ServiceState::clone(&claim.state);
-    let mut clients = Clients::default();
+    let mut work = PollerWork::default();
     let mut failures = 0u32;
     loop {
         let pass = {
@@ -363,7 +395,7 @@ async fn poll_mapping(
                 }
                 match move_batches(
                     callback,
-                    &mut clients,
+                    &mut work,
                     &state,
                     &metrics,
                     &policies,
@@ -377,7 +409,10 @@ async fn poll_mapping(
                         failures = 0;
                         ::tokio::time::sleep(POLL_INTERVAL).await;
                     }
-                    Outcome::Failed(detail) => {
+                    Outcome::Failed {
+                        detail,
+                        undelivered,
+                    } => {
                         failures = failures.saturating_add(1);
                         if failures == 1 || failures.is_multiple_of(FAILURE_LOG_INTERVAL) {
                             ::tracing::warn!(
@@ -389,7 +424,12 @@ async fn poll_mapping(
                                  it tries again"
                             );
                         }
-                        ::tokio::time::sleep(retry_backoff(failures)).await;
+                        let waiting = if undelivered {
+                            undelivered_backoff(failures)
+                        } else {
+                            retry_backoff(failures)
+                        };
+                        ::tokio::time::sleep(waiting).await;
                     }
                 }
             }
@@ -426,6 +466,71 @@ fn retry_backoff(failures: u32) -> Duration {
     RETRY_BACKOFF
         .saturating_mul(failures.max(1))
         .min(MAX_RETRY_BACKOFF)
+}
+
+/// How long to wait after `failures` consecutive attempts at a batch the FUNCTION did not
+/// process: it DOUBLES with each of them, capped at [`MAX_UNDELIVERED_BACKOFF`].
+///
+/// "When set to infinite (-1), failed records are retried until the record expires"
+/// (`MaximumRetryAttempts`), so such a batch is attempted again however many times it has
+/// already failed — but the wait between two attempts grows with them, so a function that
+/// keeps failing one batch is not invoked at the rate a healthy mapping polls and the
+/// failures it reports do not grow without bound over the span a caller watches them.
+fn undelivered_backoff(failures: u32) -> Duration {
+    let doubling = 1u32.checked_shl(failures.saturating_sub(1).min(u32::BITS - 1));
+    match doubling {
+        Some(factor) => RETRY_BACKOFF
+            .saturating_mul(factor)
+            .min(MAX_UNDELIVERED_BACKOFF),
+        // Past what a doubling fits in: the wait has long since reached its ceiling.
+        None => MAX_UNDELIVERED_BACKOFF,
+    }
+}
+
+/// The WORKING state one poller task carries from pass to pass: how it reaches the rest of
+/// this emulator, and what it has already tried.
+///
+/// It belongs to the task rather than to the store because every part of it is a fact about
+/// the attempts THIS poller has made, not one a caller reads off the mapping.
+#[derive(Default)]
+struct PollerWork {
+    /// The clients this data plane reaches the other services of this emulator through, built
+    /// on first use and then reused.
+    clients: Clients,
+    /// How many attempts the batch at the head of each shard has had, keyed by shard id, so
+    /// the mapping's `MaximumRetryAttempts` is spent on ONE batch. Bounded by the shards of
+    /// the one stream this poller reads, and an entry is given up as soon as its shard moves
+    /// on.
+    attempts: BTreeMap<String, BatchAttempts>,
+}
+
+/// How many consecutive attempts the batch at the head of ONE shard has had, and which batch
+/// those attempts were at.
+///
+/// `MaximumRetryAttempts` is spent on a BATCH — "Discard records after the specified number
+/// of retries" — so the count belongs to the records the attempts were made with and starts
+/// again once the shard has moved on to others.
+#[derive(Debug)]
+struct BatchAttempts {
+    /// The sequence number of the FIRST record of the batch, which is the position the shard
+    /// is still at: a batch read from a moved position is a different batch.
+    head: String,
+    /// How many attempts at that batch have been made, the first one included.
+    made: u32,
+}
+
+/// How many attempts one batch of a mapping carrying `maximum_retry_attempts` gets: the
+/// first attempt plus the retries that member allows.
+///
+/// `None` is "as many as it takes": "Discard records after the specified number of retries.
+/// The default value is infinite (-1). When set to infinite (-1), failed records are retried
+/// until the record expires" (`MaximumRetryAttempts`), which is what a mapping carrying no
+/// value and one carrying the infinite default both ask for.
+fn attempts_allowed(maximum_retry_attempts: Option<i32>) -> Option<u32> {
+    // A negative value is the infinite default; every other value the member's own range
+    // admits is a count of retries.
+    let retries = u32::try_from(maximum_retry_attempts?).ok()?;
+    Some(retries.saturating_add(1))
 }
 
 /// What the poller does next for the mapping it claims, releasing its claim when the
@@ -516,6 +621,7 @@ fn run_of(
         reports_batch_item_failures: super::reports_batch_item_failures(
             &mapping.function_response_types,
         ),
+        attempts_allowed: attempts_allowed(mapping.maximum_retry_attempts),
         cursors: mapping.shard_cursors.clone(),
         initial_cursor: mapping.initial_shard_cursor(),
     })
@@ -530,28 +636,41 @@ fn run_of(
 /// Every batch read is metered before it is handed over, because the age it meters is a
 /// property of the READ: it is how long the newest record of the batch had been in the
 /// shard at the instant Lambda took it off, whatever the invocation then comes to.
+///
+/// `work` carries this poller's own working state: the clients this data plane reaches the
+/// rest of the emulator through, and how many attempts the batch at the head of each shard
+/// has already had — so a batch the function keeps failing is discarded once the mapping's
+/// `MaximumRetryAttempts` is spent on it ([`failed_attempt`]).
 async fn move_batches(
     callback: &smithy_server_runtime::EmbeddedEmulator,
-    clients: &mut Clients,
+    work: &mut PollerWork,
     state: &::engine::ServiceState<ComAmazonawsLambdaAwsgirapiserviceState>,
     metrics: &FunctionMetrics,
     policies: &PolicyStores,
     uuid: &str,
     run: &ShardSourcedMapping,
 ) -> Outcome {
-    let shards = match shard_ids(callback, clients, run).await {
+    let shards = match shard_ids(callback, &mut work.clients, run).await {
         Ok(shards) => shards,
-        Err(detail) => return Outcome::Failed(detail),
+        Err(detail) => {
+            return Outcome::Failed {
+                detail,
+                undelivered: false,
+            }
+        }
     };
     let mut delivered = false;
     let mut failure: Option<String> = None;
+    // Whether what failed was the FUNCTION's processing of a batch this pass handed over,
+    // rather than something the pass could not do at all (see [`Outcome::Failed`]).
+    let mut undelivered = false;
     for shard in shards {
         let cursor = run
             .cursors
             .get(&shard)
             .cloned()
             .unwrap_or_else(|| run.initial_cursor.clone());
-        let records = match read_batch(callback, clients, run, &shard, &cursor).await {
+        let records = match read_batch(callback, &mut work.clients, run, &shard, &cursor).await {
             // "If the shard has been closed, the shard iterator can't return more data":
             // such a shard has no position left to read from.
             Ok(None) => continue,
@@ -584,7 +703,7 @@ async fn move_batches(
             iterator_age_millis(last.arrived_at.as_ref(), SystemTime::now()),
         );
         let payload = batch_event(&records);
-        match hand_over_batch(callback, clients, run, &payload, &sequence_numbers).await {
+        match hand_over_batch(callback, &mut work.clients, run, &payload, &sequence_numbers).await {
             Ok(processed) => {
                 // The mapping reads on from past the records the attempt processed, and the
                 // attempt is reported as what the mapping last came to. A shard has ONE
@@ -602,6 +721,9 @@ async fn move_batches(
                             Some(sequence_number),
                             super::LAST_PROCESSING_RESULT_OK,
                         );
+                        // The shard has moved on, so the attempts the batch it was at had are
+                        // spent on nothing further: the next batch starts its own count.
+                        work.attempts.remove(&shard);
                         delivered = true;
                     }
                     None => {
@@ -610,44 +732,113 @@ async fn move_batches(
                         // moved the shard's position not at all is one that did not process
                         // the batch, which is what it reports and what the poller backs off
                         // after.
-                        checkpoint(
+                        failure = Some(failed_attempt(
                             state,
                             uuid,
                             run,
                             &shard,
-                            None,
-                            super::LAST_PROCESSING_RESULT_FUNCTION_CALL_FAILED,
-                        );
-                        failure = Some(format!(
-                            "{} reported the first record of the batch it was handed as one \
-                             it did not process, so {shard} reads the same batch again",
-                            run.function_arn
+                            &sequence_numbers,
+                            &mut work.attempts,
+                            format!(
+                                "{} reported the first record of the batch it was handed as \
+                                 one it did not process",
+                                run.function_arn
+                            ),
                         ));
+                        undelivered = true;
                     }
                 }
             }
             Err(detail) => {
                 // Not delivered: the cursor stays where it was, so this batch is read
-                // again, and the failed attempt is what the mapping last came to. Each
-                // shard is read on its own, so the other shards of the stream are still
-                // read on this pass.
-                checkpoint(
+                // again — until the mapping's `MaximumRetryAttempts` is spent on it — and
+                // the failed attempt is what the mapping last came to. Each shard is read on
+                // its own, so the other shards of the stream are still read on this pass.
+                failure = Some(failed_attempt(
                     state,
                     uuid,
                     run,
                     &shard,
-                    None,
-                    super::LAST_PROCESSING_RESULT_FUNCTION_CALL_FAILED,
-                );
-                failure = Some(detail);
+                    &sequence_numbers,
+                    &mut work.attempts,
+                    detail,
+                ));
+                undelivered = true;
             }
         }
     }
     match failure {
-        Some(detail) => Outcome::Failed(detail),
+        Some(detail) => Outcome::Failed {
+            detail,
+            undelivered,
+        },
         None if delivered => Outcome::Delivered,
         None => Outcome::Idle,
     }
+}
+
+/// Record one FAILED attempt at the batch `sequence_numbers` names on `shard`, and answer
+/// what the attempt came to for the one log line a failing mapping writes.
+///
+/// What the attempt came to is reported as the mapping's `LastProcessingResult` either way.
+/// The cursor stays where it was — so the same batch is read again — until the mapping has
+/// spent on this batch every attempt it allows: "Discard records after the specified number
+/// of retries" (`MaximumRetryAttempts`), at which point the shard is read on from PAST the
+/// batch, so the records behind the ones that were discarded are delivered. A mapping
+/// carrying the infinite default discards nothing and keeps trying
+/// ([`attempts_allowed`]).
+fn failed_attempt(
+    state: &::engine::ServiceState<ComAmazonawsLambdaAwsgirapiserviceState>,
+    uuid: &str,
+    run: &ShardSourcedMapping,
+    shard: &str,
+    sequence_numbers: &[String],
+    attempts: &mut BTreeMap<String, BatchAttempts>,
+    detail: String,
+) -> String {
+    let (Some(head), Some(tail)) = (sequence_numbers.first(), sequence_numbers.last()) else {
+        return detail;
+    };
+    let made = match attempts.get_mut(shard) {
+        // The shard is still at the position this batch was read from, so this is one more
+        // attempt at the SAME batch.
+        Some(held) if &held.head == head => {
+            held.made = held.made.saturating_add(1);
+            held.made
+        }
+        // A batch read from a position the shard has since moved to is a different batch,
+        // which gets the mapping's whole allowance of its own.
+        _ => {
+            attempts.insert(
+                shard.to_string(),
+                BatchAttempts {
+                    head: head.clone(),
+                    made: 1,
+                },
+            );
+            1
+        }
+    };
+    let discarded = run.attempts_allowed.is_some_and(|allowed| made >= allowed);
+    if discarded {
+        attempts.remove(shard);
+    }
+    checkpoint(
+        state,
+        uuid,
+        run,
+        shard,
+        discarded.then(|| tail.clone()),
+        super::LAST_PROCESSING_RESULT_FUNCTION_CALL_FAILED,
+    );
+    if discarded {
+        return format!(
+            "{detail}, and the mapping allows {made} attempt(s) at a batch, so the {} \
+             record(s) of this one were discarded and {shard} reads on past them",
+            sequence_numbers.len()
+        );
+    }
+    format!("{detail}, so {shard} reads the same batch again")
 }
 
 /// The event ONE batch is handed over as: "Lambda reads items from the event source and

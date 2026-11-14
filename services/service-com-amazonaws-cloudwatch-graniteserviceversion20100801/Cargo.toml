@@ -36,6 +36,11 @@ base64 = "0.22"
 # an alarm action's ARN (and the Region and account of the alarm's own ARN) is read through
 # it rather than split here.
 service-common = { path = "../common" }
+# The IAM store holds the account's access keys and the identity-based policies in force on
+# its principals: the authorization gate in front of the operations whose action IAM judges
+# over every resource (`src/service/authorization.rs`) reads IAM's OWN state accessors rather
+# than keeping a second copy of either fact.
+service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
 # The AWS SDK for SNS, driven over the in-process callback
 # (`OperationContext::callback`): an alarm state transition executes its SNS topic actions
 # with `Publish` (`state::alarm_actions::settle_alarms`). Only the generated client is
@@ -150,6 +155,11 @@ service-com-amazonaws-lambda-awsgirapiservice = { workspace = true }
 service-com-amazonaws-cloudwatchlogs-logs-20140328 = { workspace = true }
 # The deployment package that suite uploads is a .zip archive it writes in memory.
 zip = { version = "9", default-features = false, features = ["deflate"] }
+# IAM and the token service are mounted beside CloudWatch on one engine in the authorization
+# suite, because the principal a call is judged as is made with THEIR operations — a role
+# carrying inline policies, assumed for a session — so the documents this service reads are
+# the ones those services wrote.
+service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true }
 
 [lints]
 workspace = true
