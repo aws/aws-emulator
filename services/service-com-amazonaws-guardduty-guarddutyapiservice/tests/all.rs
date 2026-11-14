@@ -33,6 +33,8 @@ mod criterion_value_domain;
 mod custom_detection_rule_association_arn_and_expiry;
 #[path = "all/custom_detection_rule_association_delete.rs"]
 mod custom_detection_rule_association_delete;
+#[path = "all/custom_detection_rule_association_delete_idempotence.rs"]
+mod custom_detection_rule_association_delete_idempotence;
 #[path = "all/custom_detection_rule_association_identity.rs"]
 mod custom_detection_rule_association_identity;
 #[path = "all/custom_detection_rule_association_listed_handle.rs"]
