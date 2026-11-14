@@ -24,6 +24,11 @@ pub struct ListSubscriptionsOutput {
     pub next_token: Option<String>,
 }
 
+/// `SubscriptionSummary`'s `createdAt` and `updatedAt` carry
+/// `@timestampFormat("date-time")` (`smithy_query(query="shape",
+/// shape="SubscriptionSummary")`), so they travel as RFC 3339 strings; the format reaches
+/// the wire through the shared `date-time` protocol this service takes at
+/// `Service::override_protocol` (see `src/service.rs`).
 #[smithy_macros::smithy(shape = "com.amazonaws.pricingplanmanager#SubscriptionSummary")]
 #[derive(Debug, Clone)]
 pub struct SubscriptionSummary {

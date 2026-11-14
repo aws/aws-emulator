@@ -11,6 +11,11 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-pricingplanmanager-awspricingplanmanager.json");
 
+/// `Subscription`'s `createdAt` and `updatedAt` carry `@timestampFormat("date-time")`
+/// (`smithy_query(query="shape", shape="Subscription")`), so they travel as RFC 3339
+/// strings; the format reaches the wire through the shared `date-time` protocol this
+/// service takes at `Service::override_protocol` (see `src/service.rs`), not through the
+/// derived member schemas, which the vendored codegen leaves format-less.
 #[smithy_macros::smithy(shape = "com.amazonaws.pricingplanmanager#Subscription")]
 #[derive(Debug, Clone)]
 pub struct Subscription {
@@ -26,6 +31,8 @@ pub struct Subscription {
     pub updated_at: ::aws_smithy_types::DateTime,
 }
 
+/// `ScheduledChange`'s `effectiveDate` carries `@timestampFormat("date-time")` too, and
+/// reaches the wire the same way as [`Subscription`]'s two members above.
 #[smithy_macros::smithy(shape = "com.amazonaws.pricingplanmanager#ScheduledChange")]
 #[derive(Debug, Clone, Default)]
 pub struct ScheduledChange {

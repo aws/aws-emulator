@@ -16,3 +16,6 @@ mod state_roundtrip;
 
 #[path = "all/subscription_lifecycle.rs"]
 mod subscription_lifecycle;
+
+#[path = "all/subscription_wire_form.rs"]
+mod subscription_wire_form;

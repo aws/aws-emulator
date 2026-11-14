@@ -199,55 +199,30 @@ pub struct SubscriptionRecord {
     /// drops its entry from the idempotency map, which keeps that map bounded by the
     /// number of live subscriptions rather than by the number of calls ever made.
     pub client_token: Option<String>,
-    /// Mutation counter. Never on the wire: it only feeds [`Self::etag`], so each
-    /// mutation mints a tag distinct from the previous one even when every visible
-    /// field happens to round back to an earlier value.
+    /// This record's revision: how many times the record has been written, counting the
+    /// writes the `CreateSubscription` call itself made. It IS the concurrency token
+    /// [`Self::etag`] publishes, so only a write moves it.
     pub revision: u64,
 }
 
-impl SubscriptionRecord {
-    /// This record's entity tag.
-    ///
-    /// A digest over the stored record, so the `ETag` a caller holds is derived from
-    /// state rather than minted per request: two reads of an unchanged subscription
-    /// return the same tag, and any mutation returns a different one. `client_token`
-    /// is left out: it is fixed for the record's whole life and is not part of the
-    /// resource a caller sees.
-    pub fn etag(&self) -> String {
-        use sha2::{Digest, Sha256};
+/// The revision a subscription record carries when it has just been minted and nothing
+/// else has been written to it yet.
+///
+/// Minting is itself a write, so the counter starts at one rather than at zero and the
+/// token is never empty. A subscription the create also puts into service has taken a
+/// second write by the time the create answers — see
+/// [`SubscriptionRecord::record_initial_activation`].
+pub const FIRST_REVISION: u64 = 1;
 
-        let mut hasher = Sha256::new();
-        // Length-prefix every field so no two different records can hash the same
-        // byte stream (`["ab","c"]` must not collide with `["a","bc"]`).
-        let mut field = |bytes: &[u8]| {
-            hasher.update((bytes.len() as u64).to_be_bytes());
-            hasher.update(bytes);
-        };
-        field(self.arn.as_bytes());
-        field(&self.revision.to_be_bytes());
-        field(self.plan_family.as_bytes());
-        field(self.plan_tier.as_bytes());
-        field(self.usage_level.as_deref().unwrap_or("").as_bytes());
-        field(self.status.wire().as_bytes());
-        field(self.status_reason.as_deref().unwrap_or("").as_bytes());
-        field(&(self.resource_arns.len() as u64).to_be_bytes());
-        for resource in &self.resource_arns {
-            field(resource.as_bytes());
-        }
-        match &self.scheduled_change {
-            None => field(b""),
-            Some(change) => {
-                field(change.change_type.wire().as_bytes());
-                field(&timestamp_key(change.effective_date));
-                field(change.plan_tier.as_deref().unwrap_or("").as_bytes());
-                field(change.usage_level.as_deref().unwrap_or("").as_bytes());
-            }
-        }
-        field(&timestamp_key(Some(self.created_at)));
-        field(&timestamp_key(Some(self.updated_at)));
-        // Half of the digest: 128 bits is far more than enough to make an
-        // accidental ETag collision impossible, and keeps the header short.
-        hex::encode(&hasher.finalize()[..16])
+impl SubscriptionRecord {
+    /// This record's entity tag: its [`revision`](Self::revision) in decimal.
+    ///
+    /// The token is a monotonic per-subscription revision rather than a digest over the
+    /// record's content, so it is still derived from state and not minted per request:
+    /// two reads of an unchanged subscription return the same token, and every mutation
+    /// returns the next one.
+    pub fn etag(&self) -> String {
+        self.revision.to_string()
     }
 
     /// The modelled `Subscription` shape for this record.
@@ -285,24 +260,26 @@ impl SubscriptionRecord {
     }
 
     /// Record a mutation made at `now`: bump `updatedAt` and the revision the
-    /// eTag derives from, so the next read sees a new modification time and a new
+    /// eTag is, so the next read sees a new modification time and the next
     /// concurrency token.
     pub fn touch(&mut self, now: DateTime) {
         self.updated_at = now;
         self.revision = self.revision.saturating_add(1);
     }
-}
 
-/// A timestamp's bytes for the eTag digest: seconds and sub-second nanos, so two
-/// records that differ only in their timestamps hash differently.
-fn timestamp_key(value: Option<DateTime>) -> Vec<u8> {
-    match value {
-        None => Vec::new(),
-        Some(ts) => {
-            let mut out = Vec::with_capacity(12);
-            out.extend_from_slice(&ts.secs().to_be_bytes());
-            out.extend_from_slice(&ts.subsec_nanos().to_be_bytes());
-            out
+    /// Record the write that puts a just-minted subscription into service.
+    ///
+    /// Creating a subscription that is not held for approval does two things to the
+    /// record: it mints it, and it activates it so the flat-rate coverage takes effect
+    /// ("Free-tier subscriptions are always activated immediately regardless of approval
+    /// mode"; "When `approvalMode` is set to `IMMEDIATE` or is not specified, the
+    /// subscription is activated immediately"). Both are writes, so an active
+    /// subscription's first published revision is one past a mint, while a subscription
+    /// waiting for `ApprovePaidSubscription` has taken the mint only and that approval is
+    /// what advances it.
+    pub fn record_initial_activation(&mut self, now: DateTime) {
+        if self.status == Status::Active {
+            self.touch(now);
         }
     }
 }

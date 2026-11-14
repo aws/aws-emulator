@@ -271,7 +271,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             sequence,
             now,
         );
-        let record = crate::state::SubscriptionRecord {
+        let mut record = crate::state::SubscriptionRecord {
             arn,
             plan_family,
             plan_tier,
@@ -283,8 +283,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             created_at: now,
             updated_at: now,
             client_token,
-            revision: 0,
+            revision: crate::state::FIRST_REVISION,
         };
+        // Activating the subscription is a write of its own, so a subscription this call
+        // put into service answers with the revision after the mint; one held for
+        // approval answers with the mint's.
+        record.record_initial_activation(now);
 
         let output = CreateSubscriptionOutput {
             subscription: record.to_subscription(),

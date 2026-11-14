@@ -21,11 +21,13 @@ bytes = { workspace = true }
 http = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-# Hashes the stored subscription record into its `ETag` concurrency token and the
-# opaque id in a minted subscription ARN.
+# Hashes the opaque id in a minted subscription ARN.
 sha2 = { workspace = true }
-# Hex-codes those digests and the opaque ListSubscriptions `nextToken`.
+# Hex-codes that digest and the opaque ListSubscriptions `nextToken`.
 hex = { workspace = true }
+# `date_time_json`: the workspace's ONE rendering of a `restJson1` timestamp whose model
+# declares the `date-time` form, which every timestamp member of this model does.
+service-common = { path = "../common" }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

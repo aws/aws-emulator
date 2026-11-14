@@ -14,6 +14,10 @@
 //! here named after an operation would make that operation's own module name
 //! ambiguous inside `ops` (`E0659`).
 
+// A note, not code: where a `@timestampFormat("date-time")` member of this service gets
+// its wire form. See the module's own documentation.
+pub mod date_time_wire;
+
 pub mod approve_paid_subscription_types;
 pub mod associate_resources_to_subscription_types;
 pub mod cancel_subscription_change_types;
