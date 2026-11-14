@@ -17,6 +17,8 @@ mod cluster_instance_types;
 mod compatible_versions;
 #[path = "all/describe_domains_batch.rs"]
 mod describe_domains_batch;
+#[path = "all/domain_data_plane.rs"]
+mod domain_data_plane;
 #[path = "all/domain_lifecycle.rs"]
 mod domain_lifecycle;
 #[path = "all/domain_tags.rs"]

@@ -27,7 +27,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::harness::{call_in, router, Answer};
+use crate::harness::{call_in, emulator_authority, router, Answer};
 
 /// The region the test signs for; every ARN and endpoint must carry it.
 const REGION: &str = "us-west-2";
@@ -280,10 +280,20 @@ async fn create_persists_the_domain_and_describe_answers_from_the_store() {
             .as_str()
             .unwrap_or_default()
             .to_string();
-        assert!(
-            endpoint.starts_with(&format!("search-{}-", case.name))
-                && endpoint.ends_with(&format!(".{REGION}.es.amazonaws.com")),
-            "case {label:?}: endpoint must be search-<name>-<suffix>.<region>.es.amazonaws.com, got {endpoint:?}"
+        // The address published for the domain's data plane is one a client of
+        // this emulator can DIAL: this emulator's own endpoint, with the
+        // reserved path that names this plane and the domain. The host AWS
+        // names that endpoint by resolves nowhere here, so publishing it would
+        // announce an address nothing answers at.
+        assert_eq!(
+            endpoint,
+            format!(
+                "{}/_aws/es-2015-01-01/{}",
+                emulator_authority(),
+                case.name
+            ),
+            "case {label:?}: the published endpoint must be this emulator's own endpoint \
+             with the reserved path naming this plane and the domain, got {endpoint:?}"
         );
         assert_eq!(
             created.at(label, &format!("{status}/SnapshotOptions/AutomatedSnapshotStartHour")),

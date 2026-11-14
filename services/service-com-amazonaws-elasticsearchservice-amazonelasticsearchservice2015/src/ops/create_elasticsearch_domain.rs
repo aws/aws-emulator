@@ -408,6 +408,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             input.domain_name,
             &region,
             seq,
+            // The endpoint THIS emulator answers on, recorded with the domain:
+            // it is the address the domain's data plane is published at, and a
+            // client builds its index and search requests on the value it is
+            // handed, so it must be one this process serves.
+            crate::state::emulator_endpoint_authority(ctx),
             config,
             input.tag_list.unwrap_or_default(),
             now,

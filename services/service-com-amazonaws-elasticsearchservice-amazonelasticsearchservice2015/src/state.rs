@@ -48,6 +48,11 @@ use crate::ops::types::*;
 mod request_constraints;
 pub use request_constraints::*;
 
+/// The indexes and documents a domain's own cluster holds, which its REST data
+/// plane ([`crate::service::domain_rest`]) reads and writes.
+mod search_indexes;
+pub use search_indexes::*;
+
 /// The region an ARN or endpoint uses when the request carries no SigV4
 /// credential scope to read one from.
 pub const DEFAULT_REGION: &str = "us-east-1";
@@ -187,6 +192,12 @@ pub fn domain_arn(region: &str, domain_name: &str) -> String {
 /// digits of a SHA-256 over the domain name and the store's monotonic sequence
 /// number, so it is a valid DNS label, unique per created domain, and stable for
 /// the life of that domain (every read returns the stored string).
+///
+/// This is the NAME AWS gives that endpoint, and the data plane serves it for a
+/// client that resolves AWS's own hosts (the host-style claim of
+/// [`crate::service::domain_rest`]). It is NOT what the control plane publishes:
+/// a client of this emulator resolves this host nowhere, so the address it is
+/// handed is the one it can reach ([`published_domain_address`]).
 pub fn domain_endpoint(domain_name: &str, region: &str, seq: u64) -> String {
     use sha2::Digest;
     let digest = sha2::Sha256::digest(format!("{domain_name}/{seq}").as_bytes());
@@ -195,6 +206,61 @@ pub fn domain_endpoint(domain_name: &str, region: &str, seq: u64) -> String {
         "search-{domain_name}-{suffix}.{region}.es.amazonaws.com",
         suffix = &hex[..26]
     )
+}
+
+/// The segment that names THIS service's data plane behind the reserved path
+/// namespace every data plane of this emulator is addressed under.
+///
+/// The `es` endpoint prefix this model publishes, with the API version that
+/// separates it from the modern Amazon OpenSearch Service model — which shares
+/// the `es` signing name, endpoint prefix and ARN namespace and serves a data
+/// plane of its own. The two segments are therefore disjoint, so a data-plane
+/// request has exactly one claimant whichever of the two APIs created the domain
+/// it names.
+pub const DATA_PLANE_SEGMENT: &str = "es-2015-01-01";
+
+/// The address `ElasticsearchDomainStatus$Endpoint` PUBLISHES for a domain's
+/// data plane: the endpoint THIS emulator answers on, with the reserved path
+/// that names this service's data plane and the domain behind it
+/// (`<host>:<port>/_aws/es-2015-01-01/<domain-name>`).
+///
+/// The member is "the Elasticsearch domain endpoint that you use to submit index
+/// and search requests", so a client builds its requests on the value it is
+/// handed and sends them there. The host [`domain_endpoint`] spells is the name
+/// AWS gives that endpoint and it resolves NOWHERE for a client of this
+/// emulator: handing it out announces an address nothing answers at, so the data
+/// plane the control plane says it provisioned could not be reached at all. What
+/// a client can reach is the one endpoint this process serves its whole surface
+/// at, which is why the domain is named in the PATH — the addressing
+/// `service_common::data_plane_addressing` states for every data plane of this
+/// emulator and [`crate::service::domain_rest`] resolves.
+///
+/// `emulator_endpoint` is that endpoint's `host[:port]`
+/// ([`emulator_endpoint_authority`]).
+pub fn published_domain_address(emulator_endpoint: &str, domain_name: &str) -> String {
+    format!(
+        "{emulator_endpoint}/{}/{DATA_PLANE_SEGMENT}/{domain_name}",
+        ::service_common::data_plane_addressing::EMULATOR_PATH_NAMESPACE
+    )
+}
+
+/// The `host[:port]` of the endpoint this emulator answers on, as every URL a
+/// handler hands out names: `OperationContext::endpoint`, "the base URL a later
+/// request addresses… Callers send normally signed requests to it", without its
+/// scheme — because what a domain publishes is an address a client appends a
+/// path to, not a URL.
+///
+/// It is the data port's own published base, so it does not depend on which host
+/// the request that read it carried: a domain created through an in-process call
+/// of another service publishes the same address as one a client created itself.
+///
+/// The reading itself is the shared one every plane of this emulator publishes
+/// its address by (`service_common::data_plane_addressing`), so this service
+/// cannot drift from it.
+pub fn emulator_endpoint_authority(
+    ctx: &::smithy_server_runtime::OperationContext<'_>,
+) -> String {
+    ::service_common::data_plane_addressing::emulator_endpoint_authority(ctx)
 }
 
 /// The engine the domain runs, derived from `ElasticsearchVersion`.
@@ -578,6 +644,18 @@ pub struct Domain {
     pub deleted: bool,
     pub upgrade_processing: bool,
     pub endpoint: Option<String>,
+    /// The `host[:port]` of the emulator endpoint this domain was created
+    /// through ([`emulator_endpoint_authority`]) — the address its data plane is
+    /// PUBLISHED at ([`Domain::published_endpoint`]).
+    ///
+    /// Recorded once, at the create, and never on a read: what a domain
+    /// publishes cannot depend on which request read it, so two readers hand a
+    /// client the same address.
+    pub published_at: String,
+    /// The indexes this domain's cluster holds, keyed by index name. Written and
+    /// read by the domain's own REST data plane
+    /// ([`crate::service::domain_rest`]); deleting the domain releases them.
+    pub indexes: BTreeMap<String, SearchIndex>,
     pub config: DomainConfigRecord,
     /// `CreateElasticsearchDomain.TagList`, as given.
     pub tags: Vec<Tag>,
@@ -597,10 +675,14 @@ pub fn active_deadline(now: SystemTime) -> SystemTime {
 impl Domain {
     /// A newly created domain. Its id, ARN and endpoint are derived ONCE, here,
     /// and stored: every later read answers with the stored strings.
+    ///
+    /// `published_at` is the emulator endpoint the create was served at, which
+    /// is the address this domain's data plane is published at from now on.
     pub fn create(
         domain_name: String,
         region: &str,
         seq: u64,
+        published_at: String,
         config: DomainConfigRecord,
         tags: Vec<Tag>,
         now: SystemTime,
@@ -615,6 +697,8 @@ impl Domain {
             domain_id: domain_id(&domain_name),
             arn: domain_arn(region, &domain_name),
             endpoint: Some(domain_endpoint(&domain_name, region, seq)),
+            published_at,
+            indexes: BTreeMap::new(),
             engine_type: engine_type.to_string(),
             domain_name,
             created: true,
@@ -640,6 +724,28 @@ impl Domain {
     /// Whether the domain's last change is still provisioning.
     pub fn processing(&self, now: SystemTime) -> bool {
         now < self.active_at
+    }
+
+    /// The address the control plane PUBLISHES for this domain's data plane —
+    /// `ElasticsearchDomainStatus$Endpoint`, "the Elasticsearch domain endpoint
+    /// that you use to submit index and search requests".
+    ///
+    /// It is the address a client of this emulator can REACH the domain at
+    /// ([`published_domain_address`]), because a client builds its index and
+    /// search requests on the value it is handed: the host AWS names this
+    /// endpoint by ([`Self::endpoint`]) resolves nowhere here, so publishing it
+    /// would announce a data plane nothing answers at. A record that never
+    /// recorded an emulator endpoint falls back to that host rather than to a
+    /// path naming no host at all.
+    pub fn published_endpoint(&self) -> Option<String> {
+        let endpoint = self.endpoint.as_ref()?;
+        if self.published_at.is_empty() {
+            return Some(endpoint.clone());
+        }
+        Some(published_domain_address(
+            &self.published_at,
+            &self.domain_name,
+        ))
     }
 
     /// The domain's modelled processing status — one of
@@ -675,7 +781,7 @@ impl Domain {
             arn: self.arn.clone(),
             created: Some(self.created),
             deleted: Some(self.deleted),
-            endpoint: self.endpoint.clone(),
+            endpoint: self.published_endpoint(),
             // Only a VPC domain reports per-subnet endpoints, and those are EC2-derived.
             endpoints: None,
             processing: Some(self.processing(now)),

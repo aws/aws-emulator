@@ -69,6 +69,17 @@ use smithy_server_runtime::{
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// The DOMAIN's own REST data plane: the requests a client addresses to the endpoint a
+/// domain of this service published, and what they are answered out of the indexes and
+/// documents that domain holds.
+///
+/// `can_handle` claims such a request ([`domain_rest::claims_parts`]) and the two serving
+/// seams answer it: [`Service::override_operation`] for one PRESENTING a SigV4 credential,
+/// so the router verifies that credential before anything is served, and
+/// [`Service::override_routing_error`] for one presenting none, which the router reaches
+/// before authentication.
+pub mod domain_rest;
+
 /// Wire one `crate::ops::<module>::<Operation>` per line into `table`, each wrapped in
 /// [`StatedPerOperation`] and keyed by its operation shape name — the routing key
 /// `ServerHttpProtocol::routing_key` resolves and the generated table is keyed by.
@@ -105,12 +116,70 @@ fn claims_own_path_space(parts: &http::request::Parts, signing_name: &str) -> bo
 /// router builds one shared engine and hands it to `new`.
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
     entry: crate::ServiceDefinition<Eng>,
+    /// The SAME shared engine the generated entry threads into every operation.
+    ///
+    /// Held here because a DOMAIN's own traffic ([`domain_rest`]) is claimed by
+    /// `can_handle` and served from `override_operation` / `override_routing_error`, none
+    /// of which is an operation with a `self.engine` of its own: all of them must read the
+    /// one store the control-plane operations write, not a second copy.
+    engine: Arc<Eng>,
+    /// The domain REST data plane as an [`ErasedOperation`], so the router verifies the
+    /// SigV4 credential a signed data-plane request carries before anything is served.
+    /// Held in a field, built once, because `override_operation` hands back a reference
+    /// borrowed from `&self`.
+    credentialed_data_plane: CredentialedDataPlane<Eng>,
     /// The same modelled operations the generated table holds, each wrapped in
     /// [`StatedPerOperation`] so a refused request is worded the way this service words it.
     /// Keyed by the routing key the protocol resolves — the key the generated table uses —
     /// and built from the SAME shared engine, so a wrapped operation reads and writes the
     /// one store.
     stated: OperationRoutingTable,
+}
+
+/// The auth schemes a credentialed data-plane request is verified under.
+///
+/// SigV4 is the only scheme this service's model declares, and it is the one a client
+/// signs a request to a domain's endpoint with, so a data-plane request arrives either
+/// signed — which this names so the router's own authenticator verifies it — or unsigned,
+/// which the routing-error seam answers without the router authenticating anything.
+const DATA_PLANE_AUTH_SCHEMES: &[&str] = &[::emulator_server::aws_credentials::SIGV4_SCHEME];
+
+/// The domain REST data plane for a request that PRESENTS a SigV4 credential.
+///
+/// It holds the SAME shared engine the generated entry threads into every operation, and
+/// serves the request through exactly the function the routing-error seam uses
+/// ([`domain_rest::serve`]), so the credentialed and the anonymous path cannot diverge in
+/// what they serve — only in whether a signature was verified on the way in.
+struct CredentialedDataPlane<Eng> {
+    engine: Arc<Eng>,
+}
+
+impl<Eng: Send + Sync + 'static> ErasedOperation for CredentialedDataPlane<Eng> {
+    fn run<'r>(
+        &'r self,
+        svc: &'r dyn Service,
+        req: &'r aws_smithy_runtime_api::http::Request,
+        ctx: &'r OperationContext<'r>,
+    ) -> BoxFuture<'r, aws_smithy_runtime_api::http::Response> {
+        let _ = ctx;
+        Box::pin(async move {
+            if domain_rest::claims_request(&*self.engine, req) {
+                // Serving is synchronous because this plane answers out of the one store
+                // it holds for the read or the write it performs.
+                return domain_rest::serve(&*self.engine, req);
+            }
+            // Unreachable: `override_operation` names this only for a request this data
+            // plane claims.
+            svc.definition().routing_error_response(req)
+        })
+    }
+
+    /// This is NOT a modelled operation, so there is no modelled operation for the router
+    /// to read schemes off: without this the router would find no scheme for a data-plane
+    /// request and could not verify the credential it carries.
+    fn auth_schemes(&self) -> Option<&'static [&'static str]> {
+        Some(DATA_PLANE_AUTH_SCHEMES)
+    }
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -182,8 +251,12 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             upgrade_elasticsearch_domain::UpgradeElasticsearchDomain,
         );
         Self {
-            entry: crate::ServiceDefinition::new(engine),
+            entry: crate::ServiceDefinition::new(Arc::clone(&engine)),
+            credentialed_data_plane: CredentialedDataPlane {
+                engine: Arc::clone(&engine),
+            },
             stated,
+            engine,
         }
     }
 }
@@ -299,18 +372,39 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // modern model under `/2021-01-01/…`, so the two first segments are disjoint and
         // each request has exactly one claimant.
         claims_own_path_space(parts, self.entry.identity().signing_name())
+            // And a DOMAIN's own traffic: a request addressed to the endpoint a domain
+            // this service holds published ([`domain_rest::claims_parts`]). Such a request
+            // names no modelled operation of either model under the shared `es` signing
+            // name — its path is an Elasticsearch REST path — so the front door could
+            // resolve no claimant for it and answered `404 UnknownService`, for the one
+            // address this service told the caller to send index and search requests to.
+            //
+            // The claim is narrowed to a domain this service HOLDS, read from the one
+            // shared store, rather than to a host or a path shape alone, so one request
+            // keeps one claimant.
+            || domain_rest::claims_parts(&*self.engine, parts)
     }
 
     fn override_operation(
         &self,
         req: &aws_smithy_runtime_api::http::Request,
     ) -> Option<&dyn ErasedOperation> {
-        // NOT a re-route: the key is the one the generated table's own protocol resolves,
-        // and the operation it names is the one served — wrapped in `StatedPerOperation` so
-        // a refused request is worded the way this service words it, with the collection a
-        // clause states read from the request. A key the model does not name resolves to
-        // `None` here exactly as it does in the generated table, so the router's
-        // routing-error path is unchanged.
+        // A data-plane request that PRESENTS a SigV4 credential is named as an operation,
+        // so the router verifies that credential's signature before anything is served —
+        // the router authenticates only what it names an operation for. One carrying no
+        // credential is left unnamed on purpose: it is answered by
+        // `override_routing_error` below, which the router reaches before authentication.
+        if domain_rest::claims_request(&*self.engine, req)
+            && domain_rest::carries_sigv4_credential(req)
+        {
+            return Some(&self.credentialed_data_plane);
+        }
+        // Otherwise NOT a re-route: the key is the one the generated table's own protocol
+        // resolves, and the operation it names is the one served — wrapped in
+        // `StatedPerOperation` so a refused request is worded the way this service words
+        // it, with the collection a clause states read from the request. A key the model
+        // does not name resolves to `None` here exactly as it does in the generated table,
+        // so the router's routing-error path is unchanged.
         let key = self.entry.protocol().routing_key(req).ok()?;
         self.stated.get(key)
     }
@@ -343,7 +437,14 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // default for this service's envelope (query -> 400 InvalidAction text/xml,
         // awsJson -> 404, rpcv2Cbor -> 404, rest -> 501). Return `Some(resp)` to
         // word that routing failure in your own envelope instead.
-        let _ = req;
+        //
+        // A DATA-PLANE request carrying no AWS credential arrives here, before the router
+        // authenticates anything, and is answered by the plane that claimed it: the
+        // cluster's own envelope, out of the same serving function the credentialed path
+        // uses.
+        if domain_rest::claims_request(&*self.engine, req) {
+            return Some(domain_rest::serve(&*self.engine, req));
+        }
         None
     }
 

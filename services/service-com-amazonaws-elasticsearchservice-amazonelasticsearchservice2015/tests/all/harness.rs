@@ -86,6 +86,17 @@ impl Answer {
     }
 }
 
+/// The endpoint THIS emulator answers on, as the framework states it for a router that
+/// is not served on a port — which is what an in-process suite's router is, and so the
+/// authority a published data-plane address carries here. Read from the framework rather
+/// than spelled out, so the expectation is "this emulator's own endpoint" and not a
+/// literal.
+pub fn emulator_authority() -> &'static str {
+    ::smithy_server_runtime::UNSERVED_URL_BASE
+        .split_once("://")
+        .map_or(::smithy_server_runtime::UNSERVED_URL_BASE, |(_, authority)| authority)
+}
+
 /// One call, signed for `region`.
 pub async fn call_in(
     router: &MultiServiceRouter,
