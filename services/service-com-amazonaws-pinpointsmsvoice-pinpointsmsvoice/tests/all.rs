@@ -23,5 +23,7 @@ mod legacy_surface_authorization;
 mod legacy_surface_concurrent_denial;
 #[path = "all/parameter_refusal_wording.rs"]
 mod parameter_refusal_wording;
+#[path = "all/served_operations.rs"]
+mod served_operations;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
