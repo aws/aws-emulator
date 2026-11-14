@@ -116,9 +116,20 @@ pub(crate) async fn iam(
     action: &str,
     parameters: &[(&str, String)],
 ) -> (u16, String) {
+    iam_as(router, LONG_TERM_KEY, action, parameters).await
+}
+
+/// One IAM action, signed with `access_key_id` — the credential IAM resolves the calling
+/// principal from, which for a key STS minted is that session.
+pub(crate) async fn iam_as(
+    router: &MultiServiceRouter,
+    access_key_id: &str,
+    action: &str,
+    parameters: &[(&str, String)],
+) -> (u16, String) {
     query(
         router,
-        LONG_TERM_KEY,
+        access_key_id,
         "iam",
         "2010-05-08",
         action,

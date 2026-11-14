@@ -1327,9 +1327,9 @@ pub fn iam_state<Eng: Send + Sync + 'static>(
 /// through this record ([`IamState::record_role_session`]) — the permissions in force on
 /// such a session are the role's ("the temporary security credentials … have the
 /// permissions of the role", `AssumeRole`), capped by the session policies the mint passed.
-/// The session itself stays this service's, which is why only the three facts an IAM
-/// decision needs travel: the principal the session is, the role it is of, and the scope it
-/// was minted with.
+/// The session itself stays this service's, which is why only the facts an IAM
+/// decision needs travel: the principal the session is, the role it is of, the scope it
+/// was minted with and the tags it carries.
 ///
 /// Nothing is recorded for a session that is not a role's — `GetSessionToken` and
 /// `GetFederationToken` vend no `role_arn` — and nothing at all when the engine carries no
@@ -1353,6 +1353,12 @@ pub fn publish_role_session(
             // caps what the role's own policies grant and the gate that reads those
             // policies is the one that has to read this too (see [`SessionPolicies`]).
             scope: minted.session.policies.clone(),
+            // The tags travel for the same reason: they are the values
+            // `aws:PrincipalTag/<key>` holds for a request this credential signs, and the
+            // gate that reads the role's policies is the one that decides a statement
+            // conditioned on one. They are copied exactly as the mint stored them, which is
+            // as the request submitted them.
+            tags: minted.session.tags.clone(),
         },
         ::aws_smithy_types::DateTime::from_secs(unix_seconds(now)),
     );

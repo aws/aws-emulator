@@ -104,6 +104,7 @@ fn given_session(emulator: &Emulator) {
             role_arn: role_arn(),
             expires,
             scope: iam::SessionPolicies::default(),
+            tags: Vec::new(),
         },
         now,
     );

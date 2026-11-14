@@ -1025,9 +1025,10 @@ pub struct AccessKeyRecord {
 /// permissions of the role", `AssumeRole`), capped by whatever the mint scoped the
 /// credential down to, so an authorization decision taken on a request signed with it has
 /// to reach the role the session is of and the scope it was minted with. The session itself
-/// belongs to STS, which is why only the three facts an IAM decision needs are recorded
-/// here — the principal the refusal names, the role whose policies it is judged on, and the
-/// session policies that cap them — written by the operation that mints the session.
+/// belongs to STS, which is why only the facts an IAM decision needs are recorded
+/// here — the principal the refusal names, the role whose policies it is judged on, the
+/// session policies that cap them and the tags the session carries — written by the
+/// operation that mints the session.
 #[derive(Debug, Clone)]
 pub struct RoleSessionRecord {
     /// The session's own principal, as `sts:AssumeRole` reports it:
@@ -1045,6 +1046,16 @@ pub struct RoleSessionRecord {
     /// credential may do; see [`SessionPolicies`]. Empty for a mint that passed none,
     /// which is a session no document scopes.
     pub scope: SessionPolicies,
+    /// The session tags the mint attached to this session, as `(key, value)` pairs in the
+    /// order the mint named them and held exactly as it submitted them.
+    ///
+    /// They are the values `aws:PrincipalTag/<key>` carries for a request signed with this
+    /// credential — "you can pass session tags … each session tag consists of a key name
+    /// and an associated value" (`AssumeRoleRequest$Tags`, the STS model), and session tags
+    /// "can be used … to control access to resources" — so a statement conditioned on a
+    /// principal tag is decided against them. Empty for a mint that attached none, which is
+    /// a session carrying no tag of its own.
+    pub tags: Vec<(String, String)>,
 }
 
 /// The session policies ONE mint of a temporary credential passed, which scope the

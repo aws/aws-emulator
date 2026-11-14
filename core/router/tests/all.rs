@@ -2605,3 +2605,35 @@ mod cloudformation_provisions_cloudfront_resources;
 // spans above: a module may be declared only once.)
 // (`apigatewaymanagementapi_manage_connections_authorization` is declared once, further up
 // this tail: a module may be declared only once.)
+// conditioned identity policy decided against the tags of the session that signed the call
+// spans IAM (the role, its policy and its tags) and STS (the mint that attaches the tags) at
+// once, so neither crate's own test target can tag a session and then decide about it.
+#[path = "all/iam_session_tag_authorization.rs"]
+mod iam_session_tag_authorization;
+// `cloudformation_provisions_cloudfront_resources`, `cloudformation_monitored_alb_search_estate`,
+// `elbv2_lambda_target_published_address` are each declared ONCE, in the spans above: two `mod`
+// items for one name is a redefinition that compiles neither, which is what two branches
+// appending the same lines to this tail at once produced.
+// (`cloudtrail_read_only_api_calls` and `zz_probe` are declared ONCE each, in the regions
+// above: two landings each appended their own copy to this tail, and a module declared twice
+// loads the same file twice, which compiles neither.)
+// `cloudwatch_alarm_ssm_ops_item_action` is declared in the head region above, for the reason
+// recorded there.
+// Declared in this tail: what a stack-deployed metric-stream pipeline exports before and after
+// an update rewrites its filter spans CloudFormation, IAM, CloudWatch, Firehose and Amazon S3
+// at once, so no single service crate's test target can deploy the pipeline and then read the
+// objects it delivered.
+// (`cloudformation_metric_stream_filter_update` is declared ONCE, in the head region above.)
+// (`apigateway_cognito_authorizer_app_client_audience`, `cloudtrail_read_only_api_calls`,
+// `cloudformation_metric_stream_estate_is_drainable`, `redshift_health_alarms_evaluate`,
+// `zz_probe`, `cloudformation_metric_stream_filter_update`,
+// `sdb_legacy_query_api_on_the_assembled_router`, `lambda_sqs_event_source_visibility_hold`,
+// `codebuild_s3_build_output` and `cloudformation_domain_endpoint_is_dialled_by_consumers` are
+// each declared ONCE, in the regions above: two landings each appended their own copy to this
+// tail, and a module declared twice loads the same file twice, which compiles neither.)
+// (`lambda_sqs_event_source_visibility_hold`, `codebuild_s3_build_output` and
+// `cloudformation_scripted_queue_deploy` are each declared ONCE, in the sorted span at the head
+// of this file: two landings each appended their own copy here, and a module declared twice
+// `lambda_signed_write_to_an_aoss_collection_endpoint` and
+// `cloudformation_domain_endpoint_is_dialled_by_consumers` are declared ONCE each, further up
+// this tail, for the reasons recorded there.

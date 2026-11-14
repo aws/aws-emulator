@@ -615,6 +615,7 @@ fn session_record(in_seconds: i64) -> RoleSessionRecord {
         role_arn: format!("arn:aws:iam::{}:role/Reader", account_id()),
         expires: ::aws_smithy_types::DateTime::from_secs(in_seconds),
         scope: Default::default(),
+        tags: Vec::new(),
     }
 }
 

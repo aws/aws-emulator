@@ -66,7 +66,9 @@
 //!
 //! * the SIGNING principal, resolved here before anything is decided — its friendly name,
 //!   its unique id and its tags (`aws:PrincipalTag/<key>`), read at the instant of the
-//!   call, so retagging the user changes what the same unchanged request decides;
+//!   call, so retagging the user changes what the same unchanged request decides; for a
+//!   role session those tags are the role's own plus the session tags the mint attached
+//!   ([`principal_tags`]);
 //! * the TARGET the request addresses, by the ARN the decision is made against — its tags,
 //!   under both spellings IAM publishes them as (`aws:ResourceTag/<key>` and the
 //!   service-specific `iam:ResourceTag/<key>`), so an ABAC statement comparing a resource
@@ -407,14 +409,44 @@ enum Caller<'a> {
     User(&'a User),
     /// A session of one of the account's roles, resolved from the record the operation
     /// that vended the credential left ([`super::RoleSessionRecord`]): the role whose
-    /// policies the call is judged on, and the session's own name.
+    /// policies the call is judged on, the session's own name, and the tags it was minted
+    /// carrying.
     RoleSession {
         /// The role the session is of.
         role: &'a Role,
         /// The session name the vending call carried, which is what IAM spells into the
         /// session's unique id after the role's own.
         session_name: &'a str,
+        /// The session tags the mint attached, as it submitted them
+        /// ([`super::RoleSessionRecord::tags`]).
+        session_tags: &'a [(String, String)],
     },
+}
+
+/// The tags the principal of a role session holds, as `(key, value)` pairs: the ones the
+/// mint attached to the SESSION, and the ones the ROLE it is a session of carries.
+///
+/// `aws:PrincipalTag/tag-key` is "the tag attached to the principal making the request",
+/// and a request a role session signs is made by a principal that holds both sets: the
+/// role's own tags and the session tags the mint passed, which "you can … use … to control
+/// access to resources" (`AssumeRoleRequest$Tags`). Each value is carried through exactly
+/// as it was stored, so the key holds the text the mint submitted and a `StringEquals`
+/// clause over it compares that text.
+///
+/// One key holds one value, and a session tag is the more specific of the two, so where
+/// both name the same tag the session's value is the one in force — found without case,
+/// since tag keys "are not case sensitive, but case is preserved" (the same member), and
+/// folded over the whole of Unicode because a tag key is spelled with any letter the key's
+/// own pattern admits, not only an ASCII one.
+fn principal_tags(role: &Role, session_tags: &[(String, String)]) -> Vec<(String, String)> {
+    let mut held: Vec<(String, String)> = session_tags.to_vec();
+    for tag in role.tags.iter().flatten() {
+        let folded = tag.key.to_lowercase();
+        if !held.iter().any(|(key, _)| key.to_lowercase() == folded) {
+            held.push((tag.key.clone(), tag.value.clone()));
+        }
+    }
+    held
 }
 
 /// The condition context a request by `caller` against `resource` carries, and the
@@ -437,9 +469,9 @@ enum Caller<'a> {
 /// identifier of the current user", which for an assumed-role session is the role's own id
 /// and the session name after it, and there is no `aws:username` — a session is not a user,
 /// so that key is left undeclared rather than answered as absent. Its principal TAGS are
-/// the role's tags AND the session's, and the session's are not this store's to read, so
-/// that family is left undeclared too: a clause over one of them stays undecided, which
-/// withholds a grant and keeps a refusal.
+/// the role's tags AND the session's ([`principal_tags`]), both of which the account knows
+/// in full — the session's travel with the record the mint left — so that family is
+/// published for a session exactly as it is for a user.
 ///
 /// The principal's and the target's tags are the ones they hold NOW — nothing in the
 /// request carries them — so retagging either side changes what the same unchanged request
@@ -467,12 +499,20 @@ fn request_context(
             }
             published.extend_from_slice(LONG_TERM_CREDENTIAL_ABSENT_KEYS);
         }
-        Caller::RoleSession { role, session_name } => {
+        Caller::RoleSession {
+            role,
+            session_name,
+            session_tags,
+        } => {
             context.push((
                 USER_ID_KEY.to_string(),
                 format!("{}:{session_name}", role.role_id),
             ));
             published.push(USER_ID_KEY);
+            for (key, value) in principal_tags(role, session_tags) {
+                context.push((format!("{PRINCIPAL_TAG_PREFIX}{key}"), value));
+            }
+            published.push(PRINCIPAL_TAG_PREFIX);
         }
     }
     // The tags of the entity the request addresses, under both spellings of the key: one
@@ -1040,6 +1080,7 @@ fn signing_principal<'a>(
             session_name: ::service_common::iam_role::assumed_role_session_name(
                 &session.session_arn,
             )?,
+            session_tags: &session.tags,
         },
         arn: session.session_arn.clone(),
         policies,
