@@ -213,6 +213,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .as_deref()
             .map(|token| idempotency_key(&region, token));
 
+        // The address this emulator serves the ACME surface at, opened on the first
+        // create: "after creation, ACME clients can use the endpoint URL", so the address
+        // the endpoint's URL is published on has to be open by the time a client reads it.
+        // It is opened once for the whole store and changes no endpoint
+        // ([`crate::state::acme_socket`]); the store guard is taken after it, because a
+        // guard held across an await would make this future non-`Send`.
+        crate::state::acme_socket::ensure_acme_socket(&*self.engine, &state, ctx.callback())
+            .await;
+
         // ONE instant answers the whole request: it materialises the transitions the
         // clock already owes and dates the endpoint this call creates.
         let now = std::time::SystemTime::now();

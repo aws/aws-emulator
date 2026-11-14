@@ -57,6 +57,8 @@ mod acme_external_account_binding_listing;
 mod acme_external_account_binding_revocation;
 #[path = "all/acme_external_account_binding_role_trust.rs"]
 mod acme_external_account_binding_role_trust;
+#[path = "all/acme_nonce_field_name.rs"]
+mod acme_nonce_field_name;
 #[path = "all/acme_refusal_message_rules.rs"]
 mod acme_refusal_message_rules;
 #[path = "all/acme_resource_deletion_authorization.rs"]

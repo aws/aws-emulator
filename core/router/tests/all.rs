@@ -1897,6 +1897,9 @@ mod cloudformation_provisions_cloudfront_resources;
 // crate's test target can drive it.
 #[path = "all/lambda_signed_write_to_an_aoss_collection_endpoint.rs"]
 mod lambda_signed_write_to_an_aoss_collection_endpoint;
+// Declared ONCE, in the head region above beside the other API Gateway suites: it was
+// appended here as well while two branches were landing at once, which declared it a second
+// time and compiled neither.
 // (`apigateway_cognito_authorizer_app_client_audience` is declared once, in the head region
 // above, and `cloudformation_metric_stream_estate_is_drainable` once further down this tail:
 // a module may be declared only once.)

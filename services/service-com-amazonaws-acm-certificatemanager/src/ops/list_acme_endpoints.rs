@@ -218,10 +218,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // depend on a projected member being present.
         let mut last_key: Option<&String> = None;
         let mut summaries: Vec<AcmeEndpointSummary> = Vec::new();
-        // The endpoint THIS caller reached, which is the address every `EndpointUrl` the
-        // page reports is published at: a URL an ACME client dials verbatim has to
-        // resolve back to where the caller is already talking.
-        let local_endpoint = crate::state::reached_emulator_endpoint_of_parts(ctx.parts());
+        // The address every `EndpointUrl` the page reports is published at: the socket this
+        // emulator serves the ACME surface on for a caller that reached it directly, and
+        // the Region's enrollment host for one that resolves AWS's own hostnames — a URL an
+        // ACME client dials verbatim has to name the address that surface is served at.
+        let local_endpoint = store
+            .published_acme_address(crate::state::reached_emulator_endpoint_of_parts(ctx.parts()));
         for (arn, endpoint) in remaining.by_ref().take(limit) {
             summaries.push(crate::state::acme_endpoint_summary(
                 endpoint,

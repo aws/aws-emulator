@@ -195,6 +195,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // now, which is what makes a poll for `ACTIVE` terminate.
         let mut store = state.lock();
         store.materialize_due(::std::time::SystemTime::now());
+        // Where this caller is told to reach the ACME surface: the socket it is served on
+        // for a caller that reached this emulator directly.
+        let local = store
+            .published_acme_address(crate::state::reached_emulator_endpoint_of_parts(ctx.parts()));
         let Some(endpoint) = store.acme_endpoints.get(&input.acme_endpoint_arn) else {
             return Err(DescribeAcmeEndpointErrorModeled::ResourceNotFoundException(
                 ResourceNotFoundException {
@@ -207,13 +211,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         Ok(DescribeAcmeEndpointOutput {
-            // The `EndpointUrl` reported is the address the ACME surface is published at
-            // for THIS caller: an ACME client is configured with this exact URL and dials
-            // it, so it names the endpoint the caller reached this service on.
-            acme_endpoint: Some(crate::state::acme_endpoint_detail(
-                endpoint,
-                crate::state::reached_emulator_endpoint_of_parts(ctx.parts()).as_deref(),
-            )),
+            // The `EndpointUrl` reported is the address this emulator SERVES the ACME
+            // surface at for THIS caller: an ACME client is configured with this exact URL,
+            // dials it and reads the field names of the answers at it as they were served,
+            // so a caller on this machine is told the socket that surface is published on
+            // ([`crate::state::acme_socket`]) and one that resolves AWS's own hostnames the
+            // Region's enrollment host.
+            acme_endpoint: Some(crate::state::acme_endpoint_detail(endpoint, local.as_deref())),
         })
     }
 }

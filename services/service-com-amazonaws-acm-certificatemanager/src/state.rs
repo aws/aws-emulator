@@ -98,6 +98,7 @@
 //! shared engine (`dns_validation`) — a published CNAME is what takes such a request to
 //! issuance.
 
+pub mod acme_socket;
 mod dns_validation;
 
 pub use dns_validation::any_name_is_not_in_public_dns_in;
@@ -1885,9 +1886,35 @@ pub struct ComAmazonawsAcmCertificatemanagerState {
     /// with, for as long as that token stays live. Repeating a token with the same
     /// request is the same request; repeating it with another is a conflict.
     pub account_configuration_requests: HashMap<String, AccountConfigurationRequest>,
+    /// The socket this emulator serves every endpoint's ACME surface on, and the handle
+    /// that keeps it open ([`acme_socket`]) — `None` until an endpoint has been created,
+    /// and for an engine that vends no listener at all.
+    ///
+    /// It is held HERE because the address's life is the store's: the port stays open for
+    /// as long as an endpoint can be read, and dropping the store closes it.
+    pub acme_socket: Option<acme_socket::AcmeSocket>,
 }
 
 impl ComAmazonawsAcmCertificatemanagerState {
+    /// The address an endpoint's ACME surface is PUBLISHED at to a caller that reached
+    /// this emulator directly ([`reached_emulator_endpoint_of_parts`]): the socket that
+    /// surface is served on ([`acme_socket`]) when one is open, and the endpoint the
+    /// caller reached otherwise.
+    ///
+    /// An ACME client dials the published URL verbatim and reads the FIELD NAMES of the
+    /// answers at it as they were served, so what is published is the address this
+    /// emulator serves that surface at under the names RFC 8555 gives them — not merely
+    /// an address that resolves. `None` stays `None`: a caller that resolves AWS's own
+    /// hostnames is told the Region's published enrollment host, which is no address of
+    /// this process.
+    pub fn published_acme_address(&self, reached: Option<String>) -> Option<String> {
+        let reached = reached?;
+        Some(match self.acme_socket.as_ref() {
+            Some(socket) => socket.authority().to_string(),
+            None => reached,
+        })
+    }
+
     /// Drop every `PutAccountConfiguration` idempotency token that has timed out by
     /// `now`, so the index holds only tokens ACM would still recognise and cannot
     /// grow without bound.

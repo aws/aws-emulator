@@ -40,6 +40,14 @@ sha2 = { workspace = true }
 # Hex encoding for those labels and for the opaque `NextToken`s this service's list
 # operations issue.
 hex = { workspace = true }
+# Speaks HTTP/1.1 on the raw connection the core hands the socket an ACME endpoint's
+# surface is published on, with the encoder's title-case option set so a field name reaches
+# an ACME client in the canonical spelling RFC 8555 states it in. `hyper-util` carries the
+# tokio IO and timer adapters for it, `http-body-util` the bounded body reader and the
+# one-shot body.
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
 # Certificate ids: ACM certificate ARNs end in a v4 UUID.
 uuid = { version = "1", features = ["v4"] }
 # Reads the X.509 certificates `ImportCertificate` accepts: their names, validity,

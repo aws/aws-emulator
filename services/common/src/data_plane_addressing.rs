@@ -323,6 +323,40 @@ pub fn addresses_an_aws_endpoint(host: &str) -> bool {
         .any(|suffix| host.ends_with(suffix))
 }
 
+/// Whether `host` names the interface this emulator's listeners are BOUND on — the check a
+/// data plane served on a socket of its own applies to a request's `Host`, by the rule a core
+/// HTTP listener applies to its own.
+///
+/// A loopback host passes on the default loopback bind, which is what guards a browser against
+/// DNS rebinding; the operator's own address passes when they bound a routable one; and any
+/// host passes on a wildcard bind (`0.0.0.0`, `::`), where the operator exposed the port
+/// deliberately and no single address names it. A bind this emulator cannot read at all admits
+/// nothing but loopback, so the guard fails CLOSED.
+///
+/// Any userinfo and `:port` are removed first ([`host_only`]), so a request that addressed the
+/// socket's own `host:port` is judged by its host.
+///
+/// Services still carrying their own copy of this reading, to be MIGRATED onto this function
+/// (they predate it): the CodeCommit git endpoint, the CloudFront edge endpoint, the Lambda
+/// endpoint plane, the API Gateway V2 WebSocket endpoint, the AppSync Event API and the Kinesis
+/// Video data plane. Nothing new inlines it again — call this module.
+#[must_use]
+pub fn host_names_the_bound_interface(host: &str) -> bool {
+    let host = host_only(host);
+    if ::emulator_server::is_loopback_host(host) {
+        return true;
+    }
+    let Ok(bound) = ::emulator_server::bind_address_from_env() else {
+        return false;
+    };
+    bound.is_unspecified()
+        || host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|named| named == bound)
+}
+
 /// Whether a request target carries a DOT SEGMENT — `.` or `..`, in the clear or
 /// percent-encoded, read through the one decoding of a request path
 /// ([`::smithy_server_runtime::percent_decode`]) so an encoded separator cannot hide one.
@@ -346,6 +380,33 @@ pub fn carries_a_dot_segment(request_path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_host_naming_the_bound_interface_is_admitted() {
+        // The rows span what the reading generalises over, on the DEFAULT bind every test
+        // runs under (loopback): the loopback literal with and without a port, the loopback
+        // name, a bracketed IPv6 loopback literal, a userinfo-carrying authority, and the
+        // routable hosts a browser could be made to address.
+        let cases: &[(&str, bool)] = &[
+            ("127.0.0.1", true),
+            ("127.0.0.1:9297", true),
+            ("localhost", true),
+            ("localhost:9297", true),
+            ("[::1]:9297", true),
+            ("user@127.0.0.1:9297", true),
+            ("attacker.example.com", false),
+            ("10.0.0.7:9297", false),
+            ("", false),
+        ];
+        for (host, expected) in cases {
+            let admitted = host_names_the_bound_interface(host);
+            assert_eq!(
+                admitted, *expected,
+                "case {host:?}: expected host_names_the_bound_interface {expected}, got \
+                 {admitted}"
+            );
+        }
+    }
 
     #[test]
     fn a_request_target_carries_a_dot_segment_however_it_is_spelled() {

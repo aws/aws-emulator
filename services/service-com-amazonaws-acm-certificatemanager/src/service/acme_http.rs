@@ -17,6 +17,14 @@
 //! the two seams [`crate::service::EmulatedService`] has for a request the model's
 //! routing key cannot name.
 //!
+//! WHERE it is published is a third thing. An ACME client reads the FIELD NAMES of the
+//! answers at the URL it was handed, and the HTTP/1.1 writer below the emulator's front
+//! door normalises every name to lower case, so the address the control plane publishes for
+//! a client on this machine is a socket of this plane's own, whose answer bytes are written
+//! field by field ([`crate::state::acme_socket`]). The requests it accepts are dispatched
+//! back through the router and answered HERE, so this module serves a client whichever
+//! address it arrived at.
+//!
 //! An ACME client holds no AWS credential, so the anonymous path matters: the router
 //! reaches [`smithy_server_runtime::Service::override_routing_error`] BEFORE it
 //! authenticates anything, which is what lets an unsigned ACME client be answered at

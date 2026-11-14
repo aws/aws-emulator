@@ -3,20 +3,24 @@
 //! Where the ACME surface of an ACM ACME endpoint is PUBLISHED, end to end over the wire.
 //!
 //! RULE: a server-managed URL this service hands a client names an address that client
-//! can reach. `AcmeEndpoint$EndpointUrl` is the single handle an ACME client (certbot,
-//! lego, acme.sh, the python `acme` library) is configured with — it fetches that URL
-//! verbatim and follows the resource map the body carries — so the URL is minted on the
-//! endpoint the CALLER reached this service on: the Region's published ACME enrollment
-//! host for a caller that resolves AWS's own hostnames, and the emulator's own endpoint,
-//! with the plane, the Region and the endpoint's id in the PATH, for a caller that
-//! reached this emulator directly. Every URL the ACME surface then answers with — the
-//! resource map inside the directory, an account's own URL — is on the same address, so
-//! the whole account lifecycle is reachable for a client that rewrites no host.
+//! can reach, and the address this emulator SERVES that resource at. `AcmeEndpoint$EndpointUrl`
+//! is the single handle an ACME client (certbot, lego, acme.sh, the python `acme` library)
+//! is configured with — it fetches that URL verbatim and follows the resource map the body
+//! carries — so the URL is minted on the Region's published ACME enrollment host for a
+//! caller that resolves AWS's own hostnames, and, for a caller that reached this emulator
+//! directly, on the loopback socket this emulator serves that surface on
+//! (`state::acme_socket`, whose answers carry the field names RFC 8555 spells), with the
+//! plane, the Region and the endpoint's id in the PATH. Every URL the ACME surface then
+//! answers with — the resource map inside the directory, an account's own URL — is on the
+//! address the client fetched it from, so the whole account lifecycle is reachable for a
+//! client that rewrites no host.
 //!
 //! The table spans what the rule generalises over: the shape of the endpoint a caller
 //! reached (an IPv4 loopback address with and without a port, a loopback NAME, an IPv6
 //! literal), a caller that addressed the Region's published control-plane host, and a
 //! caller that named no host at all; and, for each, the Region the endpoint lives in.
+//! What the published address serves, field name by field name, is
+//! [`crate::acme_nonce_field_name`].
 //!
 //! Every URL fetched here is one a DIFFERENT operation (`DescribeAcmeEndpoint`,
 //! `ListAcmeEndpoints`) advertised, fetched with that URL's own host and path and no
@@ -194,9 +198,9 @@ async fn assert_directory_served(router: &MultiServiceRouter, case: &str, url: &
     document
 }
 
-/// RULE: the advertised `EndpointUrl` is on the endpoint the CALLER reached — and a plain
-/// `GET` of it, exactly as returned, serves the RFC 8555 directory whose resources are on
-/// that same address.
+/// RULE: the advertised `EndpointUrl` is the address this emulator SERVES that endpoint's
+/// ACME surface at and the caller can reach — and a plain `GET` of it, exactly as returned,
+/// serves the RFC 8555 directory whose resources are on that same address.
 #[tokio::test]
 async fn the_advertised_endpoint_url_is_on_the_endpoint_the_caller_reached() {
     for region in REGIONS {
@@ -204,17 +208,21 @@ async fn the_advertised_endpoint_url_is_on_the_endpoint_the_caller_reached() {
         let arn = create_endpoint(&router, &format!("{region} endpoint"), region, MARKER).await;
         activate_endpoints_now(&engine);
         let id = endpoint_id(&arn).to_string();
+        // The address the store says this emulator serves the ACME surface at, read from
+        // the state the create opened it on rather than written here.
+        let served = served_acme_address(&engine, region);
 
         for (what, host) in ADDRESSES {
             let case = format!("{region}, a caller that reached {what}");
             let url = advertised_url(&router, &case, *host, region, &arn).await;
             let (authority, path) = split_url(&case, &url);
 
-            // The address is the one this caller is already talking to.
+            // The address is the one this emulator serves that surface at, which is a
+            // loopback address this caller reaches — whichever endpoint shape it addressed.
             assert_eq!(
-                Some(authority.as_str()),
-                *host,
-                "case {case:?}: expected the URL on the endpoint the caller reached, got {url:?}"
+                authority, served,
+                "case {case:?}: expected the URL on the address this emulator serves the ACME \
+                 surface at ({served}), got {url:?}"
             );
             // Everything that identifies the resource is in the PATH: the plane, the
             // Region and the endpoint's own id, ending at the directory resource.
@@ -283,6 +291,32 @@ async fn the_advertised_endpoint_url_is_on_the_endpoint_the_caller_reached() {
             assert_directory_served(&router, &case, &url).await;
         }
     }
+}
+
+/// The `host:port` this emulator opened for the ACME surface, read off the service state —
+/// the address a published `EndpointUrl` must name, asserted to be one a caller on this
+/// machine can reach.
+fn served_acme_address(engine: &std::sync::Arc<engine::InMemoryEngine>, region: &str) -> String {
+    let store = engine.state::<service_com_amazonaws_acm_certificatemanager::state::ComAmazonawsAcmCertificatemanagerState>();
+    let store = store.lock();
+    let authority = store
+        .acme_socket
+        .as_ref()
+        .unwrap_or_else(|| panic!("{region}: the create must have opened the ACME address"))
+        .authority()
+        .to_string();
+    let (host, port) = authority
+        .rsplit_once(':')
+        .unwrap_or_else(|| panic!("{region}: the served address names no port: {authority}"));
+    assert_eq!(
+        host, "127.0.0.1",
+        "{region}: the served ACME address must be this machine's own, got {authority:?}"
+    );
+    assert!(
+        port.parse::<u16>().is_ok_and(|port| port > 0),
+        "{region}: the served ACME address must name a port, got {authority:?}"
+    );
+    authority
 }
 
 /// RULE, to the end of the ACME account lifecycle: a client that is handed the
