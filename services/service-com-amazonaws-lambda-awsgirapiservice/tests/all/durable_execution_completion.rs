@@ -279,7 +279,11 @@ fn base64_of(bytes: &[u8]) -> Value {
 const KMS_TARGET_PREFIX: &str = "TrentService";
 
 /// One call to the key service on the awsJson1_1 wire.
-async fn kms_call(router: &MultiServiceRouter, operation: &str, body: &Value) -> Answer {
+///
+/// `pub(crate)` so the suites of this target that put a key into a state and then assert what
+/// Lambda does about it drive the key service through ONE writer of that wire
+/// (`tests/all/environment_variable_key_state.rs` is the other caller).
+pub(crate) async fn kms_call(router: &MultiServiceRouter, operation: &str, body: &Value) -> Answer {
     let request = http::Request::builder()
         .method("POST")
         .uri("http://kms.us-east-1.amazonaws.com/")

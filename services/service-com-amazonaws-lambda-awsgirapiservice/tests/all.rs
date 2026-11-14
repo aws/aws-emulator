@@ -113,6 +113,8 @@ mod durable_execution_status_events;
 mod durable_execution_stop;
 #[path = "all/dynamodb_stream_event_source_delivery.rs"]
 mod dynamodb_stream_event_source_delivery;
+#[path = "all/environment_variable_key_state.rs"]
+mod environment_variable_key_state;
 #[path = "all/event_invoke_config.rs"]
 mod event_invoke_config;
 #[path = "all/event_invoke_config_destination_slots.rs"]

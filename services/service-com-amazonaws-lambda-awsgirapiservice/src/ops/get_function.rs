@@ -169,69 +169,88 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
         let region = crate::state::request_region(ctx);
-        let mut store = state.lock();
-        let (record, version) = crate::state::resolve_function(
-            &mut store,
-            &input.function_name,
-            input.qualifier.as_deref(),
-            &region,
-            ::std::time::SystemTime::now(),
-        )
-        .map_err(|failure| match failure {
-            crate::state::ResolveFailure::Malformed(message) => {
-                GetFunctionErrorModeled::InvalidParameterValueException(
-                    InvalidParameterValueException {
-                        r#type: None,
-                        message: Some(message),
-                    },
-                )
-            }
-            crate::state::ResolveFailure::NotFound(message) => {
-                GetFunctionErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
-                    r#type: None,
-                    message: Some(message),
-                })
-            }
-        })?;
-
-        // `resolve_function` already refused a version this function does not hold, so
-        // the configuration is there to report.
-        let Some(config) = record.config_of(&version).cloned() else {
-            return Err(GetFunctionErrorModeled::ServiceException(ServiceException {
-                r#type: None,
-                message: Some("The resolved function version could not be read".to_string()),
-            })
-            .into());
-        };
-
-        Ok(GetFunctionOutput {
-            configuration: Some(record.configuration(&version, &config)),
-            code: Some(record.code_location(ctx, &version)),
-            // Tags are function-level rather than version-level, so every qualifier
-            // reports the same ones; an untagged function reports none at all.
-            tags: (!record.tags.is_empty()).then(|| {
-                record
-                    .tags
-                    .iter()
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect()
-            }),
-            tags_error: None,
-            // "Concurrency settings apply to the function as a whole, including all
-            // published versions and the unpublished version", so reserved concurrency
-            // is a property of the UNQUALIFIED function: a read addressed to a qualified
-            // identity (a published version, an alias or `$LATEST` named explicitly)
-            // reports no `Concurrency` block at all, because that identity carries no
-            // limit of its own. The qualifier may come from either the name or the
-            // `Qualifier` parameter, so both are read — see
-            // [`crate::state::named_qualifier`].
-            concurrency: match crate::state::named_qualifier(
+        // The store is READ under the lock and the answer built from it here, so the lock is
+        // released before the key service is asked about the environment's key below.
+        let mut reported = {
+            let mut store = state.lock();
+            let (record, version) = crate::state::resolve_function(
+                &mut store,
                 &input.function_name,
                 input.qualifier.as_deref(),
-            ) {
-                Some(_) => None,
-                None => record.concurrency(),
-            },
-        })
+                &region,
+                ::std::time::SystemTime::now(),
+            )
+            .map_err(|failure| match failure {
+                crate::state::ResolveFailure::Malformed(message) => {
+                    GetFunctionErrorModeled::InvalidParameterValueException(
+                        InvalidParameterValueException {
+                            r#type: None,
+                            message: Some(message),
+                        },
+                    )
+                }
+                crate::state::ResolveFailure::NotFound(message) => {
+                    GetFunctionErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
+                        r#type: None,
+                        message: Some(message),
+                    })
+                }
+            })?;
+
+            // `resolve_function` already refused a version this function does not hold, so
+            // the configuration is there to report.
+            let Some(config) = record.config_of(&version).cloned() else {
+                return Err(GetFunctionErrorModeled::ServiceException(ServiceException {
+                    r#type: None,
+                    message: Some("The resolved function version could not be read".to_string()),
+                })
+                .into());
+            };
+
+            GetFunctionOutput {
+                configuration: Some(record.configuration(&version, &config)),
+                code: Some(record.code_location(ctx, &version)),
+                // Tags are function-level rather than version-level, so every qualifier
+                // reports the same ones; an untagged function reports none at all.
+                tags: (!record.tags.is_empty()).then(|| {
+                    record
+                        .tags
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect()
+                }),
+                tags_error: None,
+                // "Concurrency settings apply to the function as a whole, including all
+                // published versions and the unpublished version", so reserved concurrency
+                // is a property of the UNQUALIFIED function: a read addressed to a qualified
+                // identity (a published version, an alias or `$LATEST` named explicitly)
+                // reports no `Concurrency` block at all, because that identity carries no
+                // limit of its own. The qualifier may come from either the name or the
+                // `Qualifier` parameter, so both are read — see
+                // [`crate::state::named_qualifier`].
+                concurrency: match crate::state::named_qualifier(
+                    &input.function_name,
+                    input.qualifier.as_deref(),
+                ) {
+                    Some(_) => None,
+                    None => record.concurrency(),
+                },
+            }
+        };
+        // Reporting the environment variables reports their PLAINTEXT, which is a decrypt
+        // under the function's own `KMSKeyArn`: so they are reported only while the key
+        // service says that key can perform it, and otherwise this answer carries the
+        // failure on `Environment.Error` and no variables at all
+        // (`crate::state::execution::environment_key`).
+        if let Some(configuration) = reported.configuration.as_mut() {
+            crate::state::report_environment_key_fault(
+                ctx.callback(),
+                &region,
+                configuration.kms_key_arn.as_deref(),
+                &mut configuration.environment,
+            )
+            .await;
+        }
+        Ok(reported)
     }
 }

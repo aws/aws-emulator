@@ -207,86 +207,106 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let now = ::std::time::SystemTime::now();
         let region = crate::state::request_region(ctx);
-        let mut store = state.lock();
+        // The store is READ under the lock and this page built from it here, so the lock is
+        // released before the key service is asked about each version's environment key.
+        let (mut versions, next_marker) = {
+            let mut store = state.lock();
 
-        // "The name or ARN of the Lambda function": the versions listed are the versions
-        // of the one function the name resolves to, resolved exactly the way every other
-        // operation on this service resolves a `FunctionName`.
-        let record = match crate::state::resolve_function(
-            &mut store,
-            &input.function_name,
-            None,
-            &region,
-            now,
-        ) {
-            Ok((record, _version)) => record,
-            Err(crate::state::ResolveFailure::Malformed(message)) => {
-                return Err(invalid_parameter(message))
+            // "The name or ARN of the Lambda function": the versions listed are the versions
+            // of the one function the name resolves to, resolved exactly the way every other
+            // operation on this service resolves a `FunctionName`.
+            let record = match crate::state::resolve_function(
+                &mut store,
+                &input.function_name,
+                None,
+                &region,
+                now,
+            ) {
+                Ok((record, _version)) => record,
+                Err(crate::state::ResolveFailure::Malformed(message)) => {
+                    return Err(invalid_parameter(message))
+                }
+                Err(crate::state::ResolveFailure::NotFound(message)) => {
+                    return Err(ListVersionsByFunctionErrorModeled::ResourceNotFoundException(
+                        ResourceNotFoundException {
+                            r#type: None,
+                            message: Some(message),
+                        },
+                    )
+                    .into())
+                }
+            };
+
+            // "Returns a list of versions, with the version-specific configuration of each":
+            // the unpublished `$LATEST` configuration is a version of the function too, and
+            // each published version reports the snapshot `PublishVersion` froze for it
+            // rather than the function's current configuration. Published versions are
+            // numbered upwards and the store keys them by that number, so iterating it
+            // yields them in ascending order after `$LATEST`.
+            //
+            // Every entry of this listing is a VERSION, so every entry's `FunctionArn` carries
+            // the version it reports — the unpublished one included, which is the one ARN that
+            // differs from what a read of the FUNCTION reports (`crate::state::FunctionRecord`'s
+            // `versioned_arn` leaves `$LATEST` off the function's own ARN, because an
+            // unqualified read acted on the function). Recorded behaviour: corpus
+            // `simparity-wire-aws-v1`, fixture
+            // `lambda-listing-qualified-identifier-and-missing-function-errors`, step `task#7`.
+            let mut entries: Vec<(String, CreateFunctionOutput)> = Vec::new();
+            let mut latest = record.configuration(crate::state::VERSION_LATEST, &record.config);
+            latest.function_arn = Some(crate::state::configured_function_arn(
+                &record.arn,
+                crate::state::VERSION_LATEST,
+            ));
+            entries.push((crate::state::VERSION_LATEST.to_string(), latest));
+            for published in record.versions.values() {
+                let label = published.version.to_string();
+                let configuration = record.configuration(&label, &published.config);
+                entries.push((label, configuration));
             }
-            Err(crate::state::ResolveFailure::NotFound(message)) => {
-                return Err(ListVersionsByFunctionErrorModeled::ResourceNotFoundException(
-                    ResourceNotFoundException {
-                        r#type: None,
-                        message: Some(message),
-                    },
-                )
-                .into())
-            }
-        };
 
-        // "Returns a list of versions, with the version-specific configuration of each":
-        // the unpublished `$LATEST` configuration is a version of the function too, and
-        // each published version reports the snapshot `PublishVersion` froze for it
-        // rather than the function's current configuration. Published versions are
-        // numbered upwards and the store keys them by that number, so iterating it
-        // yields them in ascending order after `$LATEST`.
-        //
-        // Every entry of this listing is a VERSION, so every entry's `FunctionArn` carries
-        // the version it reports — the unpublished one included, which is the one ARN that
-        // differs from what a read of the FUNCTION reports (`crate::state::FunctionRecord`'s
-        // `versioned_arn` leaves `$LATEST` off the function's own ARN, because an
-        // unqualified read acted on the function). Recorded behaviour: corpus
-        // `simparity-wire-aws-v1`, fixture
-        // `lambda-listing-qualified-identifier-and-missing-function-errors`, step `task#7`.
-        let mut entries: Vec<(String, CreateFunctionOutput)> = Vec::new();
-        let mut latest = record.configuration(crate::state::VERSION_LATEST, &record.config);
-        latest.function_arn = Some(crate::state::configured_function_arn(
-            &record.arn,
-            crate::state::VERSION_LATEST,
-        ));
-        entries.push((crate::state::VERSION_LATEST.to_string(), latest));
-        for published in record.versions.values() {
-            let label = published.version.to_string();
-            let configuration = record.configuration(&label, &published.config);
-            entries.push((label, configuration));
-        }
+            let start = match start_after {
+                Some(after) => entries
+                    .iter()
+                    .position(|(label, _)| version_order(label).is_some_and(|order| order > after))
+                    .unwrap_or(entries.len()),
+                None => 0,
+            };
+            let page = match entries.get(start..) {
+                Some(remaining) => &remaining[..page_size.min(remaining.len())],
+                None => &[][..],
+            };
+            let truncated = start + page.len() < entries.len();
 
-        let start = match start_after {
-            Some(after) => entries
-                .iter()
-                .position(|(label, _)| version_order(label).is_some_and(|order| order > after))
-                .unwrap_or(entries.len()),
-            None => 0,
-        };
-        let page = match entries.get(start..) {
-            Some(remaining) => &remaining[..page_size.min(remaining.len())],
-            None => &[][..],
-        };
-        let truncated = start + page.len() < entries.len();
-
-        Ok(ListVersionsByFunctionOutput {
-            versions: Some(
+            (
                 page.iter()
                     .map(|(_, configuration)| configuration.clone())
-                    .collect(),
-            ),
+                    .collect::<Vec<CreateFunctionOutput>>(),
+                page.last()
+                    .filter(|_| truncated)
+                    .map(|(label, _)| label.clone()),
+            )
+        };
+        // Reporting a version's environment variables reports their PLAINTEXT, which is a
+        // decrypt under that version's own `KMSKeyArn`: so every version on this page
+        // reports them only while the key service says that key can perform it, and
+        // otherwise carries the failure on `Environment.Error` and no variables at all
+        // (`crate::state::execution::environment_key`).
+        for configuration in &mut versions {
+            crate::state::report_environment_key_fault(
+                ctx.callback(),
+                &region,
+                configuration.kms_key_arn.as_deref(),
+                &mut configuration.environment,
+            )
+            .await;
+        }
+
+        Ok(ListVersionsByFunctionOutput {
+            versions: Some(versions),
             // "The pagination token that's included if more results are available" — so
             // it is absent on the last page, and it is the version label of the last
             // entry THIS page reported, which is what the next page continues after.
-            next_marker: page
-                .last()
-                .filter(|_| truncated)
-                .map(|(label, _)| label.clone()),
+            next_marker,
         })
     }
 }

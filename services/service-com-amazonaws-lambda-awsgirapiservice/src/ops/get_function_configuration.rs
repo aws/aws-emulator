@@ -276,48 +276,65 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
         let region = crate::state::request_region(ctx);
-        let mut store = state.lock();
-        let (record, version) = crate::state::resolve_function(
-            &mut store,
-            &input.function_name,
-            input.qualifier.as_deref(),
-            &region,
-            ::std::time::SystemTime::now(),
-        )
-        .map_err(|failure| match failure {
-            crate::state::ResolveFailure::Malformed(message) => {
-                GetFunctionConfigurationErrorModeled::InvalidParameterValueException(
-                    InvalidParameterValueException {
-                        r#type: None,
-                        message: Some(message),
-                    },
-                )
-            }
-            crate::state::ResolveFailure::NotFound(message) => {
-                GetFunctionConfigurationErrorModeled::ResourceNotFoundException(
-                    ResourceNotFoundException {
-                        r#type: None,
-                        message: Some(message),
-                    },
-                )
-            }
-        })?;
-
-        // `resolve_function` already refused a version this function does not hold, so
-        // the configuration is there to report.
-        let Some(config) = record.config_of(&version).cloned() else {
-            return Err(GetFunctionConfigurationErrorModeled::ServiceException(
-                ServiceException {
-                    r#type: None,
-                    message: Some("The resolved function version could not be read".to_string()),
-                },
+        // The store is READ under the lock and the answer built from it here, so the lock is
+        // released before the key service is asked about the environment's key below.
+        let mut reported = {
+            let mut store = state.lock();
+            let (record, version) = crate::state::resolve_function(
+                &mut store,
+                &input.function_name,
+                input.qualifier.as_deref(),
+                &region,
+                ::std::time::SystemTime::now(),
             )
-            .into());
-        };
+            .map_err(|failure| match failure {
+                crate::state::ResolveFailure::Malformed(message) => {
+                    GetFunctionConfigurationErrorModeled::InvalidParameterValueException(
+                        InvalidParameterValueException {
+                            r#type: None,
+                            message: Some(message),
+                        },
+                    )
+                }
+                crate::state::ResolveFailure::NotFound(message) => {
+                    GetFunctionConfigurationErrorModeled::ResourceNotFoundException(
+                        ResourceNotFoundException {
+                            r#type: None,
+                            message: Some(message),
+                        },
+                    )
+                }
+            })?;
 
-        Ok(function_configuration(
-            record.configuration(&version, &config),
-        ))
+            // `resolve_function` already refused a version this function does not hold, so
+            // the configuration is there to report.
+            let Some(config) = record.config_of(&version).cloned() else {
+                return Err(GetFunctionConfigurationErrorModeled::ServiceException(
+                    ServiceException {
+                        r#type: None,
+                        message: Some(
+                            "The resolved function version could not be read".to_string(),
+                        ),
+                    },
+                )
+                .into());
+            };
+
+            function_configuration(record.configuration(&version, &config))
+        };
+        // Reporting the environment variables reports their PLAINTEXT, which is a decrypt
+        // under the function's own `KMSKeyArn`: so they are reported only while the key
+        // service says that key can perform it, and otherwise this answer carries the
+        // failure on `Environment.Error` and no variables at all
+        // (`crate::state::execution::environment_key`).
+        crate::state::report_environment_key_fault(
+            ctx.callback(),
+            &region,
+            reported.kms_key_arn.as_deref(),
+            &mut reported.environment,
+        )
+        .await;
+        Ok(reported)
     }
 }
 

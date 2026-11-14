@@ -196,7 +196,10 @@ mod host_posix;
 /// Whether the key a function's environment variables are encrypted with can decrypt them
 /// — the check every invocation of such a function begins with.
 pub mod environment_key;
-pub use environment_key::{durable_data_key_fault, environment_key_fault, EnvironmentKeyFault};
+pub use environment_key::{
+    durable_data_key_fault, environment_key_fault, report_environment_key_fault,
+    EnvironmentKeyFault,
+};
 
 /// The X-Ray trace context one invocation runs with, which the execution environment
 /// reports in `_X_AMZN_TRACE_ID`.

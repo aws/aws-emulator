@@ -152,7 +152,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        _ctx: &smithy_server_runtime::OperationContext<'_>,
+        ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(ListFunctionsErrorModeled::ServiceException(ServiceException {
@@ -212,47 +212,71 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .unwrap_or(crate::state::MAX_PAGE_SIZE)
             .clamp(1, crate::state::MAX_PAGE_SIZE);
 
-        let mut store = state.lock();
-        store.materialize_all(::std::time::SystemTime::now());
+        let region = crate::state::request_region(ctx);
+        // The store is READ under the lock and this page built from it here, so the lock is
+        // released before the key service is asked about each entry's environment key.
+        let (mut functions, next_marker) = {
+            let mut store = state.lock();
+            store.materialize_all(::std::time::SystemTime::now());
 
-        // This emulator holds no Lambda@Edge replica: no function it stores carries a
-        // `MasterArn`, so a request filtered to one master region matches none of them.
-        // `ALL` asks for no filtering at all.
-        let replicas_only =
-            master_region.is_some_and(|region| region != MASTER_REGION_ALL);
+            // This emulator holds no Lambda@Edge replica: no function it stores carries a
+            // `MasterArn`, so a request filtered to one master region matches none of them.
+            // `ALL` asks for no filtering at all.
+            let replicas_only = master_region.is_some_and(|region| region != MASTER_REGION_ALL);
 
-        let entries = if replicas_only {
-            Vec::new()
-        } else {
-            store.listed_functions(all_versions)
+            let entries = if replicas_only {
+                Vec::new()
+            } else {
+                store.listed_functions(all_versions)
+            };
+
+            // The marker is the key of the last entry the previous page returned, so the
+            // next page starts at the first entry ordered after it and no entry is ever
+            // reported twice.
+            let start = match input.marker.as_deref() {
+                Some(marker) => entries
+                    .iter()
+                    .position(|entry| entry.key.as_str() > marker)
+                    .unwrap_or(entries.len()),
+                None => 0,
+            };
+
+            let page = match entries.get(start..) {
+                Some(remaining) => &remaining[..page_size.min(remaining.len())],
+                None => &[][..],
+            };
+            let truncated = start + page.len() < entries.len();
+
+            (
+                page.iter()
+                    .map(|entry| entry.configuration.clone())
+                    .collect::<Vec<_>>(),
+                // "The pagination token that's included if more results are available" — so
+                // it is absent on the last page, and it is the key of the last entry THIS
+                // page reported, which is what the next page continues after.
+                page.last()
+                    .filter(|_| truncated)
+                    .map(|entry| entry.key.clone()),
+            )
         };
-
-        // The marker is the key of the last entry the previous page returned, so the
-        // next page starts at the first entry ordered after it and no entry is ever
-        // reported twice.
-        let start = match input.marker.as_deref() {
-            Some(marker) => entries
-                .iter()
-                .position(|entry| entry.key.as_str() > marker)
-                .unwrap_or(entries.len()),
-            None => 0,
-        };
-
-        let page = match entries.get(start..) {
-            Some(remaining) => &remaining[..page_size.min(remaining.len())],
-            None => &[][..],
-        };
-        let truncated = start + page.len() < entries.len();
+        // Reporting a function's environment variables reports their PLAINTEXT, which is a
+        // decrypt under that function's own `KMSKeyArn`: so every entry on this page
+        // reports them only while the key service says that key can perform it, and
+        // otherwise carries the failure on `Environment.Error` and no variables at all
+        // (`crate::state::execution::environment_key`).
+        for configuration in &mut functions {
+            crate::state::report_environment_key_fault(
+                ctx.callback(),
+                &region,
+                configuration.kms_key_arn.as_deref(),
+                &mut configuration.environment,
+            )
+            .await;
+        }
 
         Ok(ListFunctionsOutput {
-            functions: Some(page.iter().map(|entry| entry.configuration.clone()).collect()),
-            // "The pagination token that's included if more results are available" — so
-            // it is absent on the last page, and it is the key of the last entry THIS
-            // page reported, which is what the next page continues after.
-            next_marker: page
-                .last()
-                .filter(|_| truncated)
-                .map(|entry| entry.key.clone()),
+            functions: Some(functions),
+            next_marker,
         })
     }
 }
