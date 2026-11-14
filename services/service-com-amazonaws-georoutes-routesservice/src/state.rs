@@ -9,15 +9,19 @@
 //! a direct route and an optimized-waypoint connection for the same pair of positions
 //! cannot disagree.
 //!
-//! That cost function is exactly this: a leg's DISTANCE is the geodesic (haversine) length
-//! of the geometry the response carries for it, and its DURATION is that distance over the
-//! travel mode's speed ([`ComAmazonawsGeoroutesRoutesserviceState::travel_mode_speeds`])
-//! scaled by the routing objective's factor ([`ObjectiveFactors::speed`]). The posted speed
-//! of a road CLASS is deliberately NOT part of it: a class decides which travel modes may
-//! use a road and ranks the roads a route travelled for `MajorRoadLabels`, so two legs of
-//! equal length take equal time whatever classes they crossed. Costing each sampled
-//! sub-segment at its own posted speed would be a per-segment cost model, which this slice
-//! does not carry.
+//! That cost function is a TRAVERSAL of the road graph ([`road_graph`]): a leg travels the
+//! roads the network offers between its two matched endpoints, its DISTANCE is the sum of
+//! the stretches it travels along them — which is the length of the geometry the response
+//! carries, and never the straight line between the endpoints, because no road of the grid
+//! runs diagonally — and its DURATION is each stretch's length at the posted speed of the
+//! road THAT stretch runs on, held down to the travel mode's own top speed
+//! ([`ComAmazonawsGeoroutesRoutesserviceState::travel_mode_speeds`]) wherever the mode
+//! cannot keep up with the road. So the road CLASSES are part of the cost: a leg that is
+//! worth reaching the numbered classes for travels most of its length near their posted
+//! speed, while a short leg spends a larger share on the local roads it needs to reach
+//! them and comes out slower. Which roads a leg takes is chosen by the request's own
+//! routing objective — the quickest way through the graph for `FastestRoute`, the shortest
+//! for `ShortestRoute` — and its alternatives are the next-best distinct ways through it.
 //!
 //! The network has COVERAGE where a territory of the world is mapped and nowhere else
 //! ([`is_mapped_territory`]): a grid cell in the open sea materialises no road, so a
@@ -36,6 +40,11 @@
 //!
 //! Nothing in here reads a clock or a random source except [`now`], so a request repeated
 //! with the same inputs computes the same distances, durations and geometry.
+
+/// The road graph a leg is traversed on, and what travelling it costs: the one place a
+/// distance and a duration of this service are computed, so a route, a matrix cell and an
+/// optimized-waypoint connection for the same pair cannot disagree.
+pub mod road_graph;
 
 /// Whether the caller's own identity-based IAM policies let a request perform the action it
 /// asks for — the decision every operation of this service takes before it computes
@@ -132,37 +141,44 @@ pub fn is_mapped_territory(pos: Position) -> bool {
     LatLon::new(centre[1], centre[0]).is_ok_and(|at| !territories.ids(at).is_empty())
 }
 
-/// Every 10th meridian road is a footpath: pedestrians only.
+/// Every 10th meridian road that carries no numbered road is a footpath: pedestrians only.
 const FOOTPATH_EVERY: i64 = 10;
-/// Every 20th parallel road is a motorway: no pedestrians, and the fastest road around, so
-/// it is what `MajorRoadLabels` reports for a route that uses one.
-const MOTORWAY_EVERY: i64 = 20;
+/// Every 100th road of either orientation is a trunk road: the network's through-road grid,
+/// numbered and controlled-access, posted at [`TRUNK_SPEED_KPH`]. At the grid's ~55 m
+/// spacing that puts one every ~5 km, the spacing of the highways that carry traffic across
+/// a metropolitan area — so a journey of a few hundred metres is on the local streets
+/// throughout, and one of tens of kilometres reaches a trunk road and spends most of its
+/// length on it.
+const TRUNK_EVERY: i64 = 100;
+/// Every 400th road of either orientation is a motorway: the network's long-haul class, the
+/// fastest road around, and so what `MajorRoadLabels` reports for a route that uses one. It
+/// is four times as sparse as the trunk grid — one every ~20 km, the spacing of the
+/// motorways between towns — so reaching one is a detour a journey within a metropolitan
+/// area does not earn back and a journey between them does.
+const MOTORWAY_EVERY: i64 = 400;
 
-/// Posted speeds of the three road classes of the synthetic network, in km/h. These rank
-/// the roads a route travelled for `MajorRoadLabels` (and name the fastest class); the
-/// duration of a leg comes from the travel mode's speed, not from these — see the module
-/// header.
-const MOTORWAY_SPEED_KPH: f64 = 90.0;
+/// Posted speeds of the road classes of the synthetic network, in km/h. They are what a
+/// stretch of a leg is costed at ([`road_graph::Stretch`]), they rank the roads a route
+/// travelled for `MajorRoadLabels`, and a travel mode held slower than the road travels at
+/// its own top speed instead.
+const MOTORWAY_SPEED_KPH: f64 = 110.0;
+const TRUNK_SPEED_KPH: f64 = 85.0;
 const STREET_SPEED_KPH: f64 = 50.0;
 const FOOTPATH_SPEED_KPH: f64 = 5.0;
 
-/// Target spacing of the samples a geometry of this service is built from. A leg is
-/// sampled every ~250 m (at least two samples, at most [`MAX_PATH_SEGMENTS`]) and every
-/// interior sample is snapped onto the road network, so the returned geometry follows the
-/// roads rather than the straight line between the two positions. It is also the spacing
-/// the vertices of a computed area are placed at where the request asks for no other.
+/// Metres per second in one km/h: posted speeds are held in km/h, as a road carries them,
+/// and travel is costed in metres per second.
+pub const KPH_TO_MPS: f64 = 1_000.0 / 3_600.0;
+
+/// Target spacing of the samples the COVERAGE of a leg's corridor is decided on. The
+/// straight line between a leg's endpoints is sampled every ~250 m (at least two samples,
+/// at most [`MAX_PATH_SEGMENTS`]) and each sample is matched against the network, so a
+/// corridor that leaves the mapped territory is one the network does not carry. It is also
+/// the spacing the vertices of a computed area are placed at where the request asks for no
+/// other.
 pub const SAMPLE_SPACING_M: f64 = 250.0;
-/// Upper bound on the samples per leg, so a long leg stays a bounded response.
+/// Upper bound on the samples per leg, so a long leg stays a bounded number of matches.
 const MAX_PATH_SEGMENTS: usize = 24;
-
-/// Lateral offset, in metres, of the `FastestRoute` path at the midpoint of each leg: the
-/// detour onto the through-roads it trades distance for.
-const FASTEST_DETOUR_M: f64 = 400.0;
-
-/// Lateral offset, in metres, of alternative route *k* at the midpoint of each leg: an
-/// alternative bows away from the direct path and is recomputed from the roads it then
-/// passes, so its distance, duration and geometry all genuinely differ.
-const ALTERNATIVE_OFFSET_M: f64 = 400.0;
 
 /// Most alternatives this service can compute distinct routes for, which is the upper
 /// bound of the model's own `MaxAlternatives` range (`0..5`).
@@ -298,30 +314,36 @@ impl RoutingObjective {
     }
 }
 
-/// The multipliers an objective applies to the cost of a leg.
-///
-/// The road-grid path between two positions is the shortest one this network offers, so
-/// `ShortestRoute` travels exactly it, at the local-street pace of `speed`;
-/// `FastestRoute` detours `detour_m` sideways onto the through-roads and travels at the
-/// mode's full speed. The detour lengthens the GEOMETRY the response carries, so the
-/// reported distance stays the length of that geometry. The two numbers are parameters of
-/// this emulator's synthetic model — AWS publishes neither — and they are held in state so
-/// every handler applies the same pair.
-#[derive(Debug, Clone, Copy)]
-pub struct ObjectiveFactors {
-    /// How far the fastest path bows off the direct one, in metres, at the midpoint of
-    /// each leg.
-    pub detour_m: f64,
-    /// Multiplier on the travel mode's speed.
-    pub speed: f64,
-}
-
-/// The class of a road in the synthetic network.
+/// The class of a road in the synthetic network, fastest first: the network is a
+/// HIERARCHY, which is what makes the speed of a journey depend on its length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoadClass {
+    /// The long-haul class: the fastest road of the network and the sparsest
+    /// ([`MOTORWAY_EVERY`]), so reaching one is a detour only a long journey earns back.
     Motorway,
+    /// The through-road grid ([`TRUNK_EVERY`]): numbered and controlled-access like a
+    /// motorway, and close enough to anywhere that a journey of more than a few kilometres
+    /// travels one.
+    Trunk,
+    /// A local road. They sit at every other index of the grid, so every position inside
+    /// the network's coverage has one beside it.
     Street,
+    /// A pedestrian-only lane.
     Footpath,
+}
+
+impl RoadClass {
+    /// Whether this class is a numbered road: one a client puts a route number on rather
+    /// than a name ([`TravelledRoad::route_number`]).
+    pub fn is_numbered(self) -> bool {
+        matches!(self, Self::Motorway | Self::Trunk)
+    }
+
+    /// Whether this class is a controlled-access highway, which is what
+    /// `Avoid$ControlledAccessHighways` asks to stay off and what no pedestrian may travel.
+    pub fn is_controlled_access(self) -> bool {
+        matches!(self, Self::Motorway | Self::Trunk)
+    }
 }
 
 /// Which way a run of the grid points. It is what the angle between two runs — and so the
@@ -478,12 +500,14 @@ impl TravelledRoad {
 
     /// The route number this road is designated by, where the network designates one.
     ///
-    /// A motorway of this network is a numbered road — it is named after its number, and
-    /// it is the class `MajorRoadLabels` reports for a route that travels one. A street
-    /// and a footpath carry a name only, so they have no number to report: `None` is "this
-    /// road is unnumbered", not "the number is unknown".
+    /// A numbered road of this network — a motorway or a trunk road — is named after its
+    /// number, and it is what `MajorRoadLabels` reports for a route that travels one. A
+    /// street and a footpath carry a name only, so they have no number to report: `None`
+    /// is "this road is unnumbered", not "the number is unknown".
     pub fn route_number(&self) -> Option<String> {
-        matches!(self.class, RoadClass::Motorway).then(|| motorway_number(self.grid_index))
+        self.class
+            .is_numbered()
+            .then(|| road_number(self.grid_index))
     }
 
     /// Bearing travel takes along this road to get from `from` to `to`, in degrees
@@ -771,9 +795,8 @@ pub struct SnappedPosition {
 /// Per-service state for com-amazonaws-georoutes-routesservice. A handler reaches it through [`service_state`].
 ///
 /// It is the whole routing model: the road network every geometry and snap is computed
-/// against, the per-mode speeds and per-objective factors that are the single cost
-/// function, the pricing bucket the responses report, and a memo of the routes already
-/// computed.
+/// against, the per-mode top speeds the traversal costs a stretch of road at, the pricing
+/// bucket the responses report, and a memo of the routes already computed.
 #[derive(Debug)]
 pub struct ComAmazonawsGeoroutesRoutesserviceState {
     /// Segments of the synthetic road network materialised so far. Grown on demand, one
@@ -782,11 +805,11 @@ pub struct ComAmazonawsGeoroutesRoutesserviceState {
     pub road_network: Vec<RoadSegment>,
     /// Indices into [`Self::road_network`] by grid cell, so a snap searches one cell.
     road_cells: HashMap<(i64, i64), Vec<usize>>,
-    /// Travel speed per mode, in metres per second: the single cost function shared by
-    /// CalculateRoutes, CalculateRouteMatrix and OptimizeWaypoints.
+    /// Top travel speed per mode, in metres per second: what the mode itself can do, which
+    /// holds travel below the posted speed of the road wherever the mode is the slower of
+    /// the two ([`road_graph`]). It is held here so CalculateRoutes, CalculateRouteMatrix,
+    /// OptimizeWaypoints and CalculateIsolines cost a stretch of road identically.
     pub travel_mode_speeds: HashMap<TravelMode, f64>,
-    /// Multipliers applied for `FastestRoute` versus `ShortestRoute`.
-    pub routing_objective_factors: HashMap<RoutingObjective, ObjectiveFactors>,
     /// The value returned in the `x-amz-geo-pricing-bucket` header, by the operation that
     /// answers the request: the tier is per-operation, so it is held per-operation and
     /// read through [`Self::pricing_bucket`].
@@ -797,38 +820,23 @@ pub struct ComAmazonawsGeoroutesRoutesserviceState {
 
 impl Default for ComAmazonawsGeoroutesRoutesserviceState {
     fn default() -> Self {
-        // Metres per second. Car 50 km/h, Truck 40 km/h, Scooter 30 km/h, Pedestrian
-        // 5 km/h, Transit 35 km/h and Intermodal 30 km/h: the parameters of this
-        // emulator's model, held here so every handler costs a leg identically.
+        // Metres per second: the top speed of each mode itself. A car keeps up with any
+        // road of this network (110 km/h), a truck is held to 90 km/h and a transit
+        // vehicle to 80, a scooter and an intermodal journey to 45, and a pedestrian walks
+        // at 5 km/h. They are the parameters of this emulator's model, held here so every
+        // handler costs a stretch of road identically.
         let travel_mode_speeds = HashMap::from([
-            (TravelMode::Car, 13.9),
-            (TravelMode::Truck, 11.1),
-            (TravelMode::Scooter, 8.3),
-            (TravelMode::Pedestrian, 1.4),
-            (TravelMode::Transit, 9.7),
-            (TravelMode::Intermodal, 8.3),
-        ]);
-        let routing_objective_factors = HashMap::from([
-            (
-                RoutingObjective::FastestRoute,
-                ObjectiveFactors {
-                    detour_m: FASTEST_DETOUR_M,
-                    speed: 1.0,
-                },
-            ),
-            (
-                RoutingObjective::ShortestRoute,
-                ObjectiveFactors {
-                    detour_m: 0.0,
-                    speed: 0.75,
-                },
-            ),
+            (TravelMode::Car, MOTORWAY_SPEED_KPH * KPH_TO_MPS),
+            (TravelMode::Truck, 90.0 * KPH_TO_MPS),
+            (TravelMode::Scooter, 45.0 * KPH_TO_MPS),
+            (TravelMode::Pedestrian, FOOTPATH_SPEED_KPH * KPH_TO_MPS),
+            (TravelMode::Transit, 80.0 * KPH_TO_MPS),
+            (TravelMode::Intermodal, 45.0 * KPH_TO_MPS),
         ]);
         Self {
             road_network: Vec::new(),
             road_cells: HashMap::new(),
             travel_mode_speeds,
-            routing_objective_factors,
             pricing_buckets: HashMap::from([
                 ("CalculateIsolines", PRICING_BUCKET_ADVANCED.to_string()),
                 ("CalculateRouteMatrix", PRICING_BUCKET_CORE.to_string()),
@@ -852,24 +860,13 @@ impl ComAmazonawsGeoroutesRoutesserviceState {
             .unwrap_or_else(|| PRICING_BUCKET_CORE.to_string())
     }
 
-    /// Travel speed of `mode`, in metres per second.
+    /// Top travel speed of `mode`, in metres per second: the fastest it goes on any road.
     pub fn speed_mps(&self, mode: TravelMode) -> f64 {
         self.travel_mode_speeds
             .get(&mode)
             .copied()
-            .unwrap_or(1.4)
+            .unwrap_or(FOOTPATH_SPEED_KPH * KPH_TO_MPS)
             .max(f64::MIN_POSITIVE)
-    }
-
-    /// The factors `objective` applies.
-    pub fn factors(&self, objective: RoutingObjective) -> ObjectiveFactors {
-        self.routing_objective_factors
-            .get(&objective)
-            .copied()
-            .unwrap_or(ObjectiveFactors {
-                detour_m: 0.0,
-                speed: 1.0,
-            })
     }
 
     /// Materialise the grid cell holding `pos`, if it is not materialised yet.
@@ -898,19 +895,15 @@ impl ComAmazonawsGeoroutesRoutesserviceState {
         let last = (lon_max / ROAD_SPACING_DEG).ceil() as i64;
         for i in first..=last {
             let lon = i as f64 * ROAD_SPACING_DEG;
-            let class = if i.rem_euclid(FOOTPATH_EVERY) == 0 {
-                RoadClass::Footpath
-            } else {
-                RoadClass::Street
-            };
+            let road = road_at(RoadOrientation::Meridian, i);
             indices.push(self.road_network.len());
             self.road_network.push(RoadSegment {
                 id: format!("m{i}@{},{}", cell.0, cell.1),
                 polyline: vec![[lon, lat_min], [lon, lat_max]],
-                speed_kph: speed_of(class),
-                road_label: label_of(class, true, i),
-                allows: allows_of(class),
-                class,
+                speed_kph: road.speed_kph,
+                road_label: road.label,
+                allows: allows_of(road.class),
+                class: road.class,
                 orientation: RoadOrientation::Meridian,
                 grid_index: i,
             });
@@ -921,19 +914,15 @@ impl ComAmazonawsGeoroutesRoutesserviceState {
         let last = (lat_max / ROAD_SPACING_DEG).ceil() as i64;
         for j in first..=last {
             let lat = j as f64 * ROAD_SPACING_DEG;
-            let class = if j.rem_euclid(MOTORWAY_EVERY) == 0 {
-                RoadClass::Motorway
-            } else {
-                RoadClass::Street
-            };
+            let road = road_at(RoadOrientation::Parallel, j);
             indices.push(self.road_network.len());
             self.road_network.push(RoadSegment {
                 id: format!("p{j}@{},{}", cell.0, cell.1),
                 polyline: vec![[lon_min, lat], [lon_max, lat]],
-                speed_kph: speed_of(class),
-                road_label: label_of(class, false, j),
-                allows: allows_of(class),
-                class,
+                speed_kph: road.speed_kph,
+                road_label: road.label,
+                allows: allows_of(road.class),
+                class: road.class,
                 orientation: RoadOrientation::Parallel,
                 grid_index: j,
             });
@@ -1010,44 +999,29 @@ impl ComAmazonawsGeoroutesRoutesserviceState {
             return hit.clone();
         }
 
-        let factors = self.factors(objective);
-        let speed = self.speed_mps(mode) * factors.speed.max(f64::MIN_POSITIVE);
         let mut legs: Vec<CachedLeg> = Vec::new();
         // (road, times traversed), in first-seen order.
         let mut roads: Vec<(TravelledRoad, usize)> = Vec::new();
         let mut uses_controlled_access_highway = false;
 
         for pair in positions.windows(2) {
-            let (path, carried) = self.path_between(pair[0], pair[1], mode, objective, variant);
-            // The roads the route travelled, counted per SNAPPED sample: an endpoint that
-            // inherited the road of its neighbour is the same travel on that road, not a
-            // second traversal of it.
-            for road in path
+            let leg = self.leg_between(pair[0], pair[1], mode, objective, variant);
+            // The roads the route travelled, counted per stretch travelled on one: an
+            // endpoint that inherited the road of its neighbour is the same travel on that
+            // road, not a second traversal of it.
+            for road in leg
+                .path
                 .iter()
                 .filter(|vertex| vertex.snapped)
                 .filter_map(|vertex| vertex.road.as_ref())
             {
-                uses_controlled_access_highway |= road.class == RoadClass::Motorway;
+                uses_controlled_access_highway |= road.class.is_controlled_access();
                 match roads.iter_mut().find(|(seen, _)| seen.label == road.label) {
                     Some(entry) => entry.1 += 1,
                     None => roads.push((road.clone(), 1)),
                 }
             }
-            // The distance IS the length of the geometry this leg reports, so a client
-            // that measures the returned line gets the number beside it.
-            let distance_m = clamp_cost(polyline_length_m(&path_positions(&path)));
-            let duration_s = clamp_cost(distance_m as f64 / speed);
-            legs.push(CachedLeg {
-                start: pair[0],
-                end: pair[1],
-                distance_m,
-                duration_s,
-                runs: leg_runs(&path, distance_m, duration_s),
-                path,
-                travel_mode: mode,
-                leg_type: LegType::for_mode(mode),
-                connected: carried,
-            });
+            legs.push(leg);
         }
 
         // `MajorRoadLabels` is what "differentiates the current route from the
@@ -1077,80 +1051,150 @@ impl ComAmazonawsGeoroutesRoutesserviceState {
         route
     }
 
-    /// The geometry of one leg: each vertex with the road the leg travels there, and
-    /// whether the network carried the leg the whole way.
+    /// One leg of a route: the roads it travels between two positions, what travelling them
+    /// covers and takes, and whether the network carries it the whole way.
     ///
-    /// The straight line from `from` to `to` is sampled every [`SAMPLE_SPACING_M`], each
-    /// interior sample is pushed sideways by the objective's detour plus
-    /// `variant * ALTERNATIVE_OFFSET_M` (zero for the shortest direct route) and then
-    /// snapped onto the nearest road `mode` may use, so the returned geometry runs along
-    /// the road network and its length is the leg's distance. Where a sample lands on a
-    /// different road from the one before it, the two runs' own junction is recorded on the
-    /// vertex: that is the manoeuvre boundary the leg's travel steps are cut at.
+    /// Both endpoints are matched onto the network ([`Self::snap`]) and the roads between
+    /// them are chosen by the objective's own cost ([`road_graph::traverse`]). The leg's
+    /// geometry is that path — the submitted origin, the stretches travelled along the
+    /// roads, the submitted destination — so its DISTANCE is the length of the geometry the
+    /// response carries, and its DURATION is the sum of what travelling each stretch takes
+    /// at the speed of the road that stretch runs on. Where the road changes, the two
+    /// roads' own junction is recorded on the vertex: that is the manoeuvre boundary the
+    /// leg's travel steps are cut at.
     ///
-    /// A sample that snaps onto no road at all is outside the network's coverage, and a
-    /// leg with one is NOT carried by the network: nothing of this model connects its
-    /// endpoints by road.
-    fn path_between(
+    /// A position the network holds no road near has nothing to travel on, so a leg with
+    /// one is reported as the straight line between the two positions and is NOT carried by
+    /// the network.
+    fn leg_between(
         &mut self,
         from: Position,
         to: Position,
         mode: TravelMode,
         objective: RoutingObjective,
         variant: u32,
-    ) -> (Vec<PathVertex>, bool) {
-        let straight_m = haversine_m(from, to);
+    ) -> CachedLeg {
+        let top_speed_mps = self.speed_mps(mode);
+        let leg = |path: Vec<PathVertex>, distance_m: i64, duration_s: i64, connected: bool| CachedLeg {
+            start: from,
+            end: to,
+            distance_m,
+            duration_s,
+            runs: leg_runs(&path, distance_m, duration_s),
+            path,
+            travel_mode: mode,
+            leg_type: LegType::for_mode(mode),
+            connected,
+        };
         // A leg between two positions that are the same place has nothing to travel: it
         // reports that pair as its geometry and costs zero, rather than wandering onto the
         // road network and back.
         if positions_equal(from, to) {
-            return (
-                vec![PathVertex::off_network(from), PathVertex::off_network(to)],
-                is_mapped_territory(from),
+            let path = vec![PathVertex::off_network(from), PathVertex::off_network(to)];
+            return leg(path, 0, 0, is_mapped_territory(from));
+        }
+        let carried = self.corridor_is_carried(from, to, mode);
+        let (Some(start), Some(end)) = (self.snap(from, mode), self.snap(to, mode)) else {
+            // No road of the network is near one of the endpoints, so there is no path
+            // through the graph to travel: the straight line between the two positions is
+            // what there is to report, and nothing of this network carries it.
+            let path = vec![PathVertex::off_network(from), PathVertex::off_network(to)];
+            let distance_m = clamp_cost(haversine_m(from, to));
+            let duration_s = clamp_cost(distance_m as f64 / top_speed_mps);
+            return leg(path, distance_m, duration_s, false);
+        };
+
+        let stretches = road_graph::traverse(&start, &end, mode, objective, top_speed_mps, variant);
+        let mut path = Vec::with_capacity(stretches.len() + 3);
+        path.push(PathVertex::off_network(from));
+        let mut previous: Option<TravelledRoad> = None;
+        for stretch in &stretches {
+            // A run boundary is a junction of two roads: where the road changes, the two
+            // roads' own crossing is the point they meet in and the angle between them is
+            // what the manoeuvre there is read from.
+            let junction = previous
+                .as_ref()
+                .filter(|previous| !previous.is_same_road(&stretch.road))
+                .and_then(|previous| previous.junction_with(&stretch.road));
+            previous = Some(stretch.road.clone());
+            push_vertex(
+                &mut path,
+                PathVertex {
+                    position: stretch.from,
+                    road: Some(stretch.road.clone()),
+                    snapped: true,
+                    junction,
+                },
             );
         }
-        let steps = ((straight_m / SAMPLE_SPACING_M).ceil() as usize).clamp(2, MAX_PATH_SEGMENTS);
-        let bow_m = self.factors(objective).detour_m + f64::from(variant) * ALTERNATIVE_OFFSET_M;
-        let mut path = vec![PathVertex::off_network(from)];
-        let mut previous_road: Option<TravelledRoad> = None;
-        let mut carried = is_mapped_territory(from) && is_mapped_territory(to);
-        for step in 1..steps {
-            let t = step as f64 / steps as f64;
-            let mut sample = interpolate(from, to, t);
-            if bow_m > 0.0 {
-                // A half sine, so the bow leaves and rejoins the direct path at the ends.
-                sample = offset_sideways(from, to, sample, bow_m * (std::f64::consts::PI * t).sin());
-            }
-            match self.snap(sample, mode) {
-                Some(snapped) => {
-                    // A run boundary is a junction of two roads: where the road changes,
-                    // the two roads' own crossing is the point they meet in and the angle
-                    // between them is what the manoeuvre there is read from.
-                    let junction = previous_road
-                        .as_ref()
-                        .filter(|previous| !previous.is_same_road(&snapped.road))
-                        .and_then(|previous| previous.junction_with(&snapped.road));
-                    previous_road = Some(snapped.road.clone());
-                    path.push(PathVertex {
-                        position: snapped.position,
-                        road: Some(snapped.road),
-                        snapped: true,
-                        junction,
-                    });
-                }
-                None => {
-                    carried = false;
-                    path.push(PathVertex::off_network(sample));
-                }
-            }
+        if let Some(last) = stretches.last() {
+            push_vertex(
+                &mut path,
+                PathVertex {
+                    position: last.to,
+                    road: Some(last.road.clone()),
+                    snapped: true,
+                    junction: None,
+                },
+            );
         }
-        path.push(PathVertex::off_network(to));
-        path.dedup_by(|a, b| positions_equal(a.position, b.position));
+        push_vertex(&mut path, PathVertex::off_network(to));
         if path.len() < 2 {
             path.push(PathVertex::off_network(to));
         }
         inherit_endpoint_roads(&mut path);
-        (path, carried)
+
+        // The distance IS the length of the geometry this leg reports, so a client that
+        // measures the returned line gets the number beside it; the hops between a
+        // submitted endpoint and the road it matched onto are part of that line too.
+        let distance_m = clamp_cost(polyline_length_m(&path_positions(&path)));
+        let travelled: f64 = stretches.iter().map(|stretch| stretch.length_m).sum();
+        let seconds: f64 = stretches.iter().map(|stretch| stretch.seconds).sum();
+        let pace = if travelled > 0.0 && seconds > 0.0 {
+            travelled / seconds
+        } else {
+            top_speed_mps
+        };
+        // Whatever the geometry carries beyond the stretches travelled — the matching hops
+        // at the two ends — is covered at the pace of the path itself.
+        let duration_s = clamp_cost(seconds + (distance_m as f64 - travelled).max(0.0) / pace);
+        leg(path, distance_m, duration_s, carried)
+    }
+
+    /// Whether the network carries travel between `from` and `to`: whether every sample of
+    /// the corridor between them is inside the mapped territory the network has roads in.
+    ///
+    /// The corridor is sampled every [`SAMPLE_SPACING_M`], at most [`MAX_PATH_SEGMENTS`]
+    /// times, and a sample the network holds no road near is a gap no road of this model
+    /// bridges — an island, the open sea — so the pair is not connected by road at all.
+    fn corridor_is_carried(&mut self, from: Position, to: Position, mode: TravelMode) -> bool {
+        if !is_mapped_territory(from) || !is_mapped_territory(to) {
+            return false;
+        }
+        let steps = ((haversine_m(from, to) / SAMPLE_SPACING_M).ceil() as usize).clamp(2, MAX_PATH_SEGMENTS);
+        (1..steps).all(|step| {
+            let sample = interpolate(from, to, step as f64 / steps as f64);
+            self.snap(sample, mode).is_some()
+        })
+    }
+}
+
+/// Add `vertex` to a leg's geometry, unless it is the place the geometry already ends in.
+///
+/// Two roads of a path can cross in the very point one of them was joined in, and a
+/// submitted endpoint can lie exactly on the road it matched onto. Neither is travel, so
+/// neither adds a vertex — but the road the traveller LEAVES that place on is the one the
+/// step from it reports, so it replaces the road recorded there.
+fn push_vertex(path: &mut Vec<PathVertex>, vertex: PathVertex) {
+    match path.last_mut() {
+        Some(last) if positions_equal(last.position, vertex.position) => {
+            if vertex.road.is_some() {
+                last.road = vertex.road;
+                last.snapped |= vertex.snapped;
+                last.junction = last.junction.or(vertex.junction);
+            }
+        }
+        _ => path.push(vertex),
     }
 }
 
@@ -1177,16 +1221,63 @@ fn inherit_endpoint_roads(path: &mut [PathVertex]) {
 fn speed_of(class: RoadClass) -> f64 {
     match class {
         RoadClass::Motorway => MOTORWAY_SPEED_KPH,
+        RoadClass::Trunk => TRUNK_SPEED_KPH,
         RoadClass::Street => STREET_SPEED_KPH,
         RoadClass::Footpath => FOOTPATH_SPEED_KPH,
     }
 }
 
-/// The modes a road class carries. A motorway carries no pedestrian; a footpath carries
-/// nothing else.
+/// How many grid roads apart the roads of `class` sit: the spacing of the hierarchy's
+/// classes, and so what decides how far a leg detours to reach one. A street sits at every
+/// index the faster classes leave over, so its spacing is one road.
+fn spacing_of(class: RoadClass) -> i64 {
+    match class {
+        RoadClass::Motorway => MOTORWAY_EVERY,
+        RoadClass::Trunk => TRUNK_EVERY,
+        RoadClass::Footpath => FOOTPATH_EVERY,
+        RoadClass::Street => 1,
+    }
+}
+
+/// The class of the road of the grid at `index` running `orientation`.
+///
+/// The faster the class, the sparser it is: a motorway every [`MOTORWAY_EVERY`] roads, a
+/// trunk road every [`TRUNK_EVERY`], a pedestrian-only footpath on every
+/// [`FOOTPATH_EVERY`]th meridian the numbered classes leave over, and a local street
+/// everywhere else. The rule is a pure function of the index, so the class of a road is
+/// the same for every reader of the network and nothing has to be materialised to ask.
+pub fn class_of(orientation: RoadOrientation, index: i64) -> RoadClass {
+    if index.rem_euclid(MOTORWAY_EVERY) == 0 {
+        RoadClass::Motorway
+    } else if index.rem_euclid(TRUNK_EVERY) == 0 {
+        RoadClass::Trunk
+    } else if orientation == RoadOrientation::Meridian && index.rem_euclid(FOOTPATH_EVERY) == 0 {
+        RoadClass::Footpath
+    } else {
+        RoadClass::Street
+    }
+}
+
+/// The road of the grid at `index` running `orientation`, as a leg reports the road it
+/// travels. It is the one place a road's class, posted speed and name are derived from its
+/// place in the grid, so the network a traversal reads and the segments it materialises
+/// cannot describe one road two ways.
+pub fn road_at(orientation: RoadOrientation, index: i64) -> TravelledRoad {
+    let class = class_of(orientation, index);
+    TravelledRoad {
+        label: label_of(class, orientation == RoadOrientation::Meridian, index),
+        class,
+        speed_kph: speed_of(class),
+        orientation,
+        grid_index: index,
+    }
+}
+
+/// The modes a road class carries. A controlled-access road — a motorway or a trunk road —
+/// carries no pedestrian; a footpath carries nothing else.
 fn allows_of(class: RoadClass) -> Vec<TravelMode> {
     match class {
-        RoadClass::Motorway => vec![
+        RoadClass::Motorway | RoadClass::Trunk => vec![
             TravelMode::Car,
             TravelMode::Truck,
             TravelMode::Scooter,
@@ -1205,34 +1296,36 @@ fn allows_of(class: RoadClass) -> Vec<TravelMode> {
     }
 }
 
-/// The route number designating a motorway of the network at grid index `index`: the
-/// network numbers its motorways, which is what [`TravelledRoad::route_number`] reports
-/// and what [`label_of`] names a motorway after.
+/// The route number designating a numbered road of the network at grid index `index`: the
+/// network numbers its motorways and its trunk roads, which is what
+/// [`TravelledRoad::route_number`] reports and what [`label_of`] names such a road after.
 ///
 /// A designation is what a client puts on a highway shield, so it is built the way a road
 /// designation is: a prefix, the road's own number, and the hemisphere letter that tells
 /// the two roads of one number apart. The grid index it is derived from is an internal
-/// coordinate of this network — its SIGN says which side of the equator the road is on and
-/// its multiple of [`MOTORWAY_EVERY`] counts the motorways from there — so neither the
-/// sign nor the spacing reaches the designation.
-fn motorway_number(index: i64) -> String {
+/// coordinate of this network — its SIGN says which side of the origin the road is on and
+/// its multiple of [`TRUNK_EVERY`] counts the numbered roads from there — so neither the
+/// sign nor the spacing reaches the designation. Every numbered road sits at a multiple of
+/// [`TRUNK_EVERY`], so one numbering serves both classes and no two roads share a number.
+fn road_number(index: i64) -> String {
     format!(
         "M{}{}",
-        (index / MOTORWAY_EVERY).unsigned_abs(),
+        (index / TRUNK_EVERY).unsigned_abs(),
         hemisphere(false, index)
     )
 }
 
 /// The name of the road at grid index `index`.
 ///
-/// Like [`motorway_number`], a name carries the road's number and the side of the origin
-/// it runs on, never the signed grid index itself: a negative numeral is an artefact of
-/// this network's coordinates and not something a client could render or match a road by.
+/// Like [`road_number`], a name carries the road's number and the side of the origin it
+/// runs on, never the signed grid index itself: a negative numeral is an artefact of this
+/// network's coordinates and not something a client could render or match a road by.
 fn label_of(class: RoadClass, meridian: bool, index: i64) -> String {
     let number = index.unsigned_abs();
     let side = hemisphere(meridian, index);
     match (class, meridian) {
-        (RoadClass::Motorway, _) => format!("Motorway {}", motorway_number(index)),
+        (RoadClass::Motorway, _) => format!("Motorway {}", road_number(index)),
+        (RoadClass::Trunk, _) => format!("Highway {}", road_number(index)),
         (RoadClass::Footpath, _) => format!("Footpath F{number}{side}"),
         (RoadClass::Street, true) => format!("Meridian Street {number}{side}"),
         (RoadClass::Street, false) => format!("Parallel Avenue {number}{side}"),
@@ -1291,22 +1384,6 @@ fn interpolate(from: Position, to: Position, t: f64) -> Position {
     [
         from[0] + (to[0] - from[0]) * t,
         from[1] + (to[1] - from[1]) * t,
-    ]
-}
-
-/// `sample` moved `offset_m` metres perpendicular to the `from`-`to` direction, kept
-/// inside the WGS 84 bounds.
-fn offset_sideways(from: Position, to: Position, sample: Position, offset_m: f64) -> Position {
-    let (mx, my) = metres_per_degree(sample[1]);
-    let (dx, dy) = ((to[0] - from[0]) * mx, (to[1] - from[1]) * my);
-    let norm = (dx * dx + dy * dy).sqrt();
-    if norm < f64::EPSILON {
-        return sample;
-    }
-    // Rotate the direction by 90 degrees, in metres, then back into degrees.
-    [
-        (sample[0] + (-dy / norm) * offset_m / mx).clamp(LONGITUDE_BOUNDS.0, LONGITUDE_BOUNDS.1),
-        (sample[1] + (dx / norm) * offset_m / my).clamp(LATITUDE_BOUNDS.0, LATITUDE_BOUNDS.1),
     ]
 }
 

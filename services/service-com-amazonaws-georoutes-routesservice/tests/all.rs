@@ -27,6 +27,8 @@ mod refusal_wording;
 mod reported_time_offsets;
 #[path = "all/response_detail.rs"]
 mod response_detail;
+#[path = "all/road_graph_metrics.rs"]
+mod road_graph_metrics;
 #[path = "all/route_matrix_boundary.rs"]
 mod route_matrix_boundary;
 #[path = "all/route_matrix_metrics.rs"]
@@ -39,3 +41,5 @@ mod state_roundtrip;
 mod success_response_synthesis;
 #[path = "all/travel_steps.rs"]
 mod travel_steps;
+#[path = "all/zz_probe_values.rs"]
+mod zz_probe_values;

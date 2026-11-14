@@ -378,12 +378,12 @@ async fn confidence_of(
 #[tokio::test]
 async fn a_match_is_scored_on_the_match_and_not_on_the_requested_radius() {
     let router = routes_service();
-    // Longitude -123.1 is a multiple of ten grid steps, where the network puts a footpath
-    // no car may travel, so the nearest road a car can be matched to in that axis is a
-    // grid step and a half away and these rows differ only in the LATITUDE offset from the
-    // parallel road at 49.28. The offsets run from none to a quarter of the grid spacing,
-    // which is as far as a point on this network can be from the road nearest it.
-    let on_a_road = [-123.1, 49.28];
+    // Longitude -123.095 is an odd multiple of ten grid steps, where the network puts a
+    // footpath no car may travel, so the nearest road a car can be matched to in that axis
+    // is a grid step and a half away and these rows differ only in the LATITUDE offset from
+    // the parallel road at 49.28. The offsets run from none to a quarter of the grid
+    // spacing, which is as far as a point on this network can be from the road nearest it.
+    let on_a_road = [-123.095, 49.28];
     let cases: [(&str, f64); 4] = [
         ("on the road", 0.0),
         ("a tenth of the spacing off the road", 0.000_05),
@@ -428,10 +428,10 @@ async fn a_match_is_scored_on_the_match_and_not_on_the_requested_radius() {
         );
     }
 
-    // Longitude -123.0995 carries a meridian street, so a point a metre east of it sits at
+    // Longitude -123.0945 carries a meridian street, so a point a metre east of it sits at
     // a crossing of two roads a car may travel and could be on either: the same offset
     // from its road as the first row above, but an ambiguous match.
-    let at_a_crossing = confidence_of(&router, "at a crossing", [-123.099_49, 49.28], 300).await;
+    let at_a_crossing = confidence_of(&router, "at a crossing", [-123.094_49, 49.28], 300).await;
     assert!(
         at_a_crossing < by_offset[0].1,
         "a point at a crossing of two roads is matched less certainly than one with no other \

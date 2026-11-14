@@ -358,9 +358,9 @@ async fn a_step_asked_for_no_detail_carries_only_what_the_model_requires() {
 /// declares, and it is the one the road HAS: the `RouteNumber` of a numbered road, the
 /// `RoadName` of an unnumbered one. Either member declares the language it is rendered in.
 ///
-/// Rows span both variants — the motorways of the grid are its numbered roads, and a
-/// pedestrian may not travel one, so a walking route is labelled by name — and the
-/// requested `Languages`, which is what the label's `Language` follows.
+/// Rows span both variants — the numbered roads of the grid are its motorways and trunk
+/// roads, and a pedestrian may travel neither, so a walking route is labelled by name —
+/// and the requested `Languages`, which is what the label's `Language` follows.
 #[tokio::test]
 async fn a_major_road_label_identifies_a_road_the_way_the_road_is_identified() {
     let router = routes_service();
@@ -378,11 +378,11 @@ async fn a_major_road_label_identifies_a_road_the_way_the_road_is_identified() {
     );
     let cases: [LabelCase; 5] = [
         (
-            // Latitude 49.28 is a motorway parallel of the grid, and the shortest route
-            // runs straight along it.
-            "a run along a motorway",
-            [-123.1, 49.28],
-            [-123.0, 49.28],
+            // Latitude 49.3 is a trunk parallel of the grid — a numbered road — and the
+            // shortest route runs straight along it.
+            "a run along a numbered road",
+            [-123.1, 49.3],
+            [-123.0, 49.3],
             "Car",
             Some("ShortestRoute"),
             None,
@@ -391,8 +391,8 @@ async fn a_major_road_label_identifies_a_road_the_way_the_road_is_identified() {
         ),
         (
             "the same run asked for in a regional variant",
-            [-123.1, 49.28],
-            [-123.0, 49.28],
+            [-123.1, 49.3],
+            [-123.0, 49.3],
             "Truck",
             Some("ShortestRoute"),
             Some("en-GB"),
@@ -400,7 +400,7 @@ async fn a_major_road_label_identifies_a_road_the_way_the_road_is_identified() {
             true,
         ),
         (
-            "a walking route, which may not use a motorway",
+            "a walking route, which may not use a numbered road",
             [-123.1, 49.28],
             [-123.103, 49.277],
             "Pedestrian",
@@ -420,6 +420,8 @@ async fn a_major_road_label_identifies_a_road_the_way_the_road_is_identified() {
             false,
         ),
         (
+            // A scooter may travel the numbered roads, and the grid's trunk roads are near
+            // enough anywhere that a route of a few hundred metres takes one.
             "a scooter route in the southern hemisphere",
             [151.21, -33.87],
             [151.2, -33.86],
@@ -427,7 +429,7 @@ async fn a_major_road_label_identifies_a_road_the_way_the_road_is_identified() {
             None,
             None,
             "en-us",
-            false,
+            true,
         ),
     ];
 
@@ -475,8 +477,8 @@ async fn a_major_road_label_identifies_a_road_the_way_the_road_is_identified() {
                 "case {case:?}: the label declares the language it is rendered in, got {label:?}"
             );
             if by_number {
-                // The network numbers its motorways; the number is not the road's full
-                // name, which is what the other variant carries.
+                // The network numbers its motorways and trunk roads; the number is not the
+                // road's full name, which is what the other variant carries.
                 let value = identity["Value"].as_str().unwrap_or_default();
                 assert!(
                     value.starts_with('M') && value.len() > 1,

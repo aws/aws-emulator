@@ -1398,7 +1398,7 @@ impl StepKind {
         from: Option<&TravelledRoad>,
         onto: Option<&TravelledRoad>,
     ) -> Self {
-        let highway = |road: Option<&TravelledRoad>| road.is_some_and(|road| road.class == RoadClass::Motorway);
+        let highway = |road: Option<&TravelledRoad>| road.is_some_and(|road| road.class.is_controlled_access());
         if leg_type == LegType::Vehicle {
             match (highway(from), highway(onto)) {
                 (false, true) => return Self::EnterHighway,
@@ -1726,12 +1726,12 @@ fn route_number(value: &str, language: &str) -> RouteNumber {
     }
 }
 
-/// `RouteRoadType` of a road class: a motorway is a `Highway`, and a street or footpath of
-/// the grid is `Urban` — at its ~55 m spacing the network is a city grid, and nothing in it
-/// is `Rural`.
+/// `RouteRoadType` of a road class: a controlled-access road of the network — a motorway
+/// or a trunk road — is a `Highway`, and a street or footpath of the grid is `Urban` — at
+/// its ~55 m spacing the network is a city grid, and nothing in it is `Rural`.
 fn road_type(class: RoadClass) -> &'static str {
     match class {
-        RoadClass::Motorway => "Highway",
+        RoadClass::Motorway | RoadClass::Trunk => "Highway",
         RoadClass::Street | RoadClass::Footpath => "Urban",
     }
 }

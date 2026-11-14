@@ -746,12 +746,12 @@ async fn the_leg_summary_is_reported_for_every_leg() {
 #[tokio::test]
 async fn a_violated_avoidance_is_reported_as_a_notice() {
     let router = routes_service();
-    // A run along a motorway parallel of the network, taken as the shortest (direct)
-    // route, so the computed path stays on that motorway: avoiding controlled-access
+    // A run along a trunk parallel of the network — a controlled-access road — taken as the
+    // shortest (direct) route, so the computed path stays on it: avoiding controlled-access
     // highways cannot be satisfied for it.
     let crossing = json!({
-        "Origin": [-123.1, 49.28],
-        "Destination": [-123.0, 49.28],
+        "Origin": [-123.1, 49.3],
+        "Destination": [-123.0, 49.3],
         "OptimizeRoutingFor": "ShortestRoute",
         "Avoid": { "ControlledAccessHighways": true },
     });
@@ -775,8 +775,8 @@ async fn a_violated_avoidance_is_reported_as_a_notice() {
         &router,
         ROUTES,
         &json!({
-            "Origin": [-123.1, 49.28],
-            "Destination": [-123.0, 49.28],
+            "Origin": [-123.1, 49.3],
+            "Destination": [-123.0, 49.3],
             "OptimizeRoutingFor": "ShortestRoute",
             "Avoid": { "TollRoads": true, "Ferries": true },
         }),
@@ -938,15 +938,24 @@ async fn a_slower_travel_mode_takes_longer_over_the_same_pair() {
     }
 }
 
-/// `ShortestRoute` is shorter and `FastestRoute` is quicker: the objective is applied,
-/// not ignored.
+/// `ShortestRoute` is never the longer way and `FastestRoute` is never the slower one: the
+/// objective is applied, not ignored. Where the graph of a pair offers a trade at all — a
+/// quicker way through it that is not also its shortest — the trade is both ways round: the
+/// quicker way costs distance and the shorter way costs time.
 #[tokio::test]
 async fn the_routing_objective_trades_distance_against_time() {
     let router = routes_service();
-    let cases = [
+    let cases: [(&str, [f64; 2], [f64; 2]); 4] = [
         ("short pair", [-123.1, 49.28], [-123.12, 49.26]),
         ("long pair", [-123.1, 49.28], [-123.2, 49.2]),
+        ("a pair across a county", [-123.1, 49.28], [-123.6, 49.9]),
+        (
+            "a pair on no road of its own",
+            [-123.1037, 49.2831],
+            [-123.2411, 49.1877],
+        ),
     ];
+    let mut traded = Vec::new();
     for (case, origin, destination) in cases {
         let ask = |objective: &str| {
             json!({ "Origin": origin, "Destination": destination, "OptimizeRoutingFor": objective })
@@ -955,19 +964,28 @@ async fn the_routing_objective_trades_distance_against_time() {
         let (_, shortest, _) = post(&router, ROUTES, &ask("ShortestRoute")).await;
         let fast = &fastest["Routes"][0]["Summary"];
         let short = &shortest["Routes"][0]["Summary"];
+        let (fast_distance, fast_duration) = (int(fast, "Distance", case), int(fast, "Duration", case));
+        let (short_distance, short_duration) = (int(short, "Distance", case), int(short, "Duration", case));
         assert!(
-            int(short, "Distance", case) < int(fast, "Distance", case),
-            "case {case:?}: ShortestRoute must be the shorter one, got {:?} against {:?}",
-            short["Distance"],
-            fast["Distance"]
+            short_distance <= fast_distance,
+            "case {case:?}: ShortestRoute must not be the longer one, got {short_distance} against {fast_distance}"
         );
         assert!(
-            int(fast, "Duration", case) < int(short, "Duration", case),
-            "case {case:?}: FastestRoute must be the quicker one, got {:?} against {:?}",
-            fast["Duration"],
-            short["Duration"]
+            fast_duration <= short_duration,
+            "case {case:?}: FastestRoute must not be the slower one, got {fast_duration} against {short_duration}"
         );
+        if fast_duration < short_duration {
+            // The quicker way is quicker because it travels faster roads, which is what the
+            // objective asked for; it is never also the shorter one, which is what the
+            // other objective asks for.
+            traded.push(case);
+        }
     }
+    assert!(
+        !traded.is_empty(),
+        "the objective must reach the route where the graph offers a quicker way than the \
+         shortest one, and no pair of the table traded"
+    );
 }
 
 // ---------------------------------------------------------------------------

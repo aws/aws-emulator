@@ -431,7 +431,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         mode: travel_mode,
                         objective,
                         outward: anchor.outward,
-                        max_radius_m: threshold.max_radius_m(&state, travel_mode, objective),
+                        max_radius_m: threshold.max_radius_m(&state, travel_mode),
                         steps: precision.steps(),
                     };
                     let vertices = ring_vertices(input.isoline_granularity.as_ref(), search.max_radius_m);
@@ -637,23 +637,20 @@ impl Threshold {
 
     /// How far from the anchor this threshold can possibly reach, in metres.
     ///
-    /// A route's distance is the length of the geometry it travels, which is never shorter
-    /// than the straight line between its endpoints, and its duration is that distance over
-    /// the travel mode's speed scaled by the objective's factor — so a distance threshold
-    /// reaches at most its own metres, and a time threshold at most what the mode covers in
-    /// its seconds. That makes this the upper bound the search starts from, and it is read
-    /// off the same speeds and factors the cost function uses.
+    /// A route's distance is the length of the path it travels along the roads, which is
+    /// never shorter than the straight line between its endpoints, and its duration is that
+    /// path at the speed of the roads it runs on — never above the travel mode's own top
+    /// speed. So a distance threshold reaches at most its own metres, and a time threshold
+    /// at most what the mode covers in its seconds. That makes this the upper bound the
+    /// search starts from, and it is read off the same speeds the cost function uses.
     fn max_radius_m(
         self,
         state: &ComAmazonawsGeoroutesRoutesserviceState,
         mode: TravelMode,
-        objective: RoutingObjective,
     ) -> f64 {
         match self {
             Self::Distance(metres) => metres as f64,
-            Self::Time(seconds) => {
-                seconds as f64 * state.speed_mps(mode) * state.factors(objective).speed.max(f64::MIN_POSITIVE)
-            }
+            Self::Time(seconds) => seconds as f64 * state.speed_mps(mode),
         }
     }
 
