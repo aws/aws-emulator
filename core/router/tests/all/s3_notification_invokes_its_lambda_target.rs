@@ -24,6 +24,12 @@
 //! key-name filter at all, which rule kinds it carries (prefix, suffix, both), and whether the
 //! written key satisfies every one of them. Each row asserts both halves, so a delivery that
 //! never happens and one the filter excluded are told apart.
+//!
+//! Every request below is dispatched through a BOXED future ([`Box::pin`]). The assembled
+//! router's dispatch future carries the whole emulator's handler state inline, so a test
+//! holding several of them across await points lays that state out on the test thread's stack
+//! and overflows it as the emulator grows; the box puts each one on the heap instead. Nothing
+//! about what is asserted changes.
 
 use std::time::Duration;
 
@@ -187,7 +193,7 @@ async fn query(
         .header("authorization", authorization(service))
         .body(Bytes::from(body))
         .expect("a well-formed request");
-    let response = router.dispatch(request).await;
+    let response = Box::pin(router.dispatch(request)).await;
     let status = response.status().as_u16();
     (status, String::from_utf8_lossy(response.body()).to_string())
 }
@@ -209,7 +215,7 @@ async fn s3(router: &MultiServiceRouter, method: &str, path: &str, body: &str) -
         .header("content-type", "application/octet-stream")
         .body(Bytes::from(body.to_owned()))
         .expect("a well-formed request");
-    let response = router.dispatch(request).await;
+    let response = Box::pin(router.dispatch(request)).await;
     Answer {
         status: response.status().as_u16(),
         body: String::from_utf8_lossy(response.body()).into_owned(),
@@ -700,7 +706,7 @@ async fn logs(router: &MultiServiceRouter, operation: &str, body: &Value) -> (u1
         .header("authorization", authorization("logs"))
         .body(Bytes::from(body.to_string()))
         .expect("a well-formed request");
-    let response = router.dispatch(request).await;
+    let response = Box::pin(router.dispatch(request)).await;
     let status = response.status().as_u16();
     let parsed: Value = if response.body().is_empty() {
         Value::Null

@@ -203,6 +203,8 @@ mod listing_optional_members;
 mod listing_query_value_decoding;
 #[path = "all/listing_resume_markers.rs"]
 mod listing_resume_markers;
+#[path = "all/metadata_annotation_table_update_refusals.rs"]
+mod metadata_annotation_table_update_refusals;
 #[path = "all/metadata_table_update_journal_status.rs"]
 mod metadata_table_update_journal_status;
 #[path = "all/multipart_checksum_type.rs"]
