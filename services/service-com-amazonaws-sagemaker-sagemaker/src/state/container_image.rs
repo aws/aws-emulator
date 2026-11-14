@@ -69,6 +69,34 @@ const IMAGE_REFERENCE_PATTERN: &str = concat!(
     r"$",
 );
 
+/// The form a container image's digest has to carry to be REPORTED as one, which is the
+/// `ImageDigest` shape's own modelled pattern
+/// (`smithy_query(query="shape",shape="ImageDigest")`: `@length 0..72`,
+/// `@pattern ^[Ss][Hh][Aa]256:[0-9a-fA-F]{64}$`): the SHA-256 algorithm name, a colon and the
+/// 64 hex digits of the content hash.
+///
+/// The reference grammar above admits other algorithms and shorter hex runs; a digest outside
+/// this pattern is one no `ImageDigest`-typed member can carry, so it is not reported as one.
+const REPORTABLE_IMAGE_DIGEST_PATTERN: &str = r"^[Ss][Hh][Aa]256:[0-9a-fA-F]{64}$";
+
+/// The content digest an image reference PINS, and `None` for a reference that pins none or
+/// pins one outside [`REPORTABLE_IMAGE_DIGEST_PATTERN`].
+///
+/// A reference in the `registry/repository[@digest]` format the image member documents names
+/// the image by its content digest, so that digest IS the digest of the image the resource is
+/// registered against — nothing has to be resolved from a registry to know it. A reference in
+/// the `registry/repository[:tag]` format pins nothing, so it names no digest.
+#[must_use]
+pub fn pinned_image_digest(image: &str) -> Option<&str> {
+    static DIGEST: ::std::sync::OnceLock<::regex::Regex> = ::std::sync::OnceLock::new();
+    let reportable = DIGEST.get_or_init(|| {
+        ::regex::Regex::new(REPORTABLE_IMAGE_DIGEST_PATTERN)
+            .expect("the modelled pattern compiles")
+    });
+    let (_, digest) = image.rsplit_once('@')?;
+    reportable.is_match(digest).then_some(digest)
+}
+
 /// Whether `image` is NOT a reference an image registry can resolve: a value outside the
 /// published grammar ([`IMAGE_REFERENCE_PATTERN`]).
 ///
@@ -135,7 +163,74 @@ pub const INVALID_IMAGE_PATH: &str = "Provided image is not a valid ECR image.";
 
 #[cfg(test)]
 mod tests {
-    use super::malformed_container_image;
+    use super::{malformed_container_image, pinned_image_digest};
+
+    /// RULE: a reference in the documented `registry/repository[@digest]` format names the
+    /// image by the digest it pins, and one that pins no digest a member can carry names
+    /// none.
+    ///
+    /// The rows span what that generalises over: the presence of a registry, a port and a
+    /// tag beside the digest, the case of the hex and of the algorithm name, and the forms
+    /// that pin nothing reportable (a tag, no suffix at all, another algorithm, a hex run
+    /// of the wrong length).
+    #[test]
+    fn a_reference_names_the_digest_it_pins() {
+        let sha = "8ebddbc1".repeat(8);
+        let upper = sha.to_uppercase();
+        // (case, the path, the digest the reference pins)
+        let rows: Vec<(&str, String, Option<String>)> = vec![
+            (
+                "an ECR digest path",
+                format!("000000000000.dkr.ecr.us-east-1.amazonaws.com/inference@sha256:{sha}"),
+                Some(format!("sha256:{sha}")),
+            ),
+            (
+                "a bare repository with a digest",
+                format!("inference@sha256:{sha}"),
+                Some(format!("sha256:{sha}")),
+            ),
+            (
+                "a registry with a port and a digest",
+                format!("registry.example.com:5000/team/inference@sha256:{sha}"),
+                Some(format!("sha256:{sha}")),
+            ),
+            (
+                "uppercase hex",
+                format!("registry.example.com/inference@sha256:{upper}"),
+                Some(format!("sha256:{upper}")),
+            ),
+            (
+                "an uppercased algorithm name",
+                format!("registry.example.com/inference@SHA256:{sha}"),
+                Some(format!("SHA256:{sha}")),
+            ),
+            (
+                "a tagged reference",
+                "000000000000.dkr.ecr.us-east-1.amazonaws.com/inference:1".to_string(),
+                None,
+            ),
+            ("no tag and no digest", "inference".to_string(), None),
+            (
+                "another algorithm",
+                format!("inference@sha512:{sha}{sha}"),
+                None,
+            ),
+            ("a hex run that is too short", "inference@sha256:0123abcd".to_string(), None),
+            (
+                "a hex run that is too long",
+                format!("inference@sha256:{sha}00"),
+                None,
+            ),
+        ];
+
+        for (case, image, expected) in rows {
+            let pinned = pinned_image_digest(&image).map(str::to_string);
+            assert_eq!(
+                pinned, expected,
+                "case {case:?}: expected {expected:?} for {image:?}, got {pinned:?}"
+            );
+        }
+    }
 
     /// RULE: a container image path is admitted exactly when it is a reference the published
     /// grammar admits — a repository, optionally behind a registry host and followed by a tag

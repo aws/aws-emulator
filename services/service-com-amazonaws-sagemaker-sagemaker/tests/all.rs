@@ -105,6 +105,10 @@ mod hyperparameter_tuning_job;
 mod hyperpod_cluster_audit_record;
 #[path = "all/hyperpod_cluster_listing.rs"]
 mod hyperpod_cluster_listing;
+#[path = "all/image_digest_probe.rs"]
+mod image_digest_probe;
+#[path = "all/image_digest_round_trip.rs"]
+mod image_digest_round_trip;
 #[path = "all/inference_deployment_lifecycle.rs"]
 mod inference_deployment_lifecycle;
 #[path = "all/inference_recommendation_refusals.rs"]
@@ -185,6 +189,8 @@ mod model_package_group_policy;
 mod model_package_group_policy_names;
 #[path = "all/model_package_pending_window.rs"]
 mod model_package_pending_window;
+#[path = "all/model_package_registration_status.rs"]
+mod model_package_registration_status;
 #[path = "all/model_package_registry.rs"]
 mod model_package_registry;
 #[path = "all/model_package_updates.rs"]

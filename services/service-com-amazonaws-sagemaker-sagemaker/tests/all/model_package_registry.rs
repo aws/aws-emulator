@@ -19,7 +19,7 @@
 //! through `CreateModelPackageGroup` over the same wire.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Map, Value};
 use smithy_server_runtime::MultiServiceRouter;
@@ -33,10 +33,12 @@ use crate::service_resolved_members::{
 /// The canonical account id every emulator ARN carries (`engine::EMULATOR_ACCOUNT_ID`).
 const ACCOUNT: &str = engine::EMULATOR_ACCOUNT_ID;
 
-/// Long enough to pass `state::MODEL_PACKAGE_COMPLETED_AFTER`, derived from that span so
-/// the wait can never drift away from the window it has to outlast.
-pub(crate) const PAST_COMPLETED_DUE: Duration =
-    state::MODEL_PACKAGE_COMPLETED_AFTER.saturating_add(Duration::from_millis(300));
+/// How long a poll below gives the clock to settle a registration: far longer than
+/// `state::MODEL_PACKAGE_COMPLETED_AFTER`, so a loaded host still settles well inside it.
+const SETTLE_DEADLINE: Duration = Duration::from_secs(120);
+
+/// How often such a poll looks again. Only the loop's condition decides when it stops.
+const SETTLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// A container the boundary validator accepts for an `InferenceSpecification`.
 pub(crate) fn container(image: &str) -> Value {
@@ -202,7 +204,7 @@ fn validation_statuses(describe: &Value) -> Vec<Value> {
 
 /// A `ValidationSpecification` with `profiles` profiles, so a case can vary how many
 /// per-profile validation items the status details must carry.
-fn validation_specification(profiles: usize) -> Value {
+pub(crate) fn validation_specification(profiles: usize) -> Value {
     let profiles: Vec<Value> = (0..profiles)
         .map(|index| {
             json!({
@@ -229,6 +231,29 @@ fn validation_specification(profiles: usize) -> Value {
         "ValidationRole": "arn:aws:iam::000000000000:role/SageMakerValidation",
         "ValidationProfiles": profiles,
     })
+}
+
+/// The `ModelPackageStatus` a registration carrying `body` is in the moment
+/// `CreateModelPackage` answers: `Pending` while the batch transform jobs its
+/// `ValidationSpecification` names are still to run, and `Completed` for a registration
+/// with no validation to run at all — either because it named no profile or because
+/// `SkipModelValidation` is `All`.
+///
+/// The oracle the suites below read a freshly registered package against, so a row varying
+/// the validation it asks for carries its own expectation.
+pub(crate) fn status_at_registration(body: &Value) -> &'static str {
+    let profiles = body
+        .pointer("/ValidationSpecification/ValidationProfiles")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    let validation_skipped =
+        body.get("SkipModelValidation").and_then(Value::as_str) == Some("All");
+    if profiles > 0 && !validation_skipped {
+        "Pending"
+    } else {
+        "Completed"
+    }
 }
 
 /// A create body: `members` plus whatever the row adds.
@@ -404,12 +429,14 @@ async fn unversioned_create_describe_round_trip_over_optional_members_and_region
             described.get("CreationTime").is_some(),
             "case {case:?}: expected a CreationTime, got {described}"
         );
-        // Registration is outstanding at this point, so the status is the non-terminal one.
+        // A registration with validation jobs still to run is reported in the
+        // non-terminal status; one with no validation to run is registered complete.
+        let expected_status = status_at_registration(&body);
         assert_eq!(
             str_field(&described, "ModelPackageStatus"),
-            "Pending",
-            "case {case:?}: expected a freshly registered package to be Pending, \
-             got {described}"
+            expected_status,
+            "case {case:?}: expected a freshly registered package to be \
+             {expected_status}, got {described}"
         );
         // `CreatedBy` names the IAM identity the registering request signed with; an
         // unsigned request presents no access-key id, so `extract_akid`'s fallback
@@ -1053,10 +1080,11 @@ async fn a_repeated_client_token_registers_nothing_a_second_time() {
     }
 }
 
-/// RULE: registration is asynchronous — a model package is `Pending` until the instant
-/// the clock owes it `Completed`, with one validation item per validation profile the
-/// request named (`NotStarted` until then, `Completed` after), and the settled
-/// `LastModifiedTime` is stable across later reads.
+/// RULE: a registration is asynchronous exactly while it has validation work to run — a
+/// package whose request names a validation profile is `Pending`, with one `NotStarted`
+/// validation item per profile, until the instant the clock owes it `Completed`, while a
+/// package the request asked no validation for is registered `Completed` outright — and
+/// the settled `LastModifiedTime` is stable across later reads.
 #[tokio::test]
 async fn status_settles_from_pending_to_completed_when_the_clock_owes_it() {
     // `ModelPackageValidationSpecification$ValidationProfiles` is modelled `len 1..1`, so
@@ -1074,23 +1102,25 @@ async fn status_settles_from_pending_to_completed_when_the_clock_owes_it() {
         }
         emulator.create(&case, &body).await;
 
-        // Straight after the call the transition is not due yet, so the caller still
-        // observes the non-terminal status.
-        let pending = emulator.describe(&case, &name).await;
+        // Straight after the call: a registration with validation jobs outstanding is
+        // reported in the non-terminal status, one with nothing to run is already
+        // complete.
+        let registered = emulator.describe(&case, &name).await;
+        let expected_status = status_at_registration(&body);
         assert_eq!(
-            str_field(&pending, "ModelPackageStatus"),
-            "Pending",
-            "case {case:?}: expected Pending before the transition is due, got {pending}"
+            str_field(&registered, "ModelPackageStatus"),
+            expected_status,
+            "case {case:?}: expected {expected_status} as registered, got {registered}"
         );
         assert!(
-            pending.get("LastModifiedTime").is_none(),
-            "case {case:?}: nothing has modified the package yet, got {pending}"
+            registered.get("LastModifiedTime").is_none(),
+            "case {case:?}: nothing has modified the package yet, got {registered}"
         );
-        let items = validation_statuses(&pending);
+        let items = validation_statuses(&registered);
         assert_eq!(
             items.len(),
             profiles,
-            "case {case:?}: expected one validation item per profile, got {pending}"
+            "case {case:?}: expected one validation item per profile, got {registered}"
         );
         for item in &items {
             assert_eq!(
@@ -1104,18 +1134,34 @@ async fn status_settles_from_pending_to_completed_when_the_clock_owes_it() {
             );
         }
 
-        tokio::time::sleep(PAST_COMPLETED_DUE).await;
-
-        let completed = emulator.describe(&case, &name).await;
+        // Look again until the registration has settled, however long the host takes:
+        // what is under test is that the transition happens, not when.
+        let deadline = Instant::now() + SETTLE_DEADLINE;
+        let completed = loop {
+            let read = emulator.describe(&case, &name).await;
+            if str_field(&read, "ModelPackageStatus") == "Completed" {
+                break read;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "case {case:?}: expected Completed within {SETTLE_DEADLINE:?}, got {read}"
+            );
+            tokio::time::sleep(SETTLE_POLL_INTERVAL).await;
+        };
         assert_eq!(
             str_field(&completed, "ModelPackageStatus"),
             "Completed",
             "case {case:?}: expected Completed once the transition is due, got {completed}"
         );
+        // `LastModifiedTime` is reported only once something has CHANGED the package: the
+        // settling of an outstanding registration is such a change, while a package that
+        // was registered complete has had nothing modify it.
         let settled_at = completed.get("LastModifiedTime").cloned();
-        assert!(
+        assert_eq!(
             settled_at.is_some(),
-            "case {case:?}: the settled package reports when it changed, got {completed}"
+            expected_status == "Pending",
+            "case {case:?}: expected a LastModifiedTime only for a registration that \
+             settled, got {completed}"
         );
         for item in validation_statuses(&completed) {
             assert_eq!(

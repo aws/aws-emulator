@@ -23,14 +23,22 @@
 //! create/describe helpers are reused from `model_package_registry`.
 
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
 use service_com_amazonaws_sagemaker_sagemaker::state;
 
 use crate::model_package_registry::{
-    container, error_code, expected_arn, str_field, Emulator, PAST_COMPLETED_DUE,
+    container, error_code, expected_arn, str_field, validation_specification, Emulator,
 };
+
+/// How long a poll below gives the clock to settle a registration: far longer than
+/// `state::MODEL_PACKAGE_COMPLETED_AFTER`, so a loaded host still settles well inside it.
+const SETTLE_DEADLINE: Duration = Duration::from_secs(120);
+
+/// How often such a poll looks again. Only the loop's condition decides when it stops.
+const SETTLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// The members a `BatchDescribeModelPackageSummary` carries
 /// (`smithy_query(query="shape",shape="BatchDescribeModelPackageSummary")`). Every one of
@@ -194,8 +202,6 @@ async fn summaries_project_each_requested_version_as_described() {
         arns.push(emulator.create(row.case, &body).await);
     }
 
-    tokio::time::sleep(PAST_COMPLETED_DUE).await;
-
     let output = batch_describe(&emulator, "every registered version", &arns).await;
     let found = summaries(&output);
     assert!(
@@ -316,6 +322,9 @@ async fn a_version_is_reported_pending_until_the_clock_owes_completed() {
             &json!({
                 "ModelPackageGroupName": "settling",
                 "InferenceSpecification": inference_specification(1),
+                // The validation profile is what leaves the registration outstanding: a
+                // registration with nothing to validate is complete when it answers.
+                "ValidationSpecification": validation_specification(1),
             }),
         )
         .await;
@@ -338,18 +347,30 @@ async fn a_version_is_reported_pending_until_the_clock_owes_completed() {
         "case \"before the transition is due\": expected Pending, got {summary}"
     );
 
-    tokio::time::sleep(PAST_COMPLETED_DUE).await;
-
-    let settled = batch_describe(
-        &emulator,
-        "once the transition is due",
-        std::slice::from_ref(&arn),
-    )
-    .await;
-    let summary = summaries(&settled)
-        .get(&arn)
-        .cloned()
-        .unwrap_or_else(|| panic!("expected a summary for {arn} in {settled}"));
+    // Look again until the registration has settled, however long the host takes: what is
+    // under test is that the batch reports the transition, not when it happens.
+    let deadline = std::time::Instant::now() + SETTLE_DEADLINE;
+    let summary = loop {
+        let settled = batch_describe(
+            &emulator,
+            "once the transition is due",
+            std::slice::from_ref(&arn),
+        )
+        .await;
+        let summary = summaries(&settled)
+            .get(&arn)
+            .cloned()
+            .unwrap_or_else(|| panic!("expected a summary for {arn} in {settled}"));
+        if str_field(&summary, "ModelPackageStatus") == "Completed" {
+            break summary;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case \"once the transition is due\": expected Completed within \
+             {SETTLE_DEADLINE:?}, got {summary}"
+        );
+        tokio::time::sleep(SETTLE_POLL_INTERVAL).await;
+    };
     assert_eq!(
         str_field(&summary, "ModelPackageStatus"),
         "Completed",

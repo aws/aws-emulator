@@ -416,8 +416,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             crate::state::materialise_additional_inference_specifications(specifications);
         }
 
-        // Registration is asynchronous: the package is `Pending` until the instant the
-        // clock owes it `Completed`, which a reporting call materialises.
+        // Registration is asynchronous only while there is validation work outstanding:
+        // `ValidationSpecification` names batch transform jobs SageMaker runs after this
+        // call answers, so a package that asks for one is `Pending` until the instant the
+        // clock owes it `Completed`, which a reporting call materialises. A registration
+        // with no validation to run has nothing left to finish, so it is registered
+        // `Completed` and every reader reports it ready.
+        let validation_outstanding = crate::state::model_package_validation_is_outstanding(
+            input.validation_specification.as_ref(),
+            input.skip_model_validation.as_deref(),
+        );
+        let (status, completed_at) = if validation_outstanding {
+            (
+                crate::state::MODEL_PACKAGE_STATUS_PENDING,
+                now + crate::state::MODEL_PACKAGE_COMPLETED_AFTER,
+            )
+        } else {
+            (crate::state::MODEL_PACKAGE_STATUS_COMPLETED, now)
+        };
+
         let model_approval_status = match version {
             // "This parameter is optional for versioned models": a version the request
             // left unset starts out awaiting manual approval.
@@ -488,10 +505,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 last_modified_by: None,
                 client_token: input.client_token,
                 update_client_tokens: Vec::new(),
-                status: crate::state::MODEL_PACKAGE_STATUS_PENDING.to_string(),
+                status: status.to_string(),
                 creation_time: now,
                 last_modified_time: now,
-                completed_at: now + crate::state::MODEL_PACKAGE_COMPLETED_AFTER,
+                completed_at,
             },
         );
         drop(store);

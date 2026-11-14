@@ -156,7 +156,7 @@ pub use s3_access::{
 pub mod container_image;
 pub use container_image::{
     first_image_outside_the_documented_formats, first_malformed_container_image,
-    image_names_no_registry, malformed_container_image, INVALID_IMAGE_PATH,
+    image_names_no_registry, malformed_container_image, pinned_image_digest, INVALID_IMAGE_PATH,
 };
 
 /// The cluster-policy slice of this state: HyperPod clusters and the cluster policies
@@ -902,10 +902,11 @@ pub const DEFAULT_MAX_CONCURRENT_TRANSFORMS: i32 = 1;
 pub const DEFAULT_NONE: &str = "None";
 
 /// How long after `CreateModelPackage` the clock owes the `Pending` -> `Completed`
-/// transition of `ModelPackageStatus`.
+/// transition of `ModelPackageStatus` for a registration that has validation work
+/// outstanding (see [`model_package_validation_is_outstanding`]).
 ///
-/// `CreateModelPackage` answers with an ARN while registration (and any validation the
-/// request asked for) is still outstanding, so a caller that describes the package
+/// `CreateModelPackage` answers with an ARN while the validation the request asked for
+/// is still outstanding, so a caller that describes the package
 /// straight away still observes `Pending`, and one that waits observes `Completed` —
 /// which is what lets a waiter terminate. Real SageMaker takes anywhere from seconds to
 /// minutes depending on the validation profiles; the span is compressed, never zero.
@@ -927,6 +928,33 @@ pub const MODEL_PACKAGE_COMPLETED_AFTER: Duration = Duration::from_secs(3);
 pub const MODEL_PACKAGE_STATUS_PENDING: &str = "Pending";
 /// See [`MODEL_PACKAGE_STATUS_PENDING`].
 pub const MODEL_PACKAGE_STATUS_COMPLETED: &str = "Completed";
+
+/// The `SkipModelValidation` member that skips a registration's validation entirely
+/// ("Indicates if you want to skip model validation"; the enum's members are `All` and
+/// `None`).
+pub const SKIP_MODEL_VALIDATION_ALL: &str = "All";
+
+/// Whether a model-package registration described by `validation_specification` and
+/// `skip_model_validation` leaves validation work outstanding — which is what decides
+/// whether the registration is reported as still settling.
+///
+/// `ValidationSpecification` "specifies batch transform jobs that SageMaker runs to validate
+/// your model package", so a registration that names at least one validation profile has jobs
+/// to run after the create answers, while one that names no specification (or whose profile
+/// list is empty, the shape allowing `@length 0..1`) has nothing to run and is registered
+/// complete. `SkipModelValidation` set to `All` skips that validation, so a registration
+/// asking for it has nothing outstanding either.
+#[must_use]
+pub fn model_package_validation_is_outstanding(
+    validation_specification: Option<&ModelPackageValidationSpecification>,
+    skip_model_validation: Option<&str>,
+) -> bool {
+    if skip_model_validation == Some(SKIP_MODEL_VALIDATION_ALL) {
+        return false;
+    }
+    validation_specification
+        .is_some_and(|specification| !specification.validation_profiles.is_empty())
+}
 
 /// The `DetailedModelPackageStatus` members a per-profile validation item reports while
 /// the package is `Pending` and once it is `Completed`.
@@ -3883,15 +3911,30 @@ pub fn derived_image_digest(image: &str) -> String {
     format!("sha256:{}", ::hex::encode(digest))
 }
 
+/// The digest of the image `image` names, as a reader of the resource reports it.
+///
+/// A reference in the `registry/repository[@digest]` format the image member documents
+/// already NAMES the image by its content digest, so that digest is the digest of the image
+/// the resource was registered against, carried through unchanged ([`pinned_image_digest`]).
+/// A reference in the `registry/repository[:tag]` format pins nothing, and nothing here pulls
+/// an image, so for one of those the emulator reports its own identifier for the reference
+/// ([`derived_image_digest`]).
+pub fn resolved_image_digest(image: &str) -> String {
+    pinned_image_digest(image)
+        .map(str::to_string)
+        .unwrap_or_else(|| derived_image_digest(image))
+}
+
 /// Fill in what SageMaker itself resolves for one container of an inference
-/// specification: the digest of the image the container names, and whether its model data
+/// specification: the digest of the image the container names ([`resolved_image_digest`],
+/// which leaves a digest the request itself carried alone), and whether its model data
 /// is a training checkpoint — which a request that says nothing leaves `false`.
 ///
 /// Called on the WRITE path, so the stored record is the materialised container every
 /// reader of it replays, rather than each reader defaulting again.
 fn materialise_container(container: &mut ModelPackageContainerDefinition) {
     if container.image_digest.is_none() {
-        container.image_digest = container.image.as_deref().map(derived_image_digest);
+        container.image_digest = container.image.as_deref().map(resolved_image_digest);
     }
     container.is_checkpoint = Some(container.is_checkpoint.unwrap_or(false));
 }
@@ -3929,12 +3972,13 @@ pub fn materialise_container_mode(container: &mut ContainerDefinition) {
 }
 
 /// Fill in what SageMaker itself resolves for an algorithm's training specification: the
-/// digest of the training image, and each training channel's `IsRequired` — which a
+/// digest of the training image ([`resolved_image_digest`], which leaves a digest the
+/// request itself carried alone), and each training channel's `IsRequired` — which a
 /// request that says nothing leaves `false`.
 pub fn materialise_training_specification(specification: &mut TrainingSpecification) {
     if specification.training_image_digest.is_none() {
         specification.training_image_digest =
-            Some(derived_image_digest(&specification.training_image));
+            Some(resolved_image_digest(&specification.training_image));
     }
     for channel in &mut specification.training_channels {
         channel.is_required = Some(channel.is_required.unwrap_or(false));

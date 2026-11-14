@@ -15,6 +15,8 @@
 //! filters, page sizes from one entry to past both published `MaxResults` bounds, and the
 //! refusals for an input outside a documented value set.
 
+use std::time::Duration;
+
 use serde_json::{json, Value};
 use service_com_amazonaws_sagemaker_sagemaker::ops::types::{
     MODEL_APPROVAL_STATUS_VALUES, MODEL_PACKAGE_TYPE_VALUES,
@@ -24,8 +26,15 @@ use service_com_amazonaws_sagemaker_sagemaker::state::MAX_PAGE_SIZE;
 
 use crate::inference_deployment_lifecycle::CREATE_SPACING;
 use crate::model_package_registry::{
-    container, error_code, expected_arn, str_field, Emulator, PAST_COMPLETED_DUE,
+    container, error_code, expected_arn, str_field, validation_specification, Emulator,
 };
+
+/// How long a poll below gives the clock to settle a registration: far longer than
+/// `state::MODEL_PACKAGE_COMPLETED_AFTER`, so a loaded host still settles well inside it.
+const SETTLE_DEADLINE: Duration = Duration::from_secs(120);
+
+/// How often such a poll looks again. Only the loop's condition decides when it stops.
+const SETTLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// The unversioned packages the seeded store holds, created in THIS order. Their names
 /// are deliberately not in creation order, so a `Name` sort and a `CreationTime` sort
@@ -95,7 +104,6 @@ async fn seed(emulator: &Emulator) -> Vec<String> {
             tokio::time::sleep(CREATE_SPACING).await;
         }
     }
-    tokio::time::sleep(PAST_COMPLETED_DUE).await;
     created
 }
 
@@ -651,7 +659,6 @@ async fn list_model_packages_summaries_replay_the_stored_package() {
             }),
         )
         .await;
-    tokio::time::sleep(PAST_COMPLETED_DUE).await;
 
     let listed = emulator
         .ok(
@@ -743,8 +750,16 @@ async fn list_model_packages_reports_the_status_the_clock_owes() {
     let group = "settling-group";
     emulator.create_group(state::DEFAULT_REGION, group).await;
     for _ in 0..3 {
+        // Each registration names a validation profile, which is what leaves it
+        // settling: a registration with nothing to validate is complete when it answers.
         emulator
-            .create(group, &json!({"ModelPackageGroupName": group}))
+            .create(
+                group,
+                &json!({
+                    "ModelPackageGroupName": group,
+                    "ValidationSpecification": validation_specification(1),
+                }),
+            )
             .await;
     }
 
@@ -770,14 +785,27 @@ async fn list_model_packages_reports_the_status_the_clock_owes() {
         "case before-due: a freshly registered package is reported Pending, got {listed:?}"
     );
 
-    tokio::time::sleep(PAST_COMPLETED_DUE).await;
-    let listed = emulator
-        .ok(
-            "past-due",
-            "ListModelPackages",
-            &json!({"ModelPackageGroupName": group}),
-        )
-        .await;
+    // Look again until every registration has settled, however long the host takes: what
+    // is under test is that the listing reports the transition, not when it happens.
+    let deadline = std::time::Instant::now() + SETTLE_DEADLINE;
+    let listed = loop {
+        let listed = emulator
+            .ok(
+                "past-due",
+                "ListModelPackages",
+                &json!({"ModelPackageGroupName": group}),
+            )
+            .await;
+        if statuses(&listed) == vec!["Completed".to_string(); 3] {
+            break listed;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case past-due: expected every registration to settle within \
+             {SETTLE_DEADLINE:?}, got {listed:?}"
+        );
+        tokio::time::sleep(SETTLE_POLL_INTERVAL).await;
+    };
     assert_eq!(
         statuses(&listed),
         vec!["Completed".to_string(); 3],

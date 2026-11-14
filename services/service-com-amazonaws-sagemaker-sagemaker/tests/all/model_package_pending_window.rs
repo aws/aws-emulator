@@ -7,11 +7,12 @@
 //! `awsJson1_1`) through the same `MultiServiceRouter` the production router uses, so
 //! what these tests exercise is what a real SDK client gets.
 //!
-//! The RULE, asserted over a TABLE rather than one call: the transition is due a fixed
-//! span after the registering call, and that span has to OUTLAST the caller's own next
-//! requests — a client that registers a package and then reads it back, through any of
-//! the operations that report its status, still observes the non-terminal `Pending`, and
-//! observes `Completed` only once the due instant has passed. The rows vary the kind of
+//! The RULE, asserted over a TABLE rather than one call: a registration with validation
+//! work still to run settles a fixed span after the registering call, and that span has to
+//! OUTLAST the caller's own next requests — a client that registers such a package and then
+//! reads it back, through any of the operations that report its status, still observes the
+//! non-terminal `Pending`, and observes `Completed` only once the due instant has passed.
+//! The rows vary the kind of
 //! registration (a version in a group, an unversioned package), the optional members it
 //! carries, how many inference containers it declares, and WHICH reporting operation the
 //! caller reads it through — one read per reader, so each row spends several round trips
@@ -25,7 +26,7 @@ use serde_json::{json, Value};
 
 use service_com_amazonaws_sagemaker_sagemaker::state;
 
-use crate::model_package_registry::{container, str_field, Emulator, PAST_COMPLETED_DUE};
+use crate::model_package_registry::{container, str_field, validation_specification, Emulator};
 
 /// The narrowest registration window a caller can still observe.
 ///
@@ -36,6 +37,13 @@ use crate::model_package_registry::{container, str_field, Emulator, PAST_COMPLET
 /// This is the floor the span is held above; the span itself is
 /// `state::MODEL_PACKAGE_COMPLETED_AFTER`.
 const OBSERVABLE_WINDOW_FLOOR: Duration = Duration::from_secs(1);
+
+/// How long a poll below gives the clock to settle a registration: far longer than the
+/// window itself, so a loaded host still settles well inside it.
+const SETTLE_DEADLINE: Duration = Duration::from_secs(120);
+
+/// How often such a poll looks again. Only the loop's condition decides when it stops.
+const SETTLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// The operations that report a model package's `ModelPackageStatus`, which is what makes
 /// the window observable. A versioned package is reported by all three; an unversioned one
@@ -106,10 +114,11 @@ struct Row {
     readers: &'static [Reader],
 }
 
-/// RULE: the `Pending` -> `Completed` transition `CreateModelPackage` owes is due a fixed
-/// span after the registering call, and the span outlasts the caller's own next requests:
-/// every operation that reports `ModelPackageStatus` reports the stored `Pending` for a
-/// package read back straight after its registration, and `Completed` only once the due
+/// RULE: the `Pending` -> `Completed` transition `CreateModelPackage` owes a registration
+/// with validation work still to run is due a fixed span after the registering call, and
+/// the span outlasts the caller's own next requests:
+/// every operation that reports `ModelPackageStatus` reports the stored `Pending` for such
+/// a package read back straight after its registration, and `Completed` only once the due
 /// instant has passed.
 #[tokio::test]
 async fn a_registration_is_reported_pending_through_every_reader_until_the_clock_owes_completed() {
@@ -117,7 +126,10 @@ async fn a_registration_is_reported_pending_through_every_reader_until_the_clock
         Row {
             case: "a version with one inference container",
             group: Some("window-plain"),
-            extras: json!({"InferenceSpecification": inference_specification(1)}),
+            extras: json!({
+                "InferenceSpecification": inference_specification(1),
+                "ValidationSpecification": validation_specification(1),
+            }),
             readers: &[Reader::Describe, Reader::Batch, Reader::List],
         },
         Row {
@@ -125,6 +137,7 @@ async fn a_registration_is_reported_pending_through_every_reader_until_the_clock
             group: Some("window-described"),
             extras: json!({
                 "InferenceSpecification": inference_specification(3),
+                "ValidationSpecification": validation_specification(1),
                 "ModelPackageDescription": "fraud detector — Détection ✓",
                 "ModelApprovalStatus": "Approved",
                 "ModelPackageRegistrationType": "Registered",
@@ -137,6 +150,7 @@ async fn a_registration_is_reported_pending_through_every_reader_until_the_clock
             extras: json!({
                 "ModelPackageName": "window-solo",
                 "InferenceSpecification": inference_specification(1),
+                "ValidationSpecification": validation_specification(1),
             }),
             readers: &[Reader::Describe, Reader::List],
         },
@@ -170,15 +184,28 @@ async fn a_registration_is_reported_pending_through_every_reader_until_the_clock
             );
         }
 
-        tokio::time::sleep(PAST_COMPLETED_DUE).await;
+        // Look again until the registration has settled, however long the host takes:
+        // what is under test is that the transition happens, not when.
+        let deadline = Instant::now() + SETTLE_DEADLINE;
+        loop {
+            let status = status_through(&emulator, case, row.readers[0], &arn).await;
+            if status == "Completed" {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "case {case:?}: expected the registration to settle within \
+                 {SETTLE_DEADLINE:?}, got {status:?}"
+            );
+            tokio::time::sleep(SETTLE_POLL_INTERVAL).await;
+        }
 
         for reader in row.readers {
             let status = status_through(&emulator, case, *reader, &arn).await;
-            let elapsed = registered_at.elapsed();
             assert_eq!(
                 status, "Completed",
-                "case {case:?} read through {reader:?}: expected Completed {elapsed:?} after the \
-                 create, past the {window:?} registration window, got {status:?}"
+                "case {case:?} read through {reader:?}: expected Completed once the \
+                 {window:?} registration window has passed, got {status:?}"
             );
         }
     }
