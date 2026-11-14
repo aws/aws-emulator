@@ -107,20 +107,13 @@ fn pointer(path: &str) -> String {
 /// that violation class rather than restated here, so a requirement this service states
 /// and one the framework states are the same sentence — and a class added upstream is
 /// worded rather than unhandled.
+///
+/// A `@pattern` requirement quotes the expression AS THE MODEL STATES IT, anchoring
+/// included: the pattern is part of the refusal's fixed text, and a client that re-validates
+/// locally with the expression it read out of the message has to be handed the one the model
+/// declares rather than a rewriting of it.
 fn requirement(kind: &ViolationKind) -> String {
-    match kind {
-        // The requirement a clause states is the expression a value must satisfy, not
-        // the anchoring the model writes around it to make the match total, so a client
-        // that re-validates locally with the expression it read out of the message uses
-        // the one the validation framework publishes. Both halves are the shared rules
-        // rather than copies of them: the anchoring is dropped by the one function that
-        // owns that reading, and the sentence around the expression is the framework's
-        // own.
-        ViolationKind::Pattern(pattern) => ::service_common::validation_message::requirement(
-            ViolationKind::Pattern(::service_common::validation::unanchored(pattern)),
-        ),
-        other => ::service_common::validation_message::requirement(other.clone()),
-    }
+    ::service_common::validation_message::requirement(kind.clone())
 }
 
 /// The clause one violation states: the member's pointer and the requirement it failed.

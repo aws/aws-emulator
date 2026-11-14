@@ -179,8 +179,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        _ctx: &smithy_server_runtime::OperationContext<'_>,
+        ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // IAM decides ahead of the service, so this is asked before anything about the
+        // request is read: a caller whose policies do not allow this action learns nothing
+        // about the key it addressed.
+        crate::service::authorization::authorize(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &input.key_identifier,
+        )
+        .map_err(denied)?;
         let MacAttributes::Algorithm(algorithm) = &input.generation_attributes else {
             return Err(crate::scaffolded::Scaffolded::not_implemented(
                 "GenerateMac with EmvMac or DUKPT generation attributes",
@@ -226,6 +236,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             mac,
         })
     }
+}
+
+/// A request the calling principal's IAM policies do not allow: the modelled
+/// `AccessDeniedException` (HTTP 403), worded by [`crate::service::authorization`].
+fn denied(exception: AccessDeniedException) -> GenerateMacError {
+    GenerateMacErrorModeled::AccessDeniedException(exception).into()
 }
 
 /// A request this operation cannot serve as asked: the modelled `ValidationException`.

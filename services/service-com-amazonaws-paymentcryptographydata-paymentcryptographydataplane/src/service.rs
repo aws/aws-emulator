@@ -43,12 +43,20 @@
 //! table, and the default error renderers — lives in the generated `ServiceDefinition`
 //! and is reached, not edited, through the one `definition` method below. You
 //! do not write it; editing the entry would let this file drift from the model.
+//!
+//! Beside those seams, [`authorization`] holds the IAM decision every implemented
+//! operation takes before it reads anything: whether the calling principal's own
+//! identity-based policies allow `payment-cryptography:<OperationName>` on the key the
+//! request addressed. It is asked from the handlers rather than from a seam here, because
+//! the resource the decision is taken against is the `KeyIdentifier` the request names,
+//! which only the deserialized input carries.
 
 use smithy_server_runtime::{
     http, ErasedOperation, Refusal, Refused, Service,
 };
 use std::sync::Arc;
 
+pub mod authorization;
 pub mod validation;
 
 /// The `com-amazonaws-paymentcryptographydata-paymentcryptographydataplane` emulated service: the generated [`ServiceDefinition`] plus

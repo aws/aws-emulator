@@ -6,15 +6,15 @@
 //! CONTROL plane mounted on the same engine so the keys these cases use are the ones
 //! `CreateKey` minted and stored.
 //!
-//! Four rules are under test, each over a table that spans the class it generalises over
+//! Five rules are under test, each over a table that spans the class it generalises over
 //! rather than the one request a recording happened to carry:
 //!
 //! 1. A request that breaks a rule the MODEL declares is the modelled
 //!    `ValidationException` (HTTP 400): one envelope sentence counting the violations,
 //!    one clause per violation naming the member as a JSON pointer spelled the way the
-//!    model spells it and the requirement that member failed, and the same clause in a
-//!    `ValidationException$fieldList` entry per member. No value the caller submitted is
-//!    echoed anywhere in it.
+//!    model spells it and the requirement that member failed — a `@pattern` quoted as the
+//!    model states it — and the same clause in a `ValidationException$fieldList` entry per
+//!    member. No value the caller submitted is echoed anywhere in it.
 //! 2. A request the codec cannot READ into the modelled input shape broke no modelled
 //!    rule: it is a serialization failure, announced as such in `x-amzn-errortype`, which
 //!    is where a restJson1 client reads the error class it raises.
@@ -23,6 +23,9 @@
 //! 4. A MAC operation judges the key's own algorithm against the requested MAC algorithm
 //!    BEFORE it judges that key's modes of use, and words that refusal with the requested
 //!    algorithm and the key's algorithm and nothing of the key's identity.
+//! 5. A symmetric encrypt or decrypt whose data is not a whole number of cipher blocks is
+//!    refused with the one sentence that names the required length in the unit the caller
+//!    sent its value in — hex characters — and nothing of the key.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -239,6 +242,12 @@ const USAGE_CARD_VERIFICATION: &str = "TR31_C0_CARD_VERIFICATION_KEY";
 fn encoded(identifier: &str) -> String {
     identifier.replace(':', "%3A").replace('/', "%2F")
 }
+
+/// The `@pattern` every hex data member of this model declares — `MessageDataType`,
+/// `PlainTextType`, `CipherTextType` and the rest
+/// (`smithy_query(query="shape",shape="PlainTextType")`) — as the model states it. A
+/// constraint refusal quotes it verbatim, anchoring included.
+const HEX_PATTERN: &str = "^(?:[0-9a-fA-F][0-9a-fA-F])+$";
 
 /// A message of `bytes` bytes, as the uppercase hex every data member's pattern admits.
 fn hex_data(bytes: usize) -> String {
@@ -491,8 +500,8 @@ async fn a_value_outside_a_modelled_constraint_names_the_member_and_the_requirem
             "17123456789".to_string(),
         ),
         (
-            // `MessageDataType`'s `@pattern`, quoted as the expression a value must
-            // satisfy rather than with the anchoring the model wraps it in.
+            // `MessageDataType`'s `@pattern`, quoted exactly as the model states it —
+            // anchoring included.
             "GenerateMac with MessageData that is not hexadecimal",
             "/mac/generate",
             json!({
@@ -501,8 +510,7 @@ async fn a_value_outside_a_modelled_constraint_names_the_member_and_the_requirem
                 "GenerationAttributes": {"Algorithm": "ISO9797_ALGORITHM1"},
             }),
             "/MessageData",
-            "Member must satisfy regular expression pattern: (?:[0-9a-fA-F][0-9a-fA-F])+"
-                .to_string(),
+            format!("Member must satisfy regular expression pattern: {HEX_PATTERN}"),
             "zzzz".to_string(),
         ),
         (
@@ -514,8 +522,7 @@ async fn a_value_outside_a_modelled_constraint_names_the_member_and_the_requirem
                 "EncryptionAttributes": {"Symmetric": {"Mode": "CBC"}},
             }),
             "/PlainText",
-            "Member must satisfy regular expression pattern: (?:[0-9a-fA-F][0-9a-fA-F])+"
-                .to_string(),
+            format!("Member must satisfy regular expression pattern: {HEX_PATTERN}"),
             "zzzz".to_string(),
         ),
     ];
@@ -560,9 +567,7 @@ async fn several_violated_members_are_counted_once_and_listed_each() {
         &[
             (
                 "/MessageData",
-                "Member must satisfy regular expression pattern: \
-                 (?:[0-9a-fA-F][0-9a-fA-F])+"
-                    .to_string(),
+                format!("Member must satisfy regular expression pattern: {HEX_PATTERN}"),
             ),
             (
                 "/MacLength",
@@ -999,3 +1004,106 @@ async fn a_mac_key_the_algorithm_admits_is_still_judged_by_its_modes_of_use() {
         );
     }
 }
+
+#[tokio::test]
+async fn data_that_is_not_a_whole_number_of_blocks_names_the_length_in_hex_characters() {
+    let router = emulator();
+    // One row per symmetric `KeyAlgorithm` this service encrypts under, with the cipher's
+    // block length in BYTES: Triple DES chains an 8-byte block, AES a 16-byte one, so the
+    // required length a refusal states is 16 and 32 HEX CHARACTERS respectively.
+    let rows: &[(&str, usize)] = &[
+        ("TDES_2KEY", 8),
+        ("TDES_3KEY", 8),
+        ("AES_128", 16),
+        ("AES_192", 16),
+        ("AES_256", 16),
+    ];
+    for (key_algorithm, block_bytes) in rows.iter().copied() {
+        let key = create_key(
+            &router,
+            key_algorithm,
+            USAGE_DATA_ENCRYPTION,
+            json!({"Encrypt": true, "Decrypt": true}),
+        )
+        .await;
+        let expected = format!(
+            "Invalid data provided. Please provide data of length multiple of {}.",
+            block_bytes * 2
+        );
+        // Lengths in bytes that are not a whole number of blocks: one byte, one short of a
+        // block, one over it, and one over two blocks. Each is a whole number of bytes, so
+        // the value itself satisfies every modelled constraint and the refusal under test
+        // is the only one it can meet.
+        for bytes in [1, block_bytes - 1, block_bytes + 1, block_bytes * 2 + 1] {
+            for (operation, path, member, attributes) in [
+                ("EncryptData", "encrypt", "PlainText", "EncryptionAttributes"),
+                ("DecryptData", "decrypt", "CipherText", "DecryptionAttributes"),
+            ] {
+                let case = format!("{operation} {key_algorithm} with {bytes} bytes");
+                let mut body = serde_json::Map::new();
+                body.insert(member.to_string(), json!(hex_data(bytes)));
+                body.insert(
+                    attributes.to_string(),
+                    json!({"Symmetric": {"Mode": "ECB"}}),
+                );
+                let answer = data_json(
+                    &router,
+                    &format!("/keys/{}/{path}", encoded(&key.arn)),
+                    &Value::Object(body),
+                )
+                .await;
+                assert_eq!(
+                    (answer.status, answer.code()),
+                    (400, "ValidationException"),
+                    "case {case}: expected a 400 ValidationException, got {answer:?}"
+                );
+                assert_eq!(
+                    answer.message(),
+                    expected,
+                    "case {case}: expected the block-length refusal, got {answer:?}"
+                );
+                assert!(
+                    !answer.message().contains(key_algorithm)
+                        && !answer.message().contains("bytes"),
+                    "case {case}: the refusal names neither the key's algorithm nor a \
+                     length in bytes, got {answer:?}"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn data_that_is_a_whole_number_of_blocks_is_served() {
+    let router = emulator();
+    // The complement of the rule above, at each published block length: a value whose
+    // length IS a multiple of the cipher's block is encrypted rather than refused, so the
+    // guard refuses exactly what it is for.
+    let rows: &[(&str, usize)] = &[("TDES_2KEY", 8), ("AES_128", 16), ("AES_256", 16)];
+    for (key_algorithm, block_bytes) in rows.iter().copied() {
+        let key = create_key(
+            &router,
+            key_algorithm,
+            USAGE_DATA_ENCRYPTION,
+            json!({"Encrypt": true, "Decrypt": true}),
+        )
+        .await;
+        for blocks in [1, 2, 3] {
+            let case = format!("{key_algorithm} with {blocks} block(s)");
+            let answer = data_json(
+                &router,
+                &format!("/keys/{}/encrypt", encoded(&key.arn)),
+                &json!({
+                    "PlainText": hex_data(block_bytes * blocks),
+                    "EncryptionAttributes": {"Symmetric": {"Mode": "ECB"}},
+                }),
+            )
+            .await;
+            assert_eq!(
+                answer.status, 200,
+                "case {case}: a whole number of blocks must be served, got {answer:?}"
+            );
+        }
+    }
+}
+

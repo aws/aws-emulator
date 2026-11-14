@@ -184,8 +184,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        _ctx: &smithy_server_runtime::OperationContext<'_>,
+        ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // IAM decides ahead of the service, so this is asked before anything about the
+        // request is read: a caller whose policies do not allow this action learns nothing
+        // about the key it addressed.
+        crate::service::authorization::authorize(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &input.key_identifier,
+        )
+        .map_err(denied)?;
         let (expiry_date, service_code) = match &input.generation_attributes {
             CardGenerationAttributes::CardVerificationValue1(attributes) => (
                 attributes.card_expiry_date.clone(),
@@ -251,6 +261,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             validation_data,
         })
     }
+}
+
+/// A request the calling principal's IAM policies do not allow: the modelled
+/// `AccessDeniedException` (HTTP 403), worded by [`crate::service::authorization`].
+fn denied(exception: AccessDeniedException) -> GenerateCardValidationDataError {
+    GenerateCardValidationDataErrorModeled::AccessDeniedException(exception).into()
 }
 
 /// A request this operation cannot serve as asked: the modelled `ValidationException`.

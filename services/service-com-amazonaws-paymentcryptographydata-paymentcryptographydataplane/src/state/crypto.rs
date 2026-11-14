@@ -38,6 +38,14 @@ use des::{Des, TdesEde2, TdesEde3};
 use hmac::Hmac;
 use sha2::{Sha224, Sha256, Sha384, Sha512};
 
+/// How many characters of a hex-coded wire value one byte of data occupies.
+///
+/// Every data member of this service is hex (`@pattern ^(?:[0-9a-fA-F][0-9a-fA-F])+$` on
+/// `PlainTextType`, `CipherTextType`, `MessageDataType` and the rest), so a length a
+/// caller counts in its own value is twice the length counted in bytes — which is the
+/// unit a refusal of such a value states.
+const HEX_CHARACTERS_PER_BYTE: usize = 2;
+
 /// The modelled `KeyAlgorithm` values this service can run a symmetric computation
 /// under, each with the number of key bytes it takes.
 ///
@@ -275,10 +283,17 @@ impl SymmetricRequest<'_> {
         // multiple of 8 bytes. For AES or AES DUKPT, the plaintext data length must
         // be a multiple of 16 bytes" (`EncryptData`'s own documentation), which is
         // the cipher's block length either way.
+        //
+        // The refusal states that requirement as a number of HEX CHARACTERS, because the
+        // value the caller sent is hex (`PlainTextType` and `CipherTextType` are
+        // `@pattern ^(?:[0-9a-fA-F][0-9a-fA-F])+$`): one byte of data is two characters of
+        // it, so the length a caller counts is twice the cipher's block length. The
+        // sentence is otherwise entirely fixed — it names neither the key nor its
+        // algorithm — so both `EncryptData` and `DecryptData` answer the one sentence.
         if self.data.is_empty() || !self.data.len().is_multiple_of(block_len) {
             return Err(format!(
-                "The data length must be a multiple of {block_len} bytes for KeyAlgorithm {}.",
-                self.key_algorithm
+                "Invalid data provided. Please provide data of length multiple of {}.",
+                block_len * HEX_CHARACTERS_PER_BYTE
             ));
         }
         let iv = match self.initialization_vector {
