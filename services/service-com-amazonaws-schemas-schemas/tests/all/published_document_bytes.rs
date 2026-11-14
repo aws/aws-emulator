@@ -478,7 +478,9 @@ async fn a_cloud_trail_document_describes_the_published_record() {
                     "invokedByDelegate",
                     "onBehalfOf",
                     "principalId",
-                    "sessionContext"
+                    "sessionContext",
+                    "type",
+                    "userName"
                 ],
                 "case {name:?}: the record's identity, got {identity_members:?}"
             );

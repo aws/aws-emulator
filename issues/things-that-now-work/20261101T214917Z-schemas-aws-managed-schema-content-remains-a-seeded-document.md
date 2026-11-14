@@ -57,3 +57,37 @@ No per-run value is involved: the seeded document reads no clock and carries no 
 4. Cause 2 (step `task#3`): `GET /v1/registries/name/aws.events/schemas/name/aws.events@AWSAPICallviaCloudTrail/export?type=JSONSchemaDraft4`. Observe 200 whose `Content` is the draft-04 translation of the document from step 3, and compare it with the recorded export byte for byte — it diverges in the same place, under `definitions.AWSAPICallviaCloudTrail.properties.userIdentity.properties.sessionContext`.
 5. After correcting the seeded CloudTrail components template, re-replay BOTH steps: `task#3` converts the document `task#2` serves, so the seed correction has to be confirmed on the describe step and on the export step separately — the two previous fixes for these steps each left one of them diverging.
 6. Both reproduce on every boot; nothing here reads the clock or mints an id.
+
+## Resolution
+
+The rule both read paths owe: a published catalogue document declares its event's record
+WHOLE — every member the record states for a structure it carries is declared on that
+structure, so a client that generates a binding or feeds a validator from the document
+knows every member of a delivered event. For the CloudTrail-delivered family that record
+is the CloudTrail record, whose identity element states, beside the credential and session
+facts, WHAT KIND of principal made the call and the friendly NAME of a principal that has
+one of its own (CloudTrail User Guide, "CloudTrail userIdentity element"); the CloudTrail
+records this emulator itself writes carry both (`services/common`'s record writer).
+
+The seeded catalogue data — `CLOUD_TRAIL_COMPONENTS` in
+`services/service-com-amazonaws-schemas-schemas/src/state.rs` — ended its `userIdentity`
+member list at `sessionContext`, so `type` and `userName` were declared nowhere, on either
+read path: `DescribeSchema` serves that one template for the whole family of every source
+and `ExportSchema` converts the document it serves. Both members are now declared, in the
+order the document writes its members. No handler and no serializer changed.
+`tests/all/published_record_identity.rs` holds both read paths to the whole identity
+element over a table (every member of the CloudTrail-delivered family × four publishing
+sources), and `tests/all/published_document_bytes.rs` carries the identity's member set
+beside the record's.
+
+CAVEAT: the replay key for each cause compares the WHOLE recorded `Content` string, and
+what the document SAYS is recorded behaviour only — the model states nothing about a
+document's text. Every replay detail filed for these two steps (this report and the three
+before it) clips the recorded document at or before
+`userIdentity.properties.sessionContext`, and the replay tool now withholds recorded
+values altogether, so the one region in which the residual difference can lie has never
+been shown. Beyond declaring the record as its documentation states it — which is what
+this change does — the remaining bytes are reachable only by fitting that one recorded
+document, which is not a rule and not a fix. Both steps still report
+`$.Content: value_mismatch` after this change.
+

@@ -2324,6 +2324,13 @@ pub const CLOUD_TRAIL_EVENT_FAMILY: &[(&str, &str)] = &[
 ///   the entity that issued the session, the source identity it carries and its
 ///   web-identity federation data (CloudTrail User Guide, "CloudTrail userIdentity
 ///   element");
+/// * the identity that made the call is declared WHOLE: every member a record's
+///   `userIdentity` carries is declared, the kind of principal it is (`type`) and the
+///   friendly name of an identity that has one (`userName`) included — those two are
+///   the first facts a record states about a caller (CloudTrail User Guide, "CloudTrail
+///   userIdentity element"), and a record this emulator itself writes carries them
+///   (`services/common`'s CloudTrail record writer), so a binding or validator built
+///   from this document has to know them;
 /// * `eventTime` carries both the `date-time` format and the `yyyy-MM-dd'T'HH:mm:ss'Z'`
 ///   pattern the record writes it in, which is what a generated binding parses it with.
 ///
@@ -2430,7 +2437,9 @@ const CLOUD_TRAIL_COMPONENTS: &str = r##"{
                 }
               }
             }
-          }
+          },
+          "type": {"type": "string"},
+          "userName": {"type": "string"}
         }
       }
     }
