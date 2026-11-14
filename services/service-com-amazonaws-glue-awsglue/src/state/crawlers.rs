@@ -73,6 +73,11 @@ pub struct CrawlerEntry {
     /// `None` once the crawl has settled, which is also every crawler that has none in
     /// flight.
     pub crawl_settles_at: Option<SystemTime>,
+    /// The Region the last crawl of this crawler was STARTED in, or `None` for a crawler
+    /// nothing has crawled. Glue is a regional service and a crawl is set going through one
+    /// endpoint, so this is the Region whose default event bus the crawl's state change is
+    /// published onto ([`CrawlerStateChange::region`]).
+    pub crawl_region: Option<String>,
     /// What the crawl in flight did, to be published when the clock settles it
     /// ([`Self::settle_crawl_if_due`]). The work itself was done where the crawl was
     /// STARTED, so this is what it answered — which is why the status, the error message
@@ -121,6 +126,7 @@ impl CrawlerEntry {
             // has finished, and there is no duration to report.
             crawl_started_at: None,
             crawl_settles_at: None,
+            crawl_region: None,
             pending_crawl: None,
             last_crawl: None,
             crawl_durations: Vec::new(),
@@ -265,12 +271,16 @@ impl CrawlerEntry {
     /// PREVIOUS crawl's `LastCrawl` and table counts in place, which is what a read of a
     /// running crawler reports.
     ///
+    /// `region` is the Region the start was served in, which is the Region whose default event
+    /// bus this crawl's state change is published onto when it comes to rest.
+    ///
     /// The crawler's definition is untouched: a crawl writes no member of it, so `Version`
     /// does not move. `LastUpdated` does, because the crawler record did change.
-    pub fn start_crawl(&mut self, record: CrawlRecord, now: SystemTime) {
+    pub fn start_crawl(&mut self, record: CrawlRecord, now: SystemTime, region: &str) {
         self.state = CRAWLER_STATE_RUNNING.to_string();
         self.crawl_started_at = Some(now);
         self.crawl_settles_at = Some(now.checked_add(CRAWL_SETTLES_AFTER).unwrap_or(now));
+        self.crawl_region = Some(region.to_string());
         self.pending_crawl = Some(record);
         self.last_updated = now;
     }
@@ -282,20 +292,21 @@ impl CrawlerEntry {
     /// it — so two reads of a settled crawl report the same crawl. Finishing it is what
     /// publishes the crawl's `LastCrawl` and its table counts, and what puts the crawler back
     /// in [`CRAWLER_STATE_READY`]: the state with no run in it.
-    pub fn settle_crawl_if_due(&mut self, now: SystemTime) {
-        let Some(due) = self.crawl_settles_at else {
-            return;
-        };
+    ///
+    /// Answers the state change the crawl that came to rest PUBLISHES, so the caller can queue
+    /// it ([`ComAmazonawsGlueAwsglueState::settle_due_crawls`]): this is the one place a crawl
+    /// moves from in-flight to finished, which is what makes the event exactly once. A call
+    /// that settled nothing answers `None`.
+    pub fn settle_crawl_if_due(&mut self, now: SystemTime) -> Option<CrawlerStateChange> {
+        let due = self.crawl_settles_at?;
         if due > now {
-            return;
+            return None;
         }
         self.crawl_settles_at = None;
         self.crawl_started_at = None;
         self.state = CRAWLER_STATE_READY.to_string();
         self.last_updated = due;
-        let Some(mut record) = self.pending_crawl.take() else {
-            return;
-        };
+        let mut record = self.pending_crawl.take()?;
         record.finished_at = Some(due);
         if let Some(duration) = record.duration() {
             self.crawl_durations.push(duration);
@@ -304,7 +315,9 @@ impl CrawlerEntry {
                 self.crawl_durations.drain(..overflow);
             }
         }
+        let change = self.crawl_state_change(&record, due);
         self.last_crawl = Some(record);
+        change
     }
 
     /// How long the crawl in flight has been running at `now`, in milliseconds: "if the

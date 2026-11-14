@@ -258,9 +258,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The crawler leaves the state with no run in it, and the clock owes it its way
         // back; what the crawl did is published when that falls due.
         if let Some(crawler) = store.crawlers.get_mut(&input.name) {
-            crawler.start_crawl(record, started_at);
+            crawler.start_crawl(record, started_at, &region);
         }
         drop(store);
+
+        // The finish the clock now owes this crawler is handed to the store's clock pump,
+        // which waits for the due instant, materialises it and publishes the crawler state
+        // change onto the account's default event bus — so a client that reacts to the crawl
+        // through EventBridge alone, making no further Glue call, still observes it.
+        crate::state::drive_clock(ctx.callback(), &state);
 
         ::tracing::info!(
             operation = "StartCrawler",

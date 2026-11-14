@@ -39,6 +39,11 @@ pub const LAST_CRAWL_STATUS_SUCCEEDED: &str = "SUCCEEDED";
 /// `LastCrawlInfo$ErrorMessage`. See [`LAST_CRAWL_STATUS_SUCCEEDED`].
 pub const LAST_CRAWL_STATUS_FAILED: &str = "FAILED";
 
+/// The third modelled `LastCrawlStatus` (`SUCCEEDED | CANCELLED | FAILED`): the status of a
+/// crawl that was cut short rather than finishing or failing. Named here so the vocabulary a
+/// crawl's status is published in ([`crawl_event_state`]) is the modelled one in full.
+pub const LAST_CRAWL_STATUS_CANCELLED: &str = "CANCELLED";
+
 /// `SchemaChangePolicy$UpdateBehavior` a crawl follows when the crawler states none: of the
 /// modelled `UpdateBehavior` (`LOG | UPDATE_IN_DATABASE`), the one that writes the changed
 /// schema into the catalog, which is the behaviour Glue applies to a crawler that states no
@@ -511,9 +516,18 @@ impl ComAmazonawsGlueAwsglueState {
     /// called, so materialising it on read reports the state the clock had already reached —
     /// the crawler back in [`CRAWLER_STATE_READY`], carrying the finished crawl's
     /// `LastCrawl` and its table counts.
+    ///
+    /// A crawl that comes to rest here is also the EVENT this service publishes for it
+    /// ([`crawler_events`]): the settle is the one place a crawl's record moves from in-flight
+    /// to finished, so queueing the change here is what makes it published exactly once —
+    /// whichever door materialised the finish, the clock pump or a reader.
     pub fn settle_due_crawls(&mut self, now: SystemTime) {
+        let mut changes: Vec<CrawlerStateChange> = Vec::new();
         for crawler in self.crawlers.values_mut() {
-            crawler.settle_crawl_if_due(now);
+            changes.extend(crawler.settle_crawl_if_due(now));
+        }
+        for change in changes {
+            self.queue_crawler_state_change(change);
         }
     }
 

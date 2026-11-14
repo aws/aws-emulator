@@ -117,6 +117,8 @@ mod crawler_runs;
 mod crawler_schedule_suspension;
 #[path = "all/crawler_schedules.rs"]
 mod crawler_schedules;
+#[path = "all/crawler_state_change_events.rs"]
+mod crawler_state_change_events;
 #[path = "all/crawler_updates.rs"]
 mod crawler_updates;
 #[path = "all/crawlers.rs"]

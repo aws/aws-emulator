@@ -262,11 +262,13 @@ pub mod lake_formation;
 mod blueprints;
 mod catalog;
 mod classifiers;
+mod clock_pump;
 mod column_statistics;
 mod column_statistics_source;
 mod column_statistics_values;
 mod crawl;
 mod crawl_source;
+mod crawler_events;
 mod crawler_roles_and_connections;
 mod crawlers;
 mod data_assets;
@@ -295,11 +297,13 @@ mod workflows;
 pub use blueprints::*;
 pub use catalog::*;
 pub use classifiers::*;
+pub use clock_pump::*;
 pub use column_statistics::*;
 pub use column_statistics_source::*;
 pub use column_statistics_values::*;
 pub use crawl::*;
 pub use crawl_source::*;
+pub use crawler_events::*;
 pub use crawler_roles_and_connections::*;
 pub use crawlers::*;
 pub use data_assets::*;
@@ -1321,15 +1325,23 @@ pub struct ComAmazonawsGlueAwsglueState {
     /// ([`MAX_PENDING_EVENTS`], oldest dropped first) because every run that comes to rest
     /// appends to it, and each entry names the Region whose bus it belongs on.
     pub pending_job_run_events: VecDeque<JobRunStateChange>,
-    /// Whether a job-run CLOCK PUMP is running against this store
-    /// ([`drive_job_run_clock`]), so at most one does.
-    pub job_run_clock_pump_running: bool,
+    /// The crawler state changes this store has observed and not published yet, oldest first
+    /// ([`crawler_events`]).
+    ///
+    /// A crawl that has COME TO REST is an event this service publishes onto the account's
+    /// default EventBridge bus, and the queue is what carries it from the critical section that
+    /// observed it to the publication, which is made with no guard held. It is bounded
+    /// ([`MAX_PENDING_CRAWLER_EVENTS`], oldest dropped first) because every crawl that finishes
+    /// appends to it, and each entry names the Region whose bus it belongs on.
+    pub pending_crawler_events: VecDeque<CrawlerStateChange>,
+    /// Whether this store's CLOCK PUMP is running ([`drive_clock`]), so at most one does.
+    pub clock_pump_running: bool,
     /// Which claim on that pump is the live one: a pump releases its own claim and never a
     /// later pump's.
-    pub job_run_clock_pump_generation: u64,
+    pub clock_pump_generation: u64,
     /// The running pump's task handle, kept so the pump it replaces is aborted rather than
     /// merely forgotten.
-    pub job_run_clock_pump: Option<::tokio::task::JoinHandle<()>>,
+    pub clock_pump: Option<::tokio::task::JoinHandle<()>>,
 }
 
 impl ComAmazonawsGlueAwsglueState {

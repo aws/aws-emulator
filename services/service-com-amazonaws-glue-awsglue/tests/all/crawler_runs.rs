@@ -44,10 +44,11 @@ use smithy_server_runtime::MultiServiceRouter;
 use crate::wire::{call, error_code, error_message, ok, ACCOUNT_ID};
 
 /// The role every crawler here is created with.
-const ROLE: &str = "arn:aws:iam::000000000000:role/service-role/AWSGlueServiceRole-crawl";
+pub(crate) const ROLE: &str =
+    "arn:aws:iam::000000000000:role/service-role/AWSGlueServiceRole-crawl";
 
 /// The database every crawl here writes its output into.
-const DATABASE: &str = "crawled_db";
+pub(crate) const DATABASE: &str = "crawled_db";
 
 /// An emulator with Glue AND Amazon S3 mounted on one shared engine, plus the engine itself
 /// so a test can move the due instant a crawl's finish falls at.
@@ -76,7 +77,7 @@ fn s3(router: &MultiServiceRouter) -> aws_sdk_s3::Client {
 }
 
 /// Create `bucket` and put every `(key, body)` into it.
-async fn stage(router: &MultiServiceRouter, bucket: &str, objects: &[(&str, &str)]) {
+pub(crate) async fn stage(router: &MultiServiceRouter, bucket: &str, objects: &[(&str, &str)]) {
     let client = s3(router);
     client
         .create_bucket()
@@ -105,7 +106,7 @@ async fn put(router: &MultiServiceRouter, bucket: &str, objects: &[(&str, &str)]
 }
 
 /// Create the database every crawl here writes into, tolerating one a previous row made.
-async fn given_database(router: &MultiServiceRouter, name: &str) {
+pub(crate) async fn given_database(router: &MultiServiceRouter, name: &str) {
     let (status, parsed) = call(
         router,
         "CreateDatabase",
@@ -122,11 +123,22 @@ async fn given_database(router: &MultiServiceRouter, name: &str) {
 /// Create one crawler over the wire: the required members, the target `target` describes, and
 /// whatever `extra` adds.
 async fn given_crawler(router: &MultiServiceRouter, name: &str, target: Value, extra: Value) {
+    given_crawler_over(router, name, json!([target]), extra).await;
+}
+
+/// The same, for a crawler carrying SEVERAL Amazon S3 targets: `targets` is the whole
+/// `S3Targets` list.
+pub(crate) async fn given_crawler_over(
+    router: &MultiServiceRouter,
+    name: &str,
+    targets: Value,
+    extra: Value,
+) {
     let mut body = json!({
         "Name": name,
         "Role": ROLE,
         "DatabaseName": DATABASE,
-        "Targets": { "S3Targets": [target] },
+        "Targets": { "S3Targets": targets },
     });
     if let Some(members) = extra.as_object() {
         for (member, value) in members {
@@ -138,7 +150,7 @@ async fn given_crawler(router: &MultiServiceRouter, name: &str, target: Value, e
 
 /// Move the due instant of every crawl in flight to `at`, so a test can hold the transient
 /// window open or make the owed finish due without sleeping.
-fn set_due_instant(engine: &Arc<engine::InMemoryEngine>, at: SystemTime) {
+pub(crate) fn set_due_instant(engine: &Arc<engine::InMemoryEngine>, at: SystemTime) {
     let state = engine.state::<ComAmazonawsGlueAwsglueState>();
     let mut store = state.lock();
     for crawler in store.crawlers.values_mut() {
@@ -149,12 +161,12 @@ fn set_due_instant(engine: &Arc<engine::InMemoryEngine>, at: SystemTime) {
 }
 
 /// An instant already past, so the next call finishes what the clock owed.
-fn already_past() -> SystemTime {
+pub(crate) fn already_past() -> SystemTime {
     SystemTime::now() - Duration::from_secs(1)
 }
 
 /// An instant far enough out that no owed finish falls due during a test.
-fn far_future() -> SystemTime {
+pub(crate) fn far_future() -> SystemTime {
     SystemTime::now() + Duration::from_secs(3600)
 }
 

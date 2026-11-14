@@ -146,7 +146,7 @@ async fn sqs(router: &MultiServiceRouter, operation: &str, body: Value) -> Value
 
 /// An SQS queue called `name`, created through SQS itself; answers its url and the ARN a rule
 /// names it by.
-async fn given_queue(router: &MultiServiceRouter, name: &str) -> (String, String) {
+pub(crate) async fn given_queue(router: &MultiServiceRouter, name: &str) -> (String, String) {
     let created = sqs(router, "CreateQueue", json!({ "QueueName": name })).await;
     let url = created["QueueUrl"]
         .as_str()
@@ -168,7 +168,7 @@ async fn given_queue(router: &MultiServiceRouter, name: &str) -> (String, String
 /// Grant `events.amazonaws.com` the `sqs:SendMessage` a rule's target needs on the queue at
 /// `url` — EventBridge makes that call as its own service principal and relies on the
 /// queue's resource-based policy, so a queue that has granted it nothing receives nothing.
-async fn grant_delivery(router: &MultiServiceRouter, url: &str, queue_arn: &str) {
+pub(crate) async fn grant_delivery(router: &MultiServiceRouter, url: &str, queue_arn: &str) {
     let policy = json!({
         "Version": "2012-10-17",
         "Statement": [{
@@ -188,7 +188,12 @@ async fn grant_delivery(router: &MultiServiceRouter, url: &str, queue_arn: &str)
 }
 
 /// Put a rule matching `pattern` on the default bus and point it at `targets`.
-async fn given_rule(router: &MultiServiceRouter, name: &str, pattern: Value, targets: &[String]) {
+pub(crate) async fn given_rule(
+    router: &MultiServiceRouter,
+    name: &str,
+    pattern: Value,
+    targets: &[String],
+) {
     events(
         router,
         "PutRule",
@@ -213,7 +218,7 @@ async fn given_rule(router: &MultiServiceRouter, name: &str, pattern: Value, tar
 }
 
 /// Every message the queue at `url` holds, drained.
-async fn drain(router: &MultiServiceRouter, url: &str) -> Vec<Value> {
+pub(crate) async fn drain(router: &MultiServiceRouter, url: &str) -> Vec<Value> {
     let received = sqs(
         router,
         "ReceiveMessage",
@@ -243,7 +248,7 @@ const DELIVERY_DEADLINE: Duration = Duration::from_secs(30);
 const DELIVERY_POLL: Duration = Duration::from_millis(20);
 
 /// The ONE event delivered to the queue at `url`, waited for until it is there.
-async fn delivered_event(router: &MultiServiceRouter, case: &str, url: &str) -> Value {
+pub(crate) async fn delivered_event(router: &MultiServiceRouter, case: &str, url: &str) -> Value {
     let deadline = Instant::now() + DELIVERY_DEADLINE;
     loop {
         let messages = drain(router, url).await;
