@@ -23,13 +23,19 @@ use std::time::{Duration, SystemTime};
 mod broker_configuration;
 /// The form a configuration revision's document is stored in.
 mod configuration_document;
+/// Whether a broker takes part in cross-Region data replication, and in which role.
+mod broker_data_replication;
 /// Where a client reaches a running broker: its console and its wire endpoints.
 mod broker_endpoints;
 /// The values the service decides for a broker rather than echoing from its create.
 mod broker_published_values;
+/// Restarting a broker, and the user changes a restart applies.
+mod broker_restart;
 
 pub use broker_configuration::*;
+pub use broker_data_replication::*;
 pub use broker_endpoints::*;
+pub use broker_restart::*;
 pub use configuration_document::*;
 pub use broker_published_values::*;
 
@@ -240,6 +246,14 @@ pub struct BrokerUser {
 /// From `ChangeType`'s modelled values (`CREATE`, `UPDATE`, `DELETE`).
 pub const CHANGE_TYPE_DELETE: &str = "DELETE";
 
+/// The `ChangeType` of a user the broker is to ADD once the change is applied.
+/// From the same modelled values.
+pub const CHANGE_TYPE_CREATE: &str = "CREATE";
+
+/// The `ChangeType` of a user whose members the broker is to change once the change
+/// is applied. From the same modelled values.
+pub const CHANGE_TYPE_UPDATE: &str = "UPDATE";
+
 /// The kind of logs `LogsSummary$auditLogGroup` names the log group of — the last
 /// segment of the group's name ([`Broker::log_group`]).
 pub const LOG_KIND_AUDIT: &str = "audit";
@@ -340,6 +354,13 @@ pub struct Broker {
     /// the configuration the create minted for it
     /// ([`ComAmazonawsMqMqState::mint_broker_default_configuration`]).
     pub configuration: BrokerConfigurationRef,
+    /// The instant the clock owes this broker its return to `RUNNING` from a restart,
+    /// or `None` when no restart is in flight ([`Broker::restart`]).
+    pub restart_completes_at: Option<SystemTime>,
+    /// The role a PROMOTION gave this broker, when one has. Unset otherwise: the role a
+    /// broker of a replication pair holds before any promotion is derived from the pair
+    /// itself ([`Broker::data_replication_role`]).
+    pub data_replication_role: Option<String>,
     /// The host this emulator answered the create on, which is the address this
     /// broker is published at ([`Broker::allocated_instances`]). Recorded at create
     /// time so every read of the broker publishes the one address, whichever host a
@@ -353,6 +374,8 @@ impl Broker {
     pub fn broker_state(&self, now: SystemTime) -> &'static str {
         if now < self.available_at {
             BROKER_STATE_CREATION_IN_PROGRESS
+        } else if self.restarting(now) {
+            BROKER_STATE_REBOOT_IN_PROGRESS
         } else {
             BROKER_STATE_RUNNING
         }
@@ -615,6 +638,29 @@ pub struct ComAmazonawsMqMqState {
 }
 
 impl ComAmazonawsMqMqState {
+    /// The broker `broker_id` names, with everything the clock already owes it applied
+    /// ([`Broker::apply_due_changes`]) — `None` when no broker carries that id.
+    ///
+    /// Every operation that resolves a broker goes through this, so a change a restart
+    /// was to apply is in force on the first read taken after that restart came due,
+    /// whichever operation takes it. The only write it makes is the one the clock had
+    /// already made due: the same answer a caller would have been given had nobody
+    /// called at all.
+    pub fn settled_broker(&mut self, broker_id: &str, now: SystemTime) -> Option<&Broker> {
+        self.settled_broker_mut(broker_id, now).map(|broker| &*broker)
+    }
+
+    /// [`Self::settled_broker`], for an operation that then changes the broker.
+    pub fn settled_broker_mut(
+        &mut self,
+        broker_id: &str,
+        now: SystemTime,
+    ) -> Option<&mut Broker> {
+        let broker = self.brokers.get_mut(broker_id)?;
+        broker.apply_due_changes(now);
+        Some(broker)
+    }
+
     /// The broker carrying `name`. Broker names are unique per account, so this
     /// scan over the one map is the name index — a second map could desync from it.
     pub fn broker_by_name(&self, name: &str) -> Option<&Broker> {
@@ -1114,32 +1160,53 @@ pub fn validate_username(attribute: &str, username: &str) -> Result<(), Invalid>
 /// A user's `Password` constraint, as the model documents it: "must be at least
 /// 12 characters long, must contain at least 4 unique characters, and must not
 /// contain commas, colons, or equal signs (,:=)."
+///
+/// A refusal carries Amazon MQ's own sentence for the rule that was broken
+/// ([`PASSWORD_LENGTH_MESSAGE`], [`PASSWORD_UNIQUE_CHARACTERS_MESSAGE`],
+/// [`PASSWORD_FORBIDDEN_CHARACTERS_MESSAGE`]) rather than a description of the value
+/// sent: the sentence states the RULE, so nothing about the rejected secret — not its
+/// length, its unique-character count or the character at fault — leaves this function.
 pub fn validate_password(attribute: &str, password: &str) -> Result<(), Invalid> {
-    let length = password.chars().count();
-    if length < 12 {
-        return Err(Invalid::new(
-            attribute,
-            format!("{attribute} must be at least 12 characters long, got {length} characters"),
-        ));
+    if password.chars().count() < MIN_PASSWORD_LENGTH {
+        return Err(Invalid::new(attribute, PASSWORD_LENGTH_MESSAGE));
     }
     let unique: std::collections::BTreeSet<char> = password.chars().collect();
-    if unique.len() < 4 {
-        return Err(Invalid::new(
-            attribute,
-            format!(
-                "{attribute} must contain at least 4 unique characters, got {}",
-                unique.len()
-            ),
-        ));
+    if unique.len() < MIN_UNIQUE_PASSWORD_CHARACTERS {
+        return Err(Invalid::new(attribute, PASSWORD_UNIQUE_CHARACTERS_MESSAGE));
     }
-    if let Some(bad) = password.chars().find(|c| matches!(c, ',' | ':' | '=')) {
-        return Err(Invalid::new(
-            attribute,
-            format!("{attribute} must not contain commas, colons or equal signs (,:=), got {bad:?}"),
-        ));
+    if password.chars().any(|c| matches!(c, ',' | ':' | '=')) {
+        return Err(Invalid::new(attribute, PASSWORD_FORBIDDEN_CHARACTERS_MESSAGE));
     }
     Ok(())
 }
+
+/// How many characters long a password must be, from `User$Password`'s own
+/// documentation ("must be at least 12 characters long") — the bound
+/// [`PASSWORD_LENGTH_MESSAGE`] states.
+pub const MIN_PASSWORD_LENGTH: usize = 12;
+
+/// How many distinct characters a password must contain, from `User$Password`'s own
+/// documentation ("must contain at least 4 unique characters") — the bound
+/// [`PASSWORD_UNIQUE_CHARACTERS_MESSAGE`] states.
+pub const MIN_UNIQUE_PASSWORD_CHARACTERS: usize = 4;
+
+/// How Amazon MQ states the unique-character rule when it refuses a password. The text
+/// is FIXED: the bracketed number is the service's rule, and nothing in the sentence
+/// comes from the request — a refused password's own properties (its length, how many
+/// unique characters it had) are never quoted back.
+pub const PASSWORD_UNIQUE_CHARACTERS_MESSAGE: &str =
+    "Password must contain at least [4] unique characters.";
+
+/// How Amazon MQ states the length rule, in the same fixed, bracketed-limit form as
+/// [`PASSWORD_UNIQUE_CHARACTERS_MESSAGE`], for the other half of the same documented
+/// rule set ("must be at least 12 characters long").
+pub const PASSWORD_LENGTH_MESSAGE: &str = "Password must be at least [12] characters long.";
+
+/// How Amazon MQ states the forbidden-character rule, the third rule of that set
+/// ("must not contain commas, colons, or equal signs (,:=)"). Fixed text: the character
+/// the password carried is not quoted back.
+pub const PASSWORD_FORBIDDEN_CHARACTERS_MESSAGE: &str =
+    "Password must not contain commas, colons, or equal signs (,:=).";
 
 /// A user's `Groups` constraint, as the model documents it: "The list of groups
 /// (20 maximum) to which the ActiveMQ user belongs. This value can contain only

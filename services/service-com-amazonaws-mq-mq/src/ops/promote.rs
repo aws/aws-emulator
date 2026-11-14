@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op Promote
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `Promote`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`Promote::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Implemented: promotes the broker the request names to the PRIMARY role of its data
+//! replication pair (`crate::state::broker_data_replication`) and answers its
+//! `BrokerId`. Only a broker configured for cross-Region data replication is in a pair,
+//! so a promotion of any other broker is the modelled `BadRequestException` and leaves
+//! the broker exactly as it was; a broker id that resolves to nothing is the modelled
+//! `NotFoundException`.
 //!
 //! ## Shape of an operation
 //!
@@ -71,6 +69,7 @@
 
 #[allow(unused_imports)]
 use super::types::*;
+use crate::state;
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -143,18 +142,48 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `Promote` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(PromoteErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("Promote"))
+        let _ = ctx;
+        let Some(state) = state::service_state(&*self.engine) else {
+            return Err(PromoteErrorModeled::InternalServerErrorException(
+                InternalServerErrorException {
+                    message: Some("the service state store is unavailable".to_string()),
+                    ..Default::default()
+                },
+            )
+            .into());
+        };
+
+        let now = ::std::time::SystemTime::now();
+        let mut store = state.lock();
+        let Some(broker) = store.settled_broker_mut(&input.broker_id, now) else {
+            return Err(PromoteErrorModeled::NotFoundException(NotFoundException {
+                error_attribute: Some("broker-id".to_string()),
+                message: Some(state::broker_not_found_message(&input.broker_id)),
+                resource_share_errors: None,
+            })
+            .into());
+        };
+
+        // There is no role to take on a broker that is in no replication pair, so the
+        // promotion is refused and nothing about the broker changes — not its state, not
+        // its role. No `errorAttribute`: the refusal is about the broker, not about a
+        // member of the request.
+        if !broker.replicates_cross_region() {
+            return Err(PromoteErrorModeled::BadRequestException(BadRequestException {
+                error_attribute: None,
+                message: Some(state::NOT_CROSS_REGION_REPLICATED_MESSAGE.to_string()),
+                resource_share_errors: None,
+            })
+            .into());
+        }
+
+        // "When a replica broker is promoted to primary, this role is interchanged":
+        // whichever mode was requested — a planned SWITCHOVER or a FAILOVER — the
+        // broker that was promoted holds the primary role afterwards, which is what
+        // `DescribeBroker`'s `dataReplicationMetadata` then reports.
+        broker.promote_to_primary();
+        Ok(PromoteOutput {
+            broker_id: Some(broker.broker_id.clone()),
+        })
     }
 }

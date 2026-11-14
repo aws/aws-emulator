@@ -39,7 +39,7 @@ use service_com_amazonaws_mq_mq::state::{
 use crate::broker_lifecycle::{create_body, string_at, Mq};
 
 /// `POST /v1/brokers/{BrokerId}/users/{Username}` — `CreateUser`.
-async fn create_user(mq: &Mq, broker_id: &str, username: &str, body: Value) -> (u16, Value) {
+pub(crate) async fn create_user(mq: &Mq, broker_id: &str, username: &str, body: Value) -> (u16, Value) {
     mq.call(
         "POST",
         &format!("/v1/brokers/{broker_id}/users/{username}"),
@@ -50,7 +50,7 @@ async fn create_user(mq: &Mq, broker_id: &str, username: &str, body: Value) -> (
 
 /// `GET /v1/brokers/{BrokerId}/users/{Username}` — `DescribeUser`, the reader this
 /// suite proves a delete through.
-async fn describe_user(mq: &Mq, broker_id: &str, username: &str) -> (u16, Value) {
+pub(crate) async fn describe_user(mq: &Mq, broker_id: &str, username: &str) -> (u16, Value) {
     mq.call(
         "GET",
         &format!("/v1/brokers/{broker_id}/users/{username}"),
@@ -75,7 +75,7 @@ async fn delete_user(mq: &Mq, broker_id: &str, username: &str) -> (u16, String, 
 /// pending change is not a deletion is reported with whatever change it does carry —
 /// which is why the assertions below test for a pending DELETE rather than for the
 /// absence of any pending change at all.
-async fn broker_users(mq: &Mq, broker_id: &str) -> Vec<(String, Option<String>)> {
+pub(crate) async fn broker_users(mq: &Mq, broker_id: &str) -> Vec<(String, Option<String>)> {
     let (status, described) = mq.describe_broker(broker_id).await;
     assert_eq!(
         status, 200,

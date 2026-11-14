@@ -163,8 +163,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
-        let store = state.lock();
-        let Some(broker) = store.brokers.get(&input.broker_id) else {
+        let mut store = state.lock();
+        let now = ::std::time::SystemTime::now();
+        let Some(broker) = store.settled_broker(&input.broker_id, now) else {
             return Err(DescribeUserErrorModeled::NotFoundException(NotFoundException {
                 error_attribute: Some("broker-id".to_string()),
                 message: Some(state::broker_not_found_message(&input.broker_id)),

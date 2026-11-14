@@ -171,8 +171,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 state::validate_groups("groups", input.groups.as_deref().unwrap_or_default())
             });
 
+        let now = ::std::time::SystemTime::now();
         let mut store = state.lock();
-        let Some(broker) = store.brokers.get_mut(&input.broker_id) else {
+        let Some(broker) = store.settled_broker_mut(&input.broker_id, now) else {
             return Err(CreateUserErrorModeled::NotFoundException(NotFoundException {
                 error_attribute: Some("broker-id".to_string()),
                 message: Some(state::broker_not_found_message(&input.broker_id)),
@@ -217,7 +218,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 console_access: input.console_access.unwrap_or(false),
                 groups: input.groups.clone().unwrap_or_default(),
                 replication_user: input.replication_user.unwrap_or(false),
-                pending_change: None,
+                // A user change does not take effect on the broker until the broker is
+                // rebooted, so what this call stages is a pending CREATE; the reboot is
+                // what applies it (`state::broker_restart`).
+                pending_change: Some(state::CHANGE_TYPE_CREATE.to_string()),
             },
         );
 

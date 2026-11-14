@@ -125,7 +125,7 @@ const ROWS: &[Row] = &[
                 "Users": [{ "Username": "orders-app", "Password": "short" }]
             })
         },
-        expected_reason: "password must be at least 12 characters long",
+        expected_reason: "Password must be at least [12] characters long.",
     },
     Row {
         case: "a username carrying a character the documented set excludes",

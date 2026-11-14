@@ -19,6 +19,8 @@ mod broker_instance_options;
 mod broker_lifecycle;
 #[path = "all/broker_read_wire_form.rs"]
 mod broker_read_wire_form;
+#[path = "all/broker_restart.rs"]
+mod broker_restart;
 #[path = "all/configuration_deleted_id.rs"]
 mod configuration_deleted_id;
 #[path = "all/configuration_lifecycle.rs"]

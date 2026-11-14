@@ -224,9 +224,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
-        let store = state.lock();
+        let mut store = state.lock();
         let now = ::std::time::SystemTime::now();
-        let Some(broker) = store.brokers.get(&input.broker_id) else {
+        let Some(broker) = store.settled_broker(&input.broker_id, now) else {
             return Err(DescribeBrokerErrorModeled::NotFoundException(NotFoundException {
                 error_attribute: Some("broker-id".to_string()),
                 message: Some(state::broker_not_found_message(&input.broker_id)),
@@ -256,6 +256,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             security_groups: state::optional_list(&broker.security_groups),
             subnet_ids: state::optional_list(&broker.subnet_ids),
             data_replication_mode: broker.data_replication_mode.clone(),
+            // "Only returned if dataReplicationMode or pendingDataReplicationMode is
+            // set to CRDR": the role this broker holds in its pair, with the broker it
+            // replicates with when its record names one.
+            data_replication_metadata: broker.data_replication_role().map(|role| {
+                DataReplicationMetadataOutput {
+                    data_replication_role: role.to_string(),
+                    data_replication_counterpart: broker.data_replication_counterpart().map(
+                        |(broker_id, region)| DataReplicationCounterpart { broker_id, region },
+                    ),
+                }
+            }),
             created: Some(broker.created_timestamp()),
             tags: broker.optional_tags(),
             // The instance allocated to the broker once it is running: where a client

@@ -257,7 +257,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .map_err(bad_request)?;
             // `DataReplicationPrimaryBrokerArn` "Must be set when
             // dataReplicationMode is set to CRDR".
-            if mode == "CRDR"
+            if mode == state::DATA_REPLICATION_MODE_CRDR
                 && input
                     .data_replication_primary_broker_arn
                     .as_deref()
@@ -659,6 +659,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .unwrap_or_else(|| state::assigned_maintenance_window(&broker_id)),
             ldap_server_metadata,
             configuration,
+            // Nothing has restarted the broker yet.
+            restart_completes_at: None,
+            // No promotion has given this broker a role: a broker of a replication pair
+            // starts as the REPLICA of the primary its create named, which
+            // `Broker::data_replication_role` derives, and only a promotion records one.
+            data_replication_role: None,
             published_host,
         };
         store.brokers.insert(broker_id.clone(), broker);
