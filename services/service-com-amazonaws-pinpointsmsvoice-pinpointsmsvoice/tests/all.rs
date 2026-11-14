@@ -19,6 +19,8 @@ mod configuration_set_names;
 mod event_destination_updates;
 #[path = "all/legacy_surface_authorization.rs"]
 mod legacy_surface_authorization;
+#[path = "all/legacy_surface_concurrent_denial.rs"]
+mod legacy_surface_concurrent_denial;
 #[path = "all/parameter_refusal_wording.rs"]
 mod parameter_refusal_wording;
 #[path = "all/state_roundtrip.rs"]
