@@ -35,6 +35,8 @@ mod application_updates;
 mod applications;
 #[path = "all/authorized_principal_type.rs"]
 mod authorized_principal_type;
+#[path = "all/bulk_loaded_snapshot_to_s3.rs"]
+mod bulk_loaded_snapshot_to_s3;
 #[path = "all/catalog_publication_order.rs"]
 mod catalog_publication_order;
 #[path = "all/change_progress.rs"]

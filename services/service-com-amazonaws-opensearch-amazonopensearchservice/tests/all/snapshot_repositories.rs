@@ -57,7 +57,7 @@ fn snapshot_role_arn() -> String {
 }
 
 /// Record the bucket a repository keeps its blobs in, as `s3:CreateBucket` records one.
-fn given_bucket(emulator: &Emulator, bucket: &str) {
+pub(crate) fn given_bucket(emulator: &Emulator, bucket: &str) {
     let store = s3::service_state(&**emulator.engine()).expect("the S3 store");
     let created = store.lock().create_bucket(bucket, REGION);
     assert!(
@@ -67,7 +67,7 @@ fn given_bucket(emulator: &Emulator, bucket: &str) {
 }
 
 /// Every key the bucket holds, in the order `s3:ListObjectsV2` lists them.
-fn keys(emulator: &Emulator, bucket: &str) -> Vec<String> {
+pub(crate) fn keys(emulator: &Emulator, bucket: &str) -> Vec<String> {
     let store = s3::service_state(&**emulator.engine()).expect("the S3 store");
     let guard = store.lock();
     let held = guard
@@ -77,7 +77,7 @@ fn keys(emulator: &Emulator, bucket: &str) -> Vec<String> {
 }
 
 /// The bytes the bucket holds at `key`, or `None` when it holds nothing there.
-fn body_at(emulator: &Emulator, bucket: &str, key: &str) -> Option<Vec<u8>> {
+pub(crate) fn body_at(emulator: &Emulator, bucket: &str, key: &str) -> Option<Vec<u8>> {
     let store = s3::service_state(&**emulator.engine()).expect("the S3 store");
     let guard = store.lock();
     Some(guard.bucket(bucket)?.object(key)?.body.clone())
@@ -86,7 +86,7 @@ fn body_at(emulator: &Emulator, bucket: &str, key: &str) -> Option<Vec<u8>> {
 /// The `s3` repository definition a case registers: the bucket, the base path it declares (a
 /// definition that declares none omits the setting entirely) and the role the domain copies
 /// with.
-fn s3_definition(bucket: &str, base_path: Option<&str>) -> Value {
+pub(crate) fn s3_definition(bucket: &str, base_path: Option<&str>) -> Value {
     let mut settings = json!({ "bucket": bucket, "role_arn": snapshot_role_arn() });
     if let Some(base_path) = base_path {
         settings["base_path"] = json!(base_path);

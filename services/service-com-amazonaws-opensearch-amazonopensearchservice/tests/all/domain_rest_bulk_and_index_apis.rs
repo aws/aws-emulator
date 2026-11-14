@@ -57,7 +57,7 @@ async fn created_cluster(emulator: &Emulator, name: &str, nodes: i64) -> String 
 }
 
 /// `PUT /{index}` with the schema `body`, asserting the create was acknowledged.
-async fn created_index(emulator: &Emulator, host: &str, index: &str, body: Value) {
+pub(crate) async fn created_index(emulator: &Emulator, host: &str, index: &str, body: Value) {
     let answer = rest(
         emulator,
         DEFAULT_ACCESS_KEY_ID,
@@ -98,7 +98,7 @@ async fn rest_text(emulator: &Emulator, host: &str, method: &str, path: &str) ->
 
 /// One bulk request: the lines joined by the newline the stream is delimited by, and
 /// terminated by one as the API documents.
-async fn bulk(emulator: &Emulator, host: &str, path: &str, lines: &[Value]) -> Answer {
+pub(crate) async fn bulk(emulator: &Emulator, host: &str, path: &str, lines: &[Value]) -> Answer {
     let mut payload = String::new();
     for line in lines {
         payload.push_str(&line.to_string());
