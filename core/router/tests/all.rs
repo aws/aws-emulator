@@ -1897,6 +1897,8 @@ mod cloudformation_provisions_cloudfront_resources;
 // crate's test target can drive it.
 #[path = "all/lambda_signed_write_to_an_aoss_collection_endpoint.rs"]
 mod lambda_signed_write_to_an_aoss_collection_endpoint;
+// (The Amazon Cognito authorizer suite is declared ONCE, in the head region above: a module
+// may be declared only once, and two branches landing at once appended it here as well.)
 // Declared ONCE, in the head region above beside the other API Gateway suites: it was
 // appended here as well while two branches were landing at once, which declared it a second
 // time and compiled neither.
@@ -1937,6 +1939,13 @@ mod cloudformation_metric_stream_estate_is_drainable;
 // cluster and then read the alarm's state.
 #[path = "all/redshift_health_alarms_evaluate.rs"]
 mod redshift_health_alarms_evaluate;
+// are declared in the head region above: a module may be declared only once.)
+// stack-deployed metric-stream pipeline exports before and after an update rewrites its filter
+// spans CloudFormation, IAM, CloudWatch, Firehose and Amazon S3 at once, so no single service
+// crate's test target can deploy the pipeline and then read the objects it delivered.
+#[path = "all/cloudformation_metric_stream_filter_update.rs"]
+mod cloudformation_metric_stream_filter_update;
+// (`zz_probe` is declared ONCE, further up this tail: a module may be declared only once.)
 // (`cloudwatch_alarm_ssm_ops_item_action` is declared once, in the head region above: a
 // module may be declared only once.)
 // (`zz_probe` is declared once, further up this tail: a module may be declared only once.)

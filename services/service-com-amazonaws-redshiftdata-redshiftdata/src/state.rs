@@ -70,6 +70,38 @@ pub mod sql_parameters;
 /// engine what it has to run for it.
 pub mod redshift_sql;
 
+/// The statements of the data warehouse's OWN vocabulary — `COPY`, `UNLOAD`,
+/// `CREATE EXTERNAL SCHEMA`, `SET`, `RESET`, `SHOW` — as the dialect's token
+/// stream carries them.
+pub mod warehouse_statements;
+
+/// What a statement reaches beyond its own database: Amazon S3, IAM and the
+/// Glue Data Catalog on this engine, and the facts about the warehouse it runs
+/// on.
+pub mod data_plane;
+
+/// Reading and writing the Amazon S3 objects a load, an export or a Spectrum
+/// table names, and whether the role the statement names may.
+pub mod object_store;
+
+/// `COPY`: the rows a load reads out of Amazon S3, and the rows it rejects.
+pub mod copy_load;
+
+/// `UNLOAD`: the objects an export writes to Amazon S3, and its manifest.
+pub mod unload_export;
+
+/// Spectrum: an external schema bound to a Glue database, and the rows its
+/// tables serve out of Amazon S3.
+pub mod external_schemas;
+
+/// The session parameters `SET`, `RESET` and `SHOW` act on, and the WLM queue a
+/// query's label puts it in.
+pub mod session_settings;
+
+/// The cluster's own system tables: its query log, the workload manager's view
+/// of it, and the rows its loads rejected.
+pub mod system_tables;
+
 /// The Amazon Redshift SQL functions the engine does not carry, implemented and
 /// registered on every connection.
 pub mod functions;
@@ -1239,6 +1271,17 @@ pub struct Database {
     /// [`redshift_sql::engine_table_name`]), so which schemas exist decides
     /// which tables a qualified name reaches.
     schemas: redshift_sql::SchemaSet,
+    /// The EXTERNAL schemas it holds: the ones bound to a database of the Glue
+    /// Data Catalog, whose tables are read out of Amazon S3 rather than held
+    /// here ([`external_schemas`]).
+    external: external_schemas::ExternalSchemas,
+    /// What this database has run and what its loads rejected — the record its
+    /// own system tables report ([`system_tables`]).
+    system: system_tables::SystemLog,
+    /// The session parameters each CONNECTION to this database holds, by that
+    /// connection's key: `SET` on one connection changes nothing on another,
+    /// which is what makes a parameter a session's own.
+    settings: HashMap<String, session_settings::SessionSettings>,
 }
 
 impl Database {
@@ -1321,7 +1364,26 @@ impl Database {
             // schema named PUBLIC": a database holds it from the moment it
             // exists, and a table nothing qualifies is a table of it.
             schemas: [DEFAULT_SCHEMA.to_string()].into_iter().collect(),
+            external: external_schemas::ExternalSchemas::default(),
+            system: system_tables::SystemLog::default(),
+            settings: HashMap::new(),
         })
+    }
+
+    /// The session parameters the connection `key` holds, which `SET` on that
+    /// connection changes and `SHOW` on it reports.
+    ///
+    /// Bounded by the sessions this service retains, as every other map it
+    /// grows on request is: a connection whose entry had to make room for
+    /// another one reads the parameters' defaults again, which is what a fresh
+    /// connection reads.
+    fn session(&mut self, key: &str) -> &mut session_settings::SessionSettings {
+        if !self.settings.contains_key(key) && self.settings.len() >= MAX_RETAINED_SESSIONS {
+            if let Some(evicted) = self.settings.keys().next().cloned() {
+                self.settings.remove(&evicted);
+            }
+        }
+        self.settings.entry(key.to_string()).or_default()
     }
 }
 
@@ -1575,6 +1637,11 @@ enum ExecutionFailure {
     /// that is not, or one that still holds objects. The message is the one the
     /// data warehouse states for that refusal.
     Catalogue(String),
+    /// The data warehouse itself refused the statement, or the service whose
+    /// resources it names answered it: a load whose rows could not be loaded, an
+    /// Amazon S3 call that was not permitted, a parameter the server has no
+    /// notion of. The message is the one the warehouse reports for it.
+    Warehouse(String),
 }
 
 impl From<rusqlite::Error> for ExecutionFailure {
@@ -1588,7 +1655,9 @@ impl ExecutionFailure {
     fn message(&self) -> String {
         match self {
             Self::Engine(error) => scrub_paths(&error.to_string()),
-            Self::Bound(message) | Self::Catalogue(message) => message.clone(),
+            Self::Bound(message) | Self::Catalogue(message) | Self::Warehouse(message) => {
+                message.clone()
+            }
         }
     }
 }
@@ -1633,6 +1702,7 @@ pub fn run_on(
     timeout: Duration,
     bound: &ExecutionBound,
     scope: &ConnectionScope,
+    plane: &data_plane::DataPlane,
 ) -> Execution {
     let mut database = handle
         .lock()
@@ -1646,9 +1716,10 @@ pub fn run_on(
         bound,
         scope,
         held: &mut held,
+        plane,
     };
     let mut execution = run_sql(&mut database, sql, parameters, Binding::Every, &mut run);
-    close_connection(&database, scope, std::slice::from_mut(&mut execution));
+    close_connection(&mut database, scope, std::slice::from_mut(&mut execution));
     execution
 }
 
@@ -1665,6 +1736,11 @@ pub fn run_on(
 /// `timeout` bounds the WHOLE batch rather than each statement: each statement
 /// is given what is left of it, so a batch of forty statements cannot outlast
 /// the request that is waiting for it.
+// Eight arguments, because a batch runs under everything a single statement runs
+// under plus the mode its statements share: each one is a separate decision of
+// the submission (its connection, its bounds, its data plane), and grouping them
+// into a struct here would only move the same list one level out.
+#[allow(clippy::too_many_arguments)]
 pub fn run_batch_on(
     handle: &DatabaseHandle,
     sqls: &[String],
@@ -1673,6 +1749,7 @@ pub fn run_batch_on(
     timeout: Duration,
     bound: &ExecutionBound,
     scope: &ConnectionScope,
+    plane: &data_plane::DataPlane,
 ) -> Vec<Execution> {
     let mut database = handle
         .lock()
@@ -1710,6 +1787,7 @@ pub fn run_batch_on(
         bound,
         scope,
         held: &mut held,
+        plane,
     };
     for sql in sqls {
         run.timeout = deadline.saturating_duration_since(Instant::now());
@@ -1750,7 +1828,7 @@ pub fn run_batch_on(
     while executions.len() < sqls.len() {
         executions.push(Execution::never_ran());
     }
-    close_connection(&database, scope, &mut executions);
+    close_connection(&mut database, scope, &mut executions);
     executions
 }
 
@@ -1769,6 +1847,9 @@ struct RunContext<'a> {
     /// The temporary relations that connection holds, which a statement that
     /// creates one adds to.
     held: &'a mut BTreeSet<String>,
+    /// What the statements may reach beyond this database, and the facts about
+    /// the warehouse they run on.
+    plane: &'a data_plane::DataPlane,
 }
 
 /// Run `sql` on `database` under the wall-clock and step bounds, and report what
@@ -1851,6 +1932,7 @@ fn run_sql(
             parameters,
             binding,
             &mut *run.budget,
+            run.plane,
             &mut effects,
         );
         if produced.is_err() {
@@ -1957,20 +2039,101 @@ impl RunEffects<'_> {
 
 /// Run ONE statement of a submission: read it as Redshift SQL and do what that
 /// reads as — run it on the engine, change the database's own catalogue of
-/// schemas, take a lock, create a temporary relation of its connection, or
-/// record what it asks of the warehouse's catalogue of databases in `effects`
-/// for the state store to carry out.
+/// schemas, take a lock, create a temporary relation of its connection, load or
+/// export Amazon S3 objects, set a session parameter, or record what it asks of
+/// the warehouse's catalogue of databases in `effects` for the state store to
+/// carry out.
+///
+/// Whatever it does, the statement is RECORDED in the database's query log
+/// afterwards ([`system_tables`]), with the label its connection carries and the
+/// workload-management queue that label put it in: a cluster logs what it ran,
+/// and a client reads that log with SQL.
 fn run_statement(
     database: &mut Database,
     sql: &str,
     parameters: &[SqlParameter],
     binding: Binding,
     budget: &mut Retention,
+    plane: &data_plane::DataPlane,
     effects: &mut RunEffects<'_>,
+) -> Result<Produced, ExecutionFailure> {
+    // The ids and the queue are the submission's, decided before the statement
+    // runs: a `COPY` records a rejected row against the id of the query that
+    // rejected it, and the queue a query is assigned to is decided when it is
+    // admitted and not from what it turned out to do.
+    let (query, xid) = database.system.next_ids();
+    let queued = SystemTime::now();
+    let (label, assignment) = assigned_queue(database, plane, effects.scope.key());
+    let produced = carry_out(
+        database, sql, parameters, binding, budget, plane, effects, query,
+    );
+    let finished = SystemTime::now();
+    database.system.record_query(system_tables::QueryEntry {
+        query,
+        xid,
+        pid: plane.facts.pid,
+        database: plane.facts.database.clone(),
+        user: plane.facts.user.clone(),
+        label,
+        text: sql.trim().to_string(),
+        started: queued,
+        ended: finished,
+        // "aborted: 1 if the query was stopped by the system or cancelled by
+        // the user", which is what a statement that did not run to its end is.
+        aborted: i64::from(produced.is_err()),
+        service_class: assignment.service_class,
+        queue: assignment.name.clone(),
+        slot_count: assignment.slot_count,
+        // The statements of one database run one at a time here, so a statement
+        // waits for its turn outside the engine: what it spent in its queue is
+        // not this execution's to claim, and what it spent executing is the
+        // whole of this run.
+        queue_micros: 0,
+        exec_micros: system_tables::elapsed_micros(queued, finished),
+    });
+    produced
+}
+
+/// The label one statement carries and the WLM queue that label assigns it to,
+/// read off the parameters in force on its connection.
+///
+/// A READ of those parameters: a connection that has set none is read as holding
+/// none, rather than having an entry written for it by the statement that looked.
+fn assigned_queue(
+    database: &Database,
+    plane: &data_plane::DataPlane,
+    connection: &str,
+) -> (String, session_settings::QueueAssignment) {
+    let applied = &plane.facts.settings;
+    let unset = session_settings::SessionSettings::default();
+    let session = database.settings.get(connection).unwrap_or(&unset);
+    let label = session_settings::in_force(
+        session_settings::QUERY_GROUP_PARAMETER,
+        session,
+        applied,
+    );
+    let slots = session_settings::query_slot_count(session, applied);
+    let assignment = session_settings::assign_queue(applied, Some(&label), slots);
+    (label, assignment)
+}
+
+/// Do what one translated statement asks for, and report what the engine — or
+/// the service whose resources the statement names — answered.
+#[allow(clippy::too_many_arguments)]
+fn carry_out(
+    database: &mut Database,
+    sql: &str,
+    parameters: &[SqlParameter],
+    binding: Binding,
+    budget: &mut Retention,
+    plane: &data_plane::DataPlane,
+    effects: &mut RunEffects<'_>,
+    query: i64,
 ) -> Result<Produced, ExecutionFailure> {
     let translated = redshift_sql::translate(sql, &database.schemas, &effects.temp());
     match translated {
         redshift_sql::Translated::Run(text) => {
+            prepare_references(database, plane, sql)?;
             execute_once(&database.connection, &text, parameters, binding, budget)
         }
         // A temporary relation belongs to the connection that created it, so it
@@ -1978,6 +2141,7 @@ fn run_statement(
         // connection resolves the name, and a statement on any other connection
         // does not reach the relation at all.
         redshift_sql::Translated::RunCreatingTemp { sql: text, relation } => {
+            prepare_references(database, plane, sql)?;
             let produced = execute_once(&database.connection, &text, parameters, binding, budget)?;
             effects.created_temp(relation);
             Ok(produced)
@@ -2042,7 +2206,239 @@ fn run_statement(
             }
             Ok(Produced::Affected(0))
         }
+        redshift_sql::Translated::Warehouse(statement) => warehouse_statement(
+            database,
+            &statement,
+            budget,
+            plane,
+            effects.scope.key(),
+            query,
+        ),
     }
+}
+
+/// Carry out one statement of the warehouse's own vocabulary.
+fn warehouse_statement(
+    database: &mut Database,
+    statement: &warehouse_statements::WarehouseStatement,
+    budget: &mut Retention,
+    plane: &data_plane::DataPlane,
+    connection: &str,
+    query: i64,
+) -> Result<Produced, ExecutionFailure> {
+    use warehouse_statements::WarehouseStatement;
+    match statement {
+        WarehouseStatement::Copy(copy) => copy_into(database, copy, plane, query),
+        WarehouseStatement::Unload(unload) => unload_from(database, unload, plane),
+        WarehouseStatement::CreateExternalSchema(external) => {
+            create_external_schema(database, external, plane)
+        }
+        WarehouseStatement::CreateExternalTable(external) => {
+            external_schemas::create_table(&database.external, plane, external)
+                .map_err(ExecutionFailure::Warehouse)?;
+            Ok(Produced::Affected(0))
+        }
+        WarehouseStatement::Set { .. }
+        | WarehouseStatement::Reset { .. }
+        | WarehouseStatement::Show { .. } => {
+            let applied = plane.facts.settings.clone();
+            // A `SHOW` REPORTS what is in force and changes nothing, so it reads
+            // the connection's parameters rather than having an entry written
+            // for a connection that has set none; a `SET` or a `RESET` is what
+            // creates one.
+            let effect = if matches!(statement, WarehouseStatement::Show { .. }) {
+                let unset = session_settings::SessionSettings::default();
+                let session = database.settings.get(connection).unwrap_or(&unset);
+                session_settings::evaluate_report(statement, session, &applied)
+            } else {
+                let session = database.session(connection);
+                session_settings::evaluate(statement, session, &applied)
+            };
+            match effect.map_err(ExecutionFailure::Warehouse)? {
+                session_settings::SettingEffect::Applied => Ok(Produced::Affected(0)),
+                session_settings::SettingEffect::Reported(reported) => {
+                    report_parameters(&database.connection, &reported, budget)
+                }
+            }
+        }
+    }
+}
+
+/// `COPY`: load the objects the statement names into the table it names.
+fn copy_into(
+    database: &mut Database,
+    copy: &warehouse_statements::CopyStatement,
+    plane: &data_plane::DataPlane,
+    query: i64,
+) -> Result<Produced, ExecutionFailure> {
+    let target = redshift_sql::engine_table_name(&copy.table, &database.schemas);
+    // The table as the statement spelled it, which is what a load failure names.
+    let named = copy.table.last().cloned().unwrap_or_default();
+    let table_id = database.system.table_id(&target);
+    let loaded = copy_load::load(
+        &database.connection,
+        plane,
+        copy,
+        &target,
+        table_id,
+        query,
+        plane.facts.pid,
+    );
+    match loaded {
+        Ok(loaded) => {
+            database.system.record_load_errors(loaded.rejected);
+            Ok(Produced::Affected(loaded.rows))
+        }
+        // The rows that could not be loaded are recorded, and the statement
+        // fails with the engine's own load-failure line, which is what points a
+        // client at them.
+        Err(copy_load::LoadFailure::Rejected(rejected)) => {
+            database.system.record_load_errors(rejected);
+            Err(ExecutionFailure::Warehouse(
+                copy_load::load_failure_message(&named),
+            ))
+        }
+        Err(copy_load::LoadFailure::Objects(failure)) => {
+            Err(ExecutionFailure::Warehouse(failure.message()))
+        }
+        Err(copy_load::LoadFailure::Refused(message)) => {
+            Err(ExecutionFailure::Warehouse(message))
+        }
+        Err(copy_load::LoadFailure::Engine(error)) => Err(ExecutionFailure::Engine(error)),
+    }
+}
+
+/// `UNLOAD`: run the query the statement carries and write its rows to Amazon
+/// S3.
+fn unload_from(
+    database: &mut Database,
+    unload: &warehouse_statements::UnloadStatement,
+    plane: &data_plane::DataPlane,
+) -> Result<Produced, ExecutionFailure> {
+    // The query being unloaded is a query of this database like any other, so
+    // the relations it references are put on the engine first.
+    prepare_references(database, plane, &unload.query)?;
+    match unload_export::export(&database.connection, plane, unload) {
+        Ok(exported) => Ok(Produced::Affected(exported.rows)),
+        Err(unload_export::ExportFailure::Objects(failure)) => {
+            Err(ExecutionFailure::Warehouse(failure.message()))
+        }
+        Err(unload_export::ExportFailure::Refused(message)) => {
+            Err(ExecutionFailure::Warehouse(message))
+        }
+        Err(unload_export::ExportFailure::Engine(error)) => Err(ExecutionFailure::Engine(error)),
+    }
+}
+
+/// `CREATE EXTERNAL SCHEMA`: bind a schema of this database to a database of the
+/// Data Catalog.
+fn create_external_schema(
+    database: &mut Database,
+    external: &warehouse_statements::ExternalSchemaStatement,
+    plane: &data_plane::DataPlane,
+) -> Result<Produced, ExecutionFailure> {
+    let already_held = redshift_sql::holds_schema(&database.schemas, &external.schema);
+    if !already_held && database.schemas.len() >= MAX_SCHEMAS_PER_DATABASE {
+        return Err(ExecutionFailure::Warehouse(format!(
+            "ERROR: schema limit exceeded: a database holds at most \
+             {MAX_SCHEMAS_PER_DATABASE} schemas"
+        )));
+    }
+    external_schemas::create(&mut database.external, plane, external, already_held)
+        .map_err(ExecutionFailure::Warehouse)?;
+    // An external schema IS a schema of this database: a later statement
+    // resolves `<schema>.<table>` through the database's own catalogue of
+    // schemas, which is what makes the external table reachable by name.
+    database.schemas.insert(external.schema.clone());
+    Ok(Produced::Affected(0))
+}
+
+/// Put the relations one statement references on the engine, where they are not
+/// tables of the database: a SYSTEM table is materialised from this database's
+/// own log, and a SPECTRUM table from the objects the Data Catalog says it lives
+/// in.
+fn prepare_references(
+    database: &mut Database,
+    plane: &data_plane::DataPlane,
+    sql: &str,
+) -> Result<(), ExecutionFailure> {
+    let relations = redshift_sql::referenced_relations(sql);
+    if relations.is_empty() {
+        return Ok(());
+    }
+    let system = system_tables::referenced(&relations);
+    if !system.is_empty() {
+        let queues = session_settings::configured_queues(&plane.facts.settings);
+        system_tables::materialise(
+            &database.connection,
+            &mut database.system,
+            &plane.facts.database,
+            &queues,
+            &system,
+        )?;
+    }
+    // The views a Spectrum client reads the external catalog itself through are
+    // served from that catalog, the same way.
+    let views = external_schemas::referenced_views(&relations);
+    if !views.is_empty() {
+        external_schemas::materialise_views(
+            &database.connection,
+            plane,
+            &database.external,
+            &views,
+        )?;
+    }
+    external_schemas::materialise(
+        &database.connection,
+        plane,
+        &database.external,
+        &relations,
+    )
+    .map_err(ExecutionFailure::Warehouse)
+}
+
+/// The result set a `SHOW` answers with: one column named after the parameter
+/// for a `SHOW <parameter>`, and the `name`/`setting` pair for `SHOW ALL`.
+///
+/// Computed BY the engine, from the values in force: the statement is run as the
+/// query it is equivalent to, so its result set carries the column metadata any
+/// other query's does.
+fn report_parameters(
+    connection: &rusqlite::Connection,
+    reported: &[(String, String)],
+    budget: &mut Retention,
+) -> Result<Produced, ExecutionFailure> {
+    let sql = match reported {
+        [(name, value)] => format!(
+            "SELECT '{}' AS \"{}\"",
+            value.replace('\'', "''"),
+            name.replace('"', "\"\"")
+        ),
+        rows => {
+            let values: Vec<String> = rows
+                .iter()
+                .map(|(name, value)| {
+                    format!(
+                        "('{}', '{}')",
+                        name.replace('\'', "''"),
+                        value.replace('\'', "''")
+                    )
+                })
+                .collect();
+            if values.is_empty() {
+                // Nothing to report at all, which is a result set of no rows
+                // rather than an error.
+                "SELECT NULL AS name, NULL AS setting WHERE 0".to_string()
+            } else {
+                format!(
+                    "WITH parameters(name, setting) AS (VALUES {}) SELECT name, setting FROM \
+                     parameters",
+                    values.join(", ")
+                )
+            }
+        }
+    };
+    execute_once(connection, &sql, &[], Binding::Referenced, budget)
 }
 
 /// Drop the temporary relations of the connections this service no longer
@@ -2061,10 +2457,17 @@ fn drop_retired_relations(database: &Database, scope: &ConnectionScope) {
 /// it, so what that connection held goes away with it: the temporary relations
 /// it created are dropped, and the locks it took are released with the
 /// connection rather than recorded against it.
-fn close_connection(database: &Database, scope: &ConnectionScope, executions: &mut [Execution]) {
+fn close_connection(
+    database: &mut Database,
+    scope: &ConnectionScope,
+    executions: &mut [Execution],
+) {
     if scope.is_session() {
         return;
     }
+    // A connection that is gone holds no session parameters either: the next
+    // statement on a connection of its own reads their defaults.
+    database.settings.remove(scope.key());
     for execution in executions {
         for relation in std::mem::take(&mut execution.connection.temp_created) {
             drop_temp_relation(database, &scope.relations().engine_name(&relation));

@@ -327,6 +327,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(validation(ABSENT_ENDPOINT_MESSAGE));
         }
 
+        // The parameter values that warehouse's ENGINE is running with, read
+        // from the same owner in the same round: a statement that reports a
+        // parameter, and the workload manager that assigns a labelled query to a
+        // queue, both read the values in force on the cluster rather than
+        // anything this service decided.
+        let engine_settings =
+            crate::state::warehouse::engine_settings(ctx, &connection.target).await;
+
         // A `Database` is NOT a synchronous rejection: the Data API accepts the
         // submission and the connection to the database is made when the
         // statement runs, so a database the warehouse has none of is a statement
@@ -386,6 +394,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 return Err(no_such_session(session));
             }
         }
+
+        // What the statement may reach BEYOND its own database: Amazon S3, IAM
+        // and the Data Catalog as this engine holds them, together with the
+        // facts about the warehouse it runs on. Resolved here, because the
+        // execution runs on a blocking pool where there is no request to ask
+        // anything over.
+        let facts = crate::state::data_plane::StatementFacts {
+            region: crate::state::warehouse::request_region(ctx),
+            warehouse: connection
+                .target
+                .cluster_identifier()
+                .or_else(|| connection.target.workgroup_name())
+                .unwrap_or_default(),
+            database: connection.database.clone(),
+            user: connection.db_user.clone().unwrap_or_default(),
+            // Filled in below from the record this submission is accepted as:
+            // the backend process a statement runs under is the one the service
+            // reports for it.
+            pid: 0,
+            settings: engine_settings,
+        };
 
         let submission = Submission {
             statements: vec![input.sql.clone()],
@@ -515,6 +544,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let sql = input.sql.clone();
 
+        // The data plane the statement runs against, carrying the backend
+        // process id this submission was accepted under.
+        let plane = crate::state::data_plane::DataPlane::resolve(
+            &*self.engine,
+            crate::state::data_plane::StatementFacts {
+                pid: accepted
+                    .as_ref()
+                    .and_then(|output| output.redshift_pid)
+                    .unwrap_or_default(),
+                ..facts
+            },
+        );
+
         // The execution is the statement's, not the request's: it runs to a
         // terminal status on its own, so two statements submitted at once are
         // really concurrent and neither depends on the caller's patience. The
@@ -604,6 +646,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     engine_timeout,
                     &bound,
                     &scope,
+                    &plane,
                 )]
             })
             .await

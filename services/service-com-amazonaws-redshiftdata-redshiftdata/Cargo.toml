@@ -99,14 +99,43 @@ aws-sdk-redshiftserverless = { version = "1", default-features = false }
 # account's default event bus.
 aws-sdk-eventbridge = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
 # `Service::override_refusal`: the wording AWS states a boundary constraint
-# refusal with on the JSON protocols, which every service on one shares.
+# refusal with on the JSON protocols, which every service on one shares. Also
+# the ONE evaluation of an IAM policy document in this tree, which decides
+# whether the role a `COPY` or an `UNLOAD` names may read or write the Amazon S3
+# objects it names (`state::object_store`).
 service-common = { path = "../common" }
+# The data plane a Redshift statement reaches BEYOND its own database, each
+# service reached through its OWN store on this one shared engine — the store
+# that service's own operations read and write, so an object a caller staged
+# with `PutObject` is the object a `COPY` loads and an object an `UNLOAD` wrote
+# is the one `GetObject` serves (`state::data_plane`):
+#
+# * Amazon S3 holds the objects `COPY` reads, `UNLOAD` writes and a Spectrum
+#   external table serves;
+# * IAM holds the role a load or an export names and the policies that decide
+#   what it may do under it;
+# * the AWS Glue Data Catalog holds the external databases a `CREATE EXTERNAL
+#   SCHEMA` binds to and the tables they define.
+#
+# No SQL type crosses into those crates: what is read is their own state.
+service-com-amazonaws-s3-amazons3 = { workspace = true }
+service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
+service-com-amazonaws-glue-awsglue = { workspace = true }
+# `state::system_tables` renders the timestamps a system table reports, and
+# `state::copy_load` reads the date and timestamp formats a load accepts, in
+# this date and time library rather than in a hand-written civil-calendar
+# conversion.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
 hex = { workspace = true }
+# The awsQuery requests the data-plane suites make — Amazon Redshift's parameter
+# groups and reboots, IAM's roles and policies — carry form-encoded values, which
+# this percent-encoding implementation writes rather than a hand-rolled escape.
+percent-encoding = "2"
 # The Data API tests mount the two Redshift control planes beside this service on
 # one engine, because the cluster and the workgroup a statement runs on are THEIR
 # resources: the suites create them there and then submit statements here.

@@ -230,6 +230,128 @@ fn redshift_serverless(
     ::aws_sdk_redshiftserverless::Client::from_conf(config)
 }
 
+/// The parameter values the WAREHOUSE's engine is running with: the values its
+/// own control plane reports as APPLIED to it.
+///
+/// A provisioned cluster's parameters live in the cluster parameter group it is
+/// configured with, and each of them carries the status of the change the
+/// cluster has seen: a parameter whose change is "`pending-reboot`: the
+/// parameter value will be applied after the cluster reboots"
+/// (`ClusterParameterStatus$ParameterApplyStatus`) has NOT reached the engine,
+/// so it is left out and the engine's own default stands for it until a restart
+/// applies it — which is exactly what makes a static parameter change
+/// observable only after a reboot. A serverless workgroup carries its settings
+/// on itself (`Workgroup$configParameters`), and they are in force as the
+/// workgroup reports them.
+///
+/// Empty for a target whose owner could not be asked, so nothing is claimed
+/// from silence: the published defaults then stand for every parameter
+/// ([`super::session_settings`]).
+pub async fn engine_settings(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    target: &ConnectionTarget,
+) -> std::collections::BTreeMap<String, String> {
+    let region = request_region(ctx);
+    match target {
+        ConnectionTarget::Cluster(identifier) => cluster_settings(ctx, &region, identifier).await,
+        ConnectionTarget::Workgroup(name) => workgroup_settings(ctx, &region, name).await,
+    }
+}
+
+/// The parameters one provisioned cluster's engine is running with.
+async fn cluster_settings(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    identifier: &str,
+) -> std::collections::BTreeMap<String, String> {
+    let client = redshift(ctx, region);
+    let Ok(described) = client
+        .describe_clusters()
+        .cluster_identifier(identifier)
+        .send()
+        .await
+    else {
+        return std::collections::BTreeMap::new();
+    };
+    let mut settings = std::collections::BTreeMap::new();
+    for cluster in described.clusters() {
+        for membership in cluster.cluster_parameter_groups() {
+            let Some(group) = membership.parameter_group_name() else {
+                continue;
+            };
+            // The parameters this cluster has not seen the change of yet.
+            let pending: Vec<&str> = membership
+                .cluster_parameter_status_list()
+                .iter()
+                .filter(|status| {
+                    status.parameter_apply_status() == Some(PENDING_REBOOT_APPLY_STATUS)
+                })
+                .filter_map(::aws_sdk_redshift::types::ClusterParameterStatus::parameter_name)
+                .collect();
+            let Ok(parameters) = client
+                .describe_cluster_parameters()
+                .parameter_group_name(group)
+                .max_records(PARAMETER_PAGE_SIZE)
+                .send()
+                .await
+            else {
+                continue;
+            };
+            for parameter in parameters.parameters() {
+                let (Some(name), Some(value)) =
+                    (parameter.parameter_name(), parameter.parameter_value())
+                else {
+                    continue;
+                };
+                if pending.contains(&name) {
+                    continue;
+                }
+                settings.insert(name.to_ascii_lowercase(), value.to_string());
+            }
+        }
+    }
+    settings
+}
+
+/// The parameters one serverless workgroup's engine is running with.
+async fn workgroup_settings(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    name: &str,
+) -> std::collections::BTreeMap<String, String> {
+    let Ok(described) = redshift_serverless(ctx, region)
+        .get_workgroup()
+        .workgroup_name(name)
+        .send()
+        .await
+    else {
+        return std::collections::BTreeMap::new();
+    };
+    described
+        .workgroup()
+        .map(|workgroup| {
+            workgroup
+                .config_parameters()
+                .iter()
+                .filter_map(|parameter| {
+                    Some((
+                        parameter.parameter_key()?.to_ascii_lowercase(),
+                        parameter.parameter_value()?.to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The apply status of a parameter change the cluster has not seen yet.
+const PENDING_REBOOT_APPLY_STATUS: &str = "pending-reboot";
+
+/// How many parameters one page of a group's parameters asks for — the modelled
+/// maximum of `DescribeClusterParametersMessage$MaxRecords` (range 20..100), so
+/// one call reads as much of the group as a page can hold.
+const PARAMETER_PAGE_SIZE: i32 = 100;
+
 /// Resolve `target` against the control plane that owns it.
 ///
 /// Asked BEFORE a submit admits a statement: a statement runs on an endpoint, so

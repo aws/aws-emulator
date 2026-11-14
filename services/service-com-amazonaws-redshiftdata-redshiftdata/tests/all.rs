@@ -50,6 +50,9 @@ mod refusal_wording;
 #[path = "all/result_pages.rs"]
 mod result_pages;
 
+#[path = "all/session_parameters.rs"]
+mod session_parameters;
+
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
 
@@ -73,3 +76,6 @@ mod unwaited_submit_answer;
 
 #[path = "all/warehouse_catalogue.rs"]
 mod warehouse_catalogue;
+
+#[path = "all/warehouse_data_plane.rs"]
+mod warehouse_data_plane;

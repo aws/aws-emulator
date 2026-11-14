@@ -347,6 +347,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(validation(ABSENT_ENDPOINT_MESSAGE));
         }
 
+        // The parameter values that warehouse's ENGINE is running with, read
+        // from the same owner in the same round, for the same reasons
+        // `ExecuteStatement` reads them.
+        let engine_settings =
+            crate::state::warehouse::engine_settings(ctx, &connection.target).await;
+
         // A `Database` the warehouse has none of is not a synchronous rejection
         // here either: the batch is accepted and every statement of it then
         // fails with the backend's own fatal line, because the connection the
@@ -414,6 +420,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 return Err(no_such_session(session));
             }
         }
+
+        // What the batch's statements may reach BEYOND their own database, and
+        // the facts about the warehouse they run on — resolved here for the same
+        // reason `ExecuteStatement` resolves them here.
+        let facts = crate::state::data_plane::StatementFacts {
+            region: crate::state::warehouse::request_region(ctx),
+            warehouse: connection
+                .target
+                .cluster_identifier()
+                .or_else(|| connection.target.workgroup_name())
+                .unwrap_or_default(),
+            database: connection.database.clone(),
+            user: connection.db_user.clone().unwrap_or_default(),
+            pid: 0,
+            settings: engine_settings,
+        };
 
         let submission = Submission {
             statements: input.sqls.clone(),
@@ -565,6 +587,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // transaction: a batch that asked for an event is published when it
         // STOPS, which happens inside that transaction and not in this request.
         let callback = ctx.callback().clone();
+        // The data plane the batch's statements run against, carrying the
+        // backend process id this submission was accepted under.
+        let plane = crate::state::data_plane::DataPlane::resolve(
+            &*self.engine,
+            crate::state::data_plane::StatementFacts {
+                pid: accepted
+                    .as_ref()
+                    .and_then(|output| output.redshift_pid)
+                    .unwrap_or_default(),
+                ..facts
+            },
+        );
         let execution = tokio::spawn(async move {
             let Some((handle, slot)) = reserved else {
                 // No connection was ever made, so no statement of the batch
@@ -644,6 +678,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     engine_timeout,
                     &bound,
                     &scope,
+                    &plane,
                 )
             })
             .await

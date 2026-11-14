@@ -55,6 +55,7 @@ use sqlparser::dialect::RedshiftSqlDialect;
 use sqlparser::parser::Parser;
 use sqlparser::tokenizer::{Token, Tokenizer};
 
+use super::warehouse_statements::{self, WarehouseStatement};
 use super::{LockMode, LockRequest, TempRelations, TEMP_QUALIFIER};
 
 /// The schemas one database holds, by name. Ordered, so a catalogue read of it
@@ -115,6 +116,11 @@ pub enum Translated {
     /// WARNING rather than an error when there is nothing for it to do — a
     /// `BEGIN` inside a transaction, a `COMMIT` or `ROLLBACK` outside one.
     Transaction(TransactionControl),
+    /// A statement of the DATA WAREHOUSE's own vocabulary, which no SQL engine
+    /// runs: a load from Amazon S3, an export to it, a Spectrum external
+    /// schema, or a session parameter. The work each one asks for is done by the
+    /// executor behind it (see [`super::warehouse_statements`]).
+    Warehouse(WarehouseStatement),
 }
 
 /// What a transaction-control statement does.
@@ -161,6 +167,12 @@ pub fn translate(sql: &str, schemas: &SchemaSet, temp: &TempRelations<'_>) -> Tr
     if !within_readable_length(sql) {
         return Translated::Run(sql.to_string());
     }
+    // A `CREATE TABLE` that names the STORAGE attributes of this dialect is
+    // re-spelled without them FIRST, and then read as any other statement: they
+    // say how the table is stored and nothing about what it holds, so the table
+    // it declares is created.
+    let stripped = warehouse_statements::without_storage_attributes(sql);
+    let sql: &str = stripped.as_deref().unwrap_or(sql);
     // Two statements of this dialect the PARSER does not model are read from the
     // token stream, because there is no parsed form of them to read; every other
     // statement below is read from the parsed statement itself, so the grammar is
@@ -560,7 +572,9 @@ fn unparsed_statement(
             .all(|token| is_keyword(token, "work") || is_keyword(token, "transaction"));
         return clauses_only.then_some(Translated::Transaction(TransactionControl::Rollback));
     }
-    None
+    // And the statements of the data warehouse's own vocabulary, which the
+    // parser models no more than it models `LOCK`.
+    warehouse_statements::parse(tokens).map(Translated::Warehouse)
 }
 
 /// The statements the engine itself has no notion of, read from the PARSED
@@ -718,7 +732,7 @@ fn name_list(tokens: &[Token]) -> Option<(Vec<Vec<String>>, &[Token])> {
 }
 
 /// Read one name — `<part>[.<part>…]` — and report what follows it.
-fn qualified_name(tokens: &[Token]) -> Option<(Vec<String>, &[Token])> {
+pub(super) fn qualified_name(tokens: &[Token]) -> Option<(Vec<String>, &[Token])> {
     let mut parts = vec![identifier(tokens.first()?)?];
     let mut rest = &tokens[1..];
     while matches!(rest.first(), Some(Token::Period)) {
@@ -730,7 +744,7 @@ fn qualified_name(tokens: &[Token]) -> Option<(Vec<String>, &[Token])> {
 
 /// Whether `token` is the unquoted keyword `word`. A quoted word is an
 /// identifier that happens to be spelled like a keyword, never the keyword.
-fn is_keyword(token: &Token, word: &str) -> bool {
+pub(super) fn is_keyword(token: &Token, word: &str) -> bool {
     matches!(token, Token::Word(found)
         if found.quote_style.is_none() && found.value.eq_ignore_ascii_case(word))
 }
@@ -779,6 +793,7 @@ pub fn lock_request(sql: &str, temp: &TempRelations<'_>) -> Option<LockRequest> 
         schemas: &schemas,
         temp: *temp,
         tables: Vec::new(),
+        seen: BTreeSet::new(),
     };
     let _walked = statement.visit(&mut relations);
     Some(LockRequest {
@@ -814,17 +829,91 @@ fn implied_mode(statement: &Statement) -> LockMode {
 }
 
 /// The ENGINE names of the relations one statement references, read off the
-/// parsed statement rather than from its text.
+/// parsed statement rather than from its text: the names in the order the
+/// statement names them, beside the SET of them, so a name already collected is
+/// recognised in one lookup.
 struct Relations<'a> {
     schemas: &'a SchemaSet,
     temp: TempRelations<'a>,
     tables: Vec<String>,
+    seen: BTreeSet<String>,
+}
+
+/// The relations one statement references, as the CALLER wrote them: each name
+/// lower-cased and its parts joined with a dot, in the order the statement
+/// names them and each name once.
+///
+/// Read off the parsed statement, so a name inside a string literal or a
+/// comment is not one. What it is for: a statement that references a system
+/// table or a Spectrum external table needs that relation PUT on the engine
+/// before it runs ([`super::system_tables`], [`super::external_schemas`]), and
+/// which relations a statement names is the question that decides it. The names
+/// are the written ones rather than engine names, because what they are matched
+/// against is a catalogue of names the caller writes.
+/// How many relations one statement is read as referencing.
+///
+/// A statement names as many as its text has room for, so the set is bounded
+/// here as every other thing a caller can multiply is: a statement past this is
+/// read as naming the first [`MAX_REFERENCED_RELATIONS`] of them, which is the
+/// most this emulator puts on the engine for one statement either way.
+pub const MAX_REFERENCED_RELATIONS: usize = 1_024;
+
+pub fn referenced_relations(sql: &str) -> Vec<String> {
+    if !within_readable_length(sql) {
+        return Vec::new();
+    }
+    let dialect = RedshiftSqlDialect {};
+    let Ok(statements) = Parser::parse_sql(&dialect, sql) else {
+        return Vec::new();
+    };
+    let mut written = WrittenRelations {
+        names: Vec::new(),
+        seen: BTreeSet::new(),
+    };
+    for statement in &statements {
+        let _walked = statement.visit(&mut written);
+    }
+    written.names
+}
+
+/// The relations one statement references, as written: the names in the order
+/// the statement names them, beside the SET of them, so recognising a name
+/// already collected costs one lookup rather than a walk of the list.
+struct WrittenRelations {
+    names: Vec<String>,
+    seen: BTreeSet<String>,
+}
+
+impl Visitor for WrittenRelations {
+    type Break = ();
+
+    fn pre_visit_relation(&mut self, relation: &ObjectName) -> ControlFlow<Self::Break> {
+        if self.names.len() >= MAX_REFERENCED_RELATIONS {
+            return ControlFlow::Continue(());
+        }
+        let parts: Vec<String> = relation
+            .0
+            .iter()
+            .filter_map(ObjectNamePart::as_ident)
+            .map(|ident| ident.value.to_ascii_lowercase())
+            .collect();
+        if !parts.is_empty() {
+            let name = parts.join(".");
+            if self.seen.insert(name.clone()) {
+                self.names.push(name);
+            }
+        }
+        ControlFlow::Continue(())
+    }
 }
 
 impl Visitor for Relations<'_> {
     type Break = ();
 
     fn pre_visit_relation(&mut self, relation: &ObjectName) -> ControlFlow<Self::Break> {
+        if self.tables.len() >= MAX_REFERENCED_RELATIONS {
+            return ControlFlow::Continue(());
+        }
         let parts: Vec<String> = relation
             .0
             .iter()
@@ -833,7 +922,7 @@ impl Visitor for Relations<'_> {
             .collect();
         if !parts.is_empty() {
             let name = relation_name(&parts, self.schemas, &self.temp);
-            if !self.tables.contains(&name) {
+            if self.seen.insert(name.clone()) {
                 self.tables.push(name);
             }
         }

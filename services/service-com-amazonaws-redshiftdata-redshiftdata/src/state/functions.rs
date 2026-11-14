@@ -6,10 +6,11 @@
 //! The Data API runs whatever SQL its data warehouse accepts, and a Redshift
 //! statement reaches for Redshift's function library: `MD5` and the `SHA`
 //! family, `LEFT`/`RIGHT`/`REPEAT`, `LEN`, `STRPOS`, `SPLIT_PART`, `INITCAP`,
-//! `NVL`. The engine behind this service implements the SQL core and its own
-//! function set, so each function named here is COMPUTED — hashed, sliced,
-//! counted — by an implementation installed on the connection before any caller
-//! SQL reaches it, never pretended at by rewriting the call into something else.
+//! `BTRIM`, `NVL`. The engine behind this service implements the SQL core and
+//! its own function set, so each function named here is COMPUTED — hashed,
+//! sliced, counted — by an implementation installed on the connection before
+//! any caller SQL reaches it, never pretended at by rewriting the call into
+//! something else.
 //!
 //! Each one follows the function it emulates: a `NULL` argument makes the result
 //! `NULL` (the whole family is strict), a character count is counted in
@@ -96,6 +97,26 @@ pub fn install(connection: &Connection) -> Result<()> {
     connection.create_scalar_function("split_part", 3, pure, split_part)?;
     connection.create_scalar_function("initcap", 1, pure, |ctx| {
         Ok(text_argument(ctx, 0)?.map(|text| initcap(&text)))
+    })?;
+    // "BTRIM … Trims a string by removing leading and trailing blanks or by
+    // removing characters that match an optional specified string." The engine
+    // carries `TRIM`, `LTRIM` and `RTRIM` under those names and not this one, so
+    // this is the one of the family that has to be implemented. Each ARITY the
+    // function takes is registered on its own, so the engine itself refuses a
+    // call with any other number of arguments — as the real function does —
+    // rather than this implementation reading an argument that is not there.
+    connection.create_scalar_function("btrim", 1, pure, |ctx| {
+        Ok(text_argument(ctx, 0)?.map(|text| text.trim().to_string()))
+    })?;
+    connection.create_scalar_function("btrim", 2, pure, |ctx| {
+        let Some(text) = text_argument(ctx, 0)? else {
+            return Ok(None);
+        };
+        let Some(characters) = text_argument(ctx, 1)? else {
+            return Ok(None);
+        };
+        let trimmed: &str = text.trim_matches(|character| characters.contains(character));
+        Ok(Some(trimmed.to_string()))
     })?;
 
     // Conditional expressions. "NVL … is a synonym for COALESCE" and takes two
