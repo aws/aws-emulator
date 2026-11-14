@@ -456,24 +456,52 @@ async fn an_unknown_policy_arn_is_the_same_not_found_sentence_everywhere() {
     }
 }
 
+/// The attach-failure sentence, transcribed here from the service's own fixed text
+/// so that a drift in how a handler words it fails this suite: the sentence
+/// TERMINATES with a period followed by a single apostrophe, and only the policy ARN
+/// (twice) and the application's name are interpolated.
+fn attach_failure_message(policy_arn: &str, app_name: &str) -> String {
+    format!(
+        "Cannot attach policy {policy_arn} to app {app_name}. \
+         Policy {policy_arn} does not exist.'"
+    )
+}
+
 /// A create or update that cannot ATTACH the policy it names states the attach
 /// failure and names the application as well as the policy — and stores nothing.
+///
+/// The table spans what the sentence interpolates: the application name's form
+/// (hyphenated, underscored, the shortest and the widest `EntityName` admits) and the
+/// policy ARN's resource id. The fixed text around them is the same for every row.
 #[tokio::test]
 async fn a_policy_that_cannot_be_attached_names_the_application() {
     let router = emulator();
 
+    // 60 characters: `EntityName`'s `[A-Za-z0-9]` head plus the 59 tail characters
+    // its `{1,59}` admits — the widest name the refusal can echo.
+    let widest = format!("a{}", "b".repeat(59));
     // CreateApp: the application is named by the `name` the request carried, since
     // nothing was minted for it.
     for (case, name, policy_id) in [
         (
             "a policy id nothing minted",
-            "attach-create-one",
+            "attach-create-one".to_string(),
             "33333333-3333-4333-8333-333333333333",
         ),
         (
-            "another application and another policy id",
-            "attach_create_two",
+            "an underscored app name and another policy id",
+            "attach_create_two".to_string(),
             "44444444-4444-4444-8444-444444444444",
+        ),
+        (
+            "the shortest name EntityName admits",
+            "ab".to_string(),
+            "66666666-6666-4666-8666-666666666666",
+        ),
+        (
+            "the widest name EntityName admits",
+            widest,
+            "77777777-7777-4777-8777-777777777777",
         ),
     ] {
         let policy_arn = unknown_policy_arn(policy_id);
@@ -484,9 +512,7 @@ async fn a_policy_that_cannot_be_attached_names_the_application() {
         )
         .await;
         refused.refused(case, 404, "ResourceNotFoundException");
-        let expected = format!(
-            "Cannot attach policy {policy_arn} to app {name}. Policy {policy_arn} does not exist."
-        );
+        let expected = attach_failure_message(&policy_arn, &name);
         let actual = message(&refused);
         assert_eq!(
             actual, expected,
@@ -498,35 +524,52 @@ async fn a_policy_that_cannot_be_attached_names_the_application() {
         created.ok(case);
     }
 
-    // UpdateApp: the application exists, and is named by the name it answers to.
-    let name = "attach-update-app";
-    let app_arn = create_an_app(&router, name).await;
-    let policy_arn = unknown_policy_arn("55555555-5555-4555-8555-555555555555");
-    let refused = post(
+    // UpdateApp: the application exists, and is named by the name it answers to. Both
+    // ways a policy ARN can resolve to nothing are covered — never minted, and
+    // deleted since.
+    let deleted = create_a_policy(&router, "attach-policy-deleted").await;
+    post(
         &router,
-        "/update-app",
-        &json!({"appArn": app_arn, "policyArn": policy_arn}),
+        "/delete-resiliency-policy",
+        &json!({"policyArn": deleted.clone()}),
     )
-    .await;
-    refused.refused("UpdateApp", 404, "ResourceNotFoundException");
-    let expected = format!(
-        "Cannot attach policy {policy_arn} to app {name}. \
-         Policy {policy_arn} does not exist."
-    );
-    let actual = message(&refused);
-    assert_eq!(
-        actual, expected,
-        "case {:?}: expected {expected:?}, got {actual:?}",
-        "UpdateApp"
-    );
-    // The refused update changed nothing: the application still carries no policy.
-    let described = post(&router, "/describe-app", &json!({"appArn": app_arn})).await;
-    assert!(
-        described.ok("UpdateApp")["app"]["policyArn"].is_null(),
-        "case {:?}: expected the application to carry no policy, got {:?}",
-        "UpdateApp",
-        described.body
-    );
+    .await
+    .ok("deleting the policy");
+
+    for (case, name, policy_arn) in [
+        (
+            "UpdateApp with a policy nothing minted",
+            "attach-update-app",
+            unknown_policy_arn("55555555-5555-4555-8555-555555555555"),
+        ),
+        (
+            "UpdateApp with a policy deleted since",
+            "attach_update_app_2",
+            deleted,
+        ),
+    ] {
+        let app_arn = create_an_app(&router, name).await;
+        let refused = post(
+            &router,
+            "/update-app",
+            &json!({"appArn": app_arn, "policyArn": policy_arn}),
+        )
+        .await;
+        refused.refused(case, 404, "ResourceNotFoundException");
+        let expected = attach_failure_message(&policy_arn, name);
+        let actual = message(&refused);
+        assert_eq!(
+            actual, expected,
+            "case {case:?}: expected {expected:?}, got {actual:?}"
+        );
+        // The refused update changed nothing: the application still carries no policy.
+        let described = post(&router, "/describe-app", &json!({"appArn": app_arn})).await;
+        assert!(
+            described.ok(case)["app"]["policyArn"].is_null(),
+            "case {case:?}: expected the application to carry no policy, got {:?}",
+            described.body
+        );
+    }
 }
 
 /// A `CreateApp` whose `name` another application already answers to is refused with

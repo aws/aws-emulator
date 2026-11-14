@@ -1648,8 +1648,16 @@ pub fn policy_not_found_message(policy_arn: &str) -> String {
 /// names BOTH the policy ARN the request carried and the application it was being
 /// attached to — without which a client batching such calls cannot tell which one
 /// failed from the error alone.
+///
+/// The sentence terminates with a period followed by a single apostrophe: the
+/// service states this refusal with that trailing character, so it belongs to the
+/// FIXED text of the class and not to any one request. Only the policy ARN (twice)
+/// and the application's name vary, both taken from the request being refused.
 pub fn policy_attachment_not_found_message(policy_arn: &str, app_name: &str) -> String {
-    format!("Cannot attach policy {policy_arn} to app {app_name}. Policy {policy_arn} does not exist.")
+    format!(
+        "Cannot attach policy {policy_arn} to app {app_name}. \
+         Policy {policy_arn} does not exist.'"
+    )
 }
 
 /// The `ConflictException` message for a `CreateApp` whose `name` another
