@@ -739,7 +739,10 @@ async fn a_cluster_is_available_only_after_the_nodes_it_provisions_are() {
         if cluster["status"].as_str() == Some("AVAILABLE") {
             cluster_up = Some(started.elapsed());
         }
-        tokio::time::sleep(Duration::from_millis(25)).await;
+        // Sampled finely enough that the two settles, one transition span apart, fall in
+        // different iterations: what the assertion below reads is their ORDER, so the
+        // sampling has to be finer than the span between them.
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
 
     let nodes_up = nodes_up.unwrap_or_else(|| {

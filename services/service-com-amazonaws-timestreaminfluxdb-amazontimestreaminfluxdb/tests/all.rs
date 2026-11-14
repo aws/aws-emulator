@@ -21,6 +21,8 @@ mod db_cluster_marketplace_subscription;
 mod db_instance_lifecycle;
 #[path = "all/db_instance_reboot.rs"]
 mod db_instance_reboot;
+#[path = "all/db_instance_restore_round_trip.rs"]
+mod db_instance_restore_round_trip;
 #[path = "all/db_parameter_group.rs"]
 mod db_parameter_group;
 #[path = "all/db_parameter_group_catalog.rs"]

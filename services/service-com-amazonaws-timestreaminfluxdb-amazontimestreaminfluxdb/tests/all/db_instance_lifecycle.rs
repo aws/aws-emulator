@@ -1196,10 +1196,21 @@ fn every_status_and_resource_type_this_service_reports_is_a_modelled_value() {
 }
 
 #[test]
-fn the_clock_owed_transition_span_is_inside_the_required_band() {
+fn the_clock_owed_transition_span_settles_before_a_clients_next_read() {
     let span = influxdb::state::TRANSITION_SPAN;
+    // Non-zero: the transient status a lifecycle call announces is the record's real
+    // status at that instant, so a caller that acts on the answer it just got still
+    // observes it and the state errors keyed to it.
     assert!(
-        span >= Duration::from_millis(250) && span <= Duration::from_millis(750),
-        "case \"transition span\": expected 250..=750ms, got {span:?}"
+        !span.is_zero(),
+        "case \"transition span\": a transient status must be observable, got {span:?}"
+    );
+    // Shorter than the round trip a client needs to issue its next read: the settle is
+    // already due when a polling client's first probe arrives, so no workflow spends one
+    // of the client's probe intervals per transition it waits through.
+    assert!(
+        span <= Duration::from_millis(50),
+        "case \"transition span\": a transient status must be settled before a client's \
+         follow-up read, got {span:?}"
     );
 }

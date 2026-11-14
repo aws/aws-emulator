@@ -164,10 +164,17 @@ pub const ARN_NAMESPACE: &str = "timestream-influxdb";
 /// How long a DB instance stays in a transient status before the clock settles it to
 /// `AVAILABLE`.
 ///
-/// NOT an AWS-documented duration (a real instance takes minutes): a chosen span, inside
-/// the 250–750 ms band this project requires, so a caller that reads straight back still
-/// observes the transient status while a test does not have to wait on a real provision.
-pub const TRANSITION_SPAN: Duration = Duration::from_millis(500);
+/// NOT an AWS-documented duration (a real instance takes minutes): a chosen span. It is
+/// non-zero, so the transient status a lifecycle call announces is the record's real
+/// status at that instant and the state errors keyed to it (a restart of an instance that
+/// is not running, say) are reachable for a caller that acts on the answer it just got.
+/// It is also SHORTER than the round trip a client needs to issue its next read, which is
+/// what keeps a polling client live: the settle is already due when that read arrives, so
+/// a workflow that provisions, waits, deletes and re-provisions does not spend one of the
+/// client's probe intervals on every transition it waits through. A span of the order of a
+/// client's probe interval instead of its round trip is what makes such a workflow cost
+/// more wall time than the workflow is given.
+pub const TRANSITION_SPAN: Duration = Duration::from_millis(25);
 
 /// The default `maxResults` for the paginated list operations: the maximum the model's
 /// `MaxResults` range (1..100) allows, so an unbounded request pages at the modelled cap.
