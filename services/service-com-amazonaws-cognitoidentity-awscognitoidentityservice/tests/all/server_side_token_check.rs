@@ -17,6 +17,13 @@
 //! An entry that does not ask for the check is decided by its issuer alone and keeps
 //! vending for the very same token, which is what makes the flag the only variable.
 //!
+//! The served half of that rule is here too: the check decides WHETHER a login is honoured
+//! and never which role a honoured one runs as, so a token whose user the integrated pool
+//! still holds signed in federates normally — the credentials vended are a session of the
+//! role the identity pool's own configuration resolves, which `sts:GetCallerIdentity` under
+//! them reports as
+//! `arn:<partition>:sts::<account>:assumed-role/<role>/CognitoIdentityCredentials`.
+//!
 //! The rows differ along what the rule generalises over: WHICH user-pool call takes the
 //! user's sign-in away (a deactivation, a deactivation the caller has since reversed, a
 //! global sign-out, a delete, a deactivation followed by a delete), and — across the two
@@ -28,7 +35,9 @@ use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::identity_pool_flow::{cognito_trust_policy, error_code, seed_role, seeded_role_arn};
+use crate::vended_role_session::{element, expected_session_arn};
 use service_com_amazonaws_cognitoidentity_awscognitoidentityservice::state::base64_url;
+use service_com_amazonaws_sts_awssecuritytokenservicev20110615 as sts;
 
 /// The Region every call below is signed for, and the one the user pool's issuer names.
 const REGION: &str = "us-east-1";
@@ -76,6 +85,10 @@ impl Emulator {
             service_com_amazonaws_cognitoidentityprovider_awscognitoidentityproviderservice
                 ::EmulatedService::new(Arc::clone(&engine)),
         );
+        // The token service too: what the credentials a vend hands back STAND FOR is the
+        // principal the service that holds the session reports for them, not a second copy
+        // of that registry kept by this suite.
+        router.register_service(sts::EmulatedService::new(Arc::clone(&engine)));
         Self { router, engine }
     }
 
@@ -113,6 +126,35 @@ impl Emulator {
             })
         };
         (status, parsed)
+    }
+
+    /// `sts:GetCallerIdentity` under `access_key_id`: an awsQuery POST, as a client holding
+    /// the vended credential makes it, carrying the key in the SigV4 credential scope.
+    /// Answers the status and the response body as text.
+    async fn caller_identity(&self, access_key_id: &str) -> (u16, String) {
+        let request = http::Request::builder()
+            .method("POST")
+            .uri("https://sts.amazonaws.com/")
+            .header("host", "sts.amazonaws.com")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .header(
+                "authorization",
+                format!(
+                    "AWS4-HMAC-SHA256 \
+                     Credential={access_key_id}/20260101/{REGION}/sts/aws4_request, \
+                     SignedHeaders=host, Signature=0"
+                ),
+            )
+            .body(bytes::Bytes::from(
+                "Action=GetCallerIdentity&Version=2011-06-15",
+            ))
+            .expect("the request builds");
+        let response = self.router.dispatch(request).await;
+        let status = response.status().as_u16();
+        (
+            status,
+            String::from_utf8_lossy(&response.into_body()).to_string(),
+        )
     }
 
     /// One call to THIS service (cognito-identity).
@@ -686,4 +728,186 @@ async fn a_checked_pool_decides_the_token_against_the_user_pool_it_names() {
         )
         .await;
     assert_vended("after the refusals", "checked", &identity_id, status, &body);
+}
+
+/// Vend for an identity of `identity_pool_id` presenting `presented`, and answer the ARN
+/// `sts:GetCallerIdentity` reports under the vended credential — which is the principal that
+/// credential STANDS FOR, read from the service that holds the session.
+async fn vended_session_arn(
+    emulator: &Emulator,
+    case: &str,
+    pool_kind: &str,
+    identity_pool_id: &str,
+    presented: &Value,
+) -> String {
+    let resolved = emulator
+        .identity_ok(
+            "GetId",
+            &json!({"IdentityPoolId": identity_pool_id, "Logins": presented}),
+        )
+        .await;
+    let identity_id = resolved["IdentityId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("case {case:?}: GetId answers an IdentityId: {resolved}"))
+        .to_string();
+    let (status, body) = emulator
+        .identity(
+            "GetCredentialsForIdentity",
+            &json!({"IdentityId": &identity_id, "Logins": presented}),
+        )
+        .await;
+    assert_vended(case, pool_kind, &identity_id, status, &body);
+    let access_key_id = body["Credentials"]["AccessKeyId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("case {case:?}: a served vend carries an AccessKeyId: {body}"));
+    let (status, reported) = emulator.caller_identity(access_key_id).await;
+    assert_eq!(
+        status, 200,
+        "case {case:?}: GetCallerIdentity under the vended credential expected HTTP 200, got \
+         {status} with {reported}"
+    );
+    element(&reported, "Arn")
+}
+
+/// RULE, the half of the check that SERVES — the control every server-side-token-check
+/// scenario rests on: a provider entry asking for the check revalidates the login and,
+/// where the integrated user pool still holds the token's user signed in, federates it
+/// NORMALLY, so the credentials vended are a session of the role that identity pool's own
+/// configuration resolves — `sts:GetCallerIdentity` under them answers
+/// `arn:<partition>:sts::<account>:assumed-role/<role>/CognitoIdentityCredentials` for THAT
+/// pool's role, never the principal the request itself was served under. The check decides
+/// WHETHER the login is honoured; it never decides which role an honoured one runs as.
+///
+/// The rows differ along what the rule generalises over: the `ServerSideTokenCheck` the
+/// provider entry carries (asked for, declined, left out), and with it the pool the very
+/// same live token is presented to — each pool carrying its own authenticated role, so the
+/// vended principal can only match by following the pool's configuration.
+#[tokio::test]
+async fn a_live_user_pool_token_vends_a_session_of_the_pools_authenticated_role() {
+    let emulator = Emulator::new();
+    let pool = user_pool(&emulator, "sstc-principal").await;
+    let id_token = signed_in_user(&emulator, &pool, "principal-user").await;
+    let presented = logins(&pool, &id_token);
+
+    for (case, pool_kind, pool_name, check) in [
+        ("the check asked for", "checked", "sstc-vend-on", Some(true)),
+        ("the check declined", "unchecked", "sstc-vend-off", Some(false)),
+        ("no check stated", "unstated", "sstc-vend-absent", None),
+    ] {
+        let identity_pool_id = emulator
+            .identity_pool(pool_name, &pool.provider_name, &pool.client_id, check)
+            .await;
+        let arn =
+            vended_session_arn(&emulator, case, pool_kind, &identity_pool_id, &presented).await;
+        // The role `Emulator::identity_pool` seeded and configured on THIS pool.
+        let expected = expected_session_arn(&format!("{pool_name}-auth"));
+        assert_eq!(
+            arn, expected,
+            "case {case:?}: the vend must be a session of the pool's own authenticated role \
+             ({expected}), got {arn:?}"
+        );
+    }
+}
+
+/// RULE, the same rule read over a pool whose configuration CHANGES: the role a vend stands
+/// for is the one the pool resolves at the time of the vend, so re-pointing a checked pool's
+/// `authenticated` role moves the principal the very same live token vends to the new role,
+/// and a pool that resolves no role at all vends nothing rather than some other principal
+/// (`InvalidIdentityPoolConfigurationException`, the error this operation models for a pool
+/// with "no authenticated role configured").
+#[tokio::test]
+async fn a_checked_pools_vend_follows_the_role_its_configuration_names() {
+    let emulator = Emulator::new();
+    let pool = user_pool(&emulator, "sstc-reconfigured").await;
+    let id_token = signed_in_user(&emulator, &pool, "reconfigured-user").await;
+    let presented = logins(&pool, &id_token);
+    let identity_pool_id = emulator
+        .identity_pool(
+            "sstc-moved",
+            &pool.provider_name,
+            &pool.client_id,
+            Some(true),
+        )
+        .await;
+
+    let first = vended_session_arn(
+        &emulator,
+        "the role first configured",
+        "checked",
+        &identity_pool_id,
+        &presented,
+    )
+    .await;
+    assert_eq!(
+        first,
+        expected_session_arn("sstc-moved-auth"),
+        "the first vend must be a session of the role the pool was created with, got {first:?}"
+    );
+
+    // A second role of the same account, admitting the same pool's users, configured in
+    // place of the first.
+    let moved = seed_role(
+        &emulator.engine,
+        &seeded_role_arn("sstc-moved", "second"),
+        cognito_trust_policy(&identity_pool_id),
+    );
+    emulator
+        .identity_ok(
+            "SetIdentityPoolRoles",
+            &json!({"IdentityPoolId": &identity_pool_id, "Roles": {"authenticated": &moved}}),
+        )
+        .await;
+    let after = vended_session_arn(
+        &emulator,
+        "the role now configured",
+        "checked",
+        &identity_pool_id,
+        &presented,
+    )
+    .await;
+    assert_eq!(
+        after,
+        expected_session_arn("sstc-moved-second"),
+        "after the pool was re-pointed the vend must be a session of the role now \
+         configured, got {after:?}"
+    );
+
+    // And a pool left resolving NO role for this exchange vends nothing at all: the
+    // refusal is the pool-configuration one, with no credential in the answer.
+    emulator
+        .identity_ok(
+            "SetIdentityPoolRoles",
+            &json!({"IdentityPoolId": &identity_pool_id, "Roles": {}}),
+        )
+        .await;
+    let resolved = emulator
+        .identity_ok(
+            "GetId",
+            &json!({"IdentityPoolId": &identity_pool_id, "Logins": &presented}),
+        )
+        .await;
+    let identity_id = resolved["IdentityId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("GetId answers an IdentityId: {resolved}"))
+        .to_string();
+    let (status, body) = emulator
+        .identity(
+            "GetCredentialsForIdentity",
+            &json!({"IdentityId": &identity_id, "Logins": &presented}),
+        )
+        .await;
+    assert_eq!(
+        status, 400,
+        "a pool resolving no role must refuse the vend with HTTP 400, got {status} with {body}"
+    );
+    let code = error_code(&body);
+    assert!(
+        code.ends_with("InvalidIdentityPoolConfigurationException"),
+        "a pool resolving no role must refuse with InvalidIdentityPoolConfigurationException, \
+         got {code:?} in {body}"
+    );
+    assert!(
+        body.get("Credentials").is_none(),
+        "a refused vend carries no credential, got {body}"
+    );
 }
