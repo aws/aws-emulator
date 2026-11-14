@@ -460,6 +460,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     ..SessionPolicies::default()
                 },
                 role_arn: Some(role.arn.clone()),
+                // The role's own id, which IDENTIFIES the principal this session speaks for;
+                // see `Session::role_id`.
+                role_id: Some(role.role_id.clone()),
                 source_identity: assertion.source_identity.clone(),
                 // The identity the exchanged response established travels with the session it
                 // mints, so a request the vended credential signs is decided against the very

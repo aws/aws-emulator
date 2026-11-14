@@ -120,6 +120,15 @@ pub const ASSUME_ROLE_WITH_SAML_ACTION: &str = "sts:AssumeRoleWithSAML";
 /// The condition key a trust policy tests a request's `ExternalId` through.
 pub const EXTERNAL_ID_CONDITION_KEY: &str = "sts:ExternalId";
 
+/// The condition key a trust policy tests the SOURCE IDENTITY a mint would set on the new
+/// session through: "you can use the `sts:SourceIdentity` condition key in a role trust
+/// policy" (`AssumeRoleRequest$SourceIdentity`, this service's model).
+///
+/// A clause over it gates the source-identity SET and not the assume, which is what a refusal
+/// decided by one names as the action
+/// ([`ResolvedRole::trust_policy_grant_turns_on`], [`SET_SOURCE_IDENTITY_ACTION`]).
+pub const SOURCE_IDENTITY_CONDITION_KEY: &str = "sts:SourceIdentity";
+
 /// The `Principal` spelling that names a whole account: the account's root user.
 fn account_root_arn(account: &str) -> String {
     format!("arn:aws:iam::{account}:root")
@@ -189,6 +198,15 @@ pub struct Session {
     /// it — the spelling a trust policy names when this session chains into another
     /// role. `None` for every other kind of session.
     pub role_arn: Option<String>,
+    /// `Role$RoleId` of that role as it read at the mint: the id that IDENTIFIES the
+    /// principal this session speaks for, beside the ARN that merely addresses it.
+    ///
+    /// A role is identified by its id and not by its name — "the stable and unique string
+    /// identifying the role" (`Role$RoleId`) — so a role deleted and created again under
+    /// the same name is a different principal behind the same ARN, and a session minted
+    /// from the first one speaks for nobody once that role is gone
+    /// ([`session_principal_is_withdrawn`]). `None` for a session that is not a role's.
+    pub role_id: Option<String>,
     /// The ARN of the IAM user whose LONG-TERM credentials minted a `GetFederationToken`
     /// session: the identity whose own policies the session's permissions are the
     /// intersection with ("the session permissions are the intersection of the IAM user
@@ -241,6 +259,8 @@ pub struct NewSession {
     pub external_id: Option<String>,
     /// See [`Session::role_arn`].
     pub role_arn: Option<String>,
+    /// See [`Session::role_id`].
+    pub role_id: Option<String>,
     /// See [`Session::federating_user_arn`].
     pub federating_user_arn: Option<String>,
     /// See [`Session::mfa_authenticated`].
@@ -264,6 +284,7 @@ impl NewSession {
             policies: SessionPolicies::default(),
             external_id: None,
             role_arn: None,
+            role_id: None,
             federating_user_arn: None,
             mfa_authenticated: false,
             federated_claims: Vec::new(),
@@ -303,6 +324,7 @@ impl NewSession {
             policies: self.policies,
             external_id: self.external_id,
             role_arn: self.role_arn,
+            role_id: self.role_id,
             federating_user_arn: self.federating_user_arn,
             mfa_authenticated: self.mfa_authenticated,
             federated_claims: self.federated_claims,
@@ -1042,6 +1064,18 @@ pub struct Caller {
     pub transitive_tag_keys: Vec<String>,
     /// The role ARN of an assumed-role credential; see [`Session::role_arn`].
     pub role_arn: Option<String>,
+    /// The id of that role as the mint read it; see [`Session::role_id`].
+    pub role_id: Option<String>,
+    /// The instant the SESSION this credential belongs to was issued, which is what the
+    /// global condition key `aws:TokenIssueTime` answers for a request it signs — and
+    /// `None` for a long-term access key, which belongs to no session: "this key is present
+    /// in the request context only when the principal uses temporary credentials" (AWS
+    /// General Reference, *Global condition context keys*).
+    ///
+    /// ONE reading, so every service that authorizes a request signed with a credential this
+    /// registry minted decides a clause over that instant alike — which is what the policy
+    /// shape that revokes every session issued before a cut-off is written over.
+    pub issued_at: Option<SystemTime>,
     /// The ARN of the IAM user whose long-term credentials minted a federated-user
     /// credential; see [`Session::federating_user_arn`].
     pub federating_user_arn: Option<String>,
@@ -1067,6 +1101,8 @@ impl Caller {
             tags: Vec::new(),
             transitive_tag_keys: Vec::new(),
             role_arn: None,
+            role_id: None,
+            issued_at: None,
             federating_user_arn: None,
             federated_claims: Vec::new(),
             session_policies: SessionPolicies::default(),
@@ -1133,6 +1169,101 @@ impl Caller {
             .or(self.federating_user_arn.as_deref())
             .unwrap_or(self.identity.arn.as_str())
     }
+
+    /// What the global condition key `aws:TokenIssueTime` answers for a request this
+    /// credential signs: the instant its session was issued, as the timestamp a `Date…`
+    /// condition operator compares — and `None` for a credential that belongs to no session,
+    /// which carries no value for the key at all (see [`Caller::issued_at`]).
+    ///
+    /// ONE rendering beside the ONE reading, so a clause over that instant is decided from
+    /// the same text in every service that resolves a credential here.
+    #[must_use]
+    pub fn token_issue_time(&self) -> Option<String> {
+        let issued_at = self.issued_at?;
+        ::aws_smithy_types::DateTime::from_secs(unix_seconds(issued_at))
+            .fmt(::aws_smithy_types::date_time::Format::DateTime)
+            .ok()
+    }
+
+    /// Whether this credential's principal is GONE, so the access key id it presents resolves
+    /// to nobody at all.
+    ///
+    /// A role session's principal is the role it was minted from, and a role is identified by
+    /// its id rather than by its name: "the stable and unique string identifying the role"
+    /// (`Role$RoleId`). So deleting the role withdraws every session of it, and creating a
+    /// role again under the same name — a new id behind the same ARN — does not revive one:
+    /// the session names a principal the account no longer holds. `iam` is the account's IAM
+    /// records, or `None` where there are none to read, which withdraws nothing: an engine
+    /// carrying no IAM store holds no evidence that a role is gone.
+    ///
+    /// Every other credential is left alone. A long-term access key's own principal is the
+    /// identity it resolved to, and a federated-user or `GetSessionToken` session stands on
+    /// the IAM user that minted it, whose own deletion takes its access keys with it.
+    ///
+    /// ONE answer, so the service that RESOLVES a credential refuses the same dead sessions
+    /// whichever service it is; what a service then ANSWERS such a request with is its own
+    /// published refusal for an access key id that resolves to nothing.
+    #[must_use]
+    pub fn principal_is_withdrawn(&self, iam: Option<&IamState>) -> bool {
+        match self.role_arn.as_deref() {
+            Some(role_arn) => {
+                role_principal_is_withdrawn(iam, role_arn, self.role_id.as_deref())
+            }
+            None => false,
+        }
+    }
+}
+
+/// WHICH role the session `access_key_id` names was minted from: its ARN, and the id the mint
+/// read for it ([`Session::role_id`], `None` for a record made before this registry carried
+/// one).
+///
+/// `None` for a key this registry holds no session for, and for a session that is not a
+/// role's. A READ, so a service may ask it while holding nothing else, and the two facts are
+/// copied out — which is what lets the caller give up this store's guard before it takes the
+/// IAM store's to decide [`role_principal_is_withdrawn`].
+#[must_use]
+pub fn session_minted_from_role(
+    state: &StsState,
+    access_key_id: &str,
+) -> Option<(String, Option<String>)> {
+    let session = state.session(access_key_id)?;
+    let role_arn = session.role_arn.clone()?;
+    Some((role_arn, session.role_id.clone()))
+}
+
+/// Whether the account no longer holds the role a session was minted from, so that session's
+/// credential speaks for nobody.
+///
+/// A role is identified by its id and not by its name — "the stable and unique string
+/// identifying the role" (`Role$RoleId`) — so the role at `role_arn` is the principal a
+/// session was minted from only while the id the account holds it under is still the one the
+/// mint read (`minted_from`). A role deleted and created again under the same name is another
+/// principal behind the same ARN.
+///
+/// `iam` is the account's IAM records, or `None` where there are none to read, which
+/// withdraws nothing: an engine carrying no IAM store holds no evidence that a role is gone.
+/// A session whose record carries no id (`minted_from` `None`) is withdrawn only by the
+/// role's absence: nothing says the role behind it is another.
+///
+/// ONE answer, so the service that RESOLVES such a credential refuses the same dead sessions
+/// whichever service it is; what a service then ANSWERS such a request with is its own
+/// published refusal for an access key id that resolves to nothing.
+#[must_use]
+pub fn role_principal_is_withdrawn(
+    iam: Option<&IamState>,
+    role_arn: &str,
+    minted_from: Option<&str>,
+) -> bool {
+    let Some(iam) = iam else {
+        return false;
+    };
+    match resolve_role(iam, role_arn) {
+        // The account holds no role at that ARN at all.
+        None => true,
+        // It holds one, but not the one this session was minted from.
+        Some(held) => minted_from.is_some_and(|minted_from| minted_from != held.role_id),
+    }
 }
 
 /// The caller a request's access key id names, with everything its credential carries.
@@ -1160,6 +1291,8 @@ pub fn resolve_request_caller(
             tags: session.tags.clone(),
             transitive_tag_keys: session.transitive_tag_keys.clone(),
             role_arn: session.role_arn.clone(),
+            role_id: session.role_id.clone(),
+            issued_at: Some(session.created_at),
             federating_user_arn: session.federating_user_arn.clone(),
             federated_claims: session.federated_claims.clone(),
             session_policies: session.policies.clone(),
@@ -1327,6 +1460,32 @@ impl ResolvedRole {
         ::service_common::iam_authorization::resource_decision(document, &request)
             == ::service_common::iam_authorization::Decision::Allowed
     }
+
+    /// Whether this role's trust policy narrows its grant of `action` to `principals` with a
+    /// `Condition` over `key` — so that a refusal of such a request is one the key decided.
+    ///
+    /// The question a refusal's WORDING asks: AWS attributes a refused assume to the
+    /// permission the deciding statement gates, and a trust policy that admits an assume only
+    /// `when` a condition key holds a value has made that key the thing the refusal is about.
+    /// The clause's own verdict is [`Self::trust_policy_admits`]'s to give; this is asked only
+    /// once that verdict refused, which is why no condition context is passed.
+    ///
+    /// A role carrying no trust policy, or one this cannot read as a policy, narrows nothing.
+    #[must_use]
+    pub fn trust_policy_grant_turns_on(
+        &self,
+        action: &str,
+        principals: &[String],
+        key: &str,
+    ) -> bool {
+        self.trust_policy.as_deref().is_some_and(|document| {
+            let request =
+                ::service_common::iam_authorization::Request::new(action, &self.arn, principals);
+            ::service_common::iam_authorization::grant_turns_on_condition_key(
+                document, &request, key,
+            )
+        })
+    }
 }
 
 /// How AWS words an authorization refusal: the principal, the action and the resource.
@@ -1374,8 +1533,8 @@ pub fn caller_may_call(kind: Option<SessionKind>, operation: &str) -> bool {
 /// undecided and withholds the grant.
 pub const ASSUME_ROLE_PUBLISHED_CONDITION_KEYS: &[&str] = &[
     "sts:RoleSessionName",
-    "sts:ExternalId",
-    "sts:SourceIdentity",
+    EXTERNAL_ID_CONDITION_KEY,
+    SOURCE_IDENTITY_CONDITION_KEY,
     "sts:TransitiveTagKeys",
     "aws:PrincipalArn",
     "aws:PrincipalAccount",

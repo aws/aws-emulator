@@ -597,13 +597,38 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let Some(role) = role else {
             return Err(refused(ASSUME_ROLE_ACTION));
         };
+        // Whether the trust policy makes its grant to this caller turn on the SOURCE IDENTITY
+        // the mint would set — a clause over `sts:SourceIdentity` on a statement that is
+        // otherwise about this assume, wherever in the document it admits the assume itself or
+        // the source-identity set. Such a clause gates the SET and not the assume, so a
+        // refusal it decided is one about `sts:SetSourceIdentity`: "you can use the
+        // `sts:SourceIdentity` condition key in a role trust policy"
+        // (`AssumeRoleRequest$SourceIdentity`), and the permission it conditions is the one an
+        // administrator grants beside the assume.
+        let source_identity_is_gated = [ASSUME_ROLE_ACTION, SET_SOURCE_IDENTITY_ACTION]
+            .iter()
+            .any(|action| {
+                role.trust_policy_grant_turns_on(
+                    action,
+                    &principals,
+                    crate::state::SOURCE_IDENTITY_CONDITION_KEY,
+                )
+            });
+        // WHICH action a refusal of this mint names: the source-identity SET where the
+        // decision that refused it is one the carried or named source identity decided, and
+        // otherwise the action the caller asked to perform.
+        let refused_source_identity = source_identity.is_some() && source_identity_is_gated;
         if !role.trust_policy_admits(
             ASSUME_ROLE_ACTION,
             &principals,
             &condition_context,
             &published,
         ) {
-            return Err(refused(ASSUME_ROLE_ACTION));
+            return Err(refused(if refused_source_identity {
+                SET_SOURCE_IDENTITY_ACTION
+            } else {
+                ASSUME_ROLE_ACTION
+            }));
         }
 
         // Carrying session tags is a SEPARATE grant: "an administrator must grant you the
@@ -633,11 +658,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // a session that already carries a source identity, against a role whose trust
         // policy does not allow `sts:SetSourceIdentity`, is refused.
         //
-        // The refusal names the action the CALLER asked to perform. A request that names
-        // `SourceIdentity` asked to set one, so its refusal names
-        // `sts:SetSourceIdentity`; a chained request that names none asked only to assume
-        // the role — STS is what carries the calling session's value forward — so its
-        // refusal names `sts:AssumeRole`, the action the caller is not authorized for.
+        // The refusal names the action the CALLER asked to perform, unless the decision that
+        // refused it is one the source identity decided. A request that names
+        // `SourceIdentity` asked to set one, and a trust policy that conditions its grant on
+        // `sts:SourceIdentity` gates the SET for a carried value too, so either refusal names
+        // `sts:SetSourceIdentity`; a chained request that names none, against a policy that
+        // conditions nothing on the value, asked only to assume the role — STS is what
+        // carries the calling session's value forward — so its refusal names
+        // `sts:AssumeRole`, the action the caller is not authorized for.
         if source_identity.is_some()
             && !role.trust_policy_admits(
                 SET_SOURCE_IDENTITY_ACTION,
@@ -646,11 +674,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 &published,
             )
         {
-            return Err(refused(if input.source_identity.is_some() {
-                SET_SOURCE_IDENTITY_ACTION
-            } else {
-                ASSUME_ROLE_ACTION
-            }));
+            return Err(refused(
+                if input.source_identity.is_some() || refused_source_identity {
+                    SET_SOURCE_IDENTITY_ACTION
+                } else {
+                    ASSUME_ROLE_ACTION
+                },
+            ));
         }
 
         // The authorization boundary is behind us, so the request's OWN session policy is
@@ -726,6 +756,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 },
                 external_id: input.external_id.clone(),
                 role_arn: Some(role.arn.clone()),
+                // The role's own id, which is what IDENTIFIES the principal this session
+                // speaks for: a role deleted and created again under the same name is
+                // another principal behind the same ARN (see `Session::role_id`).
+                role_id: Some(role.role_id.clone()),
                 // Past the MFA challenge decided above, a request that PRESENTED one
                 // satisfied it, so the session it mints is MFA-authenticated — what the
                 // credential answers the global MFA condition key with on every later

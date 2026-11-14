@@ -804,6 +804,7 @@ mod tests {
                     policies: crate::state::SessionPolicies::default(),
                     external_id: None,
                     role_arn: Some(format!("arn:aws:iam::{account}:role/demo")),
+                    role_id: None,
                     federating_user_arn: None,
                     mfa_authenticated: false,
                     federated_claims: Vec::new(),

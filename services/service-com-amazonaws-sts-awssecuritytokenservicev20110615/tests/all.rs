@@ -68,6 +68,9 @@ mod session_record_construction;
 #[path = "all/session_tag_conditions.rs"]
 mod session_tag_conditions;
 
+#[path = "all/source_identity_refusal_wording.rs"]
+mod source_identity_refusal_wording;
+
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
 

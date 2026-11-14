@@ -210,6 +210,9 @@ fn seed_session(
             policies: SessionPolicies::default(),
             external_id: None,
             role_arn: Some(format!("arn:aws:iam::{}:role/demo", emulator_account())),
+            // The role's own id is what IDENTIFIES the principal a session speaks for; this
+            // record is made directly rather than by a mint, so it carries none.
+            role_id: None,
             // `None` for an assumed-role session, whose policies are the ROLE's.
             federating_user_arn: None,
             mfa_authenticated: false,

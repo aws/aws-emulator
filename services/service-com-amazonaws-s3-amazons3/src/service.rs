@@ -102,6 +102,10 @@ pub mod sigv4;
 // The WEBSITE ENDPOINT a bucket configured for static website hosting is served on, which is
 // a different endpoint from the REST API's — see `service/website_endpoint.rs`.
 pub mod website_endpoint;
+// The refusal a request presenting a session credential whose PRINCIPAL is gone earns, at
+// credential resolution and before any policy is read — see
+// `service/withdrawn_credential.rs`.
+pub mod withdrawn_credential;
 pub mod wire;
 
 use smithy_server_runtime::{
@@ -1267,6 +1271,14 @@ fn front_door<Eng: Send + Sync + 'static>(
         invalid_bucket_name::REFUSE_INVALID_BUCKET_NAME,
         Box::new(invalid_bucket_name::RefuseInvalidBucketName::new()),
     );
+    // And the refusal a request earns for the CREDENTIAL it presents — a session whose
+    // principal no longer exists — held here for the same reason and under a key of the same
+    // kind ([`withdrawn_credential`]): it stands in front of every operation of this service,
+    // which no routing key can name.
+    table.add_operation(
+        withdrawn_credential::REFUSE_WITHDRAWN_CREDENTIAL,
+        Box::new(withdrawn_credential::RefuseWithdrawnCredential::new()),
+    );
     // And the WEBSITE ENDPOINT, the one surface of this service that is not the REST API at
     // all: a request addressed to a bucket's website host is served from here
     // ([`website_endpoint`]), under a key of the same kind as the refusals above, because no
@@ -1479,6 +1491,25 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         }
         crate::state::service_state(&*self.engine)
             .is_some_and(|state| state.lock().holds_vended_session(access_key_id))
+    }
+
+    /// Whether `req` presents a session credential whose PRINCIPAL is gone, so its access key
+    /// id resolves to nobody: a session of a role the account no longer holds, or holds under
+    /// another id than the mint read (see [`withdrawn_credential`]).
+    ///
+    /// The key is read from the request's own credential scope, which is the one thing about a
+    /// request a client cannot choose for itself once the signature is verified; a request
+    /// presenting none — the anonymous caller — presents no session either. Read-only in the
+    /// stores it asks, and it answers `false` for every credential whose principal stands,
+    /// which is every request but a dead session's.
+    fn presents_a_withdrawn_credential(&self, req: &RtRequest) -> bool {
+        let Some(scope) = sigv4::credential_scope(req) else {
+            return false;
+        };
+        withdrawn_credential::presents_a_withdrawn_credential(
+            &*self.engine,
+            &scope.access_key_id,
+        )
     }
 
     /// Whether `req` asks for the `session` subresource of a bucket that has none: a
@@ -1983,6 +2014,13 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // never addressed it. See [`website_endpoint`].
         if website_endpoint::addressed_bucket_of(req).is_some() {
             return self.door.get(website_endpoint::WEBSITE_ENDPOINT);
+        }
+        // A request whose CREDENTIAL resolves to no principal at all — a session of a role the
+        // account no longer holds — is refused for the credential, whichever operation its
+        // address names and before any policy is read: resolving the signing key is what
+        // stands in front of every authorization decision. See [`withdrawn_credential`].
+        if self.presents_a_withdrawn_credential(req) {
+            return self.door.get(withdrawn_credential::REFUSE_WITHDRAWN_CREDENTIAL);
         }
         // A request addressing a bucket by a name S3 can address no bucket by is refused for
         // the NAME, whichever operation its address names; see

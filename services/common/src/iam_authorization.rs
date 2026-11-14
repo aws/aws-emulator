@@ -586,6 +586,47 @@ pub fn identity_may_allow_action(documents: &[PreparedDocument], action: &str) -
     })
 }
 
+/// Whether a statement of the resource-based `document` that is ABOUT `request` narrows its
+/// grant with a `Condition` over `key` — "is the decision this document took about this
+/// request one that TURNS ON that condition key?".
+///
+/// A caller asks it to word a refusal: AWS attributes a refused request to the permission the
+/// deciding statement gates, and where a document grants an action only `when` a key holds a
+/// value, that key is what the refusal is about rather than the action the caller named. So
+/// the question is about the statements that are about the request — their `Action`,
+/// `Principal` and `Resource` elements cover it — whatever their `Condition` then decides:
+/// the clause's own verdict is [`resource_decision`]'s to give, and a caller reaches here
+/// only once that verdict refused.
+///
+/// `Allow` statements only: a `Deny` is already attributable on its own, and this answers
+/// which grant the request did not satisfy. The key is compared the way a condition key's
+/// name is compared everywhere here, and a statement whose `Condition` this cannot read as a
+/// map of clauses narrows nothing it can name.
+#[must_use]
+pub fn grant_turns_on_condition_key(document: &str, request: &Request<'_>, key: &str) -> bool {
+    let prepared = PreparedDocument::read(document);
+    statements(&prepared).into_iter().any(|statement| {
+        statement["Effect"]
+            .as_str()
+            .unwrap_or_default()
+            .eq_ignore_ascii_case("Allow")
+            && covers(statement, request, Flavor::Resource) != Some(false)
+            && names_condition_key(statement, key)
+    })
+}
+
+/// Whether one statement's `Condition` element names `key`, under any operator.
+fn names_condition_key(statement: &::serde_json::Value, key: &str) -> bool {
+    statement["Condition"]
+        .as_object()
+        .is_some_and(|clauses| {
+            clauses.values().any(|keys| {
+                keys.as_object()
+                    .is_some_and(|keys| keys.keys().any(|named| named.eq_ignore_ascii_case(key)))
+            })
+        })
+}
+
 /// The spellings a policy's `Principal`/`NotPrincipal` element names a whole ACCOUNT by:
 /// that account's root ARN and its bare account id.
 ///
@@ -2729,6 +2770,99 @@ mod tests {
                 could, expected,
                 "case {case:?}: expected identity_may_allow_action {expected}, got {could}"
             );
+        }
+    }
+
+    /// RULE: a grant TURNS ON a condition key exactly when a statement that is about the
+    /// request — its action, principal and resource elements cover it — narrows an `Allow`
+    /// with a `Condition` naming that key, whatever the clause then decides and whichever
+    /// operator it is written under.
+    #[test]
+    fn a_grant_turns_on_the_condition_keys_its_own_statements_name() {
+        let named = "sts:SourceIdentity";
+        let other = "sts:ExternalId";
+        // (case, the statements of the resource-based document, whether the grant of
+        // `sts:AssumeRole` to this principal turns on `sts:SourceIdentity`)
+        let rows: [(&str, &str, bool); 9] = [
+            ("no statement at all", "", false),
+            (
+                "an unconditioned grant",
+                "{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"arn:aws:iam::000000000000:role/writer\"},\
+                 \"Action\":\"sts:AssumeRole\"}",
+                false,
+            ),
+            (
+                "a grant narrowed by the key, which the request satisfies",
+                "{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"arn:aws:iam::000000000000:role/writer\"},\
+                 \"Action\":\"sts:AssumeRole\",\
+                 \"Condition\":{\"StringEquals\":{\"sts:SourceIdentity\":\"alice\"}}}",
+                true,
+            ),
+            (
+                "the same grant under another operator",
+                "{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"arn:aws:iam::000000000000:role/writer\"},\
+                 \"Action\":\"sts:AssumeRole\",\
+                 \"Condition\":{\"StringLike\":{\"STS:SOURCEIDENTITY\":\"a*\"}}}",
+                true,
+            ),
+            (
+                "a grant narrowed by ANOTHER key",
+                "{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"arn:aws:iam::000000000000:role/writer\"},\
+                 \"Action\":\"sts:AssumeRole\",\
+                 \"Condition\":{\"StringEquals\":{\"sts:ExternalId\":\"shared\"}}}",
+                false,
+            ),
+            (
+                "a grant of ANOTHER action narrowed by the key",
+                "{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"arn:aws:iam::000000000000:role/writer\"},\
+                 \"Action\":\"sts:TagSession\",\
+                 \"Condition\":{\"StringEquals\":{\"sts:SourceIdentity\":\"alice\"}}}",
+                false,
+            ),
+            (
+                "a grant to ANOTHER principal narrowed by the key",
+                "{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"arn:aws:iam::000000000000:role/reader\"},\
+                 \"Action\":\"sts:AssumeRole\",\
+                 \"Condition\":{\"StringEquals\":{\"sts:SourceIdentity\":\"alice\"}}}",
+                false,
+            ),
+            (
+                "a DENY narrowed by the key",
+                "{\"Effect\":\"Deny\",\"Principal\":{\"AWS\":\"arn:aws:iam::000000000000:role/writer\"},\
+                 \"Action\":\"sts:AssumeRole\",\
+                 \"Condition\":{\"StringEquals\":{\"sts:SourceIdentity\":\"alice\"}}}",
+                false,
+            ),
+            (
+                "an unconditioned grant beside one narrowed by the key",
+                "{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"arn:aws:iam::000000000000:role/writer\"},\
+                 \"Action\":\"sts:TagSession\"},\
+                 {\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"arn:aws:iam::000000000000:role/writer\"},\
+                 \"Action\":\"sts:AssumeRole\",\
+                 \"Condition\":{\"StringEquals\":{\"sts:SourceIdentity\":\"alice\"}}}",
+                true,
+            ),
+        ];
+        let principals = vec!["arn:aws:iam::000000000000:role/writer".to_string()];
+        let role = "arn:aws:iam::000000000000:role/target";
+        for (case, text, expected) in rows {
+            let document = identity(text);
+            let request = Request::new("sts:AssumeRole", role, &principals);
+            let turns_on = grant_turns_on_condition_key(&document, &request, named);
+            assert_eq!(
+                turns_on, expected,
+                "case {case:?}: expected the grant to turn on {named:?} = {expected}, got \
+                 {turns_on}"
+            );
+            // The key asked about is the one answered: a document narrowed by one key does
+            // not answer for another unless it names that one too.
+            if expected && !text.contains(other) {
+                let turns_on = grant_turns_on_condition_key(&document, &request, other);
+                assert!(
+                    !turns_on,
+                    "case {case:?}: expected the grant not to turn on {other:?}, got {turns_on}"
+                );
+            }
         }
     }
 }

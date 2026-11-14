@@ -122,6 +122,23 @@ const PRINCIPAL_ACCOUNT_KEY: &str = "aws:PrincipalAccount";
 /// an `…IfExists` clause over it — the spelling a "deny unless MFA" statement is written in —
 /// holds on such a request while a clause without the suffix does not.
 const MULTI_FACTOR_AUTH_PRESENT_KEY: &str = "aws:MultiFactorAuthPresent";
+
+/// The global condition key naming the instant the SESSION whose credential signed the
+/// request was issued: "the date and time that temporary security credentials were issued"
+/// (AWS General Reference, *Global condition context keys*, `aws:TokenIssueTime`).
+///
+/// The gate ANSWERS it from the credential the request presented, because the registry that
+/// minted it records that instant (`sts_store::Caller::token_issue_time`), and it is
+/// PUBLISHED for the same reason the MFA key is: "this key is present in the request context
+/// only when the principal uses temporary credentials", so a request signed with a long-term
+/// access key carries no value for it and the key's ABSENCE is decided rather than unknown.
+///
+/// A `Deny` conditioned on it with `DateLessThan` is the shape that revokes every session a
+/// role issued before a cut-off (the `AWSRevokeOlderSessions` policy an administrator attaches
+/// to a role), and such a statement can only decide — rather than leave its refusal
+/// undecided, which words it as if nothing had granted the action — where the request answers
+/// the key.
+const TOKEN_ISSUE_TIME_KEY: &str = "aws:TokenIssueTime";
 /// The global condition key naming the account that OWNS the resource the request addressed
 /// ("aws:ResourceAccount", same published list).
 ///
@@ -205,6 +222,7 @@ pub const PUBLISHED_CONDITION_KEYS: &[&str] = &[
     PRINCIPAL_ARN_KEY,
     PRINCIPAL_ACCOUNT_KEY,
     MULTI_FACTOR_AUTH_PRESENT_KEY,
+    TOKEN_ISSUE_TIME_KEY,
 ];
 
 /// The keys a decision taken WITHOUT the caller resolved publishes ([`policy_denial`], whose
@@ -242,6 +260,7 @@ const CALLER_CONDITION_KEYS: &[&str] = &[
     PRINCIPAL_ARN_KEY,
     PRINCIPAL_ACCOUNT_KEY,
     MULTI_FACTOR_AUTH_PRESENT_KEY,
+    TOKEN_ISSUE_TIME_KEY,
 ];
 
 /// The global condition key a gate answers from the account this emulator serves, for EVERY
@@ -307,6 +326,22 @@ pub fn multi_factor_auth_conditions(present: Option<bool>) -> Vec<(String, Strin
                 present.to_string(),
             )
         })
+        .into_iter()
+        .collect()
+}
+
+/// What the request's SESSION-ISSUE-TIME key ([`TOKEN_ISSUE_TIME_KEY`]) answers for the
+/// credential that signed it: one pair when the credential belongs to a session, and NOTHING
+/// when it belongs to none — a long-term access key, where the key is simply not in the
+/// request context.
+///
+/// `issued_at` is the instant the registry recorded for the session
+/// (`sts_store::Caller::token_issue_time`), read there rather than rendered here, so this
+/// service and every other one handed the same credential answer the key with the same text.
+#[must_use]
+pub fn token_issue_time_conditions(issued_at: Option<&str>) -> Vec<(String, String)> {
+    issued_at
+        .map(|issued_at| (TOKEN_ISSUE_TIME_KEY.to_string(), issued_at.to_string()))
         .into_iter()
         .collect()
 }

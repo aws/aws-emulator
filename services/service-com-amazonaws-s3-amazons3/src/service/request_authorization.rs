@@ -57,9 +57,18 @@
 //!
 //! A statement may be CONDITIONED, and a condition is decided against the keys the request
 //! carries values for — the request's own members, the global keys this gate answers for
-//! every request, and whether the credential that signed was MFA-backed
-//! ([`authorization::multi_factor_auth_conditions`], read from the credential rather than
-//! decided here), which is what a "deny unless MFA is present" statement is written over.
+//! every request, and the two facts only the CREDENTIAL can answer: whether the one that
+//! signed was MFA-backed ([`authorization::multi_factor_auth_conditions`]), which is what a
+//! "deny unless MFA is present" statement is written over, and the instant the session it
+//! belongs to was issued ([`authorization::token_issue_time_conditions`]), which is what a
+//! statement revoking every session issued before a cut-off is written over. Both are read
+//! from the credential rather than decided here, and a long-term access key carries a value
+//! for neither.
+//!
+//! A credential whose PRINCIPAL no longer exists is not judged here at all: its access key id
+//! resolves to nobody, so the request is refused at credential resolution — before any policy
+//! is read — in the code S3 answers an access key id that resolves to nothing with (see
+//! [`super::withdrawn_credential`]).
 //!
 //! A statement that names the ACCOUNT rather than the caller (the account's root ARN, or the
 //! bare account id that stands for it) delegates to the account rather than granting — "you
@@ -274,6 +283,11 @@ pub struct Caller {
     /// long-term access key, which carries no value for the key
     /// (`sts_store::Caller::multi_factor_auth_present`).
     pub multi_factor_auth_present: Option<bool>,
+    /// What the request's SESSION-ISSUE-TIME key answers for the credential presented: `Some`
+    /// for a credential that belongs to a session, carrying the instant it was issued as the
+    /// registry recorded it (`sts_store::Caller::token_issue_time`), and `None` for a
+    /// long-term access key, which belongs to no session and carries no value for the key.
+    pub token_issue_time: Option<String>,
     /// Set when this request presents the account's own published credential, which holds no
     /// IAM policies (see the module docs).
     pub account_credential: bool,
@@ -382,6 +396,10 @@ pub fn request_caller<Eng: Send + Sync + 'static>(
                 caller.identity_policies_arn().to_string(),
                 caller.session_policies.clone(),
                 caller.multi_factor_auth_present(),
+                // The instant the session was issued, as the registry recorded it: what the
+                // request's `aws:TokenIssueTime` key answers, rendered by STS's own one
+                // reading of it (`sts_store::Caller::token_issue_time`).
+                caller.token_issue_time(),
                 // The tags are the registry's record of the session, so they are known
                 // exactly for a credential it minted.
                 caller.kind.is_some(),
@@ -396,6 +414,7 @@ pub fn request_caller<Eng: Send + Sync + 'static>(
             long_term.arn.clone(),
             sts_store::SessionPolicies::default(),
             None,
+            None,
             false,
             Vec::new(),
         )),
@@ -408,6 +427,7 @@ pub fn request_caller<Eng: Send + Sync + 'static>(
         policies_arn,
         session_policies,
         multi_factor_auth_present,
+        token_issue_time,
         tags_known,
         tags,
     )) = resolved
@@ -423,6 +443,7 @@ pub fn request_caller<Eng: Send + Sync + 'static>(
         account_principals: iam::account_principals(&arn),
         arn,
         multi_factor_auth_present,
+        token_issue_time,
         tags,
         tags_known,
         ..Caller::default()
@@ -755,6 +776,12 @@ fn caller_conditions(caller: &Caller, conditions: &[(String, String)]) -> Vec<(S
     context.extend(authorization::global_conditions(&caller.identity_arn));
     context.extend(authorization::multi_factor_auth_conditions(
         caller.multi_factor_auth_present,
+    ));
+    // The instant the session the credential belongs to was issued, which is what a statement
+    // revoking the sessions issued before a cut-off is decided against — and nothing at all
+    // for a long-term key, which belongs to no session.
+    context.extend(authorization::token_issue_time_conditions(
+        caller.token_issue_time.as_deref(),
     ));
     // The session tags the principal carries, which is what an ABAC policy conditioned on
     // `aws:PrincipalTag/<key>` is decided against.

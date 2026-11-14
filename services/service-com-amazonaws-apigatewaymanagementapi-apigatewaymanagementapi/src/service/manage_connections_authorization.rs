@@ -163,6 +163,8 @@ pub fn caller<Eng: Send + Sync + 'static>(
             tags: Vec::new(),
             transitive_tag_keys: Vec::new(),
             role_arn: None,
+            role_id: None,
+            issued_at: None,
             federating_user_arn: None,
             federated_claims: Vec::new(),
             session_policies: sts_store::SessionPolicies::default(),

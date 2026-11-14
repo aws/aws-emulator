@@ -1970,6 +1970,25 @@ pub const EXPIRED_TOKEN_STATUS: u16 = 400;
 /// See [`EXPIRED_TOKEN_CODE`] — the text that same published list carries for it.
 pub const EXPIRED_TOKEN_MESSAGE: &str = "The provided token has expired.";
 
+/// The code S3 answers a request whose ACCESS KEY ID resolves to no principal at all, with
+/// the status and the message that code carries (Amazon S3 "Error responses", list of error
+/// codes: "InvalidAccessKeyId — The AWS access key ID that you provided does not exist in our
+/// records", HTTP 403).
+///
+/// What a session credential whose principal is GONE earns — a role session whose role the
+/// account no longer holds (`sts_store::Caller::principal_is_withdrawn`) — and it is answered
+/// at credential resolution, before any policy is read: the two codes mean opposite things to
+/// a client, since this one is terminal and tells a credential provider to stop using the
+/// credential, while [`ACCESS_DENIED_CODE`] says the credential is still believed valid and
+/// only the grant is missing.
+pub const INVALID_ACCESS_KEY_ID_CODE: &str = "InvalidAccessKeyId";
+/// See [`INVALID_ACCESS_KEY_ID_CODE`].
+pub const INVALID_ACCESS_KEY_ID_STATUS: u16 = 403;
+/// See [`INVALID_ACCESS_KEY_ID_CODE`] — the sentence that same published list carries for it,
+/// which is fixed text in full: the rejected key id is not echoed back.
+pub const INVALID_ACCESS_KEY_ID_MESSAGE: &str =
+    "The AWS Access Key Id you provided does not exist in our records.";
+
 /// The message S3 refuses a request carrying no credential against a Requester Pays bucket
 /// with: "Anonymous users cannot invoke requests against Requester Pays buckets" — fixed
 /// text with no variable parts, because there is no principal to name.
