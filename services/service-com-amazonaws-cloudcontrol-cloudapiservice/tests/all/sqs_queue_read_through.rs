@@ -31,12 +31,12 @@ use super::emulator::{
 };
 
 /// The type whose resources live in the Amazon SQS service's own store.
-const QUEUE: &str = "AWS::SQS::Queue";
+pub(crate) const QUEUE: &str = "AWS::SQS::Queue";
 
 /// The url of the queue called `name`, as Amazon SQS names one:
 /// `https://<endpoint>/<accountId>/<QueueName>`. This is the type's primary identifier
 /// (`primaryIdentifier: ["/properties/QueueUrl"]`).
-fn queue_url(name: &str) -> String {
+pub(crate) fn queue_url(name: &str) -> String {
     format!(
         "https://sqs.{SIGNING_REGION}.amazonaws.com/{}/{name}",
         engine::emulator_account_id()
@@ -46,7 +46,7 @@ fn queue_url(name: &str) -> String {
 /// The ARN of that queue, built by the core's own ARN builder so a case pins the queue
 /// Cloud Control API resolved to the one Amazon SQS holds rather than to a string this
 /// suite spells.
-fn queue_arn(name: &str) -> String {
+pub(crate) fn queue_arn(name: &str) -> String {
     engine::emulator_arn("sqs", SIGNING_REGION, name)
 }
 

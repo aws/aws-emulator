@@ -21,6 +21,8 @@ mod audit_records;
 mod cancel_resource_request;
 #[path = "all/emulator.rs"]
 mod emulator;
+#[path = "all/native_queue_lifecycle.rs"]
+mod native_queue_lifecycle;
 #[path = "all/native_resource_resolution.rs"]
 mod native_resource_resolution;
 #[path = "all/primary_identifier.rs"]
