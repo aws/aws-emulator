@@ -164,20 +164,15 @@ pub(crate) fn summary_ids(answer: &Answer) -> Vec<String> {
 }
 
 /// Whether `value` has the shape of a connection group id this service mints: the `cg_`
-/// prefix followed by 13 uppercase alphanumerics, the body every CloudFront token this
-/// service mints carries.
+/// prefix followed by 27 base62 characters, the width and alphabet CloudFront writes an
+/// opaque namespaced id in (`dt_3JO1OQa51Jb3BZh7XQh6pbvF3Wa` is one of its siblings).
 ///
 /// The version-token shape is the harness's own
 /// [`crate::distribution_lifecycle::is_version_token`], so this file carries no second
 /// copy of it.
 fn is_connection_group_id(value: &str) -> bool {
     match value.strip_prefix(CONNECTION_GROUP_ID_PREFIX) {
-        Some(body) => {
-            body.len() == 13
-                && body
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || b.is_ascii_uppercase())
-        }
+        Some(body) => body.len() == 27 && body.bytes().all(|b| b.is_ascii_alphanumeric()),
         None => false,
     }
 }
@@ -785,13 +780,16 @@ async fn a_request_that_names_no_page_is_refused() {
 
     // A marker that is no connection group id at all was never a resume point.
     for (case, marker) in [
-        ("a word", "next-please"),
-        ("a distribution id", "E1234567890ABC"),
-        ("the prefix alone", CONNECTION_GROUP_ID_PREFIX),
-        ("a short body", "cg_ABC"),
-        ("a lowercase body", "cg_abcdefghijklm"),
+        ("a word", "next-please".to_string()),
+        ("a distribution id", "E1234567890ABC".to_string()),
+        ("the prefix alone", CONNECTION_GROUP_ID_PREFIX.to_string()),
+        ("a short body", "cg_ABC".to_string()),
+        (
+            "a body outside the id alphabet",
+            format!("{CONNECTION_GROUP_ID_PREFIX}{}", "-".repeat(27)),
+        ),
     ] {
-        let answer = list_connection_groups(&router, &list_body(None, Some(marker), None)).await;
+        let answer = list_connection_groups(&router, &list_body(None, Some(&marker), None)).await;
         assert_eq!(
             answer.status, 400,
             "case marker {case}: expected HTTP 400, got {} with {}",
@@ -807,7 +805,7 @@ async fn a_request_that_names_no_page_is_refused() {
 
     // A marker in the shape this service mints, naming no stored group: the entity is not
     // there.
-    let absent = format!("{CONNECTION_GROUP_ID_PREFIX}ZZZZZZZZZZZZZ");
+    let absent = format!("{CONNECTION_GROUP_ID_PREFIX}{}", "Z".repeat(27));
     assert!(
         !created.contains(&absent),
         "case an absent marker: the fixture must not hold {absent}"

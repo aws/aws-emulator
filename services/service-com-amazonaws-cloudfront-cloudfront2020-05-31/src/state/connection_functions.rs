@@ -18,10 +18,11 @@
 //! [`super::DEFAULT_FUNCTION_STAGE`] and [`super::FUNCTION_STATUS_UNPUBLISHED`] are the
 //! values named here too.
 //!
-//! Nothing in here is owed by the CLOCK: a connection function this service accepts exists
-//! in `DEVELOPMENT` immediately and reaches `LIVE` only through a
-//! `PublishConnectionFunction` CALL, so no status here is transient and the parent's
-//! `settle` has nothing to do for one.
+//! One thing here IS owed by the CLOCK: a connection function this service accepts exists
+//! in `DEVELOPMENT` immediately, but a PUBLISH of it is asynchronous, so the stage a
+//! publish writes reports [`CONNECTION_FUNCTION_STATUS_PUBLISHING`] until the parent's
+//! `settle` materialises the status that publish settles to
+//! ([`StoredConnectionFunctionStage::published_due`]).
 
 use std::time::SystemTime;
 
@@ -31,9 +32,20 @@ use crate::ops::types::{
 };
 
 use super::{
-    ComAmazonawsCloudfrontCloudfront20200531State, TagSet, ID_BODY_LEN, MAX_FUNCTIONS,
-    MAX_FUNCTION_CODE_BYTES,
+    ComAmazonawsCloudfrontCloudfront20200531State, TagSet, MAX_FUNCTIONS,
+    MAX_FUNCTION_CODE_BYTES, PROPAGATION_DELAY,
 };
+
+/// `ConnectionFunctionSummary$Status` for the stage a publish has just written.
+///
+/// Publishing a connection function is ASYNCHRONOUS: the call that starts it reports the
+/// status the copy is IN rather than the one it settles to, so a caller that waits for the
+/// publish to finish has a transient status to wait on. What it settles to is read off the
+/// stored distributions ([`super::FUNCTION_STATUS_ASSOCIATED`] /
+/// [`super::FUNCTION_STATUS_UNASSOCIATED`]) once the clock owes it
+/// ([`StoredConnectionFunctionStage::settle`]). The model targets `Status` at plain
+/// `string` and states no value list, so the word is spelled out here once.
+pub const CONNECTION_FUNCTION_STATUS_PUBLISHING: &str = "PUBLISHING";
 
 /// The prefix every connection function id this service mints carries.
 ///
@@ -95,9 +107,35 @@ pub struct StoredConnectionFunctionStage {
     /// `ConnectionFunctionSummary$LastModifiedTime` — "The connection function last
     /// modified time."
     pub last_modified_time: SystemTime,
+    /// The instant the PUBLISH that wrote this stage is owed its settled status, for a
+    /// stage still reporting [`CONNECTION_FUNCTION_STATUS_PUBLISHING`]; `None` for a stage
+    /// no publish is in flight for (a `DEVELOPMENT` stage, or a `LIVE` stage whose publish
+    /// has already settled). Stored rather than slept for.
+    pub published_due: Option<SystemTime>,
 }
 
 impl StoredConnectionFunctionStage {
+    /// Apply the publish transition the clock owes at `now`, where `associated` is whether
+    /// a stored distribution names this connection function.
+    ///
+    /// Idempotent and monotonic, as every other `settle` of this service is: it only ever
+    /// moves the in-progress status to the settled one, and only once the deadline has
+    /// passed, so a read that calls it cannot change what a later caller sees.
+    pub fn settle(&mut self, now: SystemTime, associated: bool) {
+        let Some(due) = self.published_due else {
+            return;
+        };
+        if now < due {
+            return;
+        }
+        self.status = if associated {
+            super::FUNCTION_STATUS_ASSOCIATED.to_string()
+        } else {
+            super::FUNCTION_STATUS_UNASSOCIATED.to_string()
+        };
+        self.published_due = None;
+    }
+
     /// The `ConnectionFunctionSummary` projection every connection function operation
     /// returns for this stage, read from the one stored record.
     ///
@@ -207,11 +245,16 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
     }
 
     /// Allocate a connection function id no stored connection function holds:
-    /// [`CONNECTION_FUNCTION_ID_PREFIX`] followed by a minted token, drawn from the same
-    /// mint as every other id this service generates so no two are minted the same.
+    /// [`CONNECTION_FUNCTION_ID_PREFIX`] followed by a minted opaque body, drawn from the
+    /// same mint as every other namespace-prefixed id this service generates
+    /// ([`ComAmazonawsCloudfrontCloudfront20200531State::mint_opaque_id_body`]) so the three
+    /// namespaces are written in one form.
     pub fn allocate_connection_function_id(&mut self) -> String {
         loop {
-            let candidate = format!("{CONNECTION_FUNCTION_ID_PREFIX}{}", self.mint(ID_BODY_LEN));
+            let candidate = format!(
+                "{CONNECTION_FUNCTION_ID_PREFIX}{}",
+                self.mint_opaque_id_body()
+            );
             if !self.connection_functions.contains_key(&candidate) {
                 break candidate;
             }
@@ -243,10 +286,13 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
     /// no longer matches. The `DEVELOPMENT` stage is left exactly as it was — a publish does
     /// not edit the stage it reads, and the operation hands back no new token for it.
     ///
-    /// The status the written stage reports is computed from the stored distributions
-    /// ([`Self::connection_function_is_associated`]): republishing a connection function a
-    /// distribution already names reports it as associated, publishing one nothing names
-    /// reports it as unassociated.
+    /// The publish is ASYNCHRONOUS, so the stage it writes reports
+    /// [`CONNECTION_FUNCTION_STATUS_PUBLISHING`] and the CLOCK owes it the status it settles
+    /// to — read then off the stored distributions
+    /// ([`Self::connection_function_is_associated`]), so a connection function a
+    /// distribution names settles as associated and one nothing names as unassociated. The
+    /// deadline is the span every other propagation of this service is owed over
+    /// ([`PROPAGATION_DELAY`]) and is stored rather than slept for.
     pub fn publish_connection_function(
         &mut self,
         id: &str,
@@ -255,31 +301,57 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
         if !self.connection_functions.contains_key(id) {
             return None;
         }
-        let status = if self.connection_function_is_associated(id) {
-            super::FUNCTION_STATUS_ASSOCIATED
-        } else {
-            super::FUNCTION_STATUS_UNASSOCIATED
-        };
         let etag = self.next_etag();
         let function = self.connection_functions.get_mut(id)?;
         let published = StoredConnectionFunctionStage {
             stage: super::FUNCTION_STAGE_LIVE.to_string(),
             config: function.development.config.clone(),
             code: function.development.code.clone(),
-            status: status.to_string(),
+            status: CONNECTION_FUNCTION_STATUS_PUBLISHING.to_string(),
             etag,
             created_time: function.development.created_time,
             last_modified_time: now,
+            published_due: Some(now + PROPAGATION_DELAY),
         };
         let summary = published.to_summary(&function.name, &function.id, &function.arn);
         function.live = Some(published);
         Some(summary)
     }
+
+    /// Apply the publish transition the clock owes every stored connection function at
+    /// `now` — the slice of the parent's `settle` this module owns.
+    ///
+    /// Which status a settling publish lands on is read off the stored DISTRIBUTIONS, so
+    /// the connection functions that are due are collected first and written after: the
+    /// answer comes from the same one rule a publish reads
+    /// ([`Self::connection_function_is_associated`]), never from the request being served.
+    pub fn settle_connection_functions(&mut self, now: SystemTime) {
+        let due: Vec<(String, bool)> = self
+            .connection_functions
+            .iter()
+            .filter(|(_, function)| {
+                function
+                    .live
+                    .as_ref()
+                    .is_some_and(|live| live.published_due.is_some_and(|due| now >= due))
+            })
+            .map(|(id, _)| (id.clone(), self.connection_function_is_associated(id)))
+            .collect();
+        for (id, associated) in due {
+            if let Some(live) = self
+                .connection_functions
+                .get_mut(&id)
+                .and_then(|function| function.live.as_mut())
+            {
+                live.settle(now, associated);
+            }
+        }
+    }
 }
 
 /// Whether `value` has the shape of a connection function id this service mints
-/// ([`CONNECTION_FUNCTION_ID_PREFIX`] followed by [`ID_BODY_LEN`] characters of the id
-/// alphabet).
+/// ([`CONNECTION_FUNCTION_ID_PREFIX`] followed by an opaque base62 body,
+/// [`super::is_opaque_id_body`]).
 ///
 /// `ListConnectionFunctions`'s `Marker` is a resume point "the value of `NextMarker` from
 /// the current page's response", which is an id this service handed out, and the model
@@ -288,7 +360,7 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
 pub fn is_connection_function_id(value: &str) -> bool {
     value
         .strip_prefix(CONNECTION_FUNCTION_ID_PREFIX)
-        .is_some_and(super::is_token_body)
+        .is_some_and(super::is_opaque_id_body)
 }
 
 /// Whether `config` attaches the connection function `id` names.

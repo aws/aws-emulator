@@ -38,9 +38,9 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
         for vpc_origin in self.vpc_origins.values_mut() {
             vpc_origin.settle(now);
         }
-        for anycast_ip_list in self.anycast_ip_lists.values_mut() {
-            anycast_ip_list.settle(now);
-        }
+        // The publish of a connection function settles against the stored DISTRIBUTIONS, so
+        // it is applied by the slice that owns that rule rather than by a loop here.
+        self.settle_connection_functions(now);
     }
 
     /// The key value store `name` names, or `None` when the store holds none.
@@ -1650,10 +1650,15 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
     }
 
     /// Allocate a distribution tenant id no stored tenant holds:
-    /// [`DISTRIBUTION_TENANT_ID_PREFIX`] followed by a minted token.
+    /// [`DISTRIBUTION_TENANT_ID_PREFIX`] followed by a minted opaque body
+    /// ([`ComAmazonawsCloudfrontCloudfront20200531State::mint_opaque_id_body`]) — the form
+    /// CloudFront writes an id of this namespace in.
     pub fn allocate_distribution_tenant_id(&mut self) -> String {
         loop {
-            let candidate = format!("{DISTRIBUTION_TENANT_ID_PREFIX}{}", self.mint(ID_BODY_LEN));
+            let candidate = format!(
+                "{DISTRIBUTION_TENANT_ID_PREFIX}{}",
+                self.mint_opaque_id_body()
+            );
             if !self.distribution_tenants.contains_key(&candidate) {
                 break candidate;
             }
@@ -1812,10 +1817,16 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
     }
 
     /// Allocate a connection group id no stored connection group holds:
-    /// [`CONNECTION_GROUP_ID_PREFIX`] followed by a minted token.
+    /// [`CONNECTION_GROUP_ID_PREFIX`] followed by a minted opaque body
+    /// ([`ComAmazonawsCloudfrontCloudfront20200531State::mint_opaque_id_body`]) — the form
+    /// CloudFront writes an id of this namespace in, which is also the form the ARN built
+    /// around it ([`connection_group_arn`]) carries.
     pub fn allocate_connection_group_id(&mut self) -> String {
         loop {
-            let candidate = format!("{CONNECTION_GROUP_ID_PREFIX}{}", self.mint(ID_BODY_LEN));
+            let candidate = format!(
+                "{CONNECTION_GROUP_ID_PREFIX}{}",
+                self.mint_opaque_id_body()
+            );
             if !self.connection_groups.contains_key(&candidate) {
                 break candidate;
             }
@@ -1958,18 +1969,55 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
         format!("{:016x}{:016x}", self.mint_u64(), self.mint_u64())
     }
 
+    /// A fresh OPAQUE identifier body: [`OPAQUE_ID_BODY_LEN`] characters of
+    /// [`OPAQUE_ID_ALPHABET`], the form CloudFront writes the body of a namespace-prefixed
+    /// id in.
+    ///
+    /// Rendered from as many draws of the mint as the width needs
+    /// ([`OPAQUE_ID_DIGITS_PER_DRAW`] base62 digits come off each), so the whole body
+    /// carries mint state rather than padding; the allocator that prefixes it checks the
+    /// candidate against its own store, which is what makes the id it hands out unique.
+    pub(super) fn mint_opaque_id_body(&mut self) -> String {
+        let mut body = String::with_capacity(OPAQUE_ID_BODY_LEN);
+        let mut rest = 0u64;
+        let mut digits_left = 0usize;
+        while body.len() < OPAQUE_ID_BODY_LEN {
+            if digits_left == 0 {
+                rest = self.mint_u64();
+                digits_left = OPAQUE_ID_DIGITS_PER_DRAW;
+            }
+            let digit = (rest % 62) as usize;
+            rest /= 62;
+            digits_left -= 1;
+            body.push(char::from(OPAQUE_ID_ALPHABET[digit]));
+        }
+        body
+    }
+
     /// One fresh UUID from the mint: two draws (128 bits) rendered as the 8-4-4-4-12
-    /// lowercase hex a UUID takes. ONE rendering for every resource CloudFront identifies
-    /// by UUID, so no two of them mint ids in different shapes.
+    /// lowercase hex a UUID takes, with the VERSION and VARIANT bits RFC 4122 fixes on a
+    /// randomly generated UUID — version 4 (the third group starts with `4`) and variant
+    /// `10xx` (the fourth group starts with `8`, `9`, `a` or `b`). CloudFront's own minted
+    /// policy identifiers are written in exactly that form (`658327ea-f89d-4fab-a63d-
+    /// 7e88639e58f6`, the managed `CachingOptimized` cache policy, and every other id in
+    /// [`MANAGED_CACHE_POLICIES`] and its neighbours), so a UUID this service mints carries
+    /// those bits too rather than 128 bits of mint output written in a UUID's punctuation.
+    ///
+    /// ONE rendering for every resource CloudFront identifies by UUID, so no two of them
+    /// mint ids in different shapes. The six bits the form fixes are taken off the draw, so
+    /// 122 of its 128 bits remain, and every allocator that renders one checks the
+    /// candidate against its own store before it is handed out.
     pub(super) fn mint_uuid(&mut self) -> String {
         let high = self.mint_u64();
-        let low = self.mint_u64();
+        // Version 4 in the high nibble of the 7th byte, variant `10xx` in the high two bits
+        // of the 9th: the two groups those bytes start are what a reader of a UUID checks.
+        let low = (self.mint_u64() & 0x3FFF_FFFF_FFFF_FFFF) | 0x8000_0000_0000_0000;
         let hex = format!("{high:016x}{low:016x}");
         format!(
-            "{}-{}-{}-{}-{}",
+            "{}-{}-4{}-{}-{}",
             &hex[..8],
             &hex[8..12],
-            &hex[12..16],
+            &hex[13..16],
             &hex[16..20],
             &hex[20..32]
         )

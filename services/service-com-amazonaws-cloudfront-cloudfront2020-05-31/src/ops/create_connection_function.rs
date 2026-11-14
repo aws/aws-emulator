@@ -290,6 +290,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 etag: etag.clone(),
                 created_time: now,
                 last_modified_time: now,
+                // No publish is in flight for the stage a create writes: nothing about its
+                // status is owed by the clock.
+                published_due: None,
             },
             live: None,
             // Held as the one tag representation every tagged resource uses: a later read

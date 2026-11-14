@@ -1264,6 +1264,23 @@ const ID_BODY_LEN: usize = 13;
 /// token from: decimal digits and uppercase ASCII letters.
 const TOKEN_ALPHABET: &[u8; 36] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
+/// The alphabet CloudFront draws an OPAQUE, namespace-prefixed identifier from (a
+/// distribution tenant's, a connection group's, a connection function's): base62 — decimal
+/// digits and both cases of the ASCII letters, as the observed form of such an id
+/// (`dt_3JO1OQa51Jb3BZh7XQh6pbvF3Wa`) shows. Distinct from [`TOKEN_ALPHABET`], which is
+/// the uppercase-only alphabet of the older `E`+13 entity ids.
+const OPAQUE_ID_ALPHABET: &[u8; 62] =
+    b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+/// How many characters of [`OPAQUE_ID_ALPHABET`] follow the namespace label of an opaque
+/// identifier this service mints: 27, the width of the observed form
+/// (`dt_3JO1OQa51Jb3BZh7XQh6pbvF3Wa`).
+pub const OPAQUE_ID_BODY_LEN: usize = 27;
+
+/// How many base62 digits one draw of the mint renders: 62^10 < 2^64 < 62^11, so ten is
+/// every digit a single `u64` draw carries.
+const OPAQUE_ID_DIGITS_PER_DRAW: usize = 10;
+
 /// The tag set one resource carries: tag key -> the tag's value, where a tag whose
 /// `Value` the request left out carries none.
 ///

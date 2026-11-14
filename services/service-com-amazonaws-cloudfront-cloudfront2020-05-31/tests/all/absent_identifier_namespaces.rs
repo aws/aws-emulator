@@ -524,8 +524,8 @@ async fn the_tenant_scoped_invalidation_read_keeps_its_own_identifier_contract()
 
     // Mint-shaped identifiers no create handed out: the tenant is ABSENT.
     for (case, identifier) in [
-        ("an id never minted", "dt_NEVERMINTED12"),
-        ("another id never minted", "dt_0000000000000"),
+        ("an id never minted", "dt_3JO1OQa51Jb3BZh7XQh6pbvF3Wa"),
+        ("another id never minted", "dt_000000000000000000000000000"),
     ] {
         let answer = call_op(&router, op, identifier, &tenant.etag).await;
         assert_eq!(
@@ -551,10 +551,13 @@ async fn the_tenant_scoped_invalidation_read_keeps_its_own_identifier_contract()
     // Identifiers outside that shape, in every form one takes: the member-naming sentence.
     let grossly_malformed = "A".repeat(512);
     for (case, identifier) in [
-        ("a body at another width and alphabet", "dt_3JO1OQa51Jb3BZh7XQh6pbvF3Wa"),
+        ("a body at another width", "dt_NEVERMINTED12"),
         ("a body shorter than the mint's", "dt_SHORTTOKEN"),
-        ("another namespace label", "zz_NEVERMINTED12"),
-        ("the minted form with its separator dropped", "dtNEVERMINTED12"),
+        ("another namespace label", "zz_3JO1OQa51Jb3BZh7XQh6pbvF3Wa"),
+        (
+            "the minted form with its separator dropped",
+            "dt3JO1OQa51Jb3BZh7XQh6pbvF3Wa",
+        ),
         ("a bare word", "notanid"),
         ("a grossly malformed value", grossly_malformed.as_str()),
     ] {

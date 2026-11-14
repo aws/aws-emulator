@@ -20,9 +20,10 @@
 //! * the operation addresses the resource by the `Id` its create minted, so an id no
 //!   connection function answers to — a name among them — is an entity that was not found
 //!   (HTTP 404) and publishes nothing;
-//! * the status the written stage reports is computed from the stored distributions: a
-//!   connection function a distribution names is published as associated, and one nothing
-//!   names as unassociated.
+//! * a publish is ASYNCHRONOUS: the summary it answers with reports the in-progress status,
+//!   and the CLOCK — not a call — owes the written stage the status it settles to, computed
+//!   from the stored distributions: a connection function a distribution names settles as
+//!   associated, and one nothing names as unassociated.
 //!
 //! The table rows differ along everything the copy generalises over — the name's length
 //! (both published bounds of `FunctionName`) and character classes, the runtime (every value
@@ -32,6 +33,7 @@
 //! value store — because every one of them is part of what a publish has to carry across.
 
 use std::collections::BTreeSet;
+use std::time::Instant;
 
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -41,6 +43,7 @@ use crate::connection_function_lifecycle::{
 };
 use crate::distribution_lifecycle::{
     call, config, create_distribution, emulator, is_version_token, Answer, API_VERSION,
+    POLL_INTERVAL, READY_DEADLINE,
 };
 
 /// The two values the modelled `FunctionStage` enum admits (`smithy_query(query="shape",
@@ -54,8 +57,38 @@ const STATUS_UNPUBLISHED: &str = "UNPUBLISHED";
 
 /// The status a published stage reports while no distribution names the connection
 /// function, and the one it reports while a distribution does.
-const STATUS_UNASSOCIATED: &str = "UNASSOCIATED";
+pub(crate) const STATUS_UNASSOCIATED: &str = "UNASSOCIATED";
 const STATUS_ASSOCIATED: &str = "ASSOCIATED";
+
+/// The status the stage a publish has just written reports: publishing a connection
+/// function is asynchronous, so the call that starts it answers the status the copy is IN.
+pub(crate) const STATUS_PUBLISHING: &str = "PUBLISHING";
+
+/// Look again at the `LIVE` stage of the connection function `id` until it reports
+/// `settled` — the status the CLOCK owes a publish — or [`READY_DEADLINE`] passes, which
+/// fails the case.
+///
+/// The CONDITION is what is waited for, never a span of the host's clock.
+pub(crate) async fn awaited_publish(
+    router: &MultiServiceRouter,
+    case: &str,
+    id: &str,
+    settled: &str,
+) -> Answer {
+    let deadline = Instant::now() + READY_DEADLINE;
+    loop {
+        let live = describe_connection_function(router, id, Some(STAGE_LIVE)).await;
+        if live.root().text_at("Status") == Some(settled) {
+            return live;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "case {case}: the publish never settled to {settled}, last answer {}",
+            live.raw
+        );
+        ::tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Calling the publish
@@ -271,13 +304,13 @@ async fn a_publish_copies_development_into_live_and_the_describe_reports_it() {
             &create,
             &created,
             STAGE_LIVE,
-            STATUS_UNASSOCIATED,
+            STATUS_PUBLISHING,
             "the publish",
         );
 
         // The LIVE stage answers reads from the record the publish wrote, under a version
-        // token of its own.
-        let live = describe_connection_function(&router, &created.id, Some(STAGE_LIVE)).await;
+        // token of its own — once the clock has settled the status that publish is owed.
+        let live = awaited_publish(&router, case, &created.id, STATUS_UNASSOCIATED).await;
         assert_eq!(
             live.status, 200,
             "case {case}: expected HTTP 200 describing the LIVE stage, got {} with {}",
@@ -506,8 +539,9 @@ async fn an_id_no_connection_function_answers_to_is_not_found() {
     );
 }
 
-/// The status a published stage reports is computed from the stored distributions: a
-/// connection function a distribution names is published as associated, one nothing names as
+/// A publish is ASYNCHRONOUS: the summary it answers with reports the in-progress status,
+/// and the status the written stage SETTLES to is computed from the stored distributions: a
+/// connection function a distribution names settles as associated, one nothing names as
 /// unassociated — and each publish mints a fresh version token for the stage it writes.
 #[tokio::test]
 async fn the_published_status_reports_whether_a_distribution_names_the_function() {
@@ -522,8 +556,8 @@ async fn the_published_status_reports_whether_a_distribution_names_the_function(
     let named = create_one(&router, &renamed(&row, "function_a_distribution_names")).await;
     let unnamed = create_one(&router, &renamed(&row, "function_nothing_names")).await;
 
-    // While no distribution names it, a publish reports the published-but-unassociated
-    // status.
+    // The publish itself reports the in-progress status, and while no distribution names the
+    // connection function the clock settles it to published-but-unassociated.
     let first = publish_connection_function(&router, &named.id, &named.etag).await;
     assert_eq!(
         first.status, 200,
@@ -532,10 +566,16 @@ async fn the_published_status_reports_whether_a_distribution_names_the_function(
     );
     let first_status = member(first.root(), "Status", "before any association", &first.raw);
     assert_eq!(
-        first_status, STATUS_UNASSOCIATED,
-        "case before any association: expected Status {STATUS_UNASSOCIATED}, got {first_status:?}"
+        first_status, STATUS_PUBLISHING,
+        "case before any association: expected Status {STATUS_PUBLISHING}, got {first_status:?}"
     );
-    let first_live = describe_connection_function(&router, &named.id, Some(STAGE_LIVE)).await;
+    let first_live = awaited_publish(
+        &router,
+        "before any association",
+        &named.id,
+        STATUS_UNASSOCIATED,
+    )
+    .await;
     let first_live_etag = first_live.header("etag").to_string();
 
     // A distribution that names the connection function, stored with the association it
@@ -557,7 +597,7 @@ async fn the_published_status_reports_whether_a_distribution_names_the_function(
          {stored_association:?}"
     );
 
-    // So the next publish of that connection function reports the association, under a
+    // So the next publish of that connection function settles on the association, under a
     // fresh version token.
     let again = publish_connection_function(&router, &named.id, &named.etag).await;
     assert_eq!(
@@ -567,10 +607,16 @@ async fn the_published_status_reports_whether_a_distribution_names_the_function(
     );
     let again_status = member(again.root(), "Status", "a distribution names it", &again.raw);
     assert_eq!(
-        again_status, STATUS_ASSOCIATED,
-        "case a distribution names it: expected Status {STATUS_ASSOCIATED}, got {again_status:?}"
+        again_status, STATUS_PUBLISHING,
+        "case a distribution names it: expected Status {STATUS_PUBLISHING}, got {again_status:?}"
     );
-    let live = describe_connection_function(&router, &named.id, Some(STAGE_LIVE)).await;
+    let live = awaited_publish(
+        &router,
+        "a distribution names it",
+        &named.id,
+        STATUS_ASSOCIATED,
+    )
+    .await;
     let live_status = member(live.root(), "Status", "a distribution names it", &live.raw);
     assert_eq!(
         live_status, STATUS_ASSOCIATED,
@@ -597,7 +643,16 @@ async fn the_published_status_reports_whether_a_distribution_names_the_function(
         &control.raw,
     );
     assert_eq!(
-        control_status, STATUS_UNASSOCIATED,
-        "case nothing names it: expected Status {STATUS_UNASSOCIATED}, got {control_status:?}"
+        control_status, STATUS_PUBLISHING,
+        "case nothing names it: expected Status {STATUS_PUBLISHING}, got {control_status:?}"
+    );
+    let control_live =
+        awaited_publish(&router, "nothing names it", &unnamed.id, STATUS_UNASSOCIATED).await;
+    let control_live_status =
+        member(control_live.root(), "Status", "nothing names it", &control_live.raw);
+    assert_eq!(
+        control_live_status, STATUS_UNASSOCIATED,
+        "case nothing names it: expected the describe to report Status {STATUS_UNASSOCIATED}, \
+         got {control_live_status:?}"
     );
 }

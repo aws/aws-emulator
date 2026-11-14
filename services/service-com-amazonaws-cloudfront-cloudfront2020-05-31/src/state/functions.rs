@@ -474,10 +474,34 @@ pub fn function_arn(name: &str) -> String {
     ::engine::emulator_arn("cloudfront", "", &format!("function/{name}"))
 }
 
-/// The path of a function resource under this service's API version. The resource is
-/// addressed by NAME, as `GetFunction`'s and `DescribeFunction`'s `{Name}` label is.
-pub fn function_path(name: &str) -> String {
-    format!("/2020-05-31/function/{name}")
+/// The path of a function resource under this service's API version, addressed by
+/// `identifier`.
+///
+/// The segment is whichever identifier the answer being built hands the caller to address
+/// the function with. `GetFunction` and `DescribeFunction` route on `{Name}`, so a path
+/// built for one of those is built from the name; the URL a CREATE announces
+/// ([`function_location_uri`]) carries the ARN the create minted, which is the identifier
+/// that create hands back — "The response contains an Amazon Resource Name (ARN) that
+/// uniquely identifies the function."
+pub fn function_path(identifier: &str) -> String {
+    format!("/2020-05-31/function/{identifier}")
+}
+
+/// The URL a create of a CloudFront function ANNOUNCES for it — "The URL of the CloudFront
+/// function. Use the URL to manage the function with the CloudFront API."
+///
+/// The function resource under the endpoint this request reached
+/// ([`super::location_uri`]), addressed by the ARN minted for it rather than by the name
+/// the request submitted: the ARN is the identifier a create hands back ("The response
+/// contains an Amazon Resource Name (ARN) that uniquely identifies the function", and a
+/// distribution attaches the published function "using the function's ARN"), so it is the
+/// identifier the announced URL carries and the one a client that followed the URL holds
+/// afterwards.
+pub fn function_location_uri(
+    ctx: &::smithy_server_runtime::OperationContext<'_>,
+    arn: &str,
+) -> String {
+    super::location_uri(ctx, &function_path(arn))
 }
 
 /// The modelled `FunctionAlreadyExists` (HTTP 409) for a function name that is already

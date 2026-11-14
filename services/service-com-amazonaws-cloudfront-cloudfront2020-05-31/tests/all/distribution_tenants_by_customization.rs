@@ -794,15 +794,18 @@ async fn a_request_that_names_no_page_is_refused() {
 
     // A marker that is no distribution tenant id at all was never a resume point.
     for (case, marker) in [
-        ("a word", "next-please"),
-        ("a distribution id", "E1234567890ABC"),
-        ("the prefix alone", DISTRIBUTION_TENANT_ID_PREFIX),
-        ("a short body", "dt_ABC"),
-        ("a lowercase body", "dt_abcdefghijklm"),
-        ("a tenant name", "plain-tenant"),
+        ("a word", "next-please".to_string()),
+        ("a distribution id", "E1234567890ABC".to_string()),
+        ("the prefix alone", DISTRIBUTION_TENANT_ID_PREFIX.to_string()),
+        ("a short body", "dt_ABC".to_string()),
+        (
+            "a body outside the id alphabet",
+            format!("{DISTRIBUTION_TENANT_ID_PREFIX}{}", "-".repeat(27)),
+        ),
+        ("a tenant name", "plain-tenant".to_string()),
     ] {
         let answer =
-            list_by_customization(&router, &body_for(Kind::WebAcl, web_acl, Some(marker), None))
+            list_by_customization(&router, &body_for(Kind::WebAcl, web_acl, Some(&marker), None))
                 .await;
         assert_eq!(
             answer.status, 400,
@@ -819,7 +822,7 @@ async fn a_request_that_names_no_page_is_refused() {
 
     // A marker in the shape this service mints, naming no stored tenant: the entity is not
     // there.
-    let absent = format!("{DISTRIBUTION_TENANT_ID_PREFIX}ZZZZZZZZZZZZZ");
+    let absent = format!("{DISTRIBUTION_TENANT_ID_PREFIX}{}", "Z".repeat(27));
     assert!(
         !created.iter().any(|row| row.id == absent),
         "case an absent marker: the fixture must not hold {absent}"

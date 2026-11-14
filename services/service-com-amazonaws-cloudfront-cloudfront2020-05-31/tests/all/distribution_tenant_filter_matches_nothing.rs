@@ -438,7 +438,7 @@ async fn the_page_and_marker_refusals_survive_a_filter_that_matches_nothing() {
 
     // A marker in the shape this service mints, naming no stored tenant: the entity is not
     // there, whatever the filter beside it names.
-    let absent = format!("{DISTRIBUTION_TENANT_ID_PREFIX}ZZZZZZZZZZZZZ");
+    let absent = format!("{DISTRIBUTION_TENANT_ID_PREFIX}{}", "Z".repeat(27));
     assert_ne!(
         fixture.tenant, absent,
         "case an absent marker: the fixture must not hold {absent}"

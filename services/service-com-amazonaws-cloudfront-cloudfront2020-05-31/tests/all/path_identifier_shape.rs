@@ -46,7 +46,8 @@
 use smithy_server_runtime::MultiServiceRouter;
 
 use service_com_amazonaws_cloudfront_cloudfront2020_05_31::state::{
-    id_format_invalid_message, INVALID_IF_MATCH_VERSION_MESSAGE, NO_SUCH_KEY_GROUP_MESSAGE,
+    id_format_invalid_message, DISTRIBUTION_TENANT_ID_PREFIX, INVALID_IF_MATCH_VERSION_MESSAGE,
+    NO_SUCH_KEY_GROUP_MESSAGE,
 };
 
 use crate::anycast_ip_list_lifecycle::{create_anycast_ip_list, get_anycast_ip_list, Create};
@@ -309,11 +310,11 @@ fn well_formed_but_absent(kind: Kind) -> Vec<(String, String)> {
         Kind::DistributionTenant => vec![
             (
                 "an id never minted".to_string(),
-                "dt_NEVERMINTED12".to_string(),
+                format!("{DISTRIBUTION_TENANT_ID_PREFIX}{}", "Z".repeat(27)),
             ),
             (
                 "another id never minted".to_string(),
-                "dt_0000000000000".to_string(),
+                format!("{DISTRIBUTION_TENANT_ID_PREFIX}{}", "0".repeat(27)),
             ),
         ],
         Kind::KeyGroup => vec![

@@ -59,8 +59,9 @@ fn an_id_predicate_admits_only_the_shape_its_mint_renders() {
             "case allocate_distribution_tenant_id: expected {tenant:?} to be a tenant id"
         );
         assert!(
-            !is_distribution_tenant_id(&tenant.to_lowercase()),
-            "case lower-cased: expected {tenant:?} lower-cased not to be a minted tenant id"
+            !is_distribution_tenant_id(&format!("{tenant}-")),
+            "case outside the alphabet: expected {tenant:?} with a separator appended not to \
+                 be a tenant id, since an opaque body carries none"
         );
         assert!(
             is_namespaced_resource_id(&tenant)

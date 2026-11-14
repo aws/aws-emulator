@@ -39,7 +39,7 @@ use crate::connection_function_lifecycle::{
     create_connection_function, create_table, describe_connection_function, key_value_store_arn,
     member, Create,
 };
-use crate::connection_function_publish::publish_connection_function;
+use crate::connection_function_publish::{awaited_publish, publish_connection_function};
 use crate::distribution_lifecycle::{call, emulator, Answer, Node, API_VERSION};
 
 /// The two values the modelled `FunctionStage` enum admits (`smithy_query(query="shape",
@@ -179,12 +179,15 @@ async fn seed(router: &MultiServiceRouter, store_name: &str) -> Vec<Seeded> {
         let published = PUBLISHED_ROWS.contains(&index);
         if published {
             let etag = answer.header("etag").to_string();
-            let published = publish_connection_function(router, &id, &etag).await;
+            let answered = publish_connection_function(router, &id, &etag).await;
             assert_eq!(
-                published.status, 200,
+                answered.status, 200,
                 "case {case}: expected HTTP 200 from the publish, got {} with {}",
-                published.status, published.raw
+                answered.status, answered.raw
             );
+            // A publish is asynchronous, so the seed waits for the status the CLOCK owes the
+            // stage it wrote: what this suite asserts is the projection of a settled stage.
+            awaited_publish(router, case, &id, STATUS_UNASSOCIATED).await;
         }
         seeded.push(Seeded {
             create,
@@ -598,11 +601,17 @@ async fn a_marker_this_service_never_handed_out_is_refused() {
         ("a value that is no id at all", "not-a-marker".to_string()),
         ("a distribution id", "E1A2B3C4D5E6F7".to_string()),
         ("the prefix alone", "cf_".to_string()),
-        ("a body that is too short", "cf_ABCDEFGHIJKL".to_string()),
-        ("a body that is too long", "cf_ABCDEFGHIJKLMN".to_string()),
+        (
+            "a body that is too short",
+            format!("cf_{}", "A".repeat(26)),
+        ),
+        (
+            "a body that is too long",
+            format!("cf_{}", "A".repeat(28)),
+        ),
         (
             "a body outside the id alphabet",
-            "cf_abcdefghijklm".to_string(),
+            format!("cf_{}", "-".repeat(27)),
         ),
         (
             "the name a stored connection function answers to",
@@ -628,8 +637,8 @@ async fn a_marker_this_service_never_handed_out_is_refused() {
     // not the store still holds a connection function under it: the first id the store holds,
     // one past the last, and each id the store does hold.
     let mut resume_points = vec![
-        ("below every stored id", "cf_0000000000000".to_string()),
-        ("past every stored id", "cf_ZZZZZZZZZZZZZ".to_string()),
+        ("below every stored id", format!("cf_{}", "0".repeat(27))),
+        ("past every stored id", format!("cf_{}", "z".repeat(27))),
     ];
     resume_points.extend(all.iter().map(|id| ("a stored id", id.clone())));
     for (case, marker) in resume_points {

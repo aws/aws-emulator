@@ -271,8 +271,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             tags,
         };
         let function_summary = stored.development.to_summary(&stored.name, &stored.arn);
-        let location =
-            crate::state::location_uri(ctx, &crate::state::function_path(&stored.name));
+        // "The URL of the CloudFront function": the function resource under the endpoint
+        // this request reached, addressed by the ARN this create minted — the identifier
+        // the create hands back and the one later calls attach the function by.
+        let location = crate::state::function_location_uri(ctx, &stored.arn);
         store.functions.insert(input.name, stored);
 
         Ok(CreateFunctionOutput {

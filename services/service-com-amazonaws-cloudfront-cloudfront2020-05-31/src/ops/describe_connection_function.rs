@@ -145,11 +145,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(crate::state::store_unavailable());
         };
 
-        // A READ: the store is locked only to copy the record out of it. Nothing about a
-        // connection function is owed by the clock — it reaches the LIVE stage through a
-        // `PublishConnectionFunction` call, never by waiting — so this read materialises
-        // nothing and leaves what a later caller sees untouched.
-        let store = state.lock();
+        // A READ, which materialises only what the CLOCK already owes: a publish of a
+        // connection function is asynchronous, so the status its LIVE stage reports settles
+        // on a deadline this read is held to as well. The transition was owed at the same
+        // instant whether or not anybody called, so nothing a later caller sees is changed
+        // by this read.
+        let mut store = state.lock();
+        store.settle(::std::time::SystemTime::now());
 
         // "The connection function's stage", either DEVELOPMENT or LIVE: a request that
         // names no stage addresses the stage a connection function is created in.

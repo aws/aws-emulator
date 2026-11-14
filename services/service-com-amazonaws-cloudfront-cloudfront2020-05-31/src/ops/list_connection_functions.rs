@@ -173,10 +173,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .as_deref()
             .unwrap_or(crate::state::DEFAULT_FUNCTION_STAGE);
 
-        // A READ: nothing about a connection function is owed by the clock — it reaches its
-        // `LIVE` stage through a `PublishConnectionFunction` call rather than by waiting —
-        // so this read materialises nothing and leaves what a later caller sees untouched.
-        let store = state.lock();
+        // A READ, which materialises only what the CLOCK already owes: a publish of a
+        // connection function is asynchronous, so the status a `LIVE` stage reports settles
+        // on a deadline this listing is held to as well, and no item reports a stale status.
+        let mut store = state.lock();
+        store.settle(::std::time::SystemTime::now());
 
         // The marker is "the value of NextMarker from the current page's response", which is
         // a connection function id this service handed out: a value that is not one was never

@@ -256,17 +256,17 @@ pub(crate) fn create_table(kvs_arn: &str) -> Vec<Create> {
 // Reading what the service stored
 // ---------------------------------------------------------------------------
 
-/// A connection function id's shape: `cf_` followed by 13 uppercase alphanumerics, checked
-/// here rather than through the crate's own constant so a wrong constant cannot make this
-/// test pass. `ResourceId` is `length 1..64`, which the shape obeys.
+/// A connection function id's shape: `cf_` followed by 27 base62 characters, the width and
+/// alphabet CloudFront writes an opaque namespaced id in (`dt_3JO1OQa51Jb3BZh7XQh6pbvF3Wa`
+/// is one of its siblings). Checked here rather than through the crate's own constant so a
+/// wrong constant cannot make this test pass. `ResourceId` is `length 1..64`, which the
+/// shape obeys.
 fn is_connection_function_id(value: &str) -> bool {
     match value.strip_prefix("cf_") {
         Some(body) => {
             value.len() <= 64
-                && body.len() == 13
-                && body
-                    .chars()
-                    .all(|c| c.is_ascii_digit() || c.is_ascii_uppercase())
+                && body.len() == 27
+                && body.chars().all(|c| c.is_ascii_alphanumeric())
         }
         None => false,
     }

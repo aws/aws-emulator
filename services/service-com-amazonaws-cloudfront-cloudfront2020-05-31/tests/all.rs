@@ -177,6 +177,8 @@ mod function_test_not_found_message;
 mod function_test_run;
 #[path = "all/function_update.rs"]
 mod function_update;
+#[path = "all/generated_identifier_shapes.rs"]
+mod generated_identifier_shapes;
 #[path = "all/invalidation_list.rs"]
 mod invalidation_list;
 #[path = "all/invalidation_path_set.rs"]

@@ -480,7 +480,7 @@ async fn create_persists_the_function_both_reads_then_report() {
         let location = created.header("location").to_string();
         assert_eq!(
             location,
-            format!("https://{HOST}/{API_VERSION}/function/{}", create.name),
+            format!("https://{HOST}/{API_VERSION}/function/{arn}"),
             "case {case}: expected the new function's URI in Location, got {location:?}"
         );
         assert!(arns.insert(arn.clone()), "case {case}: the ARN {arn} repeated");

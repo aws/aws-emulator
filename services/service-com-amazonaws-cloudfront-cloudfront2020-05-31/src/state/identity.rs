@@ -788,7 +788,8 @@ pub fn is_streaming_distribution_id(value: &str) -> bool {
 }
 
 /// Whether `value` has the shape of a connection group id this service mints
-/// ([`CONNECTION_GROUP_ID_PREFIX`] followed by [`ID_BODY_LEN`] uppercase alphanumerics).
+/// ([`CONNECTION_GROUP_ID_PREFIX`] followed by an opaque base62 body of
+/// [`OPAQUE_ID_BODY_LEN`] characters, [`is_opaque_id_body`]).
 ///
 /// `ListConnectionGroups`'s `Marker` is "the marker for the next set of connection groups
 /// to retrieve", which is a value this service handed out, and the model constrains it no
@@ -797,12 +798,12 @@ pub fn is_streaming_distribution_id(value: &str) -> bool {
 pub fn is_connection_group_id(value: &str) -> bool {
     value
         .strip_prefix(CONNECTION_GROUP_ID_PREFIX)
-        .is_some_and(is_token_body)
+        .is_some_and(is_opaque_id_body)
 }
 
 /// Whether `value` has the shape of a distribution tenant id this service MINTS
-/// ([`DISTRIBUTION_TENANT_ID_PREFIX`] followed by [`ID_BODY_LEN`] characters of the id
-/// alphabet).
+/// ([`DISTRIBUTION_TENANT_ID_PREFIX`] followed by an opaque base62 body of
+/// [`OPAQUE_ID_BODY_LEN`] characters, [`is_opaque_id_body`]).
 ///
 /// A distribution tenant listing's `Marker` is "the marker for the next set of results",
 /// which is a tenant id this service handed out, and the model constrains it no further
@@ -816,7 +817,7 @@ pub fn is_connection_group_id(value: &str) -> bool {
 pub fn is_distribution_tenant_id(value: &str) -> bool {
     value
         .strip_prefix(DISTRIBUTION_TENANT_ID_PREFIX)
-        .is_some_and(is_token_body)
+        .is_some_and(is_opaque_id_body)
 }
 
 /// The longest a namespace label may be in an identifier [`is_namespaced_resource_id`]
@@ -1011,6 +1012,13 @@ pub(super) fn is_prefixed_token(value: &str, prefix: char) -> bool {
 /// token this service mints carries, whatever prefix it is minted under.
 pub(super) fn is_token_body(body: &str) -> bool {
     body.len() == ID_BODY_LEN && body.bytes().all(is_token_byte)
+}
+
+/// Whether `body` could be the body of an OPAQUE namespace-prefixed identifier this
+/// service MINTS: [`OPAQUE_ID_BODY_LEN`] characters of the base62 alphabet CloudFront
+/// writes such a body in (`dt_3JO1OQa51Jb3BZh7XQh6pbvF3Wa`).
+pub(super) fn is_opaque_id_body(body: &str) -> bool {
+    body.len() == OPAQUE_ID_BODY_LEN && body.bytes().all(|b| b.is_ascii_alphanumeric())
 }
 
 /// A byte of the id alphabet: a decimal digit or an uppercase ASCII letter.

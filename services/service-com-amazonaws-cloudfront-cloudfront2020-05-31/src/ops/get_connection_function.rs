@@ -145,10 +145,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(crate::state::store_unavailable());
         };
 
-        // A READ: the store is locked only to copy the code out of it. Nothing about a
-        // connection function is owed by the clock -- it reaches the LIVE stage through a
-        // `PublishConnectionFunction` call, never by waiting -- so this read materialises
-        // nothing and leaves what a later caller sees untouched.
+        // A READ: the store is locked only to copy the code out of it. The code a stage
+        // holds is not owed by the clock — only the status a publish settles to is, and this
+        // read reports no status — so it materialises nothing and leaves what a later caller
+        // sees untouched.
         let store = state.lock();
 
         // "The connection function's stage", either DEVELOPMENT or LIVE: a request that
