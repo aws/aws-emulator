@@ -923,3 +923,161 @@ async fn a_conditioned_grant_covers_only_the_actions_it_names() {
          got {body}"
     );
 }
+
+/// The longest name a context key is named by, which is the bound the member naming one
+/// publishes: `ContextKeyNameType` is length 5..256
+/// (`smithy_query(query="shape",shape="ContextKeyNameType")`).
+const SHORTEST_CONTEXT_KEY_NAME: usize = 5;
+const LONGEST_CONTEXT_KEY_NAME: usize = 256;
+
+/// A condition key name of exactly `characters` characters, opening with a service prefix so
+/// it reads as a context key name and not as something else.
+fn context_key_of(characters: usize) -> String {
+    let prefix = "aws:k";
+    format!(
+        "{prefix}{}",
+        "e".repeat(characters.saturating_sub(prefix.len()))
+    )
+}
+
+/// RULE: a key the simulated decision needed a value for is reported only where its name is
+/// a context key NAME — so a name within the published length is reported, at either bound,
+/// and a name past it is not reported at all, since no request could have supplied a value
+/// for a key that cannot be named.
+#[tokio::test]
+async fn only_a_name_a_context_key_can_have_is_reported_as_missing() {
+    let router = router();
+    // The rows are the published bounds and one character past the longest: the shortest
+    // name the member admits, the longest, and the first that is no context key name.
+    let rows: &[(&str, usize, bool)] = &[
+        ("the shortest name a context key has", SHORTEST_CONTEXT_KEY_NAME, true),
+        ("the longest name a context key has", LONGEST_CONTEXT_KEY_NAME, true),
+        (
+            "one character past the longest name",
+            LONGEST_CONTEXT_KEY_NAME + 1,
+            false,
+        ),
+    ];
+    for (row, (case, characters, reportable)) in rows.iter().enumerate() {
+        let user_name = format!("ctx-name{row}");
+        create_user(&router, case, &user_name, &[]).await;
+        let arn = user_arn(&user_name);
+        let key = context_key_of(*characters);
+        assert_eq!(
+            key.len(),
+            *characters,
+            "case {case:?}: the row's key must be {characters} characters, got {}",
+            key.len()
+        );
+        // A positive clause over a key the request supplies no value for is false, so the
+        // deny does not apply and the key is one the decision needed a value for — the
+        // reading `the_simulator_reports_only_the_keys_its_decision_needed` pins.
+        put_policy(
+            &router,
+            case,
+            &user_name,
+            "allow",
+            &format!(
+                r#"{{"Version":"2012-10-17","Statement":[{{"Effect":"Allow","Action":"iam:ListUserTags","Resource":"{arn}"}}]}}"#
+            ),
+        )
+        .await;
+        put_policy(
+            &router,
+            case,
+            &user_name,
+            "deny-conditioned",
+            &format!(
+                r#"{{"Version":"2012-10-17","Statement":[{{"Effect":"Deny","Action":"iam:ListUserTags","Resource":"{arn}","Condition":{{"StringEquals":{{"{key}":"anything"}}}}}}]}}"#
+            ),
+        )
+        .await;
+
+        let (status, body) = simulate(&router, &arn, &["iam:ListUserTags"], &[&arn], &[]).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected 200, got {status}: {body}"
+        );
+        assert_eq!(
+            reported(&body),
+            vec![("iam:ListUserTags".to_string(), ALLOWED.to_string())],
+            "case {case:?}: the clause the absence falsifies must leave the grant standing, \
+             got {body}"
+        );
+        let reported_missing = missing_keys(&body);
+        let expected: Vec<String> = if *reportable {
+            // One entry per result the key is reported on: the action's own result and its
+            // one resource-specific result.
+            vec![key.clone(), key.clone()]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(
+            reported_missing, expected,
+            "case {case:?}: expected {} reported for a {characters}-character name, got \
+             {reported_missing:?}",
+            if *reportable { "the key" } else { "no key" }
+        );
+    }
+}
+
+/// How many context keys one simulation may report as missing a value
+/// (`crate::state::simulated_decisions::MAX_SIMULATED_CONTEXT_KEYS`).
+const MAX_REPORTABLE_MISSING_KEYS: usize = 100;
+
+/// RULE: a simulation whose documents test more keys than one report may carry is refused
+/// rather than answered with a report nothing bounds — at the bound it is still served.
+#[tokio::test]
+async fn a_report_past_the_reportable_key_bound_is_refused() {
+    let router = router();
+    // The bound itself and one key past it: the first is answered, the second refused.
+    for (case, keys) in [
+        ("as many keys as one report carries", MAX_REPORTABLE_MISSING_KEYS),
+        ("one key past the bound", MAX_REPORTABLE_MISSING_KEYS + 1),
+    ] {
+        let user_name = format!("ctx-count{keys}");
+        create_user(&router, case, &user_name, &[]).await;
+        let arn = user_arn(&user_name);
+        let clauses: Vec<String> = (0..keys)
+            .map(|at| format!(r#""aws:key{at}":"anything""#))
+            .collect();
+        // Supplied with the request rather than attached: a document testing this many keys
+        // is past the size an inline policy may have, and "an optional list of additional
+        // policy documents to include in the simulation" is what carries it.
+        let supplied = vec![(
+            "PolicyInputList.member.1".to_string(),
+            format!(
+                r#"{{"Version":"2012-10-17","Statement":[{{"Effect":"Deny","Action":"iam:ListUserTags","Resource":"{arn}","Condition":{{"StringEquals":{{{}}}}}}}]}}"#,
+                clauses.join(",")
+            ),
+        )];
+
+        let (status, body) =
+            simulate(&router, &arn, &["iam:ListUserTags"], &[&arn], &supplied).await;
+        if keys <= MAX_REPORTABLE_MISSING_KEYS {
+            assert_eq!(
+                status, 200,
+                "case {case:?}: a report within the bound must be answered, got {status}: \
+                 {body}"
+            );
+            assert_eq!(
+                missing_keys(&body).len(),
+                // One list per result the keys are reported on: the action's own and its
+                // one resource-specific result.
+                keys * 2,
+                "case {case:?}: expected every key the decision needed, got {body}"
+            );
+            continue;
+        }
+        assert_eq!(
+            status, 400,
+            "case {case:?}: a report past the bound must be refused, got {status}: {body}"
+        );
+        assert_eq!(
+            error_code(&body),
+            "InvalidInput",
+            "case {case:?}: expected InvalidInput, got {:?}: {body}",
+            error_code(&body)
+        );
+    }
+}

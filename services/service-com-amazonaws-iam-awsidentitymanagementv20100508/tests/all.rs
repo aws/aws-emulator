@@ -379,6 +379,8 @@ mod simulated_principal_sources;
 mod simulated_resource_names;
 #[path = "all/simulated_resource_policy.rs"]
 mod simulated_resource_policy;
+#[path = "all/simulated_resource_policy_refusal.rs"]
+mod simulated_resource_policy_refusal;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
 #[path = "all/unparseable_arn_refusal_wording.rs"]

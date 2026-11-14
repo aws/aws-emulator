@@ -4308,16 +4308,32 @@ pub enum PolicyDocumentDefect {
     NoResources,
 }
 
-/// The fixed sentence IAM refuses an identity or resource policy document it cannot read
-/// as a policy with: one that does not parse as a JSON object, and one that parses and
-/// carries no `Statement` element.
+/// The fixed sentence IAM refuses an IDENTITY policy document it cannot read as a policy
+/// with: one that does not parse as a JSON object, and one that parses and carries no
+/// `Statement` element.
 ///
 /// IAM's identity-policy validator reports both as a SYNTAX error and gives no diagnosis
 /// at all — recorded behaviour for a `CreatePolicy` whose document is valid JSON carrying
 /// only `Version` — so the whole message is fixed text. The TRUST-policy validator is the
 /// one that tells the two apart ([`TRUST_POLICY_INVALID_JSON`],
-/// [`POLICY_HAS_NO_STATEMENTS`]).
+/// [`POLICY_HAS_NO_STATEMENTS`]), and a document supplied where a RESOURCE-BASED policy
+/// belongs is refused as that document class's own refusal states
+/// ([`INVALID_RESOURCE_POLICY`]).
 pub const SYNTAX_ERRORS_IN_POLICY: &str = "Syntax errors in policy.";
+
+/// The fixed sentence IAM refuses a document supplied where a RESOURCE-BASED policy is
+/// expected — the simulations' `ResourcePolicy` member — that it cannot use as one with.
+///
+/// A resource-based policy is read by a validator of its own, and this is the one sentence
+/// it words every such refusal in, whatever clause of that document class's grammar the
+/// document breaks (`service_common::iam_policy::resource_policy_defect`, the tree's one
+/// reading of what a resource-based document is): fixed text, carrying nothing of the
+/// document and nothing of the member that supplied it. It is what tells a caller that the
+/// DOCUMENT CLASS is wrong — the policy it supplied is not one that can be attached to a
+/// resource — rather than that some identity policy failed to parse
+/// ([`SYNTAX_ERRORS_IN_POLICY`]), which is the only thing distinguishing the two classes
+/// behind the one error code the operation models.
+pub const INVALID_RESOURCE_POLICY: &str = "Invalid Resource Policy.";
 
 /// How IAM refuses an entry of a `PolicyInputList` it cannot read as a policy document:
 /// the fixed text, carrying the POSITION of the offending entry in the list it arrived in,
@@ -4361,9 +4377,9 @@ pub const STATEMENT_WITHOUT_RESOURCES: &str = "Policy statement must contain res
 
 impl PolicyDocumentDefect {
     /// How IAM words this defect in the modelled `MalformedPolicyDocumentException` for an
-    /// IDENTITY or RESOURCE policy document: a FIXED sentence per defect, carrying nothing
-    /// of the document and nothing of the member that supplied it, so every operation
-    /// taking such a document refuses the same text for the same defect.
+    /// IDENTITY policy document: a FIXED sentence per defect, carrying nothing of the
+    /// document and nothing of the member that supplied it, so every operation taking such
+    /// a document refuses the same text for the same defect.
     ///
     /// A document that is no JSON object and one that carries no `Statement` are both
     /// reported as the SYNTAX defect here ([`SYNTAX_ERRORS_IN_POLICY`]): this validator

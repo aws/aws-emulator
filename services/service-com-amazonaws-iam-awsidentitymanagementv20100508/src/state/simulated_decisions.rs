@@ -76,6 +76,19 @@ const EVALUATIONS_PER_YIELD: usize = 64;
 /// answered.
 const MAX_SIMULATED_CONTEXT_KEYS: usize = 100;
 
+/// How long a context key NAME a report of one may carry, which is the bound the member
+/// naming a context key states: `ContextKeyNameType` is length 5..256
+/// (`smithy_query(query="shape",shape="ContextKeyNameType")`), so a longer name is no
+/// context key name and no request could have supplied a value for it.
+///
+/// It is what bounds the SIZE of a report beside the COUNT
+/// [`MAX_SIMULATED_CONTEXT_KEYS`] bounds: the names come out of the documents the request
+/// supplies, each of which may be 131,072 characters, and the keys one pair needed a value
+/// for are kept for the whole page ([`decide`]) — so without a bound on the name the page's
+/// retention would be its pairs times what those documents carry rather than times a
+/// constant of this module.
+const MAX_CONTEXT_KEY_NAME_CHARACTERS: usize = 256;
+
 /// How many condition values one request may supply in `ContextEntries` — counted over
 /// every value of every entry, since each is one value the decision may test against.
 /// Bounded for the same reason the other axes are: the keys the documents test are
@@ -205,19 +218,33 @@ pub fn request_defect(request: &SimulationInput<'_>) -> Option<String> {
             return Some(super::policy_input_list_item_invalid(position));
         }
     }
-    // Every other document the request supplies is refused with the fixed sentence the
-    // shared validator words, which carries neither the member that supplied the document
-    // nor anything read out of it.
+    // Every other IDENTITY-side document the request supplies is refused with the fixed
+    // sentence the shared validator words, which carries neither the member that supplied
+    // the document nor anything read out of it.
     let documents = request
         .boundary
         .iter()
         .chain(request.organization_levels.iter().flatten())
-        .map(String::as_str)
-        .chain(request.resource_policy);
+        .map(String::as_str);
     for document in documents {
         if let Some(defect) = super::policy_document_defect(document) {
             return Some(defect.message().to_string());
         }
+    }
+    // "A resource-based policy to include in the simulation provided as a string"
+    // (`ResourcePolicy`): what that member takes is a policy of one CLASS — one that can
+    // be attached to a resource — so the document is read by the tree's one reading of that
+    // class (`service_common::iam_policy::resource_policy_defect`, which every service
+    // handed such a document reads it by, so two of them cannot disagree about whether a
+    // document is one), and a document breaking any clause of it is refused as exactly
+    // that, in the one sentence IAM words that refusal in
+    // (`super::INVALID_RESOURCE_POLICY`), rather than through the identity-policy
+    // validator's parse-failure sentence: the sentence is the only thing that tells the two
+    // classes apart behind the one error code both are refused with.
+    if request.resource_policy.is_some_and(|document| {
+        ::service_common::iam_policy::resource_policy_defect(document).is_some()
+    }) {
+        return Some(super::INVALID_RESOURCE_POLICY.to_string());
     }
     // "An IAM entity can only have one permissions boundary in effect at a time. You can
     // input only one permissions boundary when you pass a policy to this operation."
@@ -510,21 +537,6 @@ pub async fn evaluate_page(
         // the request asked about, the way the permissions boundary's detail beside it is
         // aggregated ([`boundary_detail`]).
         let mut allowed_by_organizations: Option<bool> = None;
-        for resource in resources {
-            let decided = decide(simulated, action, resource);
-            if let Some(allowed) = decided.allowed_by_organizations {
-                allowed_by_organizations =
-                    Some(allowed && allowed_by_organizations.unwrap_or(true));
-            }
-            per_resource.push(decided.result);
-            decided_pairs += 1;
-            // The evaluation is synchronous work inside an async handler, so it hands the
-            // executor back periodically: one simulation never holds a worker for its
-            // whole run, whatever this page was asked to decide.
-            if decided_pairs.is_multiple_of(EVALUATIONS_PER_YIELD) {
-                ::tokio::task::yield_now().await;
-            }
-        }
         // "A list of context keys that are required by the included input policies but
         // that were not provided by one of the input parameters": the keys the DECISION
         // needed a value for and the request carried none, which each resource's own
@@ -536,26 +548,53 @@ pub async fn evaluate_page(
         // when the resource in a simulation is '*' … if you include a list of resources,
         // then any missing context values are instead included under the
         // ResourceSpecificResults section."
-        let missing = folded_keys(
-            per_resource
-                .iter()
-                .flat_map(|result| result.missing_context_values.iter().flatten().cloned()),
-        );
+        //
+        // Folded as each pair is decided rather than over the finished page, so the bound
+        // below is reached — and the request refused — at the pair that reaches it,
+        // before the keys of the pairs after it are retained.
+        let mut missing: ::std::collections::BTreeMap<String, String> =
+            ::std::collections::BTreeMap::new();
+        for resource in resources {
+            let decided = decide(simulated, action, resource);
+            if let Some(allowed) = decided.allowed_by_organizations {
+                allowed_by_organizations =
+                    Some(allowed && allowed_by_organizations.unwrap_or(true));
+            }
+            fold_keys_into(
+                &mut missing,
+                decided
+                    .result
+                    .missing_context_values
+                    .iter()
+                    .flatten()
+                    .cloned(),
+            );
+            // The list is reported on every result the page carries, so its length is a
+            // factor of the response's size: past the bound the request is refused rather
+            // than answered with a report nothing bounds. Truncating the list instead
+            // would be worse — a short list would read as "these are the only keys
+            // missing".
+            if missing.len() > MAX_SIMULATED_CONTEXT_KEYS {
+                return Err(format!(
+                    "Invalid value for PolicyInputList: the policies in force test more \
+                     than {MAX_SIMULATED_CONTEXT_KEYS} context keys the request supplied \
+                     no value for, and at most that many may be reported in one simulation"
+                ));
+            }
+            per_resource.push(decided.result);
+            decided_pairs += 1;
+            // The evaluation is synchronous work inside an async handler, so it hands the
+            // executor back periodically: one simulation never holds a worker for its
+            // whole run, whatever this page was asked to decide.
+            if decided_pairs.is_multiple_of(EVALUATIONS_PER_YIELD) {
+                ::tokio::task::yield_now().await;
+            }
+        }
+        let missing: Vec<String> = missing.into_values().collect();
         if !reports_each_resource {
             for result in &mut per_resource {
                 result.missing_context_values = None;
             }
-        }
-        // The list is reported on every result the page carries, so its length is a
-        // factor of the response's size: past the bound the request is refused rather
-        // than answered with a report nothing bounds. Truncating the list instead would
-        // be worse — a short list would read as "these are the only keys missing".
-        if missing.len() > MAX_SIMULATED_CONTEXT_KEYS {
-            return Err(format!(
-                "Invalid value for PolicyInputList: the policies in force test more than \
-                 {MAX_SIMULATED_CONTEXT_KEYS} context keys the request supplied no value \
-                 for, and at most that many may be reported in one simulation"
-            ));
         }
         let first = per_resource.first().cloned().unwrap_or_default();
         // "In the top-level result, this field contains the union of matched statements
@@ -711,8 +750,10 @@ fn decide(simulated: &Simulated<'_>, action: &str, resource: &str) -> Decided {
             // bounded by the evaluation
             // (`service_common::iam_authorization::MAX_REQUIRED_CONTEXT_KEYS`), and the
             // list kept per pair stops one key past the bound this report is answered
-            // under, so the page's retention is its pairs times that bound rather than
-            // times what the documents carry; [`evaluate_page`] refuses past it.
+            // under and holds no name longer than one
+            // ([`MAX_CONTEXT_KEY_NAME_CHARACTERS`]) — so the page's retention is its pairs
+            // times two constants of this module rather than times what the documents
+            // carry; [`evaluate_page`] refuses past the first of them.
             missing_context_values: {
                 let missing = folded_keys(
                     identity
@@ -800,12 +841,32 @@ fn cross_account_decision(identity: iam::Decision, resource: iam::Decision) -> &
 fn folded_keys<I: IntoIterator<Item = String>>(keys: I) -> Vec<String> {
     let mut folded: ::std::collections::BTreeMap<String, String> =
         ::std::collections::BTreeMap::new();
-    for key in keys {
-        folded
-            .entry(key.to_ascii_lowercase())
-            .or_insert_with(|| key.clone());
-    }
+    fold_keys_into(&mut folded, keys);
     folded.into_values().collect()
+}
+
+/// Fold `keys` INTO `folded`, which is the same fold [`folded_keys`] answers, kept open so
+/// a caller folding one report out of many pieces reads the set so far between them.
+///
+/// A name longer than the longest context key name a report of one may carry
+/// ([`MAX_CONTEXT_KEY_NAME_CHARACTERS`]) is left out: it names no context key, so the
+/// simulation could have needed no value for it, and the fold's size stays a constant of
+/// this module. Folding stops one entry past the bound a report is answered under
+/// ([`MAX_SIMULATED_CONTEXT_KEYS`]), which is the length its caller refuses on: nothing is
+/// retained for a report that cannot be answered.
+fn fold_keys_into<I: IntoIterator<Item = String>>(
+    folded: &mut ::std::collections::BTreeMap<String, String>,
+    keys: I,
+) {
+    for key in keys {
+        if key.len() > MAX_CONTEXT_KEY_NAME_CHARACTERS {
+            continue;
+        }
+        folded.entry(key.to_ascii_lowercase()).or_insert(key);
+        if folded.len() > MAX_SIMULATED_CONTEXT_KEYS {
+            break;
+        }
+    }
 }
 
 /// The decision the ACTION's own result reports, from the decisions its resources were
