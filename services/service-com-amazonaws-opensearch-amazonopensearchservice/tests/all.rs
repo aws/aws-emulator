@@ -143,6 +143,8 @@ mod domain_vpc_placement;
 mod dry_run_progress;
 #[path = "all/ebs_volume_size_limit.rs"]
 mod ebs_volume_size_limit;
+#[path = "all/encryption_at_rest_key_grant.rs"]
+mod encryption_at_rest_key_grant;
 #[path = "all/encryption_at_rest_key_resolution.rs"]
 mod encryption_at_rest_key_resolution;
 #[path = "all/engine_version_resolution.rs"]

@@ -766,6 +766,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .domains
             .get(&name)
             .ok_or_else(crate::state::state_unavailable)?;
+        // A domain encrypted at rest uses its key through the create's whole life and long
+        // after it: its storage is encrypted under a data key the service asks the key for,
+        // so the service takes the permission it needs on that key — the grant KMS reports
+        // for the key, scoped to this domain ([`crate::state::encryption_grant`]). Reached
+        // after the record is stored, so what the grant is taken for is the encryption the
+        // domain really holds.
+        crate::state::encryption_grant::settle_domain_grant(
+            &*self.engine,
+            &region,
+            &stored.arn,
+            stored.encryption_at_rest_options.as_ref(),
+        );
         Ok(CreateDomainOutput {
             domain_status: Some(crate::service::domain_configuration::reported_status(
                 stored,

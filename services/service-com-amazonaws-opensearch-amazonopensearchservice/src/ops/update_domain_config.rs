@@ -834,6 +834,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         store.provision_vpc_access_host(&mut merged);
 
         let domain_config = crate::service::domain_configuration::reported_config(&merged);
+        // The permission the service holds on the key the domain's data is encrypted under
+        // follows the configuration this change leaves the domain with: a change that
+        // enables encryption at rest takes the grant, one that moves it to another key
+        // moves the grant, and one that switches it off gives the permission back
+        // ([`crate::state::encryption_grant`]). Reached only here, past the dry-run return
+        // above: a dry run applies nothing, so it changes no permission either.
+        crate::state::encryption_grant::settle_domain_grant(
+            &*self.engine,
+            &merged.region,
+            &merged.arn,
+            merged.encryption_at_rest_options.as_ref(),
+        );
         store.domains.insert(name, merged);
         Ok(UpdateDomainConfigOutput {
             domain_config,

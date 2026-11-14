@@ -78,7 +78,11 @@ const KMS_CLIENT_STATUS: u16 = 400;
 /// `aws/<service-name>` alias names THAT service's managed key rather than a key this one
 /// encrypts a domain with, so it is not short-circuited here — it is accessed like any other
 /// reference.
-const AWS_MANAGED_KEY_ALIAS: &str = "alias/aws/es";
+///
+/// It is also the key an enabled configuration that names NO key encrypts a domain under,
+/// which is why [`super::encryption_grant`] reads it from here rather than spelling it
+/// again.
+pub(crate) const AWS_MANAGED_KEY_ALIAS: &str = "alias/aws/es";
 
 /// Why the KMS key `options` names cannot encrypt a domain in `region` at rest, or `None`
 /// when the configuration may be served.

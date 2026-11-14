@@ -72,6 +72,11 @@ pub mod custom_endpoint;
 /// can be encrypted with — the check the create path and the update path share.
 pub mod encryption_at_rest;
 
+/// The KMS grant a domain's storage holds on the key that storage is encrypted under: the
+/// permission the service itself uses the key with, taken and retired as the domain's
+/// encryption is configured and the domain torn down.
+pub mod encryption_grant;
+
 /// What a domain's enabled log-publishing options DELIVER into the log groups they name:
 /// the slow-log records its own data plane produces, and the cluster's application log.
 pub mod log_publishing;

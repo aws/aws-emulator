@@ -170,6 +170,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         domain.begin_change(PROCESSING_STATUS_DELETING, &[], now);
         domain.processing_until = None;
 
+        // The domain's storage goes with it, so the permission the service held on the key
+        // that storage was encrypted under is given back: the grant KMS reported for this
+        // domain is retired ([`crate::state::encryption_grant`]), which is what leaves a
+        // client's key inventory showing no dependant for a domain that is gone.
+        crate::state::encryption_grant::settle_domain_grant(
+            &*self.engine,
+            &domain.region,
+            &domain.arn,
+            None,
+        );
+
         Ok(DeleteDomainOutput {
             domain_status: Some(crate::service::domain_configuration::reported_status(
                 &domain,
