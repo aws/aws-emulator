@@ -7,10 +7,10 @@
 //! worded from the state of the create that claimed the token, and that wording is fixed
 //! text a client matches on — the creation-in-progress branch, which a call overlapping a
 //! create that has not stored its report yet gets, carries NO variable part at all, and
-//! the already-created branch, which a call presenting a token under a request that
-//! DIFFERS from the create that took it gets, carries one variable part: the ARN of that
-//! report. The caller's token is a value the client chose as its idempotency key and never
-//! appears in either message, so neither branch's text varies with the request.
+//! the already-created branch, which every call presenting a token whose create has stored
+//! its report gets, carries one variable part: the ARN of that report. The caller's token
+//! is a value the client chose as its idempotency key and never appears in either message,
+//! so neither branch's text varies with the request.
 //!
 //! The table spans what the rule generalises over: the token itself. Its rows walk
 //! `ClientToken`'s constraints (length 1..128, pattern `^[\u0021-\u007E]+$`, source:
@@ -35,9 +35,9 @@ use super::scheduled_report_lifecycle::{source_dashboard, EXECUTION_ROLE_ARN};
 pub(crate) const IN_PROGRESS_MESSAGE: &str = "A scheduled report creation is already in progress \
      for the provided clientToken. Please retry after some time.";
 
-/// The message a call presenting a token under a request OTHER than the create that took
-/// it is refused with: fixed text around the one value a caller can act on, the ARN of the
-/// report the token already created.
+/// The message every call presenting a token whose create has stored its report is refused
+/// with: fixed text around the one value a caller can act on, the ARN of the report the
+/// token already created.
 pub(crate) fn already_exists_message(arn: &str) -> String {
     format!(
         "A scheduled report with the provided clientToken already exists (ARN: {arn}). \
@@ -124,9 +124,10 @@ async fn source(name: &str) -> (MultiServiceRouter, String, String) {
     (router, dashboard_arn, widget_id)
 }
 
-/// The already-created branch, over the table: the refusal a call presenting a token under
-/// a request other than the create that took it gets is the fixed text carrying only the
-/// ARN that create minted — not the token, however the token is spelled.
+/// The already-created branch, over the table: the refusal every call presenting a token
+/// whose create stored its report gets is the fixed text carrying only the ARN that create
+/// minted — not the token, however the token is spelled, and whether the request repeats
+/// that create or differs from it.
 #[tokio::test]
 async fn a_reused_client_token_is_refused_in_aws_s_own_words() {
     for case in cases() {
@@ -138,38 +139,30 @@ async fn a_reused_client_token_is_refused_in_aws_s_own_words() {
             .unwrap_or_else(|| panic!("case {:?}: the create returns an arn: {created}", case.label))
             .to_string();
 
-        // The identical request is the one logical create the token keys, so it is
-        // answered that create's ARN rather than any refusal (the replay's own rule is
-        // tabled in `tests/all/create_report_token_spent.rs`).
-        let replayed = ok_call(&router, "CreateScheduledReport", &request).await;
-        assert_eq!(
-            replayed["arn"].as_str(),
-            Some(arn.as_str()),
-            "case {:?}: the repeat of the create is replayed with its arn, got {replayed}",
-            case.label
-        );
-
-        // A request that would have created a different report is what this suite words.
         let different = create_request(
             &case.token,
             &dashboard_arn,
             &widget_id,
             "Another Conflict Rollup",
         );
-        let branch = "a different request";
-        let (status, body) = call(&router, "CreateScheduledReport", &different).await;
-        let message = conflict_message(case.label, branch, status, &body);
         let expected = already_exists_message(&arn);
-        assert_eq!(
-            message, expected,
-            "case {:?} ({branch}): expected {expected:?}, got {message:?}",
-            case.label
-        );
-        assert!(
-            !message.contains(&case.token),
-            "case {:?} ({branch}): the presented clientToken must not appear in the refusal, got {message:?}",
-            case.label
-        );
+        for (branch, presented) in [
+            ("the identical request", &request),
+            ("a different request", &different),
+        ] {
+            let (status, body) = call(&router, "CreateScheduledReport", presented).await;
+            let message = conflict_message(case.label, branch, status, &body);
+            assert_eq!(
+                message, expected,
+                "case {:?} ({branch}): expected {expected:?}, got {message:?}",
+                case.label
+            );
+            assert!(
+                !message.contains(&case.token),
+                "case {:?} ({branch}): the presented clientToken must not appear in the refusal, got {message:?}",
+                case.label
+            );
+        }
     }
 }
 

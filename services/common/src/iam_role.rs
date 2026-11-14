@@ -286,11 +286,39 @@ pub async fn held_role_is_unassumable(
     role_arn: &str,
     service_principal: &str,
 ) -> bool {
+    held_role_is_unassumable_by_every(ctx, region, role_arn, &[service_principal]).await
+}
+
+/// Whether IAM ANSWERED that `role_arn` is a role it HOLDS that NONE of `service_principals`
+/// can assume: this account holds a role under the name the ARN carries, and the trust policy
+/// that stored role carries admits not one of those principals.
+///
+/// [`held_role_is_unassumable`] is this asked about ONE principal. A service a trust policy may
+/// name under SEVERAL spellings — the global `<service>.amazonaws.com` and the Regional
+/// `<service>.<region>.amazonaws.com` a policy written for one Region's resources names — is
+/// admitted by a document naming ANY of them, because each of them names that same service, so
+/// a caller offers every spelling it is written under and the role is unassumable only when the
+/// document admits none. The rule per principal, the grounds and the non-answers are
+/// [`held_role_is_unassumable`]'s, and the ONE hop to IAM is shared by the spellings.
+///
+/// `false` — do not refuse — for an EMPTY list as well: it asks nothing of the document, so it
+/// establishes nothing about the role.
+pub async fn held_role_is_unassumable_by_every(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    role_arn: &str,
+    service_principals: &[&str],
+) -> bool {
+    if service_principals.is_empty() {
+        return false;
+    }
     let Some(role_name) = role_name(role_arn) else {
         return false;
     };
     match role_answer(ctx.callback(), region, role_name).await {
-        RoleAnswer::Held(document) => trust_withholds(document.as_deref(), service_principal),
+        RoleAnswer::Held(document) => service_principals
+            .iter()
+            .all(|principal| trust_withholds(document.as_deref(), principal)),
         RoleAnswer::Absent | RoleAnswer::Unknown => false,
     }
 }

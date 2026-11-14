@@ -394,10 +394,9 @@ async fn the_quota_refusal_is_audited() {
 }
 
 /// `CreateScheduledReport`'s idempotency paths account for themselves by what they
-/// answer: the create leaves one SUCCESS record naming the report it stored, the replay of
-/// that same request under its token leaves the same SUCCESS record naming the same report
-/// (it is that create, answered again), and a DIFFERENT request under that token leaves its
-/// ConflictException.
+/// answer: the create leaves one SUCCESS record naming the report it stored, and every
+/// later call presenting that token — the same request as much as a different one — leaves
+/// its ConflictException record, naming no report because it stored none.
 #[tokio::test]
 async fn scheduled_report_create_reuses_are_audited_by_what_they_change() {
     use super::scheduled_report_lifecycle::EXECUTION_ROLE_ARN;
@@ -431,19 +430,14 @@ async fn scheduled_report_create_reuses_are_audited_by_what_they_change() {
         let (capture, _guard) = capture_events();
         let (status, body) = call(&router, "CreateScheduledReport", &request).await;
         assert_eq!(
-            status, 200,
-            "case the identical request again: expected the replay's 200, got {status}: {body}"
-        );
-        assert_eq!(
-            body["arn"].as_str(),
-            Some(arn.as_str()),
-            "case the identical request again: the replay answers the created arn, got {body}"
+            status, 409,
+            "case the identical request again: expected the conflict's 409, got {status}: {body}"
         );
         assert_record(
             &capture.record_for("CreateScheduledReport"),
             "CreateScheduledReport",
-            &arn,
-            "SUCCESS",
+            "-",
+            "ConflictException",
         );
     }
 

@@ -21,9 +21,10 @@
 //! including nothing at all.
 //!
 //! The controls that follow pin the two edges of the rule: text that names NO operation of
-//! the language still earns the parse defect for stating no manipulation of data, each of
-//! the four verbs this surface serves still runs, and the table the refused statements
-//! named is still ACTIVE and still holds its item. Everything is driven over the wire.
+//! the language earns a parse defect instead — the one for the position its parse stopped at
+//! — each of the four verbs this surface serves still runs, and the table the refused
+//! statements named is still ACTIVE and still holds its item. Everything is driven over the
+//! wire.
 
 use serde_json::json;
 use smithy_server_runtime::MultiServiceRouter;
@@ -162,18 +163,33 @@ async fn a_statement_naming_an_operation_this_surface_does_not_run_names_it_in_t
         "case a batch carrying such a statement: the slot beside it must be served, got {batched}"
     );
 
-    // The first edge of the rule: text that names NO operation of the language still states
-    // no manipulation of data, so it earns the parse defect and not this sentence. The rows
-    // differ in whether the verb is there without the kind of object, whether the pair
-    // belongs to another dialect, and whether the text names anything at all.
-    for (case, statement) in [
-        ("a schema verb with no kind of object", format!("DROP \"{TABLE}\"")),
-        ("a verb of another dialect", format!("TRUNCATE \"{TABLE}\"")),
+    // The first edge of the rule: text that names NO operation of the language is read as
+    // the language's other statement form, one query, and earns the parse defect for the
+    // position that parse stopped at. The rows differ in whether a token is left over past
+    // the expression the text opens with (a verb of some dialect, then the object it names)
+    // or the text reads as no expression at all (a keyword of the dialect, which no name may
+    // be spelled as).
+    for (case, statement, reason) in [
+        (
+            "a schema verb with no kind of object",
+            format!("DROP \"{TABLE}\""),
+            "Unexpected token after expression",
+        ),
+        (
+            "a verb of another dialect",
+            format!("TRUNCATE \"{TABLE}\""),
+            "Unexpected token after expression",
+        ),
         (
             "a kind of object with no verb",
             format!("TABLE \"{TABLE}\""),
+            "Expected data manipulation",
         ),
-        ("words that name nothing", "this is not a statement".to_string()),
+        (
+            "words that name nothing",
+            "this is not a statement".to_string(),
+            "Unexpected token after expression",
+        ),
     ] {
         let (status, answered) = call(
             &router,
@@ -186,8 +202,7 @@ async fn a_statement_naming_an_operation_this_surface_does_not_run_names_it_in_t
             (
                 400,
                 "ValidationException",
-                "Statement wasn't well formed, can't be processed: Expected data manipulation"
-                    .to_string()
+                format!("Statement wasn't well formed, can't be processed: {reason}")
             ),
             "case {case}: {statement:?} names no operation, got {status} with {answered}"
         );

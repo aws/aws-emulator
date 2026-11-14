@@ -8,8 +8,10 @@
 //! statement:
 //!
 //! 1. This surface runs statements that read or write items, so text that opens with
-//!    none of the four verbs states no data manipulation whatever the rest of it reads
-//!    as, and a statement that binds a name to the table it addresses — with `AS` or
+//!    none of the four verbs manipulates no data: text that reads as ONE complete
+//!    expression — the language's other statement form, a query — states no data
+//!    manipulation, and text with a token left over past that expression stopped at that
+//!    token. A statement that binds a name to the table it addresses — with `AS` or
 //!    without — is refused as aliasing, which the surface does not serve.
 //! 2. A statement that does not parse is refused with ONE fixed sentence whose tail is
 //!    the parser's phrase for the position the parse stopped at: the `FROM` a projection
@@ -39,6 +41,11 @@ fn parse_failure(reason: &str) -> String {
 
 /// The sentence a statement that binds a name to its table is refused with.
 const ALIASING: &str = "Aliasing is not supported";
+
+/// The parser's phrase for text that read as one complete expression and manipulates no
+/// data, and for text a token is left over past that expression in.
+const NO_MANIPULATION: &str = "Expected data manipulation";
+const TRAILING_TOKEN: &str = "Unexpected token after expression";
 
 /// An emulator holding one table with one item in it, so a statement that IS served can
 /// be seen to have run.
@@ -83,34 +90,55 @@ async fn refused(router: &MultiServiceRouter, case: &str, statement: &str) -> St
 async fn text_that_states_no_data_manipulation_and_a_bound_table_name_are_refused_as_such() {
     let router = seeded().await;
 
-    // The rows differ in WHAT the text reads as: a bare name, a quoted name, a literal,
-    // a predicate, a misspelled verb and a statement of another dialect — none of them
-    // opens with a verb this surface serves, so each states no data manipulation.
-    for (case, statement) in [
-        ("a bare name alone", TABLE.to_string()),
-        ("a quoted name alone", format!("\"{TABLE}\"")),
-        ("a string literal alone", "'not a statement'".to_string()),
-        ("a predicate alone", "pk = 'a'".to_string()),
-        ("a misspelled SELECT", format!("SELCT * FROM \"{TABLE}\"")),
+    // The rows differ in WHAT the text reads as: a bare name, a quoted name, a literal and
+    // a predicate each read as one complete expression and nothing more, so each states no
+    // data manipulation; a misspelled verb, a bare name with a word after it and a
+    // statement of another dialect each read as a name with a token left over, which is
+    // where the parse stopped.
+    for (case, statement, reason) in [
+        ("a bare name alone", TABLE.to_string(), NO_MANIPULATION),
+        (
+            "a quoted name alone",
+            format!("\"{TABLE}\""),
+            NO_MANIPULATION,
+        ),
+        (
+            "a string literal alone",
+            "'not a statement'".to_string(),
+            NO_MANIPULATION,
+        ),
+        ("a predicate alone", "pk = 'a'".to_string(), NO_MANIPULATION),
+        (
+            "a misspelled SELECT",
+            format!("SELCT * FROM \"{TABLE}\""),
+            TRAILING_TOKEN,
+        ),
         (
             "a misspelled INSERT",
             format!("INSRT INTO \"{TABLE}\" VALUE {{'pk':'z'}}"),
+            TRAILING_TOKEN,
         ),
-        ("a bare name and a word after it", format!("{TABLE} rows")),
+        (
+            "a bare name and a word after it",
+            format!("{TABLE} rows"),
+            TRAILING_TOKEN,
+        ),
         (
             "a statement of another dialect",
             format!("TRUNCATE \"{TABLE}\""),
+            TRAILING_TOKEN,
         ),
         (
             "a statement that reads a schema",
             format!("DESCRIBE \"{TABLE}\""),
+            TRAILING_TOKEN,
         ),
     ] {
         let stated = refused(&router, case, &statement).await;
         assert_eq!(
             stated,
-            parse_failure("Expected data manipulation"),
-            "case {case}: {statement:?} states no data manipulation, got {stated:?}"
+            parse_failure(reason),
+            "case {case}: {statement:?} manipulates no data, got {stated:?}"
         );
     }
 

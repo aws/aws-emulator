@@ -116,10 +116,13 @@ impl Position {
 /// its own phrase above.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ParseDefect {
-    /// The text states none of the verbs that read or write items, so it manipulates no
-    /// data whatever else it spells — the defect text that opens with no such verb
-    /// carries, unless its leading keywords name one of the language's other operations,
-    /// which is reported as that operation instead
+    /// The text read as ONE COMPLETE expression — a query of the language — and states none
+    /// of the verbs that read or write items, so it manipulates no data whatever else it
+    /// spells: a bare name, a literal, a predicate. Text that opens with no such verb and is
+    /// no complete expression either keeps this defect as well, while text with a token left
+    /// over past the expression stopped at that token
+    /// ([`Self::TrailingToken`]), and text whose leading keywords name one of the language's
+    /// other operations is reported as that operation instead
     /// ([`unsupported_statement_operation`]).
     NotDataManipulation,
     /// A NAME was required there — a table, an index, an attribute or an alias — and
@@ -132,8 +135,9 @@ enum ParseDefect {
     FromAfterSelectList,
     /// Text carries on past the `;` that ended the one query a statement states.
     AfterSemicolon,
-    /// A statement that opens with a data-manipulation verb is complete and the text
-    /// carries on past it.
+    /// One complete statement of the dialect — a data-manipulation statement, or the one
+    /// expression a query is — and the text carries on past it with a token nothing in the
+    /// dialect can follow an expression with.
     TrailingToken,
     /// The token at that position is not one the grammar admits there.
     UnexpectedTerm,
@@ -1441,9 +1445,55 @@ impl StatementParser<'_> {
             return Err(unsupported_statement_operation(operation));
         }
         // Text that opens with none of the four verbs this surface serves, and names no
-        // operation of the language either, manipulates no data whatever else it spells,
-        // and is refused as exactly that ([`ParseDefect::NotDataManipulation`]).
-        Err(statement_parse_error(ParseDefect::NotDataManipulation))
+        // operation of the language either, is read as the language's OTHER statement form:
+        // one query, which is one expression. What the refusal states is the position the
+        // parse stopped at ([`Self::query_defect`]) — the token that cannot follow the
+        // complete expression the text opens with, or, where the whole text reads as one
+        // expression, that it manipulates no data whatever it spells.
+        let defect = self.query_defect();
+        Err(statement_parse_error(defect))
+    }
+
+    /// The defect text that states none of the data-manipulation verbs carries, read off
+    /// WHERE the parse of it stopped.
+    ///
+    /// The language's other statement form is a QUERY — one expression — so text that opens
+    /// with no verb this surface serves is read as one, with the expression grammar this
+    /// dialect already has: the predicate form ([`Self::disjunction`] — a comparison, a
+    /// membership, a boolean call) and, for text that states no operator at all, the bare
+    /// operand form ([`Self::operand`] — a path, a literal, a collection), each of which is
+    /// a complete expression. Then:
+    ///
+    /// * text that READ as one expression with a token left over stopped at that token,
+    ///   which nothing in the dialect can follow an expression with
+    ///   ([`ParseDefect::TrailingToken`]) — a misspelled verb (`INSRT INTO …`) is this: the
+    ///   misspelling is a name, a complete expression, and the clause word after it belongs
+    ///   to no expression;
+    /// * text that IS one expression, with nothing after it, parsed as a query and
+    ///   manipulates no data whatever it spells
+    ///   ([`ParseDefect::NotDataManipulation`]) — a bare name, a literal, a predicate;
+    /// * text that reads as no expression at all states no manipulation of data either,
+    ///   which is the defect it keeps.
+    ///
+    /// The walk is a LOOK: the statement is refused whatever it finds, so where the cursor
+    /// is left does not matter, and no further parse reads from it.
+    fn query_defect(&mut self) -> ParseDefect {
+        let opened_at = self.at;
+        let mut read = self.disjunction().is_ok();
+        if !read {
+            self.at = opened_at;
+            read = self.operand().is_ok();
+        }
+        if !read {
+            return ParseDefect::NotDataManipulation;
+        }
+        // The `;` that ends a query is part of no expression and is not text carrying on
+        // past one either, so a query terminated by one is still one complete expression.
+        if self.at_end() || self.peek() == Some(&Token::Semicolon) {
+            ParseDefect::NotDataManipulation
+        } else {
+            ParseDefect::TrailingToken
+        }
     }
 
     /// The operation the text's leading keywords name, when they name one of the

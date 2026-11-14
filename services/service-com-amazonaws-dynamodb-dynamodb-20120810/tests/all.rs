@@ -151,6 +151,8 @@ mod paging_start_keys;
 mod parallel_scan_segment_refusals;
 #[path = "all/partiql_non_dml_statements.rs"]
 mod partiql_non_dml_statements;
+#[path = "all/partiql_query_form_parse_defects.rs"]
+mod partiql_query_form_parse_defects;
 #[path = "all/partiql_refusal_wording.rs"]
 mod partiql_refusal_wording;
 #[path = "all/partiql_statement_boundaries.rs"]

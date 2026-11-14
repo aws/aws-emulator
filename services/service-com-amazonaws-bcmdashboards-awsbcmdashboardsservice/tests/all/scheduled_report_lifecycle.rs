@@ -417,11 +417,10 @@ async fn create_scheduled_report_persists_the_configuration_and_get_reads_it_bac
 }
 
 /// A `clientToken` creates at most one report: the first call presenting it creates the
-/// report, the identical request presented again under it is answered that create's own
-/// answer — HTTP 200 and the same ARN, with nothing created — and a DIFFERENT request
-/// under it is refused with the modelled ConflictException (409), leaving the first record
-/// untouched. Both rules are tabled in `tests/all/create_report_token_spent.rs`, with the
-/// wording each conflict carries.
+/// report, and every later call presenting it — the identical request as much as a
+/// DIFFERENT one — is refused with the modelled ConflictException (409), leaving the first
+/// record untouched. The rule is tabled in `tests/all/create_report_token_spent.rs`, with
+/// the wording each conflict carries.
 #[tokio::test]
 async fn a_client_token_creates_at_most_one_scheduled_report() {
     let router = router();
@@ -441,17 +440,16 @@ async fn a_client_token_creates_at_most_one_scheduled_report() {
     let winner_arn = winner["arn"].as_str().expect("an arn").to_string();
     let winner_record = ok_call(&router, "GetScheduledReport", &json!({"arn": winner_arn})).await;
 
-    // The identical request again — what an SDK transport retry resends — is the one
-    // logical create the token keys, so it is answered the ARN that create minted.
+    // The identical request again — what an SDK transport retry resends — is refused as
+    // well: the token is spent by the create that took it.
     let (status, body) = call(&router, "CreateScheduledReport", &first).await;
     assert_eq!(
-        status, 200,
-        "a retry under the same clientToken is replayed with 200, got {status}: {body}"
+        status, 409,
+        "a retry under the same clientToken is refused with 409, got {status}: {body}"
     );
-    assert_eq!(
-        body["arn"].as_str(),
-        Some(winner_arn.as_str()),
-        "the replay answers the arn the first create minted, got {body}"
+    assert!(
+        error_code(&body).ends_with("ConflictException"),
+        "expected ConflictException for the retry, got {body}"
     );
 
     // A different request reusing the token is refused: one token cannot answer for two
@@ -474,7 +472,7 @@ async fn a_client_token_creates_at_most_one_scheduled_report() {
     assert_eq!(
         ok_call(&router, "GetScheduledReport", &json!({"arn": winner_arn})).await,
         winner_record,
-        "neither the replay nor the refused reuse of the token may touch the winning record"
+        "neither refused presentation of the token may touch the winning record"
     );
     let second = ok_call(
         &router,

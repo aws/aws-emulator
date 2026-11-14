@@ -21,6 +21,8 @@ mod concurrent_execution_idempotency;
 mod constrained_text_grammars;
 #[path = "all/create_report_client_token.rs"]
 mod create_report_client_token;
+#[path = "all/create_report_concurrent_token.rs"]
+mod create_report_concurrent_token;
 #[path = "all/create_report_conflict_message.rs"]
 mod create_report_conflict_message;
 #[path = "all/create_report_idempotent_replay.rs"]

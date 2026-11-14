@@ -47,7 +47,7 @@ const REGION: &str = "us-east-1";
 const FUNCTIONS_URI: &str = "/2015-03-31/functions";
 /// Where `CreateEventSourceMapping` is bound
 /// (`POST /2015-03-31/event-source-mappings`).
-const MAPPINGS_URI: &str = "/2015-03-31/event-source-mappings";
+pub(crate) const MAPPINGS_URI: &str = "/2015-03-31/event-source-mappings";
 
 /// A well-formed execution role ARN, satisfying the model's `RoleArn` pattern.
 const ROLE: &str = "arn:aws:iam::000000000000:role/service-role/queue-consumer";
@@ -58,11 +58,11 @@ const ROLE: &str = "arn:aws:iam::000000000000:role/service-role/queue-consumer";
 const PACKAGE_ZIP_BASE64: &str = "cGFja2FnZQ==";
 
 /// The `State` a mapping reports once it polls its event source.
-const STATE_ENABLED: &str = "Enabled";
+pub(crate) const STATE_ENABLED: &str = "Enabled";
 
 /// The attribute that says how many of a queue's records are in flight with a consumer:
 /// "ApproximateNumberOfMessagesNotVisible" (`GetQueueAttributes$AttributeNames`).
-const IN_FLIGHT_MESSAGES: &str = "ApproximateNumberOfMessagesNotVisible";
+pub(crate) const IN_FLIGHT_MESSAGES: &str = "ApproximateNumberOfMessagesNotVisible";
 
 /// How long every queue below hides a record it hands over for, and the mapped function's own
 /// `Timeout`: the queue has to outlast the function for the mapping to be made at all, and the
@@ -70,20 +70,25 @@ const IN_FLIGHT_MESSAGES: &str = "ApproximateNumberOfMessagesNotVisible";
 /// mid-row.
 const VISIBILITY_TIMEOUT: i64 = 30;
 /// See [`VISIBILITY_TIMEOUT`].
-const FUNCTION_TIMEOUT: i64 = 1;
+pub(crate) const FUNCTION_TIMEOUT: i64 = 1;
 
 /// How long a row waits for work the clock owes it — the mapping settling, a batch gathered,
 /// the attempt made — on top of the window it is waiting out. Well above the poll interval and
 /// the settle span, so a row fails only when the work did not happen at all.
-const BUDGET: Duration = Duration::from_secs(30);
+pub(crate) const BUDGET: Duration = Duration::from_secs(30);
 
 /// How long between two looks while waiting for one of those.
-const LOOK_AGAIN: Duration = Duration::from_millis(50);
+pub(crate) const LOOK_AGAIN: Duration = Duration::from_millis(50);
 
 /// Lambda and Amazon SQS over ONE shared engine, as `core/router/src/lib.rs` mounts them: the
 /// records are sent where a client sends them and the mapping polls the queue in the service
 /// that owns it.
 fn emulator() -> MultiServiceRouter {
+    shared_emulator()
+}
+
+/// [`emulator`], for the sibling suites that mount the same pair.
+pub(crate) fn shared_emulator() -> MultiServiceRouter {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     router.set_request_authentication(false);
@@ -106,7 +111,7 @@ fn authorization(service: &str) -> String {
 }
 
 /// One Lambda `restJson1` call, as its status and parsed body.
-async fn lambda(
+pub(crate) async fn lambda(
     router: &MultiServiceRouter,
     method: &str,
     uri: &str,
@@ -136,7 +141,7 @@ async fn lambda(
 }
 
 /// One Amazon SQS call (`POST /` with `X-Amz-Target: AmazonSQS.<Operation>`).
-async fn sqs(router: &MultiServiceRouter, operation: &str, body: &Value) -> (u16, Value) {
+pub(crate) async fn sqs(router: &MultiServiceRouter, operation: &str, body: &Value) -> (u16, Value) {
     let request = http::Request::builder()
         .method("POST")
         .uri("/")
@@ -155,12 +160,23 @@ async fn sqs(router: &MultiServiceRouter, operation: &str, body: &Value) -> (u16
 /// A queue called `name` hiding a delivered record for [`VISIBILITY_TIMEOUT`]; answers its url
 /// and the ARN a mapping names it by, both read back out of Amazon SQS.
 async fn given_queue(router: &MultiServiceRouter, case: &str, name: &str) -> (String, String) {
+    given_queue_hiding_for(router, case, name, VISIBILITY_TIMEOUT).await
+}
+
+/// [`given_queue`] with the queue's own `VisibilityTimeout` named by the caller — for a suite
+/// whose rule is about how that span relates to the span a consumer holds a record for.
+pub(crate) async fn given_queue_hiding_for(
+    router: &MultiServiceRouter,
+    case: &str,
+    name: &str,
+    visibility_timeout: i64,
+) -> (String, String) {
     let (status, created) = sqs(
         router,
         "CreateQueue",
         &json!({
             "QueueName": name,
-            "Attributes": { "VisibilityTimeout": VISIBILITY_TIMEOUT.to_string() },
+            "Attributes": { "VisibilityTimeout": visibility_timeout.to_string() },
         }),
     )
     .await;
@@ -179,7 +195,7 @@ async fn given_queue(router: &MultiServiceRouter, case: &str, name: &str) -> (St
 }
 
 /// One attribute of the queue `url` addresses, as `GetQueueAttributes` reports it.
-async fn queue_attribute(
+pub(crate) async fn queue_attribute(
     router: &MultiServiceRouter,
     case: &str,
     url: &str,
@@ -201,6 +217,15 @@ async fn queue_attribute(
 /// A function a mapping can be made on, whose deployment package is NOT one any engine runs —
 /// so the attempt the mapping makes with it fails, which is what this suite reads.
 async fn given_function(router: &MultiServiceRouter, case: &str, name: &str) {
+    given_unrunnable_function(router, case, name).await;
+}
+
+/// [`given_function`], for the sibling suites that need the same unrunnable function.
+pub(crate) async fn given_unrunnable_function(
+    router: &MultiServiceRouter,
+    case: &str,
+    name: &str,
+) {
     let (status, created) = lambda(
         router,
         "POST",
@@ -222,7 +247,7 @@ async fn given_function(router: &MultiServiceRouter, case: &str, name: &str) {
 }
 
 /// `SendMessage` of `body` to the queue `url` addresses.
-async fn send_message(router: &MultiServiceRouter, case: &str, url: &str, body: &str) {
+pub(crate) async fn send_message(router: &MultiServiceRouter, case: &str, url: &str, body: &str) {
     let (status, sent) = sqs(
         router,
         "SendMessage",
@@ -236,7 +261,7 @@ async fn send_message(router: &MultiServiceRouter, case: &str, url: &str, body: 
 }
 
 /// `GetEventSourceMapping` on the mapping `uuid` names.
-async fn get_mapping(router: &MultiServiceRouter, uuid: &str) -> Value {
+pub(crate) async fn get_mapping(router: &MultiServiceRouter, uuid: &str) -> Value {
     let (status, read) = lambda(router, "GET", &format!("{MAPPINGS_URI}/{uuid}"), None).await;
     assert_eq!(
         status, 200,
@@ -247,14 +272,14 @@ async fn get_mapping(router: &MultiServiceRouter, uuid: &str) -> Value {
 
 /// What the mapping `uuid` names reports as the result of its last processing attempt, or
 /// `None` while it has made none.
-async fn last_processing_result(router: &MultiServiceRouter, uuid: &str) -> Option<String> {
+pub(crate) async fn last_processing_result(router: &MultiServiceRouter, uuid: &str) -> Option<String> {
     get_mapping(router, uuid).await["LastProcessingResult"]
         .as_str()
         .map(str::to_string)
 }
 
 /// Wait until the mapping `uuid` names reports `state`.
-async fn await_state(router: &MultiServiceRouter, case: &str, uuid: &str, state: &str) {
+pub(crate) async fn await_state(router: &MultiServiceRouter, case: &str, uuid: &str, state: &str) {
     let deadline = Instant::now() + BUDGET;
     loop {
         let read = get_mapping(router, uuid).await;

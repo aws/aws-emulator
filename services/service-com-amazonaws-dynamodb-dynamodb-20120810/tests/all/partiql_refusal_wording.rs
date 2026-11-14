@@ -133,10 +133,10 @@ fn parse_rows() -> Vec<Row> {
             expected: parse_failure("Unexpected token after expression"),
         },
         Row {
-            case: "a misspelled verb states no data manipulation",
+            case: "a misspelled verb is a name, and the clause word cannot follow it",
             statement: format!("INSRT INTO \"{TABLE}\" VALUE {{'pk':'a'}}"),
             parameters: Value::Null,
-            expected: parse_failure("Expected data manipulation"),
+            expected: parse_failure("Unexpected token after expression"),
         },
         Row {
             case: "the text reads as an expression and nothing more",
@@ -543,7 +543,7 @@ async fn a_batch_slot_states_the_same_sentence_its_own_statement_earns() {
         (
             "a misspelled verb",
             format!("INSRT INTO \"{TABLE}\" VALUE {{'pk':'q'}}"),
-            parse_failure("Expected data manipulation"),
+            parse_failure("Unexpected token after expression"),
         ),
         (
             "an unknown function",
@@ -697,7 +697,7 @@ async fn a_transaction_states_the_slot_a_statement_was_sent_in() {
         (
             "a misspelled verb",
             format!("INSRT INTO \"{TABLE}\" VALUE {{'pk':'q'}}"),
-            parse_failure("Expected data manipulation"),
+            parse_failure("Unexpected token after expression"),
         ),
         (
             "a single-quoted table name",
@@ -849,7 +849,7 @@ fn cross_surface_rows() -> Vec<Row> {
             case: "a misspelled verb",
             statement: format!("INSRT INTO \"{TABLE}\" VALUE {{'pk':'q'}}"),
             parameters: Value::Null,
-            expected: parse_failure("Expected data manipulation"),
+            expected: parse_failure("Unexpected token after expression"),
         },
         Row {
             case: "a single-quoted table name",

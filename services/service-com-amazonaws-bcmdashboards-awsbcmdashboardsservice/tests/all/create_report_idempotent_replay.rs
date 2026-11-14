@@ -1,35 +1,38 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! The idempotent REPLAY a `CreateScheduledReport` `clientToken` buys, end to end over the
-//! wire.
+//! What a `CreateScheduledReport` `clientToken` is worth once a create has spent it, over
+//! the FORMS of the request presented under it, end to end over the wire.
 //!
 //! The rule under test: a create's `clientToken` is modelled `@idempotencyToken` — "A
 //! unique, case-sensitive identifier that you provide to ensure the idempotency of the
 //! request" (`smithy_query(query="operation",operation="CreateScheduledReport")`) — so one
-//! request presented under one token is ONE logical create however many times it arrives:
-//! every repeat is answered the first call's own answer, HTTP 200 with the ARN that call
-//! minted, and creates nothing. That is the case the token exists for: a client (or an SDK
-//! transport retry) whose first response was lost resends the request and gets the ARN that
-//! was in fact created.
+//! token keys at most ONE create: the call that takes it creates the report, and every
+//! later call presenting it creates nothing and is refused with the modelled
+//! `ConflictException` (HTTP 409) naming the report that create stored, however many times
+//! it arrives and whether or not it repeats that very request. A duplicate token is never
+//! served the first call's success, so a client whose first response was lost is told by
+//! error code that the token is spent and which report it names.
 //!
-//! The table spans what the rule generalises over — the REQUEST being retried: which
-//! optional members it carries (none beyond the required ones, each one, all of them), the
-//! form of its schedule (a cron and a rate expression, a period and none), its widget list
-//! (absent, empty, one widget), its tags (absent, empty, several) and the token spelling
-//! itself at both published length bounds of `ClientToken` (length 1..128, pattern
+//! The table spans what the rule generalises over — the REQUEST presented: which optional
+//! members it carries (none beyond the required ones, each one, all of them), the form of
+//! its schedule (a cron and a rate expression, a period and none), its widget list (absent,
+//! empty, one widget), its tags (absent, empty, several) and the token spelling itself at
+//! both published length bounds of `ClientToken` (length 1..128, pattern
 //! `^[\u0021-\u007E]+$`, source: `smithy_query(query="shape",shape="ClientToken")`). The
-//! recorded case, a fully populated create retried once, is one row of it.
+//! recorded case, a fully populated create presented again once, is one row of it.
 //!
-//! How a later call that DIFFERS from the create holding the token is answered is the
-//! sibling rule, tabled in `tests/all/create_report_token_spent.rs`.
+//! How a later call whose request DIFFERS member by member is answered is the sibling rule,
+//! tabled in `tests/all/create_report_token_spent.rs`; the fleet of callers racing for one
+//! token is `tests/all/create_report_concurrent_token.rs`.
 
 use serde_json::{json, Value};
 
-use super::dashboard_lifecycle::{call, ok_call, router};
+use super::create_report_conflict_message::already_exists_message;
+use super::dashboard_lifecycle::{call, error_code, ok_call, router};
 use super::scheduled_report_lifecycle::{acceptable_period, source_dashboard, EXECUTION_ROLE_ARN};
 
-/// How many times each row presents its request: the first call creates, and every call
-/// after it is a repeat — more than one, so a replay that only worked once is caught.
+/// How many times each row presents its request after the create: more than once, so a
+/// refusal that only held for the first duplicate is caught.
 const PRESENTATIONS: usize = 3;
 
 /// One row: a token, and the `CreateScheduledReport` request presented under it.
@@ -174,11 +177,11 @@ async fn stored_arns(router: &smithy_server_runtime::MultiServiceRouter) -> Vec<
         .collect()
 }
 
-/// Every row: the first call creates the report, and each repeat of that same request under
-/// the same token is answered 200 with the ARN the first call minted — with no second
-/// report created, no stored record changed and the tags untouched.
+/// Every row: the first call creates the report, and each later presentation of that same
+/// request under the same token is refused 409 in the name of the report that create stored
+/// — with no second report created, no stored record changed and the tags untouched.
 #[tokio::test]
-async fn a_repeat_of_a_create_under_its_client_token_is_answered_the_first_arn() {
+async fn a_repeat_of_a_create_under_its_client_token_is_refused_for_the_report_it_created() {
     let router = router();
     let (dashboard, widget) = source_dashboard(&router, "ReplaySource").await;
 
@@ -196,54 +199,58 @@ async fn a_repeat_of_a_create_under_its_client_token_is_answered_the_first_arn()
         minted.push(arn.clone());
         let stored = ok_call(&router, "GetScheduledReport", &json!({"arn": arn})).await;
         let tags = ok_call(&router, "ListTagsForResource", &json!({"resourceArn": arn})).await;
+        let expected = already_exists_message(&arn);
 
         for attempt in 2..=PRESENTATIONS {
             let (status, body) = call(&router, "CreateScheduledReport", &request).await;
             assert_eq!(
-                status, 200,
-                "case {label} (presentation {attempt}): a repeat under the same clientToken \
-                 is answered 200, got {status}: {body}"
+                status, 409,
+                "case {label} (presentation {attempt}): a repeat under a spent clientToken \
+                 is refused 409, got {status}: {body}"
+            );
+            assert!(
+                error_code(&body).ends_with("ConflictException"),
+                "case {label} (presentation {attempt}): expected ConflictException, got {body}"
             );
             assert_eq!(
-                body["arn"].as_str(),
-                Some(arn.as_str()),
-                "case {label} (presentation {attempt}): expected the first call's arn \
-                 {arn:?}, got {body}"
+                body["message"].as_str(),
+                Some(expected.as_str()),
+                "case {label} (presentation {attempt}): expected {expected:?}, got {body}"
             );
             assert_eq!(
                 ok_call(&router, "GetScheduledReport", &json!({"arn": arn})).await,
                 stored,
-                "case {label} (presentation {attempt}): the replay must change nothing \
+                "case {label} (presentation {attempt}): the refusal must change nothing \
                  about the stored report"
             );
             assert_eq!(
                 ok_call(&router, "ListTagsForResource", &json!({"resourceArn": arn})).await,
                 tags,
-                "case {label} (presentation {attempt}): the replay must change no tag"
+                "case {label} (presentation {attempt}): the refusal must change no tag"
             );
         }
 
-        // One report per row, whatever a row presented: the replays created nothing.
+        // One report per row, whatever a row presented: the refusals created nothing.
         let arns = stored_arns(&router).await;
-        let mut expected = minted.clone();
-        expected.sort();
+        let mut expected_arns = minted.clone();
+        expected_arns.sort();
         let mut actual = arns.clone();
         actual.sort();
         assert_eq!(
-            actual, expected,
+            actual, expected_arns,
             "case {label}: the rows so far must have created exactly one report each, got {arns:?}"
         );
     }
 }
 
-/// The replay is the first call's answer, not the latest call's: it stands even once the
-/// store has moved on around it — other reports created, the replayed report updated — and
-/// it is still that one report the token names.
+/// The refusal is the token's own state, not the latest call's: it stands even once the
+/// store has moved on around it — other reports created, the named report updated — and it
+/// still names that one report the token created.
 #[tokio::test]
-async fn the_replay_stands_while_the_store_moves_on_around_it() {
+async fn the_refusal_stands_while_the_store_moves_on_around_it() {
     let router = router();
     let (dashboard, widget) = source_dashboard(&router, "ReplayMovingSource").await;
-    let label = "the store moves on around the replay";
+    let label = "the store moves on around the refusal";
     let token = "sdk-retry-token-moving";
 
     let request = json!({
@@ -263,7 +270,7 @@ async fn the_replay_stands_while_the_store_moves_on_around_it() {
         .unwrap_or_else(|| panic!("case {label}: the create returns an arn: {created}"))
         .to_string();
 
-    // Another report, under another token, and an update of the replayed one.
+    // Another report, under another token, and an update of the named one.
     let mut other = request.clone();
     other["clientToken"] = json!("sdk-retry-token-other");
     other["scheduledReport"]["name"] = json!("Other Rollup");
@@ -280,32 +287,29 @@ async fn the_replay_stands_while_the_store_moves_on_around_it() {
     let after_update = ok_call(&router, "GetScheduledReport", &json!({"arn": arn})).await;
 
     let (status, body) = call(&router, "CreateScheduledReport", &request).await;
+    let expected = already_exists_message(&arn);
     assert_eq!(
-        status, 200,
-        "case {label}: the repeat is still answered 200, got {status}: {body}"
-    );
-    assert_eq!(
-        body["arn"].as_str(),
-        Some(arn.as_str()),
-        "case {label}: the repeat still answers the arn its create minted, got {body}"
+        (status, body["message"].as_str()),
+        (409, Some(expected.as_str())),
+        "case {label}: expected 409 {expected:?}, got {status}: {body}"
     );
     assert_eq!(
         ok_call(&router, "GetScheduledReport", &json!({"arn": arn})).await,
         after_update,
-        "case {label}: the replay must not undo the update it followed"
+        "case {label}: the refusal must not undo the update it followed"
     );
     let mut arns = stored_arns(&router).await;
     arns.sort();
-    let mut expected = vec![arn, other_arn];
-    expected.sort();
+    let mut expected_arns = vec![arn, other_arn];
+    expected_arns.sort();
     assert_eq!(
-        arns, expected,
+        arns, expected_arns,
         "case {label}: the two tokens must have created exactly two reports"
     );
 }
 
 /// Without a `clientToken` there is no key for a repeat to be a repeat OF, so two identical
-/// requests are two creates — the baseline the replay above is measured against.
+/// requests are two creates — the baseline the refusal above is measured against.
 #[tokio::test]
 async fn without_a_client_token_an_identical_request_creates_a_second_report() {
     let router = router();

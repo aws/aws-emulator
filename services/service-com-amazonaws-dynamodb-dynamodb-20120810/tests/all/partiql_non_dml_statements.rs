@@ -5,9 +5,11 @@
 //!
 //! THE RULE: this surface runs "reads and singleton writes on data stored in DynamoDB,
 //! using PartiQL" — the `SELECT`, `INSERT`, `UPDATE` and `DELETE` statements — so text that
-//! opens with none of those verbs manipulates no data, whatever else it spells, and is
-//! refused with the parse sentence for exactly that: the fixed text over the parser's
-//! phrase for text that states no data manipulation.
+//! opens with none of those verbs manipulates no data, and the refusal names the position
+//! the parse of it stopped at: text that reads as ONE complete expression (the language's
+//! other statement form, a query) states no data manipulation, while text with a token left
+//! over past that expression stopped at that token, which nothing in the dialect can follow
+//! an expression with.
 //!
 //! The rows differ along WHAT the text spells instead: a bare name, a quoted name, a
 //! literal, a predicate, a misspelling of each of the four verbs, a statement of another
@@ -38,8 +40,12 @@ fn parse_failure(phrase: &str) -> String {
     format!("Statement wasn't well formed, can't be processed: {phrase}")
 }
 
-/// The parser's phrase for text that states no manipulation of data.
+/// The parser's phrase for text that read as one complete expression and manipulates no
+/// data.
 const NO_DATA_MANIPULATION: &str = "Expected data manipulation";
+
+/// The parser's phrase for text a token is left over past the expression it read in.
+const TRAILING_TOKEN: &str = "Unexpected token after expression";
 
 /// An emulator holding one active table with one item in it, so a statement that IS served
 /// can be seen to have run.
@@ -70,40 +76,62 @@ async fn seeded() -> smithy_server_runtime::MultiServiceRouter {
 async fn text_that_states_none_of_the_served_verbs_manipulates_no_data() {
     let router = seeded().await;
 
-    let rows: Vec<(&str, String)> = vec![
-        ("a bare name", TABLE.to_string()),
-        ("a quoted name", format!("\"{TABLE}\"")),
-        ("a string literal", "'not a statement'".to_string()),
-        ("a predicate", "pk = 'a'".to_string()),
-        ("a name and a word after it", format!("{TABLE} rows")),
-        ("a misspelled SELECT", format!("SELCT * FROM \"{TABLE}\"")),
+    let rows: Vec<(&str, String, &str)> = vec![
+        ("a bare name", TABLE.to_string(), NO_DATA_MANIPULATION),
+        (
+            "a quoted name",
+            format!("\"{TABLE}\""),
+            NO_DATA_MANIPULATION,
+        ),
+        (
+            "a string literal",
+            "'not a statement'".to_string(),
+            NO_DATA_MANIPULATION,
+        ),
+        ("a predicate", "pk = 'a'".to_string(), NO_DATA_MANIPULATION),
+        (
+            "a name and a word after it",
+            format!("{TABLE} rows"),
+            TRAILING_TOKEN,
+        ),
+        (
+            "a misspelled SELECT",
+            format!("SELCT * FROM \"{TABLE}\""),
+            TRAILING_TOKEN,
+        ),
         (
             "a misspelled INSERT",
             format!("INSRT INTO \"{TABLE}\" VALUE {{'pk':'z'}}"),
+            TRAILING_TOKEN,
         ),
         (
             "a misspelled UPDATE",
             format!("UPDTE \"{TABLE}\" SET n = 2 WHERE pk = 'a'"),
+            TRAILING_TOKEN,
         ),
         (
             "a misspelled DELETE",
             format!("DELET FROM \"{TABLE}\" WHERE pk = 'a'"),
+            TRAILING_TOKEN,
         ),
         (
             "a statement of another dialect",
             format!("TRUNCATE \"{TABLE}\""),
+            TRAILING_TOKEN,
         ),
         (
             "a statement that reads a schema",
             format!("DESCRIBE \"{TABLE}\""),
+            TRAILING_TOKEN,
         ),
         (
             "text that is no statement in any dialect",
             "this is not a statement".to_string(),
+            TRAILING_TOKEN,
         ),
     ];
 
-    for (case, statement) in &rows {
+    for (case, statement, reason) in &rows {
         let (status, answered) = call(
             &router,
             "ExecuteStatement",
@@ -116,12 +144,8 @@ async fn text_that_states_none_of_the_served_verbs_manipulates_no_data() {
                 error_code(&answered).as_str(),
                 message(&answered).as_str()
             ),
-            (
-                400,
-                "ValidationException",
-                parse_failure(NO_DATA_MANIPULATION).as_str()
-            ),
-            "case {case}: {statement:?} states no data manipulation, got {status} with \
+            (400, "ValidationException", parse_failure(reason).as_str()),
+            "case {case}: {statement:?} manipulates no data, got {status} with \
              {answered}"
         );
     }

@@ -215,6 +215,12 @@ mod cloudformation_lambda_ssm_sourced_update;
 mod kinesisvideo_discovered_data_plane;
 #[path = "all/lambda_sqs_event_source_batching_window.rs"]
 mod lambda_sqs_event_source_batching_window;
+// Declared here, beside the suite whose helpers it shares: the reservation a Lambda event
+// source mapping holds on an Amazon SQS record is observable only as what an INDEPENDENT
+// consumer of that queue is handed, so the suite spans the two services and belongs to
+// neither crate's own test target.
+#[path = "all/lambda_sqs_event_source_visibility_hold.rs"]
+mod lambda_sqs_event_source_visibility_hold;
 #[path = "all/codebuild_service_role_trust.rs"]
 mod codebuild_service_role_trust;
 // Declared here, beside the suite above whose rule it shares: the role an app block

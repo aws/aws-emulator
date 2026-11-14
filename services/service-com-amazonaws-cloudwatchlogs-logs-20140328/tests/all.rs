@@ -67,6 +67,8 @@ mod delivery_object_layout_defaults;
 mod delivery_region_isolation;
 #[path = "all/delivery_resource_in_use_refusals.rs"]
 mod delivery_resource_in_use_refusals;
+#[path = "all/delivery_role_trust_spellings.rs"]
+mod delivery_role_trust_spellings;
 #[path = "all/delivery_source_log_types.rs"]
 mod delivery_source_log_types;
 #[path = "all/delivery_source_region_support.rs"]
