@@ -205,9 +205,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        // Removing the view also reclaims the idempotency tokens that named it,
-        // so a create/delete loop frees everything it allocated.
-        state.forget_view(&input.arn);
+        // Removing the view reclaims every reference the store holds to it: the
+        // idempotency tokens that named it, so a create/delete loop frees
+        // everything it allocated, and its place in the source-view set of each
+        // view that drew from it — the `derived` views the gate above counted.
+        // An association naming no stored view is the state this service's own
+        // writer (`AssociateSourceViews`) refuses to create, so a delete may not
+        // leave one behind: `force` lets the delete break the views that draw
+        // from this one, and what that breakage IS is the loss of this source,
+        // not a stored ARN that resolves to nothing.
+        state.forget_view(&input.arn, ::std::time::SystemTime::now());
 
         Ok(DeleteBillingViewOutput { arn: input.arn })
     }

@@ -811,12 +811,35 @@ impl ComAmazonawsBillingAwsbillingState {
             .collect()
     }
 
-    /// Drop the view at `arn` and every idempotency token that named it, so a
-    /// create/delete loop reclaims everything it allocated instead of leaving
-    /// entries behind that no API can observe or free.
-    pub fn forget_view(&mut self, arn: &str) -> Option<BillingView> {
+    /// Drop the view at `arn` and every reference the store holds to it: its own
+    /// record, every idempotency token that named it, and its place in every
+    /// other view's source-view set.
+    ///
+    /// Those three are all a billing view is referenced by, so afterwards no
+    /// stored record names a view this store no longer holds: a create/delete
+    /// loop reclaims every token it allocated instead of leaving entries behind
+    /// that no API can observe or free, and no read can report an association
+    /// that points at nothing — the state `AssociateSourceViews` refuses to
+    /// write.
+    ///
+    /// A view that drew from `arn` loses that one source and keeps the rest in
+    /// the order it held them. Its source set is part of its definition, so the
+    /// two instants a definition change moves — `updatedAt` and
+    /// `viewDefinitionLastUpdatedAt`, the pair `AssociateSourceViews` and
+    /// `DisassociateSourceViews` move when they widen or narrow the same set —
+    /// move to `at`, and a view whose set did not contain `arn` is left
+    /// untouched.
+    pub fn forget_view(&mut self, arn: &str, at: SystemTime) -> Option<BillingView> {
         let removed = self.billing_views.remove(arn);
         self.idempotency_tokens.retain(|_, stored| stored != arn);
+        for view in self.billing_views.values_mut() {
+            if !view.source_views.iter().any(|source| source == arn) {
+                continue;
+            }
+            view.source_views.retain(|source| source != arn);
+            view.updated_at = Some(at);
+            view.view_definition_last_updated_at = Some(at);
+        }
         removed
     }
 
