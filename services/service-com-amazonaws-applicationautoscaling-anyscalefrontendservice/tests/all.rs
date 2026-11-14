@@ -27,6 +27,8 @@ mod custom_resource_endpoint_targets;
 mod emulator;
 #[path = "all/keyspaces_table_resolution.rs"]
 mod keyspaces_table_resolution;
+#[path = "all/lambda_provisioned_concurrency_window.rs"]
+mod lambda_provisioned_concurrency_window;
 #[path = "all/lambda_qualifier_resolution.rs"]
 mod lambda_qualifier_resolution;
 #[path = "all/metric_driven_ecs_scaling.rs"]

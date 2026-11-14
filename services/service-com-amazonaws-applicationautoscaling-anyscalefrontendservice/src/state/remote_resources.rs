@@ -51,14 +51,15 @@ pub const READ_CAPACITY_PROPERTY: &str = "ReadCapacityUnits";
 /// which is what decides where a movement of one is delivered
 /// ([`super::policy_execution`]) and which targets the clock re-reads.
 ///
-/// `lambda` is NOT one of them: the provisioned concurrency a `lambda` target scales is
-/// allocated by a configuration of its own on the qualified function, which a function that
-/// carries none simply does not have, so there is no capacity of the resource to read or to
-/// move — only the qualifier to resolve ([`resolve_remote_resource`]).
+/// `lambda` is one of them: the provisioned concurrency a `lambda` target scales is held by a
+/// configuration of its own on the qualified function, which is read and written through that
+/// service's own provisioned-concurrency operations ([`super::lambda_functions`]). A qualifier
+/// carrying no such configuration has no provisioned concurrency at all, which is a capacity
+/// of none rather than a capacity that cannot be read.
 pub fn is_remote_capacity_namespace(service_namespace: &str) -> bool {
     matches!(
         service_namespace,
-        CUSTOM_RESOURCE_NAMESPACE | CASSANDRA_NAMESPACE
+        CUSTOM_RESOURCE_NAMESPACE | CASSANDRA_NAMESPACE | LAMBDA_NAMESPACE
     )
 }
 
@@ -108,6 +109,9 @@ pub async fn resolve_remote_resource(
             )
             .await
         }
+        // The qualifier has to name a version or an alias of the function, and the
+        // provisioned concurrency that qualifier holds right now is what the registered
+        // window is enforced on — none at all for one that carries no configuration.
         LAMBDA_NAMESPACE => {
             super::lambda_functions::resolve_lambda_qualifier(
                 callback,
@@ -116,9 +120,12 @@ pub async fn resolve_remote_resource(
                 &target.scalable_dimension,
             )
             .await?;
-            // See [`is_remote_capacity_namespace`]: such a target has no capacity of the
-            // resource for the window to be enforced on.
-            Ok(None)
+            Ok(super::lambda_functions::read_provisioned_concurrency(
+                callback,
+                region,
+                &target.resource_id,
+            )
+            .await)
         }
         _ => Ok(None),
     }
@@ -147,6 +154,14 @@ pub async fn read_remote_capacity(
                 region,
                 &target.resource_id,
                 reads_the_capacity(&target.scalable_dimension),
+            )
+            .await
+        }
+        LAMBDA_NAMESPACE => {
+            super::lambda_functions::read_provisioned_concurrency(
+                callback,
+                region,
+                &target.resource_id,
             )
             .await
         }

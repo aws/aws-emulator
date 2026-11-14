@@ -93,7 +93,7 @@ use super::{
 // disagree about it.
 use super::remote_resources::{
     is_remote_capacity_namespace as is_remote_namespace, reads_the_capacity, CASSANDRA_NAMESPACE,
-    CUSTOM_RESOURCE_NAMESPACE,
+    CUSTOM_RESOURCE_NAMESPACE, LAMBDA_NAMESPACE,
 };
 use crate::ops::types::{
     NotScaledReason, StepScalingPolicyConfiguration, TargetTrackingScalingPolicyConfiguration,
@@ -439,6 +439,15 @@ async fn deliver_remote_capacity(
                     region,
                     &target.resource_id,
                     reads_the_capacity(&target.scalable_dimension),
+                    capacity,
+                )
+                .await
+            }
+            LAMBDA_NAMESPACE => {
+                super::lambda_functions::set_provisioned_concurrency(
+                    callback,
+                    region,
+                    &target.resource_id,
                     capacity,
                 )
                 .await

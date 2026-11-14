@@ -2047,3 +2047,9 @@ mod lambda_durable_execution_status_events_reach_sqs;
 // (`zz_probe` is declared once, further up this tail: two branches landing at once appended
 // it here as well, which declared it twice and compiled neither.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared once, in the head region
+// (`apigateway_cognito_authorizer_app_client_audience` is declared ONCE, in the head region
+// above: two `mod` items for one name is a redefinition that compiles neither.)
+// (`zz_probe` is declared ONCE, further up this tail: two `mod` items for one name is a
+// redefinition that compiles neither.)
+// (`cloudformation_metric_stream_estate_is_drainable` is declared ONCE, further up this tail:
+// two `mod` items for one name is a redefinition that compiles neither.)
