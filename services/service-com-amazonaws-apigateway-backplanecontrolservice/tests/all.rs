@@ -60,6 +60,13 @@ mod test_invoke_method_stage_segment_grants;
 mod test_invoke_method_unresolvable_function;
 #[path = "all/stage_access_logging.rs"]
 mod stage_access_logging;
+// What ONE access-log record a stage delivers CONTAINS: the stage's own format rendered
+// against the request it answered — literal text verbatim, each `$context` reference replaced
+// by that request's value — in the group its `destinationArn` names, in either form. Declared
+// beside the suite above for the reason the entry at the top of this file records: it spans API
+// Gateway, AWS IAM and Amazon CloudWatch Logs at once.
+#[path = "all/stage_access_log_record_rendering.rs"]
+mod stage_access_log_record_rendering;
 #[path = "all/stage_proxy_run_logs.rs"]
 mod stage_proxy_run_logs;
 #[path = "all/stage_trace_context.rs"]

@@ -2697,3 +2697,6 @@ mod iam_session_tag_authorization;
 // (`cloudformation_metric_stream_filter_update` is declared once in the sorted block at the
 // (`codebuild_s3_build_output` is declared once, further up this tail: a module may be
 // (`cloudformation_domain_endpoint_is_dialled_by_consumers` is declared once, further up this
+// (`sdb_legacy_query_api_on_the_assembled_router` is declared ONCE, in the head region of
+// this file: a module may be declared only once.)
+// `cloudformation_scripted_queue_deploy` are each declared ONCE, in the head region of this
