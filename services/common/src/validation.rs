@@ -139,7 +139,8 @@
 //!   [`unanchored_keeping_inner_anchors`] for the services whose refusals quote an
 //!   expression that anchors its own BRANCHES as the model declares it,
 //!   [`unanchored_at_the_close`] for the services whose refusals drop only the anchor that
-//!   CLOSES the expression, and
+//!   CLOSES the expression, [`unanchored_at_the_open`] for the services whose refusals drop
+//!   only the anchor that OPENS it, and
 //!   [`whole_value_expression`] for the services whose refusals quote the expression the
 //!   WHOLE value must match, deciding the two ends independently) — LANDED here,
 //!   while ~26 service crates still carry their own inlined copy
@@ -1678,6 +1679,55 @@ pub fn unanchored_at_the_close(regex: &str) -> String {
         Some(inner) if !ends_with_escape(inner) => inner.to_string(),
         _ => regex.to_string(),
     }
+}
+
+/// [`unanchored`] at the OTHER end: the expression as the model declares it, less the `^`
+/// that OPENS it — the mirror of [`unanchored_at_the_close`], for the services whose
+/// refusals quote an expression that keeps its closing `$`.
+///
+/// Same reading of an anchor as its siblings, and the same single purpose: a Smithy
+/// `@pattern` is a FIND, so the `^` a model writes at the very start of the expression is how
+/// it makes the match total THERE rather than part of the grammar a caller has to satisfy,
+/// while everything else the model wrote — its trailing `$`, and every anchor it writes
+/// around its own branches — is quoted as declared. An expression that opens with no anchor
+/// is quoted verbatim.
+///
+/// Which of the renderings a service states is part of its validation-message dialect (the
+/// module docs above), so this is one more dialect rather than a change to any of them.
+#[must_use]
+pub fn unanchored_at_the_open(regex: &str) -> String {
+    match regex.strip_prefix('^') {
+        Some(inner) => inner.to_string(),
+        None => regex.to_string(),
+    }
+}
+
+/// [`unanchored_at_the_open`] for the EXPRESSIONS a service publishes that way, and the
+/// model's own text for every other — the opt-in mirror of
+/// [`unanchored_unless_published_as_declared`]'s opt-out list.
+///
+/// A service's `@pattern` clause quotes the expression that service publishes for the member's
+/// SHAPE, and one API can publish both forms: the expression without its opening anchor for one
+/// shape, and the model's text, anchors included, for another. Which of the two a shape is
+/// published with cannot be read off the text, because both are spelled `^…$` in the model, so
+/// it is reference data about the shape: `published_unanchored_at_the_open` is the service's
+/// list of the expressions it publishes without that anchor, keyed by the EXPRESSION, since
+/// what is published belongs to the shape and so holds for every member targeting it — in any
+/// operation, in whatever binding carried the value, and inside the constraint set stated at a
+/// collection of them.
+///
+/// THE HOME for that keying, so a service recorded stating both forms keeps only its own rows.
+/// The DROP is [`unanchored_at_the_open`]'s, called rather than restated, and the CHECK is
+/// always the model's pattern as written.
+#[must_use]
+pub fn unanchored_at_the_open_where_published(
+    regex: &str,
+    published_unanchored_at_the_open: &[&str],
+) -> String {
+    if published_unanchored_at_the_open.contains(&regex) {
+        return unanchored_at_the_open(regex);
+    }
+    regex.to_string()
 }
 
 /// The expression the WHOLE value must match, for the services whose refusals quote a
@@ -4665,6 +4715,92 @@ mod tests {
             assert_eq!(
                 actual, stated,
                 "case {case:?}: expected unanchored_at_the_close {stated:?}, got {actual:?}"
+            );
+        }
+    }
+
+    /// RULE: [`super::unanchored_at_the_open`] states the expression as the model declares
+    /// it, less the `^` that opens it — so the closing `$` and every anchor the expression
+    /// writes around its own branches stay, and an expression that opens with no anchor is
+    /// quoted verbatim.
+    ///
+    /// The rows span the forms the two ends take (both anchored, start only, end only,
+    /// neither), the alternations whose branches carry anchors of their own, an expression
+    /// whose body opens with an escape, and the one the Network Firewall pagination token
+    /// publishes.
+    #[test]
+    fn the_opening_anchor_rendering_drops_only_the_expressions_first_anchor() {
+        // (case, the model's pattern, what `unanchored_at_the_open` states)
+        let rows: [(&str, &str, &str); 8] = [
+            ("a plain whole-value pattern", "^[0-9]{12}$", "[0-9]{12}$"),
+            ("anchored at the start only", "^abc", "abc"),
+            ("anchored at the end only", "abc$", "abc$"),
+            ("no anchors at all", "[0-9]+", "[0-9]+"),
+            ("branches anchored individually", "^a$|^b$", "a$|^b$"),
+            (
+                "branches anchored inside their own groups",
+                "(^a$)|(^b$)",
+                "(^a$)|(^b$)",
+            ),
+            // The pagination token of `com.amazonaws.networkfirewall#PaginationToken`,
+            // whose refusals quote the expression without its opening anchor.
+            (
+                "a pagination token's character class",
+                r"^[0-9A-Za-z:\/+=]+$",
+                r"[0-9A-Za-z:\/+=]+$",
+            ),
+            (
+                "a body opening with an escape",
+                r"^\d{4}-\d{2}$",
+                r"\d{4}-\d{2}$",
+            ),
+        ];
+
+        for (case, pattern, stated) in rows {
+            let actual = super::unanchored_at_the_open(pattern);
+            assert_eq!(
+                actual, stated,
+                "case {case:?}: expected unanchored_at_the_open {stated:?}, got {actual:?}"
+            );
+        }
+    }
+
+    /// RULE: [`super::unanchored_at_the_open_where_published`] drops that anchor for the
+    /// expressions a service names and quotes every other as the model declares it.
+    ///
+    /// The rows span a named expression, an expression the list does not name, a named one
+    /// that carries no opening anchor to drop, and the empty list.
+    #[test]
+    fn only_a_published_expression_loses_its_opening_anchor() {
+        let published = [r"^[0-9A-Za-z:\/+=]+$", "abc"];
+        // (case, the model's pattern, the list, what is stated)
+        let rows: [(&str, &str, &[&str], &str); 4] = [
+            (
+                "a published expression",
+                r"^[0-9A-Za-z:\/+=]+$",
+                &published,
+                r"[0-9A-Za-z:\/+=]+$",
+            ),
+            (
+                "an expression the list does not name",
+                "^vpc-[0-9a-f]+$",
+                &published,
+                "^vpc-[0-9a-f]+$",
+            ),
+            ("a published expression with no anchor", "abc", &published, "abc"),
+            (
+                "nothing published at all",
+                r"^[0-9A-Za-z:\/+=]+$",
+                &[],
+                r"^[0-9A-Za-z:\/+=]+$",
+            ),
+        ];
+
+        for (case, pattern, published, stated) in rows {
+            let actual = super::unanchored_at_the_open_where_published(pattern, published);
+            assert_eq!(
+                actual, stated,
+                "case {case:?}: expected {stated:?}, got {actual:?}"
             );
         }
     }

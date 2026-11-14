@@ -2279,3 +2279,8 @@ mod route53_health_check_string_match;
 // only once.)
 // (`lambda_signed_write_to_an_aoss_collection_endpoint` is declared ONCE, further up this
 // (`cloudformation_domain_endpoint_is_dialled_by_consumers` is declared ONCE, in the span
+// (`apigateway_sns_service_integration` is declared ONCE, further up this tail: two branches
+// landing at once each appended their own copy here, and a module declared twice loads the
+// same file twice, which compiles neither.)
+// head of this file: two branches landing at once each appended their own copy here, and a
+// module declared twice loads the same file twice, which compiles neither.)

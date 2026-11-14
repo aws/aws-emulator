@@ -1309,6 +1309,26 @@ pub const TYPE_REQUIRED_MESSAGE: &str = "Type must be set when referring to Rule
 /// the request").
 pub const ARN_INVALID_FORMAT_MESSAGE: &str = "Resource ARN has an invalid format.";
 
+/// What a request supplying a resource NAME that is not a well-formed resource
+/// name is refused with, whichever member the reference arrived in — the
+/// name-shaped half of [`ARN_INVALID_FORMAT_MESSAGE`]'s pair.
+///
+/// The defect is a property of the reference, not of the request: the text names
+/// neither the member, nor the resource kind, nor the offending value, and it is
+/// recorded with no closing period where the ARN half carries one. The model
+/// fixes the classification and the status only
+/// (`smithy_query(query="shape",shape="InvalidRequestException")`: client error,
+/// HTTP 400, member `Message`), and `ResourceName`
+/// (`smithy_query(query="shape",shape="ResourceName")`: `@length` 1..128,
+/// `@pattern "^[a-zA-Z0-9-]+$"`) fixes the form a name has to take.
+///
+/// Stated at the boundary seam that answers a refused reference
+/// (`crate::service::validation`'s rule 0) and nowhere else: every binding of a
+/// resource name is held to that one shape before any handler runs, so a name
+/// outside its form never reaches the resolution path the way a malformed ARN
+/// does, and no lookup here has such a value to refuse.
+pub const NAME_INVALID_FORMAT_MESSAGE: &str = "Resource name has an invalid format";
+
 /// What a request supplying a well-formed ARN whose resource-type segment is not
 /// the type the operation addresses is refused with — the second half of
 /// [`ARN_INVALID_FORMAT_MESSAGE`]'s documented pair, "a resource that isn't

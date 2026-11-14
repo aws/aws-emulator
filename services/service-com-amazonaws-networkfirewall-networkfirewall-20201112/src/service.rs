@@ -22,7 +22,11 @@
 //!   services, or routing that keys on the access-key id.
 //! - `override_operation` — serve a request the model's routing key cannot name
 //!   correctly. The default returns `None`, so every request resolves through the
-//!   generated routing table. Return `Some(op)` to route one yourself.
+//!   generated routing table. Return `Some(op)` to route one yourself. THIS service
+//!   hands back a LAYER over that same table (`served_operation`), which serves the
+//!   operation the model names and adds the two rules that need the request or the whole
+//!   response: the per-operation fact `override_refusal` reads back, and the member a
+//!   modelled error carries its text in.
 //! - `override_refusal` — how this service words a request the framework refused
 //!   before any handler ran. The default returns `None`, keeping the framework's
 //!   wording. See the inline note on that method for how to reword.
@@ -46,6 +50,15 @@ use std::sync::Arc;
 /// How this service words a boundary refusal. Private: it is reached through
 /// `override_refusal` below, not by a caller.
 mod validation;
+
+/// Which member of an error body this service reports a failure's text in. Private: it is
+/// reached from the operation wrapper below, which sees the whole rendered response.
+mod error_message_member;
+
+/// Which operation this task is serving, for the one refusal rule that is a fact about the
+/// operation rather than about the constraint. Private: it is reached through
+/// `override_operation` and `override_refusal` below.
+mod served_operation;
 
 /// The `com-amazonaws-networkfirewall-networkfirewall-20201112` emulated service: the generated [`ServiceDefinition`] plus
 /// the behavioral seams this file owns.
@@ -89,12 +102,16 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         &self,
         req: &aws_smithy_runtime_api::http::Request,
     ) -> Option<&dyn ErasedOperation> {
-        // Return `Some(op)` to serve a request the model's routing key cannot name
-        // correctly; `None` (the default) lets the generated routing table resolve
-        // it. `req` is the whole request, so a decision that depends on the body —
-        // the `Action` form field on a query protocol, say — is reachable here.
-        let _ = req;
-        None
+        // Serve the operation the generated routing table names, through the layer that
+        // carries the one per-operation fact this service's refusal wording needs into
+        // `override_refusal` and reports a modelled error's text in the member this
+        // service's error shapes declare (see `served_operation`, whose wrapper and scope are
+        // `service_common::restated_refusal`'s). The routing decision itself is NOT
+        // overridden: the key is resolved by the model's own protocol, and a request the table
+        // cannot serve is declined here so the framework's routing-error path stays exactly as
+        // it was.
+        ::service_common::restated_refusal::routes(self.definition(), req)
+            .then_some(&served_operation::SERVED_OPERATION_LAYER as &dyn ErasedOperation)
     }
 
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {
@@ -102,15 +119,19 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // required member, or a value outside a declared bound) to let this
         // service reword it.
         //
-        // This endpoint refuses a value that cannot be one of its resource ARNs as the
-        // malformed REFERENCE it is, with the modelled error its handlers answer the same
-        // defect with. Otherwise it states the refusal without the VALUE the caller sent,
-        // reports a constraint declared on the ELEMENTS of a collection member at that member
-        // with the element shape's whole constraint set, and enumerates an enumerated type's
-        // value set as the service accepts it. See `validation`, which owns those rules; the
-        // envelope, the member paths and every requirement sentence stay the framework's, as
-        // does the error code, restated there because this seam replaces the code and the
-        // message together.
+        // This endpoint refuses a value that cannot be one of its resource REFERENCES — an
+        // ARN that cannot be one of its resource ARNs, or, on an operation acting on a
+        // resource that already exists, a name that cannot be a resource name — as the
+        // malformed reference it is, with the modelled error its handlers answer the same
+        // defect with; that body's text reaches the caller in the `Message` member this
+        // model declares through `error_message_member`. Otherwise it states the refusal
+        // without the VALUE the caller sent, reports a constraint declared on the ELEMENTS
+        // of a collection member at that member with the element shape's whole constraint
+        // set, quotes a `@pattern` without the anchor that opens it, and enumerates an
+        // enumerated type's value set as the service states it. See `validation`, which owns
+        // those rules; the envelope, the member paths and every requirement sentence stay the
+        // framework's, as does the error code, restated there because this seam replaces the
+        // code and the message together.
         validation::refused(refusal)
     }
 

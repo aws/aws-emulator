@@ -25,7 +25,12 @@
 //! * [`note_refusal`] / the scope [`RestatedRefusalOperation`] opens — the words the refusal
 //!   seam chose for the request being served, recorded as that seam runs and read back once
 //!   the response exists. Scoped around ONE operation's run, so what is noted belongs to that
-//!   request and to no other, and nothing is carried between requests.
+//!   request and to no other, and nothing is carried between requests. The scope carries the
+//!   OTHER direction too, for the refusal wording that is a fact about the OPERATION rather
+//!   than about the constraint: [`served_operation`] is the operation the request was
+//!   routed to, put in scope before the walk begins and read back by the refusal seam, which
+//!   the framework hands no request. WHAT a service concludes from the operation stays with
+//!   that service — the name is all this module knows.
 //! * [`RestatedRefusalOperation`] — the wrapper itself, which delegates to the routed
 //!   operation and hands the response, the request and whatever was noted to the service's own
 //!   restatement ([`Restatement`]). What that restatement DOES is the service's: the body
@@ -64,6 +69,27 @@ tokio::task_local! {
     /// Empty means nothing was noted: either the request was not refused at all, or it was
     /// refused for something the service does not word itself.
     static NOTED_REFUSAL: RefCell<Option<String>>;
+
+    /// The operation the request this task is serving was routed to, as the service's own
+    /// routing table names it, put in scope by [`RestatedRefusalOperation::run`] before the
+    /// framework's walk begins and read back through [`served_operation`].
+    ///
+    /// Owned, because a routing key borrows from the request: the scope outlives no request,
+    /// but a task-local cannot carry that borrow.
+    static SERVED_OPERATION: String;
+}
+
+/// The operation the request this task is serving was routed to, as the service's own routing
+/// table names it.
+///
+/// `None` outside a served request — a refusal the router raised before any operation was
+/// reached (an authentication refusal), where no operation's wording applies.
+///
+/// What a service CONCLUDES from the name is the service's own: this module carries the scope,
+/// because the plumbing is the part every service would otherwise inline.
+#[must_use]
+pub fn served_operation() -> Option<String> {
+    SERVED_OPERATION.try_with(String::clone).ok()
 }
 
 /// Record the words a service states for the framework-level refusal of the request being
@@ -103,16 +129,17 @@ pub fn routes(definition: &dyn ErasedServiceDefinition, req: &RtRequest) -> bool
     routed(definition, req).is_some()
 }
 
-/// The operation `definition`'s generated routing table names for this request, if any.
+/// The operation `definition`'s generated routing table names for this request, with the
+/// routing key it was found under.
 ///
 /// The ONE resolution here: [`routes`] and [`RestatedRefusalOperation::run`] are both
 /// expressed through it, so the claim and the delegation target cannot drift apart.
-fn routed<'s>(
+fn routed<'s, 'q>(
     definition: &'s dyn ErasedServiceDefinition,
-    req: &RtRequest,
-) -> Option<&'s dyn ErasedOperation> {
+    req: &'q RtRequest,
+) -> Option<(&'q str, &'s dyn ErasedOperation)> {
     let key = definition.protocol().routing_key(req).ok()?;
-    definition.routing_table().get(key)
+    Some((key, definition.routing_table().get(key)?))
 }
 
 /// Serves the modelled operation the service's routing table names for the request, exactly as
@@ -143,17 +170,20 @@ impl ErasedOperation for RestatedRefusalOperation {
         ctx: &'r OperationContext<'r>,
     ) -> BoxFuture<'r, RtResponse> {
         Box::pin(async move {
-            let Some(op) = routed(svc.definition(), req) else {
+            let Some((operation, op)) = routed(svc.definition(), req) else {
                 // Unreachable through a `Service::override_operation` that claims a request
                 // only when the routing table holds its key ([`routes`]); answered as the
                 // framework answers an unroutable request rather than guessed at.
                 return svc.definition().routing_error_response(req);
             };
-            NOTED_REFUSAL
-                .scope(RefCell::new(None), async move {
-                    let resp = op.run(svc, req, ctx).await;
-                    (self.restate)(req, resp, noted_refusal())
-                })
+            SERVED_OPERATION
+                .scope(
+                    operation.to_string(),
+                    NOTED_REFUSAL.scope(RefCell::new(None), async move {
+                        let resp = op.run(svc, req, ctx).await;
+                        (self.restate)(req, resp, noted_refusal())
+                    }),
+                )
                 .await
         })
     }
@@ -203,6 +233,27 @@ mod tests {
     async fn noting_outside_a_served_request_changes_nothing() {
         note_refusal("nowhere to put these");
         assert_eq!(noted_refusal(), None, "expected nothing noted");
+    }
+
+    /// The operation in scope is the one the request was routed to, and outside any scope
+    /// there is no operation to read — the refusal the router raises before an operation is
+    /// served.
+    #[tokio::test]
+    async fn the_operation_in_scope_is_the_one_being_served() {
+        assert_eq!(
+            served_operation(),
+            None,
+            "expected no operation outside a served request"
+        );
+        SERVED_OPERATION
+            .scope("DescribeThing".to_string(), async {
+                assert_eq!(
+                    served_operation().as_deref(),
+                    Some("DescribeThing"),
+                    "expected the served operation in scope"
+                );
+            })
+            .await;
     }
 
     /// A restatement is handed the response its service rendered, and may answer with its

@@ -4,7 +4,7 @@
 //! whose lowercase `message` member reads `<n> validation error(s) detected: …`, answered
 //! before any handler runs for a request that breaks a constraint the model declares.
 //!
-//! Three rules, each a property of the CONSTRAINT rather than of the request, so each test
+//! Four rules, each a property of the CONSTRAINT rather than of the request, so each test
 //! below is a TABLE whose rows span the class its rule covers — the constraint classes
 //! (absent member, length, range, pattern, enumerated value set), the member kinds (a
 //! scalar, a member nested inside a structure, a collection, a collection's elements) and
@@ -17,6 +17,9 @@
 //!   that member, with no element position and no `member` step, carrying the element
 //!   shape's WHOLE constraint set bracketed after `Member must satisfy constraint:` — while
 //!   a constraint the collection ITSELF broke keeps its own requirement;
+//! * a requirement quoting a `@pattern` quotes the expression AWS PUBLISHES for that
+//!   member's shape — the model's expression, except for the pagination token, published
+//!   without the anchor that opens it;
 //! * a requirement enumerating an enumerated type's value set names every value the service
 //!   accepts, which for the rule-group type is wider than the set the public model declares.
 //!
