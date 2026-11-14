@@ -38,9 +38,19 @@ const REGION: &str = "us-east-1";
 /// per-resource ceiling.
 const MAX_TAGS: usize = 50;
 
-/// AWS's `LimitExceededException` sentence, the wording this service's model documents
-/// for that error shape (`smithy_query(query="doc", shape="LimitExceededException")`).
-const LIMIT_EXCEEDED_SENTENCE: &str =
+/// AWS's `LimitExceededException` sentence for a tag write that would take a resource
+/// past its tag ceiling: fixed text whose only variable part is the ceiling itself.
+fn tag_limit_sentence() -> String {
+    format!(
+        "The resource already has the maximum of {MAX_TAGS} tags. Delete tags from the \
+         specified resource as needed."
+    )
+}
+
+/// The generic prose the model carries for the `LimitExceededException` SHAPE
+/// (`smithy_query(query="doc", shape="LimitExceededException")`), which every limit
+/// refusal of the service would share: the tag ceiling's refusal must NOT be this.
+const GENERIC_ACCOUNT_LIMIT_SENTENCE: &str =
     "The requested limit exceeds the permitted limit for an account.";
 
 /// `arn:aws:appstream:<region>:<account>:<resource-type>/<name>` — the ARN this service
@@ -444,13 +454,115 @@ async fn a_resource_carries_at_most_fifty_tags() {
             )
             .await;
             assert_eq!(
-                message, LIMIT_EXCEEDED_SENTENCE,
-                "case {case:?}: the refusal must carry AWS's limit sentence, got \
+                message,
+                tag_limit_sentence(),
+                "case {case:?}: the refusal must carry AWS's tag-limit sentence, got \
                  {message:?}"
             );
 
             // The refusal persisted nothing: the resource still carries exactly what it
             // had before, and not one of the refused keys.
+            let listed = listed_tags(&emulator, &case, &arn).await;
+            assert_eq!(
+                listed,
+                object(&existing),
+                "case {case:?}: a refused tag write must leave the tags as they were, \
+                 got {listed:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_ceiling_refusal_names_the_tag_ceiling_rather_than_the_generic_account_limit() {
+    // Rows: ways of crossing the per-resource ceiling. They differ along the resource
+    // kind, how many tags the resource already carries, how many keys NEW to it the
+    // write brings, whether the write also overwrites keys it already carries, and what
+    // the tag keys and values say. The sentence is fixed text about the ceiling the
+    // caller crossed, so none of that may change it — and no request value appears in
+    // it. A single request is itself bounded at 50 entries, so every row crosses the
+    // ceiling through what the resource already carries plus what the write adds.
+    let mut overwriting_half = object(&numbered_tags("carried", MAX_TAGS / 2));
+    overwriting_half.insert("one.more/key".to_string(), json!(""));
+
+    let rows: Vec<(&str, usize, Value)> = vec![
+        (
+            "at the ceiling, gaining one key",
+            MAX_TAGS,
+            json!({ "one-more": "v" }),
+        ),
+        (
+            "at the ceiling, gaining one key while overwriting half of the carried ones",
+            MAX_TAGS,
+            Value::Object(overwriting_half),
+        ),
+        (
+            "one short of the ceiling, gaining two keys",
+            MAX_TAGS - 1,
+            json!({ "team.name_1": "a/b:c=d+e-f@g", "Besitzer": "Groß Team" }),
+        ),
+        (
+            "nearly empty, gaining a full request of new keys",
+            1,
+            numbered_tags("added", MAX_TAGS),
+        ),
+        (
+            "at the ceiling, gaining a full request of new keys",
+            MAX_TAGS,
+            numbered_tags("added", MAX_TAGS),
+        ),
+    ];
+
+    for resource in resources() {
+        for (label, carried, write) in &rows {
+            let case = format!("{} {label}", resource.kind);
+            let emulator = Emulator::new();
+            let arn = create(&emulator, &case, &resource, "at-the-ceiling").await;
+
+            let existing = numbered_tags("carried", *carried);
+            emulator
+                .ok(
+                    &case,
+                    "TagResource",
+                    json!({ "ResourceArn": arn, "Tags": existing }),
+                )
+                .await;
+
+            let message = refusal(
+                &emulator,
+                &case,
+                "TagResource",
+                json!({ "ResourceArn": arn, "Tags": write }),
+                400,
+                "LimitExceededException",
+            )
+            .await;
+            assert_eq!(
+                message,
+                tag_limit_sentence(),
+                "case {case:?}: the refusal must name the {MAX_TAGS}-tag ceiling the \
+                 caller crossed, got {message:?}"
+            );
+            assert_ne!(
+                message, GENERIC_ACCOUNT_LIMIT_SENTENCE,
+                "case {case:?}: the tag ceiling must not be reported with the generic \
+                 account-limit sentence, got {message:?}"
+            );
+            // Nothing of the request is interpolated into the sentence.
+            for key in object(write).keys() {
+                assert!(
+                    !message.contains(key.as_str()),
+                    "case {case:?}: the refusal must carry no tag key from the request, \
+                     got {message:?}"
+                );
+            }
+            assert!(
+                !message.contains(&arn),
+                "case {case:?}: the refusal must carry no ARN from the request, got \
+                 {message:?}"
+            );
+
+            // And the refusal persisted nothing.
             let listed = listed_tags(&emulator, &case, &arn).await;
             assert_eq!(
                 listed,

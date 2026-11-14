@@ -534,12 +534,22 @@ pub fn application_fleet_association_selector_message() -> String {
 /// limit exceeds the permitted limit for an account", and persists nothing.
 pub const MAX_TAGS_PER_RESOURCE: usize = 50;
 
-/// AWS's `LimitExceededException` sentence, as this service's model documents that error
-/// shape (`smithy_query(query="doc", shape="LimitExceededException")`: "The requested
-/// limit exceeds the permitted limit for an account."): the one wording a request refused
-/// for crossing a limit carries, naming the rule and nothing of the request.
+/// AWS's `LimitExceededException` sentence for a tag write that would take a resource
+/// past its tag ceiling.
+///
+/// The model's prose for the `LimitExceededException` SHAPE
+/// (`smithy_query(query="doc", shape="LimitExceededException")`) is the generic "The
+/// requested limit exceeds the permitted limit for an account.", which every limit
+/// refusal of the service would otherwise share; the tag ceiling has its own wording,
+/// which names the ceiling the caller crossed and what to do about it. The only variable
+/// part is that ceiling ([`MAX_TAGS_PER_RESOURCE`]) — nothing of the request (no ARN, key
+/// or value) appears in it, because the refusal is about the resource's state and not
+/// about any one tag in the request.
 pub fn tags_limit_exceeded_message() -> String {
-    "The requested limit exceeds the permitted limit for an account.".to_string()
+    format!(
+        "The resource already has the maximum of {MAX_TAGS_PER_RESOURCE} tags. \
+         Delete tags from the specified resource as needed."
+    )
 }
 
 /// The ARN `resource-type` segment of a stack, the segment before the stack's name in
