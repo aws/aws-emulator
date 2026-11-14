@@ -215,17 +215,36 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })?;
         let now = ::std::time::SystemTime::now();
 
-        // The resource the PATH addresses is resolved before the body is judged:
-        // a request naming a gateway or a target that is not there answers the
-        // modelled 404 whatever else the body leaves out — which is what a
-        // `DeleteGatewayTarget` followed by an update of the same target answers.
+        // The BODY is judged before the resource the PATH addresses is resolved:
+        // a body this operation cannot render into its modelled response is an
+        // invalid request whatever the path names, so it is refused with the
+        // modelled 400 and the gateway/target lookup that can answer 404 is never
+        // reached. Only a body-valid request goes on to be resolved against the
+        // store.
         //
+        // `credentialProviderConfigurations` is optional on the request and
+        // `@required` with exactly one entry on this operation's own response
+        // (`smithy_query operation=UpdateGatewayTarget`), and the update REPLACES
+        // the target's whole configuration, so a body that defines none leaves
+        // nothing to report and is refused rather than defaulted.
+        let Some(credential_provider_configurations) = input
+            .credential_provider_configurations
+            .filter(|configured| !configured.is_empty())
+        else {
+            return Err(UpdateGatewayTargetErrorModeled::ValidationException(
+                crate::state::member_not_defined(
+                    crate::state::CREDENTIAL_PROVIDER_CONFIGURATIONS_PROSE,
+                ),
+            )
+            .into());
+        };
+
         // Everything that can be decided from stored state alone is decided
         // here, and the store guard is DROPPED before the cross-service call
         // below: a lock is not held across an await, and the Lambda the new
         // configuration names is resolved only for a request that would
         // otherwise be written.
-        let credential_provider_configurations = {
+        {
             let mut store = state.lock();
             // A gateway whose deletion the clock has already made due is gone
             // before this call looks for it, and its targets with it.
@@ -251,23 +270,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into());
             }
 
-            // `credentialProviderConfigurations` is optional on the request and
-            // `@required` with exactly one entry on this operation's own response
-            // (`smithy_query operation=UpdateGatewayTarget`), and the update
-            // REPLACES the target's whole configuration, so a body that defines
-            // none leaves nothing to report and is refused rather than defaulted.
-            let Some(credential_provider_configurations) = input
-                .credential_provider_configurations
-                .filter(|configured| !configured.is_empty())
-            else {
-                return Err(UpdateGatewayTargetErrorModeled::ValidationException(
-                    crate::state::member_not_defined(
-                        crate::state::CREDENTIAL_PROVIDER_CONFIGURATIONS_PROSE,
-                    ),
-                )
-                .into());
-            };
-
             // A target is served BY the gateway, so the gateway has to be ready
             // to serve it: while the gateway is still in the transient status the
             // clock owes a transition for (`CREATING`, `UPDATING`), or on its way
@@ -282,8 +284,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
                 .into());
             }
-            credential_provider_configurations
-        };
+        }
 
         // The cross-service check `CreateGatewayTarget` makes, for the same
         // reason: the gateway has to invoke the function a Lambda MCP target

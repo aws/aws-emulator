@@ -218,8 +218,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })?;
         let now = ::std::time::SystemTime::now();
 
+        // The BODY is judged before the resource the PATH addresses is resolved:
+        // a body this operation cannot render into its modelled response is an
+        // invalid request whatever the path names, so it is refused with the
+        // modelled 400 and the gateway lookup that can answer 404 is never
+        // reached.
+        //
+        // `name` is optional on the request and `@required` on every response
+        // that reports a target, so a target with no name is refused rather than
+        // stored under a name this service invented for it.
+        let name = input.name.ok_or_else(|| {
+            CreateGatewayTargetErrorModeled::ValidationException(
+                crate::state::field_validation_failed("name", "is required"),
+            )
+        })?;
+
         // Everything that can be decided from stored state alone is decided
-        // first, and the store guard is DROPPED before the cross-service call
+        // next, and the store guard is DROPPED before the cross-service call
         // below: a lock is not held across an await, and the Lambda the target
         // names is resolved only for a request that would otherwise be written.
         let gateway_arn = {
@@ -275,15 +290,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
             gateway.gateway_arn.clone()
         };
-
-        // `name` is optional on the request and `@required` on every response
-        // that reports a target, so a target with no name is refused rather than
-        // stored under a name this service invented for it.
-        let name = input.name.clone().ok_or_else(|| {
-            CreateGatewayTargetErrorModeled::ValidationException(
-                crate::state::field_validation_failed("name", "is required"),
-            )
-        })?;
 
         // The cross-service check: a Lambda MCP target must name a function that
         // exists. Only a Lambda target has one to resolve.
