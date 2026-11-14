@@ -2260,3 +2260,5 @@ mod route53_health_check_string_match;
 // once, which compiled neither.
 // (`https_front_door_concurrent_pooled_producer` is declared ONCE, in the span above: a
 // module may be declared only once, and two branches landing at once appended it here as
+// (`cloudformation_metric_stream_filter_update` is declared ONCE, in the sorted head region
+// (`https_front_door_concurrent_pooled_producer` is declared ONCE, further up this tail: a

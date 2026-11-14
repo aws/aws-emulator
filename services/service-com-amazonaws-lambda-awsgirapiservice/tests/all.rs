@@ -293,6 +293,8 @@ mod handler_object_encryption_members;
 mod handler_object_storage_sdk;
 #[path = "all/handler_rds_data_sdk.rs"]
 mod handler_rds_data_sdk;
+#[path = "all/handler_rest_api_answer_fidelity.rs"]
+mod handler_rest_api_answer_fidelity;
 #[path = "all/handler_rest_api_sdk.rs"]
 mod handler_rest_api_sdk;
 #[path = "all/handler_step_functions_sdk.rs"]
