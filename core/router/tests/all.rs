@@ -1891,3 +1891,9 @@ mod bedrock_knowledge_base_over_an_aoss_collection;
 // neither crate's own test target can observe both ends of it.
 #[path = "all/cloudformation_dynamodb_table_in_place_update.rs"]
 mod cloudformation_dynamodb_table_in_place_update;
+// Declared in the appended tail, which is where every new suite inserts its lines: the HTTPS
+// front door, its TLS terminator and its per-connection accept loop are the router's own, not
+// any one service's, and the suite drives the BINARY this build produces over its data port,
+// which only this target links.
+#[path = "all/https_front_door_concurrent_pooled_producer.rs"]
+mod https_front_door_concurrent_pooled_producer;
