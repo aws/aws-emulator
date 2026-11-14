@@ -1419,6 +1419,11 @@
 //! resolver a create answers is owed the same move through
 //! [`ComAmazonawsEc2Amazonec2State::ipam_prefix_list_resolver_create_complete_at`].
 //!
+//! A resolver a `DeleteIpamPrefixListResolver` answers is `delete-in-progress`, another
+//! non-terminal member of that catalog, so the clock owes it `delete-complete` through
+//! [`ComAmazonawsEc2Amazonec2State::ipam_prefix_list_resolver_delete_complete_at`] —
+//! see [`begin_ipam_prefix_list_resolver_deletion`].
+//!
 //! ## Capacity Reservations
 //!
 //! [`ComAmazonawsEc2Amazonec2State::capacity_reservations`] holds the account's Capacity
@@ -2624,6 +2629,7 @@ mod image_usage_report_store;
 mod capacity_billing_and_recycle_bins;
 mod ipam;
 mod ipam_deletion;
+mod ipam_prefix_list_resolver_deletion;
 mod ipam_pool_cidrs;
 mod vpc_endpoints_and_transit_gateway_attachments;
 mod prefix_lists_and_dedicated_hosts;
@@ -2720,6 +2726,7 @@ pub use host_reservations::*;
 pub use vpc_endpoints_and_transit_gateway_attachments::*;
 pub use ipam::*;
 pub use ipam_deletion::*;
+pub use ipam_prefix_list_resolver_deletion::*;
 pub use ipam_pool_cidrs::*;
 pub use capacity_billing_and_recycle_bins::*;
 pub use image_usage_report_store::*;

@@ -1100,6 +1100,10 @@ mod ipam_prefix_list_resolvers;
 // the account's resolver targets back.
 #[path = "all/ipam_prefix_list_resolver_targets.rs"]
 mod ipam_prefix_list_resolver_targets;
+// Deleting an IPAM prefix list resolver, what it refuses while the resolver still has targets,
+// and the terminal state the clock owes it.
+#[path = "all/ipam_prefix_list_resolver_deletion.rs"]
+mod ipam_prefix_list_resolver_deletion;
 #[path = "all/ipam_routing_policy_registrations.rs"]
 mod ipam_routing_policy_registrations;
 // The RPKI validation `GetIpamRouteProtectionFindings` reports for the BYOIP routes an IPAM

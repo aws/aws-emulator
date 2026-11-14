@@ -794,6 +794,11 @@ impl ComAmazonawsEc2Amazonec2State {
                 // The transition is applied once; nothing is owed on this resolver any more.
                 false
             });
+        // A resolver `DeleteIpamPrefixListResolver` answered as `delete-in-progress` reaches
+        // `delete-complete` once its due instant has passed, whether or not anybody called —
+        // the other end of the same resolver's life, owed and applied exactly as its creation
+        // was above.
+        self.materialize_due_ipam_prefix_list_resolver_deletions(now);
         // An IPAM prefix list resolver target `CreateIpamPrefixListResolverTarget` answered as
         // `create-in-progress` reaches `create-complete` once its due instant has passed,
         // whether or not anybody called — the same contract as the scope above, and the reason

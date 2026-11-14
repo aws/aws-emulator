@@ -1475,7 +1475,12 @@ pub(super) fn ipam_prefix_list_resolver_family_not_found<E>(
 
 /// The resource name this family's resolver refusal spells, which is the resource as the API
 /// titles it rather than the lower-case prose the rest of this module's sentences use.
-const IPAM_PREFIX_LIST_RESOLVER_REFUSAL_NAME: &str = "IPAM Prefix List Resolver";
+///
+/// Public because it is the ONE spelling of this resource's name in a refusal: the
+/// `NotFound` sentence below words itself with it, and so does the `IncorrectState` sentence
+/// `DeleteIpamPrefixListResolver` refuses a resolver that is already going with
+/// ([`incorrect_state_of`]).
+pub const IPAM_PREFIX_LIST_RESOLVER_REFUSAL_NAME: &str = "IPAM Prefix List Resolver";
 
 /// The same for the resolver TARGET: the resolver's own name with the target's word on the end.
 const IPAM_PREFIX_LIST_RESOLVER_TARGET_REFUSAL_NAME: &str = "IPAM Prefix List Resolver Target";
