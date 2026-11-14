@@ -45,6 +45,8 @@ mod deployment_group_defaults;
 mod deployment_group_update;
 #[path = "all/deployment_in_flight_window.rs"]
 mod deployment_in_flight_window;
+#[path = "all/deployment_info_members.rs"]
+mod deployment_info_members;
 #[path = "all/deployment_progress_refusal_sentences.rs"]
 mod deployment_progress_refusal_sentences;
 #[path = "all/deployment_target_record_readability.rs"]

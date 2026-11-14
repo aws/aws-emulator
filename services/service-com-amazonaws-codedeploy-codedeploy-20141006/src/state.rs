@@ -75,6 +75,11 @@ pub mod service_role_permissions;
 /// that digest is computed, where such a revision is recorded.
 pub mod revision_digest;
 
+/// The deployment members a read SUMMARISES or DEFAULTS rather than echoes back:
+/// the status summary of the targets a deployment holds, and the file-handling
+/// policy every deployment runs under.
+pub mod deployment_summary;
+
 /// The revision a deployment deploys when it names an S3 object, FETCHED from the
 /// object store that holds it: the one place a revision's identity is resolved and
 /// the one place a deployment whose revision cannot be located is failed.
@@ -2419,6 +2424,12 @@ impl ComAmazonawsCodedeployCodedeploy20141006State {
         deployment.previous_revision = deployment
             .previous_revision
             .map(revision_digest::with_content_digest);
+        // Every deployment runs under a file-handling policy, so the one a
+        // request left unstated is the service's documented default, recorded
+        // here rather than resolved again by each reader.
+        deployment.file_exists_behavior = Some(deployment_summary::file_exists_behavior(
+            deployment.file_exists_behavior.take(),
+        ));
         let id = deployment.deployment_id.clone();
         self.deployments.insert(id.clone(), deployment);
         self.deployment_order.push(id.clone());
@@ -4211,7 +4222,9 @@ pub fn deployment_info(deployment: &Deployment) -> crate::ops::types::Deployment
         create_time: Some(timestamp(deployment.create_time_ms)),
         start_time: deployment.start_time_ms.map(timestamp),
         complete_time: deployment.complete_time_ms.map(timestamp),
-        deployment_overview: None,
+        // The summary of the targets this deployment holds, which every
+        // deployment has; see [`deployment_summary::deployment_overview`].
+        deployment_overview: Some(deployment_summary::deployment_overview(deployment)),
         description: deployment.description.clone(),
         creator: Some(deployment.creator.clone()),
         ignore_application_stop_failures: deployment.ignore_application_stop_failures,
@@ -4227,7 +4240,17 @@ pub fn deployment_info(deployment: &Deployment) -> crate::ops::types::Deployment
         additional_deployment_status_info: None,
         file_exists_behavior: deployment.file_exists_behavior.clone(),
         deployment_mode: deployment.deployment_mode.clone(),
-        deployment_status_messages: None,
+        // The status messages of a deployment are reported as the list it HAS,
+        // empty included: "messages that contain information about the status of
+        // a deployment"
+        // (`smithy_query(query="doc",shape="DeploymentInfo",member="deploymentStatusMessages")`)
+        // are what CodeDeploy's own deployment engine attaches to a deployment
+        // beyond its status and its error information, and this service attaches
+        // none to any deployment it records — why a deployment ended as it did is
+        // reported where this service records that, on `errorInformation`
+        // ([`deployment_error_information`]). So every deployment carries such a
+        // list and a client iterates it instead of telling absent from empty.
+        deployment_status_messages: Some(Vec::new()),
         compute_platform: Some(deployment.compute_platform.clone()),
         external_id: deployment.external_id.clone(),
         related_deployments: None,
