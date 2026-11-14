@@ -999,6 +999,26 @@ pub fn is_key_value_store_name(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// Whether `value` is WRITTEN in the form CloudFront writes an entity identifier in: a
+/// leading namespace letter (an uppercase ASCII letter) followed by a non-empty body of the
+/// id alphabet ([`is_token_byte`] — digits and uppercase ASCII letters).
+///
+/// This is the coarse judgement a value alone supports, and it is all the WIDTH-FREE half of
+/// it: the members that carry such an identifier are plain `string` in the model — no
+/// `@pattern`, no `@length` — so the number of characters in the body is not something a
+/// request can be refused on, and an identifier of a width this emulator does not mint is
+/// still an identifier CloudFront could have issued. What a value of this form is NOT is a
+/// name, a caller reference, a UUID or a word: those carry characters no entity id does, so
+/// they could never have named an entity of this service at all.
+pub fn is_entity_id_form(value: &str) -> bool {
+    match value.as_bytes() {
+        [first, body @ ..] => {
+            first.is_ascii_uppercase() && !body.is_empty() && body.iter().copied().all(is_token_byte)
+        }
+        [] => false,
+    }
+}
+
 /// Whether `value` is `prefix` followed by [`ID_BODY_LEN`] characters of the id
 /// alphabet.
 pub(super) fn is_prefixed_token(value: &str, prefix: char) -> bool {

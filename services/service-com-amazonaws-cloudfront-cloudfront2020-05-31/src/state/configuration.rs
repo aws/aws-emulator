@@ -3208,16 +3208,16 @@ pub const NO_SUCH_PUBLIC_KEY_MESSAGE: &str = "The specified CloudFront public ke
 /// `Id` answers an id it cannot resolve.
 ///
 /// `GetPublicKey`'s model declares this one error, so one code and one status cover both
-/// outcomes and the MESSAGE is what tells them apart — the same split
-/// [`unresolved_field_level_encryption_profile_id`] makes for a profile, decided by the one
-/// predicate both read ([`is_minted_entity_id_of_another_kind`]): a value that is a
+/// outcomes and the MESSAGE is what tells them apart, decided by the cross-kind half of the
+/// split [`unresolved_field_level_encryption_profile_id`] makes for a profile
+/// ([`is_minted_entity_id_of_another_kind`]): a value that is a
 /// well-formed identifier of ANOTHER resource kind this service mints could never have been a
 /// public key id, so it is the identifier CloudFront cannot READ
 /// ([`id_format_invalid_message`]), while every other value the store holds no key for — an id
 /// of the public key namespace that was never minted or is of no minted id's width, a name, a
 /// caller reference, a word of no id shape at all — is a public key that is ABSENT
-/// ([`NO_SUCH_PUBLIC_KEY_MESSAGE`]). Both sentences are fixed text and neither echoes the
-/// value submitted.
+/// ([`NO_SUCH_PUBLIC_KEY_MESSAGE`]), which is the recorded contract for this resource. Both
+/// sentences are fixed text and neither echoes the value submitted.
 pub fn unresolved_public_key_id(id: &str) -> crate::ops::types::NoSuchPublicKey {
     if is_minted_entity_id_of_another_kind(id, crate::state::is_public_key_id) {
         crate::ops::types::NoSuchPublicKey {
@@ -3289,16 +3289,17 @@ pub const NO_SUCH_FIELD_LEVEL_ENCRYPTION_PROFILE_MESSAGE: &str =
 /// profile `Id` in its path answers an `Id` it cannot resolve.
 ///
 /// `GetFieldLevelEncryptionProfile` models this one not-found code, so one code and one
-/// status cover two conditions and the MESSAGE is what tells them apart — the same split
-/// [`unresolved_key_group_id`] makes for a key group, decided the same way: the SHAPE of the
-/// identifier, a property of the value alone, judged before the store is consulted. An `Id`
-/// outside the shape a profile id takes ([`is_field_level_encryption_profile_id`]) — an id of
-/// another namespace of this service, a value of no minted id's width or alphabet, a name or a
-/// caller reference — is an identifier CloudFront cannot read
-/// ([`id_format_invalid_message`]), while a well-formed profile id the store holds no profile
-/// for is the absent-profile sentence
-/// ([`NO_SUCH_FIELD_LEVEL_ENCRYPTION_PROFILE_MESSAGE`]). Both are fixed text and neither
-/// echoes the value submitted.
+/// status cover two conditions and the MESSAGE is what tells them apart, decided from the
+/// value alone and therefore before the store is consulted
+/// ([`is_unreadable_entity_id`]): an `Id` CloudFront could not have read as a profile
+/// identifier at all — one outside the entity-id form (a name, a caller reference, a UUID, a
+/// word) or a minted id of another kind of this service — is the unreadable-identifier
+/// sentence ([`id_format_invalid_message`]), while every `Id` it DOES read and finds no
+/// profile for — one of the profile namespace that was never minted, and one of the entity-id
+/// form whose namespace letter or width this emulator does not mint — is the absent-profile
+/// sentence ([`NO_SUCH_FIELD_LEVEL_ENCRYPTION_PROFILE_MESSAGE`]). The SAME split
+/// [`unresolved_public_key_id`] makes for a public key, read with the one predicate both
+/// call. Both are fixed text and neither echoes the value submitted.
 ///
 /// Only an identifier that ADDRESSES the operation is judged this way: a profile id borne by a
 /// submitted DOCUMENT (a mapping's `ProfileId` on a configuration create or update) addresses
@@ -3307,13 +3308,36 @@ pub const NO_SUCH_FIELD_LEVEL_ENCRYPTION_PROFILE_MESSAGE: &str =
 pub fn unresolved_field_level_encryption_profile_id(
     id: &str,
 ) -> crate::ops::types::NoSuchFieldLevelEncryptionProfile {
-    if is_field_level_encryption_profile_id(id) {
-        no_such_field_level_encryption_profile()
-    } else {
+    if is_unreadable_entity_id(id, is_field_level_encryption_profile_id) {
         crate::ops::types::NoSuchFieldLevelEncryptionProfile {
             message: Some(id_format_invalid_message("Id")),
         }
+    } else {
+        no_such_field_level_encryption_profile()
     }
+}
+
+/// Whether `value` is an identifier an operation ADDRESSED by an id of ONE entity kind could
+/// never have read — `addressed` being that kind's minted-id predicate.
+///
+/// Two conditions, both decided from the value alone and therefore before the store is
+/// consulted, make an identifier unreadable rather than absent:
+///
+/// * it is not WRITTEN as an entity identifier of this service at all
+///   ([`is_entity_id_form`]) — a name, a caller reference, a UUID, a word;
+/// * or it is a well-formed identifier of ANOTHER kind this service mints
+///   ([`is_minted_entity_id_of_another_kind`]), which could never have named the kind the
+///   operation addresses.
+///
+/// Everything else — an identifier of the addressed kind's own namespace that was never
+/// minted, and one of the entity-id form whose namespace letter or body width is not one
+/// this emulator mints — is a value CloudFront reads as an identifier and finds nothing
+/// for: the resource is ABSENT. The members that carry these identifiers are plain `string`
+/// in the model (no `@pattern`, no `@length`), so the ids this emulator happens to MINT are
+/// one form of an identifier, never the only form CloudFront issues one in.
+pub(super) fn is_unreadable_entity_id(value: &str, addressed: fn(&str) -> bool) -> bool {
+    !addressed(value)
+        && (!is_entity_id_form(value) || is_minted_entity_id_of_another_kind(value, addressed))
 }
 
 /// Whether `value` is a minted id of a resource kind OTHER than the one an operation
@@ -3444,22 +3468,23 @@ pub const NO_SUCH_FIELD_LEVEL_ENCRYPTION_CONFIG_MESSAGE: &str =
 /// configuration `Id` in its path answers an `Id` it cannot resolve.
 ///
 /// The SAME split [`unresolved_field_level_encryption_profile_id`] makes for the other
-/// field-level encryption resource, decided by the same property: an `Id` outside the shape a
-/// configuration id takes ([`is_field_level_encryption_config_id`]) could never have named a
-/// configuration, so the identifier itself is what CloudFront reports it cannot read
-/// ([`id_format_invalid_message`]), while a well-formed configuration id the store holds
-/// nothing for is the absent-configuration sentence
-/// ([`NO_SUCH_FIELD_LEVEL_ENCRYPTION_CONFIG_MESSAGE`]). Both are fixed text and neither
-/// echoes the value submitted.
+/// field-level encryption resource, decided by the same predicate
+/// ([`is_unreadable_entity_id`]): an `Id` CloudFront could not have read as a configuration
+/// identifier at all — one outside the entity-id form or a minted id of another kind of this
+/// service — is what the service reports it cannot read
+/// ([`id_format_invalid_message`]), while every `Id` it DOES read and holds no configuration
+/// for, the widths and namespace letters this emulator does not mint included, is the
+/// absent-configuration sentence ([`NO_SUCH_FIELD_LEVEL_ENCRYPTION_CONFIG_MESSAGE`]). Both are
+/// fixed text and neither echoes the value submitted.
 pub fn unresolved_field_level_encryption_config_id(
     id: &str,
 ) -> crate::ops::types::NoSuchFieldLevelEncryptionConfig {
-    if is_field_level_encryption_config_id(id) {
-        no_such_field_level_encryption_config()
-    } else {
+    if is_unreadable_entity_id(id, is_field_level_encryption_config_id) {
         crate::ops::types::NoSuchFieldLevelEncryptionConfig {
             message: Some(id_format_invalid_message("Id")),
         }
+    } else {
+        no_such_field_level_encryption_config()
     }
 }
 

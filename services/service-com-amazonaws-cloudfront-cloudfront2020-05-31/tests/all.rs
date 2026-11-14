@@ -156,6 +156,8 @@ mod field_level_encryption_config_list_after_delete;
 mod field_level_encryption_config_update;
 #[path = "all/field_level_encryption_identifier_format.rs"]
 mod field_level_encryption_identifier_format;
+#[path = "all/field_level_encryption_identifier_width_and_namespace.rs"]
+mod field_level_encryption_identifier_width_and_namespace;
 #[path = "all/field_level_encryption_profile_delete.rs"]
 mod field_level_encryption_profile_delete;
 #[path = "all/field_level_encryption_profile_lifecycle.rs"]

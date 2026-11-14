@@ -1292,12 +1292,13 @@ async fn an_id_no_configuration_holds_is_refused_by_the_reader() {
     let stored_id = created.root().text_at("Id").unwrap_or_default().to_string();
 
     // The rows span the ways an id can name no configuration: a well-shaped configuration id
-    // that was never minted, an id of another CloudFront namespace (including the profile's,
-    // which is a different resource under the same surface), and a value of no CloudFront id
-    // shape at all — each with the sentence its shape earns.
+    // that was never minted, an id in the CloudFront identifier form of a width this service
+    // does not mint (which the service still READS as an identifier), a minted id of another
+    // kind — the profile's, a different resource under the same surface — and a value of no
+    // CloudFront identifier form at all, each with the sentence its shape earns.
     for (case, expected) in [
         ("C3V3PVOY5NSBVE", NO_SUCH_CONFIG_MESSAGE),
-        ("EDFDVBD6EXAMPLE", ID_FORMAT_INVALID_MESSAGE),
+        ("EDFDVBD6EXAMPLE", NO_SUCH_CONFIG_MESSAGE),
         (profile.as_str(), ID_FORMAT_INVALID_MESSAGE),
         ("not-a-configuration-id", ID_FORMAT_INVALID_MESSAGE),
     ] {
@@ -1451,9 +1452,10 @@ async fn an_id_no_configuration_holds_is_refused_by_the_configuration_reader() {
     let stored_id = created.root().text_at("Id").unwrap_or_default().to_string();
 
     // The rows span the ways an id can name no configuration: a well-shaped configuration id
-    // that was never minted, an id of another CloudFront namespace (including the profile's,
-    // a different resource under the same surface), the configuration's own id with a
-    // character changed, and a value of no CloudFront id shape at all.
+    // that was never minted, an id in the CloudFront identifier form of a width this service
+    // does not mint, a minted id of another kind (the profile's, a different resource under
+    // the same surface), the configuration's own id with a character changed, and two values
+    // of no CloudFront identifier form at all.
     let mut mangled: Vec<char> = stored_id.chars().collect();
     if let Some(last) = mangled.last_mut() {
         *last = if *last == 'A' { 'B' } else { 'A' };
@@ -1461,7 +1463,7 @@ async fn an_id_no_configuration_holds_is_refused_by_the_configuration_reader() {
     let mangled: String = mangled.into_iter().collect();
     for (case, expected) in [
         ("C3V3PVOY5NSBVE", NO_SUCH_CONFIG_MESSAGE),
-        ("EDFDVBD6EXAMPLE", ID_FORMAT_INVALID_MESSAGE),
+        ("EDFDVBD6EXAMPLE", NO_SUCH_CONFIG_MESSAGE),
         (profile.as_str(), ID_FORMAT_INVALID_MESSAGE),
         (mangled.as_str(), NO_SUCH_CONFIG_MESSAGE),
         ("not-a-configuration-id", ID_FORMAT_INVALID_MESSAGE),

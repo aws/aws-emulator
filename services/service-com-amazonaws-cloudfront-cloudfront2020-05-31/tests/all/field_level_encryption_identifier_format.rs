@@ -5,11 +5,13 @@
 //!
 //! The rule under test: an operation ADDRESSED by a field-level encryption identifier answers
 //! its one modelled not-found code (404) for every identifier it cannot resolve, and the
-//! MESSAGE says which condition it was — a value outside the shape that resource kind's ids
-//! take (the kind's namespace letter followed by a body of the fixed width and alphabet every
-//! id this service mints carries) could never have named such a resource, so the identifier
-//! itself is what the service reports it cannot read ("Id format is invalid"), while a
-//! WELL-FORMED id the store holds nothing for is the absent resource ("The specified field
+//! MESSAGE says which condition it was — a value the service could not have READ as an
+//! identifier of the addressed kind at all, because it is not written in CloudFront's
+//! identifier form (a namespace letter followed by a body of the id alphabet) or because it is
+//! a minted identifier of ANOTHER kind of this service, is the identifier itself reported
+//! unreadable ("Id format is invalid"), while every identifier it DOES read and holds nothing
+//! for — including one whose namespace letter or body width this service does not mint, since
+//! the model bounds these members by nothing — is the absent resource ("The specified field
 //! level encryption config/profile does not exist."). Both sentences are fixed text: neither
 //! echoes the value submitted.
 //!
@@ -19,12 +21,14 @@
 //!   (`P`-prefixed) — each with its own namespace letter and its own pair of sentences;
 //! * every OPERATION that addresses one by a path identifier: both readers of each kind, its
 //!   update and its delete;
-//! * the SHAPES an identifier takes outside the addressed kind's: the sibling kind's own
-//!   minted id, a public key id, the `E`-prefixed namespace every other CloudFront entity id
-//!   is drawn from, the right prefix with a body one character short of and one character past
-//!   the width this service mints, a minted id in lower case, a body outside the id alphabet,
-//!   a UUID, a bare word and the resource's own caller reference — against the well-formed
-//!   rows that carry an id of the addressed kind that was simply never minted.
+//! * the identifiers the service READS and finds nothing for: an id of the addressed kind that
+//!   was never minted, the minted id with its last character changed, a namespace letter no
+//!   kind of this service mints, and bodies one character short of, one character past and
+//!   well past the width it mints;
+//! * the identifiers it cannot read at all: the sibling kind's own minted id, a public key id,
+//!   the `E`-prefixed namespace other CloudFront entity ids are drawn from, a minted id in
+//!   lower case, a body outside the id alphabet, a UUID, a bare word and the resource's own
+//!   caller reference.
 //!
 //! Each kind's width and alphabet are read off an id this emulator really MINTED rather than
 //! written out here, so the table cannot drift from what the service issues.
@@ -241,9 +245,9 @@ async fn seed(router: &MultiServiceRouter) -> Stored {
 struct Shape {
     case: String,
     id: String,
-    /// `true` when the identifier is well-formed for the kind it was submitted to, so the
-    /// refusal is the ABSENT resource; `false` when it is outside that shape, so the refusal
-    /// is the identifier the service cannot read.
+    /// `true` when the service READS the value as an identifier of the kind it was submitted
+    /// to, so the refusal is the ABSENT resource; `false` when the value could not be one at
+    /// all, so the refusal is the identifier the service cannot read.
     well_formed: bool,
 }
 
@@ -279,7 +283,7 @@ fn shapes(kind: Kind, stored: &Stored, public_key: &str) -> Vec<Shape> {
     let changed: String = changed.into_iter().collect();
 
     vec![
-        // Well formed for this kind, and the store holds nothing for it.
+        // An identifier the service reads, and the store holds nothing for it.
         Shape::new(
             "an id of this kind that was never minted",
             format!("{prefix}{}", "0".repeat(body.len())),
@@ -290,7 +294,27 @@ fn shapes(kind: Kind, stored: &Stored, public_key: &str) -> Vec<Shape> {
             changed,
             true,
         ),
-        // Outside the shape this kind's ids take.
+        Shape::new(
+            "this kind's prefix with a body one character short",
+            format!("{prefix}{}", &body[..body.len() - 1]),
+            true,
+        ),
+        Shape::new(
+            "this kind's prefix with a body one character too long",
+            format!("{prefix}{body}A"),
+            true,
+        ),
+        Shape::new(
+            "a namespace letter no kind of this service mints",
+            format!("W{body}"),
+            true,
+        ),
+        Shape::new(
+            "a namespace letter no kind of this service mints and a far longer body",
+            format!("W{body}{body}"),
+            true,
+        ),
+        // A value that could not have been an identifier of this kind at all.
         Shape::new(
             "the sibling field-level encryption kind's own minted id",
             sibling,
@@ -304,16 +328,6 @@ fn shapes(kind: Kind, stored: &Stored, public_key: &str) -> Vec<Shape> {
         Shape::new(
             "the namespace every other CloudFront entity id is drawn from",
             format!("E{body}"),
-            false,
-        ),
-        Shape::new(
-            "this kind's prefix with a body one character short",
-            format!("{prefix}{}", &body[..body.len() - 1]),
-            false,
-        ),
-        Shape::new(
-            "this kind's prefix with a body one character too long",
-            format!("{prefix}{body}A"),
             false,
         ),
         Shape::new(
