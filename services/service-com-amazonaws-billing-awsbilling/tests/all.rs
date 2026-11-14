@@ -53,5 +53,7 @@ mod source_views;
 mod source_views_tags_and_policy;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
+#[path = "all/tag_set_duplicate_keys.rs"]
+mod tag_set_duplicate_keys;
 #[path = "all/untag_resource.rs"]
 mod untag_resource;

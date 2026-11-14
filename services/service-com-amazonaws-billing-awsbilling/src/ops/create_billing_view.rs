@@ -8,6 +8,12 @@
 //! account of a consolidated billing family is refused with
 //! `ValidationException` (400) before anything is stored.
 //!
+//! The view is minted with the tags the request carries, collected through the
+//! one rule every writer of a tag set in this service shares
+//! ([`crate::state::requested_tag_set`]): a `resourceTags` list that gives the
+//! same key twice is refused with `ValidationException` (400), since the stored
+//! value would otherwise be decided by arrival order.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -145,6 +151,20 @@ pub struct CreateBillingView<Eng> {
     engine: ::std::sync::Arc<Eng>,
 }
 
+/// Refuse a request member as invalid, in the modeled `ValidationException`
+/// shape (HTTP 400) this operation declares.
+fn invalid_field(member: &str, why: &str) -> CreateBillingViewError {
+    CreateBillingViewErrorModeled::ValidationException(ValidationException {
+        message: why.to_string(),
+        reason: crate::state::VALIDATION_REASON_FIELD.to_string(),
+        field_list: Some(vec![ValidationExceptionField {
+            name: member.to_string(),
+            message: why.to_string(),
+        }]),
+    })
+    .into()
+}
+
 impl<Eng> CreateBillingView<Eng> {
     /// Construct the operation from the shared engine. INFALLIBLE — the engine is a
     /// construction-time dependency, so engine access is guaranteed by the time any
@@ -201,6 +221,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             })
             .into());
         }
+
+        // The view is minted with the tag set the request asks for, so the
+        // request's list is collected through the one rule every writer of a tag
+        // set shares: a key given twice is refused with the modeled
+        // `ValidationException` (400) rather than letting arrival order decide
+        // which of the two values the view ends up carrying. Decided before any
+        // state is read or written, so the refusal mints no ARN, stores no view
+        // and records no idempotency token.
+        let tags = crate::state::requested_tag_set(input.resource_tags.as_deref().unwrap_or(&[]))
+            .map_err(|why| invalid_field("resourceTags", &why))?;
 
         // `clientToken` is modeled `@httpHeader("X-Amzn-Client-Token")`, but this
         // service speaks awsJson1_0, where HTTP bindings are inert and the member
@@ -264,12 +294,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // A view that is HEALTHY has nothing to explain, so it carries the
             // empty reason list: see `BillingView::health_status_reasons`.
             health_status_reasons: Vec::new(),
-            tags: input
-                .resource_tags
-                .unwrap_or_default()
-                .into_iter()
-                .map(|tag| (tag.key, tag.value.unwrap_or_default()))
-                .collect(),
+            tags,
             // No operation in this service's model attaches a resource-based
             // policy, so a new view carries none: see `BillingView::resource_policy`.
             resource_policy: None,

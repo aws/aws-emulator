@@ -41,7 +41,7 @@ use service_com_amazonaws_sts_awssecuritytokenservicev20110615::state as sts_sta
 
 use crate::ops::types::{
     AccessDeniedException, BillingViewHealthStatus, BillingViewHealthStatusException, Expression,
-    ValidationException, ValidationExceptionField, BILLING_FEATURE_VALUES,
+    ResourceTag, ValidationException, ValidationExceptionField, BILLING_FEATURE_VALUES,
 };
 
 /// The Support-eligible spend `ListBusinessSupportAccountCharges` prices.
@@ -1275,6 +1275,31 @@ pub fn feature_access_denied(operation: &str, feature: &str) -> AccessDeniedExce
             preferences_backend_operation(operation)
         ),
     }
+}
+
+/// The tag set one request asks for, keyed by tag key — or the message that
+/// refuses a list carrying the same key twice.
+///
+/// A tag set is keyed by key, so one request may not carry a key twice: the two
+/// entries would decide the stored value by arrival order, and collecting them
+/// into the keyed set would silently drop one of the two values. The modelled
+/// `ResourceTagList` carries no `@uniqueItems`, so duplicates reach a handler
+/// and the rule is the service's to apply. Every writer that takes a
+/// `ResourceTagList` collects it through here, so the creator and the updater of
+/// a view's tag set answer identical input identically. The caller renders the
+/// `Err` as its own modeled `ValidationException` over the `resourceTags`
+/// member, and writes nothing.
+pub fn requested_tag_set(tags: &[ResourceTag]) -> Result<BTreeMap<String, String>, String> {
+    let mut requested: BTreeMap<String, String> = BTreeMap::new();
+    for tag in tags {
+        if requested
+            .insert(tag.key.clone(), tag.value.clone().unwrap_or_default())
+            .is_some()
+        {
+            return Err(format!("the tag key {} is given more than once", tag.key));
+        }
+    }
+    Ok(requested)
 }
 
 /// The message this service's ARN validation answers for a billing-view ARN

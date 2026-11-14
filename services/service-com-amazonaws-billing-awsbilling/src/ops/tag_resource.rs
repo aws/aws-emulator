@@ -222,20 +222,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         // A tag set is keyed by key, so one request may not carry a key twice:
-        // the two entries would decide the stored value by arrival order.
-        let mut requested: std::collections::BTreeMap<String, String> =
-            std::collections::BTreeMap::new();
-        for tag in &input.resource_tags {
-            if requested
-                .insert(tag.key.clone(), tag.value.clone().unwrap_or_default())
-                .is_some()
-            {
-                return Err(invalid_field(
-                    "resourceTags",
-                    &format!("the tag key {} is given more than once", tag.key),
-                ));
-            }
-        }
+        // the two entries would decide the stored value by arrival order. The
+        // rule lives in `crate::state::requested_tag_set`, which every writer
+        // of a tag set collects its request's list through.
+        let requested = crate::state::requested_tag_set(&input.resource_tags)
+            .map_err(|why| invalid_field("resourceTags", &why))?;
 
         // Attaching a tag whose key is already on the resource replaces that
         // key's value and leaves every other key alone, so a replayed request
