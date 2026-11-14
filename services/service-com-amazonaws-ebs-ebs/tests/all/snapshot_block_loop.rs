@@ -44,12 +44,21 @@ const AUTHORIZATION: &str =
     "AWS4-HMAC-SHA256 Credential=AKIDEBSTEST/20260101/us-east-1/ebs/aws4_request, \
      SignedHeaders=host;x-amz-date, Signature=0000000000000000000000000000000000000000000000000000000000000000";
 
-/// A router carrying just this service over a fresh shared engine.
-pub(crate) fn router() -> MultiServiceRouter {
+/// A router carrying just this service over a fresh shared engine, WITH that engine.
+///
+/// For a suite whose rule is about a change to this service's state that another service's
+/// operation makes — the EBS direct APIs model no delete of a snapshot, so the removal a
+/// `DeleteSnapshot` performs is reached through the store rather than over this wire.
+pub(crate) fn router_with_engine() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
-    router.register_service(EmulatedService::new(engine));
-    router
+    router.register_service(EmulatedService::new(Arc::clone(&engine)));
+    (router, engine)
+}
+
+/// A router carrying just this service over a fresh shared engine.
+pub(crate) fn router() -> MultiServiceRouter {
+    router_with_engine().0
 }
 
 /// One response, reduced to what these tests assert on.

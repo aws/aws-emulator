@@ -137,7 +137,7 @@ fn reported(reply: &Reply) -> Vec<Changed> {
 /// Each seed names a distinct 512 KiB payload ([`block_bytes`]), so two blocks written from
 /// the same seed hold the same bytes and two written from different seeds do not — which is
 /// what rule 1's comparison is of.
-async fn sealed_snapshot(
+pub(crate) async fn sealed_snapshot(
     router: &MultiServiceRouter,
     case: &str,
     volume_size: i64,
