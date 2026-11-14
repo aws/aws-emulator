@@ -1877,6 +1877,10 @@ mod cloudformation_provisions_cloudfront_resources;
 // (`cloudformation_monitored_alb_search_estate` and `cloudformation_domain_endpoint_outputs`
 // are declared in the head region above: a module may be declared only once.)
 // are declared further up this tail already: a module may be declared only once.)
+// (`apigateway_sns_service_integration` is declared ONCE, a few lines up in this same
+// appended tail: two branches landing in the same window appended a second declaration of it
+// here, which is a redefinition that compiled neither, so the duplicate is removed and the
+// first declaration stands.)
 // Declared in the appended tail, which is where every new suite inserts its lines: a deployed
 // method whose integration is an `AWS` call on an SNS TOPIC, served by making that call —
 // asked of the router that mounts every service at once, which is where the hop between the
@@ -1944,6 +1948,9 @@ mod redshift_health_alarms_evaluate;
 // window each appended it, and a module may be declared only once.)
 // (`cloudwatch_alarm_ssm_ops_item_action` is declared once, in the head region above: a
 // module may be declared only once.)
+// (`cloudformation_metric_stream_filter_update` is declared ONCE, in the sorted head above:
+// two branches landing in the same window appended a second declaration of it here, which is a
+// redefinition that compiled neither, so the duplicate is removed and the first stands.)
 // (`zz_probe` is declared once, further up this tail: a module may be declared only once.)
 // (The metric-stream filter-update suite is declared ONCE, in the head region above: it was
 // appended here as well while two branches were landing at once.)
@@ -2202,6 +2209,11 @@ mod ses_delivery_event_advances_the_subscribed_queue;
 // (`zz_probe` is declared once, in the head region above: a module may be declared only
 // once, and two branches landing at once had appended a second declaration of it here.)
 // above: two branches landing at once had appended a second declaration of it here.)
+// (The Amazon Cognito authorizer suite is declared ONCE, in the head region above: a module
+// may be declared only once, and two branches landing at once appended it here as well.)
+// Declared ONCE, in the head region above beside the other API Gateway suites: it was
+// appended here as well while two branches were landing at once, which declared it a second
+// time and compiled neither.
 // (The suite that reads which app client's token a COGNITO_USER_POOLS authorizer admits is
 // declared in the head region at the top of this file already: a module may be declared only
 // once.)

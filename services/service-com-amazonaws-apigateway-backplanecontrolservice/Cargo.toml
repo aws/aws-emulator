@@ -224,6 +224,11 @@ service-com-amazonaws-ec2-amazonec2 = { workspace = true }
 # encoding itself is the crate's, as the sibling medialive/codeartifact suites do it,
 # rather than a tenth hand-written copy of RFC 3986.
 percent-encoding = "2"
+# The series a WAFv2 web ACL in front of a deployed stage publishes about the requests it
+# decided live in the CloudWatch emulator's own metric store, and
+# `tests/all/stage_web_acl_request_metrics.rs` reads them back through that service's own
+# `ListMetrics`/`GetMetricStatistics`, so it is mounted on that suite's engine too.
+service-com-amazonaws-cloudwatch-graniteserviceversion20100801 = { workspace = true }
 # A REGIONAL custom domain name presents the certificate Certificate Manager holds for its
 # `regionalCertificateArn`, so that service is mounted beside this one on the suite's own
 # engine and every certificate a case names is brought in through Certificate Manager's OWN

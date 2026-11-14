@@ -80,6 +80,11 @@ mod stage_web_acl_logging;
 mod stage_web_acl_logging_destination_binding;
 #[path = "all/stage_web_acl_association_report.rs"]
 mod stage_web_acl_association_report;
+// What that same web ACL REPORTS to CloudWatch about the requests it decided at the stage:
+// the `AWS/WAFV2` counter of the action each dimension applied, under the web ACL, the rule
+// and the Region together.
+#[path = "all/stage_web_acl_request_metrics.rs"]
+mod stage_web_acl_request_metrics;
 #[path = "all/aws_service_integration.rs"]
 mod aws_service_integration;
 #[path = "all/account_settings.rs"]
