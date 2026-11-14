@@ -173,6 +173,8 @@ mod send_suppression_from_feedback;
 mod send_unverified_identity_refusal;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
+#[path = "all/suppressed_destination_deletion.rs"]
+mod suppressed_destination_deletion;
 #[path = "all/suppressed_destinations.rs"]
 mod suppressed_destinations;
 #[path = "all/suppression_list_scope_refusal.rs"]

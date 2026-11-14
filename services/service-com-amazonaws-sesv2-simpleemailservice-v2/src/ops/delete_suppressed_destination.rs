@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeleteSuppressedDestination
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DeleteSuppressedDestination`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DeleteSuppressedDestination::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Removes an address from one of this account's suppression lists — a tenant's when the
+//! request names a tenant, the account-level list otherwise — and refuses with the
+//! modelled not-found when that list holds no entry for the address. This is the ONLY
+//! file to touch for this operation.
 //!
 //! ## Shape of an operation
 //!
@@ -141,18 +136,68 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DeleteSuppressedDestination` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DeleteSuppressedDestinationErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DeleteSuppressedDestination"))
+        // The list this removal targets is chosen by the request, inside the one
+        // emulated account, so no request metadata selects a record.
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            // No store at all, which is not a modelled SES state: answer the scaffold's
+            // 501 rather than a modelled error that reads as one.
+            return Err(crate::scaffolded::Scaffolded::not_implemented(
+                "DeleteSuppressedDestination without the shared emulator state",
+            ));
+        };
+
+        let address = input.email_address;
+        let tenant = input.tenant_name;
+
+        // A `TenantName` names a resource, so a value outside its documented form is
+        // a bad request and a well-formed name the account does not hold is a
+        // not-found — the same two refusals every operation that takes one makes.
+        if let Some(tenant) = &tenant {
+            if !crate::state::tenant_name_is_well_formed(tenant) {
+                return Err(DeleteSuppressedDestinationErrorModeled::BadRequestException(
+                    BadRequestException {
+                        message: Some(crate::state::invalid_tenant_name(tenant)),
+                    },
+                )
+                .into());
+            }
+        }
+
+        let mut store = state.lock();
+        if let Some(tenant) = &tenant {
+            if !store.tenants.contains_key(tenant) {
+                return Err(not_found(crate::state::tenant_not_found(tenant)));
+            }
+        }
+
+        // "To target a tenant's suppression list, specify the TenantName parameter. If
+        // you omit TenantName, the address is removed from the account-level suppression
+        // list" — so the list the entry leaves is the one the request selects, and the
+        // same address on another list is another entry, left exactly where it was.
+        let key = crate::state::suppression_key(tenant.as_deref(), &address);
+        if store.suppressed_destinations.remove(&key).is_none() {
+            // The removal is not idempotent: an address that list does not hold is
+            // reported missing rather than silently accepted, with the one wording every
+            // suppression-list lookup that finds no entry refuses with.
+            return Err(not_found(crate::state::suppressed_destination_not_found(
+                tenant.as_deref(),
+                &address,
+            )));
+        }
+
+        // `DeleteSuppressedDestinationResponse` carries no members: that the address is
+        // off the list is what `GetSuppressedDestination` and
+        // `ListSuppressedDestinations` report.
+        Ok(DeleteSuppressedDestinationOutput {})
     }
+}
+
+/// Refuse the request with this operation's not-found error — the `NotFoundException`
+/// the model binds for "the resource you attempted to access doesn't exist".
+fn not_found(message: impl Into<String>) -> DeleteSuppressedDestinationError {
+    DeleteSuppressedDestinationErrorModeled::NotFoundException(NotFoundException {
+        message: Some(message.into()),
+    })
+    .into()
 }
