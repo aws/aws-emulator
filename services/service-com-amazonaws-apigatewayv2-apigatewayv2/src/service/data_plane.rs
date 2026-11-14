@@ -139,6 +139,16 @@ pub fn forbidden() -> RtResponse {
     json_response(FORBIDDEN_STATUS, FORBIDDEN_MESSAGE, None)
 }
 
+/// `404` `{"message":"Not Found"}` — the answer an HTTP api's `execute-api` endpoint gives
+/// for a request it has nothing for: an endpoint whose api id it serves no api of, an api
+/// whose default endpoint is turned off ([`serves_default_endpoint`]), and a method and path
+/// no route of a served stage matches. One function for all three, because they are one fact
+/// to the client — this endpoint serves nothing at that address — and must not be
+/// distinguishable from each other.
+pub fn not_found() -> RtResponse {
+    json_response(NOT_FOUND_STATUS, NOT_FOUND_MESSAGE, None)
+}
+
 /// Whether this api's DEFAULT `execute-api` endpoint serves anything at all.
 ///
 /// "Specifies whether clients can invoke your API by using the default execute-api endpoint.
@@ -151,9 +161,11 @@ pub fn forbidden() -> RtResponse {
 /// property of the ENDPOINT and not of the deployment a stage froze.
 ///
 /// Both api data planes read the member HERE, so neither can disagree with the other about an
-/// endpoint being off: an addressing that resolves an api is still this service's to answer
-/// ([`forbidden`]), since the host or path the client used is one this very service announced
-/// for the api.
+/// endpoint being off: an addressing that resolves an api is still this service's to answer,
+/// since the host or path the client used is one this very service announced for the api, and
+/// each plane answers it with ITS OWN answer for an endpoint that serves no such api — the
+/// HTTP plane's [`not_found`], the WebSocket plane's [`forbidden`] — so a disabled default
+/// endpoint is indistinguishable from one that was never there.
 pub fn serves_default_endpoint(api: &crate::state::Api) -> bool {
     !api.disable_execute_api_endpoint
 }

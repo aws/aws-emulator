@@ -26,7 +26,7 @@ use std::collections::BTreeSet;
 
 use serde_json::{json, Value};
 
-use crate::harness::base_ms;
+use crate::harness::{base_ms, now_ms};
 use crate::subscription_fan_out::{
     past_activation, past_deletion, role_arn, stream_arn, Emulator,
 };
@@ -191,7 +191,19 @@ pub(crate) async fn listed_series(
         .collect()
 }
 
-/// The datapoints CloudWatch reports for one series over a window around `at_ms`.
+/// The datapoints CloudWatch reports for one series over a window that holds every delivery a
+/// case makes: from before the batch's own events to past the instant this read is made.
+///
+/// The two ends come from two different clocks, because the values they bound do. The batch's
+/// events are stamped from [`base_ms`], an hour behind the ingestion clock, while a delivery's
+/// datapoint carries the instant the delivery was PUBLISHED — the service's own clock, now —
+/// and CloudWatch takes no datapoint whose stored span begins at or after the read's
+/// `EndTime`. An `EndTime` of `at_ms` plus an hour is exactly the moment the case STARTED, so
+/// whether a later delivery's datapoint is in range would depend on which side of a span
+/// boundary the wall clock had reached by the time the case got to it — a case that passes on
+/// an idle machine and fails on a loaded one. The end is taken from the clock the datapoints
+/// are stamped by instead, with an hour of room past it, so nothing here turns on how fast the
+/// host runs.
 async fn datapoints(
     emulator: &Emulator,
     case: &str,
@@ -200,6 +212,7 @@ async fn datapoints(
     at_ms: i64,
 ) -> Vec<Value> {
     let at_secs = at_ms as f64 / 1_000.0;
+    let until_secs = now_ms() as f64 / 1_000.0 + 3_600.0;
     let stats = emulator
         .cloudwatch(
             case,
@@ -209,7 +222,7 @@ async fn datapoints(
                 "MetricName": metric,
                 "Dimensions": dimensions,
                 "StartTime": at_secs - 3_600.0,
-                "EndTime": at_secs + 3_600.0,
+                "EndTime": until_secs,
                 "Period": 7_200,
                 "Statistics": ["Sum"],
             }),

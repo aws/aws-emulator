@@ -42,9 +42,11 @@
 //!    host's first label, by the first path segment, or, on a host that names no service,
 //!    by the stage segment of its path ([`resolve`]);
 //! 1b. that api's `DisableExecuteApiEndpoint` has not turned this endpoint off. While it
-//!    has, the endpoint serves nothing of the api and every request to it is refused `403`
-//!    `{"message":"Forbidden"}` before a stage is even looked for, and it serves again as
-//!    soon as the member is cleared ([`super::data_plane::serves_default_endpoint`]);
+//!    has, the endpoint serves nothing of the api and every request to it is answered
+//!    exactly as this endpoint answers one that serves no such api at all — `404`
+//!    `{"message":"Not Found"}` ([`not_found`]) — before a stage is even looked for, and it
+//!    serves again as soon as the member is cleared
+//!    ([`super::data_plane::serves_default_endpoint`]);
 //! 2. the path within that api names a `Stage` of it: its first segment, or the
 //!    [`crate::state::DEFAULT_STAGE_NAME`] stage, which is "the stage that serves an api's
 //!    root" and so is reached with no stage segment in the path at all — that is the
@@ -178,10 +180,10 @@ use smithy_server_runtime::{http, OperationContext};
 
 use super::data_plane::{
     addresses_connections, api_id_of_host, authority_of, first_segment, forbidden, header_of,
-    identity_source_value, joined_query_parameters, json_response, path_of,
+    identity_source_value, joined_query_parameters, json_response, not_found, path_of,
     path_segments, presents_identity_source, query_of, query_parameters, service_named_by_host,
-    split_first_segment, EXECUTE_API_LABEL, LOCAL_ENDPOINT_PREFIX, NOT_FOUND_MESSAGE,
-    NOT_FOUND_STATUS, UNAUTHORIZED_MESSAGE, UNAUTHORIZED_STATUS, UNPLACEABLE_STATUS,
+    split_first_segment, EXECUTE_API_LABEL, LOCAL_ENDPOINT_PREFIX, UNAUTHORIZED_MESSAGE,
+    UNAUTHORIZED_STATUS, UNPLACEABLE_STATUS,
 };
 use super::jwt;
 use crate::state::{
@@ -237,7 +239,8 @@ const PAYLOAD_TOO_LARGE_STATUS: u16 = 413;
 
 /// The sentence that status carries, which — like every other sentence this endpoint
 /// answers ([`INTERNAL_MESSAGE`], [`super::data_plane::FORBIDDEN_MESSAGE`],
-/// [`NOT_FOUND_MESSAGE`], [`UNAUTHORIZED_MESSAGE`]) — is the status's own reason phrase
+/// [`super::data_plane::NOT_FOUND_MESSAGE`], [`UNAUTHORIZED_MESSAGE`]) — is the status's own
+/// reason phrase
 /// (RFC 7231 §6.5.11, the phrase for 413). The recorded answer for this refusal states
 /// its status and not its body, and an HTTP api has no `GatewayResponse` resource to word
 /// one with — that catalog, whose `REQUEST_TOO_LARGE` entry the REST plane words
@@ -911,23 +914,22 @@ fn resolved<Eng: Send + Sync + 'static>(
     // `execute-api` endpoint that resolves to no api `404` `{"message": "Not Found"}`, and
     // an endpoint that resolves to nothing has no CORS configuration to decorate it with.
     let Some(resolved) = resolve(&store, &addressed) else {
-        return Err(Box::new(json_response(
-            NOT_FOUND_STATUS,
-            NOT_FOUND_MESSAGE,
-            None,
-        )));
+        return Err(Box::new(not_found()));
     };
     // The DEFAULT endpoint this request was addressed at serves nothing while the api turned
     // it off ([`super::data_plane::serves_default_endpoint`]), so the refusal is answered
     // before any stage, deployment, route or authorization of the api is read — and with none
     // of the api's CORS decoration, since an endpoint that serves nothing answers for no part
-    // of its configuration.
+    // of its configuration. Turning the member on is what makes the api unreachable on this
+    // endpoint, so what the endpoint answers is the SAME answer as for an endpoint that
+    // serves no such api ([`not_found`]): a client probing the default endpoint cannot tell a
+    // disabled one from one that was never there, which is the point of the member.
     if !super::data_plane::serves_default_endpoint(resolved.api) {
         tracing::debug!(
             api_id = %resolved.api.api_id,
             "this api's default execute-api endpoint is disabled, so it serves nothing"
         );
-        return Err(Box::new(forbidden()));
+        return Err(Box::new(not_found()));
     }
     // The api's own CORS configuration decides the decoration of WHATEVER is answered
     // below, so it is computed once, from the api and the request alone, before the stage
@@ -995,11 +997,7 @@ fn resolve_answer(
             path = %route_path,
             "no route of this api matches the request"
         );
-        return Answer::Now(Box::new(json_response(
-            NOT_FOUND_STATUS,
-            NOT_FOUND_MESSAGE,
-            None,
-        )));
+        return Answer::Now(Box::new(not_found()));
     };
     // The route's authorization is applied BEFORE anything the route fronts: a request
     // refused here never reaches the integration below, which is what makes an authorizer's

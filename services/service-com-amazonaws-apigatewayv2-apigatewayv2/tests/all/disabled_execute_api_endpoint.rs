@@ -8,13 +8,15 @@
 //!
 //! > "To require that clients use a custom domain name to invoke your API, disable the
 //! > default endpoint" (`Api$DisableExecuteApiEndpoint`) — so while an api has that member
-//! > set, its default `execute-api` endpoint serves NOTHING of the api: every request to it
-//! > is answered `403` `{"message":"Forbidden"}`, and every RFC 6455 opening handshake made
-//! > at it is REFUSED with that same answer rather than upgraded, whatever stage, deployment,
-//! > route or integration the address would otherwise have resolved. Clearing the member
-//! > makes the endpoint serve again. The member is a property of the endpoint rather than of
-//! > the configuration a stage's deployment froze, so it takes effect on every stage of the
-//! > api at once and needs no redeployment.
+//! > set, its default `execute-api` endpoint serves NOTHING of the api, and a request to it
+//! > is answered exactly as that endpoint answers a request for an api it serves none of,
+//! > whatever stage, deployment, route or integration the address would otherwise have
+//! > resolved: `404` `{"message":"Not Found"}` for a request to an HTTP api, and `403`
+//! > `{"message":"Forbidden"}` for an RFC 6455 opening handshake made at a WEBSOCKET api's,
+//! > which is REFUSED rather than upgraded. Clearing the member makes the endpoint serve
+//! > again. The member is a property of the endpoint rather than of the configuration a
+//! > stage's deployment froze, so it takes effect on every stage of the api at once and needs
+//! > no redeployment.
 //!
 //! The rows span what the rule generalises over: the api's `ProtocolType` (`HTTP` and
 //! `WEBSOCKET`), how the stage was released (a stage pinned by its own `CreateDeployment`,
@@ -31,10 +33,17 @@ use crate::api_lifecycle::{as_str, call, emulator, REGION};
 use crate::websocket_handshake_data_plane::{message, send, Answer, CLIENT_KEY};
 use crate::websocket_transport_data_plane::handshake_at;
 
-/// The status and sentence an `execute-api` endpoint answers for an api it does not serve —
-/// which is what an api that turned its own default endpoint off is on that endpoint.
+/// The status and sentence an `execute-api` endpoint answers a WEBSOCKET handshake it serves
+/// no api or stage for — which is what an api that turned its own default endpoint off is on
+/// that endpoint.
 const FORBIDDEN: u16 = 403;
 const FORBIDDEN_MESSAGE: &str = "Forbidden";
+
+/// The status and sentence an HTTP api's `execute-api` endpoint answers a request it serves
+/// no api for — which is what an api that turned its own default endpoint off is on that
+/// endpoint, so a client cannot tell the two apart.
+const NOT_FOUND: u16 = 404;
+const NOT_FOUND_MESSAGE: &str = "Not Found";
 
 /// The status a completed opening handshake carries (RFC 6455 §4.1).
 const SWITCHING_PROTOCOLS: u16 = 101;
@@ -374,9 +383,22 @@ fn assert_served(case: &str, protocol_type: &str, answer: &Answer) {
     );
 }
 
-/// Assert the endpoint REFUSED this request as an endpoint that serves nothing: `403`
-/// `{"message":"Forbidden"}`, from this service and not from the front door.
-fn assert_refused(case: &str, answer: &Answer) {
+/// The refusal a disabled default endpoint owes a request of this protocol: the answer that
+/// endpoint gives for an api it serves none of, which for an HTTP api is `404`
+/// `{"message":"Not Found"}` and for a WEBSOCKET handshake `403` `{"message":"Forbidden"}`.
+fn refusal_of(protocol_type: &str) -> (u16, &'static str) {
+    if protocol_type == "HTTP" {
+        (NOT_FOUND, NOT_FOUND_MESSAGE)
+    } else {
+        (FORBIDDEN, FORBIDDEN_MESSAGE)
+    }
+}
+
+/// Assert the endpoint REFUSED this request as an endpoint that serves nothing, with the
+/// answer its protocol's plane gives for an api it does not serve — from this service and not
+/// from the front door.
+fn assert_refused(case: &str, protocol_type: &str, answer: &Answer) {
+    let (status, sentence) = refusal_of(protocol_type);
     assert_ne!(
         answer.error_type.as_deref(),
         Some(UNKNOWN_SERVICE),
@@ -385,14 +407,14 @@ fn assert_refused(case: &str, answer: &Answer) {
         answer.summary()
     );
     assert_eq!(
-        answer.status, FORBIDDEN,
-        "case {case:?}: expected {FORBIDDEN} on a disabled default endpoint, got {}",
+        answer.status, status,
+        "case {case:?}: expected {status} on a disabled default endpoint, got {}",
         answer.summary()
     );
     assert_eq!(
         message(answer),
-        FORBIDDEN_MESSAGE,
-        "case {case:?}: expected the {FORBIDDEN_MESSAGE:?} body, got {}",
+        sentence,
+        "case {case:?}: expected the {sentence:?} body, got {}",
         answer.summary()
     );
     assert_eq!(
@@ -438,7 +460,7 @@ async fn a_disabled_default_endpoint_serves_nothing_and_serves_again_when_it_is_
             }
             let answer = request(&emulator, row, &host, &path).await;
             if disabled {
-                assert_refused(&case, &answer);
+                assert_refused(&case, row.protocol_type, &answer);
             } else {
                 assert_served(&case, row.protocol_type, &answer);
             }
@@ -543,5 +565,164 @@ async fn a_disabled_default_endpoint_refuses_the_handshake_on_the_apis_own_socke
                 ),
             }
         }
+    }
+}
+
+/// An api id this emulator holds no api for, so its `execute-api` endpoint serves nothing —
+/// the answer a disabled default endpoint has to be indistinguishable from. Shaped like an
+/// api id (`Id` is an unconstrained string in this model) and never minted by a case here,
+/// which creates its apis through `CreateApi` and reads their ids back.
+const UNHELD_API_ID: &str = "zz9999zz99";
+
+/// One row of the twin table: how a client addresses an api, and the stage it names.
+struct TwinRow {
+    case: &'static str,
+    stage: &'static str,
+    auto_deploy: bool,
+    /// The host the client addresses, built from the api's own endpoint host.
+    host: fn(&Served) -> String,
+    /// The path that reaches the api's route at that host.
+    path: fn(&Served) -> String,
+    /// A path within the same api that no route of it matches, so the refusal can be shown
+    /// to be answered before a route is looked for at all.
+    unmatched_path: fn(&Served) -> String,
+}
+
+/// The addressings an api id travels in, which is what this table generalises over: the host
+/// `Api$ApiEndpoint` documents, and the emulator's own rewriting of it with the id in the
+/// path. The stage-only addressing is left out on purpose: it carries no api id, so there is
+/// no address of an api nothing holds to compare against.
+const TWIN_ROWS: &[TwinRow] = &[
+    TwinRow {
+        case: "the api's own execute-api host, a manually created stage",
+        stage: "prod",
+        auto_deploy: false,
+        host: |served| served.endpoint_host.clone(),
+        path: |served| format!("/{}/orders", served.stage),
+        unmatched_path: |served| format!("/{}/no-such-route", served.stage),
+    },
+    TwinRow {
+        case: "the api's own execute-api host, the $default AutoDeploy stage reached with no \
+               stage segment",
+        stage: "$default",
+        auto_deploy: true,
+        host: |served| served.endpoint_host.clone(),
+        path: |_| "/orders".to_string(),
+        unmatched_path: |_| "/no-such-route".to_string(),
+    },
+    TwinRow {
+        case: "the emulator's own endpoint, the api id behind the endpoint marker",
+        stage: "beta",
+        auto_deploy: false,
+        host: |_| EMULATOR_ENDPOINT.to_string(),
+        path: |served| {
+            format!(
+                "/_aws/execute-api/{}/{}/orders",
+                served.api_id, served.stage
+            )
+        },
+        unmatched_path: |served| {
+            format!(
+                "/_aws/execute-api/{}/{}/no-such-route",
+                served.api_id, served.stage
+            )
+        },
+    },
+];
+
+/// The address of an api id this emulator holds no api for, built by the SAME row functions
+/// that address a created api, so the two are compared at one addressing.
+fn unheld(stage: &str) -> Served {
+    Served {
+        endpoint_host: format!("{UNHELD_API_ID}.execute-api.{REGION}.amazonaws.com"),
+        api_id: UNHELD_API_ID.to_string(),
+        stage: stage.to_string(),
+    }
+}
+
+#[tokio::test]
+async fn a_disabled_default_endpoint_answers_as_an_endpoint_that_serves_no_api() {
+    for row in TWIN_ROWS {
+        let emulator = emulator();
+        // Two apis differing ONLY in the member, which is the shape a stack deploying a
+        // pair of them produces: the enabled one serves its route, the disabled one serves
+        // nothing on the endpoint it was announced at.
+        let disabled = serve_api(
+            &emulator,
+            &format!("{} [disabled twin]", row.case),
+            "HTTP",
+            row.stage,
+            row.auto_deploy,
+            true,
+        )
+        .await;
+        let enabled = serve_api(
+            &emulator,
+            &format!("{} [enabled twin]", row.case),
+            "HTTP",
+            row.stage,
+            row.auto_deploy,
+            false,
+        )
+        .await;
+
+        let case = format!("{} [enabled twin]", row.case);
+        let served = send(
+            &emulator,
+            &(row.host)(&enabled),
+            "GET",
+            &(row.path)(&enabled),
+            &[],
+        )
+        .await;
+        assert_served(&case, "HTTP", &served);
+
+        let case = format!("{} [disabled twin]", row.case);
+        let refused = send(
+            &emulator,
+            &(row.host)(&disabled),
+            "GET",
+            &(row.path)(&disabled),
+            &[],
+        )
+        .await;
+        assert_refused(&case, "HTTP", &refused);
+
+        // The whole point of the member: a client probing the default endpoint cannot tell
+        // the disabled api from an api id the endpoint space serves nothing for, so the two
+        // answers are compared status and body alike.
+        let nothing = unheld(row.stage);
+        let case = format!("{} [an api id nothing serves]", row.case);
+        let unserved = send(
+            &emulator,
+            &(row.host)(&nothing),
+            "GET",
+            &(row.path)(&nothing),
+            &[],
+        )
+        .await;
+        assert_refused(&case, "HTTP", &unserved);
+        assert_eq!(
+            (refused.status, refused.text.as_str()),
+            (unserved.status, unserved.text.as_str()),
+            "case {case:?}: a disabled default endpoint must answer exactly as an endpoint \
+             that serves no api, got {} against {}",
+            refused.summary(),
+            unserved.summary()
+        );
+
+        // The refusal precedes the route: a path no route of the disabled api matches is
+        // answered the same way, so nothing of the api's configuration is observable through
+        // the endpoint it turned off.
+        let case = format!("{} [disabled twin, a path no route matches]", row.case);
+        let unmatched = send(
+            &emulator,
+            &(row.host)(&disabled),
+            "GET",
+            &(row.unmatched_path)(&disabled),
+            &[],
+        )
+        .await;
+        assert_refused(&case, "HTTP", &unmatched);
     }
 }

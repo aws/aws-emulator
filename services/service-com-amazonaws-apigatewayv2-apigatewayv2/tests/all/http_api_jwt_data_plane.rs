@@ -1222,13 +1222,14 @@ async fn an_api_this_service_does_not_serve_on_that_host_is_not_claimed() {
 
     // An api that turned its OWN default endpoint off is still the api that endpoint
     // addresses, so the request is claimed and REFUSED there: the endpoint serves nothing of
-    // the api while the member is set. (The rule over a table of apis, stages and both
-    // protocols is `disabled_execute_api_endpoint.rs`.)
+    // the api while the member is set, and it answers exactly as it answers an api id it
+    // serves no api of (the case below), so a client cannot tell the two apart. (The rule
+    // over a table of apis, stages and both protocols is `disabled_execute_api_endpoint.rs`.)
     answered(
         "an api that turned its own default endpoint off",
         &send(&emulator, &disabled_host, "GET", "/hello", &[]).await,
-        FORBIDDEN,
-        FORBIDDEN_MESSAGE,
+        NOT_FOUND,
+        NOT_FOUND_MESSAGE,
     );
 
     // The one `execute-api` address this data plane DOES answer without holding the api:
