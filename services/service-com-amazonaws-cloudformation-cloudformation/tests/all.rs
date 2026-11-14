@@ -21,6 +21,8 @@ mod appconfig_refused_create_exception;
 mod appconfig_resource_types;
 #[path = "all/apigateway_account_resource.rs"]
 mod apigateway_account_resource;
+#[path = "all/apigateway_request_validation_resources.rs"]
+mod apigateway_request_validation_resources;
 #[path = "all/apigateway_vpc_link_resources.rs"]
 mod apigateway_vpc_link_resources;
 #[path = "all/apigatewayv2_api_property_updates.rs"]

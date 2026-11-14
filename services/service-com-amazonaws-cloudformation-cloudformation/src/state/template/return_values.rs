@@ -443,6 +443,13 @@ pub(super) fn return_values(
             attributes.insert("Id".to_string(), id.clone());
             (id, attributes)
         }
+        // "Ref returns the request validator ID"; Fn::GetAtt: RequestValidatorId. The same
+        // service-assigned shape, replaced by the id `CreateRequestValidator` mints.
+        APIGATEWAY_REQUEST_VALIDATOR => {
+            let id = api_gateway_assigned_id(APIGATEWAY_REQUEST_VALIDATOR_ID_SALT, name);
+            attributes.insert("RequestValidatorId".to_string(), id.clone());
+            (id, attributes)
+        }
         // "Ref returns the usage plan ID"; Fn::GetAtt: Id. The same service-assigned shape,
         // replaced by the id `CreateUsagePlan` mints.
         APIGATEWAY_USAGE_PLAN => {
@@ -2182,6 +2189,7 @@ pub fn published_attribute_names(resource_type: &str) -> &'static [&'static str]
         APIGATEWAY_DEPLOYMENT => &["DeploymentId"],
         APIGATEWAY_API_KEY => &["APIKeyId"],
         APIGATEWAY_AUTHORIZER => &["AuthorizerId"],
+        APIGATEWAY_REQUEST_VALIDATOR => &["RequestValidatorId"],
         APIGATEWAY_ACCOUNT | APIGATEWAY_USAGE_PLAN | APIGATEWAY_USAGE_PLAN_KEY => &["Id"],
         APIGATEWAYV2_API => &["ApiEndpoint"],
         APIGATEWAYV2_API_MAPPING => &["ApiMappingId"],
@@ -2316,6 +2324,14 @@ pub fn identity_is_service_assigned(resource_type: &str) -> bool {
         || resource_type == APIGATEWAY_AUTHORIZER
         || resource_type == APIGATEWAY_USAGE_PLAN
         || resource_type == APIGATEWAY_USAGE_PLAN_KEY
+        // A method's REQUEST VALIDATOR is one more, for the reason its own constant records
+        // ([`APIGATEWAY_REQUEST_VALIDATOR`]): `CreateRequestValidator` takes no identifier
+        // and answers the id API Gateway assigned, the method that names it in its
+        // `requestValidatorId` takes that id, and a template declares the validator's name
+        // and the halves it checks rather than its identifier. (An `AWS::ApiGateway::Model`
+        // is NOT one of them: "Ref returns the model name", which its own declaration
+        // states, and that name is what every call on a model takes.)
+        || resource_type == APIGATEWAY_REQUEST_VALIDATOR
         // A VPC LINK is one more, for the reason its own constant records
         // ([`APIGATEWAY_VPC_LINK`]): `CreateVpcLink` takes no identifier and answers the id
         // API Gateway assigned, every call on a link — and the private integration that
@@ -4166,6 +4182,34 @@ pub const APIGATEWAY_USAGE_PLAN_KEY: &str = "AWS::ApiGateway::UsagePlanKey";
 /// service minted ([`crate::state::provisioning::apigateway_rest_api`]).
 pub const APIGATEWAY_VPC_LINK: &str = "AWS::ApiGateway::VpcLink";
 
+/// `AWS::ApiGateway::RequestValidator`: the validator a method names in its
+/// `requestValidatorId`, which decides whether the request's parameters and its payload are
+/// checked before the method's integration is reached — so a stack whose validator exists
+/// nowhere deploys a method that validates nothing
+/// ([`crate::state::provisioning::apigateway_rest_api`] creates it in API Gateway itself).
+///
+/// "Ref returns the request validator ID", which is also this type's one `Fn::GetAtt`
+/// attribute (`RequestValidatorId`): `CreateRequestValidator`
+/// (`POST /restapis/{restApiId}/requestvalidators`) takes no identifier and answers the `id`
+/// it assigned, and every call on one takes that id
+/// (`GetRequestValidator$requestValidatorId`, `Method$requestValidatorId`). A template
+/// declares the validator's NAME and which halves it checks, never its id, which is why
+/// [`identity_is_service_assigned`] names this type.
+pub const APIGATEWAY_REQUEST_VALIDATOR: &str = "AWS::ApiGateway::RequestValidator";
+
+/// `AWS::ApiGateway::Model`: the data schema a method maps a content type to in its
+/// `requestModels`, which is what the validator above validates a payload against — so a
+/// stack whose model exists nowhere deploys a method whose body check has no schema
+/// ([`crate::state::provisioning::apigateway_rest_api`] creates it in API Gateway itself).
+///
+/// "Ref returns the model name", which is the `Name` the declaration states — API Gateway
+/// keys a model by its name under the api that holds it, and `CreateModel$name` is the
+/// identifier every call on one takes (`GetModel$modelName`, `Method$requestModels`) — so
+/// neither [`identity_is_service_assigned`] names this type nor does [`return_values`] carry
+/// an arm for it: the name the naming rules read off the declaration is the identity in
+/// force, and the type publishes no `Fn::GetAtt` attribute.
+pub const APIGATEWAY_MODEL: &str = "AWS::ApiGateway::Model";
+
 /// `AWS::ApiGateway::Account`: the account-level settings of the REST control plane — the
 /// CloudWatch Logs role API Gateway writes an account's logs under — which a stack really
 /// sets in that service ([`crate::state::provisioning::apigateway_rest_api`]).
@@ -4269,6 +4313,7 @@ pub(super) const APIGATEWAY_RESOURCE_ID_SALT: &str = "apigateway/resource-id";
 pub(super) const APIGATEWAY_DEPLOYMENT_ID_SALT: &str = "apigateway/deployment-id";
 pub(super) const APIGATEWAY_API_KEY_ID_SALT: &str = "apigateway/api-key-id";
 pub(super) const APIGATEWAY_AUTHORIZER_ID_SALT: &str = "apigateway/authorizer-id";
+pub(super) const APIGATEWAY_REQUEST_VALIDATOR_ID_SALT: &str = "apigateway/request-validator-id";
 pub(super) const APIGATEWAY_USAGE_PLAN_ID_SALT: &str = "apigateway/usage-plan-id";
 pub(super) const APIGATEWAY_USAGE_PLAN_KEY_ID_SALT: &str = "apigateway/usage-plan-key-id";
 pub(super) const APIGATEWAY_VPC_LINK_ID_SALT: &str = "apigateway/vpc-link-id";

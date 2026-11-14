@@ -97,6 +97,10 @@ fn identifying_return_value(resource_type: &str) -> Option<&'static str> {
         // id of the key it put in the plan.
         APIGATEWAY_API_KEY => "APIKeyId",
         APIGATEWAY_AUTHORIZER => "AuthorizerId",
+        // A method's request validator, identified by the id its own create minted. (A
+        // model needs no row: it is identified by the `Name` it is keyed under, which step 3
+        // above answers from the conventional name property.)
+        APIGATEWAY_REQUEST_VALIDATOR => "RequestValidatorId",
         APIGATEWAY_USAGE_PLAN | APIGATEWAY_USAGE_PLAN_KEY => "Id",
         // The account settings of the REST control plane, identified by the id the resource
         // publishes as `Id`: the settings are a singleton, so the type declares no name a

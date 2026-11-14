@@ -2203,3 +2203,23 @@ mod cloudformation_elastic_beanstalk_removal_stabilisation;
 // sorted span above: two `mod` items for one name compile neither copy.
 // (`zz_probe` and `cloudformation_metric_stream_estate_is_drainable` are declared once each,
 // further up this tail: a module may be declared only once.)
+// Declared here, in this same head region, for the reason the entry above records: whether a
+// stack-declared request validator really refuses an invalid call to the deployed stage before
+// the integration runs spans CloudFormation, API Gateway, AWS Lambda, IAM and CloudWatch Logs
+// at once, so no single crate's own test target can deploy it and then prove the function was
+// never reached.
+#[path = "all/cloudformation_rest_api_request_validation.rs"]
+mod cloudformation_rest_api_request_validation;
+// `cloudformation_provisions_cloudfront_resources` is declared ONCE, in the sorted span
+// above: two `mod` items for one name is a redefinition that compiles neither.
+// are declared earlier in this tail already: a module may be declared only once.)
+// (`lambda_signed_write_to_an_aoss_collection_endpoint` is declared ONCE, further down this
+// tail: two landings each appended their own copy, and a module declared twice loads the same
+// file twice, which compiles neither.)
+// (`cloudtrail_read_only_api_calls` is declared ONCE, in the sorted CloudTrail block above:
+// the tail is where every suite landing in the same window appends, and a module declared
+// twice loads the same file twice, which compiles neither.)
+// (`cloudwatch_alarm_ssm_ops_item_action` is declared in the head region above: the work
+// target can drive the transition and then read what it opened.)
+// crate's test target can drive it. (Declared ONCE: two landings each appended their own copy
+// of this line, and a module declared twice loads the same file twice, which compiles

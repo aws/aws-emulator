@@ -56,7 +56,9 @@
 //! * `AWS::ApiGateway::Stage` is `CreateStage` (`POST /restapis/{restApiId}/stages`), with
 //!   the same patch tail for the settings that create does not take;
 //! * `AWS::ApiGateway::VpcLink` is `CreateVpcLink` (`POST /vpclinks`), the one create here
-//!   that answers a resource still being provisioned ([`vpc_link`]).
+//!   that answers a resource still being provisioned ([`vpc_link`]);
+//! * the two types that decide what a deployed method VALIDATES a request against are
+//!   `CreateRequestValidator` and `CreateModel` ([`request_validation`]).
 //!
 //! A declared property no call here carries is REFUSED rather than dropped: an api reported
 //! created with less than its declaration asked for is the shallow success these arms exist
@@ -84,6 +86,12 @@ use crate::state::StoredResource;
 /// their own so that neither file grows past the length a change to this repository may
 /// touch. They are reached through the same [`Kind`] every arm here is.
 mod access_control;
+
+/// The two types that decide what a deployed METHOD validates a request against — the
+/// request validator a method names and the model its schema comes from — in a module of
+/// their own so that neither file grows past the length a change to this repository may
+/// touch. They are reached through the same [`Kind`] every arm here is.
+mod request_validation;
 
 /// The VPC link a private integration reaches a VPC through, in a module of its own for the
 /// same reason: it is the one type here whose create leaves the resource still coming up, so
@@ -147,6 +155,10 @@ pub(in crate::state) enum Kind {
     /// [`access_control`]'s. Which of them it is travels with the kind, as the kind itself
     /// travels with [`super::Owner`].
     AccessControl(access_control::Kind),
+    /// One of the two types that decide what a method VALIDATES a request against, whose
+    /// arms are [`request_validation`]'s. Which of them it is travels with the kind, in the
+    /// same position as the kind above.
+    RequestValidation(request_validation::Kind),
 }
 
 /// The kind `resource_type` names, or `None` for a type this module does not own.
@@ -159,7 +171,12 @@ pub(super) fn kind_of(resource_type: &str) -> Option<Kind> {
         APIGATEWAY_STAGE => Kind::Stage,
         APIGATEWAY_VPC_LINK => Kind::VpcLink,
         APIGATEWAY_ACCOUNT => Kind::Account,
-        _ => return access_control::kind_of(resource_type).map(Kind::AccessControl),
+        _ => {
+            if let Some(kind) = access_control::kind_of(resource_type) {
+                return Some(Kind::AccessControl(kind));
+            }
+            return request_validation::kind_of(resource_type).map(Kind::RequestValidation);
+        }
     };
     Some(kind)
 }
@@ -192,6 +209,11 @@ pub(super) async fn create(
         Kind::AccessControl(kind) => {
             access_control::create(ctx, region, kind, resource, propagated).await
         }
+        // Neither a request validator nor a model publishes a `Tags` property, so
+        // CloudFormation propagates no tag to either: there is no call that could carry one.
+        Kind::RequestValidation(kind) => {
+            request_validation::create(ctx, region, kind, resource).await
+        }
     }
 }
 
@@ -217,7 +239,8 @@ pub(super) async fn readiness(
         | Kind::Deployment
         | Kind::Stage
         | Kind::Account
-        | Kind::AccessControl(_) => Ok(Readiness::Ready),
+        | Kind::AccessControl(_)
+        | Kind::RequestValidation(_) => Ok(Readiness::Ready),
     }
 }
 
@@ -246,7 +269,8 @@ pub(super) async fn update(
         | Kind::Deployment
         | Kind::Stage
         | Kind::VpcLink
-        | Kind::AccessControl(_) => Ok(None),
+        | Kind::AccessControl(_)
+        | Kind::RequestValidation(_) => Ok(None),
     }
 }
 
@@ -287,6 +311,9 @@ pub(super) async fn delete(
         Kind::Account => return account::delete(ctx, region, resource).await,
         Kind::AccessControl(kind) => {
             return access_control::delete(ctx, region, kind, resource).await
+        }
+        Kind::RequestValidation(kind) => {
+            return request_validation::delete(ctx, region, kind, resource).await
         }
     };
     api_gateway_deleted(ctx, region, &uri).await
@@ -356,6 +383,9 @@ pub(super) async fn actual_configuration(
         Kind::Account => return account::actual_configuration(ctx, region).await,
         Kind::AccessControl(kind) => {
             return access_control::actual_configuration(ctx, region, kind, resource).await
+        }
+        Kind::RequestValidation(kind) => {
+            return request_validation::actual_configuration(ctx, region, kind, resource).await
         }
     };
     match call_rest_json(ctx, API_GATEWAY_SIGNING_NAME, region, "GET", &uri, None).await {
