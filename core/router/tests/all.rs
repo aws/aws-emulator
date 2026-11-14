@@ -2143,3 +2143,14 @@ mod ses_delivery_event_advances_the_subscribed_queue;
 // of the sorted list above: a module may be declared only once.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared ONCE, in the head region
 // of the appended tail above: a module may be declared only once.)
+// (Several suites once declared a second time in this tail — the `cloudformation_…` pair
+// beside `cloudformation_provisions_cloudfront_resources`, `cloudformation_monitored_alb_
+// search_estate` and `cloudformation_domain_endpoint_outputs` among them — are declared ONCE,
+// in the sorted span above: a module may be declared only once, and a second `mod` item for
+// one name compiles neither. The sentence halves earlier dedup passes left here are gone with
+// this note.)
+// at the top of this file: a module may be declared only once, and two branches landing in the
+// same window declared it a second time here, which compiled neither.)
+// (`zz_probe` and `cloudformation_metric_stream_estate_is_drainable` are declared ONCE each, a
+// few lines up in this same appended tail: a module may be declared only once, and two
+// branches landing in the same window appended a second declaration of each here, which

@@ -37,16 +37,16 @@ use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
 /// The Region every request below is signed for and every ARN names.
-const REGION: &str = "us-east-1";
+pub(crate) const REGION: &str = "us-east-1";
 
 /// The resource path the method is put on, and the stage the api is deployed to — the stage
 /// a grant narrowed to a DEPLOYED stage names.
-const RESOURCE_PATH: &str = "echo";
-const STAGE: &str = "prod";
+pub(crate) const RESOURCE_PATH: &str = "echo";
+pub(crate) const STAGE: &str = "prod";
 
 /// The function the method is integrated with, the group its runs log to, and the role the
 /// created function names.
-const FUNCTION: &str = "simulated-invoke";
+pub(crate) const FUNCTION: &str = "simulated-invoke";
 const FUNCTION_GROUP: &str = "/aws/lambda/simulated-invoke";
 const ROLE: &str = "arn:aws:iam::000000000000:role/lambda-exec";
 const HANDLER: &str = "lambda_function.lambda_handler";
@@ -58,17 +58,23 @@ const LOOK: Duration = Duration::from_millis(100);
 
 /// The marker the handler answers with, which is how a reported body is told from one the
 /// api itself rendered.
-const MARKER: &str = "the-handler-ran";
+pub(crate) const MARKER: &str = "the-handler-ran";
+
+/// The stage segment AWS reserves for a SIMULATED invocation, which the `aws:SourceArn` of the
+/// call `TestInvokeMethod` makes carries in place of a deployed stage's name
+/// (`crate::service::invoke`'s `TEST_INVOKE_STAGE`, as `src/ops/test_invoke_method.rs` holds
+/// it).
+pub(crate) const TEST_INVOKE_STAGE: &str = "test-invoke-stage";
 
 /// The record the Lambda runtime frames every run with, which is what tells a function that
 /// RAN from one that was never invoked.
 const START_RECORD: &str = "START RequestId: ";
 
 /// The body API Gateway answers a method whose integration it could not perform with.
-const INTERNAL_SERVER_ERROR: &str = "Internal server error";
+pub(crate) const INTERNAL_SERVER_ERROR: &str = "Internal server error";
 
 /// The phrase API Gateway names this configuration error by in the execution log.
-const INVALID_PERMISSIONS: &str = "Invalid permissions on Lambda function";
+pub(crate) const INVALID_PERMISSIONS: &str = "Invalid permissions on Lambda function";
 
 /// The handler behind the method: it answers the proxy response envelope carrying the
 /// marker.
@@ -85,26 +91,26 @@ def lambda_handler(event, context):
 "#;
 
 /// One answered request: its status and its body verbatim.
-struct Answered {
-    status: u16,
-    body: Bytes,
+pub(crate) struct Answered {
+    pub(crate) status: u16,
+    pub(crate) body: Bytes,
 }
 
 impl Answered {
     /// The body as text.
-    fn text(&self) -> String {
+    pub(crate) fn text(&self) -> String {
         String::from_utf8_lossy(&self.body).to_string()
     }
 
     /// The body as JSON, `Null` when it is not JSON at all.
-    fn json(&self) -> Value {
+    pub(crate) fn json(&self) -> Value {
         serde_json::from_slice(&self.body).unwrap_or(Value::Null)
     }
 }
 
 /// The three services this rule spans, over ONE engine, as `core/router/src/lib.rs` mounts
 /// them.
-fn emulator() -> MultiServiceRouter {
+pub(crate) fn emulator() -> MultiServiceRouter {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     // The suite exercises the services, not SigV4: the calls carry a credential scope so the
@@ -134,7 +140,7 @@ fn authorization(signing_name: &str) -> String {
 }
 
 /// Dispatch one request as it arrives on the wire.
-async fn dispatch(
+pub(crate) async fn dispatch(
     router: &MultiServiceRouter,
     method: &str,
     host: &str,
@@ -183,7 +189,7 @@ async fn apigw(
 }
 
 /// One API Gateway control-plane call that has to be accepted with `expected`.
-async fn accepted(
+pub(crate) async fn accepted(
     router: &MultiServiceRouter,
     case: &str,
     method: &str,
@@ -203,7 +209,7 @@ async fn accepted(
 }
 
 /// One AWS Lambda call over its `restJson1` wire, answering its status and parsed body.
-async fn lambda(
+pub(crate) async fn lambda(
     router: &MultiServiceRouter,
     method: &str,
     path: &str,
@@ -241,7 +247,7 @@ async fn logs(router: &MultiServiceRouter, operation: &str, body: Value) -> (u16
 /// How many RUNS of the function CloudWatch Logs holds: one `START RequestId:` record per
 /// run, and none at all for a function that was never invoked (which may hold no group
 /// either).
-async fn runs_logged(router: &MultiServiceRouter) -> usize {
+pub(crate) async fn runs_logged(router: &MultiServiceRouter) -> usize {
     let (status, body) = logs(
         router,
         "FilterLogEvents",
@@ -315,7 +321,7 @@ async fn wait_until_active(router: &MultiServiceRouter) {
 
 /// The api, its one `GET` method proxying to the function, and a deployment released to the
 /// stage. Answers the api id and the id of the resource the method sits on.
-async fn wired(router: &MultiServiceRouter) -> (String, String) {
+pub(crate) async fn wired(router: &MultiServiceRouter) -> (String, String) {
     let (status, function) = lambda(
         router,
         "POST",
@@ -413,14 +419,20 @@ async fn wired(router: &MultiServiceRouter) -> (String, String) {
 }
 
 /// Grant `apigateway.amazonaws.com` `lambda:InvokeFunction` on the function, narrowed to
-/// `source_arn`.
-async fn grant(router: &MultiServiceRouter, case: &str, source_arn: &str) {
+/// `source_arn`, as the statement `statement_id` — a policy holds as many statements as the
+/// grants made on it, each under an id of its own.
+pub(crate) async fn grant(
+    router: &MultiServiceRouter,
+    case: &str,
+    statement_id: &str,
+    source_arn: &str,
+) {
     let (status, granted) = lambda(
         router,
         "POST",
         &format!("/2015-03-31/functions/{FUNCTION}/policy"),
         Some(json!({
-            "StatementId": "apigateway-invoke",
+            "StatementId": statement_id,
             "Action": "lambda:InvokeFunction",
             "Principal": "apigateway.amazonaws.com",
             "SourceArn": source_arn,
@@ -429,7 +441,8 @@ async fn grant(router: &MultiServiceRouter, case: &str, source_arn: &str) {
     .await;
     assert_eq!(
         status, 201,
-        "setup AddPermission({case:?}): expected HTTP 201, got {status} with {granted}"
+        "setup AddPermission({case:?}, {statement_id:?}): expected HTTP 201, got {status} with \
+         {granted}"
     );
 }
 
@@ -462,7 +475,7 @@ fn rows() -> Vec<Row> {
         },
         Row {
             case: "a grant naming the reserved test-invoke stage",
-            source: Some("{api}/test-invoke-stage/GET/echo"),
+            source: Some("{api}/{test-invoke-stage}/GET/echo"),
             invoked: true,
         },
         Row {
@@ -492,9 +505,10 @@ async fn a_simulated_invocation_is_decided_by_the_functions_resource_policy() {
                 account = engine::emulator_account_id(),
                 resource_half = source
                     .replace("{api}", &api)
+                    .replace("{test-invoke-stage}", TEST_INVOKE_STAGE)
                     .replace("{other}", "0123456789"),
             );
-            grant(&router, case, &source_arn).await;
+            grant(&router, case, "apigateway-invoke", &source_arn).await;
         }
 
         let simulated = accepted(

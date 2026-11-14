@@ -42,6 +42,11 @@ mod test_invoke_method_lambda_permission;
 #[path = "all/stage_scoped_lambda_permission.rs"]
 mod stage_scoped_lambda_permission;
 // Declared here, at the head, for the reason the entry at the top of this file records: what
+// ONE function's resource policy decides for the DEPLOYED stage's caller and for the simulated
+// one spans API Gateway, AWS Lambda and Amazon CloudWatch Logs at once.
+#[path = "all/test_invoke_method_stage_segment_grants.rs"]
+mod test_invoke_method_stage_segment_grants;
+// Declared here, at the head, for the reason the entry at the top of this file records: what
 // a simulated invocation of a method whose integration `uri` names a function, version or
 // alias that resolves to nothing is answered — and logged — with spans API Gateway, AWS
 // Lambda and Amazon CloudWatch Logs at once.
