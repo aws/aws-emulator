@@ -32,7 +32,10 @@
 //! Enterprise Support profile, by the pricing plan of
 //! [`ComAmazonawsBillingAwsbillingState::enterprise_support_contract`] — see
 //! the `enterprise_support` module. The money and billing-month arithmetic both
-//! reports share lives in the `money` and `billing_month` modules.
+//! reports share lives in the `money` and `billing_month` modules, and the
+//! Support subscription contracts those same bills record —
+//! what `ListBusinessSupportSubscriptionHistory` reports — are read off them by
+//! the `support_subscriptions` module.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -48,6 +51,12 @@ use crate::ops::types::{
 mod support_charges;
 
 pub use support_charges::*;
+
+/// The Support subscription contracts those same bills record, which
+/// `ListBusinessSupportSubscriptionHistory` reports.
+mod support_subscriptions;
+
+pub use support_subscriptions::*;
 
 /// The `YYYY-MM` billing-month arithmetic the monthly charge reports share.
 mod billing_month;

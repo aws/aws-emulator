@@ -27,6 +27,8 @@ mod billing_view_wire_fidelity;
 mod billing_views;
 #[path = "all/business_support_account_charges.rs"]
 mod business_support_account_charges;
+#[path = "all/business_support_subscription_history.rs"]
+mod business_support_subscription_history;
 #[path = "all/credit_allocation_family.rs"]
 mod credit_allocation_family;
 #[path = "all/credit_allocation_history.rs"]

@@ -1,15 +1,33 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListBusinessSupportSubscriptionHistory
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListBusinessSupportSubscriptionHistory`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListBusinessSupportSubscriptionHistory::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! IMPLEMENTED: this operation REPORTS the Support subscription contracts the
+//! service's persisted bills record — see
+//! [`crate::state::ComAmazonawsBillingAwsbillingState::support_subscription_contracts`],
+//! which reads them off the Support plan each account-month's bill in
+//! [`crate::state::ComAmazonawsBillingAwsbillingState::support_eligible_spend`]
+//! carries, so this report and the charges
+//! `ListBusinessSupportAccountCharges` prices cannot disagree about which plan
+//! an account was on.
+//!
+//! It is a REPORTING operation (`@readonly`): it reads the store and writes
+//! nothing, so a caller cannot change another caller's answer by reading. A
+//! contract is reported when its own period OVERLAPS the period the request
+//! asks about — the billing month it names, or the month the clock is in when
+//! it names none, with each end of that period replaced by `startDate` or
+//! `endDate` when the request carries one —
+//! filtered to one account when the request names one, ascending by account and
+//! then by contract start, and paged by `maxResults`/`nextToken`.
+//!
+//! NOTE: nothing in this emulator writes those bills yet — spend and its
+//! subscription accrue from a billing run, and the emulator performs none. So
+//! on a running emulator this reports no contracts until an operation that
+//! bills usage exists; the suite at
+//! `tests/all/business_support_subscription_history.rs` persists bills through
+//! `ComAmazonawsBillingAwsbillingState::record_support_eligible_spend` to
+//! exercise the derivation, selection and paging rules. Nothing here
+//! synthesises a contract.
 //!
 //! ## Shape of an operation
 //!
@@ -133,6 +151,70 @@ pub struct ListBusinessSupportSubscriptionHistory<Eng> {
     engine: ::std::sync::Arc<Eng>,
 }
 
+/// The page size used when the request omits `maxResults`.
+///
+/// From the `maxResults` doc: "The maximum number of results to return per
+/// page. Default is 100."
+const DEFAULT_MAX_RESULTS: usize = 100;
+
+/// The smallest and largest page size the model's `maxResults` range allows
+/// (1..100), used to clamp a size that reached this handler anyway.
+const MIN_MAX_RESULTS: usize = 1;
+const MAX_MAX_RESULTS: usize = 100;
+
+/// Refuse a request member as invalid, in the modeled `ValidationException`
+/// shape (HTTP 400) this operation declares.
+///
+/// `constraint` continues the sentence the member name starts, so the refusal
+/// names the member and the constraint the request broke without echoing the
+/// offending value back — the form this service's other paginated reads of a
+/// billing period use.
+fn invalid_field(member: &str, constraint: &str) -> ListBusinessSupportSubscriptionHistoryError {
+    ListBusinessSupportSubscriptionHistoryErrorModeled::ValidationException(ValidationException {
+        message: format!("InvalidArgument: {member} (DetailedCode={member} {constraint})"),
+        reason: crate::state::VALIDATION_REASON_FIELD.to_string(),
+        field_list: Some(vec![ValidationExceptionField {
+            name: member.to_string(),
+            message: format!("Member {constraint}"),
+        }]),
+    })
+    .into()
+}
+
+/// The contract key a `nextToken` resumes after, or a `ValidationException`
+/// when the token is not one this service issued. The token format and the
+/// refusal's wording live in `crate::state`, shared with this service's other
+/// paginated reads.
+fn resume_key(token: &str) -> Result<String, ListBusinessSupportSubscriptionHistoryError> {
+    crate::state::decode_page_token(token).ok_or_else(|| {
+        ListBusinessSupportSubscriptionHistoryErrorModeled::ValidationException(
+            ValidationException {
+                message: crate::state::PAGE_TOKEN_REFUSAL.to_string(),
+                reason: crate::state::VALIDATION_REASON_CANNOT_PARSE.to_string(),
+                field_list: Some(vec![ValidationExceptionField {
+                    name: "nextToken".to_string(),
+                    message: crate::state::PAGE_TOKEN_FIELD_REFUSAL.to_string(),
+                }]),
+            },
+        )
+        .into()
+    })
+}
+
+/// The billing month the request asks about: the one it names, or — from the
+/// `billingMonth` doc, "If you don't specify a value, defaults to the current
+/// month" — the month the clock is in.
+///
+/// `None` only when the clock names no month, which the caller answers as a
+/// server error rather than as an empty history.
+fn requested_month(billing_month: Option<&str>) -> Option<String> {
+    if let Some(month) = billing_month {
+        return Some(month.to_string());
+    }
+    let (year, month) = crate::state::billing_period(::std::time::SystemTime::now())?;
+    Some(format!("{year:04}-{month:02}"))
+}
+
 impl<Eng> ListBusinessSupportSubscriptionHistory<Eng> {
     /// Construct the operation from the shared engine. INFALLIBLE — the engine is a
     /// construction-time dependency, so engine access is guaranteed by the time any
@@ -159,18 +241,126 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListBusinessSupportSubscriptionHistory` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListBusinessSupportSubscriptionHistoryErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListBusinessSupportSubscriptionHistory"))
+        // Every modeled constraint (the `billingMonth` and `accountId`
+        // patterns, `maxResults` 1..100, the `nextToken` pattern and length) is
+        // refused by the boundary validator before this runs; what is checked
+        // here is the documented relationship between the two dates.
+        let _ = ctx;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            ListBusinessSupportSubscriptionHistoryErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: "the Support subscription store is unavailable".to_string(),
+                },
+            )
+        })?;
+        // A reporting operation: the guard is only read through, so two callers
+        // reading the same history see the same answer.
+        let state = state.lock();
+
+        let billing_month = requested_month(input.billing_month.as_deref()).ok_or_else(|| {
+            ListBusinessSupportSubscriptionHistoryErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: "the current billing month is unavailable".to_string(),
+                },
+            )
+        })?;
+        let (month_start, month_end) = crate::state::month_period(&billing_month)
+            .ok_or_else(|| invalid_field("billingMonth", "must name a calendar month"))?;
+
+        let start_filter = input.start_date.as_ref().map(crate::state::date_time_secs);
+        let end_filter = input.end_date.as_ref().map(crate::state::date_time_secs);
+        // The requested window is HALF-OPEN, the reading of a date range this
+        // service's other dated history read answers with: `endDate` is
+        // exclusive, so a zero-width range selects nothing and is refused
+        // rather than answered with an empty page.
+        if let (Some(start), Some(end)) = (start_filter, end_filter) {
+            if start >= end {
+                return Err(invalid_field(
+                    "startDate",
+                    "must be strictly before endDate (endDate is exclusive)",
+                ));
+            }
+        }
+        // The period the request asks about: the billing month's own UTC
+        // period, each end of it REPLACED by the date filter the request
+        // carries for that end — `startDate` is "the start date to filter
+        // subscription contracts from" and `endDate` "the end date to filter
+        // subscription contracts to", so a request that names one asks about a
+        // period that begins or ends there rather than at the month's own
+        // bound, and a request that names neither asks about the month.
+        let window_start = start_filter.unwrap_or_else(|| crate::state::date_time_secs(&month_start));
+        let window_end = end_filter.unwrap_or_else(|| crate::state::date_time_secs(&month_end));
+
+        let resume_after = match input.next_token.as_deref() {
+            Some(token) => Some(resume_key(token)?),
+            None => None,
+        };
+        let limit = input
+            .max_results
+            .and_then(|max| usize::try_from(max).ok())
+            .unwrap_or(DEFAULT_MAX_RESULTS)
+            .clamp(MIN_MAX_RESULTS, MAX_MAX_RESULTS);
+
+        // A date filter can leave a period of no length (an `endDate` at or
+        // before the start the request asks from); nothing runs for no time at
+        // all, so such a request selects nothing rather than everything that
+        // straddles the instant.
+        let selected: Vec<(String, BusinessSupportSubscriptionContract)> = if window_start
+            >= window_end
+        {
+            Vec::new()
+        } else {
+            state
+                .support_subscription_contracts(crate::state::caller_account_id())
+                .into_iter()
+                .filter(|contract| {
+                    input
+                        .account_id
+                        .as_deref()
+                        .is_none_or(|filter| filter == contract.account_id)
+                })
+                .filter_map(|contract| {
+                    let (contract_start, contract_end) = contract.period()?;
+                    // Reported when the contract's own period overlaps the
+                    // requested one: it began before that period ended and had
+                    // not ended when it began.
+                    if crate::state::date_time_secs(&contract_start) >= window_end
+                        || crate::state::date_time_secs(&contract_end) <= window_start
+                    {
+                        return None;
+                    }
+                    Some((
+                        contract.key(),
+                        BusinessSupportSubscriptionContract {
+                            account_id: contract.account_id.clone(),
+                            plan_name: contract.plan_name.clone(),
+                            contract_start_date: contract_start,
+                            contract_end_date: contract_end,
+                        },
+                    ))
+                })
+                .collect()
+        };
+
+        // The page resumes strictly after the contract the previous page ended
+        // on, so a bill written or removed between pages cannot make the walk
+        // skip or repeat another contract. One extra match is read to learn
+        // whether a further page exists.
+        let mut remaining = selected
+            .into_iter()
+            .filter(|(key, _)| resume_after.as_ref().is_none_or(|after| key > after));
+        let page: Vec<(String, BusinessSupportSubscriptionContract)> =
+            remaining.by_ref().take(limit).collect();
+        let next_token = if remaining.next().is_some() {
+            page.last()
+                .map(|(key, _)| crate::state::encode_page_token(key))
+        } else {
+            None
+        };
+
+        Ok(ListBusinessSupportSubscriptionHistoryOutput {
+            subscription_contracts: page.into_iter().map(|(_, contract)| contract).collect(),
+            next_token,
+        })
     }
 }
