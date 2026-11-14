@@ -37,6 +37,11 @@ aws-sdk-sns = { version = "1", default-features = false }
 # a record put on that stream (`state::event_publication::firehose`). Only the generated
 # client is needed — the emulator supplies the transport.
 aws-sdk-firehose = { version = "1", default-features = false }
+# The AWS SDK for Amazon EventBridge, driven over the same in-process callback: an event
+# destination that names an event bus receives each matching email event as one event put
+# on that bus (`state::event_publication::event_bridge`). Only the generated client is
+# needed — the emulator supplies the transport.
+aws-sdk-eventbridge = { version = "1", default-features = false }
 # The CloudWatch store a configuration set's CloudWatch event destination counts an email
 # event in (the `AWS/SES` namespace, `state::event_publication::cloudwatch`). CloudWatch
 # refuses a `PutMetricData` into a reserved `AWS/` namespace, so a service's own metrics
@@ -105,6 +110,19 @@ aws-sdk-iam = { version = "1", default-features = false }
 # a page cursor a listing refuses is sent on the query string exactly as a client sends it,
 # including its `+`, `/`, `=` and `!`.
 percent-encoding = "2.3"
+# EventBridge and Amazon SQS are mounted beside this service on one engine in the
+# EventBridge event-destination suite: the email events a send publishes are put on that
+# service's bus, and a rule's queue target is where a client reads the whole envelope back.
+service-com-amazonaws-eventbridge-awsevents = { workspace = true }
+service-com-amazonaws-sqs-amazonsqs = { workspace = true }
+# The whole pipeline a client wires over email events — SES publishes onto the bus, a rule
+# invokes its Lambda target, and the RUNNING handler relays what it was handed onto a queue
+# — is asserted end to end, so Lambda and the token service that mints the handler's role
+# session are mounted beside this service on one engine too.
+service-com-amazonaws-lambda-awsgirapiservice = { workspace = true }
+service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true }
+# The deployment package that suite uploads is a .zip archive it writes in memory.
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true

@@ -55,6 +55,9 @@
 /// The CloudWatch destination kind: the datapoint one event becomes, and the dimensions
 /// the destination declared for it.
 pub mod cloudwatch;
+/// The EventBridge destination kind: the bus its events are published onto, and the event
+/// each notification is published as.
+pub mod event_bridge;
 /// The Firehose destination kind: the role its events are sent under, and the record each
 /// event is put on the stream as.
 pub mod firehose;

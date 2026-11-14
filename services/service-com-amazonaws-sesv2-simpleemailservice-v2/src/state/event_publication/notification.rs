@@ -22,7 +22,8 @@
 //!
 //! The destination kinds served here are the ones this service reaches through a grant
 //! this emulator can read ([`super`]): the SNS topic a destination publishes to, the
-//! Firehose stream a destination puts its events on as records ([`super::firehose`]), and
+//! Firehose stream a destination puts its events on as records ([`super::firehose`]), the
+//! EventBridge bus a destination publishes its events onto ([`super::event_bridge`]), and
 //! the CloudWatch dimensions a destination counts the event under
 //! ([`super::cloudwatch`]) — which is the one kind that takes no document, because what a
 //! CloudWatch destination receives is one datapoint of the metric named after the event.
@@ -41,20 +42,22 @@ use serde_json::{json, Map, Value};
 
 use super::outcome::{Bounce, RecipientOutcome};
 
-/// The `EventType` value for the acceptance of a message, and the `eventType` the
-/// published document carries for it. The modelled value is what a destination's
-/// `MatchingEventTypes` names (see `crate::ops::types::EVENT_TYPE_VALUES`); the published
-/// spelling is the one the notification document uses.
-const SEND: (&str, &str) = ("SEND", "Send");
+/// The `EventType` value for the acceptance of a message, the `eventType` the published
+/// document carries for it, and the `detail-type` an event of it carries on an event bus.
+/// The modelled value is what a destination's `MatchingEventTypes` names (see
+/// `crate::ops::types::EVENT_TYPE_VALUES`); the published spelling is the one the
+/// notification document uses; the bus spelling is the email event the envelope is named
+/// after ([`super::event_bridge`]).
+const SEND: (&str, &str, &str) = ("SEND", "Send", "Email Send");
 
-/// The same pair for a message that reached a recipient.
-const DELIVERY: (&str, &str) = ("DELIVERY", "Delivery");
+/// The same triple for a message that reached a recipient.
+const DELIVERY: (&str, &str, &str) = ("DELIVERY", "Delivery", "Email Delivery");
 
-/// The same pair for a message that failed for a recipient.
-const BOUNCE: (&str, &str) = ("BOUNCE", "Bounce");
+/// The same triple for a message that failed for a recipient.
+const BOUNCE: (&str, &str, &str) = ("BOUNCE", "Bounce", "Email Bounce");
 
-/// The same pair for a message a recipient reported as unwanted.
-const COMPLAINT: (&str, &str) = ("COMPLAINT", "Complaint");
+/// The same triple for a message a recipient reported as unwanted.
+const COMPLAINT: (&str, &str, &str) = ("COMPLAINT", "Complaint", "Email Complaint");
 
 /// The message tag SES applies to every send made through a configuration set: the set
 /// itself. A destination publishes it as a CloudWatch dimension only where its own
@@ -79,6 +82,9 @@ pub struct Notification {
     /// destination that counts it ([`super::cloudwatch`]), which is the event's published
     /// spelling.
     pub metric_name: &'static str,
+    /// The `detail-type` an event of this notification carries on an event bus
+    /// ([`super::event_bridge`]): the email event the published document is of.
+    pub detail_type: &'static str,
     /// The published document.
     pub document: Value,
 }
@@ -156,6 +162,15 @@ impl PublishedSend {
                 if let Some(stream) = &destination.kinesis_firehose_destination {
                     super::firehose::put_event(callback, stream, &notification.document).await;
                 }
+                if let Some(bus) = &destination.event_bridge_destination {
+                    super::event_bridge::put_event(
+                        callback,
+                        bus,
+                        notification.detail_type,
+                        &notification.document,
+                    )
+                    .await;
+                }
                 // A CloudWatch destination takes no document: the event is counted as one
                 // observation of the metric named after it, under exactly the dimensions
                 // that destination declared.
@@ -202,6 +217,7 @@ impl PublishedSend {
         let mut notifications = vec![Notification {
             event_type: SEND.0,
             metric_name: SEND.1,
+            detail_type: SEND.2,
             document: document(SEND.1, &mail, "send", json!({})),
         }];
 
@@ -249,6 +265,7 @@ impl PublishedSend {
             notifications.push(Notification {
                 event_type: BOUNCE.0,
                 metric_name: BOUNCE.1,
+                detail_type: BOUNCE.2,
                 document,
             });
         }
@@ -274,6 +291,7 @@ impl PublishedSend {
             notifications.push(Notification {
                 event_type: DELIVERY.0,
                 metric_name: DELIVERY.1,
+                detail_type: DELIVERY.2,
                 document: document(DELIVERY.1, &mail, "delivery", delivery),
             });
         }
@@ -305,6 +323,7 @@ impl PublishedSend {
             notifications.push(Notification {
                 event_type: COMPLAINT.0,
                 metric_name: COMPLAINT.1,
+                detail_type: COMPLAINT.2,
                 document: document(COMPLAINT.1, &mail, "complaint", complaint),
             });
         }

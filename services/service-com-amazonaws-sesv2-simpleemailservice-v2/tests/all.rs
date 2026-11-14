@@ -127,6 +127,10 @@ mod email_template_updates;
 mod email_templates;
 #[path = "all/enum_value_set_order.rs"]
 mod enum_value_set_order;
+#[path = "all/event_bridge_event_destination_delivery.rs"]
+mod event_bridge_event_destination_delivery;
+#[path = "all/event_bridge_rule_invokes_a_lambda_target.rs"]
+mod event_bridge_rule_invokes_a_lambda_target;
 #[path = "all/export_job_cancellation.rs"]
 mod export_job_cancellation;
 #[path = "all/export_job_creation.rs"]
