@@ -27,6 +27,17 @@ use smithy_server_runtime::MultiServiceRouter;
 /// the same harness rather than each writing its own.
 pub(crate) const PAST_TRANSITION: Duration = Duration::from_millis(900);
 
+/// How long [`HealthLake::poll_until_status`] keeps looking for a status the CLOCK owes:
+/// many times over `crate::state::LIFECYCLE_TRANSITION`, so a loaded host has room while
+/// a fast one never waits for it.
+pub(crate) const SETTLING_DEADLINE: Duration = Duration::from_secs(30);
+
+/// The base URL every address this service hands a caller is rooted at: THIS emulator's
+/// own, which for a router that is not served on a port is the framework's
+/// [`smithy_server_runtime::UNSERVED_URL_BASE`]. A published address names the emulator,
+/// never the real service's host, because a caller SENDS its next request to it.
+pub(crate) const EMULATOR_BASE: &str = smithy_server_runtime::UNSERVED_URL_BASE;
+
 /// The emulated HealthLake service behind the production router.
 pub(crate) struct HealthLake {
     router: MultiServiceRouter,
@@ -97,6 +108,32 @@ impl HealthLake {
         self.ok("DescribeFHIRDatastore", &json!({ "DatastoreId": id }))
             .await["DatastoreProperties"]
             .clone()
+    }
+
+    /// Look at `DescribeFHIRDatastore` until the data store `id` reports
+    /// `DatastoreStatus` `status`, and answer that whole response; fail once
+    /// [`SETTLING_DEADLINE`] has passed without it.
+    ///
+    /// A lifecycle transition this service owes is materialised by whichever call reads
+    /// the record next, so waiting for one means LOOKING again until the condition holds —
+    /// never sleeping for the span, which would make the outcome depend on how fast the
+    /// host runs. `pub(crate)` so every suite waits for a status the one way.
+    pub(crate) async fn poll_until_status(&self, id: &str, status: &str) -> Value {
+        let deadline = std::time::Instant::now() + SETTLING_DEADLINE;
+        loop {
+            let described = self
+                .ok("DescribeFHIRDatastore", &json!({ "DatastoreId": id }))
+                .await;
+            if described["DatastoreProperties"]["DatastoreStatus"] == status {
+                return described;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the data store {id} did not reach {status} within {SETTLING_DEADLINE:?}, \
+                 last read {described}"
+            );
+            tokio::task::yield_now().await;
+        }
     }
 
     /// Every data store the service reports, in `ListFHIRDatastores` order.
@@ -265,8 +302,9 @@ async fn create_persists_every_member_and_describe_reports_it_back() {
         let endpoint = string_at(&created, "DatastoreEndpoint");
         assert_eq!(
             endpoint,
-            format!("https://healthlake.us-east-1.amazonaws.com/datastore/{id}/r4/"),
-            "case {case:?}: DatastoreEndpoint must name the minted data store, got {endpoint:?}"
+            format!("{EMULATOR_BASE}/datastore/{id}/r4/"),
+            "case {case:?}: DatastoreEndpoint must name the minted data store on the \
+             emulator's own base URL, got {endpoint:?}"
         );
         assert_eq!(
             created["DatastoreStatus"], "CREATING",
@@ -933,7 +971,11 @@ async fn delete_moves_the_stored_record_through_deleting_to_deleted() {
         "deleting a CREATING data store must answer ConflictException, got {payload}"
     );
 
-    tokio::time::sleep(PAST_TRANSITION).await;
+    // The transition the clock owes the create is waited for by LOOKING for it: a
+    // lifecycle transition is materialised by whichever call reads the record next, so
+    // the condition is what is waited on. Never a fixed interval — a wall-clock wait
+    // passes on one machine and fails on a loaded or a faster one.
+    service.poll_until_status(&id, "ACTIVE").await;
 
     let deleted = service
         .ok("DeleteFHIRDatastore", &json!({ "DatastoreId": &id }))
@@ -948,7 +990,7 @@ async fn delete_moves_the_stored_record_through_deleting_to_deleted() {
     );
     assert_eq!(
         deleted["DatastoreEndpoint"].as_str().unwrap_or_default(),
-        format!("https://healthlake.us-east-1.amazonaws.com/datastore/{id}/r4/"),
+        format!("{EMULATOR_BASE}/datastore/{id}/r4/"),
         "DeleteFHIRDatastore must report the stored endpoint, got {deleted}"
     );
 
@@ -984,11 +1026,9 @@ async fn delete_moves_the_stored_record_through_deleting_to_deleted() {
         "deleting a DELETING data store must answer ConflictException, got {payload}"
     );
 
-    tokio::time::sleep(PAST_TRANSITION).await;
-
-    let described = service
-        .ok("DescribeFHIRDatastore", &json!({ "DatastoreId": &id }))
-        .await;
+    // As above: the deletion's own transition is waited for by looking for the status it
+    // owes, not by sleeping for its span.
+    let described = service.poll_until_status(&id, "DELETED").await;
     assert_eq!(
         described["DatastoreProperties"]["DatastoreStatus"], "DELETED",
         "Describe must show the completed deletion, got {described}"

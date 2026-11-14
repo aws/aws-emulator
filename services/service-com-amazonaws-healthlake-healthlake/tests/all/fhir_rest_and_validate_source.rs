@@ -625,11 +625,11 @@ async fn a_fhir_interaction_states_its_refusals_as_an_operation_outcome() {
             "not-supported",
         ),
         (
-            "a type-level search, which this endpoint does not implement yet",
+            "a search parameter this endpoint does not implement yet",
             "GET",
-            format!("{path}Patient"),
+            format!("{path}Patient?name=Lovelace"),
             Value::Null,
-            501,
+            400,
             "not-supported",
         ),
         (

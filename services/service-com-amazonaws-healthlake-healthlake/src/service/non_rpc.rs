@@ -67,6 +67,32 @@ pub(crate) fn query_value(uri: &str, name: &str) -> Option<String> {
     })
 }
 
+/// Every query parameter of `uri` in the order it was sent, each name and value
+/// percent-decoded through the framework's decoder, as [`query_value`] decodes the one it
+/// is asked for.
+///
+/// A surface addressed by its whole query rather than by one named parameter needs them
+/// all: a FHIR search is a CONJUNCTION of the parameters it carries, and a parameter it
+/// does not recognise changes what the answer means, so it cannot be left unread. A pair
+/// with no `=` carries no value and is reported with an empty one, which is what a
+/// reader of that parameter then judges.
+pub(crate) fn query_pairs(uri: &str) -> Vec<(String, String)> {
+    let Some((_path, query)) = uri.split_once('?') else {
+        return Vec::new();
+    };
+    query
+        .split('&')
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| match pair.split_once('=') {
+            Some((name, value)) => (
+                smithy_server_runtime::percent_decode(name),
+                smithy_server_runtime::percent_decode(value),
+            ),
+            None => (smithy_server_runtime::percent_decode(pair), String::new()),
+        })
+        .collect()
+}
+
 /// `value` as a message echoes it: a bounded, single-line prefix, so neither a long
 /// request value nor a parser's multi-line complaint can run away with the response.
 pub(crate) fn bounded(value: &str) -> String {

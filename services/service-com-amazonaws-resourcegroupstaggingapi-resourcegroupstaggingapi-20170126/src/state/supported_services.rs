@@ -130,6 +130,10 @@ pub const SUPPORTED_SERVICES: &[&str] = &[
     "greengrass",
     "groundstation",
     "guardduty",
+    // AWS HealthScribe's namespace: its Domains are tagged through its own API and
+    // returned by `GetResources` under this token (the behaviour this emulator is held to
+    // for the `health-agent` owner in `crate::state::owners`).
+    "health-agent",
     "healthlake",
     "iam",
     "imagebuilder",

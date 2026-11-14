@@ -352,7 +352,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         let mut datastore = crate::state::Datastore {
             arn: crate::state::datastore_arn(&region, &id),
-            endpoint: crate::state::datastore_endpoint(&region, &id),
+            endpoint: crate::state::datastore_endpoint(ctx.endpoint().as_str(), &id),
             id: id.clone(),
             name: input.datastore_name,
             // A resource AWS returns in a non-terminal status owes the clock one

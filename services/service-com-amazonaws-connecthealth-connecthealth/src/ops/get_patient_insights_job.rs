@@ -102,7 +102,11 @@
 //!
 //! A `domainId` that names no live domain, and a `jobId` that names no job under it, are
 //! both the modelled `ResourceNotFoundException`: a job started in one domain is not
-//! readable through another.
+//! readable through another. The two are worded differently, because they name different
+//! resources: the domain by the requested `domainId`
+//! (`crate::service::error_detail::domain_not_found_message`), and a job under a domain
+//! that DOES resolve by the ARN this service would hold it under
+//! (`crate::service::error_detail::patient_insights_job_not_found_message`).
 
 #[allow(unused_imports)]
 use super::types::*;
@@ -213,14 +217,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into()
         };
-        if store.live_domain(&region, &input.domain_id).is_none() {
+        let Some(domain_arn) = store
+            .live_domain(&region, &input.domain_id)
+            .map(|domain| domain.arn.clone())
+        else {
             return Err(not_found(
                 crate::service::error_detail::domain_not_found_message(&input.domain_id),
             ));
-        }
+        };
         let Some(job) = store.patient_insights_job(&region, &input.domain_id, &input.job_id) else {
+            // The job is named by its ARN, which is what this endpoint reports for a job
+            // it cannot resolve: built from the resolved domain's OWN stored ARN and the
+            // requested `jobId` through the one rule this service mints job ARNs with
+            // (`crate::state::patient_insights_job_arn`), so the sentence names the same
+            // resource path a job that does exist reports as its `jobArn`.
             return Err(not_found(
-                crate::service::error_detail::patient_insights_job_not_found_message(&input.job_id),
+                crate::service::error_detail::patient_insights_job_not_found_message(
+                    &crate::state::patient_insights_job_arn(&domain_arn, &input.job_id),
+                ),
             ));
         };
 

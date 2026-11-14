@@ -377,7 +377,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let id = store.next_datastore_id(now);
         let datastore = crate::state::Datastore {
             arn: crate::state::datastore_arn(&region, &id),
-            endpoint: crate::state::datastore_endpoint(&region, &id),
+            endpoint: crate::state::datastore_endpoint(ctx.endpoint().as_str(), &id),
             id: id.clone(),
             // Every configuration member this operation accepts is "for the
             // restored data store", so one the request carries applies to it and

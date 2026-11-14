@@ -34,6 +34,9 @@ base64 = "0.22"
 # resource for is reported with ITS not-found code. Reached through the shared
 # engine, which needs the owning service's state TYPE. See `src/state/owners.rs`.
 service-com-amazonaws-apigateway-backplanecontrolservice = { workspace = true }
+# AWS HealthScribe / health-agent (connecthealth): a Domain, and the Subscriptions under
+# it, carry the tag set this API reads and writes for the `health-agent` namespace.
+service-com-amazonaws-connecthealth-connecthealth = { workspace = true }
 service-com-amazonaws-sqs-amazonsqs = { workspace = true }
 service-com-amazonaws-ecs-amazonec2containerservicev20141113 = { workspace = true }
 service-com-amazonaws-elasticloadbalancingv2-elasticloadbalancing-v10 = { workspace = true }

@@ -11,7 +11,10 @@
 //!    through another Region's endpoint, a domain on its way out, a request the model
 //!    rejects, or a `clientToken` already bound to different parameters — the store's
 //!    jobs are exactly the records, with exactly the identifiers, creation instants,
-//!    parameters and token bindings, that they were before the call.
+//!    parameters and token bindings, that they were before the call. Which refusal each
+//!    earns is the patient-insights runtime endpoint's: a `domainId` it cannot resolve a
+//!    live domain for is its authorization failure (401 `AccessDeniedException`), and a
+//!    value of the request outside its shape is the modelled 400 `ValidationException`.
 //! 2. A start is IDEMPOTENT on `clientToken` at every point of a job's life: a retry
 //!    answers the identifiers and creation instant of the job the first call stored,
 //!    starts no second job, and resets nothing the clock has since moved on — so the
@@ -166,24 +169,24 @@ async fn a_refused_start_writes_no_job_record() {
             home,
             "dom-0123456789abcdef0".to_string(),
             job_request(),
-            404,
-            "ResourceNotFoundException",
+            401,
+            "AccessDeniedException",
         ),
         (
             "a live domain of another Region",
             elsewhere,
             domain_id.clone(),
             job_request(),
-            404,
-            "ResourceNotFoundException",
+            401,
+            "AccessDeniedException",
         ),
         (
             "a domain on its way out",
             home,
             deleting.clone(),
             job_request(),
-            404,
-            "ResourceNotFoundException",
+            401,
+            "AccessDeniedException",
         ),
         (
             "a domainId outside the modelled pattern",

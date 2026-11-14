@@ -30,6 +30,9 @@ tracing = { workspace = true }
 sha2 = { workspace = true }
 # Hex codec for those ids and for the opaque `nextToken` pagination cursor.
 hex = { workspace = true }
+# Runs the modelled `@pattern` of `S3Uri` for the one member this service judges in its
+# handler rather than at the request boundary (`crate::state::output_location_within_shape`).
+regex = "1.13"
 # Decodes one `application/vnd.amazon.eventstream` frame: the input stream of
 # `StartMedicalScribeListeningSession` arrives as those frames, and the shared seam reads
 # only the response direction.

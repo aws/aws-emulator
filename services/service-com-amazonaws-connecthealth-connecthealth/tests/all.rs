@@ -55,6 +55,8 @@ mod patient_insights_job_lifecycle;
 mod patient_insights_job_terminal_output;
 #[path = "all/patient_insights_output_uri_character_bound.rs"]
 mod patient_insights_output_uri_character_bound;
+#[path = "all/patient_insights_runtime_refusals.rs"]
+mod patient_insights_runtime_refusals;
 #[path = "all/recorded_domain_identity_projection.rs"]
 mod recorded_domain_identity_projection;
 #[path = "all/region_scoping.rs"]

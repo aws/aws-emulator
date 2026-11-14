@@ -43,6 +43,7 @@ use std::time::SystemTime;
 // declared `{ workspace = true }` in this crate's `Cargo.toml`, so the path the
 // workspace resolves them at stays in one place.
 use service_com_amazonaws_apigateway_backplanecontrolservice as owner_apigateway;
+use service_com_amazonaws_connecthealth_connecthealth as owner_connecthealth;
 use service_com_amazonaws_ecs_amazonec2containerservicev20141113 as owner_ecs;
 use service_com_amazonaws_elasticloadbalancingv2_elasticloadbalancing_v10 as owner_elb;
 use service_com_amazonaws_eventbridge_awsevents as owner_events;
@@ -233,6 +234,7 @@ pub fn visit<Eng: Send + Sync + 'static>(
 ) -> Resolution {
     match arn.service.as_str() {
         "apigateway" => apigateway(engine, arn, change),
+        "health-agent" => health_agent(engine, arn, change),
         "sqs" => sqs(engine, arn, change),
         "ecs" => ecs(engine, arn, change),
         "elasticloadbalancing" => elasticloadbalancing(engine, arn, change),
@@ -271,6 +273,31 @@ pub fn tagged_resources<Eng: Send + Sync + 'static>(
         }
     }
 
+    if let Some(state) = owner_connecthealth::state::service_state(engine) {
+        // The resources that service holds a tag set for, resolved by the SAME rule its
+        // own tagging operations resolve a `resourceArn` with (its state's
+        // `holds_resource_arn`, which covers a Domain this Region still holds and a live
+        // Subscription under one), so a resource this projection reports is exactly a
+        // resource that service would let a caller tag or read tags from. Only ARNs it
+        // has a tag entry for are walked, which is already "no untagged resources".
+        //
+        // A purge the clock has already made due is materialised first, as it is for the
+        // secrets and state machines below: it was owed at this instant whether or not
+        // anybody called, so a Domain that service would already have dropped is never
+        // reported.
+        let mut state = state.lock();
+        state.materialise_due(SystemTime::now());
+        let held: Vec<String> = state
+            .tags_by_arn
+            .keys()
+            .filter(|arn| state.holds_resource_arn(region, arn))
+            .cloned()
+            .collect();
+        for arn in held {
+            let tags = state.tags_for(&arn).into_iter().collect();
+            record(arn, tags);
+        }
+    }
     if let Some(state) = owner_sqs::state::service_state(engine) {
         // A queue is a REGIONAL resource of that service — it belongs to the Region its
         // create addressed, which is the Region its ARN carries — so the queues this
@@ -485,6 +512,55 @@ fn apigateway<Eng: Send + Sync + 'static>(
     Resolution::Present {
         tags: Some(tags.clone()),
     }
+}
+
+/// AWS HealthScribe's `health-agent` namespace (connecthealth): a Domain, or a live
+/// Subscription under one, whose tags are that service's own — it holds one tag set per
+/// resource ARN, so that set is the one this API reads and writes, and a Domain deleted
+/// there leaves this API's answers with no untag.
+///
+/// The ARN is resolved by that service's OWN rule for a tagging `resourceArn` (its
+/// `holds_resource_arn`, which both its `TagResource` and its `ListTagsForResource` go
+/// through), and the Region comes off the ARN — the same Region the request is addressed
+/// to, since `addressable_arn` has already refused an ARN of any other — so the resources
+/// this API can tag are exactly the ones that service can, with no second copy of the
+/// resolution here to drift from it. The cap a write is held to is that service's own.
+fn health_agent<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    arn: &ParsedArn,
+    change: Option<&Change<'_>>,
+) -> Resolution {
+    let Some(state) = owner_connecthealth::state::service_state(engine) else {
+        return Resolution::Unowned;
+    };
+    let mut state = state.lock();
+    // A resolution must see the store a report of it sees: materialising the purge the
+    // clock already owes is what keeps a Domain whose deletion came due from being tagged
+    // back into existence.
+    state.materialise_due(SystemTime::now());
+    if !state.holds_resource_arn(&arn.region, &arn.arn) {
+        // That service's own refusal: `ResourceNotFoundException` at HTTP 404
+        // (`smithy_query(query="operation", operation="TagResource")` on the connecthealth
+        // model), carrying the sentence it words for an ARN it cannot resolve.
+        return absent_with_status(
+            404,
+            "ResourceNotFoundException",
+            owner_connecthealth::service::error_detail::resource_not_found_message(&arn.arn),
+        );
+    }
+    let mut held: Tags = state.tags_for(&arn.arn);
+    if let Some(change) = change {
+        if let Err(would_hold) = change.apply(&mut held) {
+            return Resolution::TooManyTags(would_hold);
+        }
+        // That service's own cap on a resource's tag SET, which a write through this API
+        // is held to exactly as a write through its own `TagResource` is.
+        if held.len() > owner_connecthealth::state::MAX_TAGS_PER_RESOURCE {
+            return Resolution::TooManyTags(held.len());
+        }
+        state.set_tags(&arn.arn, held.clone());
+    }
+    Resolution::Present { tags: Some(held) }
 }
 
 /// Amazon SQS: a queue, whose tags are the queue's own cost-allocation tags.

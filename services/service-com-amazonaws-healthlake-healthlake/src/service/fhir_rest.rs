@@ -29,9 +29,15 @@
 //! * `update`, including `update-as-create` — `PUT [base]/{type}/{id}`, which stores the
 //!   submitted resource AT the caller-chosen id: `200` when it replaces the version
 //!   held there, `201` when it creates the resource at that id, and the resource is then
-//!   readable through `read`.
+//!   readable through `read`;
+//! * `search` at the TYPE level — `GET [base]/{type}?<param>=<value>`, which answers
+//!   `200` with a `searchset` Bundle of the resources of that type satisfying every
+//!   parameter the query carries ([`SearchCriteria`]), an empty result included. The
+//!   parameters implemented are `_id`, `identifier` and the `_count` page size; any other
+//!   is refused rather than ignored, because a dropped filter would answer resources the
+//!   caller never asked for.
 //!
-//! Every other interaction on this path space (`delete`, `search`, `vread`, the
+//! Every other interaction on this path space (`delete`, `vread`, the
 //! batch/transaction endpoint) is answered `501` with an `OperationOutcome` of
 //! `not-supported`, which is this emulator's "not implemented yet" for a FHIR wire —
 //! never an empty `200` that would look like a successful interaction nothing performed.
@@ -81,6 +87,11 @@ const TOO_LONG: &str = "too-long";
 
 /// The issue code for a failure of the server itself.
 const EXCEPTION: &str = "exception";
+
+/// The path segment the FHIR capability statement is addressed at
+/// (`GET [base]/metadata`, FHIR R4 §3.1.0.1): an interaction of its own, not a resource
+/// type — the name is lower-case, which no resource type is — and not implemented here.
+const CAPABILITY_STATEMENT_SEGMENT: &str = "metadata";
 
 /// The longest resource type name this endpoint accepts in a path. FHIR resource type
 /// names are short UpperCamelCase tokens; the bound keeps a long path segment out of
@@ -164,6 +175,19 @@ impl<Eng: Send + Sync + 'static> FhirRestDataPlane<Eng> {
                 ),
             },
             ("GET", [resource_type, id]) => self.read(&route, resource_type, id),
+            // The capability statement is its own interaction, not a search for a type
+            // named `metadata`, so it keeps the "not implemented yet" answer every other
+            // unimplemented interaction on this path space gets rather than being read as
+            // a search of a type that cannot exist.
+            ("GET", [segment]) if *segment == CAPABILITY_STATEMENT_SEGMENT => outcome(
+                501,
+                NOT_SUPPORTED,
+                &format!(
+                    "This data store endpoint does not implement the FHIR capability \
+                     statement interaction (GET [base]/{CAPABILITY_STATEMENT_SEGMENT}) yet"
+                ),
+            ),
+            ("GET", [resource_type]) => self.search(&route, resource_type, req.uri()),
             ("PUT", [resource_type, id]) => match req.body().bytes() {
                 Some(body) => self.update(&route, resource_type, id, body),
                 // As for the create: the router buffers every request before dispatch,
@@ -179,8 +203,9 @@ impl<Eng: Send + Sync + 'static> FhirRestDataPlane<Eng> {
                 NOT_SUPPORTED,
                 &format!(
                     "This data store endpoint implements the FHIR create (POST [base]/{{type}}), \
-                     read (GET [base]/{{type}}/{{id}}) and update (PUT [base]/{{type}}/{{id}}) \
-                     interactions; {} {} is not implemented yet",
+                     read (GET [base]/{{type}}/{{id}}), update (PUT [base]/{{type}}/{{id}}) and \
+                     type-level search (GET [base]/{{type}}?<param>=<value>) interactions; {} {} \
+                     is not implemented yet",
                     bounded(method),
                     bounded(&format!("[base]/{}", route.interaction.join("/")))
                 ),
@@ -581,6 +606,306 @@ impl<Eng: Send + Sync + 'static> FhirRestDataPlane<Eng> {
             .headers_mut()
             .insert("etag", format!("W/\"{}\"", resource.version));
         response
+    }
+
+    /// The FHIR `search` interaction at the TYPE level: answer the resources of
+    /// `resource_type` this data store holds that satisfy every search parameter the
+    /// query carries, as a `searchset` Bundle.
+    ///
+    /// FHIR R4 §3.1.1 ("search"): `GET [base]/{type}?<parameters>` answers `200` with a
+    /// Bundle of type `searchset` whose `entry` carries one match per resource, each with
+    /// its `fullUrl` and `search.mode` — and an empty result is that same `200` with no
+    /// entries, never a `404`. Repeated parameters are AND-ed, and the comma-separated
+    /// values of ONE parameter are OR-ed, which is the whole of how a criterion composes.
+    ///
+    /// A REPORT: it reads the stored resources and answers them verbatim, so a search
+    /// changes nothing a later caller sees. The one write is the lifecycle settle every
+    /// interaction on this endpoint performs, which the clock already owed.
+    fn search(&self, route: &FhirEndpointPath, resource_type: &str, uri: &str) -> RtResponse {
+        if !is_resource_type_name(resource_type) {
+            return unknown_resource_type(resource_type);
+        }
+        let criteria = match SearchCriteria::of(uri) {
+            Ok(criteria) => criteria,
+            Err(failure) => return failure.response(),
+        };
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return store_unavailable();
+        };
+        let mut store = state.lock();
+        // Reporting resources means reporting them from a data store whose own status is
+        // up to date with the clock, exactly as the read does.
+        store.settle_lifecycle();
+        if let Err(failure) = serving(&store, &route.datastore_id) {
+            return failure.response();
+        }
+        let Some(datastore) = store.datastores.get(&route.datastore_id) else {
+            // `serving` resolved the record under this same lock.
+            return store_unavailable();
+        };
+        // The data store's resources are held under `(resourceType, id)`, so the walk is
+        // over the resources of THIS type, in id order — a stable order, so two searches
+        // answering the same matches answer them in the same sequence. Bounded by
+        // `crate::state::MAX_FHIR_RESOURCES_PER_DATASTORE`, the ceiling on what one data
+        // store retains.
+        let matched: Vec<&crate::state::FhirResource> = datastore
+            .fhir_resources
+            .values()
+            .filter(|resource| resource.resource_type == resource_type)
+            .filter(|resource| criteria.matches(&resource.content, &resource.id))
+            .collect();
+        let entries: Vec<::serde_json::Value> = matched
+            .iter()
+            .take(criteria.page_size)
+            .map(|resource| {
+                ::serde_json::json!({
+                    "fullUrl": format!(
+                        "{}{}/{}",
+                        datastore.endpoint, resource.resource_type, resource.id
+                    ),
+                    // The stored resource, byte for byte what a read of it answers.
+                    "resource": resource.content.clone(),
+                    // FHIR `SearchEntryMode`: this entry is here because it matched the
+                    // criterion, not because something included it.
+                    "search": { "mode": "match" },
+                })
+            })
+            .collect();
+        // `total` is "the total number of matches", which is every resource the criterion
+        // selected rather than the number this page carries (FHIR R4 Bundle.total on a
+        // `searchset`). `entry` is left out entirely when nothing matched, as an empty
+        // search result is written. No `self` link: a Bundle link is optional, and the
+        // one thing it could carry is the request's own query text, which this endpoint
+        // does not echo back into a response.
+        let mut bundle = ::serde_json::json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "total": matched.len(),
+        });
+        if !entries.is_empty() {
+            bundle["entry"] = ::serde_json::Value::Array(entries);
+        }
+        fhir_response(200, bundle.to_string())
+    }
+}
+
+/// How many matches one search page carries when the request asks for no size.
+///
+/// CHOSEN by this emulator: FHIR leaves the page size to the server (`_count` is "the
+/// number of resources that should be returned in a single page", and "the server is not
+/// bound to return the number requested"), and nothing in HealthLake's documentation
+/// fixes one. It is well above the number of resources any one test seeds and below the
+/// per-data-store retention ceiling, so an ordinary search answers every match in one
+/// page.
+const DEFAULT_SEARCH_PAGE_SIZE: usize = 100;
+
+/// The most matches one page carries, whatever `_count` asks for: the whole of what one
+/// data store retains ([`crate::state::MAX_FHIR_RESOURCES_PER_DATASTORE`]), so a caller
+/// may ask for every resource it could possibly have stored and no more.
+const MAX_SEARCH_PAGE_SIZE: usize = crate::state::MAX_FHIR_RESOURCES_PER_DATASTORE;
+
+/// The most search parameters one query may carry, and the most comma-separated
+/// alternatives one parameter may carry.
+///
+/// A criterion is evaluated against every resource the data store holds, so the work one
+/// request can ask for is the product of the two counts and the retained resources: these
+/// bound it. Both are far above what a search of this endpoint expresses in practice.
+const MAX_SEARCH_PARAMETERS: usize = 8;
+
+/// See [`MAX_SEARCH_PARAMETERS`].
+const MAX_SEARCH_ALTERNATIVES: usize = 16;
+
+/// The search parameter that selects a resource by its logical id (FHIR R4's `_id`, "the
+/// logical id of the resource").
+const ID_PARAMETER: &str = "_id";
+
+/// The search parameter that selects a resource by a business identifier it carries — the
+/// `identifier` element, which is a token-type search parameter on every resource type
+/// that has one.
+const IDENTIFIER_PARAMETER: &str = "identifier";
+
+/// The result parameter that asks for a page size (FHIR R4 §3.1.1.4 `_count`).
+const COUNT_PARAMETER: &str = "_count";
+
+/// One FHIR token-search value, as `[system]|[code]` splits it (FHIR R4 §3.1.1.5.4
+/// "token"): the four forms a token parameter can take, which differ in whether the
+/// system and the code are each constrained.
+#[derive(Debug, Clone)]
+enum TokenMatch {
+    /// `code` — the value matches in ANY system, which is the common form.
+    Code(String),
+    /// `system|code` — both the system and the value are named.
+    SystemAndCode(String, String),
+    /// `|code` — the value, in a record carrying NO system.
+    CodeWithoutSystem(String),
+    /// `system|` — any value in that system.
+    System(String),
+}
+
+impl TokenMatch {
+    /// The token this parameter value states.
+    fn of(raw: &str) -> Self {
+        match raw.split_once('|') {
+            Some(("", code)) => Self::CodeWithoutSystem(code.to_string()),
+            Some((system, "")) => Self::System(system.to_string()),
+            Some((system, code)) => Self::SystemAndCode(system.to_string(), code.to_string()),
+            None => Self::Code(raw.to_string()),
+        }
+    }
+
+    /// Whether one `Identifier` element (a JSON object carrying `system` and `value`)
+    /// satisfies this token.
+    fn matches_identifier(&self, identifier: &::serde_json::Value) -> bool {
+        let system = identifier
+            .get("system")
+            .and_then(::serde_json::Value::as_str);
+        let value = identifier.get("value").and_then(::serde_json::Value::as_str);
+        match self {
+            Self::Code(code) => value == Some(code.as_str()),
+            Self::SystemAndCode(wanted_system, code) => {
+                system == Some(wanted_system.as_str()) && value == Some(code.as_str())
+            }
+            Self::CodeWithoutSystem(code) => system.is_none() && value == Some(code.as_str()),
+            Self::System(wanted_system) => system == Some(wanted_system.as_str()),
+        }
+    }
+}
+
+/// One search parameter of a query, with the alternatives its comma-separated value
+/// states — any of which satisfies it.
+#[derive(Debug, Clone)]
+enum SearchFilter {
+    /// `_id`: the resource's logical id.
+    Id(Vec<String>),
+    /// `identifier`: a business identifier the resource carries.
+    Identifier(Vec<TokenMatch>),
+}
+
+impl SearchFilter {
+    /// Whether `content` (the stored resource) stored under logical id `id` satisfies
+    /// this parameter: any one alternative is enough, which is how the comma-separated
+    /// values of one parameter compose.
+    fn matches(&self, content: &::serde_json::Value, id: &str) -> bool {
+        match self {
+            Self::Id(wanted) => wanted.iter().any(|candidate| candidate == id),
+            Self::Identifier(tokens) => {
+                let element = content.get(IDENTIFIER_PARAMETER);
+                let held: Vec<&::serde_json::Value> = match element {
+                    // `Patient.identifier` and its siblings are `0..*`, so the element is
+                    // normally an array — but a resource carrying a single object is read
+                    // the same way rather than ignored.
+                    Some(::serde_json::Value::Array(list)) => list.iter().collect(),
+                    Some(single) => vec![single],
+                    None => Vec::new(),
+                };
+                tokens
+                    .iter()
+                    .any(|token| held.iter().any(|identifier| token.matches_identifier(identifier)))
+            }
+        }
+    }
+}
+
+/// What one search request asks for: the parameters a resource has to satisfy, and how
+/// many matches the page carries.
+#[derive(Debug, Clone)]
+struct SearchCriteria {
+    /// Every parameter the query carried, ALL of which a match satisfies (FHIR R4
+    /// §3.1.1: repeated and distinct parameters are AND-ed).
+    filters: Vec<SearchFilter>,
+    /// How many matches this page carries, from `_count` or
+    /// [`DEFAULT_SEARCH_PAGE_SIZE`].
+    page_size: usize,
+}
+
+impl SearchCriteria {
+    /// Read the criterion out of the request URI, or the refusal it earned.
+    ///
+    /// A parameter this endpoint does not implement is REFUSED rather than ignored: a
+    /// search answers the resources that satisfy the criterion the caller stated, so
+    /// dropping a parameter would answer resources the caller never asked for and call
+    /// them matches. FHIR R4 §3.1.1.1 provides for exactly this ("the server … return[s]
+    /// an error … for any parameter it does not recognise"), and each unimplemented
+    /// parameter is its own gap, to be implemented against its own recorded behaviour.
+    fn of(uri: &str) -> Result<Self, Failure> {
+        let pairs = super::non_rpc::query_pairs(uri);
+        if pairs.len() > MAX_SEARCH_PARAMETERS {
+            return Err(Failure::new(
+                400,
+                TOO_COSTLY,
+                format!(
+                    "A search of this endpoint carries at most {MAX_SEARCH_PARAMETERS} \
+                     parameters; this one carries {}",
+                    pairs.len()
+                ),
+            ));
+        }
+        let mut filters = Vec::new();
+        let mut page_size = DEFAULT_SEARCH_PAGE_SIZE;
+        for (name, value) in &pairs {
+            let alternatives: Vec<&str> = value.split(',').collect();
+            if alternatives.len() > MAX_SEARCH_ALTERNATIVES {
+                return Err(Failure::new(
+                    400,
+                    TOO_COSTLY,
+                    format!(
+                        "A search parameter of this endpoint carries at most \
+                         {MAX_SEARCH_ALTERNATIVES} values; '{}' carries {}",
+                        bounded(name),
+                        alternatives.len()
+                    ),
+                ));
+            }
+            match name.as_str() {
+                ID_PARAMETER => filters.push(SearchFilter::Id(
+                    alternatives.iter().map(|one| (*one).to_string()).collect(),
+                )),
+                IDENTIFIER_PARAMETER => filters.push(SearchFilter::Identifier(
+                    alternatives.iter().map(|one| TokenMatch::of(one)).collect(),
+                )),
+                COUNT_PARAMETER => {
+                    let Ok(asked) = value.parse::<usize>() else {
+                        return Err(Failure::new(
+                            400,
+                            INVALID,
+                            format!(
+                                "'{}' is not a page size: {COUNT_PARAMETER} is a whole \
+                                 number of resources",
+                                bounded(value)
+                            ),
+                        ));
+                    };
+                    // "The server is not bound to return the number requested, but can
+                    // return less": the ceiling is this endpoint's own.
+                    page_size = asked.min(MAX_SEARCH_PAGE_SIZE);
+                }
+                _ => {
+                    return Err(Failure::new(
+                        400,
+                        NOT_SUPPORTED,
+                        format!(
+                            "This data store endpoint implements the search parameters \
+                             {ID_PARAMETER}, {IDENTIFIER_PARAMETER} and \
+                             {COUNT_PARAMETER}; '{}' is not implemented yet",
+                            bounded(name)
+                        ),
+                    ))
+                }
+            }
+        }
+        Ok(Self {
+            filters,
+            page_size,
+        })
+    }
+
+    /// Whether the resource stored as `content` under logical id `id` satisfies EVERY
+    /// parameter of this criterion. A query carrying no parameter at all selects every
+    /// resource of the type, which is what `GET [base]/{type}` means.
+    fn matches(&self, content: &::serde_json::Value, id: &str) -> bool {
+        self.filters
+            .iter()
+            .all(|filter| filter.matches(content, id))
     }
 }
 

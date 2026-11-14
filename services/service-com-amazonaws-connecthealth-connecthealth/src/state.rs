@@ -153,6 +153,36 @@ pub const PATIENT_INSIGHTS_JOB_STEP_SPAN: Duration = Duration::from_millis(400);
 /// so has to stay inside the bound the member it fills declares.
 pub const MAX_S3_URI_LEN: usize = 1024;
 
+/// The MODELLED `@pattern` of an S3 URI this service accepts: `S3Uri` is
+/// `^s3://[a-z0-9][\.\-a-z0-9]{1,61}[a-z0-9](/.*)?$`
+/// (`smithy_query(query="shape",shape="S3Uri,OutputDataConfig")`) — an `s3://` scheme, a
+/// bucket name of 3 to 63 characters in the lowercase DNS-ish alphabet the shape names,
+/// and an optional key path after the separator.
+///
+/// Stated here because `OutputDataConfig$s3OutputPath` is judged by the handler rather
+/// than by the boundary walk (`skip_validation` in `crate::ops::types::shared_types`), so
+/// the rule the boundary would have applied is applied here instead — the pattern SOURCE
+/// verbatim, run by the same regex engine the framework's own `@pattern` check uses, so
+/// the two cannot judge one value differently.
+pub const S3_URI_PATTERN: &str = r"^s3://[a-z0-9][\.\-a-z0-9]{1,61}[a-z0-9](/.*)?$";
+
+/// Whether `s3_output_path` satisfies the rules `OutputDataConfig$s3OutputPath`'s shape
+/// declares: within [`MAX_S3_URI_LEN`] characters and matching [`S3_URI_PATTERN`].
+///
+/// The compiled pattern is built once and shared ([`std::sync::LazyLock`]), as the
+/// framework's own `@pattern` check caches its regexes, so one request never pays for a
+/// compile. A pattern that does not compile is a bug in the constant above, not in the
+/// request, so it is treated as matching — exactly what the framework's check does with
+/// an unparseable model pattern, rather than refusing every caller.
+pub fn output_location_within_shape(s3_output_path: &str) -> bool {
+    static S3_URI: std::sync::LazyLock<Option<::regex::Regex>> =
+        std::sync::LazyLock::new(|| ::regex::Regex::new(S3_URI_PATTERN).ok());
+    s3_output_path.chars().count() <= MAX_S3_URI_LEN
+        && S3_URI
+            .as_ref()
+            .is_none_or(|pattern| pattern.is_match(s3_output_path))
+}
+
 /// The most tag entries one resource ARN carries — AWS's standard tagging limit of 50,
 /// which bounds the set a request may leave a resource holding. `TagMap` itself declares
 /// no `@length`, so this count is the SERVICE's own rule.

@@ -2873,14 +2873,22 @@ pub fn datastore_arn(region: &str, id: &str) -> String {
     )
 }
 
-/// The FHIR endpoint of the data store `id` in `region`.
+/// The FHIR endpoint of the data store `id`, as a client must address it: THIS
+/// emulator's own base URL ([`smithy_server_runtime::OperationContext::endpoint`])
+/// followed by the data store's own path.
 ///
-/// Written from the same two constants [`parse_datastore_fhir_path`] reads, so
-/// the endpoint this service advertises is exactly the path space its FHIR REST
-/// data plane serves.
-pub fn datastore_endpoint(region: &str, id: &str) -> String {
+/// The path space is written from the same two constants
+/// [`parse_datastore_fhir_path`] reads, so the endpoint this service advertises is
+/// exactly the path space its FHIR REST data plane serves — and the host is the one
+/// serving it, because a caller SENDS FHIR interactions to this value: a URL built
+/// from the real service's host would take every one of them off the emulator, where
+/// nothing answers. The Region is therefore not in the host (one emulator serves
+/// every Region); it stays on the data store's ARN, which is what names the Region a
+/// resource belongs to.
+pub fn datastore_endpoint(endpoint_base: &str, id: &str) -> String {
     format!(
-        "https://healthlake.{region}.amazonaws.com/{DATASTORE_PATH_SEGMENT}/{id}/{FHIR_ENDPOINT_VERSION_SEGMENT}/"
+        "{}/{DATASTORE_PATH_SEGMENT}/{id}/{FHIR_ENDPOINT_VERSION_SEGMENT}/",
+        endpoint_base.trim_end_matches('/')
     )
 }
 

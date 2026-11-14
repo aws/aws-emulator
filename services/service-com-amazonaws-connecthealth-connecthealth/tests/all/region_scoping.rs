@@ -11,7 +11,10 @@
 //! therefore sees that Region's inventory and no other: it enumerates only its own
 //! resources, resolves only its own identifiers — answering the modelled
 //! `ResourceNotFoundException` (404) for one belonging to another Region, whether the
-//! call would read, mutate or delete it — and counts quotas over its own resources alone.
+//! call would read, mutate or delete it, except on the patient-insights runtime endpoint,
+//! where a START whose `domainId` resolves to no live domain of the Region is refused by
+//! that endpoint's own authorization step (401 `AccessDeniedException`) — and counts
+//! quotas over its own resources alone.
 //!
 //! Every case drives ONE emulator (one shared store) and varies only the Region the
 //! request is signed for, which is the only way the scope can be observed at all: two
@@ -35,6 +38,7 @@ use serde_json::{json, Value};
 
 use service_com_amazonaws_connecthealth_connecthealth::service::error_detail::{
     domain_not_found_message, resource_not_found_message, subscription_not_found_message,
+    DOMAIN_NOT_AUTHORIZED_MESSAGE,
 };
 use service_com_amazonaws_connecthealth_connecthealth::state::{
     MAX_DOMAINS_HELD, MAX_DOMAINS_PER_ACCOUNT, MAX_DOMAIN_REGIONS,
@@ -59,10 +63,29 @@ const FALLBACK_REGION: &str = "us-east-1";
 /// so it fails the `[a-z0-9-]+` segment every ARN pattern in this model declares.
 const UNUSABLE_REGION_SCOPE: &str = "US_WEST_2";
 
-/// The modelled 404 every cross-Region lookup answers with
+/// The modelled 404 a cross-Region lookup answers with
 /// (`smithy_query(query="operation", operation="GetDomain")`:
 /// `ResourceNotFoundException`, `httpError` 404).
 const NOT_FOUND: (u16, &str) = (404, "ResourceNotFoundException");
+
+/// What the patient-insights RUNTIME endpoint answers instead when the `domainId` a START
+/// addresses resolves to no domain this Region holds live: its own authorization failure
+/// (`smithy_query(query="operation", operation="StartPatientInsightsJob")`:
+/// `AccessDeniedException`, `httpError` 401), whose sentence names nothing read off the
+/// request.
+const NOT_AUTHORIZED: (u16, &str) = (401, "AccessDeniedException");
+
+/// One row of the cross-Region table below: the operation, the method and path it is
+/// addressed with, the body it carries, the detail text it must answer with, and the
+/// refusal (status and error code) it must earn.
+type CrossRegionRow = (
+    &'static str,
+    &'static str,
+    String,
+    Option<Value>,
+    String,
+    (u16, &'static str),
+);
 
 /// The region segment of an ARN of this service
 /// (`arn:aws:health-agent:<region>:<account>:<resource>`).
@@ -259,16 +282,21 @@ async fn every_operation_that_resolves_a_domain_refuses_one_of_another_region() 
     let job_id = string_at(&job, "jobId");
 
     // One row per operation that resolves a `domainId` or a resource ARN, reporting and
-    // mutating alike, with the detail text each answers for the identifier it could not
-    // resolve. `DeleteDomain` is included: a Region that does not hold the domain must
-    // not be able to delete it either.
-    let rows: Vec<(&str, &str, String, Option<Value>, String)> = vec![
+    // mutating alike, with the refusal and the detail text each answers for the identifier
+    // it could not resolve. `DeleteDomain` is included: a Region that does not hold the
+    // domain must not be able to delete it either. Every row but one answers the modelled
+    // 404 naming the identifier; `StartPatientInsightsJob` is served by the patient-insights
+    // RUNTIME endpoint, which refuses a `domainId` it cannot resolve a live domain for with
+    // its own authorization failure and a sentence that names nothing from the request — a
+    // domain of another Region being one such id.
+    let rows: Vec<CrossRegionRow> = vec![
         (
             "GetDomain",
             "GET",
             format!("/domain/{domain_id}"),
             None,
             domain_not_found_message(&domain_id),
+            NOT_FOUND,
         ),
         (
             "ListSubscriptions",
@@ -276,6 +304,7 @@ async fn every_operation_that_resolves_a_domain_refuses_one_of_another_region() 
             format!("/domains/{domain_id}/subscriptions"),
             None,
             domain_not_found_message(&domain_id),
+            NOT_FOUND,
         ),
         (
             "CreateSubscription",
@@ -283,6 +312,7 @@ async fn every_operation_that_resolves_a_domain_refuses_one_of_another_region() 
             format!("/domains/{domain_id}/subscriptions"),
             Some(json!({})),
             domain_not_found_message(&domain_id),
+            NOT_FOUND,
         ),
         (
             "GetSubscription",
@@ -290,6 +320,7 @@ async fn every_operation_that_resolves_a_domain_refuses_one_of_another_region() 
             format!("/domains/{domain_id}/subscriptions/{subscription_id}"),
             None,
             subscription_not_found_message(&domain_id, &subscription_id),
+            NOT_FOUND,
         ),
         (
             "ActivateSubscription",
@@ -297,6 +328,7 @@ async fn every_operation_that_resolves_a_domain_refuses_one_of_another_region() 
             format!("/domains/{domain_id}/subscriptions/{subscription_id}/activate"),
             Some(json!({})),
             subscription_not_found_message(&domain_id, &subscription_id),
+            NOT_FOUND,
         ),
         (
             "DeactivateSubscription",
@@ -304,13 +336,15 @@ async fn every_operation_that_resolves_a_domain_refuses_one_of_another_region() 
             format!("/domains/{domain_id}/subscriptions/{subscription_id}/deactivate"),
             Some(json!({})),
             subscription_not_found_message(&domain_id, &subscription_id),
+            NOT_FOUND,
         ),
         (
             "StartPatientInsightsJob",
             "POST",
             format!("/domain/{domain_id}/patient-insights-job"),
             Some(start_job_body()),
-            domain_not_found_message(&domain_id),
+            DOMAIN_NOT_AUTHORIZED_MESSAGE.to_string(),
+            NOT_AUTHORIZED,
         ),
         (
             "GetPatientInsightsJob",
@@ -318,6 +352,7 @@ async fn every_operation_that_resolves_a_domain_refuses_one_of_another_region() 
             format!("/domain/{domain_id}/patient-insights-job/{job_id}"),
             None,
             domain_not_found_message(&domain_id),
+            NOT_FOUND,
         ),
         (
             "GetMedicalScribeListeningSession",
@@ -328,6 +363,7 @@ async fn every_operation_that_resolves_a_domain_refuses_one_of_another_region() 
             ),
             None,
             domain_not_found_message(&domain_id),
+            NOT_FOUND,
         ),
         (
             "ListTagsForResource (domain ARN)",
@@ -335,6 +371,7 @@ async fn every_operation_that_resolves_a_domain_refuses_one_of_another_region() 
             tags_path(&domain_arn),
             None,
             resource_not_found_message(&domain_arn),
+            NOT_FOUND,
         ),
         (
             "ListTagsForResource (subscription ARN)",
@@ -342,6 +379,7 @@ async fn every_operation_that_resolves_a_domain_refuses_one_of_another_region() 
             tags_path(&subscription_arn),
             None,
             resource_not_found_message(&subscription_arn),
+            NOT_FOUND,
         ),
         (
             "TagResource (domain ARN)",
@@ -349,6 +387,7 @@ async fn every_operation_that_resolves_a_domain_refuses_one_of_another_region() 
             tags_path(&domain_arn),
             Some(json!({ "tags": { "env": "crossed" } })),
             resource_not_found_message(&domain_arn),
+            NOT_FOUND,
         ),
         (
             "TagResource (subscription ARN)",
@@ -356,6 +395,7 @@ async fn every_operation_that_resolves_a_domain_refuses_one_of_another_region() 
             tags_path(&subscription_arn),
             Some(json!({ "tags": { "env": "crossed" } })),
             resource_not_found_message(&subscription_arn),
+            NOT_FOUND,
         ),
         (
             "DeleteDomain",
@@ -363,26 +403,31 @@ async fn every_operation_that_resolves_a_domain_refuses_one_of_another_region() 
             format!("/domain/{domain_id}"),
             None,
             domain_not_found_message(&domain_id),
+            NOT_FOUND,
         ),
     ];
 
     for other in REGIONS.iter().filter(|region| **region != home) {
-        for (operation, method, path, body, detail) in &rows {
+        for (operation, method, path, body, detail, refusal) in &rows {
             let case = format!("{operation} from {other}");
             let (status, answered) = emulator
                 .send_in(other, method, path, body.as_ref())
                 .await;
             assert_eq!(
                 (status, error_code(&answered).as_str()),
-                NOT_FOUND,
-                "case {case:?}: a resource of another Region must answer the modelled 404, \
+                *refusal,
+                "case {case:?}: a resource of another Region must answer {refusal:?}, \
                  got {status} {answered}"
             );
             assert_eq!(
                 answered.get("Message").and_then(Value::as_str),
                 Some(detail.as_str()),
-                "case {case:?}: the detail text must name the identifier that did not \
-                 resolve, got {answered}"
+                "case {case:?}: expected the detail text {detail:?}, got {answered}"
+            );
+            assert!(
+                *refusal == NOT_FOUND || !answered.to_string().contains(domain_id.as_str()),
+                "case {case:?}: an authorization refusal must not name the requested \
+                 domain, got {answered}"
             );
         }
     }

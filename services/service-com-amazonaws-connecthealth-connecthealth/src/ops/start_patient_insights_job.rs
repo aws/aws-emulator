@@ -106,8 +106,22 @@
 //! `clientToken` is an `@idempotencyToken`: a retry carrying a token this domain has
 //! already bound to a job answers with THAT job rather than starting a second one, and
 //! the same token presented with different job parameters is the modelled
-//! `ConflictException`. A `domainId` that names no live domain is the modelled
-//! `ResourceNotFoundException`.
+//! `ConflictException`.
+//!
+//! This operation is served by the patient-insights RUNTIME endpoint (`hostPrefix
+//! runtime.`), whose front door states two refusals in its own words rather than the
+//! control plane's:
+//!
+//! * a `domainId` that resolves to no domain this account holds live in the Region is an
+//!   AUTHORIZATION failure — HTTP 401 `AccessDeniedException` with the fixed
+//!   `crate::service::error_detail::DOMAIN_NOT_AUTHORIZED_MESSAGE`, which carries nothing
+//!   read off the request, so probing ids here tells a caller nothing about which exist;
+//! * a value of the request outside the rules its own shape declares is the modelled
+//!   `ValidationException` with the fixed
+//!   `crate::service::error_detail::REQUEST_VALIDATION_FAILED_MESSAGE` — which is why
+//!   `OutputDataConfig$s3OutputPath` carries `skip_validation` (see
+//!   `super::types::shared_types`) and is judged here, after the domain is authorized
+//!   and before anything is written.
 
 #[allow(unused_imports)]
 use super::types::*;
@@ -209,20 +223,47 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // due.
         store.materialise_due(now);
 
-        // A job can only be started in a domain that is live: one already being deleted
-        // is on its way out, so it is reported as not found.
+        // The domain is AUTHORIZED before anything about the request itself is judged and
+        // before anything is written: this operation is served by the patient-insights
+        // runtime endpoint, whose front door resolves the `domainId` the request addresses
+        // and refuses a caller it cannot resolve one for — an id no domain of this account
+        // is held under, a domain of another Region, or one already on its way out — with
+        // its own authorization failure rather than with a statement about the resource.
+        // The sentence is FIXED
+        // (`crate::service::error_detail::DOMAIN_NOT_AUTHORIZED_MESSAGE`): it names
+        // nothing read off the request, so probing ids through this endpoint tells a
+        // caller nothing about which ones exist. The modelled 404 stays what a resource
+        // addressed INSIDE a domain that does resolve is answered with
+        // (`GetPatientInsightsJob`).
         let Some(domain) = store.live_domain(&region, &input.domain_id) else {
-            return Err(
-                StartPatientInsightsJobErrorModeled::ResourceNotFoundException(
-                    ResourceNotFoundException {
-                        message: Some(crate::service::error_detail::domain_not_found_message(
-                            &input.domain_id,
-                        )),
-                    },
-                )
-                .into(),
-            );
+            return Err(StartPatientInsightsJobErrorModeled::AccessDeniedException(
+                AccessDeniedException {
+                    message: Some(
+                        crate::service::error_detail::DOMAIN_NOT_AUTHORIZED_MESSAGE.to_string(),
+                    ),
+                },
+            )
+            .into());
         };
+
+        // With the domain authorized, the request's own values are judged — the output
+        // location against the rules its shape declares
+        // (`crate::state::output_location_within_shape`), which this handler enforces
+        // rather than the boundary walk (`skip_validation` on `OutputDataConfig`) because
+        // this endpoint states a refusal of the request with ONE fixed sentence instead of
+        // the control plane's per-member clause. Nothing has been written yet, so a
+        // request refused here leaves no job and no token binding behind, and an identical
+        // retry is refused again rather than answered idempotently.
+        if !crate::state::output_location_within_shape(&input.output_data_config.s3_output_path) {
+            return Err(StartPatientInsightsJobErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(
+                        crate::service::error_detail::REQUEST_VALIDATION_FAILED_MESSAGE.to_string(),
+                    ),
+                },
+            )
+            .into());
+        }
 
         // The parameters this request asks a job to run with, and their digest: what a
         // repeated `clientToken` is compared against.
@@ -295,16 +336,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let job_id = store.mint_patient_insights_job_id(&input.domain_id);
         let Some(domain) = store.live_domain_mut(&region, &input.domain_id) else {
-            return Err(
-                StartPatientInsightsJobErrorModeled::ResourceNotFoundException(
-                    ResourceNotFoundException {
-                        message: Some(crate::service::error_detail::domain_not_found_message(
-                            &input.domain_id,
-                        )),
-                    },
-                )
-                .into(),
-            );
+            // The same authorization failure the resolution above answers, for the same
+            // reason: the domain was resolved under this one lock, so this cannot be
+            // reached — and if it ever were, a caller may not learn from this endpoint
+            // whether the id names anything.
+            return Err(StartPatientInsightsJobErrorModeled::AccessDeniedException(
+                AccessDeniedException {
+                    message: Some(
+                        crate::service::error_detail::DOMAIN_NOT_AUTHORIZED_MESSAGE.to_string(),
+                    ),
+                },
+            )
+            .into());
         };
         let job = crate::state::PatientInsightsJob {
             job_id: job_id.clone(),

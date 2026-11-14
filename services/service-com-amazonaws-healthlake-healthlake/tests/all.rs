@@ -57,6 +57,8 @@ mod fhir_import_job_listing;
 mod fhir_import_job_start;
 #[path = "all/fhir_rest_and_validate_source.rs"]
 mod fhir_rest_and_validate_source;
+#[path = "all/fhir_search_interaction.rs"]
+mod fhir_search_interaction;
 #[path = "all/fhir_update_interaction.rs"]
 mod fhir_update_interaction;
 #[path = "all/idempotency_replay_precedes_state_gates.rs"]

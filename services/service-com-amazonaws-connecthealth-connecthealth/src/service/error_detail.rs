@@ -47,6 +47,12 @@
 //! that is the rule [`crate::service::tag_bounds`] keeps for the entries a tag refusal
 //! names and [`crate::state`] for the cursor it decodes and the credential-scope region it
 //! files a record under, and a refusal built here is held to it in the same way.
+//!
+//! The two FIXED sentences of the patient-insights runtime endpoint
+//! ([`DOMAIN_NOT_AUTHORIZED_MESSAGE`], [`REQUEST_VALIDATION_FAILED_MESSAGE`]) are
+//! `const`s rather than constructors for the opposite reason: that endpoint states them
+//! with nothing read off the request at all, so there is no value to name and none to
+//! bound.
 
 use std::borrow::Cow;
 
@@ -216,17 +222,41 @@ pub fn scribe_session_not_found_message(session_id: &str) -> String {
 }
 
 /// The detail text of the `ResourceNotFoundException` answered when a patient insights
-/// job cannot be resolved under the `domainId` the request named.
+/// job cannot be resolved under a domain that does resolve.
 ///
-/// Built from the REQUEST, and in the same form [`scribe_session_not_found_message`]
-/// carries for a scoped identifier ConnectHealth cannot resolve: the member that could
-/// not be resolved and the value the request gave it.
-pub fn patient_insights_job_not_found_message(job_id: &str) -> String {
-    format!(
-        "Resource not found: jobId with ID {} does not exist",
-        echoed(job_id)
-    )
+/// RECORDED behaviour: the patient-insights endpoint names the job by its ARN — `Job
+/// <jobArn> does not exist.` — rather than by the bare `jobId`, so a caller reading the
+/// sentence has the whole resource path the lookup failed on. The fixed text is `Job `
+/// and ` does not exist.`; the ARN between them is the one this service's own ARN rule
+/// builds for the resolved domain and the requested `jobId`
+/// ([`crate::state::patient_insights_job_arn`]), never a value echoed from the request
+/// unchanged — and it still goes out through this module's one bounded rendering
+/// ([`echoed`]), as every sentence here does.
+pub fn patient_insights_job_not_found_message(job_arn: &str) -> String {
+    format!("Job {} does not exist.", echoed(job_arn))
 }
+
+/// The detail text of the `AccessDeniedException` the patient-insights runtime endpoint
+/// answers when the `domainId` a request names resolves to no domain this account holds
+/// live in the Region.
+///
+/// RECORDED behaviour: that endpoint authorizes the domain the request addresses BEFORE
+/// it confirms or denies anything about the resource, so the refusal is an
+/// authorization failure (HTTP 401) rather than the modelled 404 — and its whole text is
+/// FIXED. Nothing read off the request appears in it, deliberately: a sentence that named
+/// the requested id would tell an unauthorized caller which ids exist, which is exactly
+/// what authorizing the resource ARN before resolving it withholds. A `const` rather than
+/// a constructor, because there is no value to build it from.
+pub const DOMAIN_NOT_AUTHORIZED_MESSAGE: &str = "Domain is not valid.";
+
+/// The detail text of the `ValidationException` the patient-insights runtime endpoint
+/// answers when a value of the request itself fails the rules its shape declares.
+///
+/// RECORDED behaviour: that endpoint states such a refusal as this one fixed sentence —
+/// it names neither the member nor the value, unlike the per-member clause the control
+/// plane's boundary walk renders ([`range_violation_message`]) — so a caller reads one
+/// sentence whichever member of the request was at fault.
+pub const REQUEST_VALIDATION_FAILED_MESSAGE: &str = "Request validation failed";
 
 /// The detail text of the `ResourceNotFoundException` answered when a subscription cannot
 /// be resolved — because the subscription is absent, or because its parent domain is.
@@ -371,13 +401,6 @@ mod tests {
     fn a_body_with_nothing_to_rename_is_left_alone() {
         for (label, body) in [
             ("no detail member", r#"{"__type":"ThrottlingException"}"#),
-            // The front door's authorizer failure, which `DeleteDomain` answers for an
-            // id with no allocation history: it carries no detail text at all, so there
-            // is nothing to rename and nothing may be invented.
-            (
-                "the front door's authorizer failure",
-                r#"{"__type":"AuthorizerConfigurationException"}"#,
-            ),
             ("already renamed", r#"{"__type":"ThrottlingException","Message":"slow down"}"#),
             ("not an object", r#"["ResourceNotFoundException"]"#),
             ("not JSON", "<Error/>"),
@@ -387,6 +410,26 @@ mod tests {
                 "case {label:?}: expected no rewrite"
             );
         }
+    }
+
+    /// An EMPTY detail member is renamed as the empty value it is, never dropped and
+    /// never filled in: the front door's authorizer failure, which `DeleteDomain` answers
+    /// for an id with no allocation history, carries `message` as an explicit JSON null,
+    /// and a client branching on whether a failure carries a diagnosis has to read that
+    /// null back rather than an absent member or an empty string.
+    #[test]
+    fn an_empty_detail_member_is_renamed_as_the_null_it_is() {
+        let body = r#"{"__type":"AuthorizerConfigurationException","message":null}"#;
+        let document = decoded(&with_detail_member(body.as_bytes()).expect("a rename"));
+        assert_eq!(
+            document.get(DETAIL_MEMBER),
+            Some(&Value::Null),
+            "the empty detail member must survive the rename as null, got {document}"
+        );
+        assert!(
+            document.get(RENDERED_DETAIL_MEMBER).is_none(),
+            "the body must carry the member under ONE key, got {document}"
+        );
     }
 
     /// A body carrying BOTH spellings keeps the one the error shape modelled.
@@ -521,6 +564,7 @@ mod tests {
         let arn = "arn:aws:health-agent:us-west-2:000000000000:domain/dom-0123456789abcdef0123";
         let domain_id = "dom-0123456789abcdef0123";
         let subscription_id = "sub-000000000000000000000";
+        let job_arn = format!("{arn}/patient-insights-job/job-0123456789abcdef");
         for (case, sentence, expected) in [
             (
                 "resource_not_found_message",
@@ -544,8 +588,8 @@ mod tests {
             ),
             (
                 "patient_insights_job_not_found_message",
-                patient_insights_job_not_found_message(domain_id),
-                format!("Resource not found: jobId with ID {domain_id} does not exist"),
+                patient_insights_job_not_found_message(&job_arn),
+                format!("Job {job_arn} does not exist."),
             ),
         ] {
             assert_eq!(

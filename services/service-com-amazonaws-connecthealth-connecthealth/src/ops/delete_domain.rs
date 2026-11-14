@@ -72,7 +72,8 @@
 //!   meet — a store it cannot reach ([`crate::state::store_unreachable`]).
 //!
 //! Beside it, this operation answers the front door's own
-//! `AuthorizerConfigurationException` for a `domainId` that was never allocated — see
+//! `AuthorizerConfigurationException` for a `domainId` that was never allocated — whose
+//! body carries an EMPTY `message` member (an explicit JSON null), see
 //! [`AuthorizerConfigurationException`].
 //!
 //! ## Beside the model
@@ -135,17 +136,41 @@ pub enum DeleteDomainErrorModeled {
     InternalServerException(InternalServerException),
 }
 
+/// The `message` member of the `AuthorizerConfigurationException` body.
+///
+/// RECORDED behaviour: the body carries this member with an explicit JSON `null` — there
+/// is no detail text, and the requirement is that the member is PRESENT and EMPTY rather
+/// than absent, because a client branching on whether a failure carries a diagnosis reads
+/// "no message" from a null and "unknown" from an omitted member. The name is the one
+/// every exception member of this service's model carries (`message`), which
+/// [`crate::service::error_detail`] then reports under the `Message` member ConnectHealth
+/// clients read, exactly as it does for every other error body of this service. Index 0:
+/// it is this synthetic shape's only member.
+static AUTHORIZER_CONFIGURATION_MESSAGE: ::aws_smithy_schema::Schema =
+    ::aws_smithy_schema::Schema::new_member(
+        ::aws_smithy_schema::ShapeId::from_static(
+            "smithy.framework#AuthorizerConfigurationException$message",
+            "smithy.framework",
+            "message",
+        ),
+        ::aws_smithy_schema::ShapeType::String,
+        "message",
+        0,
+    )
+    .with_xml_name("Message");
+
 /// Schema for the `AuthorizerConfigurationException` this operation answers for a
 /// `domainId` with no allocation history.
 ///
 /// RECORDED behaviour, not modelled: no shape of this name is in the model
 /// (`smithy_query(query="shape", shape="AuthorizerConfigurationException")` finds
 /// none), because it is not the SERVICE's error at all — it is the front door's, raised
-/// before the service resolves a resource. The shape carries NO members: the recorded
-/// response has no detail text, so there is none to write. Deliberately in the
-/// `smithy.framework` namespace, as `crate::scaffolded`'s synthetic shapes are, so it
-/// cannot collide with a modelled shape; the wire `__type` and the
-/// `x-amzn-errortype` header come from [`DeleteDomainError::shape_name`], not from here.
+/// before the service resolves a resource. The shape carries ONE member, the empty
+/// `message` the recorded body spells as JSON `null` (see
+/// [`AUTHORIZER_CONFIGURATION_MESSAGE`]). Deliberately in the `smithy.framework`
+/// namespace, as `crate::scaffolded`'s synthetic shapes are, so it cannot collide with a
+/// modelled shape; the wire `__type` and the `x-amzn-errortype` header come from
+/// [`DeleteDomainError::shape_name`], not from here.
 pub static AUTHORIZER_CONFIGURATION_EXCEPTION_SCHEMA: ::aws_smithy_schema::Schema =
     ::aws_smithy_schema::Schema::new_struct(
         ::aws_smithy_schema::ShapeId::from_static(
@@ -154,20 +179,22 @@ pub static AUTHORIZER_CONFIGURATION_EXCEPTION_SCHEMA: ::aws_smithy_schema::Schem
             "AuthorizerConfigurationException",
         ),
         ::aws_smithy_schema::ShapeType::Structure,
-        &[],
+        &[&AUTHORIZER_CONFIGURATION_MESSAGE],
     );
 
 /// The front door's refusal of a `domainId` it can resolve no allocation for.
 ///
 /// RECORDED behaviour: a well-formed `domainId` that was never allocated to any account
-/// is answered with the error code `AuthorizerConfigurationException` and NO message,
-/// rather than with the `ResourceNotFoundException` the model declares — the front door
+/// is answered with the error code `AuthorizerConfigurationException` and an EMPTY
+/// message — the body's `message` member is an explicit JSON `null`, so a client reads
+/// "this failure carries no diagnosis" rather than an empty string or an absent member —
+/// rather than with the `ResourceNotFoundException` the model declares: the front door
 /// cannot resolve an ARN for an id with no allocation history, so its own authorizer
 /// failure surfaces before the service ever looks a resource up. The status is the one
 /// an API Gateway front door answers an authorizer-configuration failure with (its
 /// `AUTHORIZER_CONFIGURATION_ERROR` gateway response, default status 500).
 ///
-/// A unit struct: the response body carries the discriminator alone.
+/// A unit struct: the response body carries the discriminator and that one empty member.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AuthorizerConfigurationException;
 
@@ -185,10 +212,13 @@ impl ::std::error::Error for AuthorizerConfigurationException {}
 impl ::aws_smithy_schema::serde::SerializableStruct for AuthorizerConfigurationException {
     fn serialize_members(
         &self,
-        _serializer: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
+        serializer: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
     ) -> Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        // No members: the recorded response carries no detail text, and writing an
-        // empty one would put a member on the wire the real response does not have.
+        // The one member, written EMPTY: the recorded response carries no detail text,
+        // and writing text here would invent prose the real response does not have —
+        // while omitting the member entirely would make the body say nothing about
+        // whether a diagnosis exists, which is the difference a client branches on.
+        serializer.write_null(&AUTHORIZER_CONFIGURATION_MESSAGE)?;
         Ok(())
     }
 }

@@ -17,7 +17,8 @@
 //! 2. `DeleteDomain` separates an id this service ALLOCATED — whose Domain is simply
 //!    gone, the modelled 404 `ResourceNotFoundException` — from a well-formed id with no
 //!    allocation history at all, which the front door answers with
-//!    `AuthorizerConfigurationException` and no detail text.
+//!    `AuthorizerConfigurationException` whose detail member is present and EMPTY (an
+//!    explicit null), carrying no text.
 //! 3. A Domain-not-found answer reports `Domain not found: <domainId>`, the requested id
 //!    verbatim, from whichever operation resolved the Domain.
 //! 4. `GetMedicalScribeListeningSession` resolves a session only under the exact
@@ -344,8 +345,10 @@ async fn delete_domain_separates_an_unallocated_id_from_a_domain_that_is_gone() 
              {body:?}"
         );
         assert!(
-            body.get(DETAIL_MEMBER).is_none() && body.get(RENDERED_DETAIL_MEMBER).is_none(),
-            "case {case:?}: the refusal carries no detail text, got {body:?}"
+            body.get(DETAIL_MEMBER) == Some(&Value::Null)
+                && body.get(RENDERED_DETAIL_MEMBER).is_none(),
+            "case {case:?}: the refusal carries an EMPTY detail member, not text and not \
+             an absent one, got {body:?}"
         );
 
         // A READ of the same id is the ordinary modelled not-found: the front-door

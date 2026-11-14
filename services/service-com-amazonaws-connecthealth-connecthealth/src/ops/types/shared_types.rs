@@ -123,7 +123,19 @@ pub struct S3Source {
     pub uri: String,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.connecthealth#OutputDataConfig")]
+// `skip_validation = ["s3OutputPath"]`: `StartPatientInsightsJob` is served by the
+// patient-insights RUNTIME endpoint, which states a refusal of the request itself with ONE
+// fixed sentence (`crate::service::error_detail::REQUEST_VALIDATION_FAILED_MESSAGE`) rather
+// than with the per-member constraint clause the boundary walk renders. The boundary check
+// would pre-empt that sentence for every output location outside the shape, so the member's
+// modelled `@length`/`@pattern` are judged by the handler instead
+// (`crate::state::output_location_within_shape`, which carries the same bound and the same
+// pattern source). `skip_validation` drops only this member's constraint traits: it is
+// still `@required` and still read into the same field.
+#[smithy_macros::smithy(
+    shape = "com.amazonaws.connecthealth#OutputDataConfig",
+    skip_validation = ["s3OutputPath"]
+)]
 #[derive(Debug, Clone, Default)]
 pub struct OutputDataConfig {
     pub s3_output_path: String,

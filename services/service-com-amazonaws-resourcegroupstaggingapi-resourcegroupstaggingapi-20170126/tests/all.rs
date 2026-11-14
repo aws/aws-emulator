@@ -57,3 +57,6 @@ mod arn_list_value_fault_template;
 
 #[path = "all/resource_type_filter_spelling.rs"]
 mod resource_type_filter_spelling;
+
+#[path = "all/health_agent_tagged_resource_index.rs"]
+mod health_agent_tagged_resource_index;
