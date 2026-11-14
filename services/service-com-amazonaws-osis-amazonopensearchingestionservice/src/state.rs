@@ -9,8 +9,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime};
 
+mod blueprint_format;
+
+pub use blueprint_format::{
+    BlueprintFormat, UnrenderableBlueprint, BLUEPRINT_FORMATS, BLUEPRINT_FORMAT_JSON,
+    BLUEPRINT_FORMAT_PATTERN, BLUEPRINT_FORMAT_YAML,
+};
+
 use crate::ops::types::{
-    BufferOptions, EncryptionAtRestOptions, LogPublishingOptions, Pipeline,
+    BufferOptions, EncryptionAtRestOptions, LogPublishingOptions, Pipeline, PipelineBlueprint,
     PipelineBlueprintSummary, PipelineStatusReason, PipelineSummary, Tag, VpcEndpoint, VpcOptions,
 };
 
@@ -328,6 +335,27 @@ impl StoredBlueprint {
             service: Some(self.service.clone()),
             use_case: Some(self.use_case.clone()),
         }
+    }
+
+    /// The modelled `PipelineBlueprint`, as `GetPipelineBlueprint` returns it: the same
+    /// five members the summary reports, from the same record, plus this record's
+    /// configuration document rendered in `format`.
+    ///
+    /// Reading one record through both projections is what keeps the two blueprint
+    /// operations in agreement: a blueprint the listing reports is the blueprint this
+    /// returns, member for member.
+    pub fn to_blueprint(
+        &self,
+        format: BlueprintFormat,
+    ) -> Result<PipelineBlueprint, UnrenderableBlueprint> {
+        Ok(PipelineBlueprint {
+            blueprint_name: Some(self.blueprint_name.clone()),
+            pipeline_configuration_body: Some(format.render(&self.pipeline_configuration_body)?),
+            display_name: Some(self.display_name.clone()),
+            display_description: Some(self.display_description.clone()),
+            service: Some(self.service.clone()),
+            use_case: Some(self.use_case.clone()),
+        })
     }
 }
 

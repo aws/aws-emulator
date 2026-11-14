@@ -1889,6 +1889,10 @@ mod apigateway_sns_service_integration;
 // crate's test target can drive it.
 #[path = "all/lambda_signed_write_to_an_aoss_collection_endpoint.rs"]
 mod lambda_signed_write_to_an_aoss_collection_endpoint;
+// (The suite that was declared a second time here, and the metric-stream one beside it, are
+// each declared ONCE now — the first in the sorted span at the head of this file, the second
+// further down this tail: two branches landing at once appended a second declaration of each
+// here, which compiled neither.)
 // (`apigateway_cognito_authorizer_app_client_audience` is declared in the head region
 // above: a module may be declared only once.)
 // (`apigateway_cognito_authorizer_app_client_audience` is declared ONCE, in the sorted head
@@ -1933,6 +1937,7 @@ mod redshift_health_alarms_evaluate;
 // crate's test target can deploy the pipeline and then read the objects it delivered.
 #[path = "all/cloudformation_metric_stream_filter_update.rs"]
 mod cloudformation_metric_stream_filter_update;
+// (`zz_probe` is declared ONCE, further up this tail: a module may be declared only once.)
 // (`zz_probe` is declared once, above.)
 // (`zz_probe` is declared ONCE, a few lines above: a module may be declared only once.)
 // (`zz_probe` is declared once, further up this tail: a module may be declared only once,

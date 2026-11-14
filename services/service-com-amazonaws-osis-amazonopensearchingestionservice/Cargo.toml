@@ -28,6 +28,11 @@ sha2 = { workspace = true }
 # Opaque pagination cursors: hex-encode the internal list cursor so `NextToken` is a
 # single-token string a client only ever echoes back.
 hex = { workspace = true }
+# A blueprint's configuration document is held as the YAML its record carries; this is the
+# YAML reader that parses it so `GetPipelineBlueprint` can render the same document in the
+# JSON format a caller may ask for. yaml-rust2 is the pure-Rust YAML 1.2 implementation the
+# other services in this workspace read YAML with (no `unsafe`, no C bindings).
+yaml-rust2 = { version = "0.10", default-features = false }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

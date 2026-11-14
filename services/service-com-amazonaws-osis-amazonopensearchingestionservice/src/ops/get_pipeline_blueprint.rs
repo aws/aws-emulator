@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op GetPipelineBlueprint
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `GetPipelineBlueprint`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`GetPipelineBlueprint::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! A REPORT on ONE blueprint of the catalog [`crate::state`] holds — the same records
+//! `ListPipelineBlueprints` reports, so the two operations cannot disagree. The blueprint
+//! the request names is projected into a `PipelineBlueprint`, whose configuration document
+//! is rendered in the `BlueprintFormat` the request asked for (YAML when it asked for
+//! none), and that format is echoed back. Writes nothing — no caller creates, changes or
+//! deletes a blueprint, so there is no transition for this call to materialise.
 //!
 //! ## Shape of an operation
 //!
@@ -150,18 +148,80 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `GetPipelineBlueprint` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(GetPipelineBlueprintErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("GetPipelineBlueprint"))
+        // The catalog is the same for every caller, so nothing in the request metadata
+        // selects a record: `BlueprintName` and `Format` are the whole request.
+        let _ = ctx;
+
+        let format = crate::state::BlueprintFormat::parse(input.format.as_deref())
+            .ok_or_else(|| unsupported_format(input.format.as_deref().unwrap_or_default()))?;
+
+        let state = crate::state::service_state(&*self.engine).ok_or_else(store_unavailable)?;
+        let store = state.lock();
+
+        let stored = store
+            .blueprints
+            .get(&input.blueprint_name)
+            .ok_or_else(|| not_found(&input.blueprint_name))?;
+        let blueprint = stored.to_blueprint(format).map_err(unrenderable)?;
+
+        Ok(GetPipelineBlueprintOutput {
+            blueprint: Some(blueprint),
+            // The format the answer is IN, which for a request that named none is the one
+            // the service chose, so a caller never has to assume the default.
+            format: Some(format.as_str().to_string()),
+        })
     }
+}
+
+/// The catalog publishes no blueprint of this name — HTTP 404 `ResourceNotFoundException`.
+///
+/// The message names the blueprint the request named: a blueprint name is a published
+/// catalog name a caller reads out of `ListPipelineBlueprints`, so naming it back is what
+/// tells a caller which of the names it resolved is not published.
+fn not_found(blueprint_name: &str) -> GetPipelineBlueprintError {
+    GetPipelineBlueprintErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
+        message: Some(format!("The blueprint {blueprint_name} could not be found")),
+    })
+    .into()
+}
+
+/// A `Format` naming neither of the values `BlueprintFormat` admits — HTTP 400
+/// `ValidationException`, the error this operation models for invalid input.
+///
+/// The member's `@pattern` already refuses such a value at the boundary, so this is the
+/// answer if one ever reaches the handler: a refusal rather than a quiet fallback to the
+/// default format, which would answer a document in a format nobody asked for. It is worded
+/// exactly as the boundary's pattern refusal is — the member path, the published pattern
+/// (the model's regex with its anchors dropped) and the error count — so one rejected value
+/// has one message whichever layer answers it.
+fn unsupported_format(requested: &str) -> GetPipelineBlueprintError {
+    GetPipelineBlueprintErrorModeled::ValidationException(ValidationException {
+        message: Some(format!(
+            "1 validation error detected: Value '{requested}' at 'format' failed to satisfy \
+             constraint: Member must satisfy regular expression pattern: {}",
+            crate::state::BLUEPRINT_FORMAT_PATTERN
+        )),
+    })
+    .into()
+}
+
+/// A published blueprint whose configuration document could not be rendered in the
+/// requested format — a fault in the service's own data, so HTTP 500 `InternalException`.
+fn unrenderable(error: crate::state::UnrenderableBlueprint) -> GetPipelineBlueprintError {
+    GetPipelineBlueprintErrorModeled::InternalException(InternalException {
+        message: Some(format!(
+            "the OpenSearch Ingestion blueprint configuration could not be rendered: {}",
+            error.reason()
+        )),
+    })
+    .into()
+}
+
+/// The store is unreachable — a server-side fault, modelled as `InternalException`
+/// (HTTP 500). Never answered by constructing a private engine.
+fn store_unavailable() -> GetPipelineBlueprintError {
+    GetPipelineBlueprintErrorModeled::InternalException(InternalException {
+        message: Some("the OpenSearch Ingestion blueprint catalog is unavailable".to_string()),
+    })
+    .into()
 }
