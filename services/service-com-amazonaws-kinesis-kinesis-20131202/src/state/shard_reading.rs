@@ -28,8 +28,8 @@ use ::std::time::SystemTime;
 use super::{
     epoch_millis, sequence_number_le, DataRecord, ShardPosition, ShardRecord,
     SHARD_ITERATOR_TYPE_AFTER_SEQUENCE_NUMBER, SHARD_ITERATOR_TYPE_AT_SEQUENCE_NUMBER,
-    SHARD_ITERATOR_TYPE_AT_TIMESTAMP, SHARD_ITERATOR_TYPE_TRIM_HORIZON,
-    TIMESTAMP_NOT_AN_EPOCH_DATE_MESSAGE,
+    SHARD_ITERATOR_TYPE_AT_TIMESTAMP, SHARD_ITERATOR_TYPE_LATEST,
+    SHARD_ITERATOR_TYPE_TRIM_HORIZON, TIMESTAMP_NOT_AN_EPOCH_DATE_MESSAGE,
 };
 use crate::ops::types::SHARD_ITERATOR_TYPE_VALUES;
 
@@ -48,6 +48,34 @@ pub struct PositionMembers {
     pub sequence_number: &'static str,
     /// The member supplying the instant `AT_TIMESTAMP` reads.
     pub timestamp: &'static str,
+}
+
+/// How a reader states that the `ShardIteratorType` it was given and the sequence number it
+/// was (or was not) given do not go together: the enumeration of the legal combinations, then
+/// the combination the request actually named.
+///
+/// The rule is the one each type documents — "AT_SEQUENCE_NUMBER - Start reading from the
+/// position denoted by a specific sequence number, provided in the value
+/// StartingSequenceNumber", the same for AFTER_SEQUENCE_NUMBER, against "TRIM_HORIZON - Start
+/// reading at the last untrimmed record" and "LATEST - Start reading just after the most
+/// recent record", which read no sequence number at all
+/// (`GetShardIteratorInput$ShardIteratorType`) — so the sentence states BOTH halves of it and
+/// then what it was handed instead. Everything but the type the request named, whether it
+/// carried a sequence number, and the member it spells one with ([`PositionMembers`]) is fixed
+/// text: one sentence for the one rule, whichever reader states it.
+fn inconsistent_sequence_number_message(
+    members: PositionMembers,
+    position_type: &str,
+    carried_sequence_number: bool,
+) -> String {
+    let member = members.sequence_number;
+    format!(
+        "Must either specify (1) {SHARD_ITERATOR_TYPE_AT_SEQUENCE_NUMBER} or \
+         {SHARD_ITERATOR_TYPE_AFTER_SEQUENCE_NUMBER} and {member} or (2) \
+         {SHARD_ITERATOR_TYPE_TRIM_HORIZON} or {SHARD_ITERATOR_TYPE_LATEST} and no {member}. \
+         Request specified {position_type} and {}{member}.",
+        if carried_sequence_number { "" } else { "no " }
+    )
 }
 
 /// Where in `shard` a reader that named `position_type` starts, refusing a request whose
@@ -91,11 +119,10 @@ pub fn requested_shard_position(
         || position_type == SHARD_ITERATOR_TYPE_AFTER_SEQUENCE_NUMBER;
     let takes_timestamp = position_type == SHARD_ITERATOR_TYPE_AT_TIMESTAMP;
     if sequence_number.is_some() && !takes_sequence_number {
-        return Err(format!(
-            "{} can only be used with the {SHARD_ITERATOR_TYPE_AT_SEQUENCE_NUMBER} or \
-             {SHARD_ITERATOR_TYPE_AFTER_SEQUENCE_NUMBER} shard iterator types, not with \
-             {position_type}",
-            members.sequence_number
+        return Err(inconsistent_sequence_number_message(
+            members,
+            position_type,
+            true,
         ));
     }
     if timestamp.is_some() && !takes_timestamp {
@@ -107,9 +134,10 @@ pub fn requested_shard_position(
     }
     if takes_sequence_number {
         let Some(sequence_number) = sequence_number else {
-            return Err(format!(
-                "{} is required with the {position_type} shard iterator type",
-                members.sequence_number
+            return Err(inconsistent_sequence_number_message(
+                members,
+                position_type,
+                false,
             ));
         };
         // A sequence number is "the identifier associated with every record ingested in the

@@ -2486,3 +2486,11 @@ mod cloudformation_drift_detection_status_change_events;
 // branches each appended it here.)
 // (The Amazon Cognito authorizer suite is declared ONCE, in the head region above: it was
 // (`zz_probe` is declared ONCE, in the span above: it was appended here as well while two
+// (`apigateway_cognito_authorizer_app_client_audience` is declared ONCE, further down this
+// tail: a module may be declared only once, and several landings appended a note here.)
+// (`zz_probe` and `cloudwatch_alarm_ssm_ops_item_action` are each declared ONCE above: a
+// module may be declared only once, and several landings appended a note here.)
+// (`https_front_door_concurrent_pooled_producer` and
+// `cloudformation_metric_stream_estate_is_drainable` are each declared ONCE above: a module
+// may be declared only once, and several landings appended a note here.)
+// (`apigateway_cognito_authorizer_app_client_audience`, `zz_probe` and

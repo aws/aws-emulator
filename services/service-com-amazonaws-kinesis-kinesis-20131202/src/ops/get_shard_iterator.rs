@@ -208,8 +208,9 @@ fn not_found(message: String) -> GetShardIteratorError {
 /// names neither ("you must use either the StreamARN or the StreamName parameter, or both"),
 /// and `ResourceNotFoundException` for one that names a stream nothing created — which this
 /// operation words at the SHARD it was asked for, since a shard of a stream this account does
-/// not hold is a shard that does not exist ([`crate::state::shard_not_found_message`]), the
-/// same sentence a shard missing from a stream that IS held is refused with.
+/// not hold is a shard that does not exist ([`crate::state::shard_not_found_message`]) rather
+/// than a stream that is not there. A shard missing from a stream that IS held is the other
+/// condition, with its own sentence ([`crate::state::shard_not_in_stream_message`]).
 fn lookup_refusal(
     failure: crate::state::StreamLookupFailure,
     input: &GetShardIteratorInput,
@@ -334,7 +335,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .iter()
             .find(|shard| shard.shard_id == input.shard_id)
         else {
-            return Err(not_found(crate::state::shard_not_found_message(
+            return Err(not_found(crate::state::shard_not_in_stream_message(
                 &input.shard_id,
                 // A refusal about the stream this request RESOLVED names it by its
                 // `StreamName`, whichever identifier addressed it.

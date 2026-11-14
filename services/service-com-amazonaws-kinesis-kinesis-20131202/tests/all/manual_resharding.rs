@@ -30,7 +30,7 @@
 
 use serde_json::{json, Value};
 use service_com_amazonaws_kinesis_kinesis_20131202::state::{
-    shard_not_found_message, shard_not_open_message,
+    shard_not_in_stream_message, shard_not_open_message,
     split_hash_key_outside_the_parent_message, stream_not_found_message,
     stream_on_demand_message, STREAM_ACTIVE, STREAM_IDENTIFIER_REQUIRED_MESSAGE,
     STREAM_MODE_ON_DEMAND, STREAM_MODE_PROVISIONED, STREAM_UPDATING,
@@ -43,7 +43,7 @@ use crate::merge_adjacency::not_an_adjacent_pair;
 use crate::shard_scaling::{
     hash_key_range, is_open, parents, past_reshard, shard_id, shard_map, summary,
 };
-use crate::stream_tags::{error_code, error_message, past_activation, Emulator};
+use crate::stream_tags::{error_code, error_message, past_activation, poll_until_active, Emulator};
 
 /// The open shards of `name`, lowest hash key first, as `ListShards` reports them.
 async fn open_shards(emulator: &Emulator, case: &str, name: &str) -> Vec<Value> {
@@ -514,7 +514,7 @@ async fn a_refused_reshard_changes_nothing() {
                 })
             },
             code: "ResourceNotFoundException",
-            says: |name, _| shard_not_found_message("shardId-000000000099", name),
+            says: |name, _| shard_not_in_stream_message("shardId-000000000099", name),
         },
         Refusal {
             case: "split-a-closed-shard",
@@ -640,7 +640,7 @@ async fn a_refused_reshard_changes_nothing() {
                 })
             },
             code: "ResourceNotFoundException",
-            says: |name, _| shard_not_found_message("shardId-000000000099", name),
+            says: |name, _| shard_not_in_stream_message("shardId-000000000099", name),
         },
         Refusal {
             case: "merge-a-closed-shard",
@@ -702,7 +702,16 @@ async fn a_refused_reshard_changes_nothing() {
             Subject::Creating | Subject::Absent => {}
         }
     }
-    tokio::time::sleep(past_activation()).await;
+    // The CONDITION each set-up stream reaches on the emulator's own clock, looked for again
+    // until it holds — never a duration this case measures.
+    for refusal in &cases {
+        match refusal.subject {
+            Subject::Active(_) | Subject::Split(_) | Subject::OnDemand => {
+                poll_until_active(&emulator, refusal.case, refusal.case).await;
+            }
+            Subject::Creating | Subject::Absent => {}
+        }
+    }
 
     for refusal in &cases {
         let case = refusal.case;
@@ -723,7 +732,9 @@ async fn a_refused_reshard_changes_nothing() {
                     }),
                 )
                 .await;
-            tokio::time::sleep(past_reshard()).await;
+            // The split closes the parent and leaves the stream `UPDATING`: what this row
+            // waits for is the stream reporting `ACTIVE` again with that parent closed.
+            poll_until_active(&emulator, case, case).await;
         }
         if let Subject::Creating = refusal.subject {
             emulator

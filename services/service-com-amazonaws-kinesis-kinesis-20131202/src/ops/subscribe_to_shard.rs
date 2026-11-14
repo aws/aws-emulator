@@ -276,7 +276,7 @@ impl<Eng: Send + Sync + 'static> SubscribeToShard<Eng> {
             .ok_or_else(|| {
                 // A shard of another stream, and a shard id nothing laid down, are the same
                 // thing to this stream: a shard it does not hold.
-                not_found(crate::state::shard_not_found_message(
+                not_found(crate::state::shard_not_in_stream_message(
                     &input.shard_id,
                     &stream.name,
                 ))

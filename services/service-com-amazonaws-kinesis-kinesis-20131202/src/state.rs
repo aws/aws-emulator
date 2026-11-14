@@ -2441,6 +2441,21 @@ impl ComAmazonawsKinesisKinesis20131202State {
             .unwrap_or_else(no_commitment)
     }
 
+    /// Whether this account holds a standing minimum throughput billing commitment at `now`,
+    /// which is the precondition an operation served only for a committed account is judged
+    /// against: a commitment a disable has been accepted for still STANDS until its scheduled
+    /// end falls due ([`COMMITMENT_ENABLED_UNTIL_EARLIEST_ALLOWED_END`]), so only the account
+    /// whose commitment reads [`COMMITMENT_DISABLED`] — the status an account that has never
+    /// asked for one carries — holds none.
+    ///
+    /// Read off the stored commitment's own status rather than through [`Self::commitment_at`],
+    /// which builds the whole reported shape: the precondition needs the status alone.
+    pub fn commitment_is_enabled_at(&self, now: SystemTime) -> bool {
+        self.commitment
+            .as_ref()
+            .is_some_and(|commitment| commitment.status(now) != COMMITMENT_DISABLED)
+    }
+
     /// Take this account's minimum throughput billing commitment to the status the request
     /// asks for at `now`, and answer what it carries once the change is stored.
     ///
@@ -2765,6 +2780,44 @@ pub fn stream_not_found_message(identifier: &str) -> String {
     format!(
         "Stream {} under account {} not found.",
         stream_name_in(identifier),
+        ::engine::emulator_account_id()
+    )
+}
+
+/// How an operation served only for an account that holds a standing minimum throughput
+/// billing commitment refuses one that holds none, worded the way this service words that
+/// error class: "Account `<accountId>` is not enabled for minimum throughput billing
+/// commitment".
+///
+/// The rule the sentence states is the one the operation publishes — "This operation is only
+/// supported for data streams with the on-demand capacity mode in accounts that have
+/// MinimumThroughputBillingCommitment enabled" (`UpdateStreamWarmThroughput`) — carried by the
+/// modelled `ValidationException` of that operation.
+///
+/// Built from the emulator's own account: the one variable part is the 12-digit account id the
+/// caller's credentials name, since the commitment the refusal is about is the ACCOUNT's and
+/// not any one stream's.
+pub fn account_not_enabled_for_commitment_message() -> String {
+    format!(
+        "Account {} is not enabled for minimum throughput billing commitment",
+        ::engine::emulator_account_id()
+    )
+}
+
+/// How a create refuses a name this account and region already hold a stream under, worded
+/// the way this service words that error class: "Stream `<name>` under account `<account>`
+/// already exists."
+///
+/// The rule is the one `CreateStream` publishes for its `StreamName` — a stream is addressed
+/// by its name inside its account and region, so a name that region already holds a stream
+/// under names that stream rather than a second one — which is the modelled "resource is not
+/// available for this operation" refusal. Built FROM the request and the emulator's own
+/// account: the name at fault and the 12-digit account id holding the stream that already
+/// carries it, in the same fixed spans [`stream_not_found_message`] and
+/// [`channel_already_exists_message`] state their own sentence with.
+pub fn stream_already_exists_message(stream_name: &str) -> String {
+    format!(
+        "Stream {stream_name} under account {} already exists.",
         ::engine::emulator_account_id()
     )
 }
@@ -4798,6 +4851,12 @@ impl ShardIteratorToken {
 /// it named, worded the way this service words that error class: "Shard `<shardId>` in
 /// stream `<streamName>` under account `<account>` does not exist".
 ///
+/// This is the sentence for a shard of a stream this account and region do not hold AT ALL:
+/// a read asked for one shard, so the refusal is worded at the shard rather than at the
+/// stream, and nothing about that shard can be stated beyond the identifiers the request
+/// carried. A shard missing from a stream that IS held is a different condition and carries
+/// its own sentence ([`shard_not_in_stream_message`]).
+///
 /// Built FROM the request and the emulator's own account: the shard id at fault, and the
 /// stream NAME, which an identifier that is a `StreamARN` carries in its resource segment
 /// ([`stream_name_in`]) and one that is a `StreamName` already is — the way
@@ -4805,6 +4864,22 @@ impl ShardIteratorToken {
 pub fn shard_not_found_message(shard_id: &str, stream_identifier: &str) -> String {
     format!(
         "Shard {shard_id} in stream {} under account {} does not exist",
+        stream_name_in(stream_identifier),
+        ::engine::emulator_account_id()
+    )
+}
+
+/// How a read states that the stream it resolved carries no shard under the `ShardId` the
+/// request named, worded the way this service words THAT error class: "Could not find shard
+/// `<shardId>` in stream `<streamName>` under account `<account>`."
+///
+/// The other half of the rule [`shard_not_found_message`] words: the stream is held, so the
+/// shard map it carries is what the request was looked up in and failed to name — a shard id
+/// of no shape this service mints, one of another stream's map, or one a reshard closed and
+/// removed. Built FROM the request, the resolved stream and the emulator's own account.
+pub fn shard_not_in_stream_message(shard_id: &str, stream_identifier: &str) -> String {
+    format!(
+        "Could not find shard {shard_id} in stream {} under account {}.",
         stream_name_in(stream_identifier),
         ::engine::emulator_account_id()
     )

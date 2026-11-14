@@ -374,10 +374,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             audit(&akid, &region, "conflict");
             return Err(CreateStreamErrorModeled::ResourceInUseException(
                 ResourceInUseException {
-                    message: Some(format!(
-                        "stream {} already exists in this account and region; delete it \
-                         before creating another under that name",
-                        input.stream_name
+                    message: Some(crate::state::stream_already_exists_message(
+                        &input.stream_name,
                     )),
                 },
             )

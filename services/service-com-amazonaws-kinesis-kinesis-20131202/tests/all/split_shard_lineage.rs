@@ -32,7 +32,7 @@
 use serde_json::{json, Value};
 use service_com_amazonaws_kinesis_kinesis_20131202::state::{
     retention_period_not_longer_message, retention_period_not_shorter_message,
-    shard_not_found_message, stream_not_found_message, DEFAULT_RETENTION_PERIOD_HOURS,
+    shard_not_in_stream_message, stream_not_found_message, DEFAULT_RETENTION_PERIOD_HOURS,
     STREAM_ACTIVE, stream_identifier_mismatch_message, STREAM_IDENTIFIER_REQUIRED_MESSAGE,
     STREAM_MODE_PROVISIONED, STREAM_UPDATING,
 };
@@ -40,7 +40,9 @@ use service_com_amazonaws_kinesis_kinesis_20131202::state::{
 use crate::shard_scaling::{
     hash_key_range, is_open, parents, past_reshard, shard_id, shard_map, summary,
 };
-use crate::stream_tags::{error_code, error_message, past_activation, stream_arn, Emulator, REGION};
+use crate::stream_tags::{
+    error_code, error_message, past_activation, poll_until_active, stream_arn, Emulator, REGION,
+};
 
 /// The lowest hash key a stream's shard map covers.
 const FIRST_HASH_KEY: u128 = 0;
@@ -590,7 +592,7 @@ async fn a_refusal_names_the_stream_the_request_resolved_by_name() {
                     "ShardIteratorType": "TRIM_HORIZON",
                 })
             },
-            says: |name| shard_not_found_message(ABSENT_SHARD_ID, name),
+            says: |name| shard_not_in_stream_message(ABSENT_SHARD_ID, name),
             code: "ResourceNotFoundException",
         },
     ];
@@ -599,14 +601,20 @@ async fn a_refusal_names_the_stream_the_request_resolved_by_name() {
     for refusal in &cases {
         create_stream(&emulator, refusal.case, refusal.case, 2).await;
     }
-    tokio::time::sleep(past_activation()).await;
+    // The CONDITION each stream reaches on the emulator's own clock, looked for again until
+    // it holds — never a duration this case measures.
+    for refusal in &cases {
+        poll_until_active(&emulator, refusal.case, refusal.case).await;
+    }
 
     // Every row's stream gets a closed shard, so the reshard rows have one to name; the
     // retention rows are indifferent to the shard map.
     for refusal in &cases {
         split_once(&emulator, refusal.case, refusal.case, (0, SplitAt::Midpoint)).await;
     }
-    tokio::time::sleep(past_reshard()).await;
+    for refusal in &cases {
+        poll_until_active(&emulator, refusal.case, refusal.case).await;
+    }
 
     for refusal in &cases {
         let case = refusal.case;

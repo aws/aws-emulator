@@ -69,6 +69,8 @@ mod pagination_token_classification;
 mod record_distribution_strategy;
 #[path = "all/record_flow.rs"]
 mod record_flow;
+#[path = "all/refusal_message_templates.rs"]
+mod refusal_message_templates;
 #[path = "all/resource_policies.rs"]
 mod resource_policies;
 #[path = "all/resource_policy_absence.rs"]

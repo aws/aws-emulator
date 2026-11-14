@@ -331,7 +331,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .iter()
             .find(|shard| shard.shard_id == token.shard_id)
         else {
-            return Err(not_found(crate::state::shard_not_found_message(
+            return Err(not_found(crate::state::shard_not_in_stream_message(
                 &token.shard_id,
                 &stream.name,
             )));

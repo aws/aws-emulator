@@ -306,7 +306,7 @@ fn split_shard(
         }
         return Err(SplitShardErrorModeled::ResourceNotFoundException(
             ResourceNotFoundException {
-                message: Some(crate::state::shard_not_found_message(
+                message: Some(crate::state::shard_not_in_stream_message(
                     shard_to_split,
                     &identifier,
                 )),

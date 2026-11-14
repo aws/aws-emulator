@@ -208,6 +208,21 @@ fn apply_update(
     now: ::std::time::SystemTime,
     input: &UpdateStreamWarmThroughputInput,
 ) -> Result<UpdateStreamWarmThroughputOutput, UpdateStreamWarmThroughputError> {
+    // "This operation is only supported for data streams with the on-demand capacity mode in
+    // accounts that have MinimumThroughputBillingCommitment enabled": the commitment is the
+    // ACCOUNT's, so the precondition is judged BEFORE the request's stream is resolved — an
+    // account that holds none is served no warm-throughput change at all, whether or not the
+    // stream it named exists, and a client cannot act on a refusal about one stream when the
+    // thing in the way is its account's billing commitment.
+    if !store.commitment_is_enabled_at(now) {
+        return Err(UpdateStreamWarmThroughputErrorModeled::ValidationException(
+            ValidationException {
+                message: Some(crate::state::account_not_enabled_for_commitment_message()),
+            },
+        )
+        .into());
+    }
+
     // "When invoking this API, you must use either the StreamARN or the StreamName parameter,
     // or both", and `StreamId` is documented "Not Implemented. Reserved for future use", so a
     // request naming only that member names no stream.

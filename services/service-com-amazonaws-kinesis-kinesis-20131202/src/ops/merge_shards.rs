@@ -303,7 +303,7 @@ fn merge_shards(
             None => {
                 return Err(MergeShardsErrorModeled::ResourceNotFoundException(
                     ResourceNotFoundException {
-                        message: Some(crate::state::shard_not_found_message(
+                        message: Some(crate::state::shard_not_in_stream_message(
                             shard_id,
                             &identifier,
                         )),

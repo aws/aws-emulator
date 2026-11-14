@@ -11,7 +11,9 @@
 //! read of the stream reports, upwards to scale ahead of traffic and downwards to release
 //! capacity again, and re-applying the same value changes nothing.
 //!
-//! The refusals are the ones that rule implies and the operation models: a stream whose
+//! The refusals are the ones that rule implies and the operation models: an account that
+//! holds no minimum throughput billing commitment is refused with `ValidationException`
+//! before its stream is even resolved; a stream whose
 //! capacity mode does not admit a warm-throughput configuration is `ValidationException`, and
 //! such a stream reports no warm throughput at all; a stream that is not `ACTIVE` — including
 //! one whose previous update is still in flight — is `ResourceInUseException`; a target past
@@ -37,36 +39,24 @@
 //! The wire harness and the ARN builder are [`crate::stream_tags`]', reused rather than
 //! copied.
 
-use std::time::Duration;
-
 use serde_json::{json, Value};
 use service_com_amazonaws_kinesis_kinesis_20131202::state::{
     stream_not_found_message, stream_not_active_message, stream_provisioned_message,
-    warm_throughput_over_ceiling_message, MAX_WARM_THROUGHPUT_MI_BPS, MODE_UPDATE_DELAY,
+    warm_throughput_over_ceiling_message, COMMITMENT_ENABLED, MAX_WARM_THROUGHPUT_MI_BPS,
     STREAM_ACTIVE, STREAM_CREATING, STREAM_DELETING, stream_identifier_mismatch_message,
     STREAM_IDENTIFIER_REQUIRED_MESSAGE, STREAM_MODE_ON_DEMAND, STREAM_MODE_PROVISIONED,
-    STREAM_UPDATING, WARM_THROUGHPUT_UPDATE_DELAY,
+    STREAM_UPDATING,
 };
 
-use crate::stream_tags::{error_code, error_message, past_activation, stream_arn, Emulator, REGION};
+use crate::stream_tags::{
+    error_code, error_message, poll_until, poll_until_active, stream_arn, Emulator, REGION,
+};
 
 /// The published bounds of `WarmThroughputMiBps`, in MiB/s: the modelled floor
 /// (`smithy_query(query="operation",operation="UpdateStreamWarmThroughput")` ->
 /// `WarmThroughputMiBps` range 0..) and the documented ceiling ("By default, you cannot do the
 /// following: Scale to more than 10 GiBps for an on-demand stream").
 const WARM_THROUGHPUT_BOUNDS: (i64, i64) = (0, MAX_WARM_THROUGHPUT_MI_BPS as i64);
-
-/// How long a case waits before treating a stream whose warm throughput changed as ready:
-/// past the instant the change armed the `UPDATING` -> `ACTIVE` transition for.
-fn past_warm_throughput_update() -> Duration {
-    WARM_THROUGHPUT_UPDATE_DELAY + Duration::from_millis(400)
-}
-
-/// The same, for a stream whose CAPACITY MODE changed: that change arms the transition with
-/// its own span.
-fn past_mode_update() -> Duration {
-    MODE_UPDATE_DELAY + Duration::from_millis(400)
-}
 
 /// Which identifier a row addresses its stream by. "When invoking this API, you must use
 /// either the StreamARN or the StreamName parameter, or both"
@@ -132,6 +122,23 @@ fn rows() -> Vec<Row> {
             targets: vec![1024, 512, 1024],
         },
     ]
+}
+
+/// Hold this account's minimum throughput billing commitment, which is the ACCOUNT-level
+/// precondition every case below needs: "This operation is only supported for data streams
+/// with the on-demand capacity mode in accounts that have MinimumThroughputBillingCommitment
+/// enabled" (`UpdateStreamWarmThroughput`). The refusal an account holding none is served is
+/// pinned by [`crate::refusal_message_templates`].
+pub(crate) async fn commit_the_account(emulator: &Emulator) {
+    emulator
+        .ok(
+            "setup",
+            "UpdateAccountSettings",
+            &json!({
+                "MinimumThroughputBillingCommitment": { "Status": COMMITMENT_ENABLED },
+            }),
+        )
+        .await;
 }
 
 /// The `CreateStream` body a row provisions its on-demand stream with.
@@ -211,12 +218,15 @@ fn reported_status(case: &str, summary: &Value) -> String {
 #[tokio::test]
 async fn an_update_stores_the_target_every_later_read_reports() {
     let emulator = Emulator::new();
+    commit_the_account(&emulator).await;
     for row in rows() {
         emulator
             .ok(row.label, "CreateStream", &create_body(&row))
             .await;
     }
-    tokio::time::sleep(past_activation()).await;
+    for row in rows() {
+        poll_until_active(&emulator, row.label, row.label).await;
+    }
 
     for row in rows() {
         let case = row.label;
@@ -272,7 +282,8 @@ async fn an_update_stores_the_target_every_later_read_reports() {
 
             // "After the update is complete, Kinesis Data Streams sets the status of the
             // stream back to ACTIVE", and the stored target is what the read still reports.
-            tokio::time::sleep(past_warm_throughput_update()).await;
+            // The CONDITION the emulator reaches on its own clock is what is waited for.
+            poll_until_active(&emulator, case, case).await;
             let described = summary(&emulator, case, case).await;
             let status = reported_status(case, &described);
             assert_eq!(
@@ -294,6 +305,7 @@ async fn an_update_stores_the_target_every_later_read_reports() {
 #[tokio::test]
 async fn an_update_changes_only_the_stream_it_names() {
     let emulator = Emulator::new();
+    commit_the_account(&emulator).await;
     let case = "warm-throughput-scoped";
     let updated = "warm-throughput-scoped-updated";
     let untouched = "warm-throughput-scoped-untouched";
@@ -310,7 +322,9 @@ async fn an_update_changes_only_the_stream_it_names() {
             )
             .await;
     }
-    tokio::time::sleep(past_activation()).await;
+    for name in [updated, untouched] {
+        poll_until_active(&emulator, case, name).await;
+    }
 
     emulator
         .ok(
@@ -319,7 +333,7 @@ async fn an_update_changes_only_the_stream_it_names() {
             &update_body(Address::Arn, updated, 2048),
         )
         .await;
-    tokio::time::sleep(past_warm_throughput_update()).await;
+    poll_until_active(&emulator, case, updated).await;
 
     let read = reported_target(case, &summary(&emulator, case, updated).await);
     assert_eq!(
@@ -340,6 +354,7 @@ async fn an_update_changes_only_the_stream_it_names() {
 #[tokio::test]
 async fn an_update_of_a_provisioned_stream_is_refused() {
     let emulator = Emulator::new();
+    commit_the_account(&emulator).await;
 
     // (case, the stream's name, whether a mode change takes it to the provisioned mode)
     let cases = [
@@ -357,7 +372,7 @@ async fn an_update_of_a_provisioned_stream_is_refused() {
             body["ShardCount"] = json!(2);
         }
         emulator.ok(case, "CreateStream", &body).await;
-        tokio::time::sleep(past_activation()).await;
+        poll_until_active(&emulator, case, name).await;
 
         if change_mode {
             emulator
@@ -370,7 +385,19 @@ async fn an_update_of_a_provisioned_stream_is_refused() {
                     }),
                 )
                 .await;
-            tokio::time::sleep(past_mode_update()).await;
+            // The CONDITION the mode change owes this stream: back to ACTIVE, carrying the
+            // capacity mode the change named.
+            poll_until(
+                case,
+                &format!("the stream {name} reports {STREAM_MODE_PROVISIONED} and {STREAM_ACTIVE}"),
+                || async {
+                    let described = summary(&emulator, case, name).await;
+                    described["StreamStatus"].as_str() == Some(STREAM_ACTIVE)
+                        && described["StreamModeDetails"]["StreamMode"].as_str()
+                            == Some(STREAM_MODE_PROVISIONED)
+                },
+            )
+            .await;
         }
 
         // "Represents the warm throughput configuration on the stream. This is only present
@@ -432,6 +459,7 @@ async fn an_update_of_a_stream_that_is_not_active_is_refused() {
 
     for (name, wait_for_activation, delete_first, scale_first, expected_status) in cases {
         let emulator = Emulator::new();
+        commit_the_account(&emulator).await;
         emulator
             .ok(
                 name,
@@ -444,7 +472,7 @@ async fn an_update_of_a_stream_that_is_not_active_is_refused() {
             )
             .await;
         if wait_for_activation {
-            tokio::time::sleep(past_activation()).await;
+            poll_until_active(&emulator, name, name).await;
         }
         if delete_first {
             emulator
@@ -508,7 +536,7 @@ async fn an_update_of_a_stream_that_is_not_active_is_refused() {
         // The refused update stored nothing: the stream still carries what it had, which is
         // the target the create named, or the one the scaling of this case stored.
         if !delete_first {
-            tokio::time::sleep(past_activation() + past_warm_throughput_update()).await;
+            poll_until_active(&emulator, name, name).await;
             let read = reported_target(name, &summary(&emulator, name, name).await);
             let expected = if scale_first { 64 } else { 16 };
             assert_eq!(
@@ -526,6 +554,7 @@ async fn an_update_of_a_stream_that_is_not_active_is_refused() {
 #[tokio::test]
 async fn a_target_outside_the_published_range_is_refused() {
     let emulator = Emulator::new();
+    commit_the_account(&emulator).await;
     let name = "warm-throughput-range";
     emulator
         .ok(
@@ -537,7 +566,7 @@ async fn a_target_outside_the_published_range_is_refused() {
             }),
         )
         .await;
-    tokio::time::sleep(past_activation()).await;
+    poll_until_active(&emulator, name, name).await;
 
     // Each published bound is accepted...
     for accepted in [WARM_THROUGHPUT_BOUNDS.0, WARM_THROUGHPUT_BOUNDS.1] {
@@ -548,7 +577,7 @@ async fn a_target_outside_the_published_range_is_refused() {
                 &update_body(Address::Name, name, accepted),
             )
             .await;
-        tokio::time::sleep(past_warm_throughput_update()).await;
+        poll_until_active(&emulator, name, name).await;
         let read = reported_target(name, &summary(&emulator, name, name).await);
         assert_eq!(
             read, accepted,
@@ -653,6 +682,7 @@ struct Refusal {
 #[tokio::test]
 async fn a_request_naming_no_one_stream_of_this_account_and_region_is_refused() {
     let emulator = Emulator::new();
+    commit_the_account(&emulator).await;
     let first = "warm-throughput-refusals-first";
     let second = "warm-throughput-refusals-second";
     for name in [first, second] {
@@ -668,7 +698,9 @@ async fn a_request_naming_no_one_stream_of_this_account_and_region_is_refused() 
             )
             .await;
     }
-    tokio::time::sleep(past_activation()).await;
+    for name in [first, second] {
+        poll_until_active(&emulator, name, name).await;
+    }
 
     let absent = "warm-throughput-never-created";
     let other_account = format!("arn:aws:kinesis:{REGION}:123456789012:stream/{first}");

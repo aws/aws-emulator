@@ -444,7 +444,10 @@ async fn a_subscription_naming_a_resource_that_is_not_there_is_refused() {
                 "ShardId": ABSENT_SHARD,
                 "StartingPosition": { "Type": "TRIM_HORIZON" },
             }),
-            format!("Shard {ABSENT_SHARD} in stream {stream} under account {account} does not exist"),
+            format!(
+                "Could not find shard {ABSENT_SHARD} in stream {stream} under account \
+                 {account}."
+            ),
         ),
         (
             "a shard of another stream",
@@ -453,7 +456,10 @@ async fn a_subscription_naming_a_resource_that_is_not_there_is_refused() {
                 "ShardId": other_shard,
                 "StartingPosition": { "Type": "TRIM_HORIZON" },
             }),
-            format!("Shard {other_shard} in stream {stream} under account {account} does not exist"),
+            format!(
+                "Could not find shard {other_shard} in stream {stream} under account \
+                 {account}."
+            ),
         ),
     ];
 
@@ -598,6 +604,20 @@ async fn a_dry_run_subscription_is_refused_and_establishes_nothing() {
     );
 }
 
+/// The sentence a reader refuses a `Type` and a `SequenceNumber` that do not go together
+/// with: the two legal combinations enumerated, then what the request named — written out
+/// here rather than borrowed from the crate, so the wording itself is what these cases pin,
+/// over the member THIS operation spells a sequence number with.
+fn combination_refusal(position_type: &str, carried_sequence_number: bool) -> String {
+    format!(
+        "Must either specify (1) AT_SEQUENCE_NUMBER or AFTER_SEQUENCE_NUMBER and \
+         StartingPosition.SequenceNumber or (2) TRIM_HORIZON or LATEST and no \
+         StartingPosition.SequenceNumber. Request specified {position_type} and \
+         {}StartingPosition.SequenceNumber.",
+        if carried_sequence_number { "" } else { "no " }
+    )
+}
+
 /// A starting position whose members its own `ShardIteratorType` does not admit is refused
 /// with the modelled `InvalidArgumentException`, naming the member the request spelled.
 #[tokio::test]
@@ -615,16 +635,12 @@ async fn a_starting_position_its_own_type_does_not_admit_is_refused() {
         (
             "AT_SEQUENCE_NUMBER without the sequence number it reads",
             json!({ "Type": "AT_SEQUENCE_NUMBER" }),
-            "StartingPosition.SequenceNumber is required with the AT_SEQUENCE_NUMBER shard \
-             iterator type"
-                .to_string(),
+            combination_refusal("AT_SEQUENCE_NUMBER", false),
         ),
         (
             "AFTER_SEQUENCE_NUMBER without the sequence number it reads",
             json!({ "Type": "AFTER_SEQUENCE_NUMBER" }),
-            "StartingPosition.SequenceNumber is required with the AFTER_SEQUENCE_NUMBER shard \
-             iterator type"
-                .to_string(),
+            combination_refusal("AFTER_SEQUENCE_NUMBER", false),
         ),
         (
             "AT_TIMESTAMP without the instant it reads",
@@ -635,9 +651,7 @@ async fn a_starting_position_its_own_type_does_not_admit_is_refused() {
         (
             "TRIM_HORIZON with a sequence number it does not read",
             json!({ "Type": "TRIM_HORIZON", "SequenceNumber": sequence_number }),
-            "StartingPosition.SequenceNumber can only be used with the AT_SEQUENCE_NUMBER or \
-             AFTER_SEQUENCE_NUMBER shard iterator types, not with TRIM_HORIZON"
-                .to_string(),
+            combination_refusal("TRIM_HORIZON", true),
         ),
         (
             "LATEST with an instant it does not read",

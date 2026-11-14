@@ -322,6 +322,64 @@ async fn the_history_reports_the_runs_the_schedule_made_due() {
     }
 }
 
+/// A query that states no lookback of its own reads back over the PERIOD of its schedule —
+/// the gap between two consecutive instants it names — and not merely the part of that period
+/// still ahead of the run: a DAILY cron reads the whole day before the instant it ran at,
+/// whichever time of day that instant falls at.
+///
+/// The rows are the same daily schedule at different hours, so whatever hour the host's clock
+/// stands at, each row's next named instant is a different distance ahead while every row's
+/// period is the same day. A lookback measured to the next instant instead of over the period
+/// would read a window too short to hold the seeded events for whichever rows name an hour
+/// close ahead, which is exactly the host-dependent answer this pins out.
+#[tokio::test]
+async fn a_default_lookback_is_the_period_of_the_schedule() {
+    let logs = Logs::new();
+    seed_events(&logs).await;
+
+    // Every row: the hour of the day its daily cron names. The seeded events sit an hour back
+    // ([`seed_events`]), so a window of the schedule's whole period holds them from any hour.
+    let hours = [0, 3, 11, 17, 23];
+    for hour in hours {
+        logs.ok(
+            CREATE,
+            &json!({
+                "name": format!("default-lookback-at-{hour:02}"),
+                "queryLanguage": "CWLI",
+                "queryString": QUERY_STRING,
+                "scheduleExpression": format!("cron(0 {hour} * * ? *)"),
+                "executionRoleArn": EXECUTION_ROLE,
+                "logGroupIdentifiers": [GROUP],
+            }),
+        )
+        .await;
+    }
+
+    for hour in hours {
+        let case = format!("a daily cron at {hour:02}:00 stating no lookback");
+        let name = format!("default-lookback-at-{hour:02}");
+        let found = history_of_at_least(&logs, &case, &name, 1).await;
+        let record = &found[0];
+        assert_eq!(
+            member(&case, record, "executionStatus"),
+            "Complete",
+            "case {case:?}: a run that produced its results is complete, got {record}"
+        );
+        let query_id = member(&case, record, "queryId");
+        let results = logs.ok(RESULTS, &json!({"queryId": query_id})).await;
+        let rows = results["results"]
+            .as_array()
+            .unwrap_or_else(|| panic!("case {case:?}: the results are rows, got {results}"))
+            .clone();
+        assert_eq!(
+            rows.len(),
+            SELECTED_ROWS,
+            "case {case:?}: expected the {SELECTED_ROWS} ERROR events of the period the run \
+             read back over, got {rows:?}"
+        );
+    }
+}
+
 /// One row of the schedule-window table: how the query's window and state stand, and whether
 /// a run is due at all.
 struct Window {
