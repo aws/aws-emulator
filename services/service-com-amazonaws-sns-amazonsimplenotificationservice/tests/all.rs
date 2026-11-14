@@ -160,6 +160,9 @@ mod region_isolation;
 #[path = "all/request_derived_refusals.rs"]
 mod request_derived_refusals;
 
+#[path = "all/request_rate_quota.rs"]
+mod request_rate_quota;
+
 #[path = "all/regional_listings.rs"]
 mod regional_listings;
 
@@ -174,6 +177,9 @@ mod set_platform_application_attributes;
 
 #[path = "all/set_subscription_attributes.rs"]
 mod set_subscription_attributes;
+
+#[path = "all/sms_attribute_read_filter_names.rs"]
+mod sms_attribute_read_filter_names;
 
 #[path = "all/sms_attributes.rs"]
 mod sms_attributes;

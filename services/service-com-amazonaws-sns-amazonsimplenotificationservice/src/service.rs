@@ -266,7 +266,12 @@ fn with_request_id(mut resp: RtResponse) -> RtResponse {
 /// `override_operation` is what keeps a request naming no modelled action on the
 /// ROUTER's own path (its routing-error answer, rendered before authentication)
 /// rather than quietly moving it behind this wrapper.
-struct WithRequestId;
+struct WithRequestId<Eng: Send + Sync + 'static> {
+    /// The shared engine, held so the gates in front of every operation — the request-rate
+    /// budgets of [`crate::state::request_quota`] — reach this service's own store. The
+    /// operations themselves reach it through the generated entry, which owns its own handle.
+    engine: Arc<Eng>,
+}
 
 /// The answer this endpoint gives a request addressing an account it does not serve: the
 /// awsQuery error document of the account-resolution refusal
@@ -287,6 +292,25 @@ fn no_account_response() -> RtResponse {
     resp
 }
 
+/// The answer this endpoint gives a call past the published request quota of the operation it
+/// names: the awsQuery error document of the throttling refusal
+/// ([`crate::state::request_quota`]), in the same envelope every other refusal of this
+/// service is stated in.
+fn throttled_response() -> RtResponse {
+    let body = aws_smithy_schema_server::query_error_body(
+        false,
+        crate::state::request_quota::THROTTLE_CODE,
+        crate::state::request_quota::THROTTLE_MESSAGE,
+    );
+    let status = ::aws_smithy_runtime_api::http::StatusCode::try_from(
+        crate::state::request_quota::THROTTLE_STATUS,
+    )
+    .expect("the refusal's status is a valid constant");
+    let mut resp = RtResponse::new(status, SdkBody::from(body));
+    resp.headers_mut().insert("content-type", "text/xml");
+    resp
+}
+
 /// Whether `req` addresses an account this endpoint does not serve, and so is refused
 /// before any operation of this service reads it.
 fn addresses_another_account(req: &RtRequest, ctx: &OperationContext<'_>) -> bool {
@@ -299,7 +323,7 @@ fn addresses_another_account(req: &RtRequest, ctx: &OperationContext<'_>) -> boo
     crate::state::account_resolution::addresses_another_account(body, &region)
 }
 
-impl ErasedOperation for WithRequestId {
+impl<Eng: Send + Sync + 'static> ErasedOperation for WithRequestId<Eng> {
     fn run<'r>(
         &'r self,
         svc: &'r dyn Service,
@@ -307,6 +331,17 @@ impl ErasedOperation for WithRequestId {
         ctx: &'r OperationContext<'r>,
     ) -> BoxFuture<'r, RtResponse> {
         Box::pin(async move {
+            // The request RATE is decided first of all: a published quota is a property of
+            // the endpoint the request reached rather than of any operation's own work, so a
+            // call past it is refused before anything of the request is read and performs
+            // nothing at all. The operation it names is the request's own routing key, which
+            // is the name the quota is published per.
+            if let Ok(operation) = svc.definition().protocol().routing_key(req) {
+                let region = crate::state::request_region(ctx.parts());
+                if crate::state::request_quota::is_throttled(&*self.engine, operation, &region) {
+                    return with_request_id(throttled_response());
+                }
+            }
             // The account the request addresses is resolved BEFORE the operation reads
             // the request: an ARN of another account names no resource this endpoint can
             // resolve, and the refusal reports nothing about what the account it does
@@ -388,7 +423,7 @@ impl ErasedOperation for SigningCertificate {
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
     entry: crate::ServiceDefinition<Eng>,
     /// Held, not built per request: `override_operation` returns a reference to it.
-    with_request_id: WithRequestId,
+    with_request_id: WithRequestId<Eng>,
     /// Held for the same reason: the signing certificate's own answer.
     signing_certificate: SigningCertificate,
 }
@@ -402,8 +437,8 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         // it is generated here rather than on the publish that first needs it.
         crate::state::notification_signature::prepare_signing_key();
         Self {
-            entry: crate::ServiceDefinition::new(engine),
-            with_request_id: WithRequestId,
+            entry: crate::ServiceDefinition::new(Arc::clone(&engine)),
+            with_request_id: WithRequestId { engine },
             signing_certificate: SigningCertificate,
         }
     }

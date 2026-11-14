@@ -50,6 +50,9 @@ pub mod feedback_role;
 /// Whether this account holds an origination entity SNS could send an SMS message from,
 /// which every operation whose own work is to send one asks before it accepts.
 pub mod sms_origination;
+/// The published per-second request quota an operation's calls are admitted at, and the
+/// throttling answer the calls past it are refused with.
+pub mod request_quota;
 /// The `AWS/SNS` counters a topic publishes about its own fan-out: the publishes it
 /// accepted, the messages its subscriptions' filter policies withheld, and the
 /// notifications the subscribed endpoints took or refused.
@@ -3201,6 +3204,19 @@ pub fn invalid_sms_attribute_name_message(name: &str) -> String {
     format!("{name} is not a valid attribute")
 }
 
+/// The sentence SNS refuses a READ that asks for a name which is no setting of an
+/// account's SMS configuration with: that the attribute asked for is not one SNS
+/// defines, and the name as the request spelled it.
+///
+/// A read states it differently from a write ([`invalid_sms_attribute_name_message`])
+/// because the two refuse different things: a write names a setting it would govern,
+/// and a read names a setting it would report. Recorded evidence: `GetSMSAttributes`
+/// whose `attributes` list carries a name outside [`SMS_ATTRIBUTE_NAMES`] answers
+/// `400 InvalidParameter` with exactly this sentence for that name.
+pub fn unknown_sms_attribute_message(name: &str) -> String {
+    format!("Unknown attribute requested: {name}")
+}
+
 /// The sentence SNS refuses a value an SMS setting does not accept with: the setting
 /// whose value failed, and that the value is not one of its own.
 ///
@@ -4039,6 +4055,11 @@ pub struct ComAmazonawsSnsAmazonsimplenotificationserviceState {
     /// being delivered again. Bounded at [`MAX_DEDUPLICATION_RECORDS`] live records, and
     /// written through [`Self::remember_deduplication`], never by hand.
     deduplication: HashMap<String, DeduplicationRecord>,
+    /// What each operation whose request quota SNS publishes as a hard one has left to
+    /// spend, per Region: the account's own request budgets. NOT caller-grown — see
+    /// [`request_quota::RequestRates`] — and written only by the rate gate in front of the
+    /// operations.
+    pub request_rates: request_quota::RequestRates,
     /// Backs the `SequenceNumber` a FIFO topic's `Publish` returns.
     pub sequence_counter: u64,
     /// Backs [`Self::next_unique_id`]: the monotone part of every minted id.

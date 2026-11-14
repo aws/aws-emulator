@@ -146,9 +146,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ///
     /// The request may name the settings it wants: "A list of the individual attribute
     /// names … for which you want values … If you don't use this parameter, Amazon SNS
-    /// returns all SMS attributes" (`GetSMSAttributesInput$attributes` doc). A named
-    /// setting the account does not hold contributes no entry either, so the response
-    /// carries exactly the intersection of what was asked for with what is held.
+    /// returns all SMS attributes" (`GetSMSAttributesInput$attributes` doc). The names SNS
+    /// defines are a closed set ([`state::SMS_ATTRIBUTE_NAMES`]), so a name outside it asks
+    /// for no setting of an account at all and the request is REFUSED with
+    /// `InvalidParameter` rather than answered with that entry absent — an absent entry says
+    /// the account holds nothing for a setting SNS does define, which is a different thing.
+    /// A defined setting the account does not hold contributes no entry either, so the
+    /// response carries exactly the intersection of what was asked for with what is held.
+    ///
+    /// A refused request reports nothing and writes nothing, so the account's settings are
+    /// left exactly as they were and a later read of a defined name answers what it
+    /// answered before.
     async fn handle(
         &self,
         input: Self::Input,
@@ -169,6 +177,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // Argument validation, BEFORE the store is consulted and in the order the request
+        // listed the names, so a request naming several undefined settings is refused for
+        // the first one it asked for.
+        let requested = input.attributes.unwrap_or_default();
+        for name in &requested {
+            if !state::is_sms_attribute(name) {
+                return Err(GetSMSAttributesErrorModeled::InvalidParameterException(
+                    InvalidParameterException {
+                        message: Some(state::unknown_sms_attribute_message(name)),
+                    },
+                )
+                .into());
+            }
+        }
+
         let Some(store) = state::service_state(&*self.engine) else {
             return Err(GetSMSAttributesErrorModeled::InternalErrorException(
                 InternalErrorException {
@@ -185,7 +208,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A request that names no setting asks for all of them; one that names some asks
         // for those alone, so a name it repeats still yields one entry and a name the
         // account holds nothing for yields none.
-        let requested = input.attributes.unwrap_or_default();
         let attributes: std::collections::HashMap<String, String> = if requested.is_empty() {
             held
         } else {
