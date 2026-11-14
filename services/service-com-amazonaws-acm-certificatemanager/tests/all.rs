@@ -115,6 +115,8 @@ mod certificate_wire_representation;
 mod delegated_zone_certificate_validation;
 #[path = "all/dns_validation_published_record.rs"]
 mod dns_validation_published_record;
+#[path = "all/domain_validation_summary_members.rs"]
+mod domain_validation_summary_members;
 #[path = "all/email_validation_dispatch.rs"]
 mod email_validation_dispatch;
 #[path = "all/generic_tagging_certificate_refusal_text.rs"]

@@ -3,10 +3,12 @@
 //! @op ListCertificateDomainValidations
 //!
 //! Reports one `DomainValidationSummary` per name on a stored certificate, projected
-//! from that certificate's persisted per-domain validation records: the method in
-//! effect, the status that validation currently stands at, and the challenge the
-//! method publishes. Nothing here is echoed from the request beyond the certificate it
-//! names — `RequestCertificate` wrote those records, and this operation reads them.
+//! from that certificate's persisted per-domain validation records: the method the
+//! certificate was requested with, the status that validation currently stands at, and
+//! the challenge the method publishes, all under the summary's
+//! `RequestedValidationConfiguration`. Nothing here is echoed from the request beyond
+//! the certificate it names — `RequestCertificate` wrote those records, and this
+//! operation reads them.
 //!
 //! Every defect of the request's own parameters — a `CertificateArn` that names no ACM
 //! certificate, a `NextToken` this service did not issue — is ONE refusal class with
@@ -302,33 +304,35 @@ const MAX_PAGE_SIZE: usize = 1000;
 
 /// One stored validation as the modelled `DomainValidationSummary`.
 ///
-/// `ActiveValidationConfiguration` is "the validation configuration currently in
-/// effect for this domain" (`DomainValidationSummary$ActiveValidationConfiguration`
-/// doc), which is exactly what the record holds: the method ACM is validating by, the
-/// status that validation stands at, and the challenge that method publishes.
+/// The configuration a domain is validated under is the one the certificate was
+/// REQUESTED with — the method the request asked for, the status that method's
+/// validation stands at, and the challenge that method publishes — and this operation
+/// reports it under `RequestedValidationConfiguration`, whatever the method and
+/// whatever status the validation has reached.
 ///
-/// `RequestedValidationConfiguration` is "present only when a migration is in
-/// progress" (`DomainValidationSummary$RequestedValidationConfiguration` doc) — a
-/// pending change of a domain's validation METHOD. No operation this service models
-/// starts one (`smithy_query(query="list_operations")`), so no stored certificate can
-/// be migrating and the member is absent rather than a copy of the active
-/// configuration.
+/// `ActiveValidationConfiguration` is left unset: it is "the validation configuration
+/// currently in effect for this domain"
+/// (`DomainValidationSummary$ActiveValidationConfiguration` doc), a configuration
+/// distinct from the requested one only once a domain has been MIGRATED onto another
+/// method, and no operation this service models migrates one
+/// (`smithy_query(query="list_operations")`), so there is no second configuration to
+/// report beside the requested one.
 fn domain_validation_summary(
     record: &crate::state::DomainValidationRecord,
 ) -> DomainValidationSummary {
     DomainValidationSummary {
         domain_name: record.domain_name.clone(),
-        active_validation_configuration: Some(ValidationConfiguration {
+        active_validation_configuration: None,
+        requested_validation_configuration: Some(ValidationConfiguration {
             validation_method: Some(record.validation_method.clone()),
             validation_status: Some(record.validation_status.clone()),
             validation_challenge: validation_challenge(record),
         }),
-        requested_validation_configuration: None,
     }
 }
 
-/// The challenge a domain's validation configuration carries: the evidence the method
-/// in effect asks for, read off the record `RequestCertificate` stored.
+/// The challenge a domain's validation configuration carries: the evidence the
+/// requested method asks for, read off the record `RequestCertificate` stored.
 ///
 /// `ValidationChallenge` is a union with one member per method whose challenge the
 /// model describes — `EmailValidationChallenge` (the mailboxes ACM wrote to and the

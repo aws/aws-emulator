@@ -5,24 +5,34 @@
 //!
 //! RULE: the operation reports one `DomainValidationSummary` per name on the STORED
 //! certificate, in the order the record holds them, each one's
-//! `ActiveValidationConfiguration` projected from that domain's persisted validation —
-//! the method in effect, the status it currently stands at, and the challenge the
-//! model describes for that method — bounded by `MaxItems` with a `NextToken` that
-//! resumes after the last domain emitted; an ARN with no record behind it draws
-//! `ResourceNotFoundException` and a parameter that is not valid (an ARN that is not a
-//! certificate's, a token this service did not issue for that certificate) draws
-//! `ValidationException`.
+//! `RequestedValidationConfiguration` projected from that domain's persisted
+//! validation — the method the certificate was requested with, the status it currently
+//! stands at, and the challenge the model describes for that method — bounded by
+//! `MaxItems` with a `NextToken` that resumes after the last domain emitted; an ARN
+//! with no record behind it draws `ResourceNotFoundException` and a parameter that is
+//! not valid (an ARN that is not a certificate's, a token this service did not issue
+//! for that certificate) draws `ValidationException`.
+//!
+//! `ActiveValidationConfiguration` is reported for NO summary: it is the configuration
+//! "currently in effect", which differs from the requested one only for a domain
+//! MIGRATED onto another validation method, and no operation this service models
+//! performs such a migration — so a client polling
+//! `RequestedValidationConfiguration.ValidationStatus` is the client that sees the
+//! outcome, and it terminates.
 //!
 //! The tables span what the rule generalises over: every `ValidationMethod` and the
-//! absence of one, one name as against several, plain and wildcard names, every page
-//! size across a page boundary, and the ways an ARN or a token can fail to resolve.
-//! Every per-domain value is cross-checked against the one `DescribeCertificate`
-//! reports for the same certificate, so no summary here can pass on a value that was
-//! not read out of the persisted record.
+//! absence of one, one name as against several, plain and wildcard names, a public
+//! request as against a private-CA one, the transient status as against the terminal
+//! one, every page size across a page boundary, and the ways an ARN or a token can
+//! fail to resolve. Every per-domain value is cross-checked against the one
+//! `DescribeCertificate` reports for the same certificate, so no summary here can pass
+//! on a value that was not read out of the persisted record.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use serde_json::{json, Value};
+use service_com_amazonaws_acm_certificatemanager::state::VALIDATION_SETTLE_DELAY;
 
 use crate::certificate_lifecycle::{
     call, describe, error_code, error_message, hold_pending_validations, request_certificate,
@@ -32,15 +42,15 @@ use crate::certificate_validation_state_machine::make_validation_due_now;
 
 /// Every `ValidationMethod` the model declares
 /// (`smithy_query(query="shape", shape="com.amazonaws.acm#ValidationMethod")`).
-const VALIDATION_METHODS: &[&str] = &["DNS", "EMAIL", "HTTP"];
+pub(crate) const VALIDATION_METHODS: &[&str] = &["DNS", "EMAIL", "HTTP"];
 
 /// The `ValidationMethod` ACM falls back to when `RequestCertificate` names none.
-const DEFAULT_VALIDATION_METHOD: &str = "EMAIL";
+pub(crate) const DEFAULT_VALIDATION_METHOD: &str = "EMAIL";
 
 /// A private certificate authority ARN of the form `CertificateAuthorityArn`'s pattern
 /// requires — the one request that needs no domain validation, so the one whose
 /// domains end `SUCCESS`.
-const PRIVATE_CA_ARN: &str =
+pub(crate) const PRIVATE_CA_ARN: &str =
     "arn:aws:acm-pca:us-west-2:000000000000:certificate-authority/12345678-1234-1234-1234-123456789012";
 
 /// The byte `NextToken` joins its two keys with, as the handler encodes it.
@@ -48,6 +58,16 @@ const CURSOR_SEPARATOR: char = '\u{1f}';
 
 /// The one sentence this service reports for a pagination token it did not issue.
 const INVALID_NEXT_TOKEN: &str = "Invalid next token.";
+
+/// The status a validation that has not resolved stands at
+/// (`com.amazonaws.acm#DomainStatus`).
+pub(crate) const PENDING_VALIDATION: &str = "PENDING_VALIDATION";
+
+/// The member of `DomainValidationSummary` that carries a domain's validation
+/// configuration, and the one no summary of an unmigrated domain carries
+/// (`smithy_query(query="shape", shape="com.amazonaws.acm#DomainValidationSummary")`).
+pub(crate) const CONFIGURATION_MEMBER: &str = "RequestedValidationConfiguration";
+pub(crate) const UNREPORTED_CONFIGURATION_MEMBER: &str = "ActiveValidationConfiguration";
 
 /// One row of the projection table: what it is, the `RequestCertificate` body, the
 /// names the certificate covers in stored order, and the `ValidationMethod` its
@@ -63,7 +83,7 @@ async fn list_validations(
 }
 
 /// The `DomainValidationSummaryList` of a successful call for one request body.
-async fn summaries(
+pub(crate) async fn summaries(
     router: &smithy_server_runtime::MultiServiceRouter,
     body: &Value,
 ) -> (Vec<Value>, Option<String>) {
@@ -81,7 +101,7 @@ async fn summaries(
 
 /// `DescribeCertificate`'s `DomainValidationOptions`, keyed by domain name — the other
 /// reader of the very same stored records.
-async fn described_validations(
+pub(crate) async fn described_validations(
     router: &smithy_server_runtime::MultiServiceRouter,
     arn: &str,
 ) -> BTreeMap<String, Value> {
@@ -103,7 +123,7 @@ async fn described_validations(
 }
 
 /// The domain names a summary list reports, in order.
-fn names(list: &[Value]) -> Vec<String> {
+pub(crate) fn names(list: &[Value]) -> Vec<String> {
     list.iter()
         .map(|summary| summary["DomainName"].as_str().unwrap_or_default().to_string())
         .collect()
@@ -112,34 +132,38 @@ fn names(list: &[Value]) -> Vec<String> {
 /// Assert one summary against the `DescribeCertificate` record of the same domain:
 /// same method, same status, and the challenge the model describes for that method
 /// carrying the very values the record holds.
-fn assert_summary_matches_record(case: &str, summary: &Value, described: &Value, method: &str) {
-    let active = &summary["ActiveValidationConfiguration"];
+pub(crate) fn assert_summary_matches_record(
+    case: &str,
+    summary: &Value,
+    described: &Value,
+    method: &str,
+) {
+    let requested = &summary["RequestedValidationConfiguration"];
     assert_eq!(
-        active["ValidationMethod"].as_str(),
+        requested["ValidationMethod"].as_str(),
         Some(method),
         "case {case}: expected the stored ValidationMethod {method}, got {summary}"
     );
     assert_eq!(
-        active["ValidationMethod"],
+        requested["ValidationMethod"],
         described["ValidationMethod"],
-        "case {case}: the active method must be the one DescribeCertificate reports, got {summary}"
+        "case {case}: the requested method must be the one DescribeCertificate reports, got {summary}"
     );
     assert_eq!(
-        active["ValidationStatus"],
+        requested["ValidationStatus"],
         described["ValidationStatus"],
-        "case {case}: the active status must be the one DescribeCertificate reports, got {summary}"
+        "case {case}: the requested status must be the one DescribeCertificate reports, got {summary}"
     );
 
-    // "This field is present only when a migration is in progress"
-    // (`DomainValidationSummary$RequestedValidationConfiguration` doc). No operation
-    // this service models starts a validation-method migration, so no stored
-    // certificate can be migrating.
+    // The configuration a domain is validated under is the one the certificate was
+    // requested with; a separate configuration "currently in effect" exists only for a
+    // domain migrated onto another method, which no operation this service models does.
     assert!(
-        summary["RequestedValidationConfiguration"].is_null(),
-        "case {case}: no migration is in progress, so no requested configuration exists, got {summary}"
+        summary["ActiveValidationConfiguration"].is_null(),
+        "case {case}: no domain was migrated onto another method, so no active configuration exists, got {summary}"
     );
 
-    let challenge = &active["ValidationChallenge"];
+    let challenge = &requested["ValidationChallenge"];
     match method {
         // `DnsValidationChallenge` carries the CNAME to publish.
         "DNS" => {
@@ -274,7 +298,7 @@ async fn summaries_project_every_stored_domain_validation() {
                 .unwrap_or_else(|| panic!("case {case}: {domain} is not a described domain"));
             assert_summary_matches_record(&format!("{case}/{domain}"), summary, record, method);
             assert_eq!(
-                summary["ActiveValidationConfiguration"]["ValidationStatus"].as_str(),
+                summary["RequestedValidationConfiguration"]["ValidationStatus"].as_str(),
                 Some("PENDING_VALIDATION"),
                 "case {case}/{domain}: an unproven domain is PENDING_VALIDATION, got {summary}"
             );
@@ -322,7 +346,7 @@ async fn the_reported_status_follows_the_clock_owed_outcome() {
         let (pending, _) = summaries(&router, &json!({ "CertificateArn": arn })).await;
         for summary in &pending {
             assert_eq!(
-                summary["ActiveValidationConfiguration"]["ValidationStatus"].as_str(),
+                summary["RequestedValidationConfiguration"]["ValidationStatus"].as_str(),
                 Some("PENDING_VALIDATION"),
                 "case {case}: a validation that has not resolved is PENDING_VALIDATION, got {summary}"
             );
@@ -341,7 +365,7 @@ async fn the_reported_status_follows_the_clock_owed_outcome() {
         for summary in &terminal {
             let domain = summary["DomainName"].as_str().unwrap_or_default();
             assert_eq!(
-                summary["ActiveValidationConfiguration"]["ValidationStatus"].as_str(),
+                summary["RequestedValidationConfiguration"]["ValidationStatus"].as_str(),
                 Some(*expected),
                 "case {case}/{domain}: expected the clock-owed status {expected}, got {summary}"
             );
@@ -349,7 +373,7 @@ async fn the_reported_status_follows_the_clock_owed_outcome() {
                 .get(domain)
                 .unwrap_or_else(|| panic!("case {case}: {domain} is not a described domain"));
             assert_eq!(
-                summary["ActiveValidationConfiguration"]["ValidationStatus"],
+                summary["RequestedValidationConfiguration"]["ValidationStatus"],
                 record["ValidationStatus"],
                 "case {case}/{domain}: both readers report one store, got {summary} and {record}"
             );
@@ -626,5 +650,62 @@ async fn forged_next_tokens_are_refused() {
     assert!(
         next.is_none(),
         "the resumed page reached the end of the names, got {next:?}"
+    );
+}
+
+/// RULE: the status reachable at `RequestedValidationConfiguration.ValidationStatus`
+/// reaches the terminal `DomainStatus` the clock owes the request, so a client that
+/// polls only this operation terminates — nothing has to touch the store to start the
+/// transition.
+#[tokio::test]
+async fn polling_the_requested_configuration_reaches_the_terminal_status() {
+    let router = router();
+    let started = std::time::Instant::now();
+    let arn = request_certificate(
+        &router,
+        &json!({ "DomainName": "polled.example.com", "ValidationMethod": "EMAIL" }),
+    )
+    .await;
+
+    // A budget far above the emulator's own span, so an expired one is a real failure
+    // rather than a tight-timing artefact.
+    let budget = VALIDATION_SETTLE_DELAY * 20;
+    let mut polls = 0_u32;
+    let terminal = loop {
+        let (list, _) = summaries(&router, &json!({ "CertificateArn": arn })).await;
+        let first = list
+            .first()
+            .unwrap_or_else(|| panic!("the certificate covers one name, got {list:?}"));
+        let status = first[CONFIGURATION_MEMBER]["ValidationStatus"]
+            .as_str()
+            .unwrap_or_else(|| {
+                panic!(
+                    "case poll: {CONFIGURATION_MEMBER}.ValidationStatus must be reported, \
+                     got {first}"
+                )
+            })
+            .to_string();
+        if status != PENDING_VALIDATION {
+            break status;
+        }
+        polls += 1;
+        assert!(
+            started.elapsed() < budget,
+            "case poll: polling {CONFIGURATION_MEMBER}.ValidationStatus gave up after \
+             {polls} polls in {:?}: still {first}",
+            started.elapsed()
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+
+    assert_eq!(
+        terminal, "FAILED",
+        "case poll: a public certificate whose domains cannot be proven ends FAILED, got \
+         {terminal}"
+    );
+    assert!(
+        polls > 0,
+        "case poll: the transient {PENDING_VALIDATION} status must be observable before the \
+         outcome falls due, got {polls} polls"
     );
 }

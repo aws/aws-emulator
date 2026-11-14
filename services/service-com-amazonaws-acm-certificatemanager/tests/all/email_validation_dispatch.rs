@@ -247,7 +247,7 @@ async fn the_dispatched_mail_is_reported_for_every_email_validated_name() {
             );
             // The other projection of the same record reports the same list: a
             // `ListCertificateDomainValidations` summary carries it inside the
-            // `EmailValidationChallenge` of the configuration in effect.
+            // `EmailValidationChallenge` of the requested configuration.
             let from_list = listed
                 .iter()
                 .find(|summary| {
@@ -258,7 +258,7 @@ async fn the_dispatched_mail_is_reported_for_every_email_validated_name() {
                 .unwrap_or_else(|| {
                     panic!("case {case:?}: no listed validation for {name} in {listed:?}")
                 });
-            let challenge = &from_list["ActiveValidationConfiguration"]
+            let challenge = &from_list["RequestedValidationConfiguration"]
                 ["ValidationChallenge"]["EmailValidationChallenge"];
             assert_eq!(
                 reported_mailboxes(challenge),
