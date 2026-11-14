@@ -420,18 +420,26 @@ async fn a_client_token_is_scoped_to_the_region_the_create_was_signed_for() {
             "case {case:?}: each Region must hold only the instance created through it"
         );
 
-        // A true retry — the same request, in the Region the token was spent in —
-        // still replays that Region's id and creates nothing.
-        let replay = create_instance_in(&router, created_in, &case, body).await;
+        // The same request again, in the Region the token was spent in: the token is
+        // spent there, so it is refused and creates nothing.
+        let (status, payload) =
+            call_in_region(&router, created_in, "CreateWorkspaceInstance", body).await;
         assert_eq!(
-            replay, home,
-            "case {case:?}: the retry in the token's own Region must replay {home:?}"
+            status, 409,
+            "case {case:?}: expected HTTP 409 for the spent token in its own Region, got \
+             {status} with {payload}"
+        );
+        assert_eq!(
+            payload["ResourceId"].as_str(),
+            Some(home.as_str()),
+            "case {case:?}: expected the conflict in the token's own Region to name {home:?}, \
+             got {payload}"
         );
         let listed_home = listed_ids_in(&router, created_in, &case).await;
         assert_eq!(
             listed_home,
             vec![home.clone()],
-            "case {case:?}: the retry must create no second instance, got {listed_home:?}"
+            "case {case:?}: the refusal must create no second instance, got {listed_home:?}"
         );
 
         // A volume create carries its Region in `AvailabilityZone` as well, so the same

@@ -30,6 +30,7 @@ use std::collections::BTreeMap;
 use crate::ops::types::{
     BlockDeviceMappingRequest, EC2InstanceError, IamInstanceProfileSpecification,
     InstanceNetworkInterfaceSpecification, ManagedInstanceRequest, Placement, TagSpecification,
+    ValidationException,
 };
 
 /// The resource type a `TagSpecification` of the LAUNCH names for the instance itself.
@@ -139,6 +140,89 @@ fn launch_not_made(message: &str) -> EC2InstanceError {
         ec2_error_code: None,
         ec2_exception_type: Some(EXCEPTION_TYPE_DISPATCH_FAILURE.to_string()),
         ec2_error_message: Some(message.to_string()),
+    }
+}
+
+/// The codes Amazon EC2 answers when a request names an AMI it cannot resolve: an id the
+/// account can see no image for, and a value that is no AMI id at all (Amazon EC2 error
+/// codes, `InvalidAMIID.NotFound` and `InvalidAMIID.Malformed`). Either way the request
+/// named no image the account could launch from.
+const INVALID_AMI_ID_NOT_FOUND: &str = "InvalidAMIID.NotFound";
+const INVALID_AMI_ID_MALFORMED: &str = "InvalidAMIID.Malformed";
+
+/// The `Message` this service states for a `ManagedInstance.ImageId` that names no AMI the
+/// account can see in the Region the call was signed for.
+///
+/// A FIXED sentence, like [`super::INSTANCE_NOT_FOUND_MESSAGE`] and for the same reason: it
+/// states what is wrong with the request and echoes none of what the caller sent, the id at
+/// fault included.
+pub const INVALID_IMAGE_ID_MESSAGE: &str = "Invalid AMI ID provided";
+
+/// The modelled `ValidationException` (HTTP 400) for a launch whose image cannot be
+/// resolved.
+///
+/// Built through the crate's one bad-member refusal ([`super::field_validation_failed`]), so
+/// `Reason` and `FieldList` name the member at fault the way every other refusal of this
+/// service does.
+pub fn invalid_image_id() -> ValidationException {
+    super::field_validation_failed("ManagedInstance.ImageId", INVALID_IMAGE_ID_MESSAGE)
+}
+
+/// What asking Amazon EC2 about an AMI answered — the outcome [`resolve_image`] reports.
+#[derive(Debug)]
+pub enum ImageLookup {
+    /// EC2 resolved the id: the account can see that image in the Region, so a launch
+    /// there can boot from it.
+    Resolved,
+    /// EC2 answered that the id names no image this account can see in that Region.
+    Unresolved,
+    /// The question could not be answered: EC2 could not be reached, or answered a failure
+    /// that is not about the id. Carries what EC2 reported, so a caller can tell this from
+    /// an answer either way rather than reading it as one.
+    Unanswered(EC2InstanceError),
+}
+
+/// Resolve the AMI `image_id` against the images the account can see in `region`.
+///
+/// The image a launch boots belongs to the CALLER's own account
+/// (`ManagedInstanceRequest$ImageId` mirrors `RunInstances$ImageId`), and Amazon EC2 is the
+/// service that owns AMIs, so the question is put to EC2 over the same in-process callback
+/// the launch itself is made through rather than answered from anything this crate keeps: an
+/// image registered, copied or deregistered in EC2 is one this answer follows.
+///
+/// A read, and only a read — `ec2:DescribeImages` reports images and writes nothing — and
+/// awaited with no store guard held, like every other function here.
+pub async fn resolve_image(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    image_id: &str,
+) -> ImageLookup {
+    use ::aws_sdk_ec2::error::ProvideErrorMetadata;
+
+    let Some(client) = ec2(ctx, region) else {
+        return ImageLookup::Unanswered(launch_not_made(
+            "Amazon EC2 could not be reached to resolve the image the instance boots",
+        ));
+    };
+    match client.describe_images().image_ids(image_id).send().await {
+        Ok(described) => {
+            if described
+                .images()
+                .iter()
+                .any(|image| image.image_id() == Some(image_id))
+            {
+                ImageLookup::Resolved
+            } else {
+                ImageLookup::Unresolved
+            }
+        }
+        // EC2's own answer for an id it cannot resolve — whether the id names no image the
+        // account can see or is no AMI id at all — is the answer to the question asked, not
+        // a failure of the call.
+        Err(error) => match error.code() {
+            Some(INVALID_AMI_ID_NOT_FOUND | INVALID_AMI_ID_MALFORMED) => ImageLookup::Unresolved,
+            _ => ImageLookup::Unanswered(ec2_instance_error(&error)),
+        },
     }
 }
 

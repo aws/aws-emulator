@@ -162,11 +162,13 @@ impl From<CreateWorkspaceInstanceErrorModeled> for CreateWorkspaceInstanceError 
 ///
 /// Returns the modelled `ValidationException` (HTTP 400) naming the ONE member the
 /// request is refused for, in `FieldList` as well as in the wording, and echoes no
-/// submitted value ([`crate::state::field_validation_failed`]).
-fn validate_launch_configuration(
-    input: &CreateWorkspaceInstanceInput,
+/// submitted value ([`crate::state::field_validation_failed`]). On success it answers the
+/// `ImageId` the launch boots, which the handler resolves against Amazon EC2's images
+/// before anything is minted.
+fn validate_launch_configuration<'input>(
+    input: &'input CreateWorkspaceInstanceInput,
     region: &str,
-) -> Result<(), ValidationException> {
+) -> Result<&'input str, ValidationException> {
     use crate::state::{
         configuration_tenancy, field_validation_failed, instance_type_spec,
         require_zone_in_region, DEFAULT_BILLING_MODE, PLACEMENT_TENANCY_DEFAULT,
@@ -174,13 +176,13 @@ fn validate_launch_configuration(
 
     let managed_instance = &input.managed_instance;
 
-    if managed_instance.image_id.is_none() {
+    let Some(image_id) = managed_instance.image_id.as_deref() else {
         return Err(field_validation_failed(
             "ManagedInstance.ImageId",
             "ManagedInstance.ImageId must name the Amazon Machine Image the instance \
              boots: a WorkSpace Instance cannot be launched without one",
         ));
-    }
+    };
 
     let Some(instance_type) = managed_instance.instance_type.as_deref() else {
         return Err(field_validation_failed(
@@ -256,7 +258,7 @@ fn validate_launch_configuration(
         ));
     }
 
-    Ok(())
+    Ok(image_id)
 }
 
 /// The `CreateWorkspaceInstance` operation.
@@ -295,8 +297,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        use crate::state::TokenOutcome;
-
         // A regional resource belongs to the Region its create call was signed for, so
         // the Region comes from the credential scope, never from a member: the instance
         // this call creates exists in that Region alone.
@@ -315,7 +315,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // caller may set, whichever member of the request carried it: the top-level
         // `Tags` list and the `TagList` of every `ManagedInstance.TagSpecifications`
         // entry are both caller-supplied tags. The request is refused before the store
-        // is reached, so it neither replays an idempotency token nor creates an
+        // is reached, so it neither spends an idempotency token nor creates an
         // instance.
         crate::state::reject_reserved_tag_keys(
             "Tags",
@@ -360,11 +360,34 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // The launch configuration is checked BEFORE the store is reached too, so a
         // launch this service could not carry out is refused whatever the store holds:
-        // the request neither replays an idempotency token nor is charged against the
+        // the request neither spends its idempotency token nor is charged against the
         // quota, nothing is written for a request that is going to be refused, and no
         // store guard is held while the request is inspected.
-        validate_launch_configuration(&input, &region)
+        let image_id = validate_launch_configuration(&input, &region)
             .map_err(CreateWorkspaceInstanceErrorModeled::ValidationException)?;
+
+        // The image the launch boots has to be one the account really has: `ImageId`
+        // mirrors `RunInstances$ImageId`, so it names an AMI of the caller's own account
+        // in the Region the call was signed for, and a WorkSpace Instance cannot be
+        // created for an image that does not exist there. Amazon EC2 owns AMIs, so the id
+        // is resolved against ITS images rather than against anything this service keeps,
+        // and the refusal is made HERE — before the store is reached — so a request
+        // naming an image the account cannot see mints no id, writes no record and spends
+        // no `ClientToken`.
+        match crate::state::resolve_image(ctx, &region, image_id).await {
+            crate::state::ImageLookup::Unresolved => {
+                return Err(CreateWorkspaceInstanceErrorModeled::ValidationException(
+                    crate::state::invalid_image_id(),
+                )
+                .into())
+            }
+            // The image resolves, or Amazon EC2 answered neither way (it could not be
+            // reached, or refused the call for something other than the id). An
+            // inconclusive answer is no ground to call the caller's image invalid, so the
+            // create goes ahead and the LAUNCH below is what reports the failure, through
+            // the modelled `EC2InstanceError` beside the terminal `ERROR_ALLOCATING`.
+            crate::state::ImageLookup::Resolved | crate::state::ImageLookup::Unanswered(_) => {}
+        }
 
         // PHASE 1 — the record. Everything this service decides on its own (the token,
         // the quota, the id and the stored configuration) is settled under ONE guard,
@@ -383,46 +406,29 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             let mut state = state.lock();
             // The moves the clock already owes, materialised before anything is read:
             // a torn-down record past its retention is no longer reported, and neither is
-            // the `ClientToken` of the create that made it, so the replay below cannot
-            // hand back an id this service has stopped knowing.
+            // the `ClientToken` of the create that made it, so the refusal below cannot
+            // name an id this service has stopped knowing.
             state.settle_all(std::time::Instant::now());
 
-            // `@idempotent` + `@idempotencyToken`: a token identifies ONE request, so a
-            // repeat call carrying a token this service has already created an instance for
-            // replays the SAME id and creates nothing ONLY where the parameters are the ones
-            // that token was spent on. A call that reuses a spent token with different
-            // parameters is a different request under a spent token, and is refused with the
-            // modelled `ConflictException` rather than handed an instance it did not ask
-            // for; nothing is written on that refusal.
-            //
-            // The fingerprint is taken over the request with its token cleared, so every
-            // member except the token itself is compared.
-            let mut parameters = input.clone();
-            parameters.client_token = None;
-            let fingerprint = crate::state::request_fingerprint(&parameters);
-            match crate::state::resolve_client_token(
+            // `@idempotent` + `@idempotencyToken`: a `ClientToken` this service has
+            // already created a WorkSpace Instance for is SPENT. The token is a
+            // single-use guard against a duplicate launch, not a cache of the first
+            // call's response, so a later create carrying it is refused with the modelled
+            // `ConflictException` naming the instance that token did create — whether its
+            // parameters are the ones the token was spent on or different ones — and
+            // neither refusal creates a second instance or writes anything at all.
+            if let Some(created) = crate::state::spent_client_token(
                 &state.client_tokens,
                 &region,
                 input.client_token.as_deref(),
-                &fingerprint,
             ) {
-                TokenOutcome::Replay(instance_id) => {
-                    // A replay creates nothing: the instance that token was spent on was
-                    // launched by the create that spent it, so no second launch is made.
-                    return Ok(CreateWorkspaceInstanceOutput {
-                        workspace_instance_id: Some(instance_id),
-                    });
-                }
-                TokenOutcome::Mismatch(instance_id) => {
-                    return Err(CreateWorkspaceInstanceErrorModeled::ConflictException(
-                        crate::state::idempotent_parameter_mismatch(
-                            &instance_id,
-                            crate::state::WORKSPACE_INSTANCE_RESOURCE_TYPE,
-                        ),
-                    )
-                    .into())
-                }
-                TokenOutcome::Unclaimed => {}
+                return Err(CreateWorkspaceInstanceErrorModeled::ConflictException(
+                    crate::state::client_token_mismatch(
+                        &created,
+                        crate::state::WORKSPACE_INSTANCE_RESOURCE_TYPE,
+                    ),
+                )
+                .into());
             }
 
             // A real account has a Service Quotas limit on RUNNING WorkSpace Instances,
@@ -480,7 +486,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     (region.clone(), token),
                     crate::state::IdempotencyClaim {
                         resource_id: instance_id.clone(),
-                        fingerprint,
+                        // Nothing is compared against a create's claim: the token is spent
+                        // by this call, and that is the whole of what a later create
+                        // carrying it is refused on.
+                        fingerprint: None,
                     },
                 );
             }

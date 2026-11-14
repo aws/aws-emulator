@@ -4,21 +4,22 @@
 //! the wire this service really speaks (awsJson1_0, `POST /`,
 //! `X-Amz-Target: EUCMIFrontendAPIService.<OperationName>`).
 //!
-//! The rule under test: a create's `ClientToken` identifies ONE request, so a later
-//! call carrying a token the service has already created for is a retry only when
-//! every other member of the request is the one the token was spent on — that retry
-//! replays the first call's id and creates nothing, while a call that reuses the
-//! token with ANY different parameter is refused with the modelled
-//! `ConflictException` (HTTP 409, `smithy_query(query="shape",shape="ConflictException")`)
-//! naming the resource the token did create, and changes nothing in the store.
+//! The rule under test: a create's `ClientToken` is SINGLE-USE. Once a create has
+//! created a resource under a token, that token is spent: a later create carrying it is
+//! refused with the modelled `ConflictException` (HTTP 409,
+//! `smithy_query(query="shape",shape="ConflictException")`) naming the resource the token
+//! did create — whether the later request's parameters differ from the first call's or are
+//! byte-identical — and creates nothing, so the resource the token created keeps the
+//! configuration the FIRST call asked for.
 //!
 //! Both operations the model gives a `ClientToken` `@idempotencyToken` are covered
 //! (`CreateVolume` and `CreateWorkspaceInstance`), each over a table whose rows differ
 //! along one dimension of the request: a scalar, an enum, a boolean, an added member,
-//! a nested structure, and a list.
+//! a nested structure, and a list — plus the identical request, which is refused the
+//! same way.
 //!
-//! Nothing here can pass against a canned answer: the replayed id has to be the id the
-//! first call minted, the refusal has to name it, and what the store holds afterwards is
+//! Nothing here can pass against a canned answer: the refusal has to name the id the
+//! first call minted, and what the store holds afterwards is
 //! read back — through `GetWorkspaceInstance` / `ListWorkspaceInstances` /
 //! `ListTagsForResource` for an instance, and straight out of the engine for a volume,
 //! which this service models no operation to report back.
@@ -45,7 +46,7 @@ pub(crate) const CONFLICT_STATUS: u16 = 409;
 /// `second` the call that reuses it. `case` names the dimension they differ along.
 ///
 /// `pub(crate)` with [`assert_conflict`]: the sibling `instance_token_parameter_mismatch`
-/// suite drives the same rule over retries that differ in SEVERAL members at once, and
+/// suite drives the same rule over reuses that differ in SEVERAL members at once, and
 /// states a row and checks a refusal the same way rather than restating either.
 pub(crate) struct TokenRow {
     pub(crate) case: &'static str,
@@ -58,7 +59,10 @@ pub(crate) struct TokenRow {
 /// Read straight out of the engine the router was built from: this service models no
 /// operation that reports a volume's configuration back, so the wire cannot show that
 /// a refused retry left the first volume's configuration alone.
-fn stored_volumes(
+///
+/// `pub(crate)` with [`assert_conflict`]: the sibling `client_token_single_use` suite
+/// reads what a refused create left behind the same way.
+pub(crate) fn stored_volumes(
     engine: &Arc<engine::InMemoryEngine>,
 ) -> BTreeMap<String, wsinst::state::VolumeRecord> {
     let state = wsinst::state::service_state(&**engine)
@@ -99,8 +103,8 @@ pub(crate) fn assert_conflict(
 ) {
     assert_eq!(
         status, CONFLICT_STATUS,
-        "case {case:?}: expected HTTP {CONFLICT_STATUS} for a token reused with different \
-         parameters, got {status} with {payload}"
+        "case {case:?}: expected HTTP {CONFLICT_STATUS} for a spent client token, got \
+         {status} with {payload}"
     );
     assert_eq!(
         error_code(payload),
@@ -118,15 +122,16 @@ pub(crate) fn assert_conflict(
         Some(resource_type),
         "case {case:?}: expected the conflicting resource's kind, got {payload}"
     );
-    // The service's own fixed wording for this conflict: it states what the conflict is
-    // and echoes neither the (`@sensitive`) token nor any other submitted value.
+    // The service's fixed wording for this conflict: it states that the token does not
+    // match the request and echoes neither the (`@sensitive`) token nor any other
+    // submitted value.
     let message = payload["Message"]
         .as_str()
         .or_else(|| payload["message"].as_str());
     assert_eq!(
         message,
-        Some(wsinst::state::IDEMPOTENT_PARAMETER_MISMATCH_MESSAGE),
-        "case {case:?}: expected the service's idempotent-parameter-mismatch wording, got {payload}"
+        Some(wsinst::state::CLIENT_TOKEN_MISMATCH_MESSAGE),
+        "case {case:?}: expected the service's client-token conflict wording, got {payload}"
     );
 }
 
@@ -280,13 +285,13 @@ fn instance_mismatch_rows() -> Vec<TokenRow> {
             case: "a different ImageId",
             first: json!({
                 "ManagedInstance": {
-                    "ImageId": "ami-0123456789",
+                    "ImageId": "ami-01111111111111111",
                     "InstanceType": TEST_INSTANCE_TYPE,
                 },
             }),
             second: json!({
                 "ManagedInstance": {
-                    "ImageId": "ami-9876543210",
+                    "ImageId": "ami-02222222222222222",
                     "InstanceType": TEST_INSTANCE_TYPE,
                 },
             }),
@@ -351,7 +356,7 @@ fn instance_mismatch_rows() -> Vec<TokenRow> {
 }
 
 #[tokio::test]
-async fn a_volume_token_reused_with_different_parameters_is_a_conflict() {
+async fn a_spent_volume_token_is_a_conflict_however_the_request_differs() {
     for (row_index, row) in volume_mismatch_rows().into_iter().enumerate() {
         // One store per row, so what the store holds afterwards is this row's doing.
         let (router, engine) = harness();
@@ -378,7 +383,7 @@ async fn a_volume_token_reused_with_different_parameters_is_a_conflict() {
         assert_eq!(
             volumes.len(),
             1,
-            "case {:?}: expected the refused retry to create no volume, got {:?}",
+            "case {:?}: expected the refused reuse to create no volume, got {:?}",
             row.case,
             volumes.keys().collect::<Vec<_>>()
         );
@@ -404,8 +409,9 @@ async fn a_volume_token_reused_with_different_parameters_is_a_conflict() {
             row.case
         );
 
-        // The token is still the first request's: one claim, naming that volume, and a
-        // true retry of the first call still replays it.
+        // The token is still the first request's: one claim, naming that volume — and
+        // re-submitting the FIRST call's own body under it is refused too, the token
+        // being spent rather than a key the first answer is replayed from.
         let claims = stored_volume_claims(&engine);
         assert_eq!(
             claims.len(),
@@ -421,17 +427,26 @@ async fn a_volume_token_reused_with_different_parameters_is_a_conflict() {
             "case {:?}: expected the claim to still name {created:?}, got {claims:?}",
             row.case
         );
-        let replay = create_volume(&router, first).await;
+        let (status, payload) = call(&router, "CreateVolume", first).await;
+        assert_conflict(
+            &format!("{} (the identical request again)", row.case),
+            status,
+            &payload,
+            &created,
+            wsinst::state::VOLUME_RESOURCE_TYPE,
+        );
         assert_eq!(
-            replay, created,
-            "case {:?}: expected the unchanged request to replay {created:?}, got {replay:?}",
-            row.case
+            stored_volumes(&engine).len(),
+            1,
+            "case {:?}: expected the identical reuse to create no volume either, got {:?}",
+            row.case,
+            stored_volumes(&engine).keys().collect::<Vec<_>>()
         );
     }
 }
 
 #[tokio::test]
-async fn an_instance_token_reused_with_different_parameters_is_a_conflict() {
+async fn a_spent_instance_token_is_a_conflict_however_the_request_differs() {
     for (row_index, row) in instance_mismatch_rows().into_iter().enumerate() {
         let (router, _engine) = harness();
         let token = format!("tok-instance-{row_index}");
@@ -515,24 +530,39 @@ async fn an_instance_token_reused_with_different_parameters_is_a_conflict() {
             row.case
         );
 
-        // The token still belongs to the first request, which still replays.
-        let replayed = ok(&router, "CreateWorkspaceInstance", first).await;
+        // The token still belongs to the first request, which it is spent on: the FIRST
+        // call's own body under it is refused too, and creates nothing.
+        let (status, payload) = call(&router, "CreateWorkspaceInstance", first).await;
+        assert_conflict(
+            &format!("{} (the identical request again)", row.case),
+            status,
+            &payload,
+            &created,
+            wsinst::state::WORKSPACE_INSTANCE_RESOURCE_TYPE,
+        );
+        let listed = ok(&router, "ListWorkspaceInstances", json!({})).await;
+        let ids: Vec<&str> = listed["WorkspaceInstances"]
+            .as_array()
+            .unwrap_or_else(|| panic!("ListWorkspaceInstances returned nothing: {listed}"))
+            .iter()
+            .filter_map(|instance| instance["WorkspaceInstanceId"].as_str())
+            .collect();
         assert_eq!(
-            replayed["WorkspaceInstanceId"].as_str(),
-            Some(created.as_str()),
-            "case {:?}: expected the unchanged request to replay {created:?}, got {replayed}",
+            ids,
+            vec![created.as_str()],
+            "case {:?}: expected the identical reuse to create no instance either, got {listed}",
             row.case
         );
     }
 }
 
 #[tokio::test]
-async fn an_unchanged_request_still_replays_however_its_body_is_written() {
+async fn an_unchanged_request_is_refused_under_a_spent_token_however_its_body_is_written() {
     let (router, engine) = harness();
 
-    // The comparison is over the request's MEMBERS, not over the bytes that carried
-    // them: the same parameters written in another member order are the same request,
-    // so the token replays rather than conflicts.
+    // The token is spent whatever the bytes of the later request say: the same
+    // parameters written in another member order are the same request, and a request
+    // the token was never spent on is no different — both are refused.
     let rows = [
         (
             "the identical body",
@@ -556,10 +586,13 @@ async fn an_unchanged_request_still_replays_however_its_body_is_written() {
     for (case, body) in &rows {
         let mut body = body.clone();
         body["ClientToken"] = json!(token);
-        let replay = create_volume(&router, body).await;
-        assert_eq!(
-            replay, created,
-            "case {case:?}: expected the token to replay {created:?}, got {replay:?}"
+        let (status, payload) = call(&router, "CreateVolume", body).await;
+        assert_conflict(
+            case,
+            status,
+            &payload,
+            &created,
+            wsinst::state::VOLUME_RESOURCE_TYPE,
         );
     }
 
@@ -567,7 +600,7 @@ async fn an_unchanged_request_still_replays_however_its_body_is_written() {
     assert_eq!(
         volumes.len(),
         1,
-        "case equivalent replays: expected the one volume the token created, got {:?}",
+        "case spent-token reuses: expected the one volume the token created, got {:?}",
         volumes.keys().collect::<Vec<_>>()
     );
 }
@@ -612,8 +645,8 @@ async fn a_token_retired_by_delete_carries_no_claim_into_the_next_create() {
     let created = create_volume(&router, first).await;
 
     // `DeleteVolume` retires the claim with the record, so the token is unspent again:
-    // a later call carrying it with DIFFERENT parameters is a new request, not a
-    // conflict with a volume that no longer exists.
+    // a later call carrying it is a new request, not a conflict with a volume that no
+    // longer exists.
     ok(&router, "DeleteVolume", json!({ "VolumeId": &created })).await;
     assert!(
         stored_volume_claims(&engine).is_empty(),

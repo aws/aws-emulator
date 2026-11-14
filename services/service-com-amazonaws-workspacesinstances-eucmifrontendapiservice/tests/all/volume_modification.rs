@@ -880,7 +880,7 @@ async fn an_idempotency_token_replays_one_modification_and_a_reuse_is_a_conflict
             .or_else(|| payload["message"].as_str());
         assert_eq!(
             message,
-            Some(wsinst::state::IDEMPOTENT_PARAMETER_MISMATCH_MESSAGE),
+            Some(wsinst::state::CLIENT_TOKEN_MISMATCH_MESSAGE),
             "case token {token:?} reused: expected the spent-token wording, got {payload}"
         );
         assert_eq!(

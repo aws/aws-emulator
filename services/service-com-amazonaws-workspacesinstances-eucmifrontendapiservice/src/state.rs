@@ -1933,44 +1933,74 @@ impl VolumeRecord {
     }
 }
 
-/// What one spent `@idempotencyToken` created, and WHICH request spent it.
+/// What one spent `@idempotencyToken` created, and — where the operation's token is a
+/// replay key — WHICH request spent it.
 ///
-/// A create's `ClientToken` identifies one request, not just one caller: a later
-/// call carrying the same token is a retry of THAT request, so the claim keeps a
-/// [`request_fingerprint`] of the parameters the first call carried beside the id it
-/// minted. A retry whose parameters fingerprint alike replays `resource_id`; one
-/// whose parameters differ is a different request under a spent token, which the
-/// create operations refuse with [`idempotent_parameter_mismatch`].
+/// A `ClientToken` of this service is single-use on the CREATES: a later create carrying
+/// a token the service has already created a resource for is refused with
+/// [`client_token_mismatch`] whatever its parameters say, so a create's claim holds the id
+/// alone and compares nothing ([`spent_client_token`]). An operation whose token REPLAYS
+/// its first answer (`ModifyVolume`, which answers the modification the token was accepted
+/// for) keeps a [`request_fingerprint`] of the parameters that call carried beside the id,
+/// so a retry whose parameters fingerprint alike replays and one whose parameters differ
+/// is refused ([`resolve_client_token`]).
 #[derive(Debug, Clone)]
 pub struct IdempotencyClaim {
     /// The id the first call minted: the only id this token can ever answer with.
     pub resource_id: String,
-    /// [`request_fingerprint`] of the parameters that first call carried.
-    pub fingerprint: String,
+    /// [`request_fingerprint`] of the parameters that first call carried, for a token that
+    /// is a replay key; `None` where the token is single-use and nothing is compared.
+    pub fingerprint: Option<String>,
 }
 
-/// What a create call must do about the `ClientToken` it carries — the answer
+/// What a call whose `ClientToken` is a replay key must do about it — the answer
 /// [`resolve_client_token`] gives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenOutcome {
-    /// No claim holds this token (or the call carries none): create the resource.
+    /// No claim holds this token (or the call carries none): carry the request out.
     Unclaimed,
-    /// A retry of the same request: replay this id and create nothing.
+    /// A retry of the same request: answer what the first call answered and act again
+    /// on nothing.
     Replay(String),
     /// The token is already spent on DIFFERENT parameters: refuse the call, naming
-    /// the resource the token did create.
+    /// the resource the token was spent on.
     Mismatch(String),
 }
 
 /// Resolve a create's `ClientToken` against the claims this service already holds for
-/// the Region the create was signed for.
+/// the Region the create was signed for: the id the token has ALREADY created, if any.
 ///
-/// The ONE place the idempotency decision is made, so every `@idempotent` create of
-/// this service tells a retry from a reuse the same way: a token is matched on the
-/// Region, the token AND the fingerprint of the request's parameters, never on the
-/// token alone. The Region is part of the key because what the token created is
-/// regional — the same token at another Region's endpoint asks that Region for a
-/// resource it does not hold, so it creates one there rather than replaying this one.
+/// The ONE place the idempotency decision of a create is made, so every `@idempotent`
+/// create of this service treats a reused token the same way. A token is SPENT by the
+/// create that first carried it: it is a single-use guard against a duplicate creation,
+/// not a cache of that call's response, so a later create carrying it is refused with
+/// [`client_token_mismatch`] whether or not its parameters are the ones the token was
+/// spent on, and no second resource is created either way. A token no claim holds — or a
+/// create that carries none — creates its resource.
+///
+/// The Region is part of the key because what the token created is regional: the same
+/// token at another Region's endpoint asks that Region for a resource it does not hold, so
+/// it creates one there rather than conflicting with this one. A claim retired with the
+/// resource it created (a torn-down record, a dropped modification) leaves its token
+/// unspent again, so it creates once more.
+pub fn spent_client_token(
+    claims: &BTreeMap<(String, String), IdempotencyClaim>,
+    region: &str,
+    token: Option<&str>,
+) -> Option<String> {
+    let claim = token.and_then(|token| claims.get(&(region.to_string(), token.to_string())))?;
+    Some(claim.resource_id.clone())
+}
+
+/// Resolve a `ClientToken` whose operation REPLAYS its first answer against the claims
+/// this service holds for the Region the call was signed for.
+///
+/// For an operation whose token is a replay key rather than a single-use create guard
+/// (`ModifyVolume`, which answers the modification the token was accepted for): the token
+/// is matched on the Region, the token AND the fingerprint of the request's parameters,
+/// never on the token alone, so a retry of the same request replays and a different
+/// request under a spent token is refused. The creates resolve their token through
+/// [`spent_client_token`] instead.
 pub fn resolve_client_token(
     claims: &BTreeMap<(String, String), IdempotencyClaim>,
     region: &str,
@@ -1981,7 +2011,7 @@ pub fn resolve_client_token(
     else {
         return TokenOutcome::Unclaimed;
     };
-    if claim.fingerprint == fingerprint {
+    if claim.fingerprint.as_deref() == Some(fingerprint) {
         TokenOutcome::Replay(claim.resource_id.clone())
     } else {
         TokenOutcome::Mismatch(claim.resource_id.clone())
@@ -2012,27 +2042,28 @@ pub fn request_fingerprint(parameters: &impl Debug) -> String {
     hex::encode(digest.finalize())
 }
 
-/// The `Message` this service states for a `ClientToken` spent on one request and
-/// then reused for a different one.
+/// The `Message` this service states for a `ClientToken` the request cannot be served
+/// under: one already spent on a create, or one spent on a different request.
 ///
-/// A FIXED sentence, like [`INSTANCE_NOT_FOUND_MESSAGE`] and for the same reason: it
-/// states what the conflict IS and leaves the identity of the conflicting resource to
-/// the modelled `ResourceId` member, so the prose does not vary per request and echoes
-/// nothing the caller sent (the token is `@sensitive`).
-pub const IDEMPOTENT_PARAMETER_MISMATCH_MESSAGE: &str =
-    "ClientToken was already used to create a resource with different parameters";
+/// AWS's own fixed sentence for this conflict, as the service answers it: it states that
+/// the token does not match the request being made and names no id, token or parameter, so
+/// there is nothing per-request to substitute into it. The identity of the resource the
+/// token did create travels in the modelled `ResourceId` member instead (the token itself
+/// is `@sensitive`).
+pub const CLIENT_TOKEN_MISMATCH_MESSAGE: &str =
+    "The client token provided does not match the request";
 
-/// The modelled `ConflictException` (HTTP 409) for a create whose `ClientToken` is
-/// already spent on different parameters.
+/// The modelled `ConflictException` (HTTP 409) for a request whose `ClientToken` the
+/// service cannot serve it under.
 ///
-/// The ONE place this shape is built, so every `@idempotent` create of this service
-/// refuses a reused token identically: `ResourceId` names the resource the token DID
-/// create — the only resource that token can ever answer with — and `ResourceType`
-/// that resource's kind ([`WORKSPACE_INSTANCE_RESOURCE_TYPE`] /
-/// [`VOLUME_RESOURCE_TYPE`]). Every member the model marks `@required` is filled.
-pub fn idempotent_parameter_mismatch(resource_id: &str, resource_type: &str) -> ConflictException {
+/// The ONE place this shape is built, so every refusal of a reused token of this service
+/// is worded and filled identically: `ResourceId` names the resource the token DID create
+/// — the only resource that token can ever answer with — and `ResourceType` that
+/// resource's kind ([`WORKSPACE_INSTANCE_RESOURCE_TYPE`] / [`VOLUME_RESOURCE_TYPE`]).
+/// Every member the model marks `@required` is filled.
+pub fn client_token_mismatch(resource_id: &str, resource_type: &str) -> ConflictException {
     ConflictException {
-        message: IDEMPOTENT_PARAMETER_MISMATCH_MESSAGE.to_string(),
+        message: CLIENT_TOKEN_MISMATCH_MESSAGE.to_string(),
         resource_id: resource_id.to_string(),
         resource_type: resource_type.to_string(),
     }
@@ -2056,20 +2087,20 @@ pub struct ComAmazonawsWorkspacesinstancesEucmifrontendapiserviceState {
     /// and the Region a record belongs to is the one on the record itself.
     pub instances: BTreeMap<String, WorkspaceInstanceRecord>,
     /// (Region, `ClientToken`) -> the [`IdempotencyClaim`] `CreateWorkspaceInstance`
-    /// spent that token on in that Region: the instance id to replay, and the
-    /// fingerprint of the request that minted it, so a token reused for different
-    /// parameters is refused rather than replayed.
+    /// spent that token on in that Region: the instance id that create minted. A token
+    /// held here is SPENT, so a later create carrying it is refused rather than served
+    /// ([`spent_client_token`]).
     ///
     /// Keyed by Region as well as token because the resource a token creates is
     /// regional: the same token presented to another Region's endpoint is a create
-    /// for a Region that holds nothing yet, not a retry of this one.
+    /// for a Region that holds nothing yet, not a reuse of this one.
     pub client_tokens: BTreeMap<(String, String), IdempotencyClaim>,
     /// Every live volume, keyed by its `vol-…` id, each carrying its own Region.
     pub volumes: BTreeMap<String, VolumeRecord>,
     /// (Region, `ClientToken`) -> the [`IdempotencyClaim`] `CreateVolume` spent it on.
     /// A separate namespace from [`Self::client_tokens`]: a token is scoped to the
-    /// create call that carried it, so a volume token can never replay an instance
-    /// id (the two ids are not even the same shape).
+    /// create call that carried it, so a volume token's conflict can never name an
+    /// instance id (the two ids are not even the same shape).
     pub volume_client_tokens: BTreeMap<(String, String), IdempotencyClaim>,
     /// (Region, `ClientToken`) -> the [`IdempotencyClaim`] `ModifyVolume` spent it on:
     /// the volume that modification was accepted for, and the fingerprint of the
@@ -2195,9 +2226,10 @@ impl ComAmazonawsWorkspacesinstancesEucmifrontendapiserviceState {
     }
 
     /// Stop reporting a torn-down record: the record goes, and so does the
-    /// `ClientToken` of the create that made it, since replaying that token must not
-    /// hand back an id the service no longer knows. The claim is retired under the
-    /// Region the record belonged to, which is the Region that create was signed for.
+    /// `ClientToken` of the create that made it, since a later create carrying that
+    /// token must not be refused for an id the service no longer knows. The claim is
+    /// retired under the Region the record belonged to, which is the Region that create
+    /// was signed for.
     fn forget(&mut self, id: &str) {
         if let Some(removed) = self.instances.remove(id) {
             if let Some(token) = removed.client_token {
@@ -2292,10 +2324,10 @@ impl ComAmazonawsWorkspacesinstancesEucmifrontendapiserviceState {
     /// so the delete answers not-found and the volume itself is left untouched.
     ///
     /// The `ClientToken` of the create that made the volume is retired WITH the record,
-    /// exactly as [`Self::forget`] retires an instance's: replaying that token must not
-    /// hand back an id the service no longer knows, and a claim that outlived its
-    /// resource would let a create/delete cycle grow the claim map without bound even
-    /// though [`MAX_VOLUMES`] holds.
+    /// exactly as [`Self::forget`] retires an instance's: a later create carrying that
+    /// token must not be refused for an id the service no longer knows, and a claim that
+    /// outlived its resource would let a create/delete cycle grow the claim map without
+    /// bound even though [`MAX_VOLUMES`] holds.
     pub fn remove_volume(&mut self, region: &str, id: &str) -> Option<VolumeRecord> {
         if self.volumes.get(id)?.region != region {
             return None;
@@ -2748,7 +2780,7 @@ pub fn volume_not_found_error<E>(
 /// on because of the CURRENT state of one resource.
 ///
 /// The ONE place the state-conflict shape is built, beside
-/// [`idempotent_parameter_mismatch`] for the token case, so every such refusal fills
+/// [`client_token_mismatch`] for the token case, so every such refusal fills
 /// the same members: `ResourceId` names the resource whose state conflicts and
 /// `ResourceType` its kind ([`WORKSPACE_INSTANCE_RESOURCE_TYPE`] /
 /// [`VOLUME_RESOURCE_TYPE`]), and `Message` states the conflict in a FIXED sentence —

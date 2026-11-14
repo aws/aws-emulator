@@ -348,25 +348,32 @@ async fn deleting_one_volume_touches_no_other_resource() {
 }
 
 #[tokio::test]
-async fn an_idempotency_token_replays_one_volume_and_the_token_is_retired_by_delete() {
+async fn a_spent_idempotency_token_is_refused_and_retired_by_delete() {
     let router = router();
 
     for token in ["tok-1", "a token with spaces", &"t".repeat(64)] {
         let mut body = simple_create("us-east-1a");
         body["ClientToken"] = json!(token);
         let first = create_volume(&router, body.clone()).await;
-        let replay = create_volume(&router, body.clone()).await;
+        // The token is spent by that create, so sending the identical request again is
+        // refused with the conflict naming the volume it did create.
+        let (status, payload) = call(&router, "CreateVolume", body.clone()).await;
         assert_eq!(
-            first, replay,
-            "case token {token:?}: expected the same volume back, got {first:?} then {replay:?}"
+            status, 409,
+            "case token {token:?}: expected HTTP 409 for a spent token, got {status} with {payload}"
+        );
+        assert_eq!(
+            payload["ResourceId"].as_str(),
+            Some(first.as_str()),
+            "case token {token:?}: expected the conflict to name {first:?}, got {payload}"
         );
 
         // ONE volume was created, so deleting it once is enough to make the id unknown.
         ok(&router, "DeleteVolume", json!({ "VolumeId": &first })).await;
-        assert_not_found(&router, "a token-replayed volume, deleted once", &first).await;
+        assert_not_found(&router, "a volume created once under a token, deleted", &first).await;
 
-        // The token went with the record, so replaying the create mints a new volume
-        // rather than handing back an id that no longer exists.
+        // The token went with the record, so a create carrying it is a new request again
+        // rather than a conflict with an id that no longer exists.
         let after_delete = create_volume(&router, body).await;
         assert_ne!(
             after_delete, first,

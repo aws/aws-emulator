@@ -58,8 +58,10 @@ fn router() -> MultiServiceRouter {
     router.set_request_authentication(false);
     router.register_service(wsinst::EmulatedService::new(Arc::clone(&engine)));
     router.register_service(
-        service_com_amazonaws_ec2_amazonec2::EmulatedService::new(engine),
+        service_com_amazonaws_ec2_amazonec2::EmulatedService::new(Arc::clone(&engine)),
     );
+    // The network and the images the create fixtures name, in the account's own EC2.
+    crate::workspace_instance_lifecycle::seed_account_network(&engine);
     router
 }
 

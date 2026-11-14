@@ -17,6 +17,8 @@ mod attachment_persistence;
 mod availability_zone_catalog;
 #[path = "all/catalog_fidelity.rs"]
 mod catalog_fidelity;
+#[path = "all/client_token_single_use.rs"]
+mod client_token_single_use;
 #[path = "all/create_tag_specifications.rs"]
 mod create_tag_specifications;
 #[path = "all/ec2_managed_instance_propagation.rs"]
@@ -35,6 +37,8 @@ mod instance_token_parameter_mismatch;
 mod instance_type_catalog;
 #[path = "all/instance_type_configuration_completeness.rs"]
 mod instance_type_configuration_completeness;
+#[path = "all/launch_image_resolution.rs"]
+mod launch_image_resolution;
 #[path = "all/list_pagination_resume_points.rs"]
 mod list_pagination_resume_points;
 #[path = "all/next_token_canonical_spelling.rs"]

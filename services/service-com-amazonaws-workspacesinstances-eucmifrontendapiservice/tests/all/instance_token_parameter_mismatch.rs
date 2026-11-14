@@ -4,23 +4,22 @@
 //! differs in SEVERAL members at once, driven over the wire this service speaks
 //! (awsJson1_0, `POST /`, `X-Amz-Target: EUCMIFrontendAPIService.<OperationName>`).
 //!
-//! The rule under test: a create's `ClientToken` identifies ONE request, so the whole
-//! request beside the token is what a later call carrying that token is compared
-//! against — a call that differs in ANY member, at any depth, in any number, is a
-//! different request under a spent token and is refused with the modelled
+//! The rule under test: a create's `ClientToken` is spent by the create that carried it,
+//! so a later create carrying that token is refused with the modelled
 //! `ConflictException` (HTTP 409, `ResourceId`/`ResourceType` naming the resource the
-//! token did create — `smithy_query(query="shape",shape="ConflictException")`), while
+//! token did create — `smithy_query(query="shape",shape="ConflictException")`) however the
+//! request differs from the first — in ANY member, at any depth, in any number — while
 //! the resource that token created keeps the configuration the FIRST call asked for.
 //!
 //! The sibling `idempotency_token_reuse` suite varies ONE member per row; the rows
 //! here vary a member nested two levels down, a member dropped, members added, a list
 //! and a scalar together, and a whole structure replaced — the shapes of difference a
-//! comparison that only looked at the members it was written for would miss.
+//! refusal written for the members it expected would miss.
 //!
 //! Nothing here can pass against a canned answer: the refusal has to name the id the
 //! first call minted, the configuration the store holds for it is read back after the
 //! refusal, and each refused body is shown to be a create this service accepts by
-//! being replayed under a token of its own.
+//! being sent under a token of its own.
 
 use std::sync::Arc;
 
@@ -70,7 +69,7 @@ fn stored_ids(engine: &Arc<engine::InMemoryEngine>) -> Vec<String> {
 /// (`smithy_query(query="shape",shape="ManagedInstanceRequest")`), and every value
 /// satisfies that member's constraints, so a refusal of either side can only be the
 /// conflict and never a validation failure — which the second test here proves by
-/// replaying each `second` body under a token of its own.
+/// sending each `second` body under a token of its own.
 fn mismatch_rows() -> Vec<TokenRow> {
     vec![
         TokenRow {
@@ -150,7 +149,7 @@ fn mismatch_rows() -> Vec<TokenRow> {
             case: "the whole ManagedInstance replaced by the minimal launchable one",
             first: json!({
                 "ManagedInstance": {
-                    "ImageId": "ami-0123456789",
+                    "ImageId": "ami-01111111111111111",
                     "InstanceType": "c5.large",
                     "SubnetId": "subnet-0a1b2c3d",
                 },
@@ -184,7 +183,7 @@ fn mismatch_rows() -> Vec<TokenRow> {
 }
 
 #[tokio::test]
-async fn an_instance_token_reused_on_a_request_differing_in_several_members_is_a_conflict() {
+async fn a_spent_instance_token_is_a_conflict_on_a_request_differing_in_several_members() {
     for (row_index, row) in mismatch_rows().into_iter().enumerate() {
         // One store per row, so what the store holds afterwards is this row's doing.
         let (router, engine) = harness();
@@ -228,8 +227,8 @@ async fn an_instance_token_reused_on_a_request_differing_in_several_members_is_a
             row.case
         );
 
-        // The claim still names that instance, so the FIRST request still replays it
-        // and creates nothing, and the instance is still readable.
+        // The claim still names that instance, so the FIRST request is refused under
+        // that token too, and the instance is still readable.
         let claims = {
             let store = wsinst::state::service_state(&*engine).expect("the service's own store");
             let claims = store.lock().client_tokens.clone();
@@ -243,11 +242,13 @@ async fn an_instance_token_reused_on_a_request_differing_in_several_members_is_a
             "case {:?}: expected the claim to still name {created:?}, got {claims:?}",
             row.case
         );
-        let replayed = create(&router, first).await;
-        assert_eq!(
-            replayed, created,
-            "case {:?}: expected the unchanged request to replay {created:?}, got {replayed:?}",
-            row.case
+        let (status, payload) = call(&router, "CreateWorkspaceInstance", first).await;
+        assert_conflict(
+            &format!("{} (the first request again)", row.case),
+            status,
+            &payload,
+            &created,
+            wsinst::state::WORKSPACE_INSTANCE_RESOURCE_TYPE,
         );
         let got = ok(
             &router,
@@ -264,7 +265,7 @@ async fn an_instance_token_reused_on_a_request_differing_in_several_members_is_a
         assert_eq!(
             stored_ids(&engine),
             vec![created.clone()],
-            "case {:?}: expected the replay to create no second instance, got {:?}",
+            "case {:?}: expected the refusals to create no second instance, got {:?}",
             row.case,
             stored_ids(&engine)
         );

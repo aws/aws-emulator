@@ -75,7 +75,10 @@ const STATE_TERMINATED: &str = "terminated";
 /// An EC2 client over the router's own in-process callback: no socket is opened and
 /// nothing leaves the process, and the endpoint below is only the address that transport
 /// routes on.
-fn ec2_client(router: &MultiServiceRouter) -> ::aws_sdk_ec2::Client {
+///
+/// `pub(crate)` because the sibling `launch_image_resolution` suite registers an AMI
+/// through the same seam rather than building a second client.
+pub(crate) fn ec2_client(router: &MultiServiceRouter) -> ::aws_sdk_ec2::Client {
     let callback = EmbeddedEmulator::from_router(router.clone());
     let config = ::aws_sdk_ec2::Config::builder()
         .behavior_version(::aws_sdk_ec2::config::BehaviorVersion::latest())
@@ -605,7 +608,7 @@ async fn a_launch_ec2_refuses_is_reported_as_an_ec2_instance_error() {
 }
 
 #[tokio::test]
-async fn a_replayed_idempotency_token_launches_no_second_instance() {
+async fn a_spent_idempotency_token_launches_no_second_instance() {
     let (router, _engine) = harness();
     let ec2 = ec2_client(&router);
     let token = "tok-one-launch-per-workspace-instance";
@@ -619,23 +622,28 @@ async fn a_replayed_idempotency_token_launches_no_second_instance() {
     let managed = managed
         .unwrap_or_else(|| panic!("case the first create: no managed instance in {got}"));
 
-    // Three replays of the same request: each replays the one WorkSpace Instance, and the
-    // one instance behind it.
+    // Three re-submissions of the same request: each is refused for the spent token, and
+    // the one WorkSpace Instance keeps the one instance behind it.
     for repeat in 1..=3 {
-        let replayed = create(&router, body.clone()).await;
+        let (status, payload) = call(&router, "CreateWorkspaceInstance", body.clone()).await;
         assert_eq!(
-            replayed, first,
-            "case replay {repeat}: expected the token to replay {first:?}, got {replayed:?}"
+            status, 409,
+            "case reuse {repeat}: expected HTTP 409 for the spent token, got {status} with {payload}"
+        );
+        assert_eq!(
+            payload["ResourceId"].as_str(),
+            Some(first.as_str()),
+            "case reuse {repeat}: expected the conflict to name {first:?}, got {payload}"
         );
         let (again, _state, got) = reported_managed_instance(&router, &first).await;
         assert_eq!(
             again.as_deref(),
             Some(managed.as_str()),
-            "case replay {repeat}: expected the same managed instance, got {got}"
+            "case reuse {repeat}: expected the same managed instance, got {got}"
         );
     }
 
-    // And EC2 holds exactly one instance for the account: a replay launched none.
+    // And EC2 holds exactly one instance for the account: a refused reuse launched none.
     let held = held_instances(&ec2).await;
     assert_eq!(
         held,

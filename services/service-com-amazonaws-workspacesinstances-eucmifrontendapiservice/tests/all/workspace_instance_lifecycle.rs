@@ -43,15 +43,36 @@ pub(crate) const ACCOUNT_SECURITY_GROUPS: &[&str] = &[
     "sg-00000002",
 ];
 
-/// Write [`ACCOUNT_VPC`], [`ACCOUNT_SUBNETS`] and [`ACCOUNT_SECURITY_GROUPS`] into the
-/// account's own Amazon EC2 store, at those ids.
+/// The AMIs the launch fixtures of this crate's suites boot from, held in the account's
+/// own Amazon EC2 for the same reason the subnets are: `CreateWorkspaceInstance` resolves
+/// `ManagedInstance.ImageId` against the images the account can see and refuses an id that
+/// names none, so a fixture that launches names an image the account really has.
+///
+/// Each id is `ami-` followed by 17 lowercase hexadecimal digits — EC2's long id form,
+/// which is what `ec2:DescribeImages` reads an AMI id as.
+pub(crate) const ACCOUNT_IMAGES: &[&str] = &[
+    TEST_IMAGE_ID,
+    "ami-00112233445566778",
+    "ami-0a1b2c3d4e5f60718",
+    "ami-0deadbeefdeadbeef",
+    "ami-0fedcba9876543210",
+    "ami-01111111111111111",
+    "ami-02222222222222222",
+];
+
+/// Write [`ACCOUNT_VPC`], [`ACCOUNT_SUBNETS`], [`ACCOUNT_SECURITY_GROUPS`] and
+/// [`ACCOUNT_IMAGES`] into the account's own Amazon EC2 store, at those ids.
 ///
 /// `CreateWorkspaceInstance` launches the managed EC2 instance in the caller's own
-/// network, so a fixture that names a subnet or a security group names one the account
-/// has. Written through EC2's own store at CHOSEN ids rather than through EC2's API,
-/// because `ec2:CreateSubnet` mints the id it chooses and these fixtures name specific
-/// ones.
-fn seed_account_network(engine: &Arc<engine::InMemoryEngine>) {
+/// network from an image of the caller's own account, so a fixture that names a subnet, a
+/// security group or an image names one the account has. Written through EC2's own store
+/// at CHOSEN ids rather than through EC2's API, because `ec2:CreateSubnet` and
+/// `ec2:RegisterImage` mint the id they choose and these fixtures name specific ones.
+///
+/// `pub(crate)` because the suites that build a router of their own (`region_catalog`,
+/// `instance_type_catalog`, `validation_messages`, `wire_error_responses`) seed the same
+/// account through it rather than restating any of it.
+pub(crate) fn seed_account_network(engine: &Arc<engine::InMemoryEngine>) {
     let store = ec2::state::service_state(&**engine)
         .expect("the in-memory engine carries the account's EC2 store");
     let mut store = store.lock();
@@ -92,6 +113,21 @@ fn seed_account_network(engine: &Arc<engine::InMemoryEngine>) {
             ec2::ops::types::SecurityGroup {
                 group_id: Some((*group_id).to_string()),
                 vpc_id: Some(ACCOUNT_VPC.to_string()),
+                ..Default::default()
+            },
+        );
+    }
+    // The images those launches boot from, owned by this account so the account's own
+    // `ec2:DescribeImages` reports them. Written at CHOSEN ids for the same reason the
+    // subnets are: `ec2:RegisterImage` mints the id it chooses, and these fixtures name
+    // specific ones.
+    for image_id in ACCOUNT_IMAGES {
+        store.images.insert(
+            (*image_id).to_string(),
+            ec2::ops::types::Image {
+                image_id: Some((*image_id).to_string()),
+                owner_id: Some(engine::emulator_account_id().to_string()),
+                state: Some(ec2::state::IMAGE_STATE_AVAILABLE.to_string()),
                 ..Default::default()
             },
         );
@@ -446,7 +482,7 @@ async fn create_mints_a_persisted_id_every_later_read_resolves() {
 }
 
 #[tokio::test]
-async fn an_idempotency_token_replays_one_instance() {
+async fn a_spent_idempotency_token_creates_nothing_more() {
     let router = router();
     // `ClientToken`: len 1..64, pattern ^[\x20-\x7E]+$ (printable ASCII).
     let long = "t".repeat(64);
@@ -459,20 +495,35 @@ async fn an_idempotency_token_replays_one_instance() {
             "Tags": [{ "Key": "env", "Value": "dev" }]
         });
         let first = create(&router, body.clone()).await;
-        let second = create(&router, body.clone()).await;
-        let third = create(&router, body).await;
-        assert_eq!(
-            (first.as_str(), first.as_str()),
-            (second.as_str(), third.as_str()),
-            "case token {token:?}: expected the same id on replay, got {first:?}, {second:?}, {third:?}"
-        );
+        // The create SPENT that token, so re-submitting the identical request under it
+        // is refused rather than answered with the first call's id — however many times
+        // it arrives — and no second instance exists for it.
+        for attempt in 1..=2 {
+            let (status, payload) = call(&router, "CreateWorkspaceInstance", body.clone()).await;
+            assert_eq!(
+                status, 409,
+                "case token {token:?} (attempt {attempt}): expected HTTP 409 for a spent \
+                 token, got {status} with {payload}"
+            );
+            assert_eq!(
+                error_code(&payload),
+                "ConflictException",
+                "case token {token:?} (attempt {attempt}): expected ConflictException, got {payload}"
+            );
+            assert_eq!(
+                payload["ResourceId"].as_str(),
+                Some(first.as_str()),
+                "case token {token:?} (attempt {attempt}): expected the conflict to name \
+                 {first:?}, got {payload}"
+            );
+        }
     }
 
     let ids = list_all_ids(&router, json!({})).await;
     assert_eq!(
         ids.len(),
         tokens.len(),
-        "case replay-count: expected exactly one instance per distinct token ({}), got {ids:?}",
+        "case spent-token-count: expected exactly one instance per distinct token ({}), got {ids:?}",
         tokens.len()
     );
 

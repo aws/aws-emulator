@@ -429,7 +429,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
             TokenOutcome::Mismatch(volume_id) => {
                 return Err(ModifyVolumeErrorModeled::ConflictException(
-                    crate::state::idempotent_parameter_mismatch(
+                    crate::state::client_token_mismatch(
                         &volume_id,
                         crate::state::VOLUME_RESOURCE_TYPE,
                     ),
@@ -503,7 +503,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 (region.clone(), token),
                 crate::state::IdempotencyClaim {
                     resource_id: input.volume_id.clone(),
-                    fingerprint,
+                    // This operation's token REPLAYS the modification it was accepted
+                    // for, so the claim keeps the fingerprint a retry is matched on.
+                    fingerprint: Some(fingerprint),
                 },
             );
         }
