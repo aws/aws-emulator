@@ -39,6 +39,18 @@
 //! table, and the default error renderers — lives in the generated `ServiceDefinition`
 //! and is reached, not edited, through the one `definition` method below. You
 //! do not write it; editing the entry would let this file drift from the model.
+//!
+//! # The second API on this endpoint
+//!
+//! The `sdb` endpoint serves the modelled v2 export operations under `/v2/*` AND the
+//! Amazon SimpleDB 2009-04-15 AWS Query API on `"/"`, which this repo carries no Smithy
+//! model for. The generated routing table can name only the first, so the second is
+//! served through `override_operation` below — the one seam that sees a request's BODY,
+//! where that API's `Action` field is. [`sdb_query_api`] is that surface.
+
+/// The Amazon SimpleDB 2009-04-15 AWS Query API this endpoint serves beside the
+/// modelled export operations.
+pub mod sdb_query_api;
 
 use smithy_server_runtime::{
     http, ErasedOperation, Refusal, Refused, Service,
@@ -52,6 +64,11 @@ use std::sync::Arc;
 /// router builds one shared engine and hands it to `new`.
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
     entry: crate::ServiceDefinition<Eng>,
+    /// Serves the Amazon SimpleDB 2009-04-15 AWS Query API on this endpoint's root path.
+    /// Held on the service because `override_operation` hands the router a BORROW of one
+    /// of its own operations, and it owns the shared engine, so the domains and items it
+    /// writes are the ones the modelled export operations read.
+    sdb_query_api: sdb_query_api::SimpleDbQueryApi<Eng>,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -60,6 +77,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
         Self {
+            sdb_query_api: sdb_query_api::SimpleDbQueryApi::new(Arc::clone(&engine)),
             entry: crate::ServiceDefinition::new(engine),
         }
     }
@@ -91,7 +109,16 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // correctly; `None` (the default) lets the generated routing table resolve
         // it. `req` is the whole request, so a decision that depends on the body —
         // the `Action` form field on a query protocol, say — is reachable here.
-        let _ = req;
+        //
+        // The Amazon SimpleDB 2009-04-15 AWS Query API is exactly that case: it is
+        // served on this endpoint's ROOT path as a form-encoded request naming an
+        // `Action`, which no modelled route can match (the three modelled operations are
+        // bound under `/v2/`) and no routing key can name. Naming it an operation here is
+        // also what has the router verify the caller's SigV4 signature before anything is
+        // served, exactly as it does for the modelled operations.
+        if sdb_query_api::addresses_query_api(req) {
+            return Some(&self.sdb_query_api);
+        }
         None
     }
 

@@ -17,6 +17,11 @@
 // else appends to.
 #[path = "all/cloudformation_fifo_resource_generated_names.rs"]
 mod cloudformation_fifo_resource_generated_names;
+// Declared here, in this same head region, for the reason the entry above records: whether
+// the one service that claims the `sdb` signing name serves BOTH of that endpoint's APIs is
+// only observable against the whole service set, where that key is resolved.
+#[path = "all/sdb_legacy_query_api_on_the_assembled_router.rs"]
+mod sdb_legacy_query_api_on_the_assembled_router;
 // Declared here, in this same head region, for the reason the entry above records: which app
 // client's token a COGNITO_USER_POOLS authorizer admits spans Amazon Cognito user pools (which
 // mints the tokens) and API Gateway's execute-api data plane (which reads them), so neither

@@ -7,13 +7,14 @@
 //! `ListExports` enumerates the records. Every one of those three answers from the
 //! single store below, so a write by one call is what the next call reads.
 //!
-//! The store also holds the **domain registry** a `domainName` is resolved against.
-//! No operation of this service creates a SimpleDB domain (that is the SimpleDB
-//! 2009-04-15 `CreateDomain`), so the registry holds what the operator declared
-//! through [`EXISTING_DOMAINS_ENV`] plus the domain of every stored export, and a name
-//! it does not hold is the modelled `NoSuchDomainException`.
+//! The store also holds the **domain registry** a `domainName` is resolved against,
+//! and the items those domains hold ([`simpledb_domains`]). A domain enters the
+//! registry from the operator's declaration ([`EXISTING_DOMAINS_ENV`]), from a stored
+//! export, and from a `CreateDomain` on the Amazon SimpleDB 2009-04-15 query API this
+//! endpoint serves ([`crate::service::sdb_query_api`]); a name the registry does not
+//! hold is the modelled `NoSuchDomainException`.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::ops::types::ExportSummary;
@@ -21,6 +22,13 @@ use crate::ops::types::ExportSummary;
 /// The sentences this service refuses a request with, stated in ONE place so no two
 /// handlers word the same refusal differently.
 pub mod refusal_message;
+
+/// The domains the account holds and the items inside them — the registry a
+/// `domainName` resolves against, and the attribute store the 2009-04-15 query API
+/// writes.
+pub mod simpledb_domains;
+
+use simpledb_domains::Domain;
 
 /// The ARN namespace, endpoint prefix and sigv4 signing name of this service — all
 /// three are `sdb`, from the model's `aws.api#service` / `aws.auth#sigv4` traits.
@@ -162,19 +170,20 @@ impl StoredExport {
     /// this instant whether or not anybody called, so a `GetExport` that applies it
     /// reports what the record already held rather than advancing it because it was
     /// read.
-    pub fn settle(&mut self, now: SystemTime) {
+    pub fn settle(&mut self, now: SystemTime, items_in_domain: i64) {
         if self.export_status == STATUS_PENDING && now >= self.in_progress_due_at {
             self.export_status = STATUS_IN_PROGRESS.to_string();
         }
         if self.export_status == STATUS_IN_PROGRESS && now >= self.succeeded_due_at {
             self.export_status = STATUS_SUCCEEDED.to_string();
             self.export_manifest = Some(self.manifest_key());
-            // The number of SimpleDB items this emulator holds in the exported
-            // domain. This service's modelled surface carries no item-level
-            // operation — nothing can put, delete or select an item — so the store
-            // holds no items and the count of exported ones is zero. A larger number
-            // here would be invented, not counted.
-            self.items_count = Some(0);
+            // The number of SimpleDB items the exported domain holds, counted off that
+            // domain's own record in this store (`items_in_domain`) at the instant the
+            // export completed — the items a caller wrote with the 2009-04-15
+            // `PutAttributes`, and zero for a domain nothing has written to. It is
+            // captured HERE, where the export reaches its terminal status, so a later
+            // write to the domain does not change what a finished export reports.
+            self.items_count = Some(items_in_domain);
             // "All data inserted or modified before this time will be present in the
             // exported data": the cutoff is the instant the export finished, which is
             // when the clock made the move due, not when somebody looked.
@@ -242,13 +251,18 @@ pub struct ComAmazonawsSimpledbv2Simpledbv2State {
     exports: HashMap<String, StoredExport>,
     export_order: Vec<String>,
     client_tokens: HashMap<String, String>,
-    /// The SimpleDB domains this account holds, in name order.
+    /// The SimpleDB domains this account holds, in name order, each with the items it
+    /// holds ([`simpledb_domains`]).
     ///
-    /// BOUNDED: the only writers are [`Self::create_domain`] — not reachable from the
-    /// wire, see [`EXISTING_DOMAINS_ENV`] — and [`Self::insert_export`], which is
-    /// itself bounded at [`MAX_EXPORTS`] records, so no caller can grow this set
-    /// without end.
-    domains: BTreeSet<String>,
+    /// BOUNDED: [`Self::create_domain`] stores no more than
+    /// [`simpledb_domains::MAX_DOMAINS`] of them, and each domain's own contents are
+    /// bounded at [`simpledb_domains::MAX_DOMAIN_BYTES`], so neither the 2009-04-15 wire
+    /// nor [`Self::insert_export`] can grow this map without end.
+    domains: BTreeMap<String, Domain>,
+    /// The secret this store's `ListDomains` continuation tokens are authenticated
+    /// under, so no caller can name a position in the domain enumeration that this
+    /// store did not hand it.
+    page_token_key: ::service_common::page_tokens::PageTokenKey,
     /// Strictly increasing, and mixed into every minted id, so two ids minted in the
     /// same nanosecond still differ.
     id_counter: u64,
@@ -259,38 +273,54 @@ pub struct ComAmazonawsSimpledbv2Simpledbv2State {
 ///
 /// `engine::InMemoryEngine::state` builds a service's state with `Default` the first
 /// time a handler reaches it, so this is the ONE construction every store goes
-/// through, and it is where the operator's declared domains are read: no modelled
-/// operation of this service creates a domain, so a domain that is to exist at all has
-/// to reach the store from outside the wire.
+/// through, and it is where the operator's declared domains are read and where this
+/// store's page-token secret is drawn.
 impl Default for ComAmazonawsSimpledbv2Simpledbv2State {
     fn default() -> Self {
         let mut state = Self {
             exports: HashMap::new(),
             export_order: Vec::new(),
             client_tokens: HashMap::new(),
-            domains: BTreeSet::new(),
+            domains: BTreeMap::new(),
+            page_token_key: ::service_common::page_tokens::PageTokenKey::new(),
             id_counter: 0,
         };
         for domain in ::std::env::var(EXISTING_DOMAINS_ENV)
             .map(|setting| parse_existing_domains(&setting))
             .unwrap_or_default()
         {
-            state.create_domain(&domain);
+            // A declaration longer than the registry's ceiling is truncated at it rather
+            // than growing the store past the bound this emulator holds itself to.
+            let _ = state.create_domain(&domain);
         }
         state
     }
 }
 
 impl ComAmazonawsSimpledbv2Simpledbv2State {
-    /// Record that this account holds a domain named `domain_name`.
+    /// Record that this account holds a domain named `domain_name`, answering whether it
+    /// holds one after the call.
     ///
-    /// The ONLY way a domain enters the registry other than as the domain of a stored
-    /// export, and NOT reachable from the wire: this service models no operation that
-    /// creates one, so this is reached from [`EXISTING_DOMAINS_ENV`] when the store is
-    /// created, and from a test standing up an account that does have domains.
-    /// Declaring a name the registry already holds changes nothing.
-    pub fn create_domain(&mut self, domain_name: &str) {
-        self.domains.insert(domain_name.to_string());
+    /// Reached from [`EXISTING_DOMAINS_ENV`] when the store is created, from
+    /// [`Self::insert_export`], from the 2009-04-15 `CreateDomain`, and from a test
+    /// standing up an account that already has domains. Creating a name the registry
+    /// already holds changes nothing and keeps the items that name already has, which is
+    /// what makes that `CreateDomain` idempotent.
+    ///
+    /// `false` means the account already holds [`simpledb_domains::MAX_DOMAINS`] domains
+    /// and this NEW name was not stored; a handler maps that onto the published quota
+    /// refusal. The ceiling is enforced here, where the growth bound is documented, so no
+    /// caller of this store can drop it.
+    pub fn create_domain(&mut self, domain_name: &str) -> bool {
+        if self.domains.contains_key(domain_name) {
+            return true;
+        }
+        if self.domains.len() >= simpledb_domains::MAX_DOMAINS {
+            return false;
+        }
+        self.domains
+            .insert(domain_name.to_string(), Domain::new(SystemTime::now()));
+        true
     }
 
     /// Whether this account holds a domain named `domain_name`.
@@ -299,12 +329,12 @@ impl ComAmazonawsSimpledbv2Simpledbv2State {
     /// filter resolve before they mint or enumerate anything, and whose failure is the
     /// modelled `NoSuchDomainException`.
     pub fn has_domain(&self, domain_name: &str) -> bool {
-        self.domains.contains(domain_name)
+        self.domains.contains_key(domain_name)
     }
 
     /// Every domain this account holds, in name order.
     pub fn domains(&self) -> impl Iterator<Item = &str> + '_ {
-        self.domains.iter().map(String::as_str)
+        self.domains.keys().map(String::as_str)
     }
 
     /// A fresh identifier, rendered the way RFC 4122 renders a version-4 UUID
@@ -351,8 +381,14 @@ impl ComAmazonawsSimpledbv2Simpledbv2State {
     /// Materialise every status move the clock already owes, so each operation
     /// reports the record as it stands at `now`.
     pub fn settle_all(&mut self, now: SystemTime) {
+        // The two fields are borrowed disjointly: an export's terminal `itemsCount` is
+        // the item count of the domain it exported, which lives on that domain's record.
+        let domains = &self.domains;
         for export in self.exports.values_mut() {
-            export.settle(now);
+            let items_in_domain = domains
+                .get(&export.domain_name)
+                .map_or(0, Domain::item_count);
+            export.settle(now, i64::try_from(items_in_domain).unwrap_or(i64::MAX));
         }
     }
 
@@ -408,7 +444,11 @@ impl ComAmazonawsSimpledbv2Simpledbv2State {
         if self.export_order.len() >= MAX_EXPORTS {
             return false;
         }
-        self.create_domain(&export.domain_name);
+        // A domain the registry could not take (it already holds
+        // `simpledb_domains::MAX_DOMAINS`) is not a reason to lose the export record:
+        // the record itself is the evidence of its domain, and `StartDomainExport` only
+        // ever stores one for a domain the registry already held.
+        let _ = self.create_domain(&export.domain_name);
         self.client_tokens
             .insert(export.client_token.clone(), export.export_arn.clone());
         self.export_order.push(export.export_arn.clone());

@@ -35,5 +35,16 @@ sha2 = { workspace = true }
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
 
+[dev-dependencies]
+# `form_urlencoded`: the ONE encoder of the `application/x-www-form-urlencoded` body a
+# SimpleDB 2009-04-15 request carries, so the suite that drives that wire
+# (`tests/all/simpledb_query_api.rs`) sends what a client sends rather than a form it
+# encoded by hand.
+form_urlencoded = "1"
+# `roxmltree`: that same suite READS the XML documents this API answers with through a
+# real XML parser, so an assertion sees the text a client's parser sees (entities
+# resolved) rather than the bytes on the wire.
+roxmltree = "0.20"
+
 [lints]
 workspace = true

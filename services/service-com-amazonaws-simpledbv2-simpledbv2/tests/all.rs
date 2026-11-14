@@ -17,5 +17,7 @@ mod domain_existence;
 mod domain_export_lifecycle;
 #[path = "all/refusal_message_wording.rs"]
 mod refusal_message_wording;
+#[path = "all/simpledb_query_api.rs"]
+mod simpledb_query_api;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
