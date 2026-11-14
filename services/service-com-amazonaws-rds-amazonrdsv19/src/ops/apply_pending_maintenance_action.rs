@@ -75,12 +75,16 @@
 //! * `InvalidDBInstanceStateFault` (HTTP 400) — The DB instance isn't in a valid state.
 //! * `ResourceNotFoundFault` (HTTP 404) — The specified resource ID was not found.
 //!
-//! `ResourceIdentifier` carries the ARN of the resource this call ACTS ON. An ARN that
-//! resolves to no resource of the account is answered on the MEMBER that carried it: HTTP
-//! 400 `InvalidParameterValue` with the `Unknown resource: <identifier>` sentence
-//! ([`unknown_resource_message`]), echoing the value the request supplied — whichever
-//! resource kind the ARN names, and whether it is an ARN at all. The two state faults need
-//! a maintenance action to be pending, and nothing in this service schedules one.
+//! `ResourceIdentifier` carries the ARN of the resource this call ACTS ON, and what an ARN
+//! that resolves to no resource of the account earns depends on the resource TYPE it names.
+//! An ARN naming a DB CLUSTER answers the modelled `ResourceNotFoundFault` (HTTP 404) with
+//! the `Resource not found: <identifier>` sentence ([`resource_not_found_message`]), naming
+//! the cluster identifier the ARN carries; every other value that resolves to nothing — a DB
+//! instance ARN, an ARN of another resource type or vendor, a value that is no ARN at all —
+//! is answered on the MEMBER that carried it: HTTP 400 `InvalidParameterValue` with the
+//! `Unknown resource: <identifier>` sentence ([`unknown_resource_message`]), echoing the
+//! value the request supplied. The two state faults need a maintenance action to be pending,
+//! and nothing in this service schedules one.
 
 #[allow(unused_imports)]
 use super::types::*;
@@ -155,11 +159,37 @@ fn check_value(member: &str, value: &str, allowed: &[&str]) -> Result<(), String
 /// The whole value is echoed rather than a segment of it: the member takes "the RDS Amazon
 /// Resource Name (ARN) of the resource that the pending maintenance action applies to", so
 /// what the caller has to correct is that value. ONE sentence covers every value that
-/// resolves to nothing — an ARN of a DB instance or DB cluster this account does not hold,
-/// an ARN of another resource type or vendor, and a value that is no ARN at all — because
-/// what the refusal reports is that this parameter named no resource.
+/// resolves to nothing EXCEPT a DB cluster ARN ([`resource_not_found_message`]) — an ARN of a
+/// DB instance this account does not hold, an ARN of another resource type or vendor, and a
+/// value that is no ARN at all — because what the refusal reports is that this parameter
+/// named no resource.
 fn unknown_resource_message(resource_identifier: &str) -> String {
     format!("Unknown resource: {resource_identifier}")
+}
+
+/// The message the DB CLUSTER path reports an identifier that resolves to no cluster with:
+/// the fixed text `Resource not found: `, then the cluster identifier the ARN names.
+///
+/// The variable part is the resource the ARN addresses rather than the whole ARN, which is
+/// the identifier the caller gave the cluster and the one every other cluster operation of
+/// this service answers about.
+fn resource_not_found_message(cluster_identifier: &str) -> String {
+    format!("Resource not found: {cluster_identifier}")
+}
+
+/// The resource-type field a DB cluster's ARN carries
+/// (`arn:<partition>:rds:<region>:<account>:cluster:<identifier>`, the form
+/// `crate::state::db_cluster_arn` mints).
+const DB_CLUSTER_ARN_RESOURCE_TYPE: &str = "cluster";
+
+/// The DB cluster `value` names, or `None` when it is no DB cluster ARN of this service.
+///
+/// The ARN is read through the crate's one ARN reader
+/// (`crate::state::parse_rds_resource_arn`), so which resource TYPE a value names is decided
+/// here exactly as every other operation that branches on it decides.
+fn db_cluster_arn_identifier(value: &str) -> Option<&str> {
+    let arn = crate::state::parse_rds_resource_arn(value)?;
+    (arn.resource_type == DB_CLUSTER_ARN_RESOURCE_TYPE).then_some(arn.identifier)
 }
 
 /// The `ApplyPendingMaintenanceAction` operation.
@@ -229,14 +259,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     .map(|record| record.arn()),
             )
             .find(|arn| *arn == resource);
-        // An identifier that resolves to no resource of this account is refused on the
-        // MEMBER that carried it: HTTP 400 with the Query API's `InvalidParameterValue` and
-        // the `Unknown resource: <identifier>` sentence, echoing the value the request
-        // supplied. `ResourceIdentifier` is an ARN the caller COMPOSES, so a value naming
-        // no resource this account holds is a value this parameter does not accept —
-        // whatever resource kind the ARN names, and whether it is an ARN at all — which is
-        // a 4xx a client treats as "fix the request".
+        // An identifier that resolves to no resource of this account is refused according to
+        // the resource TYPE it names. An ARN naming a DB CLUSTER is answered by the cluster
+        // path, which reports the resource as absent: the modelled `ResourceNotFoundFault`
+        // (HTTP 404) and the `Resource not found: <identifier>` sentence, naming the cluster
+        // the ARN addresses. Every other value — a DB instance ARN, an ARN of another
+        // resource type or vendor, a value that is no ARN at all — is refused on the MEMBER
+        // that carried it: HTTP 400 with the Query API's `InvalidParameterValue` and the
+        // `Unknown resource: <identifier>` sentence, echoing the value the request supplied,
+        // because such a value is one this parameter does not accept.
         let Some(resource_arn) = resolved else {
+            if let Some(cluster_identifier) = db_cluster_arn_identifier(&resource) {
+                return Err(
+                    ApplyPendingMaintenanceActionErrorModeled::ResourceNotFoundFault(
+                        ResourceNotFoundFault {
+                            message: Some(resource_not_found_message(cluster_identifier)),
+                        },
+                    )
+                    .into(),
+                );
+            }
             return Err(ApplyPendingMaintenanceActionError::invalid_parameter_value(
                 unknown_resource_message(&input.resource_identifier),
             ));

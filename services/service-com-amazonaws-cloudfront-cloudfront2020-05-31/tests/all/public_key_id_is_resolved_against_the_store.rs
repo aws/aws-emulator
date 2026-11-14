@@ -6,10 +6,11 @@
 //! `GetPublicKeyConfig`, `UpdatePublicKey` and `DeletePublicKey`
 //! (`smithy_query(query="operation",operation="GetPublicKey,GetPublicKeyConfig,UpdatePublicKey,DeletePublicKey")`)
 //! — model one 404 error, `NoSuchPublicKey`, so one code and one status cover both ways an
-//! `Id` can fail to name a key and the MESSAGE is what tells them apart: a value outside the
-//! shape CloudFront mints public key ids in is the identifier the service cannot READ, while
-//! a value of that shape the store holds no key for is the key that is ABSENT. Neither
-//! sentence echoes the value submitted.
+//! `Id` can fail to name a key and the MESSAGE is what tells them apart: only a value that is
+//! a well-formed identifier of ANOTHER resource kind this service mints could never have been
+//! a public key id, so it is the identifier the service cannot READ, while every other value
+//! the store holds no key for — one of the public key namespace, a name, a word of no id shape
+//! at all — is the key that is ABSENT. Neither sentence echoes the value submitted.
 //!
 //! The rows span what the rule generalises over — a value's RELATION to this service's
 //! identifier namespaces, on both sides of the split. The point this suite adds to the
@@ -109,7 +110,7 @@ async fn a_public_key_id_outside_its_shape_is_unreadable_and_one_inside_it_is_ab
         (
             "the public key prefix with a body of no minted id's width",
             format!("{PUBLIC_KEY_ID_PREFIX}2AA"),
-            ID_FORMAT_INVALID,
+            NO_SUCH_PUBLIC_KEY,
         ),
         (
             "a field-level encryption profile id",
@@ -134,17 +135,17 @@ async fn a_public_key_id_outside_its_shape_is_unreadable_and_one_inside_it_is_ab
         (
             "the stored id in lower case",
             key_id.to_lowercase(),
-            ID_FORMAT_INVALID,
+            NO_SUCH_PUBLIC_KEY,
         ),
         (
             "the caller reference rather than the id",
             key.caller_reference.clone(),
-            ID_FORMAT_INVALID,
+            NO_SUCH_PUBLIC_KEY,
         ),
         (
             "a word of no CloudFront id shape at all",
             "..".to_string(),
-            ID_FORMAT_INVALID,
+            NO_SUCH_PUBLIC_KEY,
         ),
     ];
 

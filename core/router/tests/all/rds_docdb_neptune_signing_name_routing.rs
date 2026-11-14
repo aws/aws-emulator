@@ -345,9 +345,10 @@ fn rds_docdb_and_neptune_route_apart_under_one_signing_name() {
                 },
                 Call {
                     // The identifier is an ARN the CALLER composes for the resource the
-                    // action is applied to, so an ARN that resolves to no resource of the
-                    // account is refused on the MEMBER that carried it, echoing the value
-                    // the request supplied — whichever resource kind the ARN names.
+                    // action is applied to, so a DB INSTANCE ARN that resolves to no
+                    // resource of the account is refused on the MEMBER that carried it,
+                    // echoing the value the request supplied. (A DB CLUSTER ARN that
+                    // resolves to nothing is the cluster path's own not-found fault.)
                     case: "rds ApplyPendingMaintenanceAction on a missing resource ARN",
                     addressed: Addressed::Signed("rds"),
                     action: "ApplyPendingMaintenanceAction",

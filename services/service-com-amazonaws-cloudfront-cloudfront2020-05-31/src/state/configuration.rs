@@ -3209,21 +3209,22 @@ pub const NO_SUCH_PUBLIC_KEY_MESSAGE: &str = "The specified CloudFront public ke
 ///
 /// `GetPublicKey`'s model declares this one error, so one code and one status cover both
 /// outcomes and the MESSAGE is what tells them apart — the same split
-/// [`unresolved_key_group_id`] makes for a key group and
-/// [`unresolved_field_level_encryption_profile_id`] makes for a profile: an `Id` outside the
-/// shape every public key id takes ([`crate::state::is_public_key_id`]) is refused as an
-/// identifier CloudFront cannot read ([`id_format_invalid_message`]), while a well-formed id
-/// the store holds no key for is the absent-key sentence ([`NO_SUCH_PUBLIC_KEY_MESSAGE`]).
-/// A well-formed identifier of ANOTHER resource kind of this service is therefore the former:
-/// it was never a public key id at all. Both sentences are fixed text and neither echoes the
+/// [`unresolved_field_level_encryption_profile_id`] makes for a profile, decided by the one
+/// predicate both read ([`is_minted_entity_id_of_another_kind`]): a value that is a
+/// well-formed identifier of ANOTHER resource kind this service mints could never have been a
+/// public key id, so it is the identifier CloudFront cannot READ
+/// ([`id_format_invalid_message`]), while every other value the store holds no key for — an id
+/// of the public key namespace that was never minted or is of no minted id's width, a name, a
+/// caller reference, a word of no id shape at all — is a public key that is ABSENT
+/// ([`NO_SUCH_PUBLIC_KEY_MESSAGE`]). Both sentences are fixed text and neither echoes the
 /// value submitted.
 pub fn unresolved_public_key_id(id: &str) -> crate::ops::types::NoSuchPublicKey {
-    if crate::state::is_public_key_id(id) {
-        no_such_public_key()
-    } else {
+    if is_minted_entity_id_of_another_kind(id, crate::state::is_public_key_id) {
         crate::ops::types::NoSuchPublicKey {
             message: Some(id_format_invalid_message("Id")),
         }
+    } else {
+        no_such_public_key()
     }
 }
 

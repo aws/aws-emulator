@@ -284,26 +284,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             crate::scaffolded::Scaffolded::validation("the repository store is unavailable")
         })?;
         let mut store = state.lock();
-        // Whether the id names a pull request AT ALL is a question about the whole
-        // store, because a pull request id is unique per account — and it is the
-        // question this operation answers FIRST, as every operation keyed by a pull
-        // request id does, so an id naming no pull request anywhere is reported as
-        // naming none whatever the repository name holds.
-        if store.pull_request(pull_request_id).is_none() {
-            return Err(
-                MergePullRequestByFastForwardErrorModeled::PullRequestDoesNotExistException(
-                    PullRequestDoesNotExistException {
-                        message: Some(
-                            crate::state::PULL_REQUEST_DOES_NOT_EXIST_MESSAGE.to_string(),
-                        ),
-                    },
-                )
-                .into(),
-            );
-        }
-        // The pull request resolved, so the repository the request names is resolved
-        // next: it is the resource the merge is scoped to, and a name the account
-        // holds no repository for is reported as naming none.
+        // A merge WRITES to the repository the request names — its destination reference
+        // moved to the source tip — so that repository is the resource this call acts on, and
+        // it is the identifier resolved FIRST: a name the account holds no repository for is
+        // reported as naming none, whatever the pull request id beside it names. An operation
+        // that acts on the PULL REQUEST instead (its comments, its approvals) resolves the
+        // pull request first, because that is the resource it addresses.
         if !store.repositories.contains_key(&input.repository_name) {
             return Err(
                 MergePullRequestByFastForwardErrorModeled::RepositoryDoesNotExistException(
@@ -311,6 +297,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         message: Some(crate::state::repository_does_not_exist_message(
                             &input.repository_name,
                         )),
+                    },
+                )
+                .into(),
+            );
+        }
+        // With the repository resolved, whether the id names a pull request AT ALL is a
+        // question about the whole store, because a pull request id is unique per account:
+        // an id naming no pull request anywhere is reported as naming none.
+        if store.pull_request(pull_request_id).is_none() {
+            return Err(
+                MergePullRequestByFastForwardErrorModeled::PullRequestDoesNotExistException(
+                    PullRequestDoesNotExistException {
+                        message: Some(
+                            crate::state::PULL_REQUEST_DOES_NOT_EXIST_MESSAGE.to_string(),
+                        ),
                     },
                 )
                 .into(),

@@ -514,10 +514,15 @@ async fn tag_resource_rejects_an_arn_naming_no_resource() {
             UNKNOWN_MANAGER_ARN.to_string(),
         ),
         ("the ARN of a deleted manager", deleted),
-        ("a string that is no ARN at all", "not-an-arn".to_string()),
         (
-            "an ARN of another service",
-            "arn:aws:ssm:us-west-2:000000000000:document/doc".to_string(),
+            "a well-formed ARN of this account in another Region",
+            "arn:aws:ssm-quicksetup:eu-west-1:000000000000:configuration-manager/\
+             11111111-2222-3333-4444-555555555555"
+                .to_string(),
+        ),
+        (
+            "a resource type this service does not mint",
+            "arn:aws:ssm-quicksetup:us-west-2:000000000000:configuration/not-a-manager".to_string(),
         ),
     ] {
         let (status, answer) = tag(&router, &arn, &tags(&[("Team", "platform")])).await;
@@ -878,10 +883,15 @@ async fn untag_resource_rejects_an_arn_naming_no_resource() {
     for (case, arn) in [
         ("a well-formed ARN no create minted", UNKNOWN_MANAGER_ARN.to_string()),
         ("the ARN of a deleted manager", deleted),
-        ("a string that is no ARN at all", "not-an-arn".to_string()),
         (
-            "an ARN of another service",
-            "arn:aws:ssm:us-west-2:000000000000:document/doc".to_string(),
+            "a well-formed ARN of this account in another Region",
+            "arn:aws:ssm-quicksetup:eu-west-1:000000000000:configuration-manager/\
+             11111111-2222-3333-4444-555555555555"
+                .to_string(),
+        ),
+        (
+            "a resource type this service does not mint",
+            "arn:aws:ssm-quicksetup:us-west-2:000000000000:configuration/not-a-manager".to_string(),
         ),
     ] {
         let (status, answer) = untag(&router, &arn, &["Env"]).await;

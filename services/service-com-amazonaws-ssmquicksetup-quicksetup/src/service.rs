@@ -21,8 +21,9 @@
 //!   for anything the model does not express: a signing name shared by several
 //!   services, or routing that keys on the access-key id.
 //! - `override_operation` — serve a request the model's routing key cannot name
-//!   correctly. Not edited here: every request this endpoint serves names a modelled
-//!   route, so the generated routing table is this service's only operation source.
+//!   correctly. EDITED here: a request addressing a resource ARN the caller is not entitled
+//!   to is refused by the front door (see below) rather than dispatched to the operation its
+//!   route names.
 //! - `override_refusal` — how this service words a request the framework refused
 //!   before any handler ran. EDITED here: a modelled-constraint refusal is worded the
 //!   way AWS words it on a JSON protocol.
@@ -40,29 +41,34 @@
 //! and is reached, not edited, through the one `definition` method below. You
 //! do not write it; editing the entry would let this file drift from the model.
 //!
-//! ## A route's target resource is resolved by the operation, not in front of it
+//! ## A route's target resource: the ARN's entitlement is decided in front, its resolution is not
 //!
 //! Several routes of this endpoint carry a resource ARN as a path label — the manager's
 //! own `/configurationManager/{ManagerArn}`, the tag plane's `/tags/{ResourceArn}`, and
 //! `/configurationDefinition/{ManagerArn}/{Id}`, whose label is the ARN of the manager
-//! that OWNS the definition the route addresses. Whether such an ARN names a resource
-//! this endpoint serves is a RESOURCE outcome, never an authorization one, so nothing
-//! here stands between those requests and their handler: each operation resolves the ARN
-//! it was given against this service's state and answers its own modelled
-//! `ResourceNotFoundException` (HTTP 404) when nothing answers to it — the same shape,
-//! with the same sentence, as for an ARN a request carries in its BODY
-//! (`ListConfigurations`) or for the configuration id `GetConfiguration`'s label carries.
-//! This service's model declares no 401 and no `UnauthorizedException` for any operation,
-//! so a caller can read a 404 as "the resource is gone" and an `AccessDeniedException`
-//! (HTTP 403, raised by each handler from the policies in force on the calling principal,
-//! [`crate::state::identity_authorization`]) as "your identity may not do this" without
-//! the two outcomes being confused.
+//! that OWNS the definition the route addresses. An ARN names the ACCOUNT that owns the
+//! resource, so one thing about such a request IS decided in front of the handlers
+//! ([`target_entitlement`]): whether the ARN is a resource ARN of this service belonging to
+//! the account the request is signed for. A request naming anything else addresses a
+//! resource that is not the caller's and is refused by the front door with
+//! [`UNAUTHORIZED_STATUS`] / [`UNAUTHORIZED_CODE`] / [`UNAUTHORIZED_MESSAGE`], before any
+//! handler and before the modelled constraint walk.
 //!
-//! A consequence of there being nothing in front of the handlers: a path label outside
-//! the `@pattern` the model states for it is refused by the modelled constraint walk, in
-//! the `400 ValidationException` envelope every other malformed input earns. The tag
-//! plane's `ResourceArn` carries no `@pattern` and no `@length` at all, so any value the
-//! route matches reaches the handler and is resolved there.
+//! Whether a resource ANSWERS to an ARN the caller IS entitled to is a RESOURCE outcome,
+//! never an authorization one, so nothing stands between such a request and its handler:
+//! each operation resolves the ARN it was given against this service's state and answers its
+//! own modelled `ResourceNotFoundException` (HTTP 404) when nothing answers to it — the same
+//! shape, with the same sentence, as for an ARN a request carries in its BODY
+//! (`ListConfigurations`) or for the configuration id `GetConfiguration`'s label carries. A
+//! manager that has been torn down, one this endpoint never minted, and one another Region's
+//! endpoint minted are all that 404.
+//!
+//! A consequence of there being nothing ELSE in front of the handlers: a path label the
+//! caller IS entitled to that falls outside the `@pattern` the model states for it is refused
+//! by the modelled constraint walk, in the `400 ValidationException` envelope every other
+//! malformed input earns. The tag plane's `ResourceArn` carries no `@pattern` and no `@length`
+//! at all, so any value the route matches and the caller is entitled to reaches the handler
+//! and is resolved there.
 //!
 //! ## The front door's answer to a request that names no route
 //!
@@ -86,10 +92,14 @@
 //! every route rather than guessed at per operation — and a handler behind the front door
 //! may rely on having been reached only by a request that named its route.
 
+pub mod target_entitlement;
+
+use target_entitlement::UnauthorizedTargetOperation;
+
 use aws_smithy_runtime_api::http::{Request as RtRequest, Response as RtResponse};
 use aws_smithy_schema::serde::{SerdeError, SerializableStruct, ShapeSerializer};
 use aws_smithy_schema::{Schema, ShapeId, ShapeType};
-use smithy_server_runtime::{http, Refusal, Refused, Service};
+use smithy_server_runtime::{http, ErasedOperation, Refusal, Refused, Service};
 use std::sync::Arc;
 
 /// The wire error code (`__type` and `x-amzn-errortype`) of the front door's refusal of a
@@ -160,7 +170,7 @@ impl SerializableStruct for Unauthorized {
 /// the same envelope (and the same `x-amzn-errortype` header) as every other error this
 /// service answers. The status and the error code come from the refusal itself: the shape
 /// is not in the model, so there is no modelled error to read them off.
-fn unauthorized(svc: &dyn Service, req: &RtRequest) -> RtResponse {
+pub(crate) fn unauthorized(svc: &dyn Service, req: &RtRequest) -> RtResponse {
     svc.definition()
         .protocol()
         .serialize_error(
@@ -179,6 +189,10 @@ fn unauthorized(svc: &dyn Service, req: &RtRequest) -> RtResponse {
 /// router builds one shared engine and hands it to `new`.
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
     entry: crate::ServiceDefinition<Eng>,
+    /// The refusal served for a request addressing a resource ARN the caller is not entitled
+    /// to. Held in a field, built once, because `override_operation` hands back a reference
+    /// to it.
+    unauthorized_target: UnauthorizedTargetOperation,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -188,6 +202,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     pub fn new(engine: Arc<Eng>) -> Self {
         Self {
             entry: crate::ServiceDefinition::new(engine),
+            unauthorized_target: UnauthorizedTargetOperation,
         }
     }
 }
@@ -208,6 +223,16 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
             Some(key) => key == self.entry.identity().signing_name(),
             None => false,
         }
+    }
+
+    fn override_operation(&self, req: &RtRequest) -> Option<&dyn ErasedOperation> {
+        // The one routing decision the model's route table cannot make: a request whose path
+        // label carries a resource ARN the caller is not entitled to — another account's, or a
+        // value that is no resource ARN of this service at all — is stopped by the front door
+        // (see [`target_entitlement`]) instead of being dispatched to the operation its route
+        // names. Every other request resolves through the generated routing table, which is
+        // this service's only other operation source.
+        target_entitlement::is_refused(req).then_some(&self.unauthorized_target as _)
     }
 
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {

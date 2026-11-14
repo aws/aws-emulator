@@ -651,8 +651,8 @@ async fn a_resource_arn_naming_no_registered_target_is_refused() {
     );
 
     // The ARN of the target that WAS registered now resolves to no registered scalable
-    // target, so each operation answers in its own terms at the client-error status: the read
-    // reports the resource as absent, each write is refused.
+    // target, so every operation of the family answers alike at the client-error status: the
+    // resource the ARN names is reported absent.
     for (operation, request) in [
         (
             "TagResource",
@@ -714,7 +714,7 @@ async fn a_resource_arn_naming_no_registered_target_is_refused() {
     for (case, arn) in unresolvable {
         // None of these ARNs resolves to a registered scalable target, so each operation
         // answers the same way it answers the ARN of a deregistered target: there is no
-        // scalable target to report tags of, and none whose tags may be written.
+        // scalable target to report tags of, and none to write tags on.
         for (operation, request) in [
             ("TagResource", json!({"ResourceARN": arn, "Tags": {"a": "1"}})),
             (
@@ -738,15 +738,11 @@ async fn a_resource_arn_naming_no_registered_target_is_refused() {
     }
 }
 
-/// The error code `operation` answers an ARN that resolves to no registered scalable target
-/// with: the READ reports the resource as absent, while a MUTATION refuses the write it was
-/// asked to make without disclosing whether the target is there.
-fn expected_code(operation: &str) -> &'static str {
-    if operation == "ListTagsForResource" {
-        "ResourceNotFoundException"
-    } else {
-        "ValidationException"
-    }
+/// The error code every operation of the tagging family answers an ARN that resolves to no
+/// registered scalable target with: `ResourceARN` names the resource the call addresses, so an
+/// ARN that identifies no registered target is the resource reported absent.
+fn expected_code(_operation: &str) -> &'static str {
+    "ResourceNotFoundException"
 }
 
 #[tokio::test]

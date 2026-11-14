@@ -186,7 +186,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // addressed to it resolves to nothing — which is the refusal below, rather than a
         // server error this operation does not model.
         let Some(state) = crate::state::service_state(&*self.engine) else {
-            return Err(tagging_denied());
+            return Err(target_not_found(&input.resource_arn));
         };
         let mut state = state.lock();
 
@@ -195,9 +195,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `RegisterScalableTarget` minted. An ARN that resolves to no REGISTERED target
         // identifies no scalable target to tag, whether this service never minted it or
         // minted it for a target that has since been deregistered, so both are the one
-        // refusal the two tag MUTATIONS share. A scalable target is regional, so an ARN
-        // of another Region resolves to none of it either: this endpoint holds the targets
-        // of its own Region.
+        // refusal every operation of the tagging family shares. A scalable target is
+        // regional, so an ARN of another Region resolves to none of it either: this
+        // endpoint holds the targets of its own Region.
         let region = crate::state::request_region(ctx.parts());
         let resolved = state
             .arn_index
@@ -205,7 +205,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .filter(|key| key.region == region)
             .cloned();
         let Some(record) = resolved.and_then(|key| state.targets.get_mut(&key)) else {
-            return Err(tagging_denied());
+            return Err(target_not_found(&input.resource_arn));
         };
 
         // The merge is computed before anything is stored: "To add a tag, specify a new
@@ -247,14 +247,15 @@ fn validation(message: impl Into<String>) -> TagResourceError {
 
 /// The refusal of a `ResourceARN` that resolves to no registered scalable target.
 ///
-/// Tagging a scalable target is a change to the resource the ARN names, and "use tags to
-/// control access to a scalable target" — so the request is decided on whether the caller may
-/// tag THAT resource rather than on whether it is there, and an ARN naming no registered
-/// target is refused as an invalid request at the client-error status. The sentence
-/// (`crate::state::TAG_MUTATION_DENIED_MESSAGE`) carries nothing of the request, so the answer
-/// discloses neither the target's absence nor the ARN asked about, and it is the same sentence
-/// `UntagResource` answers the same condition with. The tag READ keeps reporting the resource
-/// as absent: `ResourceNotFoundException` is the only error its model declares.
-fn tagging_denied() -> TagResourceError {
-    validation(crate::state::TAG_MUTATION_DENIED_MESSAGE)
+/// `ResourceARN` names the resource this call acts on, so an ARN that identifies no
+/// registered scalable target is the resource reported ABSENT — the modelled
+/// `ResourceNotFoundException` ("the specified resource doesn't exist") with the fixed
+/// sentence `crate::state::SCALABLE_TARGET_NOT_FOUND_MESSAGE` and the ARN asked about carried
+/// in the shape's own `ResourceName` member rather than spliced into the text. It is the same
+/// refusal `UntagResource` and the tag READ answer the same condition with, served at the
+/// client-error status this service answers it on
+/// (`crate::state::wire_refusals::WireRefusal::ScalableTargetNotFound`), so the three
+/// operations of the tagging family cannot word one condition three ways.
+fn target_not_found(resource_arn: &str) -> TagResourceError {
+    crate::state::wire_refusals::WireRefusal::scalable_target_not_found(resource_arn).into()
 }

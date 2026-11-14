@@ -490,9 +490,11 @@ async fn list_tags_for_resource_reports_only_the_named_resource() {
     );
 }
 
-/// An ARN naming no stored resource earns this operation's own modelled refusal: HTTP 404
-/// `ResourceNotFoundException`, with the fixed sentence this operation states for an
-/// absent resource, whatever form that ARN takes.
+/// An ARN of this account naming no stored resource earns this operation's own modelled
+/// refusal: HTTP 404 `ResourceNotFoundException`, with the fixed sentence this operation
+/// states for an absent resource, whatever form that ARN takes. A value the caller is not
+/// entitled to address at all is stopped in front of the operation instead
+/// (`tests/all/target_authorization.rs` owns that rule).
 #[tokio::test]
 async fn list_tags_for_resource_rejects_an_arn_naming_no_resource() {
     let router = emulator();
@@ -522,14 +524,15 @@ async fn list_tags_for_resource_rejects_an_arn_naming_no_resource() {
             UNKNOWN_MANAGER_ARN.to_string(),
         ),
         ("the ARN of a deleted manager", deleted),
-        ("a string that is no ARN at all", "not-an-arn".to_string()),
         (
-            "an ARN of another service",
-            "arn:aws:ssm:us-west-2:000000000000:document/doc".to_string(),
+            "a well-formed ARN of this account in another Region",
+            "arn:aws:ssm-quicksetup:eu-west-1:000000000000:configuration-manager/\
+             11111111-2222-3333-4444-555555555555"
+                .to_string(),
         ),
         (
-            "the live ARN in a different case",
-            live.to_uppercase(),
+            "a resource type this service does not mint",
+            "arn:aws:ssm-quicksetup:us-west-2:000000000000:configuration/not-a-manager".to_string(),
         ),
     ] {
         let (status, answer) = list_tags(&router, &arn).await;

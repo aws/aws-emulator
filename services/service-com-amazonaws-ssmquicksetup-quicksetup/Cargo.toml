@@ -42,6 +42,10 @@ service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
 # `sts:GetCallerIdentity` answers for the credentials a request signed with, which is the
 # principal whose identity-based policies authorize the request.
 service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true }
+# RFC 3986 percent-decoding for the resource ARN a route carries in ONE path segment, which
+# an AWS SDK percent-encodes: the front door reads that label before the framework decodes
+# it (`service::target_entitlement`).
+percent-encoding = "2"
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

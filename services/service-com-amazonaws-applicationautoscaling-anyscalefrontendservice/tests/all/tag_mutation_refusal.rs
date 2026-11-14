@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! What a tag MUTATION answers when its `ResourceARN` names no registered scalable target.
+//! What the tag family answers when its `ResourceARN` names no registered scalable target.
 //!
-//! The rule under test, one sentence: writing or removing the tags of a scalable target is
-//! decided on whether the caller may write THAT resource's tags — tags on a scalable target
-//! are themselves what access to it is controlled by — so a well-formed `ResourceARN` that
-//! names no registered scalable target is refused as an invalid request (HTTP 400,
-//! `ValidationException`, the fixed sentence "Access Denied") that discloses neither whether
-//! the target exists nor which ARN was asked about, while the tag READ, whose modelled error
-//! list is exactly `ResourceNotFoundException`
-//! (`smithy_query(query="operation",operation="TagResource,UntagResource,ListTagsForResource")`),
-//! keeps reporting the resource as absent.
+//! The rule under test, one sentence: `ResourceARN` "identifies the Application Auto Scaling
+//! scalable target" the call addresses, so a well-formed ARN that identifies no registered
+//! target is the resource reported ABSENT by every operation of the family — `TagResource`,
+//! `UntagResource` and `ListTagsForResource`, each of which models
+//! `ResourceNotFoundException`
+//! (`smithy_query(query="operation",operation="TagResource,UntagResource,ListTagsForResource")`)
+//! — with the fixed sentence "Scalable Target not found" and the ARN asked about carried in
+//! the shape's `ResourceName` member, at the client-error status this service answers it on.
 //!
 //! Asserted over a TABLE whose rows differ along HOW the ARN fails to resolve (an id this
 //! service never minted, ids of other forms, another account, another Region, another
@@ -23,12 +22,9 @@ use serde_json::{json, Value};
 
 use crate::emulator::{error_code, error_message, Emulator, ACCOUNT, REGION};
 
-/// The sentence a tag mutation carries for an ARN that names no registered scalable target.
-/// Spelled out here rather than read from the implementation: the TEXT is what the rule owes
-/// a caller.
-const TAGGING_DENIED: &str = "Access Denied";
-
-/// The sentence the tag READ carries for the same ARN.
+/// The sentence every operation of the tagging family carries for an ARN that names no
+/// registered scalable target. Spelled out here rather than read from the implementation: the
+/// TEXT is what the rule owes a caller.
 const TARGET_NOT_FOUND: &str = "Scalable Target not found";
 
 /// The status both answer with: the client-error status a request that is not going to be
@@ -132,12 +128,11 @@ fn mutations(resource_arn: &str) -> Vec<(&'static str, &'static str, Value)> {
     ]
 }
 
-/// RULE: a tag mutation whose `ResourceARN` names no registered scalable target is refused as
-/// an invalid request — HTTP 400, `ValidationException`, the fixed sentence — and the answer
-/// carries nothing of the request, so it discloses neither the resource's absence nor the ARN
-/// asked about.
+/// RULE: a tag mutation whose `ResourceARN` names no registered scalable target reports the
+/// RESOURCE as absent — HTTP 400, `ResourceNotFoundException`, the fixed sentence and the ARN
+/// asked about in `ResourceName` — exactly as the tag READ reports it.
 #[tokio::test]
-async fn a_tag_mutation_naming_no_registered_target_is_refused_as_invalid() {
+async fn a_tag_mutation_naming_no_registered_target_reports_the_resource_absent() {
     let emulator = Emulator::empty();
 
     // Two targets: one that stays registered, so a refusal below is about the ARN and not
@@ -169,24 +164,24 @@ async fn a_tag_mutation_naming_no_registered_target_is_refused_as_invalid() {
             );
             let code = error_code(&body);
             assert_eq!(
-                code, "ValidationException",
-                "case {case:?}: expected a ValidationException, got {code:?} in {body:?}"
+                code, "ResourceNotFoundException",
+                "case {case:?}: expected a ResourceNotFoundException, got {code:?} in {body:?}"
             );
             let message = error_message(&body);
             assert_eq!(
-                message, TAGGING_DENIED,
-                "case {case:?}: expected the message {TAGGING_DENIED:?}, got {message:?}"
+                message, TARGET_NOT_FOUND,
+                "case {case:?}: expected the message {TARGET_NOT_FOUND:?}, got {message:?}"
             );
-            // Nothing of the request comes back: no `ResourceName` member, and the sentence
-            // names neither the ARN asked about nor anything inside it.
+            // The ARN asked about is reported in the modelled member rather than spliced into
+            // the sentence, which states the condition and nothing else.
             assert_eq!(
                 body["ResourceName"],
-                Value::Null,
-                "case {case:?}: expected no ResourceName in the refusal, got {body:?}"
+                Value::String(row.arn.clone()),
+                "case {case:?}: expected the ARN asked about in ResourceName, got {body:?}"
             );
             assert!(
                 !message.contains(&row.arn) && !message.contains("scalable-target"),
-                "case {case:?}: expected the refusal to disclose nothing of the ARN, got \
+                "case {case:?}: expected the sentence to carry nothing of the ARN, got \
                  {message:?}"
             );
         }
@@ -219,10 +214,9 @@ async fn a_tag_mutation_naming_no_registered_target_is_refused_as_invalid() {
     );
 }
 
-/// RULE: the tag READ answers the same ARNs by reporting the RESOURCE as absent —
-/// `ResourceNotFoundException`, its own fixed sentence and the ARN asked about in
-/// `ResourceName` — which is the one error its model declares, so a client can tell a read of
-/// an absent resource from a refused write.
+/// RULE: the tag READ answers the same ARNs the same way the two mutations do — the RESOURCE
+/// reported absent, with its fixed sentence and the ARN asked about in `ResourceName` — so one
+/// condition reads alike across the family.
 #[tokio::test]
 async fn the_tag_read_reports_the_same_arns_as_an_absent_resource() {
     let emulator = Emulator::empty();

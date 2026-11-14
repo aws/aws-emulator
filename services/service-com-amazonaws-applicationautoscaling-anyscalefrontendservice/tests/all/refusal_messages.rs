@@ -729,12 +729,9 @@ async fn a_policy_configuration_that_cannot_be_evaluated_states_the_documented_r
     }
 }
 
-/// The sentence the tag READ carries for an ARN that resolves to no registered scalable
-/// target.
+/// The sentence every operation of the tagging family carries for an ARN that resolves to no
+/// registered scalable target.
 const TARGET_NOT_FOUND: &str = "Scalable Target not found";
-
-/// The sentence a tag MUTATION carries for the same ARN.
-const TAGGING_DENIED: &str = "Access Denied";
 
 #[tokio::test]
 async fn a_tag_operation_on_an_unregistered_target_answers_in_its_own_terms() {
@@ -816,11 +813,11 @@ async fn a_tag_operation_on_an_unregistered_target_answers_in_its_own_terms() {
         );
         assert_service_text(case, &message);
 
-        // The two writes answer the same condition the same way as each other: an ARN that
-        // resolves to no registered target identifies no scalable target whose tags the
-        // caller may write, whether this service minted it for a target that has since been
-        // deregistered or never minted it at all — so the write is refused rather than the
-        // resource reported absent. Neither is the boundary validator's template.
+        // The two writes answer the same condition the same way the read does: `ResourceARN`
+        // names the resource the call addresses, so an ARN that resolves to no registered
+        // target is the resource reported absent, whether this service minted it for a target
+        // that has since been deregistered or never minted it at all. None of the three is the
+        // boundary validator's template.
         for (operation, request) in [
             (
                 "TagResource",
@@ -838,13 +835,19 @@ async fn a_tag_operation_on_an_unregistered_target_answers_in_its_own_terms() {
             );
             assert_eq!(
                 error_code(&body),
-                "ValidationException",
-                "case {case:?} on {operation}: expected a ValidationException, got {body:?}"
+                "ResourceNotFoundException",
+                "case {case:?} on {operation}: expected a ResourceNotFoundException, got {body:?}"
             );
             let message = error_message(&body);
             assert_eq!(
-                message, TAGGING_DENIED,
-                "case {case:?} on {operation}: expected {TAGGING_DENIED:?}, got {message:?}"
+                message, TARGET_NOT_FOUND,
+                "case {case:?} on {operation}: expected {TARGET_NOT_FOUND:?}, got {message:?}"
+            );
+            assert_eq!(
+                body["ResourceName"],
+                json!(resource_arn),
+                "case {case:?} on {operation}: expected the ARN asked about in ResourceName, got \
+                 {body:?}"
             );
             assert_service_text(case, &message);
         }

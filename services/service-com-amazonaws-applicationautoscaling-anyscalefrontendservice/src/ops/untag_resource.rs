@@ -153,7 +153,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // addressed to it resolves to nothing: the same refusal as any other ARN that
         // resolves to no registered target (see `tag_resource`).
         let Some(state) = crate::state::service_state(&*self.engine) else {
-            return Err(tagging_denied());
+            return Err(target_not_found(&input.resource_arn));
         };
         let mut state = state.lock();
 
@@ -161,7 +161,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // another Region's ARN names none this endpoint holds (see `tag_resource`). An ARN
         // that resolves to no registered target identifies no scalable target to untag,
         // whether this service never minted it or minted it for a target that has since
-        // been deregistered, so both are the one refusal the two tag MUTATIONS share.
+        // been deregistered, so both are the one refusal every operation of the tagging
+        // family shares.
         let region = crate::state::request_region(ctx.parts());
         let resolved = state
             .arn_index
@@ -169,7 +170,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .filter(|key| key.region == region)
             .cloned();
         let Some(record) = resolved.and_then(|key| state.targets.get_mut(&key)) else {
-            return Err(tagging_denied());
+            return Err(target_not_found(&input.resource_arn));
         };
 
         // "To delete a tag, specify the tag key and the Application Auto Scaling
@@ -191,11 +192,11 @@ fn validation(message: impl Into<String>) -> UntagResourceError {
     .into()
 }
 
-/// The refusal of a `ResourceARN` that resolves to no registered scalable target: the
-/// mutation is decided on whether the caller may write the tags of THAT resource rather than
-/// on whether it is there, so it is refused as an invalid request carrying nothing of the
-/// request — the same sentence `TagResource` answers the same condition with
-/// (`crate::state::TAG_MUTATION_DENIED_MESSAGE`, and see `tag_resource`).
-fn tagging_denied() -> UntagResourceError {
-    validation(crate::state::TAG_MUTATION_DENIED_MESSAGE)
+/// The refusal of a `ResourceARN` that resolves to no registered scalable target: the ARN
+/// names the resource this call acts on, so one that identifies no registered target is the
+/// resource reported ABSENT — the same modelled `ResourceNotFoundException`, with the same
+/// fixed sentence and the ARN in its `ResourceName` member, that `TagResource` and the tag
+/// READ answer the same condition with (see `tag_resource`).
+fn target_not_found(resource_arn: &str) -> UntagResourceError {
+    crate::state::wire_refusals::WireRefusal::scalable_target_not_found(resource_arn).into()
 }

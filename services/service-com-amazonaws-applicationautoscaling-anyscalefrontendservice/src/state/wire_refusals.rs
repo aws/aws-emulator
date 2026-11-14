@@ -8,7 +8,7 @@
 //! below the service answers something else, so they cannot be constructed as a plain
 //! variant of an operation's `#[operation_error]` enum:
 //!
-//! * the ARN-addressed tag READ answers an unresolvable `ResourceARN` with
+//! * the ARN-addressed tag operations answer an unresolvable `ResourceARN` with
 //!   `ResourceNotFoundException`'s own body at the 400 of a client error, not at the 404 its
 //!   `@httpError` declares ([`WireRefusal::ScalableTargetNotFound`]);
 //! * an operation this service does not offer for the namespace addressed is refused
@@ -27,7 +27,7 @@ use ::smithy_server_runtime::OperationError;
 
 use crate::ops::types::ResourceNotFoundException;
 
-/// The status the tag read answers an unresolvable `ResourceARN` with: the 4xx of a client
+/// The status a tag operation answers an unresolvable `ResourceARN` with: the 4xx of a client
 /// error rather than the 404 the modelled shape's `@httpError` declares. Clients and the
 /// proxies in front of them branch on the status CLASS before they parse a body, and the two
 /// are classified differently — a 404 as "no such endpoint or route", retried and surfaced
@@ -110,10 +110,11 @@ impl SerializableStruct for NotSupported {
 /// the wire code, the HTTP status and the body it answers with.
 #[derive(Debug)]
 pub enum WireRefusal {
-    /// A `ResourceARN` the tag READ cannot resolve to a registered scalable target, whether or
-    /// not this service ever minted that ARN: either the target is registered or it is not,
-    /// and the refusal says so. The two tag MUTATIONS answer that condition as a refusal of
-    /// the write instead (`crate::state::TAG_MUTATION_DENIED_MESSAGE`).
+    /// A `ResourceARN` a tag operation cannot resolve to a registered scalable target, whether
+    /// or not this service ever minted that ARN: either the target is registered or it is not,
+    /// and the refusal says so. The READ and the two MUTATIONS answer that condition alike —
+    /// the ARN names the resource the call addresses, so one that identifies no target is the
+    /// resource reported absent.
     ScalableTargetNotFound(ResourceNotFoundException),
     /// An operation this service does not offer for the resource addressed.
     NotSupported(NotSupported),

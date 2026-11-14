@@ -7,17 +7,17 @@
 //! serialization, the modelled-constraint walk and the handlers — so what is asserted is
 //! what a signed AWS SDK request observes.
 //!
-//! The rule under test: whether an ARN names a resource this endpoint serves is a RESOURCE
-//! outcome, never an authorization one, and nothing stands between such a request and its
-//! handler. Each operation resolves the ARN it was given against this service's state and
-//! answers its own modelled `ResourceNotFoundException` — HTTP 404, `Message` the sentence
-//! that operation states for an absent resource — when nothing answers to it. No operation
-//! of this service models a 401 or an `UnauthorizedException`
-//! (`smithy_query(query="digest")`: every operation that addresses a resource binds
-//! `ResourceNotFoundException` at 404), so a caller can read a 404 as "the resource is
-//! gone" and the modelled `AccessDeniedException` (403, raised from the policies in force
-//! on the calling principal — `tests/all/identity_policy_authorization.rs`) as "your
-//! identity may not do this".
+//! The rule under test has two halves. The ARN a route carries as a path label names the
+//! ACCOUNT that owns the resource, so the layer in front of this service decides from the ARN
+//! alone whether the caller may address that resource: an ARN of this service in the account
+//! the request is signed for goes through, and anything else — another account's ARN, or a
+//! value that is no resource ARN of this service at all — is refused by the front door with
+//! HTTP 401, the `UnauthorizedException` wire code and the one fixed sentence `Unauthorized`,
+//! before any handler and before the modelled constraint walk. Whether a resource ANSWERS to
+//! an ARN the caller IS entitled to is a RESOURCE outcome, never an authorization one, so such
+//! a request reaches its handler, which resolves the ARN against this service's state and
+//! answers its own modelled `ResourceNotFoundException` — HTTP 404, `Message` the sentence that
+//! operation states for an absent resource — when nothing answers to it.
 //!
 //! The rows below span what the rule generalises over, and its edges:
 //!
@@ -25,19 +25,21 @@
 //!   `/configurationManager/{ManagerArn}`, the tag plane's `/tags/{ResourceArn}`, whose
 //!   label is any taggable resource's ARN, and `/configurationDefinition/{ManagerArn}/{Id}`,
 //!   whose label is the addressed definition's PARENT;
-//! * the ARN's own parts — Region, account, uuid and its hex case — since none of them is
-//!   part of the rule, and the three reasons an ARN names nothing here: never minted,
-//!   torn down, or minted by another Region's endpoint;
-//! * with nothing in front of the handlers, a label outside the modelled `@pattern` of the
-//!   member it binds to is the constraint walk's own `400 ValidationException`, while the
-//!   tag plane's `ResourceArn` — no `@pattern` and no `@length` at all — admits any value
-//!   the route matches and resolves it in the handler;
+//! * both sides of the entitlement split: the ARN's account decides it, while its Region, its
+//!   uuid and that uuid's hex case do not, and the three reasons an ARN the caller IS entitled
+//!   to names nothing here: never minted, torn down, or minted by another Region's endpoint;
+//! * behind the front door nothing else stands in front of the handlers, so a label the
+//!   caller is entitled to that falls outside the modelled `@pattern` of the member it binds
+//!   to is the constraint walk's own `400 ValidationException`, while the tag plane, whose
+//!   `ResourceArn` carries no `@pattern` and no `@length` at all, admits any such value the
+//!   route matches and resolves it in the handler;
 //! * what a request SAYS is judged where it always was: the walk refuses a member outside
 //!   its constraint, and a handler refuses what the model cannot state, for an absent
 //!   target exactly as for a stored one;
-//! * an ARN a request carries in its BODY (`ListConfigurations`) and a label that is no ARN
-//!   at all (`GetConfiguration`'s configuration id) are resolved the same way, in the same
-//!   modelled shapes;
+//! * an ARN a request carries in its BODY (`ListConfigurations`) is an argument the operation
+//!   resolves rather than a target the front door decides, so it is the modelled 404 whatever
+//!   account it names, and a label that is no ARN at all (`GetConfiguration`'s configuration
+//!   id) is read by the operation that owns it;
 //! * which SENTENCE the 404 carries belongs to the operation stating it: the manager routes
 //!   and the configuration-definition route name the ARN the request carried, the tag
 //!   plane's read and its two mutations each state fixed text of their own ([`expected_message`]).
@@ -334,6 +336,39 @@ fn assert_validation(case: &str, status: u16, answer: &Value) {
     );
 }
 
+/// The status the front door refuses a request addressing a resource ARN the caller is not
+/// entitled to with, the wire code that refusal carries, and its one fixed sentence — written
+/// out here rather than read from the crate, so the ANSWER is what these rows are held to.
+const UNAUTHORIZED_STATUS: u16 = 401;
+const UNAUTHORIZED_CODE: &str = "UnauthorizedException";
+const UNAUTHORIZED_MESSAGE: &str = "Unauthorized";
+
+/// Assert the front door's refusal: its status, its wire code and its fixed sentence, with
+/// nothing of the request or of the store in the body.
+fn assert_unauthorized(case: &str, status: u16, answer: &Value) {
+    assert_eq!(
+        status, UNAUTHORIZED_STATUS,
+        "case {case:?}: expected HTTP {UNAUTHORIZED_STATUS}, got {status} / {answer:?}"
+    );
+    let code = error_code(answer);
+    assert_eq!(
+        code, UNAUTHORIZED_CODE,
+        "case {case:?}: expected {UNAUTHORIZED_CODE}, got {code:?} in {answer:?}"
+    );
+    let message = error_message(answer);
+    assert_eq!(
+        message, UNAUTHORIZED_MESSAGE,
+        "case {case:?}: expected {UNAUTHORIZED_MESSAGE:?}, got {message:?}"
+    );
+    // The layer in front of the service names its member in lower case, unlike this
+    // service's own modelled shapes.
+    assert_eq!(
+        answer.get("message").and_then(Value::as_str),
+        Some(UNAUTHORIZED_MESSAGE),
+        "case {case:?}: expected the sentence under `message`, got {answer:?}"
+    );
+}
+
 /// Create one configuration manager, answering its ARN.
 async fn create_manager(router: &MultiServiceRouter, case: &str, name: &str) -> String {
     // `Type` must name a configuration type this service publishes; no case here is about
@@ -426,51 +461,76 @@ pub(crate) async fn poll_until_absent(
     }
 }
 
-/// ARNs that name no resource this endpoint serves, each satisfying the modelled
+/// ARNs the caller IS entitled to — this service's namespace and the account the request is
+/// signed for — that name no resource this endpoint holds, each satisfying the modelled
 /// `ManagerArn` pattern
 /// `^arn:aws:ssm-quicksetup:([^:]+):(\d{12}):configuration-manager/<uuid>$`
-/// (`smithy_query(query="operation",operation="GetConfigurationManager")`). The rows
-/// differ in Region, account id and uuid — including its hex case, which that pattern
-/// admits — because none of the three is part of the rule.
+/// (`smithy_query(query="operation",operation="GetConfigurationManager")`). The rows differ in
+/// the Region and in the uuid — including its hex case, which that pattern admits — because
+/// neither is part of the entitlement.
 const UNSERVED_ARNS: &[(&str, &str)] = &[
     (
-        "a well-formed ARN in the signing Region, the all-zero account",
+        "a well-formed ARN of this account in the signing Region",
         "arn:aws:ssm-quicksetup:us-west-2:000000000000:configuration-manager/11111111-2222-3333-4444-555555555555",
     ),
     (
-        "a well-formed ARN of another Region and another account",
-        "arn:aws:ssm-quicksetup:eu-central-1:123456789012:configuration-manager/0f0e0d0c-0b0a-0908-0706-050403020100",
+        "a well-formed ARN of this account in another Region",
+        "arn:aws:ssm-quicksetup:eu-central-1:000000000000:configuration-manager/0f0e0d0c-0b0a-0908-0706-050403020100",
     ),
     (
         "an upper-case hex uuid",
-        "arn:aws:ssm-quicksetup:ap-southeast-4:987654321098:configuration-manager/ABCDEF01-2345-6789-ABCD-EF0123456789",
+        "arn:aws:ssm-quicksetup:us-west-2:000000000000:configuration-manager/ABCDEF01-2345-6789-ABCD-EF0123456789",
     ),
     (
         "a mixed-case hex uuid in a third Region",
-        "arn:aws:ssm-quicksetup:sa-east-1:111122223333:configuration-manager/aBcDeF01-2345-6789-aBcD-eF0123456789",
+        "arn:aws:ssm-quicksetup:ap-southeast-4:000000000000:configuration-manager/aBcDeF01-2345-6789-aBcD-eF0123456789",
     ),
 ];
 
-/// Label values the modelled `ManagerArn` pattern does NOT admit, so the routes that bind
-/// it refuse them as malformed input — while the tag plane, whose `ResourceArn` carries no
-/// `@pattern` and no `@length`, resolves them like any other ARN naming nothing.
-const MALFORMED_LABELS: &[(&str, &str)] = &[
+/// Path-label values the caller is NOT entitled to address: another account's resource, and
+/// values that are no resource ARN of this service at all. Each is refused by the front door,
+/// whichever route carried it and whatever the member it binds to is constrained to — the
+/// decision is taken before the constraint walk.
+const FOREIGN_TARGETS: &[(&str, &str)] = &[
+    (
+        "another account's manager in this Region",
+        "arn:aws:ssm-quicksetup:us-west-2:123456789012:configuration-manager/11111111-2222-3333-4444-555555555555",
+    ),
+    (
+        "another account's manager in another Region",
+        "arn:aws:ssm-quicksetup:ap-southeast-4:987654321098:configuration-manager/ABCDEF01-2345-6789-ABCD-EF0123456789",
+    ),
+    (
+        "a third account's manager",
+        "arn:aws:ssm-quicksetup:sa-east-1:111122223333:configuration-manager/aBcDeF01-2345-6789-aBcD-eF0123456789",
+    ),
     ("not an ARN at all", "not-an-arn"),
     (
         "an ARN of another vendor",
-        "arn:aws:ssm:us-west-2:123456789012:document/Example",
-    ),
-    (
-        "this service's ARN namespace with no uuid after the resource type",
-        "arn:aws:ssm-quicksetup:us-west-2:123456789012:configuration-manager/",
-    ),
-    (
-        "a uuid one character short",
-        "arn:aws:ssm-quicksetup:us-west-2:123456789012:configuration-manager/11111111-2222-3333-4444-55555555555",
+        "arn:aws:ssm:us-west-2:000000000000:document/Example",
     ),
     (
         "an account id that is not twelve digits",
         "arn:aws:ssm-quicksetup:us-west-2:12345:configuration-manager/11111111-2222-3333-4444-555555555555",
+    ),
+];
+
+/// Label values of this account — so the caller IS entitled to them — that the modelled
+/// `ManagerArn` pattern does NOT admit, so the routes that bind it refuse them as malformed
+/// input, while the tag plane, whose `ResourceArn` carries no `@pattern` and no `@length`,
+/// resolves them like any other ARN naming nothing.
+const MALFORMED_LABELS: &[(&str, &str)] = &[
+    (
+        "this service's ARN namespace with no uuid after the resource type",
+        "arn:aws:ssm-quicksetup:us-west-2:000000000000:configuration-manager/",
+    ),
+    (
+        "a uuid one character short",
+        "arn:aws:ssm-quicksetup:us-west-2:000000000000:configuration-manager/11111111-2222-3333-4444-55555555555",
+    ),
+    (
+        "a resource type this service does not mint",
+        "arn:aws:ssm-quicksetup:us-west-2:000000000000:configuration/11111111-2222-3333-4444-555555555555",
     ),
 ];
 
@@ -479,9 +539,9 @@ const MALFORMED_LABELS: &[(&str, &str)] = &[
 const SOME_DEFINITION_ID: &str = "cfg-1";
 
 /// Every route that carries a resource ARN as a path label answers the modelled 404, with
-/// the service's not-found sentence around the ARN the request carried, for an ARN this
-/// endpoint serves no resource for — while a route whose label is no ARN resolves its own
-/// identifier the same way.
+/// the service's not-found sentence around the ARN the request carried, for an ARN the caller
+/// IS entitled to that this endpoint serves no resource for — while a route whose label is no
+/// ARN resolves its own identifier the same way.
 #[tokio::test]
 async fn an_arn_naming_no_resource_earns_the_modelled_not_found() {
     let router = emulator();
@@ -546,11 +606,60 @@ async fn an_arn_naming_no_resource_earns_the_modelled_not_found() {
     );
 }
 
-/// With nothing in front of the handlers, a label is judged by the constraint the model
-/// states for the member it binds to: a value outside the `ManagerArn` pattern is the
-/// walk's `400 ValidationException` on the routes that bind it, while the tag plane —
-/// whose `ResourceArn` carries no `@pattern` and no `@length` — admits any value the route
-/// matches and answers the modelled 404 for it.
+/// The other half of the rule: a path label naming a resource the caller is NOT entitled to
+/// address at this endpoint is refused by the front door — HTTP 401, `UnauthorizedException`,
+/// the one fixed sentence — on every route that carries one, before any handler runs and
+/// before the modelled constraint walk judges the request. Nothing of the store is disclosed
+/// and nothing in it changes.
+#[tokio::test]
+async fn a_target_the_caller_is_not_entitled_to_is_refused_by_the_front_door() {
+    let router = emulator();
+    // A manager that exists, so the refusals below are about the targets they name.
+    let live = create_manager(&router, "a live manager", "entitlement").await;
+    let id = definition_id(&router, "a live manager", &live).await;
+
+    for (target_case, target) in FOREIGN_TARGETS {
+        for operation in ARN_LABELLED_OPERATIONS {
+            let case = format!("{operation} on {target_case}");
+            let (status, answer) =
+                call_naming(&router, operation, target, SOME_DEFINITION_ID).await;
+            assert_unauthorized(&case, status, &answer);
+        }
+    }
+
+    // An ARN of this account that names nothing goes THROUGH the front door and is answered
+    // by the handler, so the refusals above are about entitlement and not about an ARN being
+    // unresolvable.
+    let (unserved_case, unserved) = UNSERVED_ARNS[0];
+    let (status, answer) = call_naming(&router, "GetConfigurationManager", unserved, &id).await;
+    assert_not_found(
+        unserved_case,
+        "GetConfigurationManager",
+        unserved,
+        status,
+        &answer,
+    );
+
+    // The live manager is untouched: still readable, and still holding the definition the
+    // create gave it.
+    let (status, answer) = call(
+        &router,
+        "GET",
+        &format!("/configurationManager/{}", label(&live)),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "the live manager must still be readable, got {status} / {answer:?}"
+    );
+}
+
+/// Behind the front door nothing else stands in front of the handlers: a label the caller IS
+/// entitled to is judged by the constraint the model states for the member it binds to — a
+/// value outside the `ManagerArn` pattern is the walk's `400 ValidationException` on the
+/// routes that bind it, while the tag plane — whose `ResourceArn` carries no `@pattern` and no
+/// `@length` — admits any value the route matches and answers the modelled 404 for it.
 #[tokio::test]
 async fn a_malformed_label_is_judged_by_the_constraint_the_model_states() {
     let router = emulator();
@@ -630,9 +739,10 @@ async fn the_arn_of_a_torn_down_manager_earns_the_modelled_not_found() {
     }
 }
 
-/// A manager belongs to the Region its ARN was minted in, so its own ARN names no
-/// resource at any OTHER Region's endpoint: every route that labels one answers the
-/// modelled 404 there while serving it in its own Region.
+/// A manager belongs to the Region its ARN was minted in, so its own ARN names no resource at
+/// any OTHER Region's endpoint — a RESOURCE outcome, since the caller is entitled to its own
+/// account's ARN wherever it sends it: every route that labels one answers the modelled 404
+/// there while serving it in its own Region.
 #[tokio::test]
 async fn an_arn_of_another_regions_endpoint_earns_the_modelled_not_found() {
     let router = emulator();
@@ -815,9 +925,10 @@ async fn the_requests_own_input_is_judged_as_it_is_for_a_stored_resource() {
     }
 }
 
-/// An ARN a request carries in its BODY is resolved exactly as a route's label is:
-/// `ListConfigurations` answers this service's own modelled `ResourceNotFoundException`,
-/// with the not-found sentence built from the ARN the request supplied.
+/// An ARN a request carries in its BODY is an argument the operation resolves rather than a
+/// target the front door decides, so `ListConfigurations` answers this service's own modelled
+/// `ResourceNotFoundException` — with the not-found sentence built from the ARN the request
+/// supplied — whichever account or Region that ARN names.
 #[tokio::test]
 async fn an_arn_carried_in_the_body_is_the_same_modelled_not_found() {
     let router = emulator();
@@ -825,9 +936,9 @@ async fn an_arn_carried_in_the_body_is_the_same_modelled_not_found() {
     let live = create_manager(&router, "a live manager", "body-arn").await;
 
     // Only the pattern-valid rows: `ListConfigurationsInput.ManagerArn` carries the
-    // modelled `ManagerArn` pattern, so a value outside it is the walk's own 400.
-    for (target_case, target) in UNSERVED_ARNS {
-        let (status, answer) = call(
+    // modelled `ManagerArn` pattern, so a value outside it is the walk's own 400. The rows
+    // span both sides of the ENTITLEMENT split, which no body member is decided on.
+    for (target_case, target) in UNSERVED_ARNS.iter().chain(FOREIGN_TARGETS.iter().take(3)) {        let (status, answer) = call(
             &router,
             "POST",
             "/listConfigurations",

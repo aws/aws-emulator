@@ -13,12 +13,11 @@
 //!   dimension belonging to another namespace is one such triple: nothing could have
 //!   registered it, so it names no target either.
 //! * the ARN-addressed tag operations answer an ARN that resolves to no registered scalable
-//!   target at the client-error status, each according to what it was asked to do: the READ
-//!   reports the resource as absent (`ResourceNotFoundException`, the fixed sentence "Scalable
-//!   Target not found" and the ARN asked about in `ResourceName`), while each MUTATION refuses
-//!   the write it was asked to make (`ValidationException` and the fixed sentence "Access
-//!   Denied", disclosing neither the absence nor the ARN) — one answer per operation,
-//!   whichever way the ARN fails to resolve.
+//!   target at the client-error status, all three alike: the ARN names the resource the call
+//!   addresses, so one that identifies no registered target is the resource reported ABSENT
+//!   (`ResourceNotFoundException`, the fixed sentence "Scalable Target not found" and the ARN
+//!   asked about in `ResourceName`) — by the READ and by the two MUTATIONS, whichever way the
+//!   ARN fails to resolve.
 //! * an operation this service does not offer for the namespace addressed is refused
 //!   outright, with `AccessDeniedException` and the fixed sentence naming the operation,
 //!   whatever is or is not registered. Predictive scaling is offered in one namespace: the
@@ -32,13 +31,9 @@ use service_com_amazonaws_applicationautoscaling_anyscalefrontendservice::ops::t
 
 use crate::emulator::{error_code, error_message, resource_id_for, Emulator, ACCOUNT, REGION};
 
-/// The sentence the tag READ carries for an ARN that resolves to no registered scalable
-/// target, spelled out here rather than read from the implementation.
+/// The sentence every operation of the tagging family carries for an ARN that resolves to no
+/// registered scalable target, spelled out here rather than read from the implementation.
 const TARGET_NOT_FOUND: &str = "Scalable Target not found";
-
-/// The sentence a tag MUTATION carries for the same ARN: the write is refused, and the answer
-/// carries nothing of the request.
-const TAGGING_DENIED: &str = "Access Denied";
 
 /// The status a refusal of this class answers with. Both rules below answer the client-error
 /// status: a client, and any proxy in front of it, branches on the status CLASS before it
@@ -307,35 +302,18 @@ async fn every_tag_operation_answers_an_unresolvable_arn_in_its_own_terms() {
             );
             let code = error_code(&body);
             let message = error_message(&body);
-            if operation == "ListTagsForResource" {
-                assert_eq!(
-                    code, "ResourceNotFoundException",
-                    "case {case:?}: expected a ResourceNotFoundException, got {code:?} in {body:?}"
-                );
-                assert_eq!(
-                    message, TARGET_NOT_FOUND,
-                    "case {case:?}: expected the message {TARGET_NOT_FOUND:?}, got {message:?}"
-                );
-                assert_eq!(
-                    body["ResourceName"],
-                    json!(arn),
-                    "case {case:?}: expected the ARN asked about in ResourceName, got {body:?}"
-                );
-                continue;
-            }
             assert_eq!(
-                code, "ValidationException",
-                "case {case:?}: expected a ValidationException, got {code:?} in {body:?}"
+                code, "ResourceNotFoundException",
+                "case {case:?}: expected a ResourceNotFoundException, got {code:?} in {body:?}"
             );
             assert_eq!(
-                message, TAGGING_DENIED,
-                "case {case:?}: expected the message {TAGGING_DENIED:?}, got {message:?}"
+                message, TARGET_NOT_FOUND,
+                "case {case:?}: expected the message {TARGET_NOT_FOUND:?}, got {message:?}"
             );
             assert_eq!(
                 body["ResourceName"],
-                Value::Null,
-                "case {case:?}: expected the refusal to carry nothing of the request, got \
-                 {body:?}"
+                json!(arn),
+                "case {case:?}: expected the ARN asked about in ResourceName, got {body:?}"
             );
         }
     }

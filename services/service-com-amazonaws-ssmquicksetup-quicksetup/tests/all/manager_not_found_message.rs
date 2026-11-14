@@ -324,25 +324,42 @@ async fn create_manager(router: &MultiServiceRouter, case: &str) -> String {
 
 /// Well-formed ARNs no create minted, each satisfying the modelled `ManagerArn` pattern
 /// `^arn:aws:ssm-quicksetup:([^:]+):(\d{12}):configuration-manager/<uuid>$`
-/// (`smithy_query(query="shape",shape="GetConfigurationManagerInput")`). The rows differ
-/// in Region, account id and the uuid — including its hex case, which that pattern
-/// admits — because none of the three is part of the sentence: each must come back
-/// exactly as it was sent.
+/// (`smithy_query(query="shape",shape="GetConfigurationManagerInput")`) and each naming the
+/// account and the Region this endpoint serves, so every one of them reaches the handler that
+/// states the sentence. The rows differ in the uuid — including its hex case, which that
+/// pattern admits — because the uuid is no part of the sentence: it must come back exactly as
+/// it was sent.
 const UNKNOWN_MANAGER_ARNS: &[(&str, &str)] = &[
     (
-        "the signing Region, the all-zero account",
+        "a lower-case hex uuid",
         "arn:aws:ssm-quicksetup:us-west-2:000000000000:configuration-manager/11111111-2222-3333-4444-555555555555",
     ),
+    (
+        "another lower-case hex uuid",
+        "arn:aws:ssm-quicksetup:us-west-2:000000000000:configuration-manager/0f0e0d0c-0b0a-0908-0706-050403020100",
+    ),
+    (
+        "an upper-case hex uuid",
+        "arn:aws:ssm-quicksetup:us-west-2:000000000000:configuration-manager/ABCDEF01-2345-6789-ABCD-EF0123456789",
+    ),
+    (
+        "a mixed-case hex uuid",
+        "arn:aws:ssm-quicksetup:us-west-2:000000000000:configuration-manager/aBcDeF01-2345-6789-aBcD-eF0123456789",
+    ),
+];
+
+/// The same sentence is owed for an ARN of ANOTHER account or ANOTHER Region when the request
+/// carries it in its BODY rather than as a path label: a body member is an argument the
+/// operation resolves, so no account or Region of it is part of the answer either
+/// (`tests/all/target_authorization.rs` holds the rule for a path label, which the layer in
+/// front of this service decides on the ARN's entitlement).
+const UNKNOWN_MANAGER_ARNS_OF_OTHER_ACCOUNTS: &[(&str, &str)] = &[
     (
         "another Region and another account",
         "arn:aws:ssm-quicksetup:eu-central-1:123456789012:configuration-manager/0f0e0d0c-0b0a-0908-0706-050403020100",
     ),
     (
-        "an upper-case hex uuid",
-        "arn:aws:ssm-quicksetup:ap-southeast-4:987654321098:configuration-manager/ABCDEF01-2345-6789-ABCD-EF0123456789",
-    ),
-    (
-        "a mixed-case hex uuid in a third Region",
+        "a third Region and a third account",
         "arn:aws:ssm-quicksetup:sa-east-1:111122223333:configuration-manager/aBcDeF01-2345-6789-aBcD-eF0123456789",
     ),
 ];
@@ -372,6 +389,16 @@ async fn an_arn_naming_no_manager_is_refused_with_the_not_found_sentence() {
             let case = format!("{operation} on {arn_case}");
             let (status, answer) = call_naming(&router, operation, arn, SOME_DEFINITION_ID).await;
             assert_fixed_not_found(&case, arn, expected, status, &answer);
+        }
+    }
+
+    // An ARN of another account or another Region earns the same sentence where the request
+    // carries it in its BODY, which is the operation's own argument to resolve.
+    for (arn_case, arn) in UNKNOWN_MANAGER_ARNS_OF_OTHER_ACCOUNTS {
+        for operation in MANAGER_ARN_OPERATIONS {
+            let case = format!("{operation} on {arn_case}");
+            let (status, answer) = call_naming(&router, operation, arn, SOME_DEFINITION_ID).await;
+            assert_not_found(&case, arn, status, &answer);
         }
     }
 

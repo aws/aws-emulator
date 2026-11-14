@@ -37,11 +37,8 @@ const DIMENSION_WITHOUT_RESOURCE_ID: &str =
     "Scalable dimension cannot be provided without a resource ID.";
 /// A `NextToken` this service did not issue.
 const INVALID_NEXT_TOKEN: &str = "The NextToken value is not valid";
-/// A tag READ addressed to an ARN that resolves to no registered scalable target.
+/// A tag operation addressed to an ARN that resolves to no registered scalable target.
 const TARGET_NOT_FOUND: &str = "Scalable Target not found";
-/// A tag MUTATION addressed to the same ARN: the write is refused, carrying nothing of the
-/// request.
-const TAGGING_DENIED: &str = "Access Denied";
 /// A write to the reserved tag namespace.
 const SYSTEM_TAG_KEY_REFUSED: &str = "Caller is an end user and not allowed to mutate system tags";
 /// A tag set over the per-resource maximum.
@@ -867,8 +864,8 @@ async fn the_tagging_refusals_are_distinct_sentences() {
         ),
     ];
     for (case, unknown) in unresolvable {
-        // The read reports the resource as absent for an ARN that resolves to none; each
-        // write is refused instead, at the same client-error status.
+        // Every operation of the family reports the resource as absent for an ARN that
+        // resolves to none, at the same client-error status.
         for (operation, request) in [
             (
                 "TagResource",
@@ -880,19 +877,14 @@ async fn the_tagging_refusals_are_distinct_sentences() {
             ),
             ("ListTagsForResource", json!({"ResourceARN": unknown})),
         ] {
-            let (code, message) = if operation == "ListTagsForResource" {
-                ("ResourceNotFoundException", TARGET_NOT_FOUND)
-            } else {
-                ("ValidationException", TAGGING_DENIED)
-            };
             refused_with_status(
                 &emulator,
                 &format!("{operation} on {case}"),
                 operation,
                 request,
                 400,
-                code,
-                message,
+                "ResourceNotFoundException",
+                TARGET_NOT_FOUND,
             )
             .await;
         }

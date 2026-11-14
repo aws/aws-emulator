@@ -646,12 +646,12 @@ async fn an_id_no_key_holds_is_refused() {
         (
             "the existing id in lower case",
             id.to_lowercase(),
-            "Id format is invalid",
+            NO_SUCH_PUBLIC_KEY_MESSAGE,
         ),
         (
             "a token of no public key id's shape",
             "not-a-key".to_string(),
-            "Id format is invalid",
+            NO_SUCH_PUBLIC_KEY_MESSAGE,
         ),
     ];
 

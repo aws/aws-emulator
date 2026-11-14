@@ -732,8 +732,8 @@ async fn an_id_no_key_holds_is_refused() {
     let last = flipped.len() - 1;
     flipped[last] = if flipped[last] == 'A' { 'B' } else { 'A' };
     // Each row: the case, the `Id` submitted, and the sentence it is refused with — the
-    // absent-key sentence for a value of the public key id shape, the unreadable-identifier
-    // sentence for one outside it.
+    // unreadable-identifier sentence for a well-formed identifier of another resource kind
+    // this service mints, the absent-key sentence for every other value.
     let absent: [(&str, String, &str); 7] = [
         (
             "a public key id never minted",
@@ -748,21 +748,21 @@ async fn an_id_no_key_holds_is_refused() {
         (
             "the known id in lower case",
             known.to_lowercase(),
-            ID_FORMAT_INVALID_MESSAGE,
+            NO_SUCH_PUBLIC_KEY_MESSAGE,
         ),
         (
             "a token that is no public key id",
             "not-a-public-key-id".to_string(),
-            ID_FORMAT_INVALID_MESSAGE,
+            NO_SUCH_PUBLIC_KEY_MESSAGE,
         ),
         (
             "the caller reference rather than the id",
             present.caller_reference.clone(),
-            ID_FORMAT_INVALID_MESSAGE,
+            NO_SUCH_PUBLIC_KEY_MESSAGE,
         ),
         (
             "a well-formed distribution id",
-            "EDFDVBD6EXAMPLE".to_string(),
+            "EDFDVBD6EXAMPL".to_string(),
             ID_FORMAT_INVALID_MESSAGE,
         ),
         (

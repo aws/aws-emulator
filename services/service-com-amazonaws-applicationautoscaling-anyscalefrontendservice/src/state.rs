@@ -1695,35 +1695,22 @@ pub fn take_page<T>(
 pub const CAPACITY_RANGE_INVERTED_MESSAGE: &str =
     "Maximum capacity cannot be less than minimum capacity";
 
-/// The message the tag READ carries for an ARN that resolves to no registered scalable
-/// target.
+/// The message every operation of the tagging family carries for a `ResourceARN` that
+/// resolves to no registered scalable target.
 ///
-/// The resource `ListTagsForResource` addresses is the scalable target its `ResourceARN`
-/// names, and either that target is registered or it is not: the refusal states exactly
-/// that, and the ARN asked about is reported in the modelled `ResourceName` member rather
-/// than spliced into the sentence. It is answered for every ARN that resolves to no
-/// registered target — one this service never minted and one whose target has since been
-/// deregistered alike, since neither identifies a scalable target now — with the
-/// client-error status rather than with the 404 the shape's `@httpError` declares
-/// (`wire_refusals::WireRefusal::ScalableTargetNotFound`). The read is the one tag
-/// operation whose modelled error list is exactly `ResourceNotFoundException`, so it is the
-/// one that reports the resource as absent; the two MUTATIONS answer
-/// [`TAG_MUTATION_DENIED_MESSAGE`] instead.
+/// The resource a tag operation addresses is the scalable target its `ResourceARN` names,
+/// and either that target is registered or it is not: the refusal states exactly that, and
+/// the ARN asked about is reported in the modelled `ResourceName` member rather than spliced
+/// into the sentence. Entirely fixed text — no ARN, Region, account or tag key is
+/// interpolated. It is answered for every ARN that resolves to no registered target — one
+/// this service never minted and one whose target has since been deregistered alike, since
+/// neither identifies a scalable target now — by the READ and by the two MUTATIONS alike,
+/// with the client-error status rather than with the 404 the shape's `@httpError` declares
+/// (`wire_refusals::WireRefusal::ScalableTargetNotFound`). A tag write to an absent target is
+/// the resource reported absent, not a permission failure: `ResourceNotFoundException` is
+/// modelled on all three operations, and a client branches on the code to tell "the target is
+/// gone" from "your request may not be made".
 pub const SCALABLE_TARGET_NOT_FOUND_MESSAGE: &str = "Scalable Target not found";
-
-/// The message a tag MUTATION carries when its `ResourceARN` resolves to no registered
-/// scalable target.
-///
-/// Writing or removing a tag on a scalable target is a change to the resource the ARN names,
-/// and tags on a scalable target are themselves what access to it is controlled by, so the
-/// request is decided on whether the caller may tag THAT resource — not on whether it is
-/// there. An ARN naming no registered scalable target therefore fails that decision, and the
-/// mutation is refused as an invalid request with this sentence and nothing of the request in
-/// it: the answer discloses neither whether the target exists nor which ARN was asked about.
-/// Entirely fixed text — no id, Region, account or tag key is interpolated — and the same
-/// string for both mutations, carried by their modelled `ValidationException` (client, HTTP
-/// 400).
-pub const TAG_MUTATION_DENIED_MESSAGE: &str = "Access Denied";
 
 // ---------------------------------------------------------------------------
 // Shared validation

@@ -502,16 +502,18 @@ async fn create_persists_the_configuration_every_read_then_reports() {
         );
     }
 
-    // An id no public key holds. The SENTENCE splits two conditions: a well-shaped id of this
-    // namespace that was never minted is the key reported ABSENT, while a value of no public
-    // key id shape at all is the identifier this service cannot read. BOTH readers of the one
-    // record answer the same way, under fixed text that names no part of the request, so the
-    // id asked about is no part of it. The wider table over this service's other namespaces is
+    // An id no public key holds. The SENTENCE splits two conditions: only a well-formed
+    // identifier of ANOTHER resource kind this service mints is the identifier this service
+    // cannot read, while every other value the store holds no key for — an id of this
+    // namespace that was never minted, a word of no id shape at all — is the key reported
+    // ABSENT. BOTH readers of the one record answer the same way, under fixed text that names
+    // no part of the request. The wider table over this service's other namespaces is
     // asserted in `refusal_message_fidelity`.
     for (id, sentence) in [
         ("K1AAAAAAAAAAAA", NO_SUCH_PUBLIC_KEY),
-        ("not-an-id", PUBLIC_KEY_ID_FORMAT_INVALID),
-        ("0", PUBLIC_KEY_ID_FORMAT_INVALID),
+        ("not-an-id", NO_SUCH_PUBLIC_KEY),
+        ("0", NO_SUCH_PUBLIC_KEY),
+        ("E1AAAAAAAAAAAA", PUBLIC_KEY_ID_FORMAT_INVALID),
     ] {
         for (reader, missing) in [
             ("GetPublicKey", get_key(&router, id).await),
