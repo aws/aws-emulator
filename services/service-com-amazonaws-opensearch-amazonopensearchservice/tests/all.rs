@@ -95,6 +95,8 @@ mod data_source_registry;
 mod data_source_updates;
 #[path = "all/default_application_setting.rs"]
 mod default_application_setting;
+#[path = "all/detached_attachment_read_refusal.rs"]
+mod detached_attachment_read_refusal;
 #[path = "all/direct_query_data_source_deletion.rs"]
 mod direct_query_data_source_deletion;
 #[path = "all/direct_query_data_source_inventory.rs"]
