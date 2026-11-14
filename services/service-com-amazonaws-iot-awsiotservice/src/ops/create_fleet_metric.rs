@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateFleetMetric
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateFleetMetric`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateFleetMetric::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -173,18 +164,196 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateFleetMetric` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateFleetMetricErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateFleetMetric"))
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            CreateFleetMetricErrorModeled::InternalFailureException(InternalFailureException {
+                message: Some("the IoT emulator has no state store attached".to_string()),
+            })
+        })?;
+
+        let region = crate::state::request_region(ctx.parts());
+        let now = ::std::time::SystemTime::now();
+
+        // What the metric would COMPUTE is read first, because it is a property of the
+        // request alone: an aggregation this service cannot compute is refused whatever
+        // the account's indexes are doing. The modelled `InvalidRequestException` ("The
+        // request is not valid", HTTP 400) is the refusal, and its message names the rule
+        // that was broken.
+        if let Err(rejection) = crate::state::validate_aggregation(
+            &input.aggregation_type,
+            input.period,
+            input.unit.as_deref(),
+        ) {
+            return Err(CreateFleetMetricErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    message: Some(rejection.message()),
+                },
+            )
+            .into());
+        }
+
+        // A metric aggregates over the things its query SELECTS, so a string that is not
+        // a query is refused with the modelled `InvalidQueryException` ("The query is
+        // invalid", HTTP 400).
+        if let Err(rejection) = crate::state::validate_query_string(&input.query_string) {
+            return Err(CreateFleetMetricErrorModeled::InvalidQueryException(
+                InvalidQueryException {
+                    message: Some(rejection.message()),
+                },
+            )
+            .into());
+        }
+
+        // `Tag$Key` is `@required` and keys a resource's tag set, so the last value given
+        // for a key is the one the resource carries. How MANY tags one request may carry
+        // is bounded: `TagList` has no modelled maximum, so without the ceiling one
+        // request would choose how large a single record is.
+        let requested_tags = input.tags.unwrap_or_default();
+        if requested_tags.len() > crate::state::MAX_FLEET_METRIC_TAGS {
+            return Err(CreateFleetMetricErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    message: Some(format!(
+                        "a fleet metric may carry at most {} tags; this request carries {}",
+                        crate::state::MAX_FLEET_METRIC_TAGS,
+                        requested_tags.len()
+                    )),
+                },
+            )
+            .into());
+        }
+        let tags: ::std::collections::BTreeMap<String, Option<String>> = requested_tags
+            .into_iter()
+            .map(|tag| (tag.key, tag.value))
+            .collect();
+
+        // A name outside the set of indexes this service recognises is a request it
+        // cannot act on at all, which is a different refusal from an index the account
+        // does not have: the modelled `InvalidRequestException` ahead of any lookup.
+        let index_name = input
+            .index_name
+            .clone()
+            .unwrap_or_else(|| crate::state::THING_INDEX_NAME.to_string());
+        if !crate::state::FLEET_INDEX_NAMES.contains(&index_name.as_str()) {
+            return Err(CreateFleetMetricErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    message: Some(crate::state::unrecognized_index_name_message(&index_name)),
+                },
+            )
+            .into());
+        }
+
+        let mut store = state.lock();
+
+        // The index the metric reads decides whether it can exist: an account whose
+        // configuration has no such index has nothing to aggregate (the modelled
+        // `ResourceNotFoundException`, HTTP 404), and one whose index is still being built
+        // has the index but not yet its contents (the modelled `IndexNotReadyException`,
+        // HTTP 400). Neither writes anything.
+        match store.fleet_index_availability(&index_name, now) {
+            crate::state::FleetIndexAvailability::Missing => {
+                return Err(CreateFleetMetricErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: Some(
+                            crate::state::missing_fleet_index_for_aggregation_message(&index_name),
+                        ),
+                    },
+                )
+                .into());
+            }
+            crate::state::FleetIndexAvailability::Building => {
+                return Err(CreateFleetMetricErrorModeled::IndexNotReadyException(
+                    IndexNotReadyException {
+                        message: Some(crate::state::index_not_ready_message(
+                            &index_name,
+                            store.fleet_index_status(&index_name, now),
+                        )),
+                    },
+                )
+                .into());
+            }
+            crate::state::FleetIndexAvailability::Ready => {}
+        }
+
+        // The FIELD the metric aggregates has to be one the index holds, and of a type
+        // the aggregation can be computed over: an index carries the fields the service
+        // manages plus the custom fields the account declared, and the arithmetic
+        // summaries are over numbers. Reading the account's own indexing configuration is
+        // what makes this the index's answer rather than a guess, and the refusal is the
+        // modelled `InvalidRequestException` (HTTP 400) with nothing written.
+        if let Err(rejection) = store.validate_aggregation_field(
+            &index_name,
+            &input.aggregation_field,
+            &input.aggregation_type,
+        ) {
+            return Err(CreateFleetMetricErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    message: Some(rejection.message()),
+                },
+            )
+            .into());
+        }
+
+        // The name is the metric's identity, so a name already taken is a conflict:
+        // `ResourceAlreadyExistsException` (HTTP 409). Nothing this operation documents
+        // makes it idempotent, so even the same configuration under an existing name is
+        // refused rather than re-creating the metric.
+        if let Some(existing) = store.fleet_metrics.get(&input.metric_name) {
+            return Err(CreateFleetMetricErrorModeled::ResourceAlreadyExistsException(
+                ResourceAlreadyExistsException {
+                    message: Some(format!(
+                        "Fleet metric {} already exists",
+                        existing.metric_name
+                    )),
+                    resource_id: Some(existing.metric_name.clone()),
+                    resource_arn: Some(existing.metric_arn.clone()),
+                },
+            )
+            .into());
+        }
+
+        // The store is one a CALLER grows, a metric at a time, so the number of records
+        // an account can hold is bounded. The ceiling is read AFTER the conflict check,
+        // because a name already taken adds no record; past it nothing is written and the
+        // create is refused with the modelled `LimitExceededException`.
+        if store.fleet_metrics.len() >= crate::state::MAX_FLEET_METRICS {
+            return Err(CreateFleetMetricErrorModeled::LimitExceededException(
+                LimitExceededException {
+                    message: Some(format!(
+                        "the maximum of {} fleet metrics is already reached",
+                        crate::state::MAX_FLEET_METRICS
+                    )),
+                },
+            )
+            .into());
+        }
+
+        let configuration = crate::state::FleetMetricConfiguration {
+            query_string: input.query_string,
+            aggregation_name: input.aggregation_type.name,
+            aggregation_values: input.aggregation_type.values.unwrap_or_default(),
+            period: input.period,
+            aggregation_field: input.aggregation_field,
+            description: input.description,
+            query_version: input.query_version,
+            index_name,
+            unit: input.unit,
+        };
+        let metric_arn = crate::state::fleet_metric_arn(&region, &input.metric_name);
+        let metric = crate::state::RegisteredFleetMetric::new(
+            input.metric_name,
+            metric_arn,
+            configuration,
+            tags,
+            now,
+        );
+
+        // The response is built from the record that is about to be persisted, so what
+        // this call reports and what the next `DescribeFleetMetric` reads are one value,
+        // not two that could drift.
+        let output = CreateFleetMetricOutput {
+            metric_name: Some(metric.metric_name.clone()),
+            metric_arn: Some(metric.metric_arn.clone()),
+        };
+        store.fleet_metrics.insert(metric.metric_name.clone(), metric);
+        Ok(output)
     }
 }

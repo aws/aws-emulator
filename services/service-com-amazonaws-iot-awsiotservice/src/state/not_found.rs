@@ -53,6 +53,16 @@ pub fn missing_thing_group_message(thing_group_name: &str) -> String {
     registry_not_found("ThingGroup", thing_group_name)
 }
 
+/// How this service states that a `metricName` names no fleet metric this account
+/// holds — for a reader of one and for a writer of one.
+///
+/// A fleet metric is a REGISTRY resource of this account like a thing or a thing
+/// group, so the miss is stated the same way: the family noun, the account the record
+/// would belong to and the name the request asked about.
+pub fn missing_fleet_metric_message(metric_name: &str) -> String {
+    registry_not_found("FleetMetric", metric_name)
+}
+
 /// How this service states that a `thingTypeName` names no thing type this account holds
 /// — for a reader of one, for the deprecation of one, and for a thing whose
 /// `thingTypeName` named it.

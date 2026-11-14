@@ -213,14 +213,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 creation_date: Some(::aws_smithy_types::DateTime::from(group.creation_date)),
             }),
             // `indexName`, `queryString`, `queryVersion` and `status` are the DYNAMIC
-            // thing group members (`status` is a `DynamicGroupStatus`). A group
-            // created by `CreateThingGroup` is static, so it has none of them;
-            // `CreateDynamicThingGroup` is a scaffold with its own issue and is what
-            // will populate them.
-            index_name: None,
-            query_string: None,
-            query_version: None,
-            status: None,
+            // thing group members: a group created by `CreateThingGroup` is static and
+            // carries none of them, while one created by `CreateDynamicThingGroup`
+            // reports the query that decides its membership and the status that query
+            // is in. The status is `ACTIVE` because the query is recorded by the create
+            // itself, so there is no build the clock still owes the group.
+            index_name: group
+                .dynamic_query
+                .as_ref()
+                .map(|query| query.index_name.clone()),
+            query_string: group
+                .dynamic_query
+                .as_ref()
+                .map(|query| query.query_string.clone()),
+            query_version: group
+                .dynamic_query
+                .as_ref()
+                .and_then(|query| query.query_version.clone()),
+            status: group
+                .dynamic_query
+                .as_ref()
+                .map(|_| crate::state::DYNAMIC_GROUP_ACTIVE.to_string()),
         })
     }
 }

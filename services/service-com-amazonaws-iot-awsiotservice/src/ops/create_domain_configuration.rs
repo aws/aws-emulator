@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateDomainConfiguration
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateDomainConfiguration`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateDomainConfiguration::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -192,18 +183,169 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateDomainConfiguration` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateDomainConfigurationErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateDomainConfiguration"))
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            CreateDomainConfigurationErrorModeled::InternalFailureException(
+                InternalFailureException {
+                    message: Some("the IoT emulator has no state store attached".to_string()),
+                },
+            )
+        })?;
+
+        let region = crate::state::request_region(ctx.parts());
+        let now = ::std::time::SystemTime::now();
+
+        // `Tag$Key` is `@required` and keys a resource's tag set, so the last value given
+        // for a key is the one the resource carries, and how MANY tags one request may
+        // carry is bounded for the reason every other store's tag ceiling exists.
+        let requested_tags = input.tags.unwrap_or_default();
+        if requested_tags.len() > crate::state::domain_configurations::MAX_DOMAIN_CONFIGURATION_TAGS
+        {
+            return Err(
+                CreateDomainConfigurationErrorModeled::InvalidRequestException(
+                    InvalidRequestException {
+                        message: Some(format!(
+                            "a domain configuration may carry at most {} tags; this request \
+                             carries {}",
+                            crate::state::domain_configurations::MAX_DOMAIN_CONFIGURATION_TAGS,
+                            requested_tags.len()
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+        let tags: ::std::collections::BTreeMap<String, Option<String>> = requested_tags
+            .into_iter()
+            .map(|tag| (tag.key, tag.value))
+            .collect();
+
+        let server_certificate_arns = input.server_certificate_arns.unwrap_or_default();
+
+        let mut store = state.lock();
+
+        // The certificate a configuration presents belongs to Certificate Manager, so
+        // whether it exists is the holder's answer and not this service's: it is read
+        // from the one shared record of a certificate's serving material that holder
+        // writes. A certificate nothing is held for cannot be passed to a device, so the
+        // configuration is refused — the modelled `InvalidRequestException` (HTTP 400) —
+        // and nothing is written, which is what makes the following
+        // `DescribeDomainConfiguration` a 404.
+        if !server_certificate_arns.is_empty() {
+            let Some(material) =
+                crate::state::domain_configurations::certificate_key_material(&*self.engine)
+            else {
+                return Err(
+                    CreateDomainConfigurationErrorModeled::InternalFailureException(
+                        InternalFailureException {
+                            message: Some(
+                                "the IoT emulator cannot reach the certificate store".to_string(),
+                            ),
+                        },
+                    )
+                    .into(),
+                );
+            };
+            let held = material.lock();
+            for certificate_arn in &server_certificate_arns {
+                if held.material(certificate_arn).is_none() {
+                    return Err(
+                        CreateDomainConfigurationErrorModeled::InvalidRequestException(
+                            InvalidRequestException {
+                                message: Some(
+                                    crate::state::missing_server_certificate_message(
+                                        certificate_arn,
+                                    ),
+                                ),
+                            },
+                        )
+                        .into(),
+                    );
+                }
+            }
+        }
+
+        // The name is the configuration's identity, so a name already taken is a
+        // conflict: `ResourceAlreadyExistsException` (HTTP 409).
+        if let Some(existing) = store.domain_configurations.get(&input.domain_configuration_name) {
+            return Err(
+                CreateDomainConfigurationErrorModeled::ResourceAlreadyExistsException(
+                    ResourceAlreadyExistsException {
+                        message: Some(format!(
+                            "Domain configuration {} already exists",
+                            existing.domain_configuration_name
+                        )),
+                        resource_id: Some(existing.domain_configuration_name.clone()),
+                        resource_arn: Some(existing.domain_configuration_arn.clone()),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // The store is one a CALLER grows, so the number of records an account can hold
+        // is bounded; past the ceiling nothing is written and the create is refused with
+        // the modelled `LimitExceededException`.
+        if store.domain_configurations.len() >= crate::state::MAX_DOMAIN_CONFIGURATIONS {
+            return Err(
+                CreateDomainConfigurationErrorModeled::LimitExceededException(
+                    LimitExceededException {
+                        message: Some(format!(
+                            "the maximum of {} domain configurations is already reached",
+                            crate::state::MAX_DOMAIN_CONFIGURATIONS
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // A configuration carrying a domain name of the caller's own is the
+        // customer-managed kind; one carrying none configures the AWS-managed domain the
+        // account's endpoint already serves, which is why its certificates are "not
+        // required".
+        let domain_type = if input.domain_name.is_some() {
+            crate::state::domain_configurations::DOMAIN_TYPE_CUSTOMER_MANAGED
+        } else {
+            crate::state::domain_configurations::DOMAIN_TYPE_AWS_MANAGED
+        };
+        let domain_configuration_arn = crate::state::domain_configuration_arn(
+            &region,
+            &input.domain_configuration_name,
+        );
+        let configuration = crate::state::RegisteredDomainConfiguration {
+            domain_configuration_name: input.domain_configuration_name,
+            domain_configuration_arn,
+            domain_name: input.domain_name,
+            server_certificate_arns,
+            validation_certificate_arn: input.validation_certificate_arn,
+            authorizer_config: input.authorizer_config,
+            service_type: input
+                .service_type
+                .unwrap_or_else(|| {
+                    crate::state::domain_configurations::DEFAULT_SERVICE_TYPE.to_string()
+                }),
+            domain_type: domain_type.to_string(),
+            status: crate::state::domain_configurations::DOMAIN_CONFIGURATION_ENABLED.to_string(),
+            tls_config: input.tls_config,
+            server_certificate_config: input.server_certificate_config,
+            authentication_type: input.authentication_type,
+            application_protocol: input.application_protocol,
+            client_certificate_config: input.client_certificate_config,
+            tags,
+            last_status_change_date: now,
+        };
+
+        // The response is built from the record that is about to be persisted, so what
+        // this call reports and what the next `DescribeDomainConfiguration` reads are one
+        // value, not two that could drift.
+        let output = CreateDomainConfigurationOutput {
+            domain_configuration_name: Some(configuration.domain_configuration_name.clone()),
+            domain_configuration_arn: Some(configuration.domain_configuration_arn.clone()),
+        };
+        store.domain_configurations.insert(
+            configuration.domain_configuration_name.clone(),
+            configuration,
+        );
+        Ok(output)
     }
 }

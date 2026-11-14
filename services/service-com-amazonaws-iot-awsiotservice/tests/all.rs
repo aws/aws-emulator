@@ -23,6 +23,8 @@ mod bulk_thing_registration;
 mod bulk_thing_registration_reports;
 #[path = "all/certificate_deletion.rs"]
 mod certificate_deletion;
+#[path = "all/certificate_providers.rs"]
+mod certificate_providers;
 #[path = "all/certificate_status_update.rs"]
 mod certificate_status_update;
 #[path = "all/command_execution_listing.rs"]
@@ -37,12 +39,16 @@ mod command_registry;
 mod describe_endpoint;
 #[path = "all/device_certificate_issuance.rs"]
 mod device_certificate_issuance;
+#[path = "all/domain_configurations.rs"]
+mod domain_configurations;
 #[path = "all/effective_policies.rs"]
 mod effective_policies;
 #[path = "all/endpoint_discovery_reachability.rs"]
 mod endpoint_discovery_reachability;
 #[path = "all/fleet_index_description.rs"]
 mod fleet_index_description;
+#[path = "all/fleet_metrics.rs"]
+mod fleet_metrics;
 #[path = "all/indexing_configuration.rs"]
 mod indexing_configuration;
 #[path = "all/job_cancellation.rs"]
@@ -81,14 +87,22 @@ mod package_versions;
 mod policy_attachments;
 #[path = "all/policy_registry.rs"]
 mod policy_registry;
+#[path = "all/policy_versions.rs"]
+mod policy_versions;
+#[path = "all/provisioning_templates.rs"]
+mod provisioning_templates;
 #[path = "all/role_alias_deletion.rs"]
 mod role_alias_deletion;
 #[path = "all/role_alias_registry.rs"]
 mod role_alias_registry;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
+#[path = "all/streams.rs"]
+mod streams;
 #[path = "all/thing_group_hierarchy.rs"]
 mod thing_group_hierarchy;
+#[path = "all/thing_group_membership.rs"]
+mod thing_group_membership;
 #[path = "all/thing_group_update.rs"]
 mod thing_group_update;
 #[path = "all/thing_listing.rs"]

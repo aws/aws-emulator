@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op UpdateProvisioningTemplate
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `UpdateProvisioningTemplate`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`UpdateProvisioningTemplate::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -152,18 +143,79 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `UpdateProvisioningTemplate` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(UpdateProvisioningTemplateErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            UpdateProvisioningTemplateErrorModeled::InternalFailureException(
+                InternalFailureException {
+                    message: Some("the IoT emulator has no state store attached".to_string()),
+                },
+            )
+        })?;
+        let _ = ctx;
+        let now = ::std::time::SystemTime::now();
+
+        let mut store = state.lock();
+
+        let Some(template) = store.provisioning_templates.get_mut(&input.template_name) else {
+            return Err(
+                UpdateProvisioningTemplateErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: Some(crate::state::missing_provisioning_template_message(
+                            &input.template_name,
+                        )),
+                    },
+                )
+                .into(),
+            );
+        };
+
+        // The update is a PATCH: every member it carries replaces what the record held,
+        // and every member it leaves out leaves the record as it was
+        // (`smithy_query(query="operation",operation="UpdateProvisioningTemplate")` binds
+        // it to `PATCH /provisioning-templates/{templateName}` and makes each member
+        // optional).
         //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("UpdateProvisioningTemplate"))
+        // `defaultVersionId` re-points which version provisioning uses, so it may only
+        // name a version the template HOLDS: anything else would leave the template
+        // pointing at a body nothing stored. The refusal is the modelled
+        // `InvalidRequestException` (HTTP 400), and nothing else about the record is
+        // written.
+        if let Some(default_version_id) = input.default_version_id {
+            if !template.versions.contains_key(&default_version_id) {
+                return Err(
+                    UpdateProvisioningTemplateErrorModeled::InvalidRequestException(
+                        InvalidRequestException {
+                            message: Some(
+                                crate::state::provisioning_templates::missing_template_version_message(
+                                    &input.template_name,
+                                    default_version_id,
+                                ),
+                            ),
+                        },
+                    )
+                    .into(),
+                );
+            }
+            template.default_version_id = default_version_id;
+        }
+        if let Some(description) = input.description {
+            template.description = Some(description);
+        }
+        if let Some(enabled) = input.enabled {
+            template.enabled = enabled;
+        }
+        if let Some(provisioning_role_arn) = input.provisioning_role_arn {
+            template.provisioning_role_arn = provisioning_role_arn;
+        }
+        // `removePreProvisioningHook` is "Removes pre-provisioning hook template", so it
+        // clears the hook the record held; a request that supplies a hook instead
+        // replaces it.
+        if input.remove_pre_provisioning_hook == Some(true) {
+            template.pre_provisioning_hook = None;
+        } else if let Some(pre_provisioning_hook) = input.pre_provisioning_hook {
+            template.pre_provisioning_hook = Some(pre_provisioning_hook);
+        }
+        template.last_modified_date = now;
+
+        Ok(UpdateProvisioningTemplateOutput {})
     }
 }

@@ -374,6 +374,18 @@ pub struct RegisteredThingGroup {
     pub creation_date: SystemTime,
     /// The registry version of this record.
     pub version: i64,
+    /// The things that have been ADDED to this group, keyed by `thingName` — the
+    /// relation `AddThingToThingGroup` writes and `ListThingsInThingGroup` reads (see
+    /// [`thing_group_membership`]). Ordered, so a paginated reader over it is stable.
+    ///
+    /// It is NOT part of [`ThingGroupConfiguration`]: a group's membership is not what
+    /// the group is configured with, so two groups holding different things were
+    /// configured alike and a repeat create of one is still the same group.
+    pub members: BTreeSet<String>,
+    /// The query whose things this group holds, for a group created as a DYNAMIC one
+    /// (`CreateDynamicThingGroup`); `None` for a static group, whose membership is
+    /// [`RegisteredThingGroup::members`]. See [`DynamicGroupQuery`].
+    pub dynamic_query: Option<DynamicGroupQuery>,
 }
 
 /// The `version` a freshly created thing group carries.
@@ -403,6 +415,8 @@ impl RegisteredThingGroup {
             tags,
             creation_date,
             version: FIRST_THING_GROUP_VERSION,
+            members: BTreeSet::new(),
+            dynamic_query: None,
         }
     }
 
@@ -940,6 +954,59 @@ pub struct ComAmazonawsIotAwsiotserviceState {
     /// A caller grows this store, so it is bounded: [`audit_tasks::MAX_AUDIT_TASKS`] is the
     /// ceiling `StartOnDemandAuditTask` refuses past.
     pub audit_tasks: BTreeMap<String, AuditTask>,
+    /// Every FLEET METRIC that exists, keyed by `metricName`.
+    ///
+    /// The name is the metric's identity — the model binds it as the `@httpLabel` of
+    /// `/fleet-metric/{metricName}` on every single-metric operation — so a
+    /// `BTreeMap` keyed by name is the registry itself. `BTreeMap` (not `HashMap`)
+    /// because `ListFleetMetrics` is `@paginated` and a page boundary is only
+    /// meaningful over a stable order.
+    ///
+    /// A caller grows this store, so it is bounded: [`fleet_metrics::MAX_FLEET_METRICS`]
+    /// is the ceiling `CreateFleetMetric` refuses past.
+    pub fleet_metrics: BTreeMap<String, RegisteredFleetMetric>,
+    /// Every DOMAIN CONFIGURATION that exists, keyed by `domainConfigurationName`.
+    ///
+    /// The name is the configuration's identity — the model binds it as the
+    /// `@httpLabel` of `/domainConfigurations/{domainConfigurationName}` on every
+    /// single-configuration operation — so a `BTreeMap` keyed by name is the store
+    /// itself, ordered for the same reason the fleet metrics are.
+    ///
+    /// A caller grows this store, so it is bounded:
+    /// [`domain_configurations::MAX_DOMAIN_CONFIGURATIONS`] is the ceiling
+    /// `CreateDomainConfiguration` refuses past.
+    pub domain_configurations: BTreeMap<String, RegisteredDomainConfiguration>,
+    /// Every CERTIFICATE PROVIDER that exists, keyed by `certificateProviderName`.
+    ///
+    /// The name is the provider's identity — the model binds it as the `@httpLabel`
+    /// of `/certificate-providers/{certificateProviderName}` on every single-provider
+    /// operation — so a `BTreeMap` keyed by name is the store itself, ordered for the
+    /// same reason the fleet metrics are.
+    ///
+    /// Which provider holds an operation's ACCOUNT DEFAULT is derived from these
+    /// records and never recorded beside them, so the account cannot hold two
+    /// defaults for one operation (see [`certificate_providers`]).
+    pub certificate_providers: BTreeMap<String, RegisteredCertificateProvider>,
+    /// Every FLEET PROVISIONING TEMPLATE that exists, keyed by `templateName`.
+    ///
+    /// The name is the template's identity — the model binds it as the `@httpLabel`
+    /// of `/provisioning-templates/{templateName}` on every single-template operation
+    /// — so a `BTreeMap` keyed by name is the store itself, ordered for the same
+    /// reason the fleet metrics are. A template's VERSIONS hang off its record, keyed
+    /// by `versionId`: a version's identity is the pair `(templateName, versionId)`,
+    /// which is what the model binds as the two `@httpLabel`s of
+    /// `/provisioning-templates/{templateName}/versions/{versionId}`, so a version
+    /// lives inside the template it belongs to and disappears with it.
+    pub provisioning_templates: BTreeMap<String, RegisteredProvisioningTemplate>,
+    /// Every STREAM that exists, keyed by `streamId`.
+    ///
+    /// The id is the stream's identity — the model binds it as the `@httpLabel` of
+    /// `/streams/{streamId}` on every single-stream operation — so a `BTreeMap` keyed
+    /// by id is the store itself, ordered for the same reason the fleet metrics are.
+    ///
+    /// A caller grows this store, so it is bounded: [`streams::MAX_STREAMS`] is the
+    /// ceiling `CreateStream` refuses past.
+    pub streams: BTreeMap<String, RegisteredStream>,
 }
 
 impl ComAmazonawsIotAwsiotserviceState {
@@ -1100,25 +1167,6 @@ impl ComAmazonawsIotAwsiotserviceState {
         }
         chain.reverse();
         chain
-    }
-
-    /// How a THING GROUP target is refused.
-    ///
-    /// A group's executions are its MEMBERS' executions. The group registry holds no
-    /// membership (`AddThingToThingGroup` is still a scaffold, its own issue), so a
-    /// group target cannot be expanded into the devices it names: a group the registry
-    /// does not hold is the modelled 404, and one it DOES hold is the modelled 400 —
-    /// never a 200 that reports a group-targeted job as dispatched while queueing
-    /// nothing.
-    pub fn thing_group_target_refusal(&self, group_name: &str) -> JobTargetsRefusal {
-        if self.thing_groups.contains_key(group_name) {
-            return JobTargetsRefusal::Invalid(format!(
-                "a thing group target cannot be expanded: this emulator records no \
-                 membership for thing group {group_name}, so the devices it names are \
-                 not known"
-            ));
-        }
-        JobTargetsRefusal::NotFound(not_found::missing_thing_group_message(group_name))
     }
 
     /// The endpoint identifier recorded for `region`, if an endpoint has been created
@@ -2913,9 +2961,79 @@ pub use audit_tasks::{
 pub mod not_found;
 pub use not_found::{
     missing_audit_task_message, missing_authorizer_message, missing_command_message,
-    missing_job_execution_job_message, missing_job_execution_message, missing_job_message,
-    missing_thing_group_message, missing_thing_message, missing_thing_type_message,
-    unrecognized_index_name_message, MISSING_THING_REGISTRATION_TASK_MESSAGE,
+    missing_fleet_metric_message, missing_job_execution_job_message, missing_job_execution_message,
+    missing_job_message, missing_thing_group_message, missing_thing_message,
+    missing_thing_type_message, unrecognized_index_name_message,
+    MISSING_THING_REGISTRATION_TASK_MESSAGE,
+};
+
+// Whether a FLEET INDEXING QUERY STRING is one this service can read at all — the one
+// reading of a `queryString` every operation that takes one shares — lives in
+// `state/fleet_query.rs`, beside the store accessor for the same reason the rules engine
+// does. Its names are re-exported here so a handler reaches them as
+// `crate::state::<name>`.
+pub mod fleet_query;
+pub use fleet_query::{validate_query_string, QueryStringRejection, UNPARSABLE_QUERY_MESSAGE};
+
+// What a FLEET METRIC is — the record one holds, the aggregation it is configured with,
+// and where the index it aggregates over stands — lives in `state/fleet_metrics.rs`.
+pub mod fleet_metrics;
+pub use fleet_metrics::{
+    fleet_metric_arn, index_not_ready_message, missing_fleet_index_for_aggregation_message,
+    validate_aggregation, AggregationFieldRejection, AggregationRejection, FleetIndexAvailability,
+    FleetMetricConfiguration, RegisteredFleetMetric, MAX_FLEET_METRICS, MAX_FLEET_METRIC_TAGS,
+};
+
+// WHICH THINGS are in which thing group, and what makes a group DYNAMIC, lives in
+// `state/thing_group_membership.rs`, beside the thing-group update for the same reason.
+pub mod thing_group_membership;
+pub use thing_group_membership::{
+    named_thing, named_thing_group, DynamicGroupQuery, MembershipRefusal, DYNAMIC_GROUP_ACTIVE,
+    MAX_DYNAMIC_THING_GROUPS, MAX_THING_GROUPS_PER_THING, MAX_THINGS_PER_THING_GROUP,
+};
+
+// What a DOMAIN CONFIGURATION is — the record one holds, the server certificate it
+// presents and what every reader of one reports — lives in
+// `state/domain_configurations.rs`.
+pub mod domain_configurations;
+pub use domain_configurations::{
+    domain_configuration_arn, missing_domain_configuration_message,
+    missing_server_certificate_message, RegisteredDomainConfiguration, MAX_DOMAIN_CONFIGURATIONS,
+};
+
+// What a CERTIFICATE PROVIDER is — the record one holds and which provider holds an
+// operation's account default — lives in `state/certificate_providers.rs`.
+pub mod certificate_providers;
+pub use certificate_providers::{
+    certificate_provider_arn, default_provider_conflict_message,
+    missing_certificate_provider_message, RegisteredCertificateProvider,
+    CERTIFICATE_PROVIDER_OPERATIONS, MAX_CERTIFICATE_PROVIDERS,
+};
+
+// What a FLEET PROVISIONING TEMPLATE is — the record one holds, its versions and which
+// of them is the default — lives in `state/provisioning_templates.rs`.
+pub mod provisioning_templates;
+pub use provisioning_templates::{
+    missing_provisioning_template_message, provisioning_template_arn,
+    validate_provisioning_template_body, ProvisioningTemplateBodyRejection,
+    ProvisioningTemplateVersion, RegisteredProvisioningTemplate, DEFAULT_TEMPLATE_TYPE,
+    FIRST_TEMPLATE_VERSION_ID, MAX_PROVISIONING_TEMPLATES, MAX_PROVISIONING_TEMPLATE_VERSIONS,
+};
+
+// What a STREAM is — the record one holds, the files it streams and what every reader of
+// one reports — lives in `state/streams.rs`.
+pub mod streams;
+pub use streams::{
+    missing_stream_message, stream_arn, RegisteredStream, FIRST_STREAM_VERSION, MAX_STREAMS,
+    MAX_STREAM_TAGS,
+};
+
+// The VERSIONS of an IoT policy — how one is added, how many a policy holds, and what a
+// reader of them reports — live in `state/policy_versions.rs`, beside the policy record
+// they hang off.
+pub mod policy_versions;
+pub use policy_versions::{
+    missing_policy_version_message, policy_versions_limit_message, MAX_POLICY_VERSIONS,
 };
 
 /// This service's store in the shared engine: call it with a handler's `&*self.engine`.

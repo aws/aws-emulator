@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateProvisioningTemplateVersion
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateProvisioningTemplateVersion`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateProvisioningTemplateVersion::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -159,18 +150,77 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateProvisioningTemplateVersion` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateProvisioningTemplateVersionErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateProvisioningTemplateVersion"))
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            CreateProvisioningTemplateVersionErrorModeled::InternalFailureException(
+                InternalFailureException {
+                    message: Some("the IoT emulator has no state store attached".to_string()),
+                },
+            )
+        })?;
+        let _ = ctx;
+        let now = ::std::time::SystemTime::now();
+
+        // The same reading of a template body the create applies, so the two cannot drift
+        // apart on what they accept.
+        if let Err(rejection) =
+            crate::state::validate_provisioning_template_body(&input.template_body)
+        {
+            return Err(
+                CreateProvisioningTemplateVersionErrorModeled::InvalidRequestException(
+                    InvalidRequestException {
+                        message: Some(rejection.message()),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        let mut store = state.lock();
+
+        // A version hangs off the template it is a version of, so a name the account
+        // holds no template under is the modelled `ResourceNotFoundException` (HTTP 404).
+        let Some(template) = store.provisioning_templates.get_mut(&input.template_name) else {
+            return Err(
+                CreateProvisioningTemplateVersionErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: Some(crate::state::missing_provisioning_template_message(
+                            &input.template_name,
+                        )),
+                    },
+                )
+                .into(),
+            );
+        };
+
+        // How many versions a template holds is CAPPED
+        // ([`crate::state::MAX_PROVISIONING_TEMPLATE_VERSIONS`]), and the cap is read
+        // under the same lock as the write: past it nothing is written and the create is
+        // refused with the modelled `VersionsLimitExceededException` (HTTP 409).
+        if template.versions.len() >= crate::state::MAX_PROVISIONING_TEMPLATE_VERSIONS {
+            return Err(
+                CreateProvisioningTemplateVersionErrorModeled::VersionsLimitExceededException(
+                    VersionsLimitExceededException {
+                        message: Some(
+                            crate::state::provisioning_templates::template_versions_limit_message(
+                                &input.template_name,
+                            ),
+                        ),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        let version_id = template.add_version(input.template_body, input.set_as_default, now);
+
+        // The response is built from the record that has just been written, so what this
+        // call reports and what the next `DescribeProvisioningTemplateVersion` reads are
+        // one value.
+        Ok(CreateProvisioningTemplateVersionOutput {
+            template_arn: Some(template.template_arn.clone()),
+            template_name: Some(template.template_name.clone()),
+            version_id: Some(version_id),
+            is_default_version: version_id == template.default_version_id,
+        })
     }
 }

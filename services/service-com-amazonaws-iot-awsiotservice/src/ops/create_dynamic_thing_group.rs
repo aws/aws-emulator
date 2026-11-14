@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateDynamicThingGroup
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateDynamicThingGroup`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateDynamicThingGroup::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -165,18 +156,143 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateDynamicThingGroup` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateDynamicThingGroupErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateDynamicThingGroup"))
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            CreateDynamicThingGroupErrorModeled::InternalFailureException(
+                InternalFailureException {
+                    message: Some("the IoT emulator has no state store attached".to_string()),
+                },
+            )
+        })?;
+
+        let region = crate::state::request_region(ctx.parts());
+        let now = ::std::time::SystemTime::now();
+
+        // A dynamic group IS its query — the things it holds are the things the query
+        // selects — so a string that is not a query is refused before anything is
+        // written: the modelled `InvalidQueryException` ("The query is invalid", HTTP
+        // 400), whose message names the rule that was broken.
+        if let Err(rejection) = crate::state::validate_query_string(&input.query_string) {
+            return Err(CreateDynamicThingGroupErrorModeled::InvalidQueryException(
+                InvalidQueryException {
+                    message: Some(rejection.message()),
+                },
+            )
+            .into());
+        }
+
+        // `CreateDynamicThingGroup$indexName` is "The dynamic thing group index name.
+        // Currently one index is supported: AWS_Things", so any other name is a request
+        // this service cannot act on: the modelled `InvalidRequestException` (HTTP 400).
+        let index_name = input
+            .index_name
+            .clone()
+            .unwrap_or_else(|| crate::state::THING_INDEX_NAME.to_string());
+        if index_name != crate::state::THING_INDEX_NAME {
+            return Err(CreateDynamicThingGroupErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    message: Some(crate::state::unrecognized_index_name_message(&index_name)),
+                },
+            )
+            .into());
+        }
+
+        // Everything about the group that is NOT its name or its query, in the form the
+        // registry keeps it — the same value `CreateThingGroup` builds, so a static and a
+        // dynamic group are one kind of record.
+        let properties = input.thing_group_properties.unwrap_or_default();
+        let configuration = crate::state::ThingGroupConfiguration {
+            parent_group_name: None,
+            description: properties.thing_group_description,
+            attributes: properties
+                .attribute_payload
+                .and_then(|payload| payload.attributes)
+                .map(|attributes| attributes.into_iter().collect())
+                .unwrap_or_default(),
+        };
+        let tags: ::std::collections::BTreeMap<String, Option<String>> = input
+            .tags
+            .unwrap_or_default()
+            .into_iter()
+            .map(|tag| (tag.key, tag.value))
+            .collect();
+
+        let mut store = state.lock();
+
+        // The name is the group's identity, and the two kinds of group share one
+        // namespace — the model binds `thingGroupName` as the `@httpLabel` of both
+        // `/thing-groups/{thingGroupName}` and `/dynamic-thing-groups/{thingGroupName}`
+        // — so a name already taken by a group of either kind is the modelled
+        // `ResourceAlreadyExistsException` (HTTP 409).
+        if let Some(existing) = store.thing_groups.get(&input.thing_group_name) {
+            return Err(
+                CreateDynamicThingGroupErrorModeled::ResourceAlreadyExistsException(
+                    ResourceAlreadyExistsException {
+                        message: Some(format!(
+                            "Thing group {} already exists",
+                            existing.thing_group_name
+                        )),
+                        resource_id: Some(existing.thing_group_name.clone()),
+                        resource_arn: Some(existing.thing_group_arn.clone()),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // The store is one a CALLER grows, so how many dynamic groups an account holds is
+        // bounded; past the ceiling nothing is written and the create is refused with the
+        // modelled `LimitExceededException`.
+        if store.dynamic_thing_group_count() >= crate::state::MAX_DYNAMIC_THING_GROUPS {
+            return Err(CreateDynamicThingGroupErrorModeled::LimitExceededException(
+                LimitExceededException {
+                    message: Some(format!(
+                        "the maximum of {} dynamic thing groups is already reached",
+                        crate::state::MAX_DYNAMIC_THING_GROUPS
+                    )),
+                },
+            )
+            .into());
+        }
+
+        let query = crate::state::DynamicGroupQuery {
+            index_name,
+            query_string: input.query_string,
+            query_version: input.query_version,
+        };
+        let thing_group_arn = crate::state::thing_group_arn(&region, &input.thing_group_name);
+        let group = crate::state::RegisteredThingGroup::new_dynamic(
+            input.thing_group_name,
+            store.mint_thing_group_id(),
+            thing_group_arn,
+            configuration,
+            tags,
+            now,
+            query,
+        );
+
+        // The response is built from the record that is about to be persisted, so what
+        // this call reports and what the next `DescribeThingGroup` reads are one value,
+        // not two that could drift.
+        let output = CreateDynamicThingGroupOutput {
+            thing_group_name: Some(group.thing_group_name.clone()),
+            thing_group_arn: Some(group.thing_group_arn.clone()),
+            thing_group_id: Some(group.thing_group_id.clone()),
+            index_name: group
+                .dynamic_query
+                .as_ref()
+                .map(|query| query.index_name.clone()),
+            query_string: group
+                .dynamic_query
+                .as_ref()
+                .map(|query| query.query_string.clone()),
+            query_version: group
+                .dynamic_query
+                .as_ref()
+                .and_then(|query| query.query_version.clone()),
+        };
+        store
+            .thing_groups
+            .insert(group.thing_group_name.clone(), group);
+        Ok(output)
     }
 }

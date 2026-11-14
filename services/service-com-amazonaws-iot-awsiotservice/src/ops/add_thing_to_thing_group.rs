@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op AddThingToThingGroup
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `AddThingToThingGroup`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`AddThingToThingGroup::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -146,18 +137,83 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `AddThingToThingGroup` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(AddThingToThingGroupErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            AddThingToThingGroupErrorModeled::InternalFailureException(InternalFailureException {
+                message: Some("the IoT emulator has no state store attached".to_string()),
+            })
+        })?;
+        let _ = ctx;
+
+        // Either end may be named by NAME or by ARN — neither member is `@required`
+        // (`smithy_query(query="operation",operation="AddThingToThingGroup")`) — and the
+        // name inside the ARN is the resource's identity, so both forms become one
+        // request. A request that names neither end asks for no membership at all: the
+        // modelled `InvalidRequestException` (HTTP 400).
+        let Some(thing_group_name) = crate::state::named_thing_group(
+            input.thing_group_name.as_deref(),
+            input.thing_group_arn.as_deref(),
+        ) else {
+            return Err(AddThingToThingGroupErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    message: Some(
+                        "either thingGroupName or thingGroupArn must name the thing group to add \
+                         the thing to"
+                            .to_string(),
+                    ),
+                },
+            )
+            .into());
+        };
+        let Some(thing_name) =
+            crate::state::named_thing(input.thing_name.as_deref(), input.thing_arn.as_deref())
+        else {
+            return Err(AddThingToThingGroupErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    message: Some(
+                        "either thingName or thingArn must name the thing to add to the thing \
+                         group"
+                            .to_string(),
+                    ),
+                },
+            )
+            .into());
+        };
+
+        // One membership write ([`crate::state::ComAmazonawsIotAwsiotserviceState::add_thing_to_thing_group`]),
+        // so every writer of the relation agrees on what it takes: both ends have to
+        // exist, and the group has to be a static one. A missing end is the modelled
+        // `ResourceNotFoundException` (HTTP 404) — a membership between records this
+        // account does not hold would be a relation over nothing — and a group whose
+        // membership is its query's, or an end already at its limit, is the modelled
+        // `InvalidRequestException` (HTTP 400).
         //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("AddThingToThingGroup"))
+        // `overrideDynamicGroups` is "Override dynamic thing groups with static thing
+        // groups when 10-group limit is reached": it only applies where a thing is at the
+        // group limit BECAUSE of dynamic groups, and a dynamic group's membership is
+        // never written here, so there is no dynamic membership for it to override.
+        let _ = input.override_dynamic_groups;
+        let refusal = state
+            .lock()
+            .add_thing_to_thing_group(&thing_group_name, &thing_name);
+        match refusal {
+            Ok(()) => Ok(AddThingToThingGroupOutput {}),
+            Err(
+                refusal @ (crate::state::MembershipRefusal::MissingThing(_)
+                | crate::state::MembershipRefusal::MissingThingGroup(_)),
+            ) => Err(
+                AddThingToThingGroupErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: Some(refusal.message()),
+                    },
+                )
+                .into(),
+            ),
+            Err(refusal) => Err(AddThingToThingGroupErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    message: Some(refusal.message()),
+                },
+            )
+            .into()),
+        }
     }
 }

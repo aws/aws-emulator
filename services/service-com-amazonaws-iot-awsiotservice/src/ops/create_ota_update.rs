@@ -318,7 +318,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Which DEVICES this update runs on: a thing target names one, a thing-group
         // target names its members. Resolved BEFORE any lock is taken, so a malformed
         // request never reaches the stores at all, and bounded before the walk.
-        let fanout = crate::state::resolve_job_targets(&input.targets).map_err(refused)?;
+        let mut fanout = crate::state::resolve_job_targets(&input.targets).map_err(refused)?;
 
         let region = crate::state::request_region(ctx.parts());
         let now = ::std::time::SystemTime::now();
@@ -415,12 +415,32 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::MAX_JOBS
             )));
         }
-        // A group's executions are its MEMBERS' executions, and no membership is
-        // recorded, so a group target is refused — never answered with a 200 that
-        // reports a group-targeted update as deployed while queueing nothing. The
-        // FIRST group target decides, as any one of them refuses the whole request.
-        if let Some(group_name) = fanout.groups.first() {
-            return Err(refused(store.thing_group_target_refusal(group_name)));
+        // A group's executions are its MEMBERS' executions, so a group target is
+        // EXPANDED into the things the group holds, exactly as `CreateJob` expands one:
+        // one execution per member, and a group whose devices are not known — one the
+        // registry does not hold, or a dynamic group whose members are the things its
+        // query selects — is refused instead
+        // ([`crate::state::ComAmazonawsIotAwsiotserviceState::thing_group_target_refusal`]),
+        // never answered with a 200 that reports a group-targeted update as deployed
+        // while queueing nothing.
+        for group_name in &fanout.groups {
+            if let Some(refusal) = store.thing_group_target_refusal(group_name) {
+                return Err(refused(refusal));
+            }
+            for thing_name in store.things_in_thing_group(group_name) {
+                if !fanout.things.contains(&thing_name) {
+                    fanout.things.push(thing_name);
+                }
+            }
+        }
+        // The fan-out a group target adds is bounded by the same ceiling the request's
+        // own targets are: a deployment's executions are what one request may create.
+        if fanout.things.len() > crate::state::MAX_JOB_TARGETS {
+            return Err(over_limit(format!(
+                "an OTA update may name at most {} targets, got {}",
+                crate::state::MAX_JOB_TARGETS,
+                fanout.things.len()
+            )));
         }
 
         let job = crate::state::RegisteredJob {

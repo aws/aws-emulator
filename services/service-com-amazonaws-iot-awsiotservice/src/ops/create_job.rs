@@ -307,7 +307,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // records it creates and the document each record carries — is capped before
         // any work proportional to it.
         let fanout = crate::state::resolve_job_targets(&input.targets).map_err(refused)?;
-        let targeted_things = fanout.things;
+        let mut targeted_things = fanout.things;
         let targeted_groups = fanout.groups;
 
         // `documentParameters` are the values the document's substitution parameters
@@ -403,12 +403,34 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::MAX_JOBS
             )));
         }
-        // A group's executions are its MEMBERS' executions, and no membership is
-        // recorded, so a group target is refused — never answered with a 200 that
-        // reports a group-targeted job as dispatched while queueing nothing. The FIRST
-        // group target decides, as any one of them refuses the whole request.
-        if let Some(group_name) = targeted_groups.first() {
-            return Err(refused(store.thing_group_target_refusal(group_name)));
+        // A group's executions are its MEMBERS' executions, so a group target is
+        // EXPANDED into the things the group holds
+        // ([`crate::state::ComAmazonawsIotAwsiotserviceState::things_in_thing_group`]):
+        // one execution per member, and a member also named directly by the request
+        // still gets one execution. A group whose devices are not known — one the
+        // registry does not hold, or a dynamic group whose members are the things its
+        // query selects — is refused instead
+        // ([`crate::state::ComAmazonawsIotAwsiotserviceState::thing_group_target_refusal`]),
+        // never answered with a 200 that reports a group-targeted job as dispatched
+        // while queueing nothing.
+        for group_name in &targeted_groups {
+            if let Some(refusal) = store.thing_group_target_refusal(group_name) {
+                return Err(refused(refusal));
+            }
+            for thing_name in store.things_in_thing_group(group_name) {
+                if !targeted_things.contains(&thing_name) {
+                    targeted_things.push(thing_name);
+                }
+            }
+        }
+        // The fan-out a group target adds is bounded by the same ceiling the request's
+        // own targets are: a job's executions are what one request may create.
+        if targeted_things.len() > crate::state::MAX_JOB_TARGETS {
+            return Err(over_limit(format!(
+                "a job may name at most {} targets, got {}",
+                crate::state::MAX_JOB_TARGETS,
+                targeted_things.len()
+            )));
         }
 
         // Targeting a thing with a job IS creating that thing's job execution: it is

@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreatePolicyVersion
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreatePolicyVersion`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreatePolicyVersion::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -168,18 +159,68 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreatePolicyVersion` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreatePolicyVersionErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreatePolicyVersion"))
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            CreatePolicyVersionErrorModeled::InternalFailureException(InternalFailureException {
+                message: Some("the IoT emulator has no state store attached".to_string()),
+            })
+        })?;
+        let _ = ctx;
+        let now = ::std::time::SystemTime::now();
+
+        // A version IS its document, so a document that is not an IoT policy document is
+        // refused before anything is written — the same reading `CreatePolicy` applies
+        // ([`crate::state::validate_policy_document`]), so the two cannot drift apart on
+        // what they accept: `MalformedPolicyException` (HTTP 400), whose message names the
+        // rule that was violated.
+        if let Err(rejection) = crate::state::validate_policy_document(&input.policy_document) {
+            return Err(CreatePolicyVersionErrorModeled::MalformedPolicyException(
+                MalformedPolicyException {
+                    message: Some(rejection.message()),
+                },
+            )
+            .into());
+        }
+
+        let mut store = state.lock();
+
+        // A version hangs off the policy it is a version of, so a name the account holds
+        // no policy under is the modelled `ResourceNotFoundException` (HTTP 404).
+        let Some(policy) = store.policies.get_mut(&input.policy_name) else {
+            return Err(CreatePolicyVersionErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: Some(crate::state::missing_policy_message(&input.policy_name)),
+                },
+            )
+            .into());
+        };
+
+        // How many versions a policy holds is CAPPED, and the cap is read under the same
+        // lock as the write ([`crate::state::MAX_POLICY_VERSIONS`]) — which is what makes
+        // concurrent creates resolve to successes up to the cap plus losers refused the
+        // modelled `VersionsLimitExceededException` (HTTP 409), never a policy holding
+        // more versions than the cap.
+        let Some(version_id) =
+            policy.add_version(input.policy_document.clone(), input.set_as_default, now)
+        else {
+            return Err(
+                CreatePolicyVersionErrorModeled::VersionsLimitExceededException(
+                    VersionsLimitExceededException {
+                        message: Some(crate::state::policy_versions_limit_message(
+                            &input.policy_name,
+                        )),
+                    },
+                )
+                .into(),
+            );
+        };
+
+        // The response is built from the record that has just been written, so what this
+        // call reports and what the next `GetPolicyVersion` reads are one value.
+        Ok(CreatePolicyVersionOutput {
+            policy_arn: Some(policy.policy_arn.clone()),
+            policy_document: Some(input.policy_document),
+            policy_version_id: Some(version_id.to_string()),
+            is_default_version: version_id == policy.default_version_id,
+        })
     }
 }

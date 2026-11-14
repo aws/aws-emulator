@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateCertificateProvider
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateCertificateProvider`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateCertificateProvider::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -168,18 +159,147 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateCertificateProvider` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateCertificateProviderErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateCertificateProvider"))
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            CreateCertificateProviderErrorModeled::InternalFailureException(
+                InternalFailureException {
+                    message: Some("the IoT emulator has no state store attached".to_string()),
+                },
+            )
+        })?;
+
+        let region = crate::state::request_region(ctx.parts());
+        let now = ::std::time::SystemTime::now();
+
+        // `Tag$Key` is `@required` and keys a resource's tag set, so the last value given
+        // for a key is the one the resource carries, and how MANY tags one request may
+        // carry is bounded for the reason every other store's tag ceiling exists.
+        let requested_tags = input.tags.unwrap_or_default();
+        if requested_tags.len() > crate::state::certificate_providers::MAX_CERTIFICATE_PROVIDER_TAGS
+        {
+            return Err(
+                CreateCertificateProviderErrorModeled::InvalidRequestException(
+                    InvalidRequestException {
+                        message: Some(format!(
+                            "a certificate provider may carry at most {} tags; this request \
+                             carries {}",
+                            crate::state::certificate_providers::MAX_CERTIFICATE_PROVIDER_TAGS,
+                            requested_tags.len()
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+        let tags: ::std::collections::BTreeMap<String, Option<String>> = requested_tags
+            .into_iter()
+            .map(|tag| (tag.key, tag.value))
+            .collect();
+
+        // An operation the provider claims the default for has to be an operation a
+        // provider CAN serve ([`crate::state::CERTIFICATE_PROVIDER_OPERATIONS`], the
+        // modelled `CertificateProviderOperation` values): anything else is the modelled
+        // `InvalidRequestException` (HTTP 400).
+        for operation in &input.account_default_for_operations {
+            if !crate::state::CERTIFICATE_PROVIDER_OPERATIONS.contains(&operation.as_str()) {
+                return Err(
+                    CreateCertificateProviderErrorModeled::InvalidRequestException(
+                        InvalidRequestException {
+                            message: Some(
+                                crate::state::certificate_providers::unsupported_provider_operation_message(
+                                    operation,
+                                ),
+                            ),
+                        },
+                    )
+                    .into(),
+                );
+            }
+        }
+
+        let mut store = state.lock();
+
+        // The name is the provider's identity, so a name already taken is a conflict:
+        // `ResourceAlreadyExistsException` (HTTP 409).
+        if let Some(existing) = store
+            .certificate_providers
+            .get(&input.certificate_provider_name)
+        {
+            return Err(
+                CreateCertificateProviderErrorModeled::ResourceAlreadyExistsException(
+                    ResourceAlreadyExistsException {
+                        message: Some(format!(
+                            "Certificate provider {} already exists",
+                            existing.certificate_provider_name
+                        )),
+                        resource_id: Some(existing.certificate_provider_name.clone()),
+                        resource_arn: Some(existing.certificate_provider_arn.clone()),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // An operation has ONE account default, so a provider claiming one another
+        // provider holds is refused and nothing is written — the modelled
+        // `InvalidRequestException` (HTTP 400). The slot is derived from the records
+        // themselves ([`crate::state::ComAmazonawsIotAwsiotserviceState::default_certificate_provider`]),
+        // so deleting the provider that holds it frees it for the next create.
+        for operation in &input.account_default_for_operations {
+            if store.default_certificate_provider(operation).is_some() {
+                return Err(
+                    CreateCertificateProviderErrorModeled::InvalidRequestException(
+                        InvalidRequestException {
+                            message: Some(crate::state::default_provider_conflict_message(
+                                &input.certificate_provider_name,
+                                operation,
+                            )),
+                        },
+                    )
+                    .into(),
+                );
+            }
+        }
+
+        // Past the ceiling nothing is written and the create is refused with the modelled
+        // `LimitExceededException`, rather than growing the store without bound.
+        if store.certificate_providers.len() >= crate::state::MAX_CERTIFICATE_PROVIDERS {
+            return Err(
+                CreateCertificateProviderErrorModeled::LimitExceededException(
+                    LimitExceededException {
+                        message: Some(format!(
+                            "the maximum of {} certificate providers is already reached",
+                            crate::state::MAX_CERTIFICATE_PROVIDERS
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        let certificate_provider_arn = crate::state::certificate_provider_arn(
+            &region,
+            &input.certificate_provider_name,
+        );
+        let provider = crate::state::RegisteredCertificateProvider::new(
+            input.certificate_provider_name,
+            certificate_provider_arn,
+            input.lambda_function_arn,
+            input.account_default_for_operations,
+            tags,
+            now,
+        );
+
+        // The response is built from the record that is about to be persisted, so what
+        // this call reports and what the next `DescribeCertificateProvider` reads are one
+        // value, not two that could drift.
+        let output = CreateCertificateProviderOutput {
+            certificate_provider_name: Some(provider.certificate_provider_name.clone()),
+            certificate_provider_arn: Some(provider.certificate_provider_arn.clone()),
+        };
+        store.certificate_providers.insert(
+            provider.certificate_provider_name.clone(),
+            provider,
+        );
+        Ok(output)
     }
 }

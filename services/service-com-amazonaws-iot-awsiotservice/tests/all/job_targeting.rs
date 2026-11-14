@@ -131,16 +131,6 @@ impl Emulator {
             .await
     }
 
-    async fn create_thing_group(&self, group_name: &str) -> Reply {
-        self.call(
-            "POST",
-            &format!("/thing-groups/{group_name}"),
-            Some(&json!({})),
-            REGION,
-        )
-        .await
-    }
-
     async fn create_job(&self, job_id: &str, request: &Value) -> Reply {
         self.create_job_in(job_id, request, REGION).await
     }
@@ -402,16 +392,6 @@ async fn a_refused_create_job_writes_neither_the_job_nor_an_execution() {
     }
 
     let document = json!(r#"{"operation":"reboot"}"#);
-    // A thing group that EXISTS is refused too, and differently: a group's executions
-    // are its MEMBERS', and no membership is recorded here, so it cannot be expanded
-    // into devices and must not be answered with a hollow 200.
-    let existing_group = "fleet-registered";
-    let created_group = emulator.create_thing_group(existing_group).await;
-    assert_eq!(
-        created_group.status, 200,
-        "the probe thing group must be creatable, got {} {:?}",
-        created_group.status, created_group.body
-    );
     let refused: Vec<RefusalCase> = vec![
         RefusalCase {
             case: "a thing group the registry does not hold",
@@ -422,16 +402,6 @@ async fn a_refused_create_job_writes_neither_the_job_nor_an_execution() {
             status: 404,
             code: "ResourceNotFoundException",
             message_carries: "fleet-1",
-        },
-        RefusalCase {
-            case: "a thing group that exists but whose members are unknown",
-            targets: vec![format!(
-                "arn:aws:iot:{REGION}:{ACCOUNT_ID}:thinggroup/{existing_group}"
-            )],
-            document: Some(document.clone()),
-            status: 400,
-            code: "InvalidRequestException",
-            message_carries: existing_group,
         },
         RefusalCase {
             case: "an ARN of another resource type",

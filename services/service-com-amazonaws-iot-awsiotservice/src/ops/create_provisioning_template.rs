@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateProvisioningTemplate
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateProvisioningTemplate`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateProvisioningTemplate::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -169,18 +160,142 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateProvisioningTemplate` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateProvisioningTemplateErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateProvisioningTemplate"))
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            CreateProvisioningTemplateErrorModeled::InternalFailureException(
+                InternalFailureException {
+                    message: Some("the IoT emulator has no state store attached".to_string()),
+                },
+            )
+        })?;
+
+        let region = crate::state::request_region(ctx.parts());
+        let now = ::std::time::SystemTime::now();
+
+        // A template IS its body, so a body that is not a provisioning template is
+        // refused before anything is written — the same reading the version create
+        // applies ([`crate::state::validate_provisioning_template_body`]), so the two
+        // cannot drift apart on what they accept: the modelled `InvalidRequestException`
+        // (HTTP 400), whose message names the rule that was violated.
+        if let Err(rejection) =
+            crate::state::validate_provisioning_template_body(&input.template_body)
+        {
+            return Err(
+                CreateProvisioningTemplateErrorModeled::InvalidRequestException(
+                    InvalidRequestException {
+                        message: Some(rejection.message()),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // `type` names which kind of template this is; a value outside the modelled
+        // `TemplateType` is a request this service cannot act on.
+        let template_type = input
+            .r#type
+            .clone()
+            .unwrap_or_else(|| crate::state::DEFAULT_TEMPLATE_TYPE.to_string());
+        if !crate::ops::types::TEMPLATE_TYPE_VALUES.contains(&template_type.as_str()) {
+            return Err(
+                CreateProvisioningTemplateErrorModeled::InvalidRequestException(
+                    InvalidRequestException {
+                        message: Some(format!(
+                            "type {template_type} is not a supported provisioning template type; \
+                             the supported types are {}",
+                            crate::ops::types::TEMPLATE_TYPE_VALUES.join(", ")
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        let requested_tags = input.tags.unwrap_or_default();
+        if requested_tags.len()
+            > crate::state::provisioning_templates::MAX_PROVISIONING_TEMPLATE_TAGS
+        {
+            return Err(
+                CreateProvisioningTemplateErrorModeled::InvalidRequestException(
+                    InvalidRequestException {
+                        message: Some(format!(
+                            "a provisioning template may carry at most {} tags; this request \
+                             carries {}",
+                            crate::state::provisioning_templates::MAX_PROVISIONING_TEMPLATE_TAGS,
+                            requested_tags.len()
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+        let tags: ::std::collections::BTreeMap<String, Option<String>> = requested_tags
+            .into_iter()
+            .map(|tag| (tag.key, tag.value))
+            .collect();
+
+        let mut store = state.lock();
+
+        // The name is the template's identity, so a name already taken is a conflict:
+        // `ResourceAlreadyExistsException` (HTTP 409).
+        if let Some(existing) = store.provisioning_templates.get(&input.template_name) {
+            return Err(
+                CreateProvisioningTemplateErrorModeled::ResourceAlreadyExistsException(
+                    ResourceAlreadyExistsException {
+                        message: Some(format!(
+                            "Provisioning template {} already exists",
+                            existing.template_name
+                        )),
+                        resource_id: Some(existing.template_name.clone()),
+                        resource_arn: Some(existing.template_arn.clone()),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // Past the ceiling nothing is written and the create is refused with the modelled
+        // `LimitExceededException`, rather than growing the store without bound.
+        if store.provisioning_templates.len() >= crate::state::MAX_PROVISIONING_TEMPLATES {
+            return Err(
+                CreateProvisioningTemplateErrorModeled::LimitExceededException(
+                    LimitExceededException {
+                        message: Some(format!(
+                            "the maximum of {} provisioning templates is already reached",
+                            crate::state::MAX_PROVISIONING_TEMPLATES
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        let template_arn = crate::state::provisioning_template_arn(&region, &input.template_name);
+        let template = crate::state::RegisteredProvisioningTemplate::new(
+            input.template_name,
+            template_arn,
+            input.description,
+            input.template_body,
+            input
+                .enabled
+                .unwrap_or(crate::state::provisioning_templates::DEFAULT_TEMPLATE_ENABLED),
+            input.provisioning_role_arn,
+            input.pre_provisioning_hook,
+            template_type,
+            tags,
+            now,
+        );
+
+        // The response is built from the record that is about to be persisted — including
+        // the id of the version the body was stored as — so what this call reports and
+        // what the next `DescribeProvisioningTemplate` reads are one value.
+        let output = CreateProvisioningTemplateOutput {
+            template_arn: Some(template.template_arn.clone()),
+            template_name: Some(template.template_name.clone()),
+            default_version_id: Some(template.default_version_id),
+        };
+        store
+            .provisioning_templates
+            .insert(template.template_name.clone(), template);
+        Ok(output)
     }
 }

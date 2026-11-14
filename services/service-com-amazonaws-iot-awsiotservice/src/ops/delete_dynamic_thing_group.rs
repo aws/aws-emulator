@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeleteDynamicThingGroup
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DeleteDynamicThingGroup`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DeleteDynamicThingGroup::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -142,18 +133,60 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DeleteDynamicThingGroup` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DeleteDynamicThingGroupErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DeleteDynamicThingGroup"))
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            DeleteDynamicThingGroupErrorModeled::InternalFailureException(
+                InternalFailureException {
+                    message: Some("the IoT emulator has no state store attached".to_string()),
+                },
+            )
+        })?;
+        let _ = ctx;
+
+        let mut store = state.lock();
+
+        // A name the account holds no group under leaves it in the state the caller asked
+        // for, which is why this operation models no `ResourceNotFoundException` at all
+        // (`smithy_query(query="operation",operation="DeleteDynamicThingGroup")` lists
+        // InternalFailure, InvalidRequest, Throttling and VersionConflict): the delete is
+        // idempotent, so a repeat of it succeeds having removed nothing.
+        if let Some(group) = store.thing_groups.get(&input.thing_group_name) {
+            // This operation deletes DYNAMIC groups: a static group is deleted through
+            // `DeleteThingGroup`, so naming one here is the modelled
+            // `InvalidRequestException` (HTTP 400) and nothing is removed.
+            if group.dynamic_query.is_none() {
+                return Err(
+                    DeleteDynamicThingGroupErrorModeled::InvalidRequestException(
+                        InvalidRequestException {
+                            message: Some(format!(
+                                "Thing group {} is not a dynamic thing group",
+                                group.thing_group_name
+                            )),
+                        },
+                    )
+                    .into(),
+                );
+            }
+            // `expectedVersion` is the version the caller believes the group is at, so a
+            // request naming a different one is acting on a record someone else has
+            // moved: the modelled `VersionConflictException` (HTTP 409), nothing deleted.
+            if let Some(expected_version) = input.expected_version {
+                if expected_version != group.version {
+                    return Err(
+                        DeleteDynamicThingGroupErrorModeled::VersionConflictException(
+                            VersionConflictException {
+                                message: Some(format!(
+                                    "Version {expected_version} of thing group {} does not match \
+                                     the current version {}",
+                                    group.thing_group_name, group.version
+                                )),
+                            },
+                        )
+                        .into(),
+                    );
+                }
+            }
+            store.thing_groups.remove(&input.thing_group_name);
+        }
+        Ok(DeleteDynamicThingGroupOutput {})
     }
 }

@@ -170,15 +170,6 @@ impl Emulator {
         .await
     }
 
-    async fn create_thing_group(&self, group_name: &str) -> Reply {
-        self.call(
-            "POST",
-            &format!("/thing-groups/{group_name}"),
-            Some(&json!({})),
-            REGION,
-        )
-        .await
-    }
 
     async fn create_ota_update(&self, ota_update_id: &str, request: &Value) -> Reply {
         self.create_ota_update_in(ota_update_id, request, REGION)
@@ -702,13 +693,6 @@ struct RefusalCase {
 async fn a_refused_create_records_no_update_and_no_execution() {
     let emulator = Emulator::new();
 
-    let known_group = "fleet-known";
-    assert_eq!(
-        emulator.create_thing_group(known_group).await.status,
-        200,
-        "the thing group a case targets must be registrable"
-    );
-
     let one_file = json!([s3_file("firmware.bin", "1.0.0")]);
     let too_long_name = "x".repeat(MAX_THING_NAME_LEN + 1);
     let over_target_limit: Vec<String> = (0..=MAX_JOB_TARGETS)
@@ -756,15 +740,6 @@ async fn a_refused_create_records_no_update_and_no_execution() {
             status: 404,
             code: "ResourceNotFoundException",
             message_carries: format!("ThingGroup {ACCOUNT_ID}:fleet-unknown not found."),
-        },
-        RefusalCase {
-            case: "a thing group the registry does hold, whose members are unknown",
-            ota_update_id: "ota-known-group".to_string(),
-            targets: json!([thing_group_arn(known_group)]),
-            files: one_file.clone(),
-            status: 400,
-            code: "InvalidRequestException",
-            message_carries: "thing group target cannot be expanded".to_string(),
         },
         RefusalCase {
             case: "a file naming no location at all",

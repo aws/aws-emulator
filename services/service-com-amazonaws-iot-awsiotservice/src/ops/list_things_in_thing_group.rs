@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListThingsInThingGroup
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListThingsInThingGroup`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListThingsInThingGroup::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -150,18 +141,98 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListThingsInThingGroup` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListThingsInThingGroupErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListThingsInThingGroup"))
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            ListThingsInThingGroupErrorModeled::InternalFailureException(
+                InternalFailureException {
+                    message: Some("the IoT emulator has no state store attached".to_string()),
+                },
+            )
+        })?;
+        let _ = ctx;
+
+        let store = state.lock();
+        // A listing of a group the account does not hold is the modelled
+        // `ResourceNotFoundException` (HTTP 404), never an empty page that looks like a
+        // group with no things in it.
+        let Some(group) = store.thing_groups.get(&input.thing_group_name) else {
+            return Err(
+                ListThingsInThingGroupErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: Some(crate::state::missing_thing_group_message(
+                            &input.thing_group_name,
+                        )),
+                    },
+                )
+                .into(),
+            );
+        };
+        // A DYNAMIC group holds the things its query selects, which this emulator does
+        // not evaluate: the modelled `InvalidRequestException` (HTTP 400) states that,
+        // rather than an empty page standing in for a membership nobody computed.
+        if group.dynamic_query.is_some() {
+            return Err(
+                ListThingsInThingGroupErrorModeled::InvalidRequestException(
+                    InvalidRequestException {
+                        message: Some(
+                            crate::state::thing_group_membership::dynamic_group_things_unknown_message(
+                                &input.thing_group_name,
+                            ),
+                        ),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // `recursive` is "When true, list things in this thing group and in all child
+        // thing groups", so a recursive listing is the union of this group's things and
+        // every group's below it in the hierarchy; the walk is over the records' own
+        // `parentGroupName`, so there is one record of the hierarchy.
+        let mut things: Vec<String> = store.things_in_thing_group(&input.thing_group_name);
+        if input.recursive {
+            for group_name in store.descendant_thing_groups(&input.thing_group_name) {
+                things.extend(store.things_in_thing_group(&group_name));
+            }
+            things.sort();
+            things.dedup();
+        }
+
+        // One page of the listing's total order, resumed after the position the caller's
+        // own token names ([`crate::state::page_of`]) — the same paging every other
+        // `@paginated` listing of this service uses, so a token is read one way.
+        let scope = format!("things-in-thing-group/{}", input.thing_group_name);
+        let resume_after = match input.next_token.as_deref() {
+            None => None,
+            Some(token) => {
+                let Some(resume_after) = crate::state::decode_page_marker(token, &scope) else {
+                    return Err(
+                        ListThingsInThingGroupErrorModeled::InvalidRequestException(
+                            InvalidRequestException {
+                                message: Some(
+                                    "nextToken is not a token this listing issued".to_string(),
+                                ),
+                            },
+                        )
+                        .into(),
+                    );
+                };
+                Some(resume_after)
+            }
+        };
+        // The page is at most what the listing admits; the clamp is defensive rather
+        // than load-bearing, keeping the page inside the modelled `maxResults` range
+        // without depending on a validation performed outside this module.
+        let page_size = input
+            .max_results
+            .map_or(crate::state::MAX_LIST_PAGE_SIZE, |max_results| {
+                max_results.clamp(1, crate::state::MAX_LIST_PAGE_SIZE)
+            }) as usize;
+        let (page, next_token) =
+            crate::state::page_of(things, &scope, resume_after.as_deref(), page_size);
+
+        Ok(ListThingsInThingGroupOutput {
+            things: Some(page),
+            next_token,
+        })
     }
 }
