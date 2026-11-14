@@ -38,6 +38,13 @@ tracing = { workspace = true }
 # negotiated in band and of the `host:port` a published endpoint carries, which a
 # distribution's edge listener is announced and served through.
 service-common = { path = "../common" }
+# WHO a request speaks for and WHAT that principal may do: the authorization step in front
+# of this service's operations (`service::authorization`) resolves the caller through STS's
+# own `resolve_caller` — the same place `sts:GetCallerIdentity` answers from — and reads the
+# identity-based documents in force on it through IAM's own `principal_policies` accessor,
+# so a policy a client wrote with `iam:PutRolePolicy` decides this service's calls.
+service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true }
+service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
 # The CloudWatch store the EDGE publishes the per-distribution metrics of the viewer
 # requests it serves to (the `AWS/CloudFront` namespace, `service::edge_metrics`).
 # CloudWatch refuses a `PutMetricData` into a reserved `AWS/` namespace, so a service's own
@@ -121,10 +128,10 @@ hex = { workspace = true }
 # router: the record the edge delivers is read back through Kinesis itself. TEST-ONLY.
 service-com-amazonaws-kinesis-kinesis-20131202 = { workspace = true }
 # The IAM roles the real-time log suite hands its endpoints, and the roles the Lambda@Edge
-# suite stages its execution roles as, mounted on the same router: whether a delivery role may
-# put a record on its stream, and what a role's trust policy says, are IAM's decisions.
-# TEST-ONLY.
-service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
+# suite stages its execution roles as: whether a delivery role may put a record on its
+# stream, and what a role's trust policy says, are IAM's decisions. The IAM service itself
+# is a dependency of this crate (the authorization step reads its store), and the suites
+# mount it on the same router.
 # The Lambda@Edge suite stages the function a cache behaviour associates, and the IAM role it
 # runs as, through the SERVICES' own APIs on the same router — so the execution role the
 # handler resolves is one a client really created. TEST-ONLY.

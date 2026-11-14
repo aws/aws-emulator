@@ -7,6 +7,13 @@
 //! record it stored. A repeated `CallerReference` for the same batch is the same
 //! request again, so it reports the invalidation it already created.
 //!
+//! IAM decides the call first: this is the action `cloudfront:CreateInvalidation` on the
+//! distribution the request names, so a caller whose identity-based policies do not allow
+//! it on that distribution's ARN is refused with `AccessDenied` before the distribution is
+//! resolved — which is why an unauthorized caller naming a distribution the account does
+//! not hold reads that refusal rather than `NoSuchDistribution`
+//! ([`crate::service::authorization`]).
+//!
 //! The batch is stored as the SET of objects it describes
 //! ([`crate::state::resolve_invalidation_batch`]): an exact repeat of a path asks for
 //! nothing more than naming it once and collapses, while paths differing in case name
@@ -167,7 +174,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(crate::state::store_unavailable());
         };
-        let _ = ctx;
+        // IAM decides the call BEFORE this service looks at the distribution, so a caller
+        // whose identity-based policies do not allow this action on that distribution's ARN
+        // is refused whether or not the account holds it
+        // ([`crate::service::authorization`]). Taken before this service's store is
+        // locked, because the decision reads the account's STS and IAM stores.
+        crate::service::authorization::authorize(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &crate::state::distribution_arn(&input.distribution_id),
+        )
+        .map_err(CreateInvalidationErrorModeled::AccessDenied)?;
         let now = SystemTime::now();
         let mut store = state.lock();
         store.settle(now);

@@ -1476,7 +1476,9 @@ impl ManagementEventLog {
     ///
     /// Delivering is the CALLER's: a store holds no transport, and neither the publication
     /// nor the object write must happen under this lock
-    /// ([`crate::api_call_events::DeliveredApiCall::deliver`]).
+    /// ([`crate::api_call_events::DeliveredApiCall::deliver`]) — which is also where the
+    /// call's read/write class decides whether the EVENT leg of that delivery is made at
+    /// all ([`crate::api_call_events`]).
     pub fn record_delivered(
         &mut self,
         call: ServedApiCall,

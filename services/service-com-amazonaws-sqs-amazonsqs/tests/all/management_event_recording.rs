@@ -13,7 +13,8 @@
 //!
 //! That record is the one document the account's two readers of its management events see:
 //! CloudTrail's `LookupEvents` reports it, and — while a trail of the Region is logging
-//! calls of its class — it is also the `detail` of the `AWS API Call via CloudTrail` event
+//! calls of its class — the record of a MUTATING call is also the `detail` of the `AWS API
+//! Call via CloudTrail` event
 //! published onto the account's default event bus, which is what an EventBridge rule on
 //! `aws.sqs` matches. The fan-out itself crosses four services and is pinned in
 //! `core/router/tests/all/cloudtrail_api_call_events_by_region.rs`; what is pinned HERE is

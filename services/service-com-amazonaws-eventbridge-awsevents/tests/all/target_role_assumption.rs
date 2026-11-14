@@ -5,27 +5,29 @@
 //! target API call is made — and a failed delivery goes to the target's
 //! dead-letter queue.
 //!
-//! The RULE asserted here: EventBridge invokes a role-governed target by acting
-//! AS the target's `RoleArn`, which it assumes before it chooses or makes the
+//! The RULE asserted here: EventBridge invokes a target that NAMES a `RoleArn`
+//! by acting AS that role, which it assumes before it chooses or makes the
 //! target's call — so a `RoleArn` whose trust policy does not admit this service
 //! fails the handover whatever service the target belongs to, the event is
 //! written to the target's `DeadLetterConfig` queue carrying the condition of
 //! that step, and the target itself is never reached. The step is about the role
 //! alone, so it decides a handover to a target whose own service answers nothing
-//! here exactly as it decides one it does; what the role is ALLOWED to do is a
+//! here exactly as it decides one it does, and it decides one to a target AWS
+//! would otherwise govern by the target's own resource-based policy ("for Lambda
+//! functions, Amazon SNS topics and Amazon SQS queues, EventBridge relies on
+//! resource-based policies") as well: a role the caller handed EventBridge is one
+//! EventBridge has to be able to act as. What the role is ALLOWED to do is a
 //! question about the call, so a target this emulator makes no call for earns no
-//! verdict about permissions and no dead letter when its role is assumable.
-//! Targets AWS reaches through the target's own resource-based policy instead
-//! ("for Lambda functions, Amazon SNS topics and Amazon SQS queues, EventBridge
-//! relies on resource-based policies") are not governed by a `RoleArn` at all,
-//! so such a role bars nothing there.
+//! verdict about permissions and no dead letter when its role is assumable, and
+//! the kinds governed by the target's own policy earn none either.
 //!
 //! The table spans the class rather than one case: its rows differ along the
 //! SERVICE the target belongs to — one whose invocation this emulator makes
 //! (Step Functions), one it makes none for (Amazon ECS), one whose own service
 //! is not mounted here (Amazon Data Firehose) and one reached under the target's
 //! own policy (Amazon SQS) — along whether the role is assumable, and along
-//! whether it carries any permissions at all.
+//! whether it carries any permissions at all. WHICH rule the assume is made for
+//! is `target_role_trust_conditions`' table.
 //!
 //! The harness (the router with EventBridge, SQS, Step Functions, IAM and
 //! CloudWatch on one engine, and the rule/queue/role fixtures) is the one
@@ -74,8 +76,8 @@ enum Target {
     /// A Step Functions state machine: a target AWS invokes under that role and
     /// this emulator does invoke.
     StateMachine,
-    /// An Amazon SQS queue: a target reached under the QUEUE's own policy, so
-    /// the `RoleArn` governs nothing for it.
+    /// An Amazon SQS queue: a target whose own CALL is decided by the QUEUE's
+    /// policy, and whose role is assumed all the same.
     Queue,
 }
 
@@ -90,7 +92,8 @@ enum Expect {
     /// role it could have assumed refuses nothing — so there is no dead letter
     /// and no verdict about what that role may do.
     NotAttempted,
-    /// The delivery went through: the role governs nothing for this target.
+    /// The delivery went through: the role is assumable and nothing else refuses
+    /// this target's call.
     Delivered,
 }
 
@@ -150,6 +153,16 @@ fn rows() -> Vec<Row> {
             target: Target::Queue,
             trusts: OTHER_PRINCIPAL,
             allows: Some("*"),
+            expected: Expect::DeadLettered,
+        },
+        Row {
+            // The queue's own policy grants the send and the role is assumable,
+            // so the handover goes through: the role decides nothing further for
+            // this kind.
+            case: "a queue under a role this service can assume",
+            target: Target::Queue,
+            trusts: EVENTS_PRINCIPAL,
+            allows: None,
             expected: Expect::Delivered,
         },
     ]
@@ -209,6 +222,12 @@ async fn a_role_this_service_cannot_assume_dead_letters_the_event_whatever_the_t
         let (target_arn, received) = given_target(&emulator, row.target).await;
         let (dead_letter_url, dead_letter_arn) = given_queue(&emulator, "dead-letters").await;
         let role_arn = given_role(&emulator, ROLE_NAME, row.trusts, row.allows).await;
+        // The assume is made FOR the invoking rule, which the refusal names: the
+        // ARN EventBridge mints for a rule of the default bus.
+        let rule_arn = format!(
+            "arn:aws:events:{REGION}:{}:rule/{RULE_NAME}",
+            engine::emulator_account_id()
+        );
         given_rule(
             &emulator,
             RULE_NAME,
@@ -235,7 +254,7 @@ async fn a_role_this_service_cannot_assume_dead_letters_the_event_whatever_the_t
                 );
                 let expected_message = format!(
                     "Event bus failed to assume role {role_arn}: its trust policy does not let \
-                     {EVENTS_PRINCIPAL} perform {ASSUME_ROLE_ACTION}."
+                     {EVENTS_PRINCIPAL} perform {ASSUME_ROLE_ACTION} for {rule_arn}."
                 );
                 assert_eq!(
                     *message, expected_message,

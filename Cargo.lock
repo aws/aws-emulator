@@ -10902,6 +10902,7 @@ dependencies = [
  "service-com-amazonaws-kinesis-kinesis-20131202",
  "service-com-amazonaws-lambda-awsgirapiservice",
  "service-com-amazonaws-s3-amazons3",
+ "service-com-amazonaws-sts-awssecuritytokenservicev20110615",
  "service-com-amazonaws-wafv2-awswaf-20190729",
  "service-common",
  "sha2 0.10.9",

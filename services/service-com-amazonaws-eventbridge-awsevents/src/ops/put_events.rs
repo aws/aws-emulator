@@ -32,11 +32,15 @@
 //! `kinesis:PutRecord` for a data stream, `firehose:PutRecord` for a delivery
 //! stream, `logs:PutLogEvents` for a CloudWatch
 //! Logs log group),
-//! carrying the whole event envelope. For the kinds AWS invokes under the
-//! target's `RoleArn` it acts as that role, so a role it cannot assume or whose
-//! policies withhold the call is a delivery that fails: the event is sent to the
-//! target's dead-letter queue and counted on `FailedInvocations`, where one the
-//! target accepted is counted on `Invocations` — each per rule of its bus. For
+//! carrying the whole event envelope. A target that NAMES a `RoleArn` is reached
+//! by ACTING AS that role, so a role EventBridge cannot assume for the invoking
+//! rule fails the delivery whatever the target's kind is (the recorded behaviour
+//! of a function target under a role trusted only for another rule's ARN): the
+//! event is sent to the target's dead-letter queue and counted on
+//! `FailedInvocations`, where one
+//! the target accepted is counted on `Invocations` — each per rule of its bus.
+//! For the kinds AWS invokes under that role it also decides the CALL, so
+//! policies that withhold it fail the delivery the same way. For
 //! the kinds AWS governs by the TARGET's own resource-based policy instead —
 //! "for Lambda functions, Amazon SNS topics and Amazon SQS queues, EventBridge
 //! relies on resource-based policies" — the call is made as this service's own
@@ -1705,19 +1709,25 @@ pub(crate) async fn deliver(
     // what the delivery failed at: that step comes before the call and does not
     // depend on which call it was, so AWS fails such a handover too.
     let kind = TargetKind::of(&target.arn);
-    // EventBridge acts AS the target's role for the kinds AWS invokes under one,
-    // so a role it cannot assume at all is a delivery that fails before any
-    // target API call is made — whatever that call would have been, and so
-    // whether or not this emulator makes it. The question of WHICH kinds the
-    // role governs is asked of the target's ARN ([`invoked_under_target_role`])
-    // rather than of its resolved kind, for the same reason. The decision is
-    // taken with the IAM guard held only for as long as reading the role takes,
-    // never across the invocation.
-    let role_arn = target
-        .role_arn
-        .as_deref()
-        .filter(|_| invoked_under_target_role(&target.arn));
-    let unassumable = assume_role_refusal(stores.iam, role_arn);
+    // EventBridge acts AS the target's role, so a role it cannot assume at all
+    // is a delivery that fails before any target API call is made — whatever
+    // that call would have been, and so whether or not this emulator makes it.
+    // The step is reached by every target that NAMES a role: the `RoleArn` the
+    // caller installed is what EventBridge is asked to act as, and a role it
+    // cannot act as for the invoking rule is a handover AWS fails even for a
+    // target kind whose CALL its own resource-based policy decides — which is
+    // what the recorded behaviour of a FUNCTION target under a role trusted only
+    // for another rule's ARN shows: that delivery fails and is dead-lettered,
+    // while the rule the trust names delivers. So the assume is attempted
+    // wherever a role is named, and it is decided for the RULE that is invoking
+    // ([`crate::state::role_assumption`]). WHICH kinds the role goes on
+    // to decide the API CALL for is a different question, asked of the target's
+    // ARN below ([`invoked_under_target_role`]). The decision is taken with the
+    // IAM guard held only for as long as reading the role takes, never across
+    // the invocation.
+    let named_role = target.role_arn.as_deref().filter(|arn| !arn.is_empty());
+    let role_arn = named_role.filter(|_| invoked_under_target_role(&target.arn));
+    let unassumable = assume_role_refusal(stores.iam, named_role, handover.rule_arn);
     // A target whose invocation this emulator does not make, under a role it
     // could have assumed, is a gap in this emulator rather than a refusal: it
     // spends nothing of the request's budget and is dead-lettered nowhere.
@@ -1778,7 +1788,7 @@ pub(crate) async fn deliver(
             action: kind.action(),
             resource: &target.arn,
         };
-        match role_refusal(stores.iam, role_arn, &attempt) {
+        match role_refusal(stores.iam, role_arn, handover.rule_arn, &attempt) {
             Some((code, message)) => crate::state::InvocationOutcome::Failed { code, message },
             // "Input: valid JSON text passed to the target": what a target is
             // handed is a JSON document, so an input this delivery rendered that
@@ -2144,7 +2154,9 @@ async fn republish(
         action: crate::state::PUT_EVENTS_ACTION,
         resource: &target.arn,
     };
-    if let Some((code, message)) = role_refusal(iam, target.role_arn.as_deref(), &attempt) {
+    if let Some((code, message)) =
+        role_refusal(iam, target.role_arn.as_deref(), handover.rule_arn, &attempt)
+    {
         return crate::state::InvocationOutcome::Failed { code, message };
     }
     if dispatch.hops >= MAX_BUS_HOPS {
@@ -2302,26 +2314,28 @@ fn republished_delivery(
 fn role_refusal(
     iam: Option<&::engine::ServiceState<crate::state::IamState>>,
     role_arn: Option<&str>,
+    rule_arn: &str,
     attempt: &crate::state::DeliveryAttempt<'_>,
 ) -> Option<(String, String)> {
     let iam = iam?;
-    crate::state::delivery_refusal(role_arn, attempt, &iam.lock())
+    crate::state::delivery_refusal(role_arn, rule_arn, attempt, &iam.lock())
 }
 
-/// Why EventBridge cannot ASSUME `role_arn` at all, as the account's IAM records
-/// show it — the first step of the decision above, in
+/// Why EventBridge cannot ASSUME `role_arn` for `rule_arn`'s delivery at all, as
+/// the account's IAM records show it — the first step of the decision above, in
 /// [`crate::state::role_assumption::assume_role_refusal`] and asked here with
 /// the IAM guard held for the read alone.
 ///
-/// Asked ON ITS OWN for a handover whose target API call this emulator does not
-/// make: the step comes before that call and does not depend on it, so it is the
-/// whole of what such a delivery can fail at.
+/// Asked of EVERY target that NAMES a role, whatever its kind and whether or not
+/// this emulator makes that target's API call: the step comes before the call and
+/// does not depend on it, so it is the whole of what such a delivery can fail at.
 fn assume_role_refusal(
     iam: Option<&::engine::ServiceState<crate::state::IamState>>,
     role_arn: Option<&str>,
+    rule_arn: &str,
 ) -> Option<(String, String)> {
     let iam = iam?;
-    crate::state::role_assumption::assume_role_refusal(role_arn, &iam.lock())
+    crate::state::role_assumption::assume_role_refusal(role_arn, rule_arn, &iam.lock())
 }
 
 /// What is recorded for a handover to a target this emulator makes no API call

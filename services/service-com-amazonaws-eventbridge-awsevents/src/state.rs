@@ -2868,6 +2868,7 @@ pub const MAX_ROLE_DOCUMENTS: usize = 32;
 /// and a role carrying more documents than [`MAX_ROLE_DOCUMENTS`].
 pub fn delivery_refusal(
     role_arn: Option<&str>,
+    rule_arn: &str,
     attempt: &DeliveryAttempt<'_>,
     iam: &IamState,
 ) -> Option<(String, String)> {
@@ -2878,8 +2879,9 @@ pub fn delivery_refusal(
     // [`role_assumption::assume_role_refusal`], because it is about the role
     // alone — which API call would have followed does not enter into it — so a
     // handover whose target call this emulator does not make is decided by that
-    // step and nothing else.
-    if let Some(refusal) = role_assumption::assume_role_refusal(Some(role_arn), iam) {
+    // step and nothing else. It is decided for the RULE that is invoking, whose
+    // ARN is what a trust policy's own condition is scoped by.
+    if let Some(refusal) = role_assumption::assume_role_refusal(Some(role_arn), rule_arn, iam) {
         return Some(refusal);
     }
     let documents = role_documents(role_arn, iam)?;

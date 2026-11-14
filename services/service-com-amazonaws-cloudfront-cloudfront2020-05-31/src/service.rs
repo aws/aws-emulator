@@ -83,10 +83,13 @@
 //! so the routing table the envelope above dispatches from is the AUDITED one
 //! ([`management_events`]): each served call is recorded in the account's event history
 //! where CloudTrail's `LookupEvents` reads it, and — while a trail of the account is
-//! logging — published onto the default EventBridge bus as `AWS API Call via CloudTrail`.
-//! The EDGE plane is deliberately outside it: a viewer request is not an API call of this
-//! account, so it is no management event.
+//! logging — each MUTATING call is published onto the default EventBridge bus as `AWS API
+//! Call via CloudTrail`. The EDGE plane is deliberately outside it: a viewer request is not
+//! an API call of this account, so it is no management event.
 
+/// Whether IAM lets a request perform the action it asks for on the resource it addressed
+/// — the step an operation takes before it reads or writes anything.
+pub mod authorization;
 pub mod edge;
 /// What the edge REPORTS about the viewer traffic it served: the per-distribution CloudWatch
 /// series every answer it serves is counted into.

@@ -151,7 +151,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(crate::state::store_unavailable());
         };
-        let _ = ctx;
+        // IAM decides the call BEFORE this service looks at the distribution
+        // ([`crate::service::authorization`]), and before this service's store is locked,
+        // because the decision reads the account's STS and IAM stores.
+        crate::service::authorization::authorize(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &crate::state::distribution_arn(&input.distribution_id),
+        )
+        .map_err(ListInvalidationsErrorModeled::AccessDenied)?;
 
         // "MaxItems: the maximum number of invalidation batches that you want in the
         // response body" - the member BOUNDS the page rather than demanding one, so a

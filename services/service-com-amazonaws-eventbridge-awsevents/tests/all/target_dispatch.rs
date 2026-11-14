@@ -27,7 +27,8 @@
 //! principal, a policy naming another action, a policy stating nothing at all, a
 //! policy that grants the call, a role the account does not hold (which is
 //! evidence of nothing, so the delivery goes ahead), and a target kind whose
-//! invocation the role does not govern at all.
+//! own CALL the role's permissions do not govern — though the assume-role step is
+//! reached by every target that NAMES a role, whatever its kind.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -1254,15 +1255,26 @@ async fn a_delivery_the_targets_role_bars_is_dead_lettered_and_counted() {
             expected: Expected::Failed("NO_PERMISSIONS"),
         },
         RoleCase {
-            // A queue target is invoked under the QUEUE's resource policy, not
-            // under the role, so a role that neither trusts EventBridge nor
-            // allows the call does not stop the delivery.
-            case: "a target kind whose invocation the role does not govern",
+            // A queue target's own CALL is decided by the QUEUE's resource
+            // policy rather than by the role's policies, so a role that is
+            // assumable but allows nothing does not stop the delivery.
+            case: "a target kind whose invocation the role's permissions do not govern",
+            kind: Kind::Queue,
+            principal: SERVICE_PRINCIPAL,
+            allowed: None,
+            role_exists: true,
+            expected: Expected::Invoked,
+        },
+        RoleCase {
+            // The assume-role step, though, is reached by every target that
+            // NAMES a role: a role EventBridge cannot act as fails the handover
+            // for a queue target too.
+            case: "a queue target under a role that does not trust this service",
             kind: Kind::Queue,
             principal: "lambda.amazonaws.com",
             allowed: None,
             role_exists: true,
-            expected: Expected::Invoked,
+            expected: Expected::Failed("FAILED_TO_ASSUME_ROLE"),
         },
         RoleCase {
             case: "the role may start an execution",

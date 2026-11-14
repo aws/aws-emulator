@@ -7,7 +7,6 @@
 //!
 //! A suite that is not declared here compiles nowhere and its tests never run. A
 //! suite left at the top level of `tests/` fails the build.
-
 // `tests/all.rs` is a test-target CRATE ROOT, so a bare `mod` resolves to a SIBLING
 // (`tests/state_roundtrip.rs`) — which the layout check refuses. The `#[path]` is what
 // points it into `tests/all/`.
@@ -183,6 +182,8 @@ mod function_test_run;
 mod function_update;
 #[path = "all/generated_identifier_shapes.rs"]
 mod generated_identifier_shapes;
+#[path = "all/invalidation_authorization.rs"]
+mod invalidation_authorization;
 #[path = "all/invalidation_list.rs"]
 mod invalidation_list;
 #[path = "all/invalidation_path_set.rs"]
@@ -359,3 +360,4 @@ mod web_acl_association;
 mod web_acl_scope_admission;
 #[path = "all/wire_instant_ordering.rs"]
 mod wire_instant_ordering;
+

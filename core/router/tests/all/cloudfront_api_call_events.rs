@@ -8,7 +8,9 @@
 //! the account serves that CHANGED it is ALSO published onto the account's DEFAULT event bus,
 //! with `source` `aws.<service>`, `detail-type` `AWS API Call via CloudTrail` and the
 //! CloudTrail record of the call as the event's `detail` — so a rule matching that pair, or
-//! reaching into the record, delivers to its targets. No trail logging, no publication.
+//! reaching into the record, delivers to its targets. No trail logging, no publication; and a
+//! call that only REPORTS the account (a `Get`/`List`/`Describe`) is published onto no bus at
+//! all, however widely a rule's pattern is written.
 //!
 //! Only a cross-service suite can pin this: the event is published by the service that
 //! SERVED the call (CloudFront, restXml), the delivery decision belongs to CloudTrail
@@ -562,11 +564,12 @@ async fn a_cloudfront_call_reaches_a_rule_on_the_api_call_channel() {
             "case {:?}: the record names the call the caller was answered for, got {envelope}",
             row.case
         );
-        let expected_read_only = event_name == "ListDistributions";
+        // Everything this channel carries is a call that CHANGED the account, so the
+        // record of a delivered event is a write.
         assert_eq!(
             envelope.pointer("/detail/readOnly"),
-            Some(&json!(expected_read_only)),
-            "case {:?}: expected readOnly {expected_read_only}, got {envelope}",
+            Some(&json!(false)),
+            "case {:?}: expected a mutating call's record, got {envelope}",
             row.case
         );
     }

@@ -52,6 +52,16 @@ const TARGET_ACTION: &str = "states:StartExecution";
 /// be able to assume the role.
 const ASSUME_ROLE_ACTION: &str = "sts:AssumeRole";
 
+/// The rule the assume is made FOR, which the assume-role refusal names: the ARN
+/// EventBridge mints for a rule of the default bus.
+fn rule_arn() -> String {
+    format!(
+        "arn:aws:events:{}:{}:rule/{RULE_NAME}",
+        crate::target_dispatch::REGION,
+        engine::emulator_account_id()
+    )
+}
+
 /// A trust policy with one statement, stating `effect` for `principal` on
 /// `action`.
 fn trust_statement(effect: &str, principal: &str, action: &str) -> String {
@@ -292,14 +302,16 @@ async fn the_dead_letter_error_code_names_the_step_the_delivery_failed_at() {
             row.case
         );
         // The whole sentence, in the terms the failed step is about: the
-        // assume-role step names the role, the principal and the action it may
-        // not take, while the permission step names the SESSION principal the
+        // assume-role step names the role, the principal, the action it may not
+        // take and the RULE the assume was for, while the permission step names
+        // the SESSION principal the
         // call would have been made as, the call and the resource, and closes on
         // which of the two permission verdicts it was.
         let expected_message = match row.expected {
             Step::AssumeRole => format!(
                 "Event bus failed to assume role {role_arn}: its trust policy does not let \
-                 {SERVICE_PRINCIPAL} perform {ASSUME_ROLE_ACTION}."
+                 {SERVICE_PRINCIPAL} perform {ASSUME_ROLE_ACTION} for {}.",
+                rule_arn()
             ),
             Step::Permissions { denied } => {
                 let reason = if denied {

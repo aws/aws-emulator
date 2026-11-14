@@ -2,8 +2,11 @@
 
 //! This front door's AUDIT leg: every call it serves is a management event of
 //! `cloudfront.amazonaws.com`, recorded in the account's event history where CloudTrail's
-//! `LookupEvents` reads it — and, while a trail of the account is logging, published onto
-//! the account's default EventBridge bus as `AWS API Call via CloudTrail`.
+//! `LookupEvents` reads it — and, while a trail of the account is logging, each MUTATING
+//! call published onto the account's default EventBridge bus as `AWS API Call via
+//! CloudTrail` (that channel carries the calls that CHANGE an account and not the ones that
+//! only report it, which is the shared fan-out's rule:
+//! [`service_common::api_call_events`]).
 //!
 //! Every control-plane call of an account is a management event, which makes the recording
 //! a property of SERVING a call and not of any one operation — so it is not written per
