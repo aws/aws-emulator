@@ -29,6 +29,11 @@
 //!
 //! Assembling the whole router costs stack (see `boot_serve.rs`), so it is built — and the
 //! requests driven — on a sized thread.
+//!
+//! The wire harness below — the dispatch helpers, the role and caller-identity helpers and
+//! the constants they read — is `pub(crate)` because the sibling suite that pins the OTHER
+//! role-mapping type (`cognito_rules_role_mapping.rs`) drives the same four services and
+//! reads it from here rather than holding a second copy.
 
 use std::sync::Arc;
 
@@ -37,39 +42,39 @@ use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
 /// Keep this at or above `boot_serve.rs`'s stack: the same assembly runs here.
-const BOOT_STACK_SIZE: usize = 64 * 1024 * 1024;
+pub(crate) const BOOT_STACK_SIZE: usize = 64 * 1024 * 1024;
 
 /// The Region every call below is signed for, and so the Region the pools live in.
-const REGION: &str = "us-east-1";
+pub(crate) const REGION: &str = "us-east-1";
 
 /// The emulator's own address: an address, so the `Host` header names no service and the
 /// unsigned legs carry their service name in `X-Amz-Target` alone.
-const EMULATOR_HOST: &str = "127.0.0.1:9297";
+pub(crate) const EMULATOR_HOST: &str = "127.0.0.1:9297";
 
 /// The access key id every signed setup call carries.
-const SETUP_KEY_ID: &str = "AKIDTEST";
+pub(crate) const SETUP_KEY_ID: &str = "AKIDTEST";
 
 /// The `RoleSessionName` every session an identity pool vends carries, as AWS publishes it
 /// in the caller ARN of such a session.
-const VENDED_ROLE_SESSION_NAME: &str = "CognitoIdentityCredentials";
+pub(crate) const VENDED_ROLE_SESSION_NAME: &str = "CognitoIdentityCredentials";
 
 /// The STS API version every `awsQuery` call to STS carries.
-const STS_API_VERSION: &str = "2011-06-15";
+pub(crate) const STS_API_VERSION: &str = "2011-06-15";
 
 /// The IAM API version every `awsQuery` call to IAM carries.
-const IAM_API_VERSION: &str = "2010-05-08";
+pub(crate) const IAM_API_VERSION: &str = "2010-05-08";
 
 /// A password satisfying a default user pool's password policy.
-const GOOD_PASSWORD: &str = "Passw0rd!2024";
+pub(crate) const GOOD_PASSWORD: &str = "Passw0rd!2024";
 
 /// What one call answered.
-struct Answer {
-    status: u16,
-    body: bytes::Bytes,
+pub(crate) struct Answer {
+    pub(crate) status: u16,
+    pub(crate) body: bytes::Bytes,
 }
 
 impl Answer {
-    fn json(&self) -> Value {
+    pub(crate) fn json(&self) -> Value {
         if self.body.is_empty() {
             Value::Null
         } else {
@@ -77,7 +82,7 @@ impl Answer {
         }
     }
 
-    fn text(&self) -> String {
+    pub(crate) fn text(&self) -> String {
         String::from_utf8_lossy(&self.body).to_string()
     }
 }
@@ -85,7 +90,7 @@ impl Answer {
 /// Dispatch one request, signed with `access_key_id` for `signing_name`, or unsigned when
 /// `signing_name` is `None` — which is how an SDK sends an operation a client calls before
 /// it holds any credential.
-fn dispatch(
+pub(crate) fn dispatch(
     router: &MultiServiceRouter,
     runtime: &tokio::runtime::Runtime,
     signing_name: Option<(&str, &str)>,
@@ -126,7 +131,7 @@ fn dispatch(
 
 /// One awsJson1_1 call to `target`, signed for `signing_name` with [`SETUP_KEY_ID`] or
 /// unsigned.
-fn rpc(
+pub(crate) fn rpc(
     router: &MultiServiceRouter,
     runtime: &tokio::runtime::Runtime,
     signing_name: Option<&str>,
@@ -146,7 +151,7 @@ fn rpc(
 }
 
 /// One awsJson1_1 call that must be served.
-fn ok(
+pub(crate) fn ok(
     router: &MultiServiceRouter,
     runtime: &tokio::runtime::Runtime,
     signing_name: Option<&str>,
@@ -165,7 +170,7 @@ fn ok(
 }
 
 /// One awsQuery call, which is how IAM and STS are called, signed with `access_key_id`.
-fn query(
+pub(crate) fn query(
     router: &MultiServiceRouter,
     runtime: &tokio::runtime::Runtime,
     signing_name: &str,
@@ -182,7 +187,7 @@ fn query(
 }
 
 /// The text of the first `<name>…</name>` element of an XML body.
-fn xml_element(body: &str, name: &str) -> String {
+pub(crate) fn xml_element(body: &str, name: &str) -> String {
     let open = format!("<{name}>");
     let close = format!("</{name}>");
     let start = body
@@ -197,7 +202,7 @@ fn xml_element(body: &str, name: &str) -> String {
 }
 
 /// A base64url JWS segment's bytes (RFC 7515 §2).
-fn decode_base64url(segment: &str) -> Vec<u8> {
+pub(crate) fn decode_base64url(segment: &str) -> Vec<u8> {
     let mut standard = segment.replace('-', "+").replace('_', "/");
     while !standard.len().is_multiple_of(4) {
         standard.push('=');
@@ -207,7 +212,7 @@ fn decode_base64url(segment: &str) -> Vec<u8> {
 }
 
 /// The claim set of a compact-serialized JWS.
-fn claims_of(token: &str) -> Value {
+pub(crate) fn claims_of(token: &str) -> Value {
     let segments: Vec<&str> = token.split('.').collect();
     assert_eq!(
         segments.len(),
@@ -224,7 +229,7 @@ fn claims_of(token: &str) -> Value {
 /// Compact and free of the characters that are significant in an
 /// `application/x-www-form-urlencoded` body (`&`, `=`, `+`, `%`, space), so it needs no
 /// encoding.
-fn trust_policy(audience: &str) -> String {
+pub(crate) fn trust_policy(audience: &str) -> String {
     format!(
         "{{\"Version\":\"2012-10-17\",\"Statement\":[{{\"Effect\":\"Allow\",\
          \"Principal\":{{\"Federated\":\"cognito-identity.amazonaws.com\"}},\
@@ -234,7 +239,7 @@ fn trust_policy(audience: &str) -> String {
 }
 
 /// `iam:CreateRole` with a trust policy admitting `audience`'s users, answering its ARN.
-fn create_role(
+pub(crate) fn create_role(
     router: &MultiServiceRouter,
     runtime: &tokio::runtime::Runtime,
     role_name: &str,
@@ -262,7 +267,7 @@ fn create_role(
 }
 
 /// `sts:GetCallerIdentity` under `access_key_id`, answering the caller ARN.
-fn caller_arn(
+pub(crate) fn caller_arn(
     router: &MultiServiceRouter,
     runtime: &tokio::runtime::Runtime,
     case: &str,
@@ -287,7 +292,7 @@ fn caller_arn(
 }
 
 /// The assumed-role ARN a session of `role_name` speaks for.
-fn session_arn(role_name: &str) -> String {
+pub(crate) fn session_arn(role_name: &str) -> String {
     format!(
         "arn:aws:sts::{}:assumed-role/{role_name}/{VENDED_ROLE_SESSION_NAME}",
         engine::emulator_account_id()

@@ -1920,3 +1920,10 @@ mod https_front_door_concurrent_pooled_producer;
 // test target can vend the session and then be refused by what it reaches.
 #[path = "all/cognito_vended_session_is_bounded_by_its_role_policy.rs"]
 mod cognito_vended_session_is_bounded_by_its_role_policy;
+// Declared in this tail: which role a `Rules` role mapping resolves from a signed-in user's
+// own attribute claims spans cognito-idp (the custom attribute and the sign-in),
+// cognito-identity (the mapping and the vend), IAM (the roles) and STS (the session's caller
+// identity), so no single service crate's test target can sign in and then read the session
+// the mapping vended.
+#[path = "all/cognito_rules_role_mapping.rs"]
+mod cognito_rules_role_mapping;
