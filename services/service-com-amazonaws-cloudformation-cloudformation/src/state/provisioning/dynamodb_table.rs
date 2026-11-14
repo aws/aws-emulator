@@ -24,7 +24,7 @@
 //! ## The properties
 //!
 //! The type's properties are `CreateTable`'s own members, named identically on both sides,
-//! with three exceptions:
+//! with four exceptions:
 //!
 //! * `TableName` ADDRESSES the call rather than travelling beside the others: "Ref returns
 //!   the table name", and that name is CloudFormation's to decide
@@ -34,7 +34,15 @@
 //! * `SSESpecification` spells its flag `SSEEnabled`, while the API's own member is
 //!   `Enabled` ([`sse_specification`]);
 //! * `ResourcePolicy` is an object carrying a `PolicyDocument` in a template, while the
-//!   API's `ResourcePolicy` is that document as TEXT ([`resource_policy`]).
+//!   API's `ResourcePolicy` is that document as TEXT ([`resource_policy`]);
+//! * `StreamSpecification` states what the stream CAPTURES and nothing else — declaring the
+//!   property is what asks for a stream — while the API's own specification carries a
+//!   REQUIRED `StreamEnabled` beside the view type ([`stream_specification`]).
+//!
+//! A property whose shape or spelling differs that way is TRANSLATED into the API's member
+//! rather than passed through: a member a template never states is a member the owning
+//! service refuses the call for, which fails a resource whose declaration is valid
+//! CloudFormation.
 //!
 //! Every other property of the type is a DIFFERENT DynamoDB call made on the table after it
 //! exists (`UpdateTimeToLive`, `UpdateContinuousBackups`, `UpdateContributorInsights`, the
@@ -133,6 +141,24 @@ const CREATE_MEMBERS: &[&str] = &[
     "WarmThroughput",
 ];
 
+/// The property carrying the table's DynamoDB Streams settings, whose SHAPE differs between
+/// the template and the API ([`stream_specification`]).
+const STREAM_SPECIFICATION_PROPERTY: &str = "StreamSpecification";
+
+/// The member the API's own `StreamSpecification` states the stream's existence in, which is
+/// REQUIRED there (`smithy_query(query="shape",shape="StreamSpecification")`), and the member
+/// stating what the stream captures, which both sides spell the same way.
+const STREAM_ENABLED_MEMBER: &str = "StreamEnabled";
+const STREAM_VIEW_TYPE_MEMBER: &str = "StreamViewType";
+
+/// The members of a declared `StreamSpecification` this arm applies: what the stream
+/// captures, and the API's own flag, which a declaration stating it keeps.
+///
+/// The type's own specification also carries a `ResourcePolicy` over the STREAM, which this
+/// arm puts into force nowhere, so a declaration carrying it is refused rather than dropped
+/// ([`refuse_unapplied_properties`]).
+const STREAM_SPECIFICATION_MEMBERS: &[&str] = &[STREAM_ENABLED_MEMBER, STREAM_VIEW_TYPE_MEMBER];
+
 /// The members `UpdateTable` takes that a declaration can change on a table that already
 /// exists, under the same name on both sides.
 ///
@@ -149,21 +175,6 @@ const UPDATE_MEMBERS: &[&str] = &[
     "TableClass",
     "WarmThroughput",
 ];
-
-/// The property carrying the table's stream configuration, whose required flag the type does
-/// not publish at all ([`stream_specification`]). A member of both `CreateTable` and
-/// `UpdateTable` under this same name, which is why it is applied beside
-/// [`CREATE_MEMBERS`]/[`UPDATE_MEMBERS`] rather than inside them.
-const STREAM_SPECIFICATION_PROPERTY: &str = "StreamSpecification";
-
-/// The flag the API's own `StreamSpecification` requires, which no property of the type
-/// carries: "Indicates whether DynamoDB Streams is enabled (true) or disabled (false) on the
-/// table" (`StreamSpecification$StreamEnabled`, `@required`).
-const STREAM_ENABLED_MEMBER: &str = "StreamEnabled";
-
-/// The member both sides spell the same way: what is written to the stream for each modified
-/// item.
-const STREAM_VIEW_TYPE_MEMBER: &str = "StreamViewType";
 
 /// The member `CreateTable` and `UpdateTable` answer the table's description under.
 const TABLE_DESCRIPTION_MEMBER: &str = "TableDescription";
@@ -325,6 +336,12 @@ async fn creation_window(
 /// unchanged member would turn a change to one property into a refusal of the whole
 /// deployment.
 ///
+/// The table's stream is the one member whose change can need more than one call
+/// ([`stream_steps`]), since that same refusal means no call changes what an ENABLED stream
+/// captures; each call is made on a settled table, and the attributes published for the
+/// resource are read off the LAST answer, so an output over the stream ARN follows the stream
+/// the change left the table with.
+///
 /// `Ok(None)` where the change is to a property `UpdateTable` does not take
 /// ([`UPDATE_MEMBERS`]): the table keeps the configuration in force and the deployment
 /// reports the change as not applied, rather than as a success that dropped it.
@@ -346,6 +363,9 @@ pub(super) async fn update(
     let Some(setting_calls) = settings::calls(Some(&resource.properties), declared) else {
         return Ok(None);
     };
+    // What takes the table's STREAM from the specification in force to the declared one,
+    // which travels as its own call rather than as a member of the request below.
+    let streams = stream_steps(&resource.properties, declared);
     let mut request = Map::new();
     for member in UPDATE_MEMBERS {
         let asked = declared_in(declared, member);
@@ -360,24 +380,10 @@ pub(super) async fn update(
         };
         request.insert((*member).to_string(), value.clone());
     }
-    // The stream configuration travels as the API's own `StreamSpecification`, whose required
-    // flag the type does not publish ([`stream_specification`]). It is a member `UpdateTable`
-    // takes, so a declaration that changes it has an in-place path; a declaration that DROPPED
-    // it has none here, for the reason the loop above gives for every other dropped member.
-    let stream_in_force = declared_in(&resource.properties, STREAM_SPECIFICATION_PROPERTY);
-    let stream_declared = declared_in(declared, STREAM_SPECIFICATION_PROPERTY);
-    if stream_declared != stream_in_force {
-        match stream_specification(declared) {
-            Some(specification) => {
-                request.insert(STREAM_SPECIFICATION_PROPERTY.to_string(), specification);
-            }
-            None => return Ok(None),
-        }
-    }
     if changed_outside_update_members(&resource.properties, declared) {
         return Ok(None);
     }
-    if request.is_empty() && setting_calls.is_empty() {
+    if request.is_empty() && setting_calls.is_empty() && streams.is_empty() {
         // Nothing `UpdateTable` takes changed, no setting of its own changed, and nothing
         // outside either did, so the table already has the declared configuration.
         return Ok(Some(Created::default()));
@@ -388,16 +394,40 @@ pub(super) async fn update(
     // The settings first: each of their calls leaves the TABLE itself untouched, while
     // `UpdateTable` leaves it in the window this service refuses a further change in.
     settings::apply(ctx, region, &resource.physical_resource_id, &setting_calls).await?;
-    if request.is_empty() {
+    let mut answered = None;
+    for specification in streams {
+        let mut body = Map::new();
+        body.insert(STREAM_SPECIFICATION_PROPERTY.to_string(), specification);
+        answered = Some(update_table(ctx, region, &resource.physical_resource_id, body).await?);
+    }
+    if !request.is_empty() {
+        answered = Some(update_table(ctx, region, &resource.physical_resource_id, request).await?);
+    }
+    let Some(answered) = answered else {
         // Only settings changed, and they are applied: the table itself keeps the
         // configuration in force.
         return Ok(Some(Created::default()));
-    }
+    };
+    Ok(Some(Created::attributes(published_attributes(
+        answered.get(TABLE_DESCRIPTION_MEMBER),
+    ))))
+}
+
+/// One `UpdateTable` on the table `physical_resource_id`, carrying `request` beside the member
+/// that addresses it, made once DynamoDB reports the table out of the window it refuses a
+/// change in — which is the window the PREVIOUS call of a multi-call change left it in.
+async fn update_table(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    physical_resource_id: &str,
+    mut request: Map<String, Value>,
+) -> Result<Value, Refusal> {
+    await_settled(ctx, region, physical_resource_id).await;
     request.insert(
         TABLE_NAME_PROPERTY.to_string(),
-        Value::String(resource.physical_resource_id.clone()),
+        Value::String(physical_resource_id.to_string()),
     );
-    let answered = call_json_rpc(
+    call_json_rpc(
         ctx,
         DYNAMODB_SIGNING_NAME,
         region,
@@ -405,10 +435,7 @@ pub(super) async fn update(
         &format!("{DYNAMODB_TARGET_PREFIX}.UpdateTable"),
         &Value::Object(request),
     )
-    .await?;
-    Ok(Some(Created::attributes(published_attributes(
-        answered.get(TABLE_DESCRIPTION_MEMBER),
-    ))))
+    .await
 }
 
 /// Delete the table a stack created, addressed by the name its physical id carries.
@@ -642,6 +669,48 @@ fn sse_specification(properties: &Value) -> Option<Value> {
     Some(Value::Object(specification))
 }
 
+/// Whether a specification asks for a stream: every one that does not state the API's flag
+/// FALSE does, since declaring the property is what asks for one.
+fn asks_for_a_stream(specification: &Value) -> bool {
+    specification.get(STREAM_ENABLED_MEMBER) != Some(&Value::Bool(false))
+}
+
+/// The `StreamSpecification` of each `UpdateTable` that takes the table's stream from the
+/// specification in force to the declared one, in the order the calls must be made.
+///
+/// A stream's identity is its ARN, and `UpdateTable` refuses a specification that enables a
+/// stream on "a table that already has a stream", so NO call changes what an enabled stream
+/// captures: a declaration that changes the view type is applied by turning the stream in
+/// force off and a stream capturing what it now asks for on. The table's stream ARN after
+/// such a change is therefore a new one, and an `Fn::GetAtt` over it follows the stream the
+/// table now has.
+///
+/// A declaration that states no specification at all asks for no stream, which `UpdateTable`
+/// expresses as the flag turned off; a table that has no stream is already in the state such
+/// a declaration asks for, so nothing is called for it.
+fn stream_steps(in_force: &Value, declared: &Value) -> Vec<Value> {
+    let before = stream_specification(in_force);
+    let after = stream_specification(declared);
+    if before == after {
+        return Vec::new();
+    }
+    let enabled = before.as_ref().is_some_and(asks_for_a_stream);
+    let mut turn_off = Map::new();
+    turn_off.insert(STREAM_ENABLED_MEMBER.to_string(), Value::Bool(false));
+    let turn_off = Value::Object(turn_off);
+    match after {
+        Some(specification) if asks_for_a_stream(&specification) => {
+            if enabled {
+                vec![turn_off, specification]
+            } else {
+                vec![specification]
+            }
+        }
+        _ if enabled => vec![turn_off],
+        _ => Vec::new(),
+    }
+}
+
 /// The policy document a declared `ResourcePolicy` carries, as the TEXT `CreateTable`'s own
 /// `ResourcePolicy` member takes.
 ///
@@ -723,6 +792,10 @@ fn changed_outside_update_members(in_force: &Value, declared: &Value) -> bool {
 /// than dropped from a create that answered success. Every other property of the type is
 /// either a member of the create or a call of this service's own on the table that exists,
 /// which [`settings`] makes.
+///
+/// A property this arm TRANSLATES is checked member by member for the same reason: the
+/// translation carries the members it names ([`STREAM_SPECIFICATION_MEMBERS`]), so one it does
+/// not name would be dropped from a create that answered success.
 fn refuse_unapplied_properties(properties: &Value, resource_type: &str) -> Result<(), Refusal> {
     let Value::Object(members) = properties else {
         return Ok(());
@@ -731,46 +804,47 @@ fn refuse_unapplied_properties(properties: &Value, resource_type: &str) -> Resul
         if applies(property) {
             continue;
         }
-        return Err(Refusal {
-            code: "NotImplemented".to_string(),
-            message: format!(
-                "this emulator does not apply the {property} property of {resource_type}"
-            ),
-        });
+        return Err(unapplied(property, resource_type));
     }
     // The stream's own resource-based policy is a sub-resource of the STREAM rather than a
     // member of either table call, so a declaration asking for one asks for something this
     // arm does not put: refused, for the reason every unapplied property above is. The two
     // members the API's own structure carries are applied ([`stream_specification`]).
-    if let Some(Value::Object(stream)) = declared_in(properties, STREAM_SPECIFICATION_PROPERTY) {
-        for member in stream.keys() {
-            if member == STREAM_VIEW_TYPE_MEMBER || member == STREAM_ENABLED_MEMBER {
-                continue;
+    if let Some(Value::Object(specification)) =
+        declared_in(properties, STREAM_SPECIFICATION_PROPERTY)
+    {
+        for member in specification.keys() {
+            if !STREAM_SPECIFICATION_MEMBERS.contains(&member.as_str()) {
+                return Err(unapplied(
+                    &format!("{STREAM_SPECIFICATION_PROPERTY}.{member}"),
+                    resource_type,
+                ));
             }
-            return Err(Refusal {
-                code: "NotImplemented".to_string(),
-                message: format!(
-                    "this emulator does not apply the \
-                     {STREAM_SPECIFICATION_PROPERTY}.{member} property of {resource_type}"
-                ),
-            });
         }
     }
     Ok(())
 }
 
+/// The refusal itself, worded over the declared property it names.
+fn unapplied(property: &str, resource_type: &str) -> Refusal {
+    Refusal {
+        code: "NotImplemented".to_string(),
+        message: format!("this emulator does not apply the {property} property of {resource_type}"),
+    }
+}
+
 /// Whether this arm applies the property `name`: a body member of the create, the one that
-/// addresses it, the tag set, one of the two whose spelling differs between the two sides, or
-/// one of the settings DynamoDB applies through a call of its own ([`settings`]).
+/// addresses it, the tag set, one of the three whose shape or spelling differs between the two
+/// sides, or one of the settings DynamoDB applies through a call of its own ([`settings`]).
 fn applies(name: &str) -> bool {
     CREATE_MEMBERS.contains(&name)
-        || name == STREAM_SPECIFICATION_PROPERTY
         || settings::is_a_setting(name)
         || [
             TABLE_NAME_PROPERTY,
             TAGS_PROPERTY,
             RESOURCE_POLICY_PROPERTY,
             SSE_SPECIFICATION_PROPERTY,
+            STREAM_SPECIFICATION_PROPERTY,
         ]
         .contains(&name)
 }
@@ -959,6 +1033,131 @@ mod tests {
                 document.as_deref(),
                 Some("{\"Version\":\"2012-10-17\"}"),
                 "case {case:?}: expected the policy document as text, got {document:?}"
+            );
+        }
+    }
+
+    /// The type's own `StreamSpecification` reaches the API with the flag that specification
+    /// requires, whatever the template states, and a declaration that states the flag keeps
+    /// the value it states.
+    #[test]
+    fn the_declared_stream_reaches_the_api_with_its_required_flag() {
+        // The rows differ along what the rule generalises over: the type's own form (the view
+        // type alone, in each of the values the model declares), the API's own spelling of
+        // both flag values, and a declaration that states no specification at all.
+        let cases: &[(&str, Value, Option<Value>)] = &[
+            (
+                "the type's own form: the view type alone",
+                serde_json::json!({ "StreamSpecification": {
+                    "StreamViewType": "NEW_AND_OLD_IMAGES" } }),
+                Some(serde_json::json!({ "StreamEnabled": true,
+                                         "StreamViewType": "NEW_AND_OLD_IMAGES" })),
+            ),
+            (
+                "the type's own form, capturing keys only",
+                serde_json::json!({ "StreamSpecification": { "StreamViewType": "KEYS_ONLY" } }),
+                Some(serde_json::json!({ "StreamEnabled": true,
+                                         "StreamViewType": "KEYS_ONLY" })),
+            ),
+            (
+                "the API's own spelling travels as written",
+                serde_json::json!({ "StreamSpecification": { "StreamEnabled": true,
+                                                             "StreamViewType": "NEW_IMAGE" } }),
+                Some(serde_json::json!({ "StreamEnabled": true,
+                                         "StreamViewType": "NEW_IMAGE" })),
+            ),
+            (
+                "a specification that turns the stream off asks for no stream",
+                serde_json::json!({ "StreamSpecification": { "StreamEnabled": false } }),
+                Some(serde_json::json!({ "StreamEnabled": false })),
+            ),
+            (
+                "no specification at all: no member on the call",
+                serde_json::json!({ "BillingMode": "PAY_PER_REQUEST" }),
+                None,
+            ),
+        ];
+        for (case, properties, expected) in cases {
+            let specification = stream_specification(properties);
+            assert_eq!(
+                specification.as_ref(),
+                expected.as_ref(),
+                "case {case:?}: expected the API's own specification {expected:?}, got \
+                 {specification:?}"
+            );
+        }
+    }
+
+    /// A `StreamSpecification.ResourcePolicy` is a policy over the STREAM that this arm puts
+    /// into force nowhere, so a declaration carrying it is refused rather than dropped.
+    #[test]
+    fn an_unapplied_stream_member_is_refused() {
+        let carried = declared(serde_json::json!({
+            "KeySchema": [{ "AttributeName": "pk", "KeyType": "HASH" }],
+            "StreamSpecification": { "StreamViewType": "KEYS_ONLY",
+                                     "ResourcePolicy": { "PolicyDocument": {} } },
+        }));
+        let answer = refuse_unapplied_properties(&carried.properties, &carried.resource_type);
+        let message = answer.as_ref().err().map(|refusal| refusal.message.clone());
+        assert_eq!(
+            message.as_deref(),
+            Some(
+                "this emulator does not apply the StreamSpecification.ResourcePolicy property \
+                 of AWS::DynamoDB::Table"
+            ),
+            "case {:?}: expected a refusal naming the member, got {answer:?}",
+            "a stream resource policy"
+        );
+    }
+
+    /// What takes the table's stream from the specification in force to the declared one: a
+    /// change of VIEW TYPE has no single-call path, so it is the one that needs two.
+    #[test]
+    fn a_view_type_change_is_applied_as_a_disable_and_an_enable() {
+        let off = serde_json::json!({ "StreamEnabled": false });
+        let cases: &[(&str, Value, Value, Vec<Value>)] = &[
+            (
+                "the view type changed: the stream in force off, then the declared one on",
+                serde_json::json!({ "StreamSpecification": {
+                    "StreamViewType": "NEW_AND_OLD_IMAGES" } }),
+                serde_json::json!({ "StreamSpecification": { "StreamViewType": "KEYS_ONLY" } }),
+                vec![
+                    off.clone(),
+                    serde_json::json!({ "StreamEnabled": true, "StreamViewType": "KEYS_ONLY" }),
+                ],
+            ),
+            (
+                "the same view type: nothing to call",
+                serde_json::json!({ "StreamSpecification": { "StreamViewType": "NEW_IMAGE" } }),
+                serde_json::json!({ "StreamSpecification": { "StreamViewType": "NEW_IMAGE" } }),
+                Vec::new(),
+            ),
+            (
+                "a stream added to a table that had none: one enable",
+                serde_json::json!({ "BillingMode": "PAY_PER_REQUEST" }),
+                serde_json::json!({ "BillingMode": "PAY_PER_REQUEST",
+                                    "StreamSpecification": { "StreamViewType": "OLD_IMAGE" } }),
+                vec![serde_json::json!({ "StreamEnabled": true,
+                                         "StreamViewType": "OLD_IMAGE" })],
+            ),
+            (
+                "the specification dropped: the stream in force is turned off",
+                serde_json::json!({ "StreamSpecification": { "StreamViewType": "OLD_IMAGE" } }),
+                serde_json::json!({}),
+                vec![off.clone()],
+            ),
+            (
+                "a table with no stream, declared with none: nothing to call",
+                serde_json::json!({}),
+                serde_json::json!({ "StreamSpecification": { "StreamEnabled": false } }),
+                Vec::new(),
+            ),
+        ];
+        for (case, in_force, declared_now, expected) in cases {
+            let steps = stream_steps(in_force, declared_now);
+            assert_eq!(
+                &steps, expected,
+                "case {case:?}: expected the calls {expected:?}, got {steps:?}"
             );
         }
     }
