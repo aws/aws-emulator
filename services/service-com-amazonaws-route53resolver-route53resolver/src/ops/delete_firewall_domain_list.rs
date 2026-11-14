@@ -149,8 +149,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ) -> Result<Self::Output, Self::Error> {
         // The engine is reachable from `&self` (constructor-injected); this
         // operation mints no ARN — it reports the one the stored record already
-        // carries — so it takes nothing from `ctx`.
-        let _ = ctx;
+        // carries — and what it takes from `ctx` is the trace its refusals are
+        // reported under.
+        let trace_root = crate::state::request_trace_root(&ctx.parts().headers);
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(
                 DeleteFirewallDomainListErrorModeled::InternalServiceErrorException(
@@ -192,17 +193,57 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // Nothing is stored under that id — including a second delete of the
+        // same list, which the first one already removed, and a list DNS
+        // Firewall publishes itself, which belongs to the service and not to
+        // the account reading it: a published list is not visible as a writable
+        // resource, so a delete naming one is answered exactly as a delete
+        // naming a list that does not exist (see
+        // `crate::state::firewall_domain_list_not_found`). That is decided
+        // BEFORE the in-use check below, so an id this account holds no list
+        // under is reported missing whether or not a rule names it — a rule may
+        // match against a published list, and a published list is not a
+        // resource this account could delete in the first place.
+        if !store
+            .firewall_domain_lists
+            .contains_key(&input.firewall_domain_list_id)
+        {
+            return Err(
+                DeleteFirewallDomainListErrorModeled::ResourceNotFoundException(
+                    crate::state::firewall_domain_list_not_found(&input.firewall_domain_list_id),
+                )
+                .into(),
+            );
+        }
+
+        // A list a DNS Firewall rule still matches against is still deciding
+        // whether that rule fires, so the delete is refused with the sentence
+        // the service states for that fault
+        // (`crate::state::firewall_domain_list_in_use_conflict`) and the list is
+        // left in place: the rule goes first, which is the order the rule delete
+        // and this one are meant to be called in. Once no rule references the
+        // list the very same call is served — so no rule is ever left matching
+        // against a list the store no longer holds.
+        let referenced_by = store
+            .firewall_rule_group_referencing_domain_list(&input.firewall_domain_list_id)
+            .map(str::to_string);
+        if let Some(firewall_rule_group_id) = referenced_by {
+            return Err(DeleteFirewallDomainListErrorModeled::ConflictException(
+                crate::state::firewall_domain_list_in_use_conflict(
+                    &firewall_rule_group_id,
+                    &trace_root,
+                ),
+            )
+            .into());
+        }
+
         let Some(mut record) = store
             .firewall_domain_lists
             .remove(&input.firewall_domain_list_id)
         else {
-            // Nothing is stored under that id — including a second delete of
-            // the same list, which the first one already removed, and a list
-            // DNS Firewall publishes itself, which belongs to the service and
-            // not to the account reading it: a published list is not visible as
-            // a writable resource, so a delete naming one is answered exactly
-            // as a delete naming a list that does not exist (see
-            // `crate::state::firewall_domain_list_not_found`).
+            // The id resolved above, under this same lock, so nothing can have
+            // taken the record out in between; this arm reports the same body
+            // rather than assuming that away.
             return Err(
                 DeleteFirewallDomainListErrorModeled::ResourceNotFoundException(
                     crate::state::firewall_domain_list_not_found(&input.firewall_domain_list_id),

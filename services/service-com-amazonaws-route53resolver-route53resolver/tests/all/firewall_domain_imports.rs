@@ -28,11 +28,11 @@
 //!   deleted afterwards.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use service_com_amazonaws_route53resolver_route53resolver::state::{
-    MAX_DOMAINS_PER_LIST, PROVISIONING_DELAY,
+    firewall_domain_list_status_is_settled, MAX_DOMAINS_PER_LIST,
 };
 use service_com_amazonaws_s3_amazons3::state::{service_state as s3_state, Object};
 use smithy_server_runtime::MultiServiceRouter;
@@ -167,10 +167,29 @@ async fn list_domains(router: &MultiServiceRouter, id: &str) -> Vec<String> {
         .collect()
 }
 
-/// Wait out the span the clock owes a change in flight, so the step it settles
-/// in is due.
-async fn settle() {
-    tokio::time::sleep(PROVISIONING_DELAY + Duration::from_millis(250)).await;
+/// How long a poll waits before it looks at the list again.
+const POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// How long a poll keeps looking before it gives up: generous, so how fast the
+/// host runs never decides the outcome.
+const SETTLE_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Look at the list again until the change in flight has settled, so the step
+/// it settles in is the one the case reads — the CONDITION is waited for and
+/// never a span of the clock.
+async fn settle(router: &MultiServiceRouter, id: &str, case: &str) {
+    let deadline = Instant::now() + SETTLE_DEADLINE;
+    loop {
+        let status = string_member(&read_list(router, id).await, "Status");
+        if firewall_domain_list_status_is_settled(&status) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "case {case:?}: the list must settle, it still reports {status:?}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
 }
 
 /// Call one operation with a credential scope naming `region`, and return
@@ -288,7 +307,7 @@ async fn an_imported_domain_file_replaces_the_lists_domains() {
                    _dmarc.example.com\nlocalhost\nrooted.example.com\n",
             expected: vec![
                 "rooted.example.com.",
-                "UPPER.example.com.",
+                "upper.example.com.",
                 "*.wild.example.com.",
                 "_dmarc.example.com.",
                 "localhost.",
@@ -318,7 +337,7 @@ async fn an_imported_domain_file_replaces_the_lists_domains() {
         update(&router, &id, "ADD", &["left-over.example.com"]).await;
 
         import(&router, &id, &url, case).await;
-        settle().await;
+        settle(&router, &id, case).await;
 
         let read = read_list(&router, &id).await;
         assert_eq!(
@@ -425,7 +444,7 @@ async fn an_import_of_a_file_that_cannot_be_downloaded_fails_with_the_download_m
                 "case {case:?}: an accepted import is under way when it answers, got {answered}"
             );
 
-            settle().await;
+            settle(&router, &id, &case).await;
 
             let read = read_list(&router, &id).await;
             assert_eq!(
@@ -469,7 +488,7 @@ async fn an_import_of_a_file_that_cannot_be_downloaded_fails_with_the_download_m
                 &format!("{case} (retried)"),
             )
             .await;
-            settle().await;
+            settle(&router, &id, &case).await;
             let retried = list_domains(&router, &id).await;
             assert_eq!(
                 retried,
@@ -611,12 +630,14 @@ struct SpellingCase<'a> {
 }
 
 /// Whatever spelling a write uses, the list holds and reports the canonical
-/// rooted name — and a removal written in EITHER spelling removes that one
-/// entry, so the two spellings are one domain rather than two.
+/// name — rooted and case folded — and a removal written in ANY of those
+/// spellings removes that one entry, so the spellings are one domain rather
+/// than several.
 ///
 /// The rows span the spellings of a name: unrooted, already rooted, mixed case,
-/// a wildcard, an asterisk without a separator, an underscored label, a single
-/// label and a long many-label name.
+/// upper case, a wildcard, an asterisk without a separator, an underscored
+/// label, a single label, a punycode/ACE name that case folding leaves alone,
+/// and a long many-label name.
 #[tokio::test]
 async fn every_write_path_holds_the_canonical_rooted_name() {
     let (router, engine) = emulator_with_object_storage();
@@ -634,7 +655,17 @@ async fn every_write_path_holds_the_canonical_rooted_name() {
         SpellingCase {
             case: "a name in mixed case",
             written: "Ads.Example.COM",
-            stored: "Ads.Example.COM.",
+            stored: "ads.example.com.",
+        },
+        SpellingCase {
+            case: "a rooted name in upper case",
+            written: "ADS.EXAMPLE.COM.",
+            stored: "ads.example.com.",
+        },
+        SpellingCase {
+            case: "a punycode name case folding leaves alone",
+            written: "xn--e1afmkfd.xn--80akhbyknj4f",
+            stored: "xn--e1afmkfd.xn--80akhbyknj4f.",
         },
         SpellingCase {
             case: "a wildcard",
@@ -691,7 +722,7 @@ async fn every_write_path_holds_the_canonical_rooted_name() {
             &format!("{case} (import)"),
         )
         .await;
-        settle().await;
+        settle(&router, &by_import, case).await;
 
         for (path, id) in [
             ("ADD", &by_add),

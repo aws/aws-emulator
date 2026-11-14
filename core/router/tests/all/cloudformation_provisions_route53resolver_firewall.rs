@@ -31,7 +31,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use serde_json::{json, Value};
@@ -46,6 +46,44 @@ use super::query_wire::{elements, form_encode, opt_element};
 /// the stack reports the template it deployed and the resources report their settled
 /// statuses.
 const PAST_PROVISIONING_SPANS: Duration = Duration::from_millis(900);
+
+/// How long a poll waits before it looks at the stack again.
+const POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// How long a poll keeps looking before it gives up: generous, so how fast the host runs
+/// never decides the outcome.
+const SETTLE_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Look at the stack again until its own `StackStatus` is one it has REACHED — every status
+/// CloudFormation reports while an operation is still running ends in `_IN_PROGRESS` — and
+/// answer that status, so a case reads the OUTCOME of the operation and never a span of the
+/// clock.
+async fn settled_stack(
+    router: &MultiServiceRouter,
+    region: &str,
+    stack_name: &str,
+    case: &str,
+) -> String {
+    let deadline = Instant::now() + SETTLE_DEADLINE;
+    loop {
+        let (_, described) = cloudformation(
+            router,
+            region,
+            "DescribeStacks",
+            &[("StackName", stack_name)],
+        )
+        .await;
+        let status = opt_element(&described, "StackStatus").unwrap_or_default();
+        if !status.is_empty() && !status.ends_with("_IN_PROGRESS") {
+            return status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "case {case:?}: the stack operation must finish, it still reports {status:?}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
 
 /// The prefixes Route 53 Resolver mints its DNS Firewall identifiers under: a domain list is
 /// `rslvr-fdl-…`, a rule group `rslvr-frg-…` and a rule group association
@@ -809,19 +847,12 @@ async fn a_rule_group_whose_rule_is_refused_fails_the_stack() {
         status, 200,
         "case {case:?}: expected HTTP 200 from CreateStack, got {status} with body {body}"
     );
-    tokio::time::sleep(PAST_PROVISIONING_SPANS).await;
-
-    let (_, described) = cloudformation(
-        &router,
-        region,
-        "DescribeStacks",
-        &[("StackName", "firewall-refused")],
-    )
-    .await;
+    // The create's own outcome is what this case is about, so the stack is looked at until
+    // it has one.
+    let stack_status = settled_stack(&router, region, "firewall-refused", case).await;
     assert_eq!(
-        opt_element(&described, "StackStatus").as_deref(),
-        Some("ROLLBACK_COMPLETE"),
-        "case {case:?}: expected the failed create to be rolled back, got {described}"
+        stack_status, "ROLLBACK_COMPLETE",
+        "case {case:?}: expected the failed create to be rolled back, got {stack_status:?}"
     );
     let (_, events) = cloudformation(
         &router,
@@ -833,9 +864,10 @@ async fn a_rule_group_whose_rule_is_refused_fails_the_stack() {
     assert!(
         elements(&events, "ResourceStatusReason")
             .iter()
-            .any(|reported| reported.contains("BlockResponse")),
+            .any(|reported| reported.contains("RSLVR-02016") && reported.contains("BLOCK RESPONSE")),
         "case {case:?}: expected the failing resource's event to carry Route 53 Resolver's own \
-         refusal, got {events}"
+         refusal — its coded sentence, naming the block option the rule requires as that service \
+         spells it — got {events}"
     );
 
     // The rollback removed the rule group the failed create had already made, and the

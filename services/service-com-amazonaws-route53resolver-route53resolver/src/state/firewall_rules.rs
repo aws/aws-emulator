@@ -370,39 +370,94 @@ pub fn firewall_rule_settings_fault(
 
     // "`BlockResponse` … This setting is required if the rule action setting is
     // BLOCK", and each `BlockOverride*` member "is required if the
-    // BlockResponse setting is OVERRIDE".
+    // BlockResponse setting is OVERRIDE". A block option the rule requires and
+    // the request left out is not a block option the service can act on, so it
+    // is refused as one that is not valid
+    // ([`firewall_rule_block_option_not_valid`]).
     if settings.action == FIREWALL_RULE_ACTION_BLOCK && settings.block_response.is_none() {
-        return Some(ValidationException {
-            message: Some(format!(
-                "BlockResponse is required when Action is {FIREWALL_RULE_ACTION_BLOCK}"
-            )),
-        });
+        return Some(firewall_rule_block_option_not_valid(
+            BLOCK_OPTION_BLOCK_RESPONSE,
+        ));
     }
     if settings.block_response == Some(FIREWALL_RULE_BLOCK_RESPONSE_OVERRIDE) {
         let missing = [
             (
-                "BlockOverrideDomain",
+                BLOCK_OPTION_BLOCK_OVERRIDE_DOMAIN,
                 settings.block_override_domain.is_none(),
             ),
             (
-                "BlockOverrideDnsType",
+                BLOCK_OPTION_BLOCK_OVERRIDE_DNS_TYPE,
                 settings.block_override_dns_type.is_none(),
             ),
-            ("BlockOverrideTtl", settings.block_override_ttl.is_none()),
+            (
+                BLOCK_OPTION_BLOCK_OVERRIDE_TTL,
+                settings.block_override_ttl.is_none(),
+            ),
         ]
         .into_iter()
         .find_map(|(member, absent)| absent.then_some(member));
         if let Some(member) = missing {
-            return Some(ValidationException {
-                message: Some(format!(
-                    "{member} is required when BlockResponse is \
-                     {FIREWALL_RULE_BLOCK_RESPONSE_OVERRIDE}"
-                )),
-            });
+            return Some(firewall_rule_block_option_not_valid(member));
         }
     }
 
     None
+}
+
+/// The block options a DNS Firewall rule carries, named as the model spells
+/// them (`smithy_query(query="shape",shape="CreateFirewallRuleRequest")`).
+///
+/// They are the members [`FirewallRuleBlockOptions`] holds, carried as constants
+/// because a refusal that names one states it in the service's own spelling
+/// ([`block_option_name`]) rather than in the model's.
+pub const BLOCK_OPTION_BLOCK_RESPONSE: &str = "BlockResponse";
+pub const BLOCK_OPTION_BLOCK_OVERRIDE_DOMAIN: &str = "BlockOverrideDomain";
+pub const BLOCK_OPTION_BLOCK_OVERRIDE_DNS_TYPE: &str = "BlockOverrideDnsType";
+pub const BLOCK_OPTION_BLOCK_OVERRIDE_TTL: &str = "BlockOverrideTtl";
+
+/// How the service NAMES one block option in a refusal: the modelled member
+/// name read as words — every word upper case, separated by a single space — so
+/// `BlockResponse` is stated as `BLOCK RESPONSE`.
+///
+/// The service states the option a caller sets rather than the member an API
+/// request carries, and the two differ only in this spelling, so the name is
+/// derived from the member instead of written out once per option.
+pub fn block_option_name(member: &str) -> String {
+    let mut name = String::with_capacity(member.len() + 3);
+    let mut inside_word = false;
+    for character in member.chars() {
+        if inside_word && character.is_ascii_uppercase() {
+            name.push(' ');
+        }
+        inside_word = !character.is_ascii_uppercase();
+        name.push(character.to_ascii_uppercase());
+    }
+    name
+}
+
+/// The Route 53 Resolver service error code for a block option a rule cannot
+/// block with.
+///
+/// Carried for the same reason as [`RSLVR_CODE_RESOURCE_NOT_FOUND`]: the HTTP
+/// status (400) and the exception shape name together do not say which Resolver
+/// fault occurred, and the model states no message text.
+pub const RSLVR_CODE_FIREWALL_RULE_BLOCK_OPTION_NOT_VALID: &str = "RSLVR-02016";
+
+/// The `ValidationException` a rule write is refused with when the block option
+/// `member` is one the rule cannot block with — because the rule requires it and
+/// the request did not state it.
+///
+/// The sentence is the service's own for that fault
+/// ([`RSLVR_CODE_FIREWALL_RULE_BLOCK_OPTION_NOT_VALID`]) and names the OPTION,
+/// in the service's spelling of it ([`block_option_name`]), and nothing else
+/// from the request.
+pub fn firewall_rule_block_option_not_valid(member: &str) -> ValidationException {
+    ValidationException {
+        message: Some(rslvr_message(
+            RSLVR_CODE_FIREWALL_RULE_BLOCK_OPTION_NOT_VALID,
+            &format!("Your block option {} is not valid", block_option_name(member)),
+        )),
+    }
 }
 
 /// The block settings one rule write STATES, as the request carries them.
@@ -926,7 +981,13 @@ impl ComAmazonawsRoute53resolverRoute53resolverState {
             priority: Some(request.priority),
             action: Some(request.action.to_string()),
             block_response: request.block_response.map(str::to_string),
-            block_override_domain: request.block_override_domain.map(str::to_string),
+            // The override target is a DNS NAME the rule answers the blocked
+            // query with, so it is stored canonical
+            // ([`firewall_domain_canonical`]) and every reader projects that one
+            // spelling — the same reduction the domains of a domain list get.
+            block_override_domain: request
+                .block_override_domain
+                .map(firewall_domain_canonical),
             block_override_dns_type: request.block_override_dns_type.map(str::to_string),
             block_override_ttl: request.block_override_ttl,
             creator_request_id: Some(request.creator_request_id.to_string()),
@@ -1180,7 +1241,7 @@ impl ComAmazonawsRoute53resolverRoute53resolverState {
             rule.block_response = Some(value.to_string());
         }
         if let Some(value) = request.block_override_domain {
-            rule.block_override_domain = Some(value.to_string());
+            rule.block_override_domain = Some(firewall_domain_canonical(value));
         }
         if let Some(value) = request.block_override_dns_type {
             rule.block_override_dns_type = Some(value.to_string());
@@ -1256,5 +1317,69 @@ impl ComAmazonawsRoute53resolverRoute53resolverState {
         // deleted, lifecycle state included, so a caller reads back exactly the
         // rule that is now gone.
         Ok(record.to_rule(now))
+    }
+
+    /// The id of a rule group holding a rule that matches against the domain
+    /// list `firewall_domain_list_id`, if the store holds one — the oldest
+    /// group, so a list several groups reference answers deterministically.
+    ///
+    /// This is the index `DeleteFirewallDomainList` consults before it takes a
+    /// list out ([`firewall_domain_list_in_use_conflict`]): a list a rule
+    /// matches against cannot be deleted, so no rule is ever left matching
+    /// against a `FirewallDomainListId` the store no longer holds. The scan is
+    /// over a store bounded by [`MAX_STORED_FIREWALL_RULE_GROUPS`], each group
+    /// by [`MAX_RULES_PER_FIREWALL_RULE_GROUP`].
+    pub fn firewall_rule_group_referencing_domain_list(
+        &self,
+        firewall_domain_list_id: &str,
+    ) -> Option<&str> {
+        self.firewall_rule_groups
+            .values()
+            .filter(|group| {
+                group.rules.iter().any(|record| {
+                    record.rule.firewall_domain_list_id.as_deref() == Some(firewall_domain_list_id)
+                })
+            })
+            .min_by_key(|group| group.seq)
+            .map(|group| group.id.as_str())
+    }
+}
+
+/// The Route 53 Resolver service error code for a DNS Firewall domain list a
+/// rule still matches against.
+pub const RSLVR_CODE_FIREWALL_DOMAIN_LIST_IN_USE: &str = "RSLVR-02304";
+
+/// The `ConflictException` `DeleteFirewallDomainList` is refused with while a
+/// DNS Firewall rule still matches against the list it names.
+///
+/// A list a rule matches against is still deciding whether that rule fires, so
+/// deleting it is not a state transition the service makes: the rule goes first
+/// ("delete the rule"), which is the teardown order
+/// `DeleteFirewallRule`/`DeleteFirewallDomainList` are meant to be called in,
+/// and the model's `ConflictException` ("the requested state transition isn't
+/// valid") is the answer for a transition it will not make.
+///
+/// The sentence names the RULE GROUP the referencing rule belongs to — a rule
+/// is addressed by its group and its match source and carries no id of its own
+/// — and closes with the trace clause of the request ([`traced_message`]), as
+/// the refusals of a DNS Firewall resource another one still holds do.
+pub fn firewall_domain_list_in_use_conflict(
+    firewall_rule_group_id: &str,
+    trace_root: &str,
+) -> ConflictException {
+    ConflictException {
+        message: Some(traced_message(
+            rslvr_message_sentences(
+                RSLVR_CODE_FIREWALL_DOMAIN_LIST_IN_USE,
+                &[
+                    &format!(
+                        "The DNS Firewall domain list is associated with a DNS Firewall rule : \
+                         \"{firewall_rule_group_id}\""
+                    ),
+                    "Delete the rule and then try again",
+                ],
+            ),
+            trace_root,
+        )),
     }
 }

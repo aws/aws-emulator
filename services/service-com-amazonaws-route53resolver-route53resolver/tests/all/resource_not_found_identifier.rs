@@ -27,7 +27,7 @@ use serde_json::{json, Value};
 use service_com_amazonaws_route53resolver_route53resolver::state::RSLVR_CODE_RESOURCE_NOT_FOUND;
 use smithy_server_runtime::MultiServiceRouter;
 
-use super::harness::{call, emulator, error_type, ok, string_member, ACCOUNT, REGION};
+use super::harness::{call, emulator, error_type, ok, string_member, traced_message, ACCOUNT, REGION};
 
 /// An account that is not the one this emulator's resources belong to, so a
 /// policy document naming it really does ask for a share.
@@ -280,27 +280,56 @@ async fn the_sentence_names_the_bare_id_for_every_resource_type() {
     }
 
     // The id-addressed readers of the other DNS Firewall resources word it the
-    // same way.
-    for (operation, member, id) in [
-        (
-            "GetFirewallDomainList",
-            "FirewallDomainListId",
-            "rslvr-fdl-0f1e2d3c4b5a6978",
-        ),
-        (
-            "GetFirewallRuleGroupAssociation",
-            "FirewallRuleGroupAssociationId",
-            "rslvr-frgassoc-0f1e2d3c4b5a6978",
-        ),
-    ] {
-        let message = not_found_message(&router, member, operation, json!({ member: id })).await;
-        assert_eq!(
-            message,
-            expected_message(id),
-            "case {member:?}: {operation} must name the bare id, got {message:?}"
-        );
-        assert_quotes_hold_only_the_id(member, operation, id, &message);
-    }
+    // same way. The rule-group association's own refusal closes with the trace
+    // clause of the request (see [`super::firewall_association_error_bodies`]),
+    // so what is compared for it is the sentence before that clause: the
+    // identifier it names is the same bare id either way.
+    let message = not_found_message(
+        &router,
+        "FirewallDomainListId",
+        "GetFirewallDomainList",
+        json!({ "FirewallDomainListId": "rslvr-fdl-0f1e2d3c4b5a6978" }),
+    )
+    .await;
+    assert_eq!(
+        message,
+        expected_message("rslvr-fdl-0f1e2d3c4b5a6978"),
+        "case \"FirewallDomainListId\": GetFirewallDomainList must name the bare id, got \
+         {message:?}"
+    );
+    assert_quotes_hold_only_the_id(
+        "FirewallDomainListId",
+        "GetFirewallDomainList",
+        "rslvr-fdl-0f1e2d3c4b5a6978",
+        &message,
+    );
+
+    let association = "rslvr-frgassoc-0f1e2d3c4b5a6978";
+    let message = not_found_message(
+        &router,
+        "FirewallRuleGroupAssociationId",
+        "GetFirewallRuleGroupAssociation",
+        json!({ "FirewallRuleGroupAssociationId": association }),
+    )
+    .await;
+    let (stated, _) = traced_message(&message).unwrap_or_else(|| {
+        panic!(
+            "case \"FirewallRuleGroupAssociationId\": the refusal must close with its trace \
+             clause, got {message:?}"
+        )
+    });
+    assert_eq!(
+        stated,
+        expected_message(association),
+        "case \"FirewallRuleGroupAssociationId\": GetFirewallRuleGroupAssociation must name the \
+         bare id, got {message:?}"
+    );
+    assert_quotes_hold_only_the_id(
+        "FirewallRuleGroupAssociationId",
+        "GetFirewallRuleGroupAssociation",
+        association,
+        stated,
+    );
 }
 
 /// The reproduction a client hits: a rule group that DOES exist, addressed by an

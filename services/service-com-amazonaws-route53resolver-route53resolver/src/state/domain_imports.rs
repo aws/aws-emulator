@@ -104,8 +104,9 @@ fn domains_of(text: &str) -> FirewallDomainFile {
         if !firewall_domain_is_wellformed(domain) || domain.len() > MAX_FIREWALL_DOMAIN_CHARS {
             return FirewallDomainFile::NotDomains(domain.to_string());
         }
-        if keys.insert(firewall_domain_key(domain)) {
-            domains.push(firewall_domain_canonical(domain));
+        let canonical = firewall_domain_canonical(domain);
+        if keys.insert(canonical.clone()) {
+            domains.push(canonical);
         }
     }
     FirewallDomainFile::Domains(domains)

@@ -151,8 +151,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ) -> Result<Self::Output, Self::Error> {
         // The engine is reachable from `&self` (constructor-injected); this
         // operation mints no ARN — it reports the one the stored record already
-        // carries — so it takes nothing from `ctx`.
-        let _ = ctx;
+        // carries — and what it takes from `ctx` is the trace its refusals are
+        // reported under.
+        let trace_root = crate::state::request_trace_root(&ctx.parts().headers);
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(
                 DisassociateFirewallRuleGroupErrorModeled::InternalServiceErrorException(
@@ -167,36 +168,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let now = ::std::time::Instant::now();
         let mut store = state.lock();
 
-        // An association whose last change has not settled yet still has one in
-        // flight, so the disassociate is refused with the sentence the model
-        // states for that class and the record is left exactly as it is; a
-        // mutation-protected association refuses the removal outright, which is
-        // what that setting is for. Both are read out as owned values, so the
+        // "Disassociates a FirewallRuleGroup from a VPC, to remove DNS
+        // filtering from the VPC": every association the store holds is one
+        // this removes, whatever lifecycle step it stands in — an association
+        // still being put in place is being put in place for this VPC, and
+        // taking it away again does not wait for that to finish. What a
+        // mutation-protected association refuses is the REMOVAL itself, which
+        // is what that setting is for: "this setting disallows modification or
+        // removal of the association". It is read out as an owned value, so the
         // record is no longer borrowed when it is taken out of the store below.
-        let standing = store
+        let protected = store
             .firewall_rule_group_associations
             .get(&input.firewall_rule_group_association_id)
-            .map(|record| {
-                (
-                    record.status_at(now).to_string(),
-                    record.mutation_protection.clone(),
-                )
+            .is_some_and(|record| {
+                record.mutation_protection == crate::state::MUTATION_PROTECTION_ENABLED
             });
-        if let Some((status, mutation_protection)) = standing {
-            if status != crate::state::FIREWALL_RULE_GROUP_ASSOCIATION_STATUS_COMPLETE {
-                return Err(DisassociateFirewallRuleGroupErrorModeled::ConflictException(
-                    crate::state::state_transition_conflict(),
+        if protected {
+            return Err(
+                DisassociateFirewallRuleGroupErrorModeled::ValidationException(
+                    crate::state::mutation_protection_forbids_change(&trace_root),
                 )
-                .into());
-            }
-            if mutation_protection == crate::state::MUTATION_PROTECTION_ENABLED {
-                return Err(
-                    DisassociateFirewallRuleGroupErrorModeled::ValidationException(
-                        crate::state::mutation_protection_forbids_change(),
-                    )
-                    .into(),
-                );
-            }
+                .into(),
+            );
         }
 
         // Nothing is stored under that id — including a second disassociate of
@@ -209,6 +202,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 DisassociateFirewallRuleGroupErrorModeled::ResourceNotFoundException(
                     crate::state::firewall_rule_group_association_not_found(
                         &input.firewall_rule_group_association_id,
+                        &trace_root,
                     ),
                 )
                 .into(),

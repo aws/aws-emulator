@@ -140,7 +140,7 @@ async fn created_rules_are_listed_in_the_order_dns_firewall_processes_them() {
                 "FirewallDomainListId": own_list,
                 "Action": "BLOCK",
                 "BlockResponse": "OVERRIDE",
-                "BlockOverrideDomain": "safe.example.com",
+                "BlockOverrideDomain": "safe.example.com.",
                 "BlockOverrideDnsType": "CNAME",
                 "BlockOverrideTtl": 60,
             }),

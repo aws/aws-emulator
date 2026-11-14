@@ -46,6 +46,7 @@ use crate::ops::types::{
 // and the root re-exports them all so every handler reaches them from
 // `crate::state`.
 mod domain_imports;
+mod firewall_associations;
 mod firewall_rules;
 mod query_log;
 mod query_log_destinations;
@@ -53,6 +54,7 @@ mod resolver_rules;
 mod tags;
 mod vpc_configs;
 pub use domain_imports::*;
+pub use firewall_associations::*;
 pub use firewall_rules::*;
 pub use query_log::*;
 pub use query_log_destinations::*;
@@ -2411,12 +2413,17 @@ pub fn firewall_rule_group_not_found(firewall_rule_group: &str) -> ResourceNotFo
 /// that resolves a `FirewallRuleGroupAssociationId` reports the same body — the
 /// same relation [`firewall_rule_group_not_found`] has to the rule-group
 /// operations.
+///
+/// The sentence closes with the trace clause of the request
+/// ([`traced_message`]), which is how the service reports this fault.
 pub fn firewall_rule_group_association_not_found(
     firewall_rule_group_association_id: &str,
+    trace_root: &str,
 ) -> ResourceNotFoundException {
     ResourceNotFoundException {
-        message: Some(resource_not_found_message(
-            firewall_rule_group_association_id,
+        message: Some(traced_message(
+            resource_not_found_message(firewall_rule_group_association_id),
+            trace_root,
         )),
         resource_type: Some(RESOURCE_TYPE_FIREWALL_RULE_GROUP_ASSOCIATION.to_string()),
     }
@@ -2431,13 +2438,20 @@ pub fn firewall_rule_group_association_not_found(
 /// RSLVR-coded sentence the service states for that fault
 /// ([`RSLVR_CODE_ASSOCIATION_MUTATION_PROTECTED`]): it names neither the
 /// association nor the member that was to change, so nothing is interpolated
-/// into it, and the update and the disassociate report the same body.
-pub fn mutation_protection_forbids_change() -> ValidationException {
+/// into it, and the update and the disassociate report the same body — closed,
+/// as this slice's refusals are, with the trace clause of the request
+/// ([`traced_message`]).
+pub fn mutation_protection_forbids_change(trace_root: &str) -> ValidationException {
     ValidationException {
-        message: Some(rslvr_message(
-            RSLVR_CODE_ASSOCIATION_MUTATION_PROTECTED,
-            "The DNS Firewall rule group association is under mutation protection. \
-             Remove the mutation protection and try again",
+        message: Some(traced_message(
+            rslvr_message_sentences(
+                RSLVR_CODE_ASSOCIATION_MUTATION_PROTECTED,
+                &[
+                    "The DNS Firewall rule group association is under mutation protection",
+                    "Remove the mutation protection and try again",
+                ],
+            ),
+            trace_root,
         )),
     }
 }
@@ -2451,18 +2465,23 @@ pub fn mutation_protection_forbids_change() -> ValidationException {
 /// single VPC." The refusal is the RSLVR-coded sentence the service states for
 /// that fault ([`RSLVR_CODE_ASSOCIATION_PRIORITY_IN_USE`]), which names the
 /// association that already holds the priority — read out of this store, so the
-/// caller can address the one it clashed with — and asks for another number.
+/// caller can address the one it clashed with — and asks for another number,
+/// closed with the trace clause of the request ([`traced_message`]).
 pub fn association_priority_in_use(
     holding_firewall_rule_group_association_id: &str,
+    trace_root: &str,
 ) -> ValidationException {
     ValidationException {
-        message: Some(rslvr_message(
-            RSLVR_CODE_ASSOCIATION_PRIORITY_IN_USE,
-            &format!(
-                "This priority is the same with another association: \
-                 \"{holding_firewall_rule_group_association_id}\" . \
-                 Try again with another priority number"
+        message: Some(traced_message(
+            rslvr_message(
+                RSLVR_CODE_ASSOCIATION_PRIORITY_IN_USE,
+                &format!(
+                    "This priority is the same with another association: \
+                     \"{holding_firewall_rule_group_association_id}\" . \
+                     Try again with another priority number"
+                ),
             ),
+            trace_root,
         )),
     }
 }
@@ -2521,31 +2540,25 @@ pub fn firewall_rule_group_has_rule(firewall_rule_group_id: &str) -> ConflictExc
     }
 }
 
-/// The canonical spelling of a domain name written to a firewall domain list:
-/// the fully qualified name, rooted with exactly one trailing dot.
+/// The canonical spelling of a DNS name a DNS Firewall resource HOLDS: the
+/// fully qualified name, rooted with exactly one trailing dot and case folded.
 ///
-/// It is the ONE canonicalization this service already applies to the domain
-/// name a Resolver rule selects on ([`canonical_domain_name`]) — a domain name
-/// is written relative to the root, and the root is written as a trailing dot
-/// (RFC 1035 §3.1) — read here under the name the firewall slice uses it by:
-/// the fully qualified form is what a domain list HOLDS, so every reader of the
-/// list projects the rooted name whatever spelling the request wrote it in.
-/// Rooting is IDEMPOTENT, which is what makes the two spellings of one domain
-/// one entry rather than two ([`firewall_domain_key`]).
+/// Rooting is the ONE canonicalization this service already applies to the
+/// domain name a Resolver rule selects on ([`canonical_domain_name`]) — a domain
+/// name is written relative to the root, and the root is written as a trailing
+/// dot (RFC 1035 §3.1). Case folding is the other half of the same reduction:
+/// DNS labels are compared without regard to case (RFC 4343 §1), and the ASCII
+/// letters are the only ones that case folding applies to — a punycode/ACE
+/// label is already in the form it is compared in.
+///
+/// So a name written `Foo.test` and a name written `foo.test.` are ONE name:
+/// whichever a request spells, what is stored and what every reader projects is
+/// `foo.test.`, and writing the canonical form again changes nothing because
+/// this reduction is IDEMPOTENT. That is what makes two spellings of one domain
+/// one entry of a domain list rather than two, and what makes the name a rule
+/// reports for its block override the name the caller can compare against.
 pub fn firewall_domain_canonical(domain: &str) -> String {
-    canonical_domain_name(domain)
-}
-
-/// The key a firewall domain list decides membership on: the canonical name
-/// ([`firewall_domain_canonical`]), case folded.
-///
-/// DNS names are case-insensitive (RFC 4343 §1) and a name means the same
-/// domain whether or not the request rooted it, so `Example.com` and
-/// `example.com.` name ONE domain: adding the second to a list that already
-/// holds the first adds nothing, and removing either — however it was spelled —
-/// removes the entry.
-pub fn firewall_domain_key(domain: &str) -> String {
-    firewall_domain_canonical(domain).to_ascii_lowercase()
+    canonical_domain_name(domain).to_ascii_lowercase()
 }
 
 /// Whether `domain` satisfies the requirements

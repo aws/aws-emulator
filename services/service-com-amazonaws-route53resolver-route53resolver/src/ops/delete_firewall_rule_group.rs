@@ -153,8 +153,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ) -> Result<Self::Output, Self::Error> {
         // The engine is reachable from `&self` (constructor-injected); this
         // operation mints no ARN — it reports the one the stored record already
-        // carries — so it takes nothing from `ctx`.
-        let _ = ctx;
+        // carries — and what it takes from `ctx` is the trace its refusals are
+        // reported under.
+        let trace_root = crate::state::request_trace_root(&ctx.parts().headers);
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(
                 DeleteFirewallRuleGroupErrorModeled::InternalServiceErrorException(
@@ -209,11 +210,48 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // Nothing is stored under that id — including a second delete of the
-        // same group, which the first one already removed.
+        // same group, which the first one already removed. That is decided
+        // BEFORE the in-use conflict below, the same order the domain-list
+        // delete follows: an id this account holds no group under is reported
+        // missing whether or not an association names it.
+        if !store
+            .firewall_rule_groups
+            .contains_key(&input.firewall_rule_group_id)
+        {
+            return Err(
+                DeleteFirewallRuleGroupErrorModeled::ResourceNotFoundException(
+                    crate::state::firewall_rule_group_not_found(&input.firewall_rule_group_id),
+                )
+                .into(),
+            );
+        }
+
+        // A group a VPC is associated with is still filtering that VPC's DNS
+        // traffic, so the delete is refused with the sentence the service
+        // states for that fault
+        // (`crate::state::firewall_rule_group_associated_conflict`) and the
+        // group is left in place: the association goes first, which is the
+        // order the disassociate and this one are meant to be called in. Once
+        // no association names the group the very same call is served — so no
+        // association is ever left naming a group the store no longer holds.
+        let associated = store.firewall_rule_group_is_associated(&input.firewall_rule_group_id);
+        if associated {
+            return Err(DeleteFirewallRuleGroupErrorModeled::ConflictException(
+                crate::state::firewall_rule_group_associated_conflict(
+                    &input.firewall_rule_group_id,
+                    &trace_root,
+                ),
+            )
+            .into());
+        }
+
         let Some(record) = store
             .firewall_rule_groups
             .remove(&input.firewall_rule_group_id)
         else {
+            // The id resolved above, under this same lock, so nothing can have
+            // taken the record out in between; this arm reports the same body
+            // rather than assuming that away.
             return Err(
                 DeleteFirewallRuleGroupErrorModeled::ResourceNotFoundException(
                     crate::state::firewall_rule_group_not_found(&input.firewall_rule_group_id),

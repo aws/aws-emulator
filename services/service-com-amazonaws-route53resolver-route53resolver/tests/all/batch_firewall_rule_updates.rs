@@ -504,7 +504,9 @@ async fn an_entry_changes_only_the_members_it_carries() {
         ("Priority", json!(250)),
         ("Name", json!("member-rule-renamed")),
         ("BlockOverrideTtl", json!(120)),
-        ("BlockOverrideDomain", json!("other.example.test")),
+        // The override target is a DNS name the rule reports canonical, so the
+        // row carries the canonical spelling: the write is idempotent over it.
+        ("BlockOverrideDomain", json!("other.example.test.")),
         ("Qtype", json!("AAAA")),
         (
             "FirewallDomainRedirectionAction",

@@ -25,6 +25,12 @@ mod endpoint_subnet_references;
 mod endpoint_vpc_and_addresses;
 #[path = "all/firewall_association_error_bodies.rs"]
 mod firewall_association_error_bodies;
+#[path = "all/firewall_association_priority_band.rs"]
+mod firewall_association_priority_band;
+#[path = "all/firewall_block_option_refusals.rs"]
+mod firewall_block_option_refusals;
+#[path = "all/firewall_canonical_dns_names.rs"]
+mod firewall_canonical_dns_names;
 #[path = "all/firewall_config_listing.rs"]
 mod firewall_config_listing;
 #[path = "all/firewall_configs.rs"]
@@ -45,6 +51,8 @@ mod firewall_domain_lists;
 mod firewall_domains;
 #[path = "all/firewall_lifecycle_status_messages.rs"]
 mod firewall_lifecycle_status_messages;
+#[path = "all/firewall_resource_in_use.rs"]
+mod firewall_resource_in_use;
 #[path = "all/firewall_rule_deletion.rs"]
 mod firewall_rule_deletion;
 #[path = "all/firewall_rule_group_deletion.rs"]

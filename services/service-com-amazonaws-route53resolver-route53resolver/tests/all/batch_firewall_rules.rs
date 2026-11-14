@@ -406,7 +406,9 @@ async fn batch_created_rules_round_trip_and_repeat_idempotently() {
         ("Priority", json!(100)),
         ("Action", json!("BLOCK")),
         ("BlockResponse", json!("OVERRIDE")),
-        ("BlockOverrideDomain", json!("example.test")),
+        // The override target is a DNS name, so the rule reports it canonical —
+        // rooted — whatever spelling the entry wrote it in.
+        ("BlockOverrideDomain", json!("example.test.")),
         ("BlockOverrideDnsType", json!("CNAME")),
         ("BlockOverrideTtl", json!(60)),
         (

@@ -262,18 +262,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         // The requested domains, CANONICALIZED (a fully qualified name, rooted
-        // with one trailing dot — `crate::state::firewall_domain_canonical`),
+        // with one trailing dot and case folded —
+        // `crate::state::firewall_domain_canonical`),
         // in the order they arrived and without a repeat: a domain list holds a
-        // domain once however many times one request names it, and in the one
-        // spelling every reader of the list projects. Both capacities are the
+        // domain once however many times one request names it — and two
+        // spellings of one name are one domain — in the one spelling every
+        // reader of the list projects. Both capacities are the
         // length of the request's already-materialised list, which the limit
         // above bounds.
         let mut requested: Vec<String> = Vec::with_capacity(input.domains.len());
         let mut requested_keys: ::std::collections::HashSet<String> =
             ::std::collections::HashSet::with_capacity(input.domains.len());
         for domain in &input.domains {
-            if requested_keys.insert(crate::state::firewall_domain_key(domain)) {
-                requested.push(crate::state::firewall_domain_canonical(domain));
+            let canonical = crate::state::firewall_domain_canonical(domain);
+            if requested_keys.insert(canonical.clone()) {
+                requested.push(canonical);
             }
         }
 
@@ -281,21 +284,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // "ADD - Add the domains to the ones that are already in the domain
             // list": the union, with the domains already stored keeping their
             // places, so a caller paging the list only ever sees the new ones
-            // appended.
+            // appended. Both sides are canonical — the list holds nothing else
+            // — so membership is decided on the stored spelling itself.
             "ADD" => {
-                let mut domains = record.domains.clone();
-                let stored: ::std::collections::HashSet<String> = domains
+                let stored: ::std::collections::HashSet<&str> =
+                    record.domains.iter().map(String::as_str).collect();
+                let added: Vec<String> = requested
                     .iter()
-                    .map(|domain| crate::state::firewall_domain_key(domain))
+                    .filter(|domain| !stored.contains(domain.as_str()))
+                    .cloned()
                     .collect();
-                domains.extend(
-                    requested
-                        .iter()
-                        .filter(|domain| {
-                            !stored.contains(&crate::state::firewall_domain_key(domain))
-                        })
-                        .cloned(),
-                );
+                let mut domains = record.domains.clone();
+                domains.extend(added);
                 domains
             }
             // "REMOVE - Search the domain list for the domains and remove them
@@ -304,7 +304,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             "REMOVE" => record
                 .domains
                 .iter()
-                .filter(|domain| !requested_keys.contains(&crate::state::firewall_domain_key(domain)))
+                .filter(|domain| !requested_keys.contains(domain.as_str()))
                 .cloned()
                 .collect(),
             // "REPLACE - Update the domain list to exactly match the list that

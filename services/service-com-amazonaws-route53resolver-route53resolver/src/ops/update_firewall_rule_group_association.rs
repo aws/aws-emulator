@@ -164,9 +164,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         // The engine is reachable from `&self` (constructor-injected); this
-        // operation mints no ARN — the record keeps the one it was made with — so
-        // it takes nothing from `ctx`.
-        let _ = ctx;
+        // operation mints no ARN — the record keeps the one it was made with —
+        // and what it takes from `ctx` is the trace its refusals are reported
+        // under.
+        let trace_root = crate::state::request_trace_root(&ctx.parts().headers);
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(
                 UpdateFirewallRuleGroupAssociationErrorModeled::InternalServiceErrorException(
@@ -195,22 +196,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // "The allowed values for Priority are between 100 and 9900", the same
-        // bounds the associate enforces: "you can change the priority setting
+        // band the associate enforces: "you can change the priority setting
         // for a rule group association after you create it", not the values it
-        // may take.
+        // may take (`crate::state::association_priority_fault`).
         if let Some(priority) = input.priority {
-            if !crate::state::ASSOCIATION_PRIORITY_RANGE.contains(&priority) {
+            if let Some(refusal) = crate::state::association_priority_fault(priority) {
                 return Err(
-                    UpdateFirewallRuleGroupAssociationErrorModeled::ValidationException(
-                        ValidationException {
-                            message: Some(format!(
-                                "Priority {priority} is outside the allowed values, which are between {} and {}",
-                                crate::state::ASSOCIATION_PRIORITY_RANGE.start(),
-                                crate::state::ASSOCIATION_PRIORITY_RANGE.end()
-                            )),
-                        },
-                    )
-                    .into(),
+                    UpdateFirewallRuleGroupAssociationErrorModeled::ValidationException(refusal)
+                        .into(),
                 );
             }
         }
@@ -254,6 +247,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 UpdateFirewallRuleGroupAssociationErrorModeled::ResourceNotFoundException(
                     crate::state::firewall_rule_group_association_not_found(
                         &input.firewall_rule_group_association_id,
+                        &trace_root,
                     ),
                 )
                 .into(),
@@ -284,7 +278,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         {
             return Err(
                 UpdateFirewallRuleGroupAssociationErrorModeled::ValidationException(
-                    crate::state::mutation_protection_forbids_change(),
+                    crate::state::mutation_protection_forbids_change(&trace_root),
                 )
                 .into(),
             );
@@ -304,7 +298,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             if let Some(holder_id) = holder {
                 return Err(
                     UpdateFirewallRuleGroupAssociationErrorModeled::ValidationException(
-                        crate::state::association_priority_in_use(&holder_id),
+                        crate::state::association_priority_in_use(&holder_id, &trace_root),
                     )
                     .into(),
                 );
@@ -319,6 +313,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 UpdateFirewallRuleGroupAssociationErrorModeled::ResourceNotFoundException(
                     crate::state::firewall_rule_group_association_not_found(
                         &input.firewall_rule_group_association_id,
+                        &trace_root,
                     ),
                 )
                 .into(),

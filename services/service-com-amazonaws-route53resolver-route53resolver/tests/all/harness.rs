@@ -16,10 +16,12 @@ use service_com_amazonaws_ec2_amazonec2 as ec2;
 use service_com_amazonaws_firehose_firehose_20150804 as firehose;
 use service_com_amazonaws_kinesis_kinesis_20131202 as kinesis;
 use service_com_amazonaws_route53profiles_route53profiles as profiles;
+use service_com_amazonaws_route53resolver_route53resolver::state::FIREWALL_RULE_GROUP_ASSOCIATION_STATUS_COMPLETE;
 use service_com_amazonaws_route53resolver_route53resolver::EmulatedService;
 use service_com_amazonaws_s3_amazons3 as s3;
 use smithy_server_runtime::MultiServiceRouter;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// The region every request below is signed for; it is where the ARNs the
 /// service mints must be rooted.
@@ -691,6 +693,53 @@ pub fn traced_message(message: &str) -> Option<(&str, &str)> {
     let (stated, clause) = message.rsplit_once(" Trace Id: ")?;
     let trace = clause.strip_prefix('"')?.strip_suffix('"')?;
     service_common::xray_trace::is_trace_id(trace).then_some((stated, trace))
+}
+
+/// The tracing header naming chain `index`, and the `Root` a refusal of a
+/// request carrying it has to be reported under — a trace id in the form X-Ray
+/// gives one (`1-<8 hex>-<24 hex>`), so a suite that asserts on the clause
+/// chooses the chain itself instead of writing one out.
+pub fn tracing_chain(index: u32) -> (String, String) {
+    let root = format!("1-6b100000-{index:024x}");
+    (format!("Root={root};Sampled=0"), root)
+}
+
+/// How long [`settled_association`] waits before it looks again.
+const POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// How long [`settled_association`] keeps looking before it gives up: generous,
+/// so how fast the host runs never decides the outcome.
+const SETTLE_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Look at the DNS Firewall rule-group association `id` again until the change
+/// in flight has settled, so a case that needs a settled one reads a settled
+/// one.
+///
+/// The CONDITION is what is waited for — the status the association REPORTS —
+/// and never a span of the clock, so a loaded or a faster host changes nothing
+/// about the outcome.
+pub async fn settled_association(router: &MultiServiceRouter, id: &str, case: &str) {
+    let deadline = Instant::now() + SETTLE_DEADLINE;
+    loop {
+        let read = ok(
+            router,
+            "GetFirewallRuleGroupAssociation",
+            serde_json::json!({ "FirewallRuleGroupAssociationId": id }),
+        )
+        .await;
+        let association = read
+            .get("FirewallRuleGroupAssociation")
+            .unwrap_or_else(|| panic!("case {case:?}: the read answers an association, got {read}"));
+        let status = string_member(association, "Status");
+        if status == FIREWALL_RULE_GROUP_ASSOCIATION_STATUS_COMPLETE {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "case {case:?}: the association must settle, it still reports {status:?}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
 }
 
 /// Call an operation that must succeed, and return its body.

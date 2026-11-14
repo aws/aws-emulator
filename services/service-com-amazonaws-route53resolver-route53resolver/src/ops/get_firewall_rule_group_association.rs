@@ -144,8 +144,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         // The engine is reachable from `&self` (constructor-injected); this pure
-        // read reports the record as it stands, so it takes nothing from `ctx`.
-        let _ = ctx;
+        // read reports the record as it stands, and what it takes from `ctx` is
+        // the trace its refusal is reported under.
+        let trace_root = crate::state::request_trace_root(&ctx.parts().headers);
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(
                 GetFirewallRuleGroupAssociationErrorModeled::InternalServiceErrorException(
@@ -170,6 +171,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 GetFirewallRuleGroupAssociationErrorModeled::ResourceNotFoundException(
                     crate::state::firewall_rule_group_association_not_found(
                         &input.firewall_rule_group_association_id,
+                        &trace_root,
                     ),
                 )
                 .into(),

@@ -218,20 +218,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // "The allowed values for Priority are between 100 and 9900": the model
-        // puts no range on `Priority`, so the bounds its doc states are enforced
-        // here.
-        if !crate::state::ASSOCIATION_PRIORITY_RANGE.contains(&input.priority) {
-            return Err(AssociateFirewallRuleGroupErrorModeled::ValidationException(
-                ValidationException {
-                    message: Some(format!(
-                        "Priority {} is outside the allowed values, which are between {} and {}",
-                        input.priority,
-                        crate::state::ASSOCIATION_PRIORITY_RANGE.start(),
-                        crate::state::ASSOCIATION_PRIORITY_RANGE.end()
-                    )),
-                },
-            )
-            .into());
+        // puts no range on `Priority`, so the band its doc states is enforced
+        // here, with the sentence the service states for the value that fell
+        // outside it (`crate::state::association_priority_fault`).
+        if let Some(refusal) = crate::state::association_priority_fault(input.priority) {
+            return Err(
+                AssociateFirewallRuleGroupErrorModeled::ValidationException(refusal).into(),
+            );
         }
 
         let mutation_protection = input
@@ -256,6 +249,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let now = ::std::time::Instant::now();
         let region = crate::state::request_region(&ctx.parts().headers);
+        let trace_root = crate::state::request_trace_root(&ctx.parts().headers);
         let timestamp = crate::state::now_rfc3339();
 
         // This service's own resources are resolved FIRST, under a lock that is
@@ -391,7 +385,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ) {
             let holder_id = holder.id.clone();
             return Err(AssociateFirewallRuleGroupErrorModeled::ValidationException(
-                crate::state::association_priority_in_use(&holder_id),
+                crate::state::association_priority_in_use(&holder_id, &trace_root),
             )
             .into());
         }
