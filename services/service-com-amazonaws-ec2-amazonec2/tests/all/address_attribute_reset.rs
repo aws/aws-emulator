@@ -36,7 +36,7 @@ use std::time::Duration;
 use service_com_amazonaws_ec2_amazonec2::state::{
     ADDRESS_ATTRIBUTE_DOMAIN_NAME, AddressPtrRecord, ComAmazonawsEc2Amazonec2State as Ec2State,
     INVALID_ALLOCATION_ID_MALFORMED, INVALID_ALLOCATION_ID_NOT_FOUND, INVALID_PAGINATION_TOKEN,
-    PENDING_REQUEST_ALREADY_EXISTS, PTR_UPDATE_STATUS_PENDING, TRANSITION_DELAY,
+    PENDING_REQUEST_ALREADY_EXISTS, PTR_UPDATE_STATUS_PENDING,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -46,10 +46,16 @@ use super::wire::{child, child_text, document, set_items};
 /// The Region every call here is signed for.
 const REGION: &str = "us-west-2";
 
-/// Long enough past [`TRANSITION_DELAY`] that an update the clock owes a PTR record is
-/// certainly due, with a margin so a slow machine cannot read the state before it is.
-fn past_the_update() -> Duration {
-    TRANSITION_DELAY + Duration::from_millis(250)
+/// Long enough past the span the clock owes a PTR record's update that it is certainly
+/// overdue: the deadline the polls below give up at, generous because what is under test is
+/// the state the record reaches rather than how fast it reaches it.
+fn update_deadline() -> Duration {
+    Duration::from_secs(60)
+}
+
+/// How long a poll below waits between two reads of an address's attribute.
+fn poll_interval() -> Duration {
+    Duration::from_millis(50)
 }
 
 /// A `(key, value)` request parameter.
@@ -102,6 +108,56 @@ async fn reset(
     ];
     params.extend_from_slice(extra);
     call(router, REGION, "ResetAddressAttribute", &params).await
+}
+
+/// Give `allocation_id` a reverse DNS record in effect, so a reset of it has one to take
+/// away.
+///
+/// A reset acts on the record the address CARRIES, and an address that was never given one
+/// has none to reset — so every row below that resets an address sets one first, through the
+/// OTHER writer of this attribute (`ModifyAddressAttribute`), and waits for that update to
+/// come due: one record carries at most one outstanding request at a time.
+async fn give_record(router: &MultiServiceRouter, case: &str, allocation_id: &str) {
+    let (status, body) = call(
+        router,
+        REGION,
+        "ModifyAddressAttribute",
+        &[
+            p("AllocationId", allocation_id),
+            p("DomainName", "mail.example.com"),
+        ],
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "case {case:?}: expected HTTP 200 from ModifyAddressAttribute, got {status} with \
+         body {body}"
+    );
+    wait_until_applied(router, case, allocation_id).await;
+}
+
+/// Wait until `allocation_id` carries no outstanding update any more — the state the clock
+/// owes a record a write has just been started on.
+///
+/// Polls for that STATE rather than sleeping for the span the clock owes it, so a loaded
+/// machine cannot read the record before the move has been applied.
+async fn wait_until_applied(router: &MultiServiceRouter, case: &str, allocation_id: &str) {
+    let deadline = tokio::time::Instant::now() + update_deadline();
+    loop {
+        let reported = described_one(router, case, allocation_id).await;
+        let outstanding = reported
+            .as_ref()
+            .and_then(|attribute| attribute.update_status.clone());
+        if outstanding.is_none() {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "case {case:?}: the update on {allocation_id} must come due, last read \
+             {reported:?}"
+        );
+        tokio::time::sleep(poll_interval()).await;
+    }
 }
 
 /// The attribute carried by `node` — the `<address>` of a reset response, or one `<item>` of
@@ -183,6 +239,7 @@ async fn reset_starts_an_outstanding_update_on_the_named_address() {
     ];
     for (case, index) in rows {
         let (allocation_id, public_ip) = held[index].clone();
+        give_record(&router, case, &allocation_id).await;
         let (status, body) = reset(&router, &allocation_id, &[]).await;
         assert_eq!(
             status, 200,
@@ -195,8 +252,8 @@ async fn reset_starts_an_outstanding_update_on_the_named_address() {
             Attribute {
                 public_ip: Some(public_ip.clone()),
                 allocation_id: Some(allocation_id.clone()),
-                // The address was never given a record, and the reset names no new one, so
-                // the update it started carries no value and there is no record in effect.
+                // The address held a record, and the reset names no new one, so the update
+                // it started carries no value and there is no record in effect.
                 ptr_record: None,
                 update_status: Some(PTR_UPDATE_STATUS_PENDING.to_string()),
                 update_value: None,
@@ -218,7 +275,7 @@ async fn reset_starts_an_outstanding_update_on_the_named_address() {
             vec![Attribute {
                 public_ip: Some(public_ip),
                 allocation_id: Some(allocation_id.clone()),
-                // The address was never given a record, and the reset names no new one.
+                // The address held a record, and the reset names no new one.
                 ptr_record: None,
                 update_status: Some(PTR_UPDATE_STATUS_PENDING.to_string()),
                 update_value: None,
@@ -228,15 +285,22 @@ async fn reset_starts_an_outstanding_update_on_the_named_address() {
         );
 
         // The update was owed at its instant whether or not anybody called, so once it has
-        // passed the address carries neither the update nor a record — and an address with
-        // no attribute at all is reported no row.
-        tokio::time::sleep(past_the_update()).await;
-        let settled = described_one(&router, case, &allocation_id).await;
-        assert_eq!(
-            settled, None,
-            "case {case:?}: expected the update to have been applied, leaving the address \
-             with no attribute to report, got {settled:?}"
-        );
+        // been applied the address carries neither the update nor a record — and an address
+        // with no attribute at all is reported no row. Read until that holds rather than once
+        // after a span of this test's choosing.
+        let deadline = tokio::time::Instant::now() + update_deadline();
+        loop {
+            let settled = described_one(&router, case, &allocation_id).await;
+            if settled.is_none() {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "case {case:?}: expected the update to have been applied, leaving the \
+                 address with no attribute to report, last read {settled:?}"
+            );
+            tokio::time::sleep(poll_interval()).await;
+        }
     }
 }
 
@@ -248,6 +312,8 @@ async fn a_further_reset_while_one_is_outstanding_is_refused() {
     let router = emulator();
     let (first, _) = allocate_one(&router, "the address being reset").await;
     let (second, _) = allocate_one(&router, "another address of the account").await;
+    give_record(&router, "the address being reset", &first).await;
+    give_record(&router, "another address of the account", &second).await;
 
     let (status, body) = reset(&router, &first, &[]).await;
     assert_eq!(
@@ -296,8 +362,10 @@ async fn a_further_reset_while_one_is_outstanding_is_refused() {
         "another address must carry its own outstanding update, got {answered:?}"
     );
 
-    // Once the outstanding update has come due the record takes a new request again.
-    tokio::time::sleep(past_the_update()).await;
+    // Once the outstanding update has come due the record takes a new request again — given
+    // a record to take away, the first one having been taken away by the reset above.
+    wait_until_applied(&router, "the address being reset", &first).await;
+    give_record(&router, "the address being reset again", &first).await;
     let (status, body) = reset(&router, &first, &[]).await;
     assert_eq!(
         status, 200,
@@ -390,14 +458,18 @@ async fn reset_refuses_an_id_the_account_holds_no_address_for() {
     }
 
     // Nothing was stored for any of them: the one address the account still holds carries no
-    // record and no outstanding update, so the report answers no row for it and a reset of it
-    // is accepted.
+    // outstanding update, so the report answers no row for it — and once it is given a record
+    // a reset of it is accepted.
     let reported = described_one(&router, "after the refusals", &held).await;
     assert_eq!(
-        reported, None,
-        "a refused request must store nothing, so the address must carry no attribute, \
-         got {reported:?}"
+        reported
+            .as_ref()
+            .and_then(|attribute| attribute.update_status.clone()),
+        None,
+        "a refused request must store nothing, so the address must carry no outstanding \
+         update, got {reported:?}"
     );
+    give_record(&router, "the held address", &held).await;
     let (status, body) = reset(&router, &held, &[]).await;
     assert_eq!(
         status, 200,
@@ -450,7 +522,8 @@ async fn reset_refuses_an_attribute_the_address_does_not_have() {
     }
 
     // The attribute is the only thing that stopped the request: named as the model spells
-    // it, the same request works.
+    // it, the same request works on an address that carries a record.
+    give_record(&router, "the stored address", &allocation_id).await;
     let (status, body) = reset(&router, &allocation_id, &[]).await;
     assert_eq!(
         status, 200,
@@ -466,6 +539,11 @@ async fn a_dry_run_starts_nothing() {
     let router = emulator();
     let (first, _) = allocate_one(&router, "the address a dry run names").await;
     let (second, _) = allocate_one(&router, "another address of the account").await;
+    // A dry run asks whether the request WOULD have succeeded, so both addresses carry a
+    // record for it to take away: a reset of an address that carries none would be refused
+    // for that reason instead.
+    give_record(&router, "the address a dry run names", &first).await;
+    give_record(&router, "another address of the account", &second).await;
 
     // Rows differing along which address the dry run names and how many have already been
     // made: none of them may start an update on any address.

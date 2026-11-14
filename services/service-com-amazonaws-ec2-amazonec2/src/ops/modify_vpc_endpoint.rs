@@ -357,7 +357,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let Some(endpoint) = store.vpc_endpoints.get(endpoint_id).cloned() else {
             return Err(state::id_not_found(
                 state::INVALID_VPC_ENDPOINT_ID_NOT_FOUND,
-                "VpcEndpoint Id",
+                // The resource as the sentence a recorded refusal of THIS operation words it
+                // with names it: three words, `Vpc Endpoint Id`.
+                "Vpc Endpoint Id",
                 endpoint_id,
             ));
         };

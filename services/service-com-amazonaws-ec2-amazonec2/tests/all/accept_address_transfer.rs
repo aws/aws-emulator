@@ -30,8 +30,7 @@ use aws_smithy_types::DateTime;
 use service_com_amazonaws_ec2_amazonec2 as ec2;
 use service_com_amazonaws_ec2_amazonec2::state::{
     ADDRESS_TRANSFER_ACCEPTED_VISIBILITY, ADDRESS_TRANSFER_OFFER_WINDOW,
-    ADDRESS_TRANSFER_STATUS_ACCEPTED, ADDRESS_TRANSFER_STATUS_DISABLED,
-    ADDRESS_TRANSFER_STATUS_PENDING,
+    ADDRESS_TRANSFER_STATUS_ACCEPTED, ADDRESS_TRANSFER_STATUS_PENDING,
 };
 use smithy_server_runtime::MultiServiceRouter;
 use std::sync::Arc;
@@ -507,10 +506,11 @@ async fn accept_refuses_an_address_nothing_has_on_offer() {
         );
 
         // A refusal stored nothing: the standing offer is still standing, the withdrawn one
-        // is still withdrawn, and the taken one is still taken.
+        // is still gone — withdrawing an offer leaves the account no transfer of that
+        // address to report — and the taken one is still taken.
         for (allocation_id, expected) in [
             (&standing_id, ADDRESS_TRANSFER_STATUS_PENDING),
-            (&withdrawn_id, ADDRESS_TRANSFER_STATUS_DISABLED),
+            (&withdrawn_id, ""),
             (&taken_id, ADDRESS_TRANSFER_STATUS_ACCEPTED),
         ] {
             let status = reported_status(&router, case, allocation_id).await;

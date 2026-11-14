@@ -214,6 +214,10 @@ async fn create_endpoint(
         param("VpcEndpointType", endpoint_type),
     ];
     if endpoint_type == "Interface" {
+        // A VPC you create has DNS hostnames off, and an interface endpoint's private hosted
+        // zone needs them on — these rows are about the DELETE, so they ask for no private
+        // hosted zone rather than turning the VPC's attributes on.
+        params.push(param("PrivateDnsEnabled", "false"));
         params.push(param("SubnetId.1", &built.subnet_id));
     }
     let body = ok(case, router, "CreateVpcEndpoint", &params).await;
@@ -597,6 +601,9 @@ async fn deleting_an_interface_endpoint_takes_its_network_interfaces_with_it() {
             param("VpcId", &vpc_id),
             param("ServiceName", "com.amazonaws.us-east-1.ssm"),
             param("VpcEndpointType", "Interface"),
+            // This row is about the interfaces a delete takes away, so it asks for no
+            // private hosted zone: the VPC it creates has DNS hostnames off.
+            param("PrivateDnsEnabled", "false"),
         ];
         let subnet_references: Vec<&str> = subnet_ids.iter().map(String::as_str).collect();
         params.extend(indexed("SubnetId", &subnet_references));

@@ -138,12 +138,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // `ctx` carries request metadata only; this operation reads none of it — every
-        // resource it acts on is named by id. The store is reached through the engine held
-        // on `self`.
-        let _ = ctx;
+        // `ctx` carries request metadata only; the Region of its credential scope is what
+        // the published prefix-list catalog is read for. The store is reached through the
+        // engine held on `self`.
         use crate::scaffolded::Scaffolded;
         use crate::state;
+        let region = state::request_region(ctx.parts());
 
         // The request's own form first: an id that is not an id of its kind at all is
         // refused as malformed, so "not an id of this kind" never reads as "no such
@@ -156,12 +156,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &input.prefix_list_id,
             state::INVALID_PREFIX_LIST_ID_MALFORMED,
         )?;
-        // The prefix list is checked for FORM only, deliberately: "the prefix list that is
-        // used for destination matches" (`$PrefixListId`) may be one the account manages or
-        // one AWS publishes (an AWS-managed service prefix list, which no account creates),
-        // and this emulator holds no managed-prefix-list store to resolve either against. A
-        // well-formed id is therefore accepted and recorded as the route's destination,
-        // rather than refused as not found on the strength of a store that does not exist.
         if let Some(attachment_id) = input.transit_gateway_attachment_id.as_deref() {
             state::require_well_formed_transit_gateway_attachment_id(attachment_id)?;
         }
@@ -212,6 +206,37 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         {
             return Err(state::invalid_transit_gateway_route_table_id_not_found(
                 &input.transit_gateway_route_table_id,
+            ));
+        }
+
+        // "The ID of the prefix list that is used for destination matches"
+        // (`$PrefixListId`): a reference routes exactly the address ranges that list holds,
+        // so a value naming no prefix list this caller can see routes nothing and could
+        // never route anything — it is refused with the prefix list's own not-found class
+        // rather than stored as a destination that resolves to nothing. Which lists a caller
+        // can see is the SAME derivation `DescribeManagedPrefixLists` reports — "your managed
+        // prefix lists and any Amazon Web Services-managed prefix lists": the lists this
+        // account created and the ones the Region publishes for its services — so one id is
+        // visible to this create exactly when it is visible to a report of it.
+        let visible_prefix_list = store
+            .managed_prefix_lists
+            .contains_key(&input.prefix_list_id)
+            || state::managed_prefix_lists_in_region(&region)
+                .iter()
+                .any(|published| published.prefix_list_id == input.prefix_list_id);
+        if !visible_prefix_list {
+            return Err(Scaffolded::service_error(
+                state::INVALID_PREFIX_LIST_ID_NOT_FOUND,
+                400,
+                // The sentence this operation words that code with, which names the prefix
+                // list in parentheses rather than quoting an id — the wording of a recorded
+                // refusal of THIS operation, not of the prefix list surface's own
+                // ([`crate::state::invalid_prefix_list_id_not_found`], whose sentence other
+                // operations are recorded answering).
+                format!(
+                    "The prefix list ({prefix_list_id}) does not exist.",
+                    prefix_list_id = input.prefix_list_id,
+                ),
             ));
         }
 

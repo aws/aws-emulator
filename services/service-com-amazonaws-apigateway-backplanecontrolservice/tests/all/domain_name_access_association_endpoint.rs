@@ -152,6 +152,10 @@ async fn execute_api_endpoint(gateway: &Gateway, network: &Network, case: &str) 
             ("ServiceName", &format!("com.amazonaws.{REGION}.execute-api")),
             ("VpcEndpointType", "Interface"),
             ("SubnetId.1", &network.subnet),
+            // A VPC you create has DNS hostnames off, which a private hosted zone needs; this
+            // endpoint is only what the private domain name is reached through, so it asks for
+            // no private DNS.
+            ("PrivateDnsEnabled", "false"),
         ],
         case,
     )

@@ -428,6 +428,10 @@ async fn create_interface_endpoint(router: &MultiServiceRouter) -> String {
             param("VpcId", &vpc_id),
             param("VpcEndpointType", "Interface"),
             param("ServiceName", &format!("com.amazonaws.{REGION}.s3")),
+            // This endpoint is only something for the association report to be about, so it
+            // asks for no private hosted zone: a VPC you create has DNS hostnames off, which
+            // is what an endpoint associating one needs.
+            param("PrivateDnsEnabled", "false"),
         ],
     )
     .await;

@@ -277,8 +277,34 @@ async fn launch_from(router: &MultiServiceRouter, image_id: &str) -> String {
     )
     .await;
     assert_eq!(status, 200, "RunInstances must succeed, got {status}: {body}");
-    element(&body, "instanceId")
-        .unwrap_or_else(|| panic!("RunInstances must report the instance it minted: {body}"))
+    let instance_id = element(&body, "instanceId")
+        .unwrap_or_else(|| panic!("RunInstances must report the instance it minted: {body}"));
+    // "Replaces the EBS-backed root volume for a `running` instance"
+    // (`CreateReplaceRootVolumeTask`), and a launch leaves the instance `pending` until the
+    // clock carries it on — so every row waits for the state the operation needs rather than
+    // for a span of its own.
+    wait_until_running(router, &instance_id).await;
+    instance_id
+}
+
+/// Wait until `DescribeInstances` reports `instance_id` as `running`.
+///
+/// Polls for the STATE rather than sleeping for the span the clock owes it, so a loaded
+/// machine cannot read the instance before the move has been applied; the deadline is
+/// generous, because what is under test is the operation rather than how fast the clock runs.
+async fn wait_until_running(router: &MultiServiceRouter, instance_id: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let state = super::ec2_query::described_instance_state(router, REGION, instance_id).await;
+        if state == "running" {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the instance {instance_id} must reach the running state, last read {state:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 /// Launch one instance from an AMI this account holds no image for — the launch path does

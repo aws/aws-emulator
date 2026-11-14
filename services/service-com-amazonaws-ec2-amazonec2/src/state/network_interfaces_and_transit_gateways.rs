@@ -1136,28 +1136,32 @@ impl ComAmazonawsEc2Amazonec2State {
         allocation_id.to_string()
     }
 
-    /// Withdraw the transfer offer on `allocation_id`, answering whether there was a
-    /// `pending` one to withdraw.
+    /// Withdraw the transfer offer on `allocation_id`, answering the offer as it was
+    /// withdrawn — or `None` when there was no `pending` one to withdraw.
     ///
     /// "Disables Elastic IP address transfer" (`DisableAddressTransfer`): only a `pending`
     /// offer can be withdrawn — an accepted transfer has already moved the address, and a
-    /// disabled one is already withdrawn — so this answers `false` for every other state
-    /// and the caller refuses the request with
-    /// [`address_transfer_not_available`]. The record keeps the expiration instant it was
-    /// offered with: withdrawing the offer does not move when the offer would have run out,
-    /// which is also when the record stops being reported.
-    pub fn withdraw_address_transfer(&mut self, allocation_id: &str) -> bool {
-        let Some(record) = self.address_transfers.get_mut(allocation_id) else {
-            return false;
-        };
+    /// disabled one is already withdrawn — so this answers `None` for every other state and
+    /// the caller refuses the request with [`address_transfer_not_available`].
+    ///
+    /// The withdrawn offer is REMOVED from the store: "describes an Elastic IP address
+    /// transfer" (`DescribeAddressTransfers`) reports the transfers of the account, and an
+    /// offer the account has taken back is no longer one of them — it stands for nothing, has
+    /// no account left to accept it and no expiry left to run out. So the record goes with the
+    /// call that withdraws it, and the answer this hands back, which carries the
+    /// [`ADDRESS_TRANSFER_STATUS_DISABLED`] word the call reports, is the LAST view of it.
+    /// An address whose offer was withdrawn can be offered again, which
+    /// [`Self::offer_address_transfer`] records as the fresh offer it is.
+    pub fn withdraw_address_transfer(&mut self, allocation_id: &str) -> Option<AddressTransfer> {
+        let record = self.address_transfers.get(allocation_id)?;
         if record.transfer.address_transfer_status.as_deref()
             != Some(ADDRESS_TRANSFER_STATUS_PENDING)
         {
-            return false;
+            return None;
         }
-        record.transfer.address_transfer_status =
-            Some(ADDRESS_TRANSFER_STATUS_DISABLED.to_string());
-        true
+        let mut withdrawn = self.address_transfers.remove(allocation_id)?.transfer;
+        withdrawn.address_transfer_status = Some(ADDRESS_TRANSFER_STATUS_DISABLED.to_string());
+        Some(withdrawn)
     }
 
     /// The allocation id of the stored transfer that has `public_ip` ON OFFER, or `None`

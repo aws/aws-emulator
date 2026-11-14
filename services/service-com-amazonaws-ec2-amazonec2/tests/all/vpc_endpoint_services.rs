@@ -1258,6 +1258,11 @@ async fn a_created_endpoints_dns_names_sit_under_the_reported_base_name() {
             param("ServiceName", &service_name),
             param("VpcEndpointType", "Interface"),
             param("SubnetId.1", &subnet_id),
+            // This row is about the names the endpoint answers ON, so it asks for no private
+            // hosted zone: the service's own public name is served by that zone rather than
+            // sitting under the endpoint's base name, and a VPC you create has the DNS
+            // hostnames such a zone needs turned off.
+            param("PrivateDnsEnabled", "false"),
         ],
     )
     .await;

@@ -923,6 +923,10 @@ async fn a_deleted_vpc_endpoint_stops_resolving() {
             param("VpcId", &vpc_id),
             param("ServiceName", service_name),
             param("VpcEndpointType", endpoint_type),
+            // These rows are about an id that stops resolving once its endpoint is deleted,
+            // so they ask for no private hosted zone: a VPC you create has DNS hostnames off,
+            // which is what an endpoint associating one needs.
+            param("PrivateDnsEnabled", "false"),
         ];
         if in_subnet {
             params.push(param("SubnetId.1", &subnet_id));

@@ -1289,6 +1289,21 @@ impl ComAmazonawsEc2Amazonec2State {
             .map(|(route_server_id, _)| route_server_id.as_str())
     }
 
+    /// The VPC the route server `route_server_id` is already associated with, or `None` when
+    /// it holds no association at all.
+    ///
+    /// The mirror of [`Self::route_server_association_of_vpc`], and the ONE place that
+    /// question is answered: an associate asks it to refuse a second VPC for one route
+    /// server, and an operation that has to know which VPC a route server serves — the VPC
+    /// its endpoints' subnets have to belong to — reads it here rather than walking the map
+    /// itself.
+    pub fn vpc_route_server_is_associated_with(&self, route_server_id: &str) -> Option<&str> {
+        self.route_server_associations
+            .keys()
+            .find(|(associated_server, _)| associated_server == route_server_id)
+            .map(|(_, vpc_id)| vpc_id.as_str())
+    }
+
     /// Associate `route_server_id` with `vpc_id` from `now`, and answer the association as
     /// of that instant.
     ///

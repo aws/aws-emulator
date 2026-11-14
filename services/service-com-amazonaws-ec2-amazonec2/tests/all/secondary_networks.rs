@@ -1553,8 +1553,9 @@ async fn deleting_an_id_no_network_has_is_refused_and_changes_nothing() {
     );
 }
 
-/// A repeat of a delete reports the same deletion and does NOT restart its clock: a repeat
-/// made after the move fell due still answers `delete-complete`.
+/// A repeat of a delete is REFUSED — the network is already on its way out, which is no
+/// state a delete runs from — and the deletion the first call started keeps its own clock:
+/// the network reaches `delete-complete` at the instant that first delete made due.
 #[tokio::test]
 async fn repeating_a_delete_reports_the_same_deletion_without_restarting_its_clock() {
     let router = emulator();
@@ -1574,33 +1575,35 @@ async fn repeating_a_delete_reports_the_same_deletion_without_restarting_its_clo
 
     let (status, immediate_repeat) = delete(&router, &params).await;
     assert_eq!(
-        status, 200,
-        "immediate repeat: expected HTTP 200, got {status} with body {immediate_repeat}"
+        status, 400,
+        "immediate repeat: expected HTTP 400, got {status} with body {immediate_repeat}"
     );
     assert_eq!(
-        elements(&immediate_repeat, "state"),
-        elements(&first, "state"),
-        "immediate repeat: expected the deletion already under way, got {immediate_repeat}"
+        error_code(&immediate_repeat),
+        "InvalidState",
+        "immediate repeat: expected the wrong-state refusal, got {immediate_repeat}"
     );
+    let (_, while_deleting) = describe(&router, &indexed("SecondaryNetworkId", &[&id])).await;
     assert_eq!(
-        element(&immediate_repeat, "secondaryNetworkId").as_deref(),
-        Some(id.as_str()),
-        "immediate repeat: expected the same network, got {immediate_repeat}"
+        elements(&while_deleting, "state"),
+        state_pair("delete-in-progress", "disassociating"),
+        "immediate repeat: a refused repeat leaves the deletion as it was, got \
+         {while_deleting}"
     );
 
     past_the_transition().await;
 
     // The repeat AFTER the move fell due is what shows the clock was never restarted: a
-    // restarted deletion would answer `delete-in-progress` again.
+    // restarted deletion would still read `delete-in-progress` here.
     let (status, late_repeat) = delete(&router, &params).await;
     assert_eq!(
-        status, 200,
-        "late repeat: expected HTTP 200, got {status} with body {late_repeat}"
+        status, 400,
+        "late repeat: expected HTTP 400, got {status} with body {late_repeat}"
     );
     assert_eq!(
-        elements(&late_repeat, "state"),
-        state_pair("delete-complete", "disassociated"),
-        "late repeat: a repeat must not restart the deletion's clock, got {late_repeat}"
+        error_code(&late_repeat),
+        "InvalidState",
+        "late repeat: expected the wrong-state refusal, got {late_repeat}"
     );
 
     let (_, read) = describe(&router, &indexed("SecondaryNetworkId", &[&id])).await;

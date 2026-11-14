@@ -18,9 +18,10 @@
 //! 3. it is a REPORT: two identical calls answer the same thing, so no later caller can
 //!    tell a read was made;
 //! 4. the status it reports comes from state: `DisableAddressTransfer` withdraws a `pending`
-//!    offer and the next read says `disabled`, a later `EnableAddressTransfer` starts a new
-//!    `pending` one, and a request the transfer surface has nothing to act on is refused
-//!    with EC2's own error code and stores nothing.
+//!    offer — reporting it `disabled` and leaving the account with no transfer for that
+//!    address at all — a later `EnableAddressTransfer` starts a new `pending` one, and a
+//!    request the transfer surface has nothing to act on is refused with EC2's own error
+//!    code and stores nothing.
 //!
 //! Each table row is a distinct input along what the rule generalises over — how many
 //! transfers, which ids narrow the answer, which page size, which status the record is in,
@@ -531,9 +532,10 @@ async fn two_identical_reads_answer_the_same_thing() {
 // Rule 4 — the reported status comes from state
 // ---------------------------------------------------------------------------
 
-/// `DisableAddressTransfer` withdraws a `pending` offer, so the next read reports
-/// `disabled`; a second disable has nothing to act on and is refused; a later enable starts
-/// a fresh `pending` offer on the same address.
+/// `DisableAddressTransfer` withdraws a `pending` offer: the call answers it `disabled` and
+/// the account has no transfer for that address left to report; a second disable has nothing
+/// to act on and is refused; a later enable starts a fresh `pending` offer on the same
+/// address.
 #[tokio::test]
 async fn disable_withdraws_the_offer_and_enable_starts_a_new_one() {
     let router = emulator();
@@ -552,16 +554,20 @@ async fn disable_withdraws_the_offer_and_enable_starts_a_new_one() {
         "the disable answers the withdrawn offer, got {body}"
     );
 
-    let (_, body) = describe(&router, &named).await;
-    assert_eq!(
-        element(&body, "addressTransferStatus").as_deref(),
-        Some(ADDRESS_TRANSFER_STATUS_DISABLED),
-        "the read reports the withdrawn offer from state, got {body}"
-    );
     assert_eq!(
         element(&body, "publicIp").as_deref(),
         Some(public_ip.as_str()),
-        "the withdrawn offer still names the address it was started for, got {body}"
+        "the withdrawn offer names the address it was started for, got {body}"
+    );
+
+    let (_, body) = describe(&router, &named).await;
+    assert!(
+        elements(&body, "addressTransferStatus").is_empty(),
+        "a withdrawn offer is no transfer of the account, got {body}"
+    );
+    assert!(
+        elements(&body, "allocationId").is_empty(),
+        "a withdrawn offer is no transfer of the account, got {body}"
     );
 
     // Nothing left to withdraw: EC2 answers the transfer surface's own code for an address
@@ -715,7 +721,9 @@ async fn disable_refuses_an_address_with_no_pending_offer() {
             "an allocation id no address of the account has",
             vec![p("AllocationId", "eipalloc-0123456789abcdef0")],
             400,
-            "InvalidAllocationID.NotFound",
+            // This operation answers the OTHER of the two codes EC2 publishes for an
+            // allocation id that resolves to no address of the account.
+            "InvalidElasticIpID.NotFound",
         ),
         (
             "an allocation id of another resource kind",

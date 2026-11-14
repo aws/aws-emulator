@@ -25,7 +25,7 @@ use ec2::ops::types::TransitGatewayVpcAttachment;
 use ec2::state::{
     ComAmazonawsEc2Amazonec2State as Ec2State, PREFIX_LIST_REFERENCE_STATE_AVAILABLE,
     PREFIX_LIST_REFERENCE_STATE_DELETING, PREFIX_LIST_REFERENCE_STATE_PENDING,
-    TRANSIT_GATEWAY_ATTACHMENT_STATE_AVAILABLE, TRANSITION_DELAY, TransitGatewayAttachmentView,
+    TRANSIT_GATEWAY_ATTACHMENT_STATE_AVAILABLE, TransitGatewayAttachmentView,
 };
 use service_com_amazonaws_ec2_amazonec2 as ec2;
 use smithy_server_runtime::MultiServiceRouter;
@@ -39,9 +39,63 @@ const REGION: &str = "us-east-1";
 /// The HTTP status EC2 answers `DryRunOperation` with.
 const DRY_RUN_STATUS: u16 = 412;
 
-/// Long enough past [`TRANSITION_DELAY`] that a move the clock owes is certainly due.
-fn past_the_transition() -> Duration {
-    TRANSITION_DELAY + Duration::from_millis(250)
+/// Long enough past the span a clock-owed move takes that it is certainly overdue: the
+/// deadline the polls below give up at, generous because what is under test is the state a
+/// reference reaches rather than how fast it reaches it.
+fn move_deadline() -> Duration {
+    Duration::from_secs(60)
+}
+
+/// How long a poll below waits between two reads of a reference's state.
+fn poll_interval() -> Duration {
+    Duration::from_millis(50)
+}
+
+/// Wait until the reference of `prefix_list_id` in `route_table_id` is reported in `state`.
+///
+/// Polls for that STATE rather than sleeping for the span the clock owes the move, so a
+/// loaded machine cannot read the reference before the move has been applied.
+async fn wait_until_reported(
+    router: &MultiServiceRouter,
+    route_table_id: &str,
+    prefix_list_id: &str,
+    state: &str,
+) {
+    let deadline = tokio::time::Instant::now() + move_deadline();
+    loop {
+        let reported = reported_states(router, route_table_id, prefix_list_id).await;
+        if reported == vec![state.to_string()] {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the reference of {prefix_list_id} in {route_table_id} must reach {state:?}, \
+             last read {reported:?}"
+        );
+        tokio::time::sleep(poll_interval()).await;
+    }
+}
+
+/// Wait until the reference of `prefix_list_id` is no longer reported for `route_table_id` —
+/// the removal a delete starts, which the clock owes the table.
+async fn wait_until_gone(
+    router: &MultiServiceRouter,
+    route_table_id: &str,
+    prefix_list_id: &str,
+) {
+    let deadline = tokio::time::Instant::now() + move_deadline();
+    loop {
+        let reported = reported_states(router, route_table_id, prefix_list_id).await;
+        if reported.is_empty() {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the reference of {prefix_list_id} in {route_table_id} must stop being \
+             reported, last read {reported:?}"
+        );
+        tokio::time::sleep(poll_interval()).await;
+    }
 }
 
 /// One call of `action` signed for the Region above.
@@ -83,6 +137,42 @@ fn seed_attachment(engine: &engine::InMemoryEngine) -> String {
             },
         ))
         .expect("the store holds the seeded attachment")
+}
+
+/// Store a managed prefix list under each id the rows below name, so a reference created FOR
+/// one names a prefix list the account holds.
+///
+/// A reference routes exactly the ranges its prefix list holds, so the create resolves the
+/// `PrefixListId` against the account's own lists; which list it is has no part in any rule
+/// here, the rows being about the DELETE.
+fn seed_prefix_lists(engine: &engine::InMemoryEngine) {
+    let store = engine.state::<Ec2State>();
+    let mut guard = store.lock();
+    for prefix_list_id in [
+        "pl-00000000000000aa1",
+        "pl-0000aa12",
+        "pl-00000000000000bb2",
+        "pl-0000bb23",
+        "pl-0000cc34",
+    ] {
+        guard.managed_prefix_lists.insert(
+            prefix_list_id.to_string(),
+            ec2::state::ManagedPrefixListRecord {
+                view: ec2::ops::types::ManagedPrefixList {
+                    prefix_list_id: Some(prefix_list_id.to_string()),
+                    address_family: Some("IPv4".to_string()),
+                    state: Some("create-complete".to_string()),
+                    prefix_list_name: Some(format!("seeded-{prefix_list_id}")),
+                    max_entries: Some(5),
+                    version: Some(1),
+                    owner_id: Some(engine::emulator_account_id().to_string()),
+                    ..Default::default()
+                },
+                entries: Vec::new(),
+                pending: None,
+            },
+        );
+    }
 }
 
 /// The state the store holds for one (route table, prefix list) pair, or `None` when it holds
@@ -212,6 +302,7 @@ async fn deleting_a_prefix_list_reference_takes_the_route_out_of_its_route_table
             delete_when_available,
         } = case;
         let (router, engine) = super::ec2_query::emulator();
+        seed_prefix_lists(&engine);
         let route_table_id = route_table(&router).await;
         let attachment_id = match target {
             Target::Blackhole => None,
@@ -229,7 +320,13 @@ async fn deleting_a_prefix_list_reference_takes_the_route_out_of_its_route_table
         )
         .await;
         let expected_before_delete = if delete_when_available {
-            tokio::time::sleep(past_the_transition()).await;
+            wait_until_reported(
+                &router,
+                &route_table_id,
+                prefix_list_id,
+                PREFIX_LIST_REFERENCE_STATE_AVAILABLE,
+            )
+            .await;
             PREFIX_LIST_REFERENCE_STATE_AVAILABLE
         } else {
             PREFIX_LIST_REFERENCE_STATE_PENDING
@@ -307,8 +404,9 @@ async fn deleting_a_prefix_list_reference_takes_the_route_out_of_its_route_table
         );
 
         // The removal the clock owed falls due on its own, without anybody asking for it, and
-        // the record's bytes go back to the store's budget.
-        tokio::time::sleep(past_the_transition()).await;
+        // the record's bytes go back to the store's budget. Read until it has, rather than
+        // after a span of this test's choosing.
+        wait_until_gone(&router, &route_table_id, prefix_list_id).await;
         assert_eq!(
             reported_states(&router, &route_table_id, prefix_list_id).await,
             Vec::<String>::new(),
@@ -346,6 +444,7 @@ async fn deleting_a_prefix_list_reference_takes_the_route_out_of_its_route_table
 #[tokio::test]
 async fn a_delete_leaves_every_other_route_of_the_table_alone() {
     let (router, engine) = super::ec2_query::emulator();
+    seed_prefix_lists(&engine);
     let first_table = route_table(&router).await;
     let second_table = route_table(&router).await;
 
@@ -385,7 +484,7 @@ async fn a_delete_leaves_every_other_route_of_the_table_alone() {
         status, 200,
         "the delete must succeed, got {status} with body {body}"
     );
-    tokio::time::sleep(past_the_transition()).await;
+    wait_until_gone(&router, &first_table, deleted).await;
 
     // The clock-owed removal is applied by the next call, which is what a client of the
     // emulator would make: the route is gone from both the report and the store.
@@ -421,6 +520,7 @@ async fn a_delete_leaves_every_other_route_of_the_table_alone() {
 #[tokio::test]
 async fn a_delete_whose_ids_do_not_resolve_is_refused_with_its_own_code() {
     let (router, engine) = super::ec2_query::emulator();
+    seed_prefix_lists(&engine);
     let route_table_id = route_table(&router).await;
     let attachment_id = seed_attachment(&engine);
     let referenced = "pl-00000000000000aa1";
@@ -524,10 +624,17 @@ async fn a_dry_run_deletes_no_reference() {
         ("an available route", "pl-00000000000000bb2", true),
     ] {
         let (router, engine) = super::ec2_query::emulator();
+        seed_prefix_lists(&engine);
         let route_table_id = route_table(&router).await;
         create_reference(&router, case, &route_table_id, prefix_list_id, None).await;
         let expected = if delete_when_available {
-            tokio::time::sleep(past_the_transition()).await;
+            wait_until_reported(
+                &router,
+                &route_table_id,
+                prefix_list_id,
+                PREFIX_LIST_REFERENCE_STATE_AVAILABLE,
+            )
+            .await;
             PREFIX_LIST_REFERENCE_STATE_AVAILABLE
         } else {
             PREFIX_LIST_REFERENCE_STATE_PENDING
@@ -579,6 +686,7 @@ async fn a_dry_run_deletes_no_reference() {
 #[tokio::test]
 async fn a_second_delete_answers_the_route_on_its_way_out() {
     let (router, engine) = super::ec2_query::emulator();
+    seed_prefix_lists(&engine);
     let route_table_id = route_table(&router).await;
     let prefix_list_id = "pl-00000000000000aa1";
     create_reference(
@@ -608,7 +716,7 @@ async fn a_second_delete_answers_the_route_on_its_way_out() {
         );
     }
 
-    tokio::time::sleep(past_the_transition()).await;
+    wait_until_gone(&router, &route_table_id, prefix_list_id).await;
     assert_eq!(
         reported_states(&router, &route_table_id, prefix_list_id).await,
         Vec::<String>::new(),

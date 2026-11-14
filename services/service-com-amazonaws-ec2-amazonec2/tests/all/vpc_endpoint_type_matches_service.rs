@@ -220,6 +220,10 @@ fn create_params(row: &Row, built: &Network) -> Vec<Param> {
     let mut params = vec![
         param("VpcId", &built.vpc_id),
         param("ServiceName", row.service_name),
+        // These rows are about the endpoint TYPE a service offers, so they ask for no
+        // private hosted zone: a VPC you create has DNS hostnames off, which is what an
+        // endpoint associating one needs.
+        param("PrivateDnsEnabled", "false"),
     ];
     if let Some(endpoint_type) = row.endpoint_type {
         params.push(param("VpcEndpointType", endpoint_type));

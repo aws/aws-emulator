@@ -181,6 +181,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // asking.
         let region = state::request_region(ctx.parts());
 
+        // "The ARN of the ACM certificate with which to associate the IAM role"
+        // (`$CertificateArn`): a certificate is ACM's resource, and the association uploads
+        // THAT certificate's bundle — its chain and its encrypted private key — to Amazon S3,
+        // so an ARN the certificate manager holds no certificate under names nothing to
+        // associate and nothing to upload. It is resolved by asking the service that owns it
+        // ([`crate::state::acm_certificate_is_absent`], the crate's one reading of a
+        // certificate ARN against ACM), before this service's own store is locked, so no lock
+        // is held across the call into another service.
+        if state::acm_certificate_is_absent(ctx, &region, &input.certificate_arn).await {
+            return Err(crate::scaffolded::Scaffolded::service_error(
+                "InvalidCertificateArn.NotFound",
+                400,
+                // The whole sentence a recorded refusal of this operation carries: this
+                // surface words its ARN refusals as a bare statement of what it will not
+                // take, carrying no part of the request — the way the two malformed-ARN
+                // refusals beside it do
+                // ([`crate::state::invalid_certificate_arn_malformed`]).
+                "CertificateArnNotFound",
+            ));
+        }
+
         let state_handle = state::require_service_state(&*self.engine)?;
         let mut store = state_handle.lock();
         // The clock-owed moves this call must see before it decides, the way every operation

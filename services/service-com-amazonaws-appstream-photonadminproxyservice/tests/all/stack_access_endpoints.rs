@@ -212,6 +212,10 @@ async fn endpoint(ec2: &::aws_sdk_ec2::Client, vpc: &str, label: &str) -> String
         .vpc_id(vpc)
         .vpc_endpoint_type(interface())
         .service_name(&service_name)
+        // A VPC you create has DNS hostnames off, which a private hosted zone needs; these
+        // endpoints are only ids for the stack's access endpoints to resolve, so they ask for
+        // no private DNS.
+        .private_dns_enabled(false)
         .send()
         .await
         .unwrap_or_else(|error| panic!("EC2 must create an endpoint to {service_name}: {error:?}"))

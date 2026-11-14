@@ -36,7 +36,7 @@ use std::time::Duration;
 
 use service_com_amazonaws_ec2_amazonec2::state::{
     ADDRESS_ATTRIBUTE_DOMAIN_NAME, AddressPtrRecord, ComAmazonawsEc2Amazonec2State as Ec2State,
-    INVALID_ALLOCATION_ID_MALFORMED, PTR_UPDATE_STATUS_PENDING, TRANSITION_DELAY,
+    INVALID_ALLOCATION_ID_MALFORMED, PTR_UPDATE_STATUS_PENDING,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -54,10 +54,16 @@ fn p(key: &str, value: impl Into<String>) -> (String, String) {
 /// One request's form parameters, as the ec2Query harness takes them.
 type Params = Vec<(String, String)>;
 
-/// Long enough past [`TRANSITION_DELAY`] that an update the clock owes a PTR record is
-/// certainly due, with a margin so a slow machine cannot read the state before it is.
-fn past_the_update() -> Duration {
-    TRANSITION_DELAY + Duration::from_millis(250)
+/// Long enough past the span the clock owes a PTR record's update that it is certainly
+/// overdue: the deadline the polls below give up at, generous because what is under test is
+/// the state the record reaches rather than how fast it reaches it.
+fn attribute_deadline() -> Duration {
+    Duration::from_secs(60)
+}
+
+/// How long a poll below waits between two reads of the report.
+fn poll_interval() -> Duration {
+    Duration::from_millis(50)
 }
 
 /// The emulator the tests drive, and the engine its store is reached through so a row can
@@ -275,7 +281,40 @@ async fn an_address_drops_out_once_its_attribute_is_gone() {
 
     // `ResetAddressAttribute` takes the record away, which it leaves OUTSTANDING on the
     // address until the clock applies it — so the address has an attribute to report
-    // meanwhile.
+    // meanwhile. A reset acts on the record the address carries, so one is set first, through
+    // the other writer of this attribute, and given its own span.
+    let (status, body) = call(
+        &router,
+        REGION,
+        "ModifyAddressAttribute",
+        &[
+            p("AllocationId", held[0].as_str()),
+            p("DomainName", "mail.example.com"),
+        ],
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "the record must be set before it can be reset, got {status} with body {body}"
+    );
+    // Read until the record the modify started is in effect, rather than waiting a span of
+    // this test's choosing: one record carries at most one outstanding request, so the reset
+    // below needs the first one applied.
+    let deadline = tokio::time::Instant::now() + attribute_deadline();
+    loop {
+        let (attributes, _) = described(&router, "while the record is being set", &[]).await;
+        let outstanding = attributes
+            .first()
+            .and_then(|attribute| attribute.update_status.clone());
+        if outstanding.is_none() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the record set by the modify must come due, last read {attributes:?}"
+        );
+        tokio::time::sleep(poll_interval()).await;
+    }
     let params = vec![
         p("AllocationId", held[0].as_str()),
         p("Attribute", ADDRESS_ATTRIBUTE_DOMAIN_NAME),
@@ -300,11 +339,22 @@ async fn an_address_drops_out_once_its_attribute_is_gone() {
         attributes[0]
     );
 
-    // The update was owed at its instant whether or not anybody called, so once it has
-    // passed the address carries no record and no update — no attribute at all, and so no
-    // row.
-    tokio::time::sleep(past_the_update()).await;
-    let (attributes, token) = described(&router, "once the update came due", &[]).await;
+    // The update was owed at its instant whether or not anybody called, so once it has been
+    // applied the address carries no record and no update — no attribute at all, and so no
+    // row. Read until that holds rather than once after a span of this test's choosing.
+    let deadline = tokio::time::Instant::now() + attribute_deadline();
+    let (attributes, token) = loop {
+        let (attributes, token) = described(&router, "once the update came due", &[]).await;
+        if attributes.is_empty() {
+            break (attributes, token);
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "once the update came due the address carries no attribute, so it must be \
+             reported no row, last read {attributes:?}"
+        );
+        tokio::time::sleep(poll_interval()).await;
+    };
     assert!(
         attributes.is_empty(),
         "once the update came due the address carries no attribute, so it must be reported \

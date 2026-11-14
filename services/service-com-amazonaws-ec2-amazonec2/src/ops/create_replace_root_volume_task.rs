@@ -317,12 +317,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // malformed rather than not-found. ONE lookup: the validator hands back the record
         // it resolved.
         let instance = require_replaceable_instance(&store, &input.instance_id)?;
-        // "Replaces the EBS-backed root volume for a running instance": an instance on its
-        // way to `terminated` has no root volume left for a replacement to attach to.
-        if instance.state.is_terminating() {
-            return Err(Scaffolded::incorrect_instance_state(
-                &input.instance_id,
-                "given a replacement root volume",
+        // "Replaces the EBS-backed root volume for a `running` instance"
+        // (`CreateReplaceRootVolumeTask`): the replacement is attached to the instance in
+        // place, which is work only a running instance is given — an instance in any other
+        // state (one still coming up, one stopping or stopped, one on its way to
+        // `terminated`) has no running root volume for a replacement to take over from, so
+        // the task is refused rather than started against a state that could not carry it.
+        if instance.state != crate::state::InstanceStateName::Running {
+            return Err(Scaffolded::service_error(
+                "IncorrectInstanceState",
+                400,
+                // The sentence a recorded refusal of THIS operation words that code with: it
+                // names the state the operation needs and nothing of the request, which is
+                // why it is built here rather than through the shared constructor
+                // ([`crate::scaffolded::Scaffolded::incorrect_instance_state`], whose
+                // sentence other operations are recorded answering).
+                "Instance is not in the running state.",
             ));
         }
         let instance_zone = instance.placement_az.clone();

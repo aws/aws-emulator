@@ -531,8 +531,9 @@ async fn a_route_server_a_vpc_holds_cannot_be_deleted_until_it_is_disassociated(
          body {body}"
     );
 
-    // A second association of the SAME VPC is refused as a resource that is already there,
-    // which is the code a caller racing another on one VPC gets.
+    // A second association of the SAME route server is refused: a route server writes what it
+    // learns into the route tables of the one VPC it is associated with, so it holds one
+    // association at a time.
     let (status, body) = call(
         &router,
         "AssociateRouteServer",
@@ -544,7 +545,7 @@ async fn a_route_server_a_vpc_holds_cannot_be_deleted_until_it_is_disassociated(
     .await;
     assert_eq!(
         error_code(&body),
-        "RouteServerAssociationAlreadyExists",
+        "InvalidRouteServerId.AlreadyAssociated",
         "case {case:?}: expected the repeated association to be refused, got {status} with \
          body {body}"
     );

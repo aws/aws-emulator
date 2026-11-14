@@ -619,7 +619,8 @@ async fn delete_vpn_gateway_refuses_an_id_that_names_no_gateway_of_the_account()
 // ---------------------------------------------------------------------------
 
 /// The rows: the state the gateway is deleted in — one still coming up, one that has reached
-/// `available` — and a delete repeated on a gateway that is already going away.
+/// `available` — and a delete repeated on a gateway that is already going away, which is a
+/// gateway no delete can act on.
 #[tokio::test]
 async fn delete_vpn_gateway_moves_the_gateway_through_deleting_to_deleted() {
     // (case, wait for the create's clock-owed move first, delete twice)
@@ -666,12 +667,19 @@ async fn delete_vpn_gateway_moves_the_gateway_through_deleting_to_deleted() {
         );
 
         if delete_twice {
-            let repeated = delete_ok(case, &router, &id).await;
+            // A gateway whose deletion is already under way is in no state to be deleted: the
+            // repeat is refused rather than answering as though it had deleted the gateway a
+            // second time.
+            let (status, repeated) = delete(&router, &id, &[]).await;
             assert_eq!(
-                element(&repeated, "return").as_deref(),
-                Some("true"),
-                "case {case:?}: expected the envelope's success flag on the repeat, got \
-                 {repeated}"
+                status, 400,
+                "case {case:?}: expected HTTP 400 from a repeated delete, got {status} with \
+                 body {repeated}"
+            );
+            assert_eq!(
+                error_code(&repeated),
+                ec2::state::INCORRECT_STATE,
+                "case {case:?}: expected the wrong-state refusal on the repeat, got {repeated}"
             );
             // The repeat changed nothing: the gateway is still the one the first delete
             // left going away.

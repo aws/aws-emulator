@@ -143,6 +143,10 @@ async fn an_endpoint_is_created_to_a_service_of_every_published_name_form() {
         let mut params = vec![
             param("VpcId", &vpc_id),
             param("ServiceName", row.service_name),
+            // These rows are about the service NAME an endpoint is created to, so they ask
+            // for no private hosted zone: a VPC you create has DNS hostnames off, which is
+            // what an endpoint associating one needs.
+            param("PrivateDnsEnabled", "false"),
         ];
         if let Some(endpoint_type) = row.endpoint_type {
             params.push(param("VpcEndpointType", endpoint_type));

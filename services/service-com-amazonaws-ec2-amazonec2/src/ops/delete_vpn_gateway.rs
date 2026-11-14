@@ -173,6 +173,49 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // place this crate asks those two questions, in that order.
         let record = store.require_vpn_gateway_mut(&input.vpn_gateway_id)?;
 
+        // `VpnState` carries `deleting` and `deleted` beside `pending` and `available`, so a
+        // gateway a delete has been asked for is still a gateway the API reports — but it is
+        // no longer one a delete can act on: the deletion is already under way, and once it
+        // has fallen due the gateway is gone. A repeat is therefore refused rather than
+        // answered 200, which would tell a caller its delete had just happened.
+        let already_going = matches!(
+            record.view.state.as_deref(),
+            Some(state::VPN_GATEWAY_STATE_DELETING) | Some(state::VPN_GATEWAY_STATE_DELETED)
+        );
+        if already_going {
+            let current = record.view.state.clone().unwrap_or_default();
+            if current == state::VPN_GATEWAY_STATE_DELETED {
+                return Err(state::invalid_vpn_gateway_id_not_found(
+                    &input.vpn_gateway_id,
+                ));
+            }
+            return Err(state::incorrect_state(format!(
+                "The vpnGateway '{vpn_gateway_id}' is in state '{current}' and cannot be \
+                 deleted.",
+                vpn_gateway_id = input.vpn_gateway_id,
+            )));
+        }
+
+        // "You must first detach the virtual private gateway from the VPC"
+        // (`DeleteVpnGateway`): an attachment is the gateway's dependency, and it is cleared
+        // by `DetachVpnGateway`, never by this delete — so a gateway that still holds one is
+        // refused with the code this service answers for a resource whose dependencies are
+        // still there, exactly as the internet gateway's own delete answers its attachment.
+        if let Some(attached_vpc) = record
+            .view
+            .vpc_attachments
+            .iter()
+            .flatten()
+            .find(|attachment| attachment.state.as_deref() != Some(ATTACHMENT_STATE_DETACHED))
+            .and_then(|attachment| attachment.vpc_id.clone())
+        {
+            return Err(state::dependency_violation(format!(
+                "The vpnGateway '{vpn_gateway_id}' is attached to the vpc '{attached_vpc}' \
+                 and cannot be deleted.",
+                vpn_gateway_id = input.vpn_gateway_id,
+            )));
+        }
+
         // The request is one that would have succeeded, so a dry run stops HERE: "If you
         // have the required permissions, the error response is DryRunOperation" (`DryRun`).
         // Nothing has been written yet, and nothing is.
@@ -180,24 +223,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(state::dry_run_operation());
         }
 
-        // `VpnState` carries `deleting` and `deleted` beside `pending` and `available`, so a
-        // gateway a delete has been asked for is still a gateway the API reports: the delete
-        // moves it into the non-terminal `deleting` state and the clock owes it `deleted`,
-        // one TRANSITION_DELAY later, rather than making the record vanish.
-        //
-        // A gateway already on its way out is left exactly as it is — the deletion this
-        // call asks for is the one already under way, so repeating the call neither reports
-        // a second deletion nor postpones the first by restarting its due instant.
-        let already_going = matches!(
-            record.view.state.as_deref(),
-            Some(state::VPN_GATEWAY_STATE_DELETING) | Some(state::VPN_GATEWAY_STATE_DELETED)
-        );
-        if !already_going {
-            record.view.state = Some(state::VPN_GATEWAY_STATE_DELETING.to_string());
-            record.pending = Some(state::PendingStateMove::starting_now(
-                state::VPN_GATEWAY_STATE_DELETED,
-            ));
-        }
+        // The delete moves the gateway into the non-terminal `deleting` state and the clock
+        // owes it `deleted`, one TRANSITION_DELAY later, rather than making the record
+        // vanish: both words are `VpnState` members the API reports.
+        record.view.state = Some(state::VPN_GATEWAY_STATE_DELETING.to_string());
+        record.pending = Some(state::PendingStateMove::starting_now(
+            state::VPN_GATEWAY_STATE_DELETED,
+        ));
         Ok(DeleteVpnGatewayOutput)
     }
 }
+
+/// An attachment that has been taken down: the `AttachmentStatus` enum's `detached` member
+/// (`smithy_query(query="shape",shape="AttachmentStatus")`, whose members are `attaching`,
+/// `attached`, `detaching` and `detached`) — the one state in which a gateway's
+/// `VpcAttachments` entry attaches nothing.
+const ATTACHMENT_STATE_DETACHED: &str = "detached";

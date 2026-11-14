@@ -1485,9 +1485,8 @@ async fn delete_endpoint(
 
 /// RULE 6: the delete reports the endpoint it names as the store then holds it —
 /// `delete-in-progress`, with every other member of the endpoint unchanged — the describe
-/// reports that same endpoint, a repeat of the call reports the deletion already under way
-/// without restarting its clock, and the CLOCK alone moves the endpoint on to
-/// `delete-complete`.
+/// reports that same endpoint, a repeat of the call is REFUSED because the endpoint is
+/// already on its way out, and the CLOCK alone moves the endpoint on to `delete-complete`.
 ///
 /// The rows differ along what the rule generalises over: which address family the endpoint's
 /// subnet has, whether the request that created it carried tags or a client token, and
@@ -1592,13 +1591,24 @@ async fn deleting_an_endpoint_starts_a_clock_owed_deletion() {
             created.id
         );
 
-        // A repeat of the call reports the deletion already under way: the same endpoint,
-        // still inside the span the FIRST delete gave it.
-        let repeated = delete_endpoint(&fixture.router, case, &params).await;
+        // A repeat of the call is REFUSED: the deletion this call asks for is already under
+        // way, so the endpoint is in a state no delete runs from — and the endpoint it names
+        // is left exactly where the first delete put it.
+        let (status, body) = delete(&fixture.router, &params).await;
         assert_eq!(
-            repeated, expected,
-            "case {case:?}: a repeated delete must report the deletion already under way, \
-             got {repeated:?}"
+            status, 400,
+            "case {case:?}: expected HTTP 400 from a repeated delete, got {status} with \
+             body {body}"
+        );
+        assert_eq!(
+            super::ec2_query::error_code(&body),
+            ec2::state::INCORRECT_STATE,
+            "case {case:?}: expected the wrong-state refusal on the repeat, got body {body}"
+        );
+        assert_eq!(
+            described_row(&fixture.router, case, &created.id).await,
+            expected,
+            "case {case:?}: a refused repeat must leave the deletion the first one started"
         );
 
         // Only the endpoint the request named moved: the bystander is still in a CREATE

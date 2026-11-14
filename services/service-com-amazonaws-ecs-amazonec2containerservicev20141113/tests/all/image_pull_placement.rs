@@ -228,6 +228,9 @@ async fn vpc_endpoint(
     // gateway endpoint is an entry a route table routes to and stands up none.
     if endpoint_type == "Interface" {
         params.push(("SubnetId.1", subnet_id));
+        // A VPC you create has DNS hostnames off, which a private hosted zone needs; these
+        // endpoints are only what an image pull is reached through, so they ask for none.
+        params.push(("PrivateDnsEnabled", "false"));
     }
     ec2(router, "CreateVpcEndpoint", &params, case).await;
 }

@@ -660,11 +660,13 @@ async fn a_request_past_a_filtering_ceiling_is_refused() {
 // ---------------------------------------------------------------------------
 // Rule 4: the duration bounds and OfferingId
 // ---------------------------------------------------------------------------
-/// `MinDuration` and `MaxDuration` bound the term inclusively.
+/// `MinDuration` and `MaxDuration` bound the term inclusively, and a value that is not a
+/// term reservations are offered for is refused.
 ///
-/// The rows are each published term, each bound set to one second inside and one second
-/// outside it, and the pair that spans both — so both ends of the range are checked on
-/// the bound itself and one past it.
+/// "The number of seconds specified must be the number of seconds in a year (365x24x60x60)
+/// times one of the supported durations (1 or 3)" (`$MinDuration`, and `$MaxDuration` word
+/// for word) — so the rows are each published term as each bound, the pair that spans both,
+/// and, for the refusal, a value one second off a term at each end.
 #[tokio::test]
 async fn the_duration_bounds_select_the_terms() {
     let (router, _engine) = super::ec2_query::emulator();
@@ -673,7 +675,7 @@ async fn the_duration_bounds_select_the_terms() {
     /// One row of the duration-bound table: the case name, the `MinDuration` and the
     /// `MaxDuration` the request carries, and the terms expected back.
     type Row<'a> = (&'static str, Option<&'a str>, Option<&'a str>, Vec<i64>);
-    let rows: [Row<'_>; 8] = [
+    let rows: [Row<'_>; 6] = [
         (
             "no bound",
             None,
@@ -687,25 +689,23 @@ async fn the_duration_bounds_select_the_terms() {
             vec![ONE_YEAR_SECONDS, THREE_YEAR_SECONDS],
         ),
         (
-            "min one past the one-year bound",
-            Some("31536001"),
-            None,
-            vec![THREE_YEAR_SECONDS],
-        ),
-        (
             "min at the three-year bound",
             Some(three_years.as_str()),
             None,
             vec![THREE_YEAR_SECONDS],
         ),
-        ("min one past the three-year bound", Some("94608001"), None, Vec::new()),
         (
             "max at the one-year bound",
             None,
             Some(one_year.as_str()),
             vec![ONE_YEAR_SECONDS],
         ),
-        ("max one below the one-year bound", None, Some("31535999"), Vec::new()),
+        (
+            "max at the three-year bound",
+            None,
+            Some(three_years.as_str()),
+            vec![ONE_YEAR_SECONDS, THREE_YEAR_SECONDS],
+        ),
         (
             "both bounds span the terms",
             Some(one_year.as_str()),
@@ -737,17 +737,45 @@ async fn the_duration_bounds_select_the_terms() {
             "case {case:?}: expected the terms {expected:?}, got {reported:?}"
         );
     }
+
+    // A bound that is not a term reservations are offered for names no term at all, so it is
+    // refused rather than used as a bound that quietly matches everything or nothing. The
+    // rows are one second off a published term at each end, for each of the two members.
+    for (case, member, value) in [
+        ("min one past the one-year term", "MinDuration", "31536001"),
+        ("min one past the three-year term", "MinDuration", "94608001"),
+        ("max one below the one-year term", "MaxDuration", "31535999"),
+        ("max one below the three-year term", "MaxDuration", "94607999"),
+    ] {
+        let mut params = filters(&[("instance-family", &["m4"])]);
+        params.extend(field(member, value));
+        let (status, body) = describe(&router, &params).await;
+        assert_eq!(
+            status, 400,
+            "case {case:?}: expected 400 for a bound that is no term, got {status} {body}"
+        );
+        assert_eq!(
+            error_code(&body),
+            "InvalidParameterValue",
+            "case {case:?}: expected InvalidParameterValue, got {body}"
+        );
+        assert!(
+            elements(&body, "offeringId").is_empty(),
+            "case {case:?}: a refused request reports no offering, got {body}"
+        );
+    }
 }
 
 /// `OfferingId` reports the one offering carrying that id, and an id the catalog does not
-/// hold reports none.
+/// publish is refused rather than reported as no offering.
 ///
 /// The ids that are expected to resolve are read back out of an unfiltered describe, over
 /// rows spanning the payment options and both terms, so the test names no id of its own.
 /// The rows that resolve to nothing are ids the service CAN read and the catalog does not
-/// publish: an id past the catalog's end, and one at the top of the form's range. A value
-/// that is no offering id at all is a refusal rather than a miss, which
-/// `an_offering_id_that_is_not_one_is_refused` covers.
+/// publish — an id past the catalog's end, and one at the top of the form's range — and an
+/// offering id names ONE entry of the price list, so an id this catalog did not issue is
+/// refused under the id's own class exactly as a value that is no offering id at all is
+/// (`an_offering_id_that_is_not_one_is_refused`).
 #[tokio::test]
 async fn an_offering_id_selects_one_offering() {
     let (router, _engine) = super::ec2_query::emulator();
@@ -781,7 +809,8 @@ async fn an_offering_id_selects_one_offering() {
     }
 
     // Ids of the catalog's own form that it does not publish: one just past its end, and
-    // the largest value the form holds.
+    // the largest value the form holds. An offering id names one entry of the price list, so
+    // an id this catalog did not issue names no offering at all.
     let misses: [(&str, &str); 2] = [
         ("an unheld id of the right form", "hro-0ffffffffffffffff"),
         ("the largest id the form holds", "hro-0fffffffffffffffe"),
@@ -789,12 +818,17 @@ async fn an_offering_id_selects_one_offering() {
     for (case, offering_id) in misses {
         let (status, body) = describe(&router, &field("OfferingId", offering_id)).await;
         assert_eq!(
-            status, 200,
-            "case {case:?}: expected 200 for OfferingId {offering_id:?}, got {status} {body}"
+            status, 400,
+            "case {case:?}: expected 400 for OfferingId {offering_id:?}, got {status} {body}"
+        );
+        assert_eq!(
+            error_code(&body),
+            "InvalidHostReservationOfferingId.Malformed",
+            "case {case:?}: expected the offering id's own refusal, got {body}"
         );
         assert!(
             elements(&body, "offeringId").is_empty(),
-            "case {case:?}: an id the catalog does not hold names no offering, got {body}"
+            "case {case:?}: a refused request reports no offering, got {body}"
         );
     }
 }

@@ -156,6 +156,36 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &input.instance_connect_endpoint_id,
         )?;
 
+        let now = Instant::now();
+        // A delete acts on an endpoint that is THERE to delete: once a delete has been
+        // accepted the endpoint is on its way out, so the deletion this call asks for is not
+        // one it can perform. While the deletion is still under way the endpoint exists in a
+        // state that admits no delete (`IncorrectState`), and once it has completed the
+        // endpoint is gone, which is the not-found answer every operation naming an endpoint
+        // the account no longer holds gets. Either way the request is refused rather than
+        // answered 200 with a `delete-complete` endpoint, which would tell a caller its
+        // delete had just happened.
+        let deleting = store
+            .instance_connect_endpoints
+            .get(&input.instance_connect_endpoint_id)
+            .map(|record| record.state_at(now));
+        match deleting {
+            Some(state::INSTANCE_CONNECT_ENDPOINT_STATE_DELETE_IN_PROGRESS) => {
+                return Err(state::incorrect_state(format!(
+                    "The EC2 Instance Connect Endpoint '{endpoint_id}' is in state \
+                     '{current}' and cannot be deleted",
+                    endpoint_id = input.instance_connect_endpoint_id,
+                    current = state::INSTANCE_CONNECT_ENDPOINT_STATE_DELETE_IN_PROGRESS,
+                )));
+            }
+            Some(state::INSTANCE_CONNECT_ENDPOINT_STATE_DELETE_COMPLETE) => {
+                return Err(state::invalid_instance_connect_endpoint_id_not_found(
+                    &input.instance_connect_endpoint_id,
+                ));
+            }
+            _ => {}
+        }
+
         // DryRun sits AFTER the named endpoint has been resolved and BEFORE the write: the
         // flag asks whether the request WOULD have worked, so one that would have been
         // refused is refused with that reason instead, and one that would have succeeded
@@ -164,14 +194,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(state::dry_run_operation());
         }
 
-        let now = Instant::now();
         // The deletion is owed to the clock rather than finished here: the endpoint answers
         // `delete-in-progress` until the stored instant falls due and `delete-complete`
         // after it, so a caller acting straight after this call still sees the transient
         // state. The record itself stays in the store — both delete states are states the
         // model reports for an endpoint — so the bytes it holds stay charged to the store's
-        // budget, which still holds them, and a repeat of this call reports the deletion
-        // already under way rather than restarting its clock.
+        // budget, which still holds them, and a later delete of it is refused above rather
+        // than restarting this clock.
         let instance_connect_endpoint = store
             .begin_instance_connect_endpoint_deletion(
                 &input.instance_connect_endpoint_id,

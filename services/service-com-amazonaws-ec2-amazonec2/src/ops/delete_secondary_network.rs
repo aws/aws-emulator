@@ -176,6 +176,37 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // did not, and a typo from a resource that is gone.
         state::require_known_secondary_network(&store, &input.secondary_network_id)?;
 
+        let now = Instant::now();
+        // A delete acts on a network that is THERE to delete: once a delete has been accepted
+        // the network is on its way out, so the deletion this call asks for is not one it can
+        // perform — the network is in a state no delete runs from, whether that deletion is
+        // still under way or has already completed. The request is refused rather than
+        // answered 200 with a `delete-complete` network, which would tell a caller its delete
+        // had just happened.
+        let deleting = store
+            .secondary_networks
+            .get(&input.secondary_network_id)
+            .map(|record| record.state_at(now));
+        if matches!(
+            deleting,
+            Some(
+                state::SECONDARY_NETWORK_STATE_DELETE_IN_PROGRESS
+                    | state::SECONDARY_NETWORK_STATE_DELETE_COMPLETE
+            )
+        ) {
+            return Err(crate::scaffolded::Scaffolded::service_error(
+                // The code and the sentence a recorded repeat of this delete pins: the
+                // resource is there and its STATE is what refuses the call, which the
+                // sentence states without naming the state it is in.
+                "InvalidState",
+                400,
+                format!(
+                    "The secondary network '{network_id}' is not in a modifiable state.",
+                    network_id = input.secondary_network_id,
+                ),
+            ));
+        }
+
         // "You must delete all secondary subnets in the secondary network before you can
         // delete the secondary network" (`DeleteSecondaryNetwork`). Nothing in this emulator
         // stores a secondary subnet yet — `CreateSecondarySubnet` is still a scaffold

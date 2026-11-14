@@ -195,12 +195,30 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(Scaffolded::dry_run_operation());
         }
 
+        // Every id is RESOLVED before any Fleet is moved: an id that names no Fleet of the
+        // account names nothing this call could cancel, so it is the REQUEST's refusal —
+        // `InvalidCapacityReservationFleetId.NotFound`, the same answer the describe gives
+        // for the same id — rather than one entry of a per-Fleet report.
+        // `FailedFleetCancellations` is for Fleets that DO exist and are in a state no
+        // cancellation runs from, which is a fact of the Fleet rather than of the request.
+        // Asked of the whole request first, so a request naming one unknown id cancels
+        // nothing beside it.
+        if let Some(unknown) = fleet_ids
+            .iter()
+            .find(|fleet_id| !store.capacity_reservation_fleets.contains_key(fleet_id.as_str()))
+        {
+            return Err(Scaffolded::service_error(
+                INVALID_CAPACITY_RESERVATION_FLEET_ID_NOT_FOUND,
+                400,
+                capacity_reservation_fleet_not_found_message(unknown),
+            ));
+        }
+
         let mut successful: Vec<CapacityReservationFleetCancellationState> = Vec::new();
         let mut failed: Vec<FailedCapacityReservationFleetCancellationResult> = Vec::new();
         for fleet_id in fleet_ids {
-            // An id that names no Fleet of the account is one Fleet that could not be
-            // cancelled, not a request that cannot be served: this operation reports per
-            // Fleet, so the other ids are still cancelled.
+            // Resolved a moment ago, with the store locked throughout, so this cannot be a
+            // Fleet the account does not hold.
             let Some(record) = store.capacity_reservation_fleets.get_mut(&fleet_id) else {
                 failed.push(cancellation_failure(
                     &fleet_id,

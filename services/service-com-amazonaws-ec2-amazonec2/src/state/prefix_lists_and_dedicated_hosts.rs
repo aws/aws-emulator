@@ -1941,7 +1941,9 @@ pub fn duplicate_subnets_in_same_zone<E>(subnet_id: &str) -> Scaffolded<E> {
 pub const INVALID_PARAMETER: &str = "InvalidParameter";
 
 /// Refuse a request asking to associate a private hosted zone with a VPC whose DNS
-/// attributes do not admit one: HTTP 400 [`INVALID_PARAMETER`].
+/// attributes do not admit one: HTTP 400 [`INVALID_PARAMETER`], in the wording a recorded
+/// refusal of this class pins — the sentence names both attributes that have to be on and the
+/// VPC they are off for.
 ///
 /// "To use a private hosted zone, you must set the following VPC attributes to true:
 /// enableDnsHostnames and enableDnsSupport"
@@ -1951,8 +1953,8 @@ pub fn private_dns_unsupported_vpc<E>(vpc_id: &str) -> Scaffolded<E> {
         INVALID_PARAMETER,
         400,
         format!(
-            "Private DNS can't be enabled because the VPC {vpc_id} doesn't support DNS \
-             hostnames or DNS resolution"
+            "Enabling private DNS requires both enableDnsSupport and enableDnsHostnames VPC \
+             attributes set to true for {vpc_id}"
         ),
     )
 }
@@ -2631,6 +2633,38 @@ pub fn endpoint_service_types(
         .into_iter()
         .find(|service| service.service_name == service_name)
         .map(|service| service.service_types)
+}
+
+/// The DEFAULT PUBLIC DNS NAME of the endpoint service called `service_name` — the name a
+/// private hosted zone resolves inside the VPC — or `None` when the service publishes none,
+/// and for a name this service holds no catalogue entry for.
+///
+/// "(Interface endpoint) Indicates whether to associate a private hosted zone with the
+/// specified VPC. The private hosted zone contains a record set for the default public DNS
+/// name for the service for the Region" (`CreateVpcEndpointRequest$PrivateDnsEnabled`): that
+/// record set is the whole content of the zone, so a service with no such name has no private
+/// hosted zone to associate and an endpoint to it resolves nothing privately.
+///
+/// Read from the same two sources, in the same order, as [`endpoint_service_types`], so the
+/// name a create of an endpoint is held to is the one `DescribeVpcEndpointServices` reports
+/// for that service ([`EndpointServiceRecord::private_dns_name`]).
+pub fn endpoint_service_private_dns_name(
+    store: &ComAmazonawsEc2Amazonec2State,
+    service_name: &str,
+) -> Option<String> {
+    let parsed = parse_endpoint_service_name(service_name)?;
+    if let Some(service) = store
+        .vpc_endpoint_services
+        .values()
+        .filter_map(account_endpoint_service_record)
+        .find(|service| service.service_name == service_name)
+    {
+        return service.private_dns_name;
+    }
+    endpoint_services_in_region(&parsed.region)
+        .into_iter()
+        .find(|service| service.service_name == service_name)
+        .and_then(|service| service.private_dns_name)
 }
 
 /// Refuse an endpoint of a type the service it names is not reachable through: HTTP 400

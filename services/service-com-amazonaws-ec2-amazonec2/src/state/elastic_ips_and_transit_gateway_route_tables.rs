@@ -2778,13 +2778,22 @@ pub fn invalid_allocation_id_malformed<E>(allocation_id: &str) -> Scaffolded<E> 
     )
 }
 
+/// Why a well-formed allocation id resolves to no address of the account.
+///
+/// ONE wording, so the two codes EC2 publishes for that failure
+/// ([`invalid_allocation_id_not_found`] and [`INVALID_ELASTIC_IP_ID_NOT_FOUND`], whichever an
+/// operation answers) say the same thing about the same id.
+pub fn allocation_id_not_found_message(allocation_id: &str) -> String {
+    format!("The allocation ID '{allocation_id}' does not exist")
+}
+
 /// Refuse a request that named an allocation id no address of the account has: HTTP 400
 /// `InvalidAllocationID.NotFound`.
 pub fn invalid_allocation_id_not_found<E>(allocation_id: &str) -> Scaffolded<E> {
     Scaffolded::service_error(
         INVALID_ALLOCATION_ID_NOT_FOUND,
         400,
-        format!("The allocation ID '{allocation_id}' does not exist"),
+        allocation_id_not_found_message(allocation_id),
     )
 }
 

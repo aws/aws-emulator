@@ -28,9 +28,13 @@ use super::wire::{Param, param};
 /// The Region every call here is signed for.
 const REGION: &str = "us-east-1";
 
-/// Long enough past [`ec2::state::TRANSITION_DELAY`] that the move the clock owed a created
-/// endpoint is certainly due, with a margin for a slow machine.
-const SETTLE_WAIT: Duration = Duration::from_millis(900);
+/// Long enough past [`ec2::state::TRANSITION_DELAY`] that a move the clock owed a created
+/// endpoint is certainly overdue: the deadline the poll below gives up at, generous because
+/// what is under test is the state the endpoint reaches rather than how fast it reaches it.
+const SETTLE_DEADLINE: Duration = Duration::from_secs(60);
+
+/// How long the poll below waits between two reads of an endpoint's state.
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// The emulator the tests drive. The store is reached only through the wire here, so the
 /// engine handle is not needed.
@@ -138,6 +142,21 @@ struct Network {
 /// against resources this emulator actually stores.
 async fn network(case: &str, router: &MultiServiceRouter, zones: &[&str]) -> Network {
     let vpc_id = create_vpc(case, router, "10.40.0.0/16").await;
+    // A VPC you create has DNS hostnames OFF (Amazon VPC User Guide, "DNS attributes in
+    // your VPC"), and an interface endpoint's private hosted zone needs them ON — so the
+    // network every endpoint below is created in turns them on, leaving the rows free to be
+    // about the endpoint rather than about the VPC's DNS attributes
+    // (`private_dns_follows_the_vpcs_dns_attributes` is the row that is about those).
+    let _ = ok(
+        case,
+        router,
+        "ModifyVpcAttribute",
+        &[
+            param("VpcId", &vpc_id),
+            param("EnableDnsHostnames.Value", "true"),
+        ],
+    )
+    .await;
     let mut subnets = Vec::with_capacity(zones.len());
     for (index, zone) in zones.iter().enumerate() {
         let cidr_block = format!("10.40.{}.0/24", index + 1);
@@ -316,10 +335,15 @@ async fn each_endpoint_type_is_created_persisted_and_read_back() {
             "case {case:?}: expected one endpoint network interface per subnet, got {body}"
         );
         // "(Interface endpoint) The DNS entries for the endpoint" (`DnsEntries`): the
-        // regional name plus one per zone, and nothing for the other types.
+        // regional name plus one per zone, the service's own default public name beside them
+        // when the endpoint associates a private hosted zone for it — which an interface
+        // endpoint to a service that publishes one does by default — and nothing at all for
+        // the other types.
         let dns_names = set_members(case, &body, "dnsEntrySet", "dnsName");
+        let publishes_private_name = row.service_name.starts_with("com.amazonaws.")
+            && !row.service_name.starts_with("com.amazonaws.vpce.");
         let expected_names = if row.reported_type == "Interface" {
-            subnets.len() + 1
+            subnets.len() + 1 + usize::from(publishes_private_name)
         } else {
             0
         };
@@ -381,15 +405,23 @@ async fn each_endpoint_type_is_created_persisted_and_read_back() {
     );
 
     // The move the clock owed each of them falls due on its own, with nothing called in
-    // between to make it happen.
-    tokio::time::sleep(SETTLE_WAIT).await;
+    // between to make it happen — so each endpoint is READ until it reports the state it was
+    // owed rather than read once after a span of this test's choosing.
     for endpoint_id in &created {
-        let described = describe_endpoint("after the transition", &router, endpoint_id).await;
-        assert_eq!(
-            element(&described, "state").as_deref(),
-            Some(ec2::state::VPC_ENDPOINT_STATE_AVAILABLE),
-            "expected the clock to owe {endpoint_id} its available state, got {described}"
-        );
+        let deadline = tokio::time::Instant::now() + SETTLE_DEADLINE;
+        loop {
+            let described = describe_endpoint("after the transition", &router, endpoint_id).await;
+            let state = element(&described, "state");
+            if state.as_deref() == Some(ec2::state::VPC_ENDPOINT_STATE_AVAILABLE) {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "expected the clock to owe {endpoint_id} its available state, last read \
+                 {state:?} in {described}"
+            );
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
     }
 }
 
@@ -495,6 +527,18 @@ async fn the_policy_is_the_one_supplied_or_the_documented_default() {
 async fn private_dns_follows_the_vpcs_dns_attributes() {
     let router = emulator();
     let built = network("private DNS", &router, &["us-east-1a"]).await;
+    // THIS row is about the VPC's DNS attributes, so the network's hostnames go back off:
+    // every other row is created in a VPC that has them on.
+    ok(
+        "disable DNS hostnames",
+        &router,
+        "ModifyVpcAttribute",
+        &[
+            param("VpcId", &built.vpc_id),
+            param("EnableDnsHostnames.Value", "false"),
+        ],
+    )
+    .await;
     let params = || {
         let mut params = vec![
             param("VpcId", &built.vpc_id),

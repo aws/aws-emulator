@@ -31,7 +31,7 @@ use ec2::state::{
     ComAmazonawsEc2Amazonec2State as Ec2State, PREFIX_LIST_REFERENCE_STATE_AVAILABLE,
     PREFIX_LIST_REFERENCE_STATE_PENDING, TRANSIT_GATEWAY_ATTACHMENT_RESOURCE_TYPE_CLIENT_VPN,
     TRANSIT_GATEWAY_ATTACHMENT_RESOURCE_TYPE_PEERING, TRANSIT_GATEWAY_ATTACHMENT_RESOURCE_TYPE_VPC,
-    TRANSIT_GATEWAY_ATTACHMENT_STATE_AVAILABLE, TRANSITION_DELAY, TransitGatewayAttachmentView,
+    TRANSIT_GATEWAY_ATTACHMENT_STATE_AVAILABLE, TransitGatewayAttachmentView,
 };
 use service_com_amazonaws_ec2_amazonec2 as ec2;
 use smithy_server_runtime::MultiServiceRouter;
@@ -57,8 +57,40 @@ const INVALID_PARAMETER_COMBINATION: &str = "InvalidParameterCombination";
 const INVALID_PARAMETER_VALUE: &str = "InvalidParameterValue";
 
 /// Long enough past [`TRANSITION_DELAY`] that a move the clock owes is certainly due.
-fn past_the_transition() -> Duration {
-    TRANSITION_DELAY + Duration::from_millis(250)
+/// Long enough past the span a clock-owed move takes that it is certainly overdue: the
+/// deadline the polls below give up at, generous because what is under test is the state a
+/// reference reaches rather than how fast it reaches it.
+fn move_deadline() -> Duration {
+    Duration::from_secs(60)
+}
+
+/// How long a poll below waits between two reads of a reference's state.
+fn poll_interval() -> Duration {
+    Duration::from_millis(50)
+}
+
+/// Wait until every reference of `route_table_id` is reported in `state`.
+///
+/// Polls for that STATE rather than sleeping for the span the clock owes the move, so a
+/// loaded machine cannot read a reference before the move has been applied.
+async fn wait_until_every_reference_is(
+    router: &MultiServiceRouter,
+    route_table_id: &str,
+    state: &str,
+) {
+    let deadline = tokio::time::Instant::now() + move_deadline();
+    loop {
+        let body = reported(router, route_table_id, &[]).await;
+        let states = elements(&body, "state");
+        if !states.is_empty() && states.iter().all(|reported| reported == state) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "every reference of {route_table_id} must reach {state:?}, last read {states:?}"
+        );
+        tokio::time::sleep(poll_interval()).await;
+    }
 }
 
 /// One call of `action` signed for the Region above.
@@ -174,6 +206,58 @@ fn seed_attachment(engine: &engine::InMemoryEngine, kind: &Kind) -> String {
         .expect("the store holds the seeded attachment")
 }
 
+/// Store a managed prefix list under `prefix_list_id`, so a reference created FOR it names a
+/// prefix list the account holds.
+///
+/// A reference routes exactly the ranges its prefix list holds, so the create resolves the
+/// `PrefixListId` against the account's own lists and the Region's published ones. Which list
+/// it is has no part in any rule here — the rows are about the ROUTE — so one is seeded at
+/// each id the table names rather than every row being rewritten around the ids a create
+/// mints.
+fn seed_prefix_list(engine: &engine::InMemoryEngine, prefix_list_id: &str) {
+    let store = engine.state::<Ec2State>();
+    let mut guard = store.lock();
+    guard.managed_prefix_lists.insert(
+        prefix_list_id.to_string(),
+        ec2::state::ManagedPrefixListRecord {
+            view: ec2::ops::types::ManagedPrefixList {
+                prefix_list_id: Some(prefix_list_id.to_string()),
+                address_family: Some("IPv4".to_string()),
+                state: Some("create-complete".to_string()),
+                prefix_list_name: Some(format!("seeded-{prefix_list_id}")),
+                max_entries: Some(5),
+                version: Some(1),
+                owner_id: Some(engine::emulator_account_id().to_string()),
+                ..Default::default()
+            },
+            entries: Vec::new(),
+            pending: None,
+        },
+    );
+}
+
+/// Every prefix list id the rows below name, so each create resolves the list it routes.
+const SEEDED_PREFIX_LISTS: [&str; 11] = [
+    "pl-00000000000000aa1",
+    "pl-0000aa12",
+    "pl-00000000000000bb2",
+    "pl-00000000000000cc3",
+    "pl-0000dd45",
+    "pl-0000000000000000a",
+    "pl-0000000000000000b",
+    "pl-0000000000000000c",
+    "pl-0000000000000000d",
+    "pl-0000000000000000e",
+    "pl-0000000000000000f",
+];
+
+/// Seed [`SEEDED_PREFIX_LISTS`] into a fresh store.
+fn seed_prefix_lists(engine: &engine::InMemoryEngine) {
+    for prefix_list_id in SEEDED_PREFIX_LISTS {
+        seed_prefix_list(engine, prefix_list_id);
+    }
+}
+
 /// The state the store holds for one (route table, prefix list) pair, or `None` when it holds
 /// no reference for it at all.
 fn stored_state(
@@ -273,6 +357,7 @@ async fn creating_a_prefix_list_reference_stores_one_route_and_reads_it_back() {
             target,
         } = case;
         let (router, engine) = super::ec2_query::emulator();
+        seed_prefix_lists(&engine);
         let route_table_id = route_table(&router).await;
         let kinds = kinds();
         let attachment = match target {
@@ -396,8 +481,14 @@ async fn creating_a_prefix_list_reference_stores_one_route_and_reads_it_back() {
             "case {case:?}: expected IncorrectState, got {body}"
         );
 
-        // The move the clock owed falls due on its own, without anybody asking for it.
-        tokio::time::sleep(past_the_transition()).await;
+        // The move the clock owed falls due on its own, without anybody asking for it — read
+        // until it has rather than after a span of this test's choosing.
+        wait_until_every_reference_is(
+            &router,
+            &route_table_id,
+            PREFIX_LIST_REFERENCE_STATE_AVAILABLE,
+        )
+        .await;
         let body = reported(
             &router,
             &route_table_id,
@@ -429,6 +520,7 @@ async fn creating_a_prefix_list_reference_stores_one_route_and_reads_it_back() {
 #[tokio::test]
 async fn a_request_whose_ids_or_target_do_not_resolve_is_refused_with_its_own_code() {
     let (router, engine) = super::ec2_query::emulator();
+    seed_prefix_lists(&engine);
     let route_table_id = route_table(&router).await;
     let attachment_id = seed_attachment(&engine, &kinds()[0]);
 
@@ -643,6 +735,7 @@ async fn a_malformed_route_table_id_is_named_in_the_refusal() {
 #[tokio::test]
 async fn a_dry_run_creates_no_reference() {
     let (router, engine) = super::ec2_query::emulator();
+    seed_prefix_lists(&engine);
     let route_table_id = route_table(&router).await;
     let attachment_id = seed_attachment(&engine, &kinds()[0]);
 
@@ -704,6 +797,7 @@ async fn a_dry_run_creates_no_reference() {
 #[tokio::test]
 async fn every_documented_filter_selects_the_references_it_names() {
     let (router, engine) = super::ec2_query::emulator();
+    seed_prefix_lists(&engine);
     let route_table_id = route_table(&router).await;
     let kind = &kinds()[0];
     let attachment_id = seed_attachment(&engine, kind);
@@ -737,8 +831,13 @@ async fn every_documented_filter_selects_the_references_it_names() {
     }
 
     // Past the move the clock owed, so the `state` rows below name a settled state rather
-    // than racing the transition.
-    tokio::time::sleep(past_the_transition()).await;
+    // than racing the transition — read until every reference has reached it.
+    wait_until_every_reference_is(
+        &router,
+        &route_table_id,
+        PREFIX_LIST_REFERENCE_STATE_AVAILABLE,
+    )
+    .await;
 
     let account = engine::emulator_account_id().to_string();
     // (case, the filters, the prefix list ids expected in report order)
@@ -861,6 +960,7 @@ async fn every_documented_filter_selects_the_references_it_names() {
 #[tokio::test]
 async fn the_reader_pages_the_references_in_prefix_list_order() {
     let (router, engine) = super::ec2_query::emulator();
+    seed_prefix_lists(&engine);
     let route_table_id = route_table(&router).await;
 
     // More references than the smallest page the model's `TransitGatewayMaxResults`

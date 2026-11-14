@@ -323,6 +323,10 @@ async fn logs_endpoint(emulator: &Emulator, network: &Network, case: &str) -> St
                 ("ServiceName", &format!("com.amazonaws.{REGION}.logs")),
                 ("VpcEndpointType", "Interface"),
                 ("SubnetId.1", &network.subnet),
+                // A VPC you create has DNS hostnames off, which a private hosted zone needs;
+                // this endpoint is only the one syslog data is ingested through, so it asks
+                // for no private DNS.
+                ("PrivateDnsEnabled", "false"),
             ],
             case,
         )

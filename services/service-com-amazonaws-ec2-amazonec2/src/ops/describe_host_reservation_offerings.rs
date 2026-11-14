@@ -202,12 +202,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "The ID of the reservation offering" (`OfferingId`): an offering id is read
         // through the id parser BEFORE the catalog is consulted
         // ([`host_offering_id_is_well_formed`]), so a value that is no offering id at all is
-        // refused rather than looked up — `InvalidHostReservationOfferingId.Malformed`. That
-        // is a different answer from the empty offering set a well-formed id this catalog
-        // does not publish gets, which is what lets a caller tell a bad id from a term or
-        // family nothing is offered for.
+        // refused rather than looked up — `InvalidHostReservationOfferingId.Malformed`.
+        //
+        // And an id of that form that this catalog does not publish is refused the SAME way:
+        // an offering id names ONE entry of the price list, and EC2 answers an id it did not
+        // issue — whatever its shape — `InvalidHostReservationOfferingId.Malformed` rather
+        // than reporting no offering for it, which is what a recorded probe of an id outside
+        // the catalog pins. So the two questions have one answer here, and a caller is never
+        // told "no offerings" for an id that names nothing.
         if let Some(offering_id) = input.offering_id.as_deref() {
-            if !host_offering_id_is_well_formed(offering_id) {
+            if !host_offering_id_is_well_formed(offering_id)
+                || host_offering_by_id(offering_id).is_none()
+            {
                 return Err(
                     crate::state::invalid_host_reservation_offering_id_malformed(offering_id),
                 );
@@ -328,9 +334,33 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         }
 
-        // "This is the minimum duration of the reservation you'd like to purchase" /
-        // "the maximum duration of the reservation to purchase, specified in seconds":
-        // bounds on the term, inclusive at both ends, so a request naming exactly one
+        // "This is the minimum duration of the reservation you'd like to purchase, specified
+        // in seconds. Reservations are available in one-year and three-year terms. The number
+        // of seconds specified must be the number of seconds in a year (365x24x60x60) times
+        // one of the supported durations (1 or 3). For example, specify 31536000 for one
+        // year" (`$MinDuration`, and `$MaxDuration` word for word for the maximum): a value
+        // outside that set is not a term this API knows, so it is refused rather than used as
+        // a bound that silently matches every term or none.
+        for (member, requested) in [
+            ("minDuration", input.min_duration),
+            ("maxDuration", input.max_duration),
+        ] {
+            let Some(requested) = requested else { continue };
+            if !host_reservation_durations().contains(&requested) {
+                return Err(crate::state::invalid_parameter_value(format!(
+                    "Invalid value '{requested}' for {member}. It must be the number of \
+                     seconds in a year ({SECONDS_PER_RESERVATION_YEAR}) times one of the \
+                     supported durations ({terms})",
+                    terms = HOST_RESERVATION_TERM_YEARS
+                        .iter()
+                        .map(i32::to_string)
+                        .collect::<Vec<String>>()
+                        .join(" or "),
+                )));
+            }
+        }
+
+        // Those two bound the term, inclusive at both ends, so a request naming exactly one
         // term's length reports that term.
         let durations: Vec<i32> = host_reservation_durations()
             .into_iter()
@@ -542,9 +572,8 @@ impl HostOfferingRecord {
 /// The ONE place an operation that ACTS on an offering resolves it, so the purchase and its
 /// preview cannot disagree about which ids name an offering or about how they refuse one that
 /// does not: an id outside the catalog, whatever its form, names nothing there is a price for.
-/// The describe above does NOT go through this — "the results describe all of the Dedicated
-/// Host reservation offerings", so for a SELECTION an id the catalog does not hold is a filter
-/// that matches nothing rather than a refusal.
+/// The describe above resolves its own `OfferingId` against the same catalog, under the id's
+/// own refusal class rather than this one — the pair a recorded probe of that operation pins.
 pub fn require_host_offering<E>(
     offering_id: &str,
 ) -> Result<&'static HostOfferingRecord, crate::scaffolded::Scaffolded<E>> {

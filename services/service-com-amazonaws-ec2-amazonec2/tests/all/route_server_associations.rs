@@ -19,10 +19,12 @@
 //!    `DryRun` request is held to;
 //! 4. reading associations WRITES NOTHING: two reads of one route server report the same
 //!    associations, and a read never creates one;
-//! 5. one VPC holds at most ONE association: a second `AssociateRouteServer` naming a VPC
-//!    that already holds one is refused with `RouteServerAssociationAlreadyExists` and writes
-//!    nothing, and deleting a VPC takes the association it held with it rather than leaving
-//!    one that names a VPC which no longer exists;
+//! 5. a route server holds at most ONE association: it writes what it learns into the route
+//!    tables of the one VPC it is associated with, so a second `AssociateRouteServer` naming
+//!    it — for another VPC or for the one it already serves — is refused with
+//!    `InvalidRouteServerId.AlreadyAssociated` and writes nothing, while a VPC already served
+//!    by one route server can be served by another; and deleting a VPC takes the association
+//!    it held with it rather than leaving one that names a VPC which no longer exists;
 //! 6. every way `AssociateRouteServer` can be refused is rendered in THIS SERVICE'S
 //!    ec2Query error envelope: the status that refusal class carries, its code, the message
 //!    AWS words for it with the request's own values in it, the envelope's media type, and
@@ -207,7 +209,8 @@ async fn associate(
 /// `associated` after it — and the read itself writes nothing.
 ///
 /// The rows differ in which route server holds the association, which VPC it is with, and
-/// how many associations one route server holds (none, one, two).
+/// whether a route server holds one association or none — a route server holds at most one,
+/// which `one_route_server_holds_at_most_one_association` is the rule for.
 #[tokio::test]
 async fn get_route_server_associations_reports_the_associations_of_the_route_server_named() {
     let router = emulator();
@@ -217,18 +220,19 @@ async fn get_route_server_associations_reports_the_associations_of_the_route_ser
     // route server a recording used.
     let first_server = create_route_server("the first route server", &router, "64512").await;
     let second_server = create_route_server("the second route server", &router, "4200000000").await;
+    let sharing_server = create_route_server("a route server sharing a VPC", &router, "64513").await;
     let unassociated_server = create_route_server("a route server nobody associates", &router, "1").await;
 
-    // Three VPCs of the account, so the VPC side of a pair varies too.
+    // Two VPCs of the account, so the VPC side of a pair varies too — and one of them is
+    // served by two route servers, which a VPC may be.
     let first_vpc = create_vpc("the first VPC", &router, "10.11.0.0/16").await;
-    let second_vpc = create_vpc("the second VPC", &router, "10.12.0.0/16").await;
     let third_vpc = create_vpc("the third VPC", &router, "10.13.0.0/16").await;
 
     // One row per pair the table associates.
     let pairs: [(&str, &str, &str); 3] = [
         ("the first route server with the first VPC", &first_server, &first_vpc),
-        ("the first route server with a second VPC", &first_server, &second_vpc),
         ("the second route server with the third VPC", &second_server, &third_vpc),
+        ("a second route server for the first VPC", &sharing_server, &first_vpc),
     ];
 
     for (case, route_server_id, vpc_id) in pairs {
@@ -266,21 +270,21 @@ async fn get_route_server_associations_reports_the_associations_of_the_route_ser
 
     // Rule 1: each route server reports exactly its own pairs, in VpcId order, and a route
     // server that holds none reports the empty set.
-    let mut first_expected = vec![
-        (first_vpc.clone(), ASSOCIATED.to_string()),
-        (second_vpc.clone(), ASSOCIATED.to_string()),
-    ];
-    first_expected.sort();
-    let expectations: [ReportRow<'_>; 3] = [
+    let expectations: [ReportRow<'_>; 4] = [
         (
-            "the route server holding two associations",
+            "the route server holding the first VPC",
             &first_server,
-            first_expected,
+            vec![(first_vpc.clone(), ASSOCIATED.to_string())],
         ),
         (
-            "the route server holding one association",
+            "the route server holding the third VPC",
             &second_server,
             vec![(third_vpc.clone(), ASSOCIATED.to_string())],
+        ),
+        (
+            "the route server sharing the first VPC",
+            &sharing_server,
+            vec![(first_vpc.clone(), ASSOCIATED.to_string())],
         ),
         (
             "the route server holding none",
@@ -497,24 +501,27 @@ async fn a_dry_run_of_a_request_that_would_succeed_writes_nothing() {
 }
 
 // ---------------------------------------------------------------------------
-// Rule 5: one VPC holds at most one association
+// Rule 5: one route server holds at most one association
 // ---------------------------------------------------------------------------
 
-/// The rule: an association is the connection between one route server and one VPC, so a
-/// VPC that already holds one cannot take a second — whether the second request repeats the
-/// pair or names another route server — and the refusal is the `<Resource>AlreadyExists`
-/// code EC2 answers a resource a create would duplicate with, which for this operation is
-/// `RouteServerAssociationAlreadyExists`, with nothing written. An unknown VPC id is refused
-/// with the code every operation of this service refuses one with, and deleting a VPC takes
-/// the association it held with it.
+/// The rule: an association is the connection between one route server and one VPC, and the
+/// route server is what holds it — it writes the routes it learns into the route tables of
+/// the one VPC it is associated with — so a route server that already holds an association
+/// takes no second one, whether the request names another VPC or repeats the association it
+/// already has: that is `InvalidRouteServerId.AlreadyAssociated`, with nothing written. The
+/// VPC is the association's SUBJECT rather than its holder, so a VPC already served by one
+/// route server can be served by another. An unknown VPC id is refused with the code every
+/// operation of this service refuses one with, and deleting a VPC takes the association it
+/// held with it.
 ///
-/// The rows differ in which route server the second associate names, which parameter the
-/// request leaves out, and whether the VPC named exists at all.
+/// The rows differ in which route server the second associate names, which VPC it names,
+/// which parameter the request leaves out, and whether the VPC named exists at all.
 #[tokio::test]
-async fn one_vpc_holds_at_most_one_route_server_association() {
+async fn one_route_server_holds_at_most_one_association() {
     let router = emulator();
     let first_server = create_route_server("the associated route server", &router, "65010").await;
     let second_server = create_route_server("another route server", &router, "65011").await;
+    let third_server = create_route_server("a third route server", &router, "65012").await;
     let associated_vpc = create_vpc("the VPC that gets associated", &router, "10.31.0.0/16").await;
     let free_vpc = create_vpc("a VPC nobody associates", &router, "10.32.0.0/16").await;
 
@@ -524,6 +531,22 @@ async fn one_vpc_holds_at_most_one_route_server_association() {
         "the first associate must succeed, got {status} with body {body}"
     );
 
+    // A VPC is the subject of an association, not its holder, so a SECOND route server may be
+    // associated with the VPC the first one already serves.
+    let (status, second_body) = associate(&router, &second_server, &associated_vpc, &[]).await;
+    assert_eq!(
+        status, 200,
+        "a second route server must take the same VPC, got {status} with body {second_body}"
+    );
+    assert_eq!(
+        (
+            element(&second_body, "routeServerId"),
+            element(&second_body, "vpcId")
+        ),
+        (Some(second_server.clone()), Some(associated_vpc.clone())),
+        "the second association must name the pair it was asked for, got {second_body}"
+    );
+
     // (case, the route server, the VPC, the extra parameters, the code, the message)
     let rows: [RefusalRow<'_>; 5] = [
         (
@@ -531,28 +554,28 @@ async fn one_vpc_holds_at_most_one_route_server_association() {
             &first_server,
             &associated_vpc,
             Vec::new(),
-            "RouteServerAssociationAlreadyExists",
-            format!("The vpc '{associated_vpc}' is already associated with route server '{first_server}'"),
+            "InvalidRouteServerId.AlreadyAssociated",
+            format!("The route server '{first_server}' is already associated with vpc '{associated_vpc}'"),
         ),
         (
-            "another route server for the same VPC",
-            &second_server,
-            &associated_vpc,
+            "the associated route server for another VPC",
+            &first_server,
+            &free_vpc,
             Vec::new(),
-            "RouteServerAssociationAlreadyExists",
-            format!("The vpc '{associated_vpc}' is already associated with route server '{first_server}'"),
+            "InvalidRouteServerId.AlreadyAssociated",
+            format!("The route server '{first_server}' is already associated with vpc '{associated_vpc}'"),
         ),
         (
             "a dry run of a request that would be refused",
-            &second_server,
-            &associated_vpc,
+            &first_server,
+            &free_vpc,
             vec![param("DryRun", "true")],
-            "RouteServerAssociationAlreadyExists",
-            format!("The vpc '{associated_vpc}' is already associated with route server '{first_server}'"),
+            "InvalidRouteServerId.AlreadyAssociated",
+            format!("The route server '{first_server}' is already associated with vpc '{associated_vpc}'"),
         ),
         (
             "a VPC the account does not hold",
-            &first_server,
+            &third_server,
             "vpc-0a1b2c3d4e5f60719",
             Vec::new(),
             "InvalidVpcID.NotFound",
@@ -560,7 +583,7 @@ async fn one_vpc_holds_at_most_one_route_server_association() {
         ),
         (
             "no VpcId at all",
-            &first_server,
+            &third_server,
             "",
             Vec::new(),
             "MissingParameter",
@@ -585,12 +608,12 @@ async fn one_vpc_holds_at_most_one_route_server_association() {
             message,
             "case {case:?}: expected the message {message:?}, got body {body}"
         );
-        // Nothing was written: the second route server holds no association, and the first
+        // Nothing was written: the third route server holds no association, and the first
         // still holds exactly the one it was given.
-        let second = reported_pairs(case, &router, &second_server).await;
+        let third = reported_pairs(case, &router, &third_server).await;
         assert!(
-            second.is_empty(),
-            "case {case:?}: a refused associate must write nothing, got {second:?}"
+            third.is_empty(),
+            "case {case:?}: a refused associate must write nothing, got {third:?}"
         );
         let first = reported_pairs(case, &router, &first_server).await;
         assert_eq!(
@@ -668,6 +691,8 @@ struct EnvelopeRow {
 async fn every_refusal_of_the_associate_is_rendered_in_this_services_error_envelope() {
     let router = emulator();
     let route_server_id = create_route_server("the route server", &router, "65020").await;
+    let free_server = create_route_server("a route server with no association", &router, "65021")
+        .await;
     let associated_vpc =
         create_vpc("the VPC that holds an association", &router, "10.41.0.0/16").await;
     let free_vpc = create_vpc("a VPC that holds none", &router, "10.42.0.0/16").await;
@@ -737,18 +762,18 @@ async fn every_refusal_of_the_associate_is_rendered_in_this_services_error_envel
             message: format!("The vpc ID '{unknown_vpc}' does not exist"),
         },
         EnvelopeRow {
-            case: "a VPC that already holds an association".to_string(),
-            params: associate_params(&route_server_id, &associated_vpc, &[]),
+            case: "a route server that already holds an association".to_string(),
+            params: associate_params(&route_server_id, &free_vpc, &[]),
             status: 400,
-            code: "RouteServerAssociationAlreadyExists",
+            code: "InvalidRouteServerId.AlreadyAssociated",
             message: format!(
-                "The vpc '{associated_vpc}' is already associated with route server \
-                 '{route_server_id}'"
+                "The route server '{route_server_id}' is already associated with vpc \
+                 '{associated_vpc}'"
             ),
         },
         EnvelopeRow {
             case: "a DryRun of a request that would have succeeded".to_string(),
-            params: associate_params(&route_server_id, &free_vpc, &[param("DryRun", "true")]),
+            params: associate_params(&free_server, &free_vpc, &[param("DryRun", "true")]),
             status: DRY_RUN_STATUS,
             code: "DryRunOperation",
             message: "Request would have succeeded, but DryRun flag is set.".to_string(),
@@ -810,7 +835,7 @@ async fn every_refusal_of_the_associate_is_rendered_in_this_services_error_envel
         "case {case:?}: the one association must still be with {associated_vpc}, got {after:?}",
         case = "after every refusal"
     );
-    let (free_status, free_body) = associate(&router, &route_server_id, &free_vpc, &[]).await;
+    let (free_status, free_body) = associate(&router, &free_server, &free_vpc, &[]).await;
     assert_eq!(
         free_status, 200,
         "the VPC only ever named in refused requests must still associate, got {free_status} \

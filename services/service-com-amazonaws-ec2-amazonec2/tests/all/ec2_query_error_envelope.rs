@@ -458,7 +458,27 @@ async fn two_identical_refusals_report_two_different_request_ids() {
 /// one route per prefix list has nothing left to do.
 #[tokio::test]
 async fn a_success_reports_the_request_in_its_own_lowercase_element() {
-    let (router, _engine) = super::ec2_query::emulator();
+    let (router, engine) = super::ec2_query::emulator();
+    // The prefix list the reference below routes: a reference routes exactly the ranges its
+    // list holds, so the create resolves the `PrefixListId` against the account's own lists.
+    // Which list it is has no part in this rule, which is about the ENVELOPE.
+    engine.state::<ec2::state::ComAmazonawsEc2Amazonec2State>().lock().managed_prefix_lists.insert(
+        PREFIX_LIST_ID.to_string(),
+        ec2::state::ManagedPrefixListRecord {
+            view: ec2::ops::types::ManagedPrefixList {
+                prefix_list_id: Some(PREFIX_LIST_ID.to_string()),
+                address_family: Some("IPv4".to_string()),
+                state: Some("create-complete".to_string()),
+                prefix_list_name: Some("the envelope suite's prefix list".to_string()),
+                max_entries: Some(5),
+                version: Some(1),
+                owner_id: Some(engine::emulator_account_id().to_string()),
+                ..Default::default()
+            },
+            entries: Vec::new(),
+            pending: None,
+        },
+    );
 
     let case = "CreateTransitGateway";
     let (status, body) = invoke(&router, "CreateTransitGateway", &[]).await;

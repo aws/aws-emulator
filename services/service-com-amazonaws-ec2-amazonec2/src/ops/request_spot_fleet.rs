@@ -431,6 +431,51 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )));
             };
             require_visible_image(&store, image_id)?;
+            // "If you specify `InstanceRequirements`, you can't specify `InstanceType`"
+            // (`SpotFleetLaunchSpecification$InstanceRequirements`): the two members are two
+            // ways of saying which instance type the pool launches, so a specification that
+            // gives both says it twice — refused through the one place that rule lives, so a
+            // launch specification and a launch template override answer it alike.
+            if launch.instance_type.is_some() && launch.instance_requirements.is_some() {
+                return Err(crate::state::instance_requirements_with_instance_type());
+            }
+            // A specification that names its pool by instance REQUIREMENTS asks EC2 to
+            // "identify instance types with those attributes" and launch from those
+            // (`$InstanceRequirements`), which this slice does not do: nothing here resolves a
+            // requirement set to the instance types that satisfy it. Refused rather than
+            // accepted and dropped, the same answer the override member gets below.
+            if launch.instance_requirements.is_some() {
+                return Err(crate::state::unsupported_operation(
+                    "RequestSpotFleet places the Spot pools a launch specification's instance \
+                     type names; the member 'instanceRequirements' is not one this service \
+                     resolves instance types from",
+                ));
+            }
+            // "The instance type" (`$InstanceType`) is what a pool launches; a specification
+            // that names none leaves the pool's type to the fleet, which is what the store
+            // records for it.
+            // "If you specify a network interface, you must specify any security groups as
+            // part of the network interface instead of using this parameter"
+            // (`$SecurityGroups`), and an interface carries the subnet it is created in — so a
+            // specification that gives an interface AND an instance-level subnet or security
+            // group says where to attach the instance twice, with no defined winner.
+            let interfaces = launch.network_interfaces.as_deref().unwrap_or_default();
+            if !interfaces.is_empty() {
+                for (member, given) in [
+                    ("subnetId", launch.subnet_id.is_some()),
+                    (
+                        "groupSet",
+                        launch.security_groups.as_deref().is_some_and(|groups| !groups.is_empty()),
+                    ),
+                ] {
+                    if given {
+                        return Err(Scaffolded::invalid_parameter_combination(format!(
+                            "Network interfaces and an instance-level {member} may not be \
+                             specified on the same request"
+                        )));
+                    }
+                }
+            }
             if let Some(subnet_id) = launch.subnet_id.as_deref() {
                 if !store.subnets.contains_key(subnet_id) {
                     return Err(invalid_subnet_id_not_found(subnet_id));
@@ -438,6 +483,35 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
             for group in launch.security_groups.iter().flatten() {
                 require_known_group(&store, group)?;
+            }
+            // "The name of the key pair" (`$KeyName`): the key pair is the credential the
+            // instances this pool launches are reachable with, so a name the account holds no
+            // key pair under names a launch that could never happen — refused with the key
+            // pair's own not-found class, the way the image and the groups above are refused
+            // with theirs.
+            if let Some(key_name) = launch
+                .key_name
+                .as_deref()
+                .filter(|key_name| !key_name.is_empty())
+            {
+                if store.key_pair_id_for_name(key_name).is_none() {
+                    return Err(crate::state::invalid_key_pair_name_not_found(key_name));
+                }
+            }
+            // "You can't specify both a snapshot ID and an encryption value. This is because
+            // only blank volumes can be encrypted on creation"
+            // (`$BlockDeviceMappings`): a mapping that gives both asks for a volume restored
+            // from a snapshot AND created blank, which is two different volumes.
+            for mapping in launch.block_device_mappings.iter().flatten() {
+                let Some(ebs) = mapping.ebs.as_ref() else {
+                    continue;
+                };
+                if ebs.snapshot_id.is_some() && ebs.encrypted.is_some() {
+                    return Err(Scaffolded::invalid_parameter_combination(
+                        "A block device mapping cannot carry both a snapshot ID and an \
+                         encryption value: only a blank volume can be encrypted on creation",
+                    ));
+                }
             }
             if let Some(zone_name) = launch
                 .placement

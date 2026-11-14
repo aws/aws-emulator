@@ -32,9 +32,13 @@ use super::wire::{param, Param};
 /// The Region every call here is signed for, and the Region of the endpoint services below.
 const REGION: &str = "us-east-1";
 
-/// Long enough past [`ec2::state::TRANSITION_DELAY`] that the move the clock owed a created
-/// endpoint is certainly due, with a margin for a slow machine.
-const SETTLE_WAIT: Duration = Duration::from_millis(900);
+/// Long enough past [`ec2::state::TRANSITION_DELAY`] that a move the clock owed a created
+/// endpoint is certainly overdue: the deadline the poll below gives up at, generous because
+/// what is under test is the state the endpoint reaches rather than how fast it reaches it.
+const SETTLE_DEADLINE: Duration = Duration::from_secs(60);
+
+/// How long the poll below waits between two reads of an endpoint's state.
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// One `action` call carrying `params`, as its HTTP status and XML body.
 async fn call(router: &MultiServiceRouter, action: &str, params: &[Param]) -> (u16, String) {
@@ -193,6 +197,10 @@ async fn an_endpoint_reports_its_state_in_the_published_vocabulary() {
         let mut params = vec![
             param("VpcId", &vpc_id),
             param("ServiceName", row.service_name),
+            // These rows are about the STATE an endpoint is created in, so they ask for no
+            // private hosted zone: a VPC you create has DNS hostnames off, which is what an
+            // endpoint associating one needs.
+            param("PrivateDnsEnabled", "false"),
         ];
         if let Some(endpoint_type) = row.endpoint_type {
             params.push(param("VpcEndpointType", endpoint_type));
@@ -261,14 +269,22 @@ async fn an_endpoint_reports_its_state_in_the_published_vocabulary() {
     }
 
     // The move the clock owed each endpoint that was not in service yet falls due on its own,
-    // with nothing called in between to make it happen.
-    tokio::time::sleep(SETTLE_WAIT).await;
+    // with nothing called in between to make it happen — so each is READ until it reports the
+    // state it was owed rather than read once after a span of this test's choosing.
     for (case, endpoint_id, _) in &created {
-        assert_eq!(
-            described_state(case, &router, endpoint_id).await,
-            ec2::state::VPC_ENDPOINT_STATE_AVAILABLE,
-            "case {case:?}: the clock owed {endpoint_id} its available state"
-        );
+        let deadline = tokio::time::Instant::now() + SETTLE_DEADLINE;
+        loop {
+            let state = described_state(case, &router, endpoint_id).await;
+            if state == ec2::state::VPC_ENDPOINT_STATE_AVAILABLE {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "case {case:?}: the clock owed {endpoint_id} its available state, last read \
+                 {state:?}"
+            );
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
     }
     let available = ids_in_state("the available filter", &router, "available").await;
     assert_eq!(

@@ -133,10 +133,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         use crate::scaffolded::Scaffolded;
-        use crate::state::{
-            address_transfer_not_available, internal_error, require_known_address,
-            require_service_state,
-        };
+        use crate::state::{address_transfer_not_available, require_service_state};
 
         // `ctx` carries request metadata only; this operation reads none of it. The store
         // is reached through the engine held on `self`.
@@ -150,12 +147,30 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         store.materialize_due_transitions();
 
         // "The allocation ID of an Elastic IP address"
-        // (`DisableAddressTransferRequest$AllocationId`): `require_known_address` answers
-        // `InvalidAllocationID.Malformed` for a value that is not an allocation id at all
-        // before `InvalidAllocationID.NotFound` for a well-formed one the account has no
-        // address for, the way the service orders the two.
+        // (`DisableAddressTransferRequest$AllocationId`): an id that is not an allocation id
+        // at all is `InvalidAllocationID.Malformed` before anything is looked up, the way the
+        // service orders the two questions — and a well-formed one the account holds no
+        // address for is answered under the OTHER of the two codes EC2 publishes for that
+        // failure, `InvalidElasticIpID.NotFound`, which is the one a recorded refusal of THIS
+        // operation pins ([`crate::state::invalid_elastic_ip_id_not_found`] carries why which
+        // code an operation answers is a fact of the operation).
         let allocation_id = input.allocation_id.clone();
-        require_known_address(&store, &allocation_id)?;
+        if !crate::state::allocation_id_is_well_formed(&allocation_id) {
+            return Err(crate::state::invalid_allocation_id_malformed(
+                &allocation_id,
+            ));
+        }
+        if !store.addresses.contains_key(&allocation_id) {
+            return Err(crate::scaffolded::Scaffolded::service_error(
+                crate::state::INVALID_ELASTIC_IP_ID_NOT_FOUND,
+                400,
+                // The code is this operation's; the SENTENCE is the one every refusal of an
+                // unresolvable allocation id of this service carries, naming the member the
+                // request sent ([`crate::state::invalid_allocation_id_not_found`]) — the
+                // recorded pair for this operation.
+                crate::state::allocation_id_not_found_message(&allocation_id),
+            ));
+        }
 
         // There is nothing to disable unless the address carries a PENDING offer: an
         // accepted transfer has already moved the address and a disabled one is already
@@ -186,21 +201,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // The check above already established there is a pending offer, and nothing can
-        // have moved it: the store is still locked. So this cannot answer `false` — it is
+        // have moved it: the store is still locked. So this cannot answer `None` — it is
         // read rather than discarded so no path can withdraw nothing and report a success.
-        if !store.withdraw_address_transfer(&allocation_id) {
+        // The withdrawn offer is what the answer carries: the record is gone from the store
+        // with the withdrawal, so this view — the offer as it stood, in the `disabled` state
+        // the withdrawal left it in — is the one and only report of it, and a later
+        // `DescribeAddressTransfers` reports no transfer for the address, which is what
+        // taking the offer back means.
+        let Some(withdrawn) = store.withdraw_address_transfer(&allocation_id) else {
             return Err(address_transfer_not_available(&address));
-        }
-
-        // Read the response back OUT of the store, so the caller sees what a later
-        // `DescribeAddressTransfers` will see rather than a record built here.
-        let stored = store.address_transfers.get(&allocation_id).ok_or_else(|| {
-            internal_error(format!(
-                "the transfer just disabled for '{allocation_id}' could not be read back"
-            ))
-        })?;
+        };
         Ok(DisableAddressTransferOutput {
-            address_transfer: Some(stored.transfer.clone()),
+            address_transfer: Some(withdrawn),
         })
     }
 }

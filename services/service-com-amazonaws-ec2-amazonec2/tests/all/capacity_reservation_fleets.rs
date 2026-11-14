@@ -21,8 +21,9 @@
 //!    it still reports the composition it reserved;
 //! 4. an id that is not a Capacity Reservation Fleet id at all is refused for the WHOLE
 //!    request with `InvalidCapacityReservationFleetId.Malformed`, before any Fleet is looked
-//!    up or moved, while a well-formed id that names no Fleet is reported PER FLEET by the
-//!    cancel and refused by the describe;
+//!    up or moved, and a well-formed id that names no Fleet is refused for the whole request
+//!    too, with `InvalidCapacityReservationFleetId.NotFound`, by the cancel and by the
+//!    describe alike;
 //! 5. a request that cannot be served is refused with EC2's own error code and stores
 //!    nothing, `DryRun` performs nothing, and one `ClientToken` creates one Fleet;
 //! 6. `CapacityReservationFleetIds`, `Filters` and `MaxResults` narrow and page the report,
@@ -51,7 +52,7 @@ use ec2::state::{
     RESOURCE_TYPE_CAPACITY_RESERVATION_FLEET, TRANSITION_DELAY,
 };
 
-use super::ec2_query::{call, elements, error_code, filters, indexed};
+use super::ec2_query::{call, elements, error_code, error_message, filters, indexed};
 use super::wire::{child, child_text, document, param, Param};
 
 /// The Region every call here is signed for. A Fleet's ARN names the Region the request was
@@ -952,10 +953,10 @@ async fn a_malformed_fleet_id_is_refused_before_any_fleet_is_touched() {
     }
 }
 
-/// RULE 4: a well-formed id that names no Fleet is ONE Fleet that could not be cancelled —
-/// the others named in the same call still are — while the describe refuses the request; and
-/// a Fleet whose cancellation has already happened is reported as `IncorrectState` rather
-/// than cancelled twice.
+/// RULE 4: a well-formed id that names no Fleet is the REQUEST's refusal — nothing named
+/// beside it is cancelled, and the describe refuses the same id the same way; while a Fleet
+/// whose cancellation has already happened is reported as `IncorrectState` rather than
+/// cancelled twice.
 #[tokio::test]
 async fn an_unknown_or_already_cancelled_fleet_is_reported_per_fleet() {
     let (router, _engine) = super::ec2_query::emulator();
@@ -970,14 +971,32 @@ async fn an_unknown_or_already_cancelled_fleet_is_reported_per_fleet() {
     let fleet_id = created_fleet("a Fleet to cancel", &body).id;
     past_the_transition().await;
 
-    // One call naming a known Fleet and an unknown one: the known Fleet is cancelled and the
-    // unknown id is reported beside it.
+    // One call naming a known Fleet and an unknown one: the id that names no Fleet is the
+    // request's refusal, and the Fleet named beside it is left exactly as it was.
     let case = "an unknown id beside a known Fleet";
     let (status, body) = cancel(&router, &[fleet_id.as_str(), UNKNOWN_FLEET_ID]).await;
     assert_eq!(
+        status, 400,
+        "case {case:?}: an id that names no Fleet is the request's refusal, got {status} \
+         with body {body}"
+    );
+    assert_eq!(
+        error_code(&body),
+        "InvalidCapacityReservationFleetId.NotFound",
+        "case {case:?}: expected the not-found code, got body {body}"
+    );
+    assert!(
+        error_message(&body).contains(UNKNOWN_FLEET_ID),
+        "case {case:?}: the message must name the id, got body {body}"
+    );
+
+    // The Fleet named beside the unknown id is still cancellable, which is how the refusal
+    // is observable as having cancelled nothing.
+    let case = "the known Fleet on its own";
+    let (status, body) = cancel(&router, &[fleet_id.as_str()]).await;
+    assert_eq!(
         status, 200,
-        "case {case:?}: a per-Fleet failure is not a request failure, got {status} with \
-         body {body}"
+        "case {case:?}: expected HTTP 200, got {status} with body {body}"
     );
     let doc = document(case, &body);
     let successful = set_items(doc.root_element(), "successfulFleetCancellationSet");
@@ -989,28 +1008,9 @@ async fn an_unknown_or_already_cancelled_fleet_is_reported_per_fleet() {
         vec![fleet_id.clone()],
         "case {case:?}: the known Fleet is still cancelled, got body {body}"
     );
-    let failed = set_items(doc.root_element(), "failedFleetCancellationSet");
-    assert_eq!(
-        failed.len(),
-        1,
-        "case {case:?}: one id named no Fleet, got body {body}"
-    );
-    let error = child(failed[0], "cancelCapacityReservationFleetError")
-        .unwrap_or_else(|| panic!("case {case:?}: no error on the failed entry: {body}"));
-    assert_eq!(
-        (
-            child_text(failed[0], "capacityReservationFleetId"),
-            child_text(error, "code"),
-        ),
-        (
-            Some(UNKNOWN_FLEET_ID.to_string()),
-            Some("InvalidCapacityReservationFleetId.NotFound".to_string()),
-        ),
-        "case {case:?}: expected the unknown id and its code, got body {body}"
-    );
     assert!(
-        child_text(error, "message").is_some_and(|message| message.contains(UNKNOWN_FLEET_ID)),
-        "case {case:?}: the message must name the id, got body {body}"
+        set_items(doc.root_element(), "failedFleetCancellationSet").is_empty(),
+        "case {case:?}: nothing could not be cancelled, got body {body}"
     );
 
     // The same Fleet again, while it is `cancelling`, and once more after the clock has made

@@ -192,6 +192,29 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let vpc_id = subnet.vpc_id.clone();
         let subnet_cidr_block = subnet.cidr_block.clone().unwrap_or_default();
 
+        // An endpoint is "an Amazon Web Services-managed component inside a subnet"
+        // (`RouteServerEndpoint`) through which the route server exchanges routes with the
+        // appliances of the VPC it is associated with, so the subnet has to be a subnet of
+        // THAT VPC: a subnet of any other VPC is in a network this route server does not
+        // serve, and the endpoint created there could never carry its routes. The association
+        // is the one record of which VPC a route server serves
+        // ([`crate::state::ComAmazonawsEc2Amazonec2State::vpc_route_server_is_associated_with`]),
+        // so a route server that holds none has no VPC to contradict and the subnet is taken
+        // as given.
+        if let Some(associated_vpc) =
+            store.vpc_route_server_is_associated_with(&input.route_server_id)
+        {
+            if vpc_id.as_deref() != Some(associated_vpc) {
+                return Err(state::invalid_parameter_value(format!(
+                    "Invalid value '{subnet_id}' for subnetId. The subnet is not in vpc \
+                     '{associated_vpc}', which route server '{route_server_id}' is associated \
+                     with",
+                    subnet_id = input.subnet_id,
+                    route_server_id = input.route_server_id,
+                )));
+            }
+        }
+
         let replayed = input
             .client_token
             .as_deref()

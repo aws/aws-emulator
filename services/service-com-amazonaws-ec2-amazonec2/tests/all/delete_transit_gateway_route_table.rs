@@ -271,6 +271,36 @@ async fn a_delete_removes_the_table_and_everything_stored_in_it() {
             prefix_lists,
         } = case;
         let (router, engine) = super::ec2_query::emulator();
+        // The prefix lists the references below route: a reference routes exactly the ranges
+        // its list holds, so the create resolves the `PrefixListId` against the account's own
+        // lists. Which list it is has no part in this row, which is about the DELETE.
+        {
+            let store = engine.state::<Ec2State>();
+            let mut guard = store.lock();
+            for prefix_list_id in prefix_lists
+                .iter()
+                .copied()
+                .chain(["pl-00000000000000ff9"])
+            {
+                guard.managed_prefix_lists.insert(
+                    prefix_list_id.to_string(),
+                    ec2::state::ManagedPrefixListRecord {
+                        view: ec2::ops::types::ManagedPrefixList {
+                            prefix_list_id: Some(prefix_list_id.to_string()),
+                            address_family: Some("IPv4".to_string()),
+                            state: Some("create-complete".to_string()),
+                            prefix_list_name: Some(format!("seeded-{prefix_list_id}")),
+                            max_entries: Some(5),
+                            version: Some(1),
+                            owner_id: Some(engine::emulator_account_id().to_string()),
+                            ..Default::default()
+                        },
+                        entries: Vec::new(),
+                        pending: None,
+                    },
+                );
+            }
+        }
         let (transit_gateway_id, association_table, _) = transit_gateway(&router, &[]).await;
         let default_route_table_id = association_table
             .expect("a gateway created with the documented defaults owns a default route table");

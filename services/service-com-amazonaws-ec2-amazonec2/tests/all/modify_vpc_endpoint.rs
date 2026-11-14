@@ -148,6 +148,20 @@ struct Network {
 /// resources this emulator actually stores.
 async fn network(case: &str, router: &MultiServiceRouter, zones: &[&str]) -> Network {
     let vpc_id = create_vpc(case, router, "10.60.0.0/16").await;
+    // A VPC you create has DNS hostnames OFF (Amazon VPC User Guide, "DNS attributes in
+    // your VPC"), and an interface endpoint's private hosted zone needs them ON — so the
+    // network every endpoint below is created in turns them on, leaving the rows free to be
+    // about the modify rather than about the VPC's DNS attributes.
+    let _ = ok(
+        case,
+        router,
+        "ModifyVpcAttribute",
+        &[
+            param("VpcId", &vpc_id),
+            param("EnableDnsHostnames.Value", "true"),
+        ],
+    )
+    .await;
     let mut subnets = Vec::with_capacity(zones.len());
     for (index, zone) in zones.iter().enumerate() {
         let cidr_block = format!("10.60.{}.0/24", index + 1);
@@ -396,19 +410,24 @@ async fn the_subnets_an_endpoint_serves_follow_the_additions_and_removals() {
             "case {case:?}: expected one endpoint network interface per subnet, got {described}"
         );
         // "(Interface endpoint) The DNS entries for the endpoint" (`DnsEntries`): the
-        // endpoint's regional name plus one per zone it is served in.
+        // endpoint's regional name plus one per zone it is served in, and the service's own
+        // default public name beside them for the private hosted zone this endpoint
+        // associates.
         let dns_names = set_members(case, &described, "dnsEntrySet", "dnsName");
         assert_eq!(
             dns_names.len(),
-            expected.len() + 1,
-            "case {case:?}: expected the regional name and one per zone, got {dns_names:?}"
+            expected.len() + 2,
+            "case {case:?}: expected the service's name, the regional name and one per zone, \
+             got {dns_names:?}"
         );
         assert!(
             dns_names
                 .iter()
                 .all(|name| name.starts_with(&format!("{endpoint_id}."))
-                    || name.starts_with(&format!("{endpoint_id}-"))),
-            "case {case:?}: expected every name to be the endpoint's own, got {dns_names:?}"
+                    || name.starts_with(&format!("{endpoint_id}-"))
+                    || name == &format!("logs.{REGION}.amazonaws.com")),
+            "case {case:?}: expected every name to be the endpoint's own or the service's, \
+             got {dns_names:?}"
         );
     }
 }

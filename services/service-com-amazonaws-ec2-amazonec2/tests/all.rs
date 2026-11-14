@@ -109,14 +109,11 @@ mod local_gateways;
 // `RunInstances` driven from a LAUNCH TEMPLATE: the version's parameters overlaid with the
 // request's own, which version a request names, and what a template the account does not hold
 // refuses. Declared beside `prefix_lists` for the reason the note above gives: the sorted
-// neighbourhood and the tail of this file are where every new ec2 suite inserts its lines.
 #[path = "all/run_instances_from_launch_template.rs"]
 mod run_instances_from_launch_template;
 // `RunInstances` with a NETWORK INTERFACE SPECIFICATION: the interfaces a launch names are
 // created in the subnets, with the groups, addresses and options they name, or an existing one
 // is attached — and what a launch asks for that an interface cannot be given. Declared beside
-// `prefix_lists` for the reason the note above gives: the sorted neighbourhood and the tail of
-// this file are where every new ec2 suite inserts its lines.
 #[path = "all/run_instances_network_interfaces.rs"]
 mod run_instances_network_interfaces;
 // The SQL Server High Availability REGISTRATIONS the account holds: what an enable writes and
@@ -1030,7 +1027,6 @@ mod import_snapshot_tasks;
 #[path = "all/snapshot_imports.rs"]
 mod snapshot_imports;
 // Cancelling an import task of either kind: what `CancelImportTask` moves and what it
-// refuses.
 #[path = "all/import_task_cancellation.rs"]
 mod import_task_cancellation;
 #[path = "all/instance_connect_endpoints.rs"]
@@ -2153,7 +2149,6 @@ mod delete_network_insights_access_scope;
 // The conflicting-state precondition `CreateFlowLogs` checks before it stores anything: a
 // create asking for a flow log the account already holds — the same configuration delivered
 // to the same destination — is refused `FlowLogAlreadyExists` and stores nothing. Declared at
-// the tail of this file, which is where every new ec2 suite lands.
 #[path = "all/flow_log_duplicate_refusal.rs"]
 mod flow_log_duplicate_refusal;
 // WHERE EC2 answers the modelled `DryRun` member: the verdict an operation this emulator has
@@ -2165,6 +2160,14 @@ mod dry_run_verdict_and_ordering;
 // What `ModifyApplicationStatusCheck` changes on a stored application status check: exactly the
 // members the request carries, every other one left where the create left it, held to the same
 // published bounds. Declared at the tail of this file, which is where every new ec2 suite
-// lands.
 #[path = "all/modify_application_status_check.rs"]
 mod modify_application_status_check;
+// What this service ADMITS: the state and reference checks an operation makes before it
+// writes — a root volume replacement that runs only on a running instance, a delete refused
+// once the deletion it asks for is under way, an id naming no resource refused with that
+// resource's own code, a route server endpoint held to the VPC its route server serves, an
+// interface endpoint's private hosted zone held to the VPC's DNS attributes, and the
+// withdrawal of an address transfer leaving the account none to report. Declared at the tail
+// of this file, which is where every new ec2 suite lands.
+#[path = "all/admission_checks.rs"]
+mod admission_checks;

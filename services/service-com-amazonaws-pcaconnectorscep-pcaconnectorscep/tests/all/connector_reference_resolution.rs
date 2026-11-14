@@ -328,6 +328,10 @@ impl Emulator {
             .vpc_id(vpc_id)
             .vpc_endpoint_type(endpoint_type)
             .service_name(service_name)
+            // A VPC you create has DNS hostnames off, which a private hosted zone needs;
+            // these endpoints are only references for a connector to resolve, so they ask for
+            // no private DNS.
+            .private_dns_enabled(false)
             .send()
             .await
             .expect("EC2 must create the VPC endpoint")

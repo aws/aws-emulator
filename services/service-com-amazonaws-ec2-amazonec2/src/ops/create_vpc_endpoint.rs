@@ -514,18 +514,41 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
-        // "To use a private hosted zone, you must set the following VPC attributes to true:
-        // enableDnsHostnames and enableDnsSupport" (`PrivateDnsEnabled`) — a VPC without
-        // them cannot resolve the private name, so the endpoint is refused rather than
-        // created with an association that would never answer.
+        // "(Interface endpoint) Indicates whether to associate a private hosted zone with the
+        // specified VPC. The private hosted zone contains a record set for the default public
+        // DNS name for the service for the Region … To use a private hosted zone, you must
+        // set the following VPC attributes to true: enableDnsHostnames and enableDnsSupport"
+        // (`PrivateDnsEnabled`). Two things have to hold for that zone to resolve anything,
+        // and each is asked here rather than left to fail silently:
         //
-        // The model publishes no DEFAULT for this member (`smithy_query(query="doc",
-        // shape="CreateVpcEndpointRequest",member="PrivateDnsEnabled")` states the rule
-        // above and no default), so an endpoint reports the association the request asked
-        // for and none when it asked for nothing: a request that named no private hosted
-        // zone is not refused for a VPC whose attributes could not have served one.
-        let private_dns_enabled = interface && input.private_dns_enabled.unwrap_or(false);
+        // * the SERVICE has to publish a default public DNS name, since the record set for
+        //   that name is the whole content of the zone
+        //   ([`crate::state::endpoint_service_private_dns_name`], read off the one catalogue
+        //   `DescribeVpcEndpointServices` reports from) — a service with none has no zone to
+        //   associate;
+        // * the VPC has to have both DNS attributes on, which is what makes a private hosted
+        //   zone resolve inside it at all.
+        //
+        // The model publishes no DEFAULT for the member (`smithy_query(query="doc",
+        // shape="CreateVpcEndpointRequest",member="PrivateDnsEnabled")` states the rule above
+        // and no default), and the service's own default is ON for a service that publishes a
+        // private DNS name: private DNS is what makes an interface endpoint intercept the
+        // service's public hostname, so an endpoint created without a word about it is created
+        // with it — and is held to the VPC's attributes exactly as one that asked for it is. A
+        // service that publishes no such name has nothing to turn on, so an endpoint to one
+        // defaults to off.
+        let service_private_dns_name = state::endpoint_service_private_dns_name(&store, service_name);
+        let private_dns_enabled = interface
+            && input
+                .private_dns_enabled
+                .unwrap_or(service_private_dns_name.is_some());
         if private_dns_enabled {
+            if service_private_dns_name.is_none() {
+                return Err(state::invalid_parameter_value(format!(
+                    "Private DNS can't be enabled because the service {service_name} has no \
+                     private DNS name"
+                )));
+            }
             let attributes = store
                 .vpc_attributes_of(&input.vpc_id)
                 .ok_or_else(|| state::invalid_vpc_id_not_found(&input.vpc_id))?;

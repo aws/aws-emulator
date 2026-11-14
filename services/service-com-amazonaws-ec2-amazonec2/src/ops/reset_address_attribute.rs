@@ -166,8 +166,37 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A reverse DNS change is not immediate, and one record carries at most one
         // outstanding request: while the previous one has not been applied, another cannot
         // be started on it, so this one is refused rather than queued or silently dropped.
+        // Asked FIRST of the two questions below, because a record with a change in flight is
+        // a record this operation has already acted on.
         if store.address_ptr_update_is_pending(&allocation_id) {
             return Err(pending_request_already_exists());
+        }
+
+        // A reset takes the address's reverse DNS record AWAY — the one attribute an address
+        // has ("`AddressAttributeName` has exactly ONE member, `domain-name`"), so a reset of
+        // an address that carries no such record asks for the state it is already in: there
+        // is no record to reset, and nothing for the change the answer would report to be
+        // about. That request is refused rather than answered with an outstanding update of
+        // nothing.
+        let carries_a_record = store
+            .address_ptr_records
+            .get(&allocation_id)
+            .is_some_and(|record| record.ptr_record.is_some());
+        if !carries_a_record {
+            // The code and the sentence EC2 answers for an address that has no reverse DNS
+            // record: the sentence names the ADDRESS, which is what a PTR record is looked up
+            // by, and the code is the allocation id's own not-found class — the reset found
+            // no record of that address to act on.
+            let address = store
+                .addresses
+                .get(&allocation_id)
+                .and_then(|address| address.public_ip.clone())
+                .unwrap_or_default();
+            return Err(Scaffolded::service_error(
+                crate::state::INVALID_ALLOCATION_ID_NOT_FOUND,
+                400,
+                format!("No ptr record found for {address} ."),
+            ));
         }
 
         // DryRun sits AFTER every check that could refuse the request and BEFORE the one
