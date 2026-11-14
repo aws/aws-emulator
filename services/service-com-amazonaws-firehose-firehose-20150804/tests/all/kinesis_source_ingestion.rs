@@ -24,28 +24,30 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 
-use crate::delivery_stream_lifecycle::{PAST_THE_TRANSITION, REGION, ROLE_ARN};
+use crate::delivery_stream_lifecycle::{REGION, ROLE_ARN};
 use crate::destination_delivery::{base64, carries_time_prefix, Emulator};
 
 /// The `X-Amz-Target` prefix of the Kinesis Data Streams wire.
-const KINESIS_TARGET: &str = "Kinesis_20131202";
+pub(crate) const KINESIS_TARGET: &str = "Kinesis_20131202";
 
 /// The routing key a Kinesis request is signed for.
-const KINESIS_SERVICE: &str = "kinesis";
+pub(crate) const KINESIS_SERVICE: &str = "kinesis";
 
 /// How long a delivery out of a source stream is waited for before the case fails.
 ///
 /// Longer than the `DirectPut` suite's deadline: a record has to be CONSUMED from the source
 /// before its buffer even opens, so the wait covers a source poll, the buffer's window and
 /// the destination write, with room to spare on a slow machine.
-const DELIVERY_DEADLINE: Duration = Duration::from_secs(20);
+pub(crate) const DELIVERY_DEADLINE: Duration = Duration::from_secs(20);
 
 /// How often the destination is polled while waiting for a delivery.
-const POLL_INTERVAL: Duration = Duration::from_millis(25);
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
-/// How long the destination is watched AFTER every record has arrived, to see that nothing
-/// is delivered twice: several source polls and several buffer windows.
-const SETTLE: Duration = Duration::from_millis(1_500);
+/// How long a destination is WATCHED once every record has arrived, to see that nothing is
+/// delivered twice and that nothing the stream should not have retrieved appears: several
+/// source polls and several buffer windows. The window is watched by looking again every
+/// [`POLL_INTERVAL`], not by waiting it out.
+const WATCH: Duration = Duration::from_millis(1_500);
 
 /// One source-ingestion case: the source stream's shape, the destination the Firehose stream
 /// delivers to, and the records a producer writes to the source.
@@ -151,7 +153,7 @@ async fn a_kinesis_source_streams_records_are_delivered_to_the_destination() {
             put_to_source(&emulator, &source, &format!("pk-{index}"), payload).await;
         }
 
-        let bodies = delivered_payloads(&emulator, row.case, &bucket, &payloads).await;
+        let bodies = delivered_payloads(&emulator, row.case, &bucket, "", &payloads).await;
         let prefix = row.prefix.unwrap_or_default();
         for key in bodies.keys() {
             assert!(
@@ -174,22 +176,7 @@ async fn a_kinesis_source_streams_records_are_delivered_to_the_destination() {
 
         // Each record of the source reached the destination exactly once: a consumed record
         // is not consumed again, and a delivered buffer is not delivered again.
-        tokio::time::sleep(SETTLE).await;
-        let settled = concatenated(&emulator, &bucket).await;
-        for (index, payload) in payloads.iter().enumerate() {
-            let held = occurrences(&settled, payload);
-            assert_eq!(
-                held, 1,
-                "case {:?}: record {index} of the source is delivered exactly once, got {held}",
-                row.case
-            );
-        }
-        assert_eq!(
-            settled.len(),
-            payloads.iter().map(Vec::len).sum::<usize>(),
-            "case {:?}: the destination holds the source's records and nothing else",
-            row.case
-        );
+        stays_delivered(&emulator, row.case, &bucket, "", &once(&payloads)).await;
     }
 }
 
@@ -222,7 +209,7 @@ async fn retrieval_starts_at_the_delivery_start_timestamp() {
     put_to_source(&emulator, &source, "pk-after", &after).await;
 
     let delivered =
-        delivered_payloads(&emulator, row.case, &bucket, std::slice::from_ref(&after)).await;
+        delivered_payloads(&emulator, row.case, &bucket, "", std::slice::from_ref(&after)).await;
     let held: Vec<u8> = delivered.values().flatten().copied().collect();
     assert_eq!(
         occurrences(&held, &before),
@@ -232,21 +219,16 @@ async fn retrieval_starts_at_the_delivery_start_timestamp() {
         String::from_utf8_lossy(&held)
     );
 
-    // And it stays unretrieved: the position the first poll took is past it for good.
-    tokio::time::sleep(SETTLE).await;
-    let settled = concatenated(&emulator, &bucket).await;
-    assert_eq!(
-        occurrences(&settled, &before),
-        0,
-        "a record before the delivery start timestamp is never retrieved, got {:?}",
-        String::from_utf8_lossy(&settled)
-    );
-    assert_eq!(
-        occurrences(&settled, &after),
-        1,
-        "the record written after it is delivered exactly once, got {:?}",
-        String::from_utf8_lossy(&settled)
-    );
+    // And it stays unretrieved: the position the first poll took is past it for good, and
+    // the record written after retrieval started is delivered exactly once.
+    stays_delivered(
+        &emulator,
+        row.case,
+        &bucket,
+        "",
+        &[(before.as_slice(), 0), (after.as_slice(), 1)],
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -282,6 +264,7 @@ async fn a_source_fed_stream_takes_no_direct_put() {
         &emulator,
         "a source-fed stream takes no direct put",
         &bucket,
+        "",
         std::slice::from_ref(&through_the_source),
     )
     .await;
@@ -296,7 +279,7 @@ async fn a_source_fed_stream_takes_no_direct_put() {
 
 /// Create the source Kinesis data stream `name` with `shards` shards and answer its
 /// `StreamARN`, once the stream reports `ACTIVE`.
-async fn create_source_stream(emulator: &Emulator, name: &str, shards: u32) -> String {
+pub(crate) async fn create_source_stream(emulator: &Emulator, name: &str, shards: u32) -> String {
     let (status, answered) = emulator
         .json_rpc(
             KINESIS_SERVICE,
@@ -372,39 +355,59 @@ async fn create_source_fed_stream(
         "case {:?}: the create answers the stream's ARN, got {answered:?}",
         row.case
     );
-    tokio::time::sleep(PAST_THE_TRANSITION).await;
+    await_active_source_fed_stream(emulator, row.case, name, source_arn).await;
+}
 
-    // The source the stream reports is the one it was created with, read back through the
-    // service's own describe.
-    let described = emulator
-        .firehose_ok(
-            "DescribeDeliveryStream",
-            json!({ "DeliveryStreamName": name }),
-        )
-        .await;
-    let description = &described["DeliveryStreamDescription"];
-    assert_eq!(
-        description["DeliveryStreamStatus"],
-        json!("ACTIVE"),
-        "case {:?}: the stream must be ACTIVE, got {described:?}",
-        row.case
-    );
-    assert_eq!(
-        description["Source"]["KinesisStreamSourceDescription"]["KinesisStreamARN"],
-        json!(source_arn),
-        "case {:?}: the stream reports the source it reads, got {described:?}",
-        row.case
-    );
-    assert!(
-        description["Source"]["KinesisStreamSourceDescription"]["DeliveryStartTimestamp"]
-            .is_number(),
-        "case {:?}: the stream reports when retrieval starts, got {described:?}",
-        row.case
-    );
+/// Wait for the Firehose stream `name` to report `ACTIVE`, and assert that the source it
+/// reports is `source_arn`, read back through the service's own describe.
+///
+/// A poll loop on the STATUS rather than a wait for the clock-owed transition span: the case
+/// fails only if the stream is still not `ACTIVE` once [`DELIVERY_DEADLINE`] has passed, so
+/// how fast the host runs cannot decide it.
+pub(crate) async fn await_active_source_fed_stream(
+    emulator: &Emulator,
+    case: &str,
+    name: &str,
+    source_arn: &str,
+) {
+    let deadline = Instant::now() + DELIVERY_DEADLINE;
+    loop {
+        let described = emulator
+            .firehose_ok(
+                "DescribeDeliveryStream",
+                json!({ "DeliveryStreamName": name }),
+            )
+            .await;
+        let description = &described["DeliveryStreamDescription"];
+        if description["DeliveryStreamStatus"] == json!("ACTIVE") {
+            assert_eq!(
+                description["Source"]["KinesisStreamSourceDescription"]["KinesisStreamARN"],
+                json!(source_arn),
+                "case {case:?}: {name} reports the source it reads, got {described:?}"
+            );
+            assert!(
+                description["Source"]["KinesisStreamSourceDescription"]
+                    ["DeliveryStartTimestamp"]
+                    .is_number(),
+                "case {case:?}: {name} reports when ITS retrieval starts, got {described:?}"
+            );
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "case {case:?}: {name} must reach ACTIVE, got {described:?}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
 }
 
 /// Write one record to the source stream, as a producer does.
-async fn put_to_source(emulator: &Emulator, source: &str, partition_key: &str, data: &[u8]) {
+pub(crate) async fn put_to_source(
+    emulator: &Emulator,
+    source: &str,
+    partition_key: &str,
+    data: &[u8],
+) {
     let (status, answered) = emulator
         .json_rpc(
             KINESIS_SERVICE,
@@ -428,17 +431,19 @@ async fn put_to_source(emulator: &Emulator, source: &str, partition_key: &str, d
     );
 }
 
-/// Every object the destination holds once each of `payloads` is in one of them, keyed by
-/// object key — or a failure naming `case` once [`DELIVERY_DEADLINE`] has passed.
-async fn delivered_payloads(
+/// Every object under `prefix` of the destination bucket once each of `payloads` is in one of
+/// them, keyed by object key — or a failure naming `case` once [`DELIVERY_DEADLINE`] has
+/// passed.
+pub(crate) async fn delivered_payloads(
     emulator: &Emulator,
     case: &str,
     bucket: &str,
+    prefix: &str,
     payloads: &[Vec<u8>],
 ) -> BTreeMap<String, Vec<u8>> {
     let deadline = Instant::now() + DELIVERY_DEADLINE;
     loop {
-        let bodies = bodies(emulator, bucket).await;
+        let bodies = bodies_under(emulator, bucket, prefix).await;
         let held: Vec<u8> = bodies.values().flatten().copied().collect();
         let missing: Vec<usize> = payloads
             .iter()
@@ -451,8 +456,8 @@ async fn delivered_payloads(
         }
         assert!(
             Instant::now() < deadline,
-            "case {case:?}: expected every record of the source in {bucket}, missing the \
-             records at {missing:?} of {} (the keys delivered are {:?})",
+            "case {case:?}: expected every record of the source under {bucket}/{prefix}, \
+             missing the records at {missing:?} of {} (the keys delivered are {:?})",
             payloads.len(),
             bodies.keys().collect::<Vec<_>>()
         );
@@ -460,20 +465,24 @@ async fn delivered_payloads(
     }
 }
 
-/// The bytes of every object the destination holds, keyed by key.
-async fn bodies(emulator: &Emulator, bucket: &str) -> BTreeMap<String, Vec<u8>> {
+/// The bytes of every object under `prefix` of the destination bucket, keyed by key.
+pub(crate) async fn bodies_under(
+    emulator: &Emulator,
+    bucket: &str,
+    prefix: &str,
+) -> BTreeMap<String, Vec<u8>> {
     let mut bodies = BTreeMap::new();
-    for key in emulator.keys_under(bucket, "").await {
+    for key in emulator.keys_under(bucket, prefix).await {
         let body = emulator.object(bucket, &key).await;
         bodies.insert(key, body);
     }
     bodies
 }
 
-/// The bytes of every object the destination holds, in key order, as one slab — what the
-/// records of a source are counted in.
-async fn concatenated(emulator: &Emulator, bucket: &str) -> Vec<u8> {
-    bodies(emulator, bucket)
+/// The bytes of every object under `prefix` of the destination bucket, in key order, as one
+/// slab — what the records of a source are counted in.
+pub(crate) async fn concatenated(emulator: &Emulator, bucket: &str, prefix: &str) -> Vec<u8> {
+    bodies_under(emulator, bucket, prefix)
         .await
         .values()
         .flatten()
@@ -481,8 +490,73 @@ async fn concatenated(emulator: &Emulator, bucket: &str) -> Vec<u8> {
         .collect()
 }
 
+/// Watch `prefix` of `bucket` over [`WATCH`], failing the moment what it holds stops matching
+/// `expected`: each record there in exactly the number of copies given, and no byte beyond
+/// them.
+///
+/// A POLL LOOP rather than one look after a wait, so a record delivered a second time — or a
+/// record retrieved that this stream should never have retrieved — fails the case whenever in
+/// the window it happens, and the window's length decides nothing but how long the watch
+/// lasts.
+pub(crate) async fn stays_delivered(
+    emulator: &Emulator,
+    case: &str,
+    bucket: &str,
+    prefix: &str,
+    expected: &[(&[u8], usize)],
+) {
+    let until = Instant::now() + WATCH;
+    loop {
+        let held = concatenated(emulator, bucket, prefix).await;
+        for (record, copies) in expected {
+            let counted = occurrences(&held, record);
+            assert_eq!(
+                counted, *copies,
+                "case {case:?}: {bucket}/{prefix} holds the record {:?} exactly {copies} \
+                 time(s), got {counted}",
+                summarised(record)
+            );
+        }
+        let expected_bytes: usize = expected
+            .iter()
+            .map(|(record, copies)| record.len() * copies)
+            .sum();
+        assert_eq!(
+            held.len(),
+            expected_bytes,
+            "case {case:?}: {bucket}/{prefix} holds the records expected of it and nothing \
+             else, got {} bytes",
+            held.len()
+        );
+        if Instant::now() >= until {
+            return;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// Each of `payloads`, expected EXACTLY once — what [`stays_delivered`] is given for a record
+/// set a stream delivers in full.
+pub(crate) fn once(payloads: &[Vec<u8>]) -> Vec<(&[u8], usize)> {
+    payloads
+        .iter()
+        .map(|payload| (payload.as_slice(), 1))
+        .collect()
+}
+
+/// A record shortened for an assertion message: the head that carries its marker, rather than
+/// the filler that can run to tens of kilobytes behind it.
+fn summarised(record: &[u8]) -> String {
+    let head = record.len().min(40);
+    let mut shown = String::from_utf8_lossy(&record[..head]).into_owned();
+    if head < record.len() {
+        shown.push_str("...");
+    }
+    shown
+}
+
 /// How many times `needle` occurs in `held`.
-fn occurrences(held: &[u8], needle: &[u8]) -> usize {
+pub(crate) fn occurrences(held: &[u8], needle: &[u8]) -> usize {
     if needle.is_empty() || held.len() < needle.len() {
         return 0;
     }
@@ -496,7 +570,7 @@ fn occurrences(held: &[u8], needle: &[u8]) -> usize {
 ///
 /// The filler is a repeated digit, which cannot hold another record's marker, so counting a
 /// marker in the concatenated objects counts that record and nothing else.
-fn payload(ordinal: usize, index: usize, filler: usize) -> Vec<u8> {
+pub(crate) fn payload(ordinal: usize, index: usize, filler: usize) -> Vec<u8> {
     let mut payload = format!("case-{ordinal}-record-{index}:").into_bytes();
     payload.extend(std::iter::repeat_n(b'7', filler));
     payload

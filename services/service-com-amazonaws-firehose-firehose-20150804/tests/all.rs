@@ -81,6 +81,8 @@ mod http_endpoint_delivery;
 mod http_endpoint_error_output_forms;
 #[path = "all/http_endpoint_lambda_error_output.rs"]
 mod http_endpoint_lambda_error_output;
+#[path = "all/kinesis_source_fan_out.rs"]
+mod kinesis_source_fan_out;
 #[path = "all/kinesis_source_ingestion.rs"]
 mod kinesis_source_ingestion;
 #[path = "all/kms_key_resolution.rs"]
