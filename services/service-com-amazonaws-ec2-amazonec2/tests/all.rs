@@ -2200,6 +2200,13 @@ mod modify_application_status_check;
 // of this file, which is where every new ec2 suite lands.
 #[path = "all/admission_checks.rs"]
 mod admission_checks;
+// The two bundle API actions EC2 no longer serves — `CancelBundleTask` and `BundleInstance`:
+// every call to one is refused HTTP 400 `UnsupportedOperation` with the sentence naming that
+// action, whatever id, storage location, dry run, Region or stored state the call carries, and
+// the refusal writes nothing. Declared at the tail of this file, which is where every new ec2
+// suite lands.
+#[path = "all/retired_bundle_api_actions.rs"]
+mod retired_bundle_api_actions;
 // The WORDING of eight refusal families — a BYOIP range that is no CIDR block, a pagination
 // token the service did not mint, an unsupported filter name in the transit gateway
 // describes, an unknown placement group in each of the two planes that word it, one subnet

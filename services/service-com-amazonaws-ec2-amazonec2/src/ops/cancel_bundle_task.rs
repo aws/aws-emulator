@@ -1,15 +1,26 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CancelBundleTask
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CancelBundleTask`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CancelBundleTask::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! ## What this operation answers, and why it answers nothing else
+//!
+//! EC2 serves no call to this action: "CancelBundleTask is no longer supported because
+//! BundleInstance, the operation it cancels, is no longer supported" (this operation's own
+//! documentation, below). The action is retired, so every call to it is refused with HTTP
+//! 400 `UnsupportedOperation` and EC2's sentence for a retired action
+//! ([`crate::state::api_not_supported`]) — whatever bundle task id the request names,
+//! whether or not it sets `DryRun`, and whatever the account holds.
+//!
+//! That refusal IS the implementation, and the alternatives are all wrong:
+//!
+//! * a `<bundleInstanceTask>` with HTTP 200 would report a cancellation nothing performed,
+//!   of a task no operation of this API can mint any more;
+//! * `InvalidBundleID.NotFound` ([`crate::state::invalid_bundle_ids`], which
+//!   `DescribeBundleTasks` answers for a bundle id it cannot resolve) would say the action
+//!   is served and only this id is wrong;
+//! * `DryRunOperation` would say the request would have succeeded, which it could not;
+//! * a 501 would say nobody has written the operation, where what is true is that EC2
+//!   itself does not serve it.
 //!
 //! ## Shape of an operation
 //!
@@ -135,18 +146,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CancelBundleTask` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CancelBundleTaskErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
+        // Nothing of the request, and nothing in the store, can make this action servable:
+        // EC2 retired it along with the operation whose task it cancels, so the answer is
+        // the same for every call and neither the input, nor `ctx`, nor the state behind the
+        // engine is read. This module's header says why that answer is the refusal rather
+        // than a reported cancellation, a not-found or a 501.
         //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CancelBundleTask"))
+        // It is answered AHEAD of the `BundleId` the request names and ahead of the `DryRun`
+        // flag on purpose: the id only selects a task of an action that is not served, and
+        // the flag asks whether the request WOULD have succeeded — which it never could — so
+        // refusing for the retired action, rather than for the id or with `DryRunOperation`,
+        // is what keeps the answer the same whatever the request carries.
+        let _ = (&input, ctx, &self.engine);
+        Err(crate::state::api_not_supported(Self::NAME))
     }
 }

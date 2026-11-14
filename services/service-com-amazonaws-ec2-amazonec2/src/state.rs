@@ -1738,8 +1738,10 @@
 //! [`BundleTask`] shape `DescribeBundleTasks` reports, keyed by `BundleId`, for the same
 //! reason a conversion task is stored as its own modelled shape: every member a writer sets
 //! round-trips through the describe without a field-by-field copy that can silently drop
-//! one. `BundleInstance` is the operation that starts one and `CancelBundleTask` the one
-//! that cancels it.
+//! one. Nothing WRITES that store: `BundleInstance`, the operation that started a bundle
+//! task, and `CancelBundleTask`, the one that cancelled it, are both actions EC2 no longer
+//! serves ([`api_not_supported`]), so no call can mint or cancel one and the report is of
+//! the tasks the store holds.
 //!
 //! ## Root volume replacement tasks
 //!
@@ -2727,10 +2729,16 @@ mod store;
 /// task. Everything it declares is re-exported below, so a handler reaches it as
 /// `crate::state::require_bundle_task` like any helper of this module.
 mod bundle_tasks;
+/// The refusal EC2 answers a call to an API action it no longer serves with: the one
+/// wording for an action the model documents as no longer supported. Everything it declares
+/// is re-exported below, so a handler reaches it as `crate::state::api_not_supported` like
+/// any other refusal of this module.
+mod retired_api_actions;
 /// The published parameter bounds the handlers enforce by hand, and the sentences EC2
 /// refuses a violation of one with.
 mod parameter_bounds;
 pub use bundle_tasks::*;
+pub use retired_api_actions::*;
 pub use parameter_bounds::*;
 pub use store::*;
 pub use vpcs_and_security_groups::*;

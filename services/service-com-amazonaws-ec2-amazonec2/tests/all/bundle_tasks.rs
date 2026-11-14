@@ -35,10 +35,10 @@
 //! catalog, which [`the_rows_cover_every_published_bundle_task_state`] pins.
 //!
 //! Bundle tasks are SEEDED into the store here, the way the sibling export-task suite
-//! ([`super::export_tasks`]) seeds export tasks: `BundleInstance`, the operation that starts
-//! one, and `CancelBundleTask`, the one that cancels it, both still carry the crate's
-//! `SCAFFOLDED, NOT IMPLEMENTED` marker, so the store is the only writer available — and
-//! seeding is what lets one row per published catalog value be a case.
+//! ([`super::export_tasks`]) seeds export tasks: `BundleInstance`, the operation that started
+//! one, and `CancelBundleTask`, the one that cancelled it, are both actions EC2 no longer
+//! serves ([`super::retired_bundle_api_actions`]), so the store is the only writer available
+//! — and seeding is what lets one row per published catalog value be a case.
 
 use ec2::ops::types::{
     BUNDLE_TASK_STATE_VALUES, BundleTask, BundleTaskError, S3Storage, Storage,
@@ -161,6 +161,24 @@ fn seed(engine: &engine::InMemoryEngine, view: &BundleTask) -> String {
 /// How many bundle tasks the store holds.
 fn stored_tasks(engine: &engine::InMemoryEngine) -> usize {
     engine.state::<Ec2State>().lock().bundle_tasks.len()
+}
+
+/// One bundle task of this suite's table, seeded into `engine`'s store, answered as
+/// `(its id, the task as stored)`.
+///
+/// For the sibling suite that drives the two bundle API actions EC2 no longer serves
+/// ([`super::retired_bundle_api_actions`]): it needs a bundle id that RESOLVES, and the store
+/// is the only writer of a bundle task — so the seeding lives here, with the table it reads
+/// its row from, rather than being written a second time there.
+pub(super) fn seed_one_task(engine: &engine::InMemoryEngine) -> (String, BundleTask) {
+    let (_case, view) = rows()
+        .into_iter()
+        .next()
+        .expect("the table must hold at least one bundle task");
+    let bundle_id = seed(engine, &view);
+    let mut stored = view;
+    stored.bundle_id = Some(bundle_id.clone());
+    (bundle_id, stored)
 }
 
 /// The table rules 1, 2, 3 and 6 work from: one bundle task per row, each row a distinct
