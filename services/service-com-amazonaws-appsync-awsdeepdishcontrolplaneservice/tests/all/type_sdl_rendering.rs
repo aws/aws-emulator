@@ -32,16 +32,19 @@ use super::schema_creation::{await_creation, start_creation};
 
 /// One row of the rendering table: a definition as a request writes it, and the document
 /// a read of the type it declares answers with.
+///
+/// Shared with the suites that assert the same rendering through another operation, so one
+/// table states the layout for all of them.
 #[derive(Debug, Clone)]
-struct Row {
+pub(crate) struct Row {
     /// What the row covers, named in every assertion of it.
-    label: &'static str,
+    pub(crate) label: &'static str,
     /// The name the definition declares, which the type is addressed by.
-    name: &'static str,
+    pub(crate) name: &'static str,
     /// The definition as the request writes it.
-    stated: &'static str,
+    pub(crate) stated: &'static str,
     /// The document a read of the stored type answers with.
-    rendered: &'static str,
+    pub(crate) rendered: &'static str,
 }
 
 /// Every kind of type a GraphQL SDL definition declares, and the member shapes one can
@@ -54,7 +57,7 @@ struct Row {
 /// request wrote the definition on one line or over several, and in whether the
 /// definition carries a description, arguments, default values, wrapped types or a
 /// `@deprecated` directive.
-fn rows() -> Vec<Row> {
+pub(crate) fn rows() -> Vec<Row> {
     vec![
         Row {
             label: "an object type written on one line",
@@ -90,6 +93,12 @@ fn rows() -> Vec<Row> {
                        comments(limit: Int = 10, after: String): [Comment!]!\n\n\n\
                        legacyTitle: String @deprecated(reason: \"use title\")\n\n\
                        }\n",
+        },
+        Row {
+            label: "an enum type written with tab-indented values",
+            name: "Shelf",
+            stated: "enum Shelf {\n\tNEW\n\tOLD\n}\n",
+            rendered: "enum Shelf\n\n{\nNEW\n\n\nOLD\n\n}\n",
         },
         Row {
             label: "an interface type",
@@ -133,7 +142,7 @@ fn rows() -> Vec<Row> {
 }
 
 /// Send one `ListTypes` for `api_id`, in `format`.
-async fn list_types(router: &MultiServiceRouter, api_id: &str, format: &str) -> Answer {
+pub(crate) async fn list_types(router: &MultiServiceRouter, api_id: &str, format: &str) -> Answer {
     call(
         router,
         "GET",
@@ -157,7 +166,7 @@ fn listed(answer: &Answer, name: &str) -> Option<Value> {
 }
 
 /// The definition a reported `Type` carries.
-fn definition_of(reported: &Value) -> &str {
+pub(crate) fn definition_of(reported: &Value) -> &str {
     reported["definition"].as_str().unwrap_or_default()
 }
 
@@ -166,7 +175,7 @@ fn definition_of(reported: &Value) -> &str {
 ///
 /// The wait is the crate's shared poll loop on the CONDITION — the creation's own reported
 /// status — so nothing here depends on how fast the host runs.
-async fn create_schema(router: &MultiServiceRouter, api_id: &str, document: &str) {
+pub(crate) async fn create_schema(router: &MultiServiceRouter, api_id: &str, document: &str) {
     let started = start_creation(router, api_id, document.as_bytes()).await;
     assert_eq!(
         started.status, 200,

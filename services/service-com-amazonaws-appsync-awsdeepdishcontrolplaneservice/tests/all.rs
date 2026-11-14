@@ -121,6 +121,8 @@ mod identity_authorization;
 mod introspection_schema;
 #[path = "all/list_apis.rs"]
 mod list_apis;
+#[path = "all/list_types_sdl_layout.rs"]
+mod list_types_sdl_layout;
 #[path = "all/merged_api_association_topology.rs"]
 mod merged_api_association_topology;
 #[path = "all/merged_api_disassociation.rs"]

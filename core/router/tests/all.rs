@@ -2132,3 +2132,5 @@ mod ses_delivery_event_advances_the_subscribed_queue;
 // declared ONCE in the regions above, which is where they stay: a module may be declared
 // only once, and declaring it twice compiles neither.)
 // (`zz_probe` is declared once, further up this tail.)
+// above beside the other `apigateway_…` suites: a module may be declared only once.)
+// tail: a module may be declared only once.)
