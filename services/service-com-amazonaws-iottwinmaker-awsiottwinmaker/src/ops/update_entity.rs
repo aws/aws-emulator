@@ -69,7 +69,10 @@
 //! a property `value` that is not a value of the `dataType` the property has,
 //! its own or the inherited one
 //! ([`crate::state::Workspace::component_property_value_violation`], the rule
-//! every writer of a property's value shares), a property definition whose
+//! every writer of a property's value shares, and asked of every value the
+//! patched component would hold wherever the entry re-points the
+//! `componentTypeId` those values resolve through —
+//! [`crate::state::Workspace::component_property_values_violation`]), a property definition whose
 //! `defaultValue` is not a value of that same `dataType`
 //! ([`crate::state::Workspace::component_property_default_violation`], the same
 //! rule asked of the default a read reports AS the property's value while
@@ -564,6 +567,22 @@ fn apply_component_update(
         // `crate::state::Workspace::component_property_defaults_violation`,
         // asked of the whole patched record.
         if let Some(violation) = workspace.component_property_defaults_violation(
+            Some(component_type_id.as_str()),
+            &component.properties,
+        ) {
+            return Err(validation(violation));
+        }
+        // And for every VALUE the patched component would hold: a value is
+        // judged against the `dataType` the property resolves to through the
+        // component type its holder instantiates, so re-pointing that member
+        // moves the answer for a value some earlier write already stored
+        // exactly as it moves the answer for a definition or a default — the
+        // rule `crate::state::Workspace::component_property_value_violation`
+        // asked of the whole patched record
+        // (`crate::state::Workspace::component_property_values_violation`), so
+        // a re-point is refused rather than left for a read to report a stored
+        // value against a `dataType` it contradicts.
+        if let Some(violation) = workspace.component_property_values_violation(
             Some(component_type_id.as_str()),
             &component.properties,
         ) {

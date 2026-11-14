@@ -582,6 +582,63 @@ impl Workspace {
         })
     }
 
+    /// Why one of the VALUES the properties a component instantiating
+    /// `component_type_id` HOLD contradicts the `dataType` a read reports beside
+    /// it — `None` when none of them does.
+    ///
+    /// [`component_property_value_violation`](Self::component_property_value_violation)
+    /// asked of the values a component ALREADY HOLDS rather than of one a
+    /// request carries, for the reason its siblings
+    /// [`stranded_component_property_definition`](Self::stranded_component_property_definition)
+    /// and
+    /// [`component_property_defaults_violation`](Self::component_property_defaults_violation)
+    /// are: the component type is the other input of the rule — a stored value
+    /// is judged against a `dataType` resolved through it — so a writer that
+    /// re-points it answers the rule over the WHOLE record it would store
+    /// instead of over the entries the request happened to name.
+    ///
+    /// Every value a property holds is asked, whichever plane wrote it: the one
+    /// current value the control plane set ([`PropertyRecord::value`]) and each
+    /// value the time-series data plane wrote
+    /// ([`PropertyRecord::time_series`]), because a read reports each of them
+    /// beside that one `dataType`
+    /// ([`latest_property_value`], `GetPropertyValueHistory`). Walked in
+    /// property-name order, the way every writer of a requested map walks one
+    /// ([`requested_in_key_order`]), and within one property from the control
+    /// plane's value through the series in time order, so a record holding more
+    /// than one such value is always refused for the same one.
+    ///
+    /// The sibling's two steps are taken apart here so the first is taken ONCE
+    /// per property: a property's definition resolves to one `dataType` whatever
+    /// it holds, so the inheritance chain is resolved once
+    /// ([`refined_component_property_definition`](Self::refined_component_property_definition))
+    /// and the rule the sibling delegates to ([`data_value_type_violation`]) is
+    /// then asked of each value against it — one value still held to one rule,
+    /// with the cost of the walk linear in the values a record holds rather than
+    /// in the values times the component types the workspace holds. The same
+    /// choice [`stranded_property_definition`](Self::stranded_property_definition)
+    /// makes for a component type's own definitions.
+    pub fn component_property_values_violation(
+        &self,
+        component_type_id: Option<&str>,
+        properties: &BTreeMap<String, PropertyRecord>,
+    ) -> Option<String> {
+        properties.iter().find_map(|(property_name, property)| {
+            let resolved = self.refined_component_property_definition(
+                component_type_id,
+                property.definition.as_ref(),
+                property_name,
+            );
+            property
+                .value
+                .iter()
+                .chain(property.time_series.values().map(|held| &held.value))
+                .find_map(|value| {
+                    data_value_type_violation(property_name, resolved.as_ref(), value)
+                })
+        })
+    }
+
     /// Why `value` cannot be written to the property `property_name` of a
     /// component that instantiates `component_type_id` and declares
     /// `definition` for it — `None` when it can.
@@ -600,7 +657,10 @@ impl Workspace {
     /// The component-level counterpart of the question the time-series data
     /// plane asks of every value it writes, shared by every writer of a
     /// component's property value so one value is held to one rule wherever it
-    /// is written.
+    /// is written; asked of the values a component already holds by
+    /// [`component_property_values_violation`](Self::component_property_values_violation),
+    /// which is what a writer that re-points the component type the rule
+    /// resolves through needs.
     pub fn component_property_value_violation(
         &self,
         component_type_id: Option<&str>,
