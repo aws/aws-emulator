@@ -45,7 +45,11 @@ pub use custom_headers::{
     ingest_custom_headers, matched_headers, CustomHeaderRule, IngestedCustomHeaders,
     MAX_CUSTOM_HEADER_RULES_PER_APP,
 };
-pub use hosting_address::{amplify_zone_default_domain, hosted_branch_host, hosted_site_host};
+pub use hosting_address::{
+    addressed_hosted_site, amplify_zone_default_domain, announced_default_domain,
+    hosted_branch_host, hosted_site_host, hosted_site_path, hosting_plane_prefix,
+    names_the_hosting_zone, HostedSiteAddress, HOSTING_PLANE_LABEL,
+};
 
 /// One Amplify app as this service persists it: the modelled record it hands back,
 /// plus the branches, domain associations, webhooks and backend environments created
@@ -1568,28 +1572,62 @@ impl ComAmazonawsAmplifyAmplifyState {
             .fold(0usize, usize::saturating_add)
     }
 
-    /// Whether some branch of some app is HOSTED at `host` — the question
-    /// `Service::can_handle` asks of a request addressed to a branch's default domain.
-    pub fn hosts_a_branch(&self, host: &str) -> bool {
-        let host = hosted_site_host(host);
-        self.apps.values().any(|app| {
-            let domain = &app.app.default_domain;
-            app.branches
-                .values()
-                .any(|branch| hosted_branch_host(&branch.branch.display_name, domain) == host)
-        })
+    /// Whether some branch of some app answers at `address` — the question
+    /// `Service::can_handle` asks of a request addressed to a branch's site.
+    pub fn hosts_a_branch(&self, address: &HostedSiteAddress<'_>) -> bool {
+        self.hosted_branch_at(address).is_some()
     }
 
-    /// Resolve one hosting-edge visit: the branch `host` names, settled, with `path`
+    /// WHICH branch answers at `address`: the app's id and the branch's own key, or `None`
+    /// when no branch of any app answers there.
+    ///
+    /// A branch's site is addressed in the two ways [`HostedSiteAddress`] states:
+    ///
+    /// * by HOST, `<displayName>.<app defaultDomain>`, for an app announced under Amplify's
+    ///   own hosting zone ([`names_the_hosting_zone`]): `Branch$displayName` "is used as the
+    ///   default domain prefix"
+    ///   (`smithy_query(query="doc",shape="Branch",member="displayName")`) and
+    ///   `App$defaultDomain` is "the default domain for the Amplify app"
+    ///   (`(shape="App",member="defaultDomain")`). The match is case-insensitive and ignores
+    ///   any port, because a host is;
+    /// * by PATH, where the app is named by its id and the branch by that same display name
+    ///   ([`hosted_site_path`]) — compared case-insensitively too, because it is the same
+    ///   label. This is how the site of an app announced on this emulator's own endpoint is
+    ///   reached, since that address is one every app created through the same endpoint
+    ///   shares and is not a zone a branch label can be prefixed to.
+    fn hosted_branch_at(&self, address: &HostedSiteAddress<'_>) -> Option<(String, String)> {
+        match *address {
+            HostedSiteAddress::Host(host) => {
+                let host = hosted_site_host(host);
+                self.apps.iter().find_map(|(app_id, app)| {
+                    let domain = &app.app.default_domain;
+                    if !names_the_hosting_zone(domain) {
+                        return None;
+                    }
+                    app.branches.iter().find_map(|(name, branch)| {
+                        (hosted_branch_host(&branch.branch.display_name, domain) == host)
+                            .then(|| (app_id.clone(), name.clone()))
+                    })
+                })
+            }
+            HostedSiteAddress::Local { app_id, label } => {
+                let app = self.apps.get(app_id)?;
+                app.branches.iter().find_map(|(name, branch)| {
+                    branch
+                        .branch
+                        .display_name
+                        .eq_ignore_ascii_case(label)
+                        .then(|| (app_id.to_string(), name.clone()))
+                })
+            }
+        }
+    }
+
+    /// Resolve one hosting-edge visit: the branch `address` names, settled, with `path`
     /// resolved against its app's rules and its own published files.
     ///
-    /// A branch's site is served at `<displayName>.<app defaultDomain>`:
-    /// `Branch$displayName` "is used as the default domain prefix"
-    /// (`smithy_query(query="doc",shape="Branch",member="displayName")`) and
-    /// `App$defaultDomain` is "the default domain for the Amplify app"
-    /// (`smithy_query(query="doc",shape="App",member="defaultDomain")`). The match is
-    /// case-insensitive and ignores any port, because a host is. `None` when no branch
-    /// of any app is hosted there.
+    /// Which branch that is, is [`Self::hosted_branch_at`]; `None` when no branch of any app
+    /// answers there.
     ///
     /// `&mut` on the branch because serving a request REPORTS on it, and reporting
     /// materialises what the clock already owes it ([`AmplifyBranch::settle`]) — never
@@ -1603,38 +1641,32 @@ impl ComAmazonawsAmplifyAmplifyState {
     /// header carried, which is what the branch's access control is verified against.
     pub fn hosted_visit(
         &mut self,
-        host: &str,
+        address: &HostedSiteAddress<'_>,
         path: &str,
         presented: Option<&[u8]>,
     ) -> Option<HostedVisit> {
-        let host = hosted_site_host(host);
-        self.apps.values_mut().find_map(|app| {
-            let domain = app.app.default_domain.clone();
-            let hosted = app.branches.iter().find_map(|(name, branch)| {
-                (hosted_branch_host(&branch.branch.display_name, &domain) == host)
-                    .then(|| name.clone())
-            })?;
-            // What the clock already owes this branch — its jobs' status changes, and
-            // the site a finished deployment publishes — is materialised before anything
-            // is read, so a visitor sees the deployment that has finished rather than
-            // the one before it.
-            app.branches.get_mut(&hosted)?.settle();
-            let branch = app.branches.get(&hosted)?;
-            // Access control comes FIRST: a protected site tells an unauthenticated
-            // visitor nothing about what it carries, not even whether a path exists.
-            if !site_is_open_to(app, branch, presented) {
-                return Some(HostedVisit::unauthorized());
-            }
-            let rules = app.app.custom_rules.as_deref().unwrap_or_default();
-            Some(HostedVisit {
-                answer: resolve_hosted_request(rules, &branch.site, path),
-                // The header rules are handed BACK rather than resolved here: matching
-                // them against the path is bounded work on caller text
-                // ([`matched_headers`]), and it happens after this lock is released, so
-                // no other caller of this service waits on it. The list is shared, so
-                // handing it over copies no rule.
-                header_rules: Arc::clone(&app.custom_header_rules),
-            })
+        let (app_id, branch_name) = self.hosted_branch_at(address)?;
+        let app = self.apps.get_mut(&app_id)?;
+        // What the clock already owes this branch — its jobs' status changes, and
+        // the site a finished deployment publishes — is materialised before anything
+        // is read, so a visitor sees the deployment that has finished rather than
+        // the one before it.
+        app.branches.get_mut(&branch_name)?.settle();
+        let branch = app.branches.get(&branch_name)?;
+        // Access control comes FIRST: a protected site tells an unauthenticated
+        // visitor nothing about what it carries, not even whether a path exists.
+        if !site_is_open_to(app, branch, presented) {
+            return Some(HostedVisit::unauthorized());
+        }
+        let rules = app.app.custom_rules.as_deref().unwrap_or_default();
+        Some(HostedVisit {
+            answer: resolve_hosted_request(rules, &branch.site, path),
+            // The header rules are handed BACK rather than resolved here: matching
+            // them against the path is bounded work on caller text
+            // ([`matched_headers`]), and it happens after this lock is released, so
+            // no other caller of this service waits on it. The list is shared, so
+            // handing it over copies no rule.
+            header_rules: Arc::clone(&app.custom_header_rules),
         })
     }
 

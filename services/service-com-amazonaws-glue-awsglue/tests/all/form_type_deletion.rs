@@ -9,11 +9,10 @@
 //! The rule under test: a delete removes the ONE form type its `Identifier` resolves to —
 //! a form type's identifier being the name it was registered under, which is also the `Id`
 //! its put reports — so a later read of that form type misses while every other form type
-//! is untouched; it is HELD UP while an ASSET TYPE still references that form type ("a
-//! form type cannot be deleted if it is still referenced by an asset type"), whether by
-//! declaring a form of it among its own forms or through an asset of that type carrying one,
-//! earning the modelled `ConflictException` that names every such asset type and removing
-//! nothing, and is served again once those records are gone; and it
+//! is untouched; a reference an ASSET TYPE or an ASSET still carries to it does NOT hold the
+//! delete up (the recorded AWS answer for a form type an asset type still declares among its
+//! forms is `200` with an empty body and the form type gone), and the referencing records are
+//! left exactly as their own puts wrote them; and it
 //! reports no miss, because the operation models no not-found error
 //! (`smithy_query operation=DeleteFormType` lists `AccessDeniedException`,
 //! `ConcurrentModificationException`, `ConflictException`,
@@ -27,7 +26,7 @@
 use serde_json::{json, Map, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::wire::{call, emulator, error_code, error_message, ok, ACCOUNT_ID};
+use crate::wire::{call, emulator, error_code, error_message, ok};
 
 /// The longest `Name` the model accepts: "len 1..128" on `FormTypeName`
 /// (`smithy_query operation=PutFormType`), whose pattern `^[A-Z]\w*$` is what the rows
@@ -231,17 +230,17 @@ async fn deleting_a_form_type_removes_only_the_one_it_names() {
 // A form type an asset still uses
 // ---------------------------------------------------------------------------
 
-/// A delete is REFUSED for a form type an ASSET still carries a form of: "a form type cannot
-/// be deleted if it is still referenced by an asset type" (`DeleteFormType`), so the request
-/// earns the operation's modelled `ConflictException` naming every dependency that holds it
-/// up — the asset type of each using asset — the form type is still readable afterwards and
-/// no asset type is rewritten; and once the using assets are gone the same delete is served.
+/// A delete is SERVED for a form type an ASSET still carries a form of: a reference from an
+/// asset (or from the asset type it is an instance of) is not a dependency that holds the
+/// delete up, so the request answers 200 with an empty body, the form type is gone
+/// afterwards, and the records that reference it are left exactly as their own puts wrote
+/// them.
 ///
 /// The rows differ along how many forms the asset type declares, whether two of its entries
-/// share the doomed form type, how many assets (under how many asset types) use it, and
+/// share the deleted form type, how many assets (under how many asset types) use it, and
 /// whether the asset types keep a reference to a form type the delete never names.
 #[tokio::test]
-async fn deleting_a_form_type_an_asset_uses_is_refused_while_that_use_stands() {
+async fn deleting_a_form_type_an_asset_uses_is_served_while_that_use_stands() {
     let router = emulator();
 
     /// One row: the asset types whose assets carry a form of the form type the delete names.
@@ -344,10 +343,9 @@ async fn deleting_a_form_type_an_asset_uses_is_refused_while_that_use_stands() {
             );
         }
 
-        // A DECLARATION alone already holds the delete up. One asset per asset type, each
-        // carrying a form of the doomed form type, references it through that same asset
-        // type, so the dependency list below names each asset type once however many
-        // references it carries.
+        // One asset per asset type, each carrying a form of the deleted form type, so the
+        // row holds a reference through the asset AND through its asset type's own
+        // declaration — neither of which holds the delete up.
         let assets: Vec<String> = row
             .asset_types
             .iter()
@@ -367,8 +365,8 @@ async fn deleting_a_form_type_an_asset_uses_is_refused_while_that_use_stands() {
             .await;
         }
 
-        // The form type is readable to begin with, so the refusal below is about the
-        // reference and not about a form type that is not there.
+        // The form type is readable to begin with, so the miss below is the delete's doing
+        // and not a form type that was never there.
         assert_eq!(
             read_schema(&router, &doomed_id).await,
             doomed_schema,
@@ -376,28 +374,23 @@ async fn deleting_a_form_type_an_asset_uses_is_refused_while_that_use_stands() {
             row.case
         );
 
-        // The delete is held up while the assets stand — by either address the form
-        // type answers to — and the refusal names every asset type that holds it up.
-        for identifier in [doomed_id.as_str(), row.doomed_name] {
-            assert_delete_is_refused(
-                &router,
-                row.case,
-                identifier,
-                row.doomed_name,
-                row.asset_types,
-            )
-            .await;
-        }
-        // The refused delete removed nothing: the form type still reports its schema.
+        // The delete is SERVED while the assets stand, and the form type is gone
+        // afterwards — by either address it answers to.
+        let answered = delete(&router, row.case, &doomed_id).await;
         assert_eq!(
-            read_schema(&router, &doomed_id).await,
-            doomed_schema,
-            "case {}: a refused delete must leave the form type in place",
+            answered,
+            json!({}),
+            "case {}: DeleteFormType must answer an empty body, got {answered}",
             row.case
         );
+        assert_read_misses(&router, row.case, &doomed_id).await;
+        assert_read_misses(&router, row.case, row.doomed_name).await;
+        // The repeat by the other address removes nothing more and is served the same way.
+        delete(&router, row.case, row.doomed_name).await;
+        assert_read_misses(&router, row.case, &doomed_id).await;
 
-        // And it rewrote nothing else: every asset type still reports the `Forms` its put
-        // wrote.
+        // It rewrote nothing else: every asset type still reports the `Forms` its put
+        // wrote, references to the removed form type included.
         for (asset_type, before) in row.asset_types.iter().zip(forms_before.iter()) {
             let read = ok(
                 &router,
@@ -408,30 +401,28 @@ async fn deleting_a_form_type_an_asset_uses_is_refused_while_that_use_stands() {
             assert_eq!(
                 read.get("Forms"),
                 Some(before),
-                "case {}: the refused delete must rewrite no asset type, got {read}",
+                "case {}: the delete must rewrite no asset type, got {read}",
                 row.case
             );
         }
 
-        // Dropping the using ASSETS is not enough: each asset type still declares the form
-        // type, which is a reference of its own, so the identical delete is still refused
-        // and names the same dependencies.
+        // And the assets of those types are still there, each still reporting the asset
+        // type it is an instance of.
+        for (asset_type, asset) in row.asset_types.iter().zip(assets.iter()) {
+            let read = ok(&router, "GetAsset", &json!({ "Identifier": asset })).await;
+            assert_eq!(
+                read.get("AssetTypeId").and_then(Value::as_str),
+                Some(*asset_type),
+                "case {}: the delete must leave the using asset in place, got {read}",
+                row.case
+            );
+        }
+
+        // Tearing the referencing records down afterwards is served too, so a cleanup path
+        // runs in either order.
         for asset in &assets {
             ok(&router, "DeleteAsset", &json!({ "Identifier": asset })).await;
         }
-        for identifier in [doomed_id.as_str(), row.doomed_name] {
-            assert_delete_is_refused(
-                &router,
-                row.case,
-                identifier,
-                row.doomed_name,
-                row.asset_types,
-            )
-            .await;
-        }
-
-        // Once the asset types are gone too, nothing references the form type any more and
-        // the very same delete is served, by either address.
         for asset_type in row.asset_types {
             ok(
                 &router,
@@ -440,9 +431,6 @@ async fn deleting_a_form_type_an_asset_uses_is_refused_while_that_use_stands() {
             )
             .await;
         }
-        delete(&router, row.case, &doomed_id).await;
-        assert_read_misses(&router, row.case, &doomed_id).await;
-        assert_read_misses(&router, row.case, row.doomed_name).await;
 
         // The form type the asset types' other entries named was never the delete's
         // target and is untouched throughout.
@@ -455,22 +443,16 @@ async fn deleting_a_form_type_an_asset_uses_is_refused_while_that_use_stands() {
     }
 }
 
-/// The dependency a refusal names an asset type by: the kind of dependency it is, and the
-/// asset type's address inside the catalog that holds it. Written here independently of the
-/// service, so the suite pins the wording and not the code.
-fn dependency_of(asset_type: &str) -> String {
-    format!("gluetype glueAsset#glue_{ACCOUNT_ID}#{asset_type}")
-}
-
-/// An asset type that only DECLARES a form type among its forms still REFERENCES it: the
-/// delete is refused while that asset type stands, naming it as the dependency that holds the
-/// delete up, and the same delete is served once the asset type itself is gone.
+/// An asset type that only DECLARES a form type among its forms references it, and that
+/// reference does not hold the delete up either: the delete is served while the asset type
+/// stands, the form type is gone afterwards, and the asset type keeps the declaration its
+/// own put wrote.
 ///
 /// The rows differ along how many asset types declare the form type, how many forms each
 /// declares, and whether an asset of that asset type exists at all — carrying a form of
 /// ANOTHER form type, so the asset is there without using the one being deleted.
 #[tokio::test]
-async fn deleting_a_form_type_an_asset_type_declares_is_refused_until_that_type_is_gone() {
+async fn deleting_a_form_type_an_asset_type_declares_is_served_while_that_type_stands() {
     let router = emulator();
 
     // (case, the form type the delete names, the asset types declaring it, whether an
@@ -500,8 +482,9 @@ async fn deleting_a_form_type_an_asset_type_declares_is_refused_until_that_type_
         let doomed_id = put_form_type(&router, doomed_name, &doomed_schema).await;
 
         let mut assets: Vec<String> = Vec::new();
+        let mut declared: Vec<Value> = Vec::new();
         for asset_type in asset_types {
-            ok(
+            let put = ok(
                 &router,
                 "PutAssetType",
                 &json!({
@@ -510,6 +493,11 @@ async fn deleting_a_form_type_an_asset_type_declares_is_refused_until_that_type_
                 }),
             )
             .await;
+            declared.push(
+                put.get("Forms")
+                    .cloned()
+                    .unwrap_or_else(|| panic!("case {case}: PutAssetType must report Forms")),
+            );
             if with_asset {
                 let asset = format!("{}-other-asset", asset_type.to_lowercase());
                 ok(
@@ -527,19 +515,35 @@ async fn deleting_a_form_type_an_asset_type_declares_is_refused_until_that_type_
             }
         }
 
-        // The declaration is a reference, so it holds the delete up by either address the
-        // form type answers to, and the form type stays readable.
-        for identifier in [doomed_id.as_str(), doomed_name] {
-            assert_delete_is_refused(&router, case, identifier, doomed_name, asset_types).await;
-        }
+        // The declaration is a reference, and the delete is served anyway — by either
+        // address the form type answers to — after which the form type resolves to nothing.
         assert_eq!(
             read_schema(&router, &doomed_id).await,
             doomed_schema,
-            "case {case}: a refused delete must leave the form type in place"
+            "case {case}: the form type must be readable before the delete"
         );
+        delete(&router, case, doomed_name).await;
+        assert_read_misses(&router, case, &doomed_id).await;
+        assert_read_misses(&router, case, doomed_name).await;
+        delete(&router, case, &doomed_id).await;
 
-        // Once the declaring asset types are gone, nothing references the form type and the
-        // identical delete is served.
+        // Every declaring asset type still reports the forms its put wrote, the entry
+        // naming the removed form type included.
+        for (asset_type, before) in asset_types.iter().zip(declared.iter()) {
+            let read = ok(
+                &router,
+                "GetAssetType",
+                &json!({ "Identifier": asset_type }),
+            )
+            .await;
+            assert_eq!(
+                read.get("Forms"),
+                Some(before),
+                "case {case}: the delete must rewrite no asset type, got {read}"
+            );
+        }
+
+        // Tearing the referencing records down afterwards is served too.
         for asset in &assets {
             ok(&router, "DeleteAsset", &json!({ "Identifier": asset })).await;
         }
@@ -551,52 +555,14 @@ async fn deleting_a_form_type_an_asset_type_declares_is_refused_until_that_type_
             )
             .await;
         }
-        delete(&router, case, &doomed_id).await;
-        assert_read_misses(&router, case, &doomed_id).await;
     }
 
-    // The form type no row ever named is untouched: the deletes above were refused and
-    // served for the references they named, not for any reference at all.
+    // The form type no row ever named is untouched: each delete above removed the one form
+    // type its identifier resolved to and nothing else.
     assert_eq!(
         read_schema(&router, &other).await,
         "structure DanglingOther { a: String }",
         "case the other form type: no delete above ever named it"
-    );
-}
-
-/// Assert that the delete of `identifier` is refused with the modelled `ConflictException`
-/// whose `Message` is the business catalog's JSON document naming the form type and every
-/// dependency holding the delete up.
-async fn assert_delete_is_refused(
-    router: &MultiServiceRouter,
-    case: &str,
-    identifier: &str,
-    form_type: &str,
-    asset_types: &[&str],
-) {
-    let (status, body) = call(
-        router,
-        "DeleteFormType",
-        &json!({ "Identifier": identifier }),
-    )
-    .await;
-    assert_eq!(
-        status, 400,
-        "case {case}: DeleteFormType of {identifier:?} must be refused while an asset uses \
-         it, got {status} with {body}"
-    );
-    assert!(
-        error_code(&body).contains("ConflictException"),
-        "case {case}: expected ConflictException for {identifier:?}, got {body}"
-    );
-    let dependencies: Vec<String> = asset_types.iter().copied().map(dependency_of).collect();
-    assert_eq!(
-        error_message(&body),
-        format!(
-            r#"{{"Message":"Form type {form_type} cannot be deleted because of the following dependencies: {}"}}"#,
-            dependencies.join(", ")
-        ),
-        "case {case}: unexpected refusal wording for {identifier:?}, got {body}"
     );
 }
 

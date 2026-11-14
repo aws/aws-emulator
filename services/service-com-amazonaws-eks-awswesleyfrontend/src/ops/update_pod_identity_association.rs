@@ -9,9 +9,10 @@
 //! account the association can never be moved between — is left as stored.
 //!
 //! The `roleArn` an update asks Amazon EKS to pass is authorized FIRST — before the
-//! body's forms and before the association is resolved — and then, once the forms
-//! are sound, that role's trust relationship is resolved against IAM: an update may
-//! only point the association at a role the EKS Pod Identity principal may assume
+//! body's forms and before the association is resolved — and then, once the forms are
+//! sound, the CLUSTER the association belongs to is resolved ([`cluster_refusal`])
+//! before that role's trust relationship is resolved against IAM: an update may only
+//! point the association at a role the EKS Pod Identity principal may assume
 //! ([`crate::state::pod_identity_role_trust_refusal`]), the same rule the create
 //! applies to the role it stores.
 //!
@@ -282,6 +283,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let region = state::request_region(ctx.parts());
 
+        let now = SystemTime::now();
+
+        // THE CLUSTER COMES BEFORE THE ROLE'S TRUST RELATIONSHIP, for the reason
+        // `CreatePodIdentityAssociation` gives: an association is a child of a cluster,
+        // so a request naming a cluster this account does not hold is answered as the
+        // not-found it is, whatever the trust policy of the role it carries says. The
+        // guard is taken for that resolution alone and released again, because the
+        // trust question below is a call out to another service.
+        {
+            let mut guard = store.lock();
+            guard.materialize_due_transitions(now);
+            if let Some(refusal) = cluster_refusal(
+                guard
+                    .clusters
+                    .get(&(region.clone(), input.cluster_name.clone())),
+                &input.cluster_name,
+            ) {
+                return Err(refusal);
+            }
+        }
+
         // THE ROLE'S TRUST RELATIONSHIP, once the request's own forms are sound: an
         // update may only point the association at a role EKS Pod Identity can
         // assume for its Pods, which is the same rule the create applies to the role
@@ -296,7 +318,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
-        let now = SystemTime::now();
         let mut guard = store.lock();
         guard.materialize_due_transitions(now);
 
@@ -310,23 +331,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
         };
 
-        let Some(cluster) = guard
-            .clusters
-            .get(&(region.clone(), input.cluster_name.clone()))
-        else {
-            return Err(not_found(crate::state::cluster_not_found(
-                &input.cluster_name,
-            )));
-        };
-        // EKS Pod Identity hands credentials to Pods through the Amazon EKS-managed
-        // plane, which a cluster `RegisterCluster` connected has none of: this operation
-        // does not apply to it. The gate is a fact about the CLUSTER, so it precedes
-        // resolving the association id and judging the body.
-        if cluster.is_connected() {
-            return Err(UpdatePodIdentityAssociationErrorModeled::ClientException(
-                crate::state::connected_cluster_refusal(&input.cluster_name),
-            )
-            .into());
+        // The cluster is resolved AGAIN under the guard that writes, because the guard
+        // taken for the resolution above was released while IAM was asked: nothing is
+        // updated under a cluster that stopped existing in between.
+        if let Some(refusal) = cluster_refusal(
+            guard
+                .clusters
+                .get(&(region.clone(), input.cluster_name.clone())),
+            &input.cluster_name,
+        ) {
+            return Err(refusal);
         }
 
         let key = (
@@ -410,4 +424,35 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             association: Some(association),
         })
     }
+}
+
+/// Why no association under the cluster `cluster_name` names can be updated, or `None`
+/// when it is a cluster of this account that EKS Pod Identity applies to.
+///
+/// The same two facts about the CLUSTER `CreatePodIdentityAssociation` answers before it
+/// writes — a cluster this store does not hold is the not-found the operation models
+/// ([`crate::state::cluster_not_found`]), and a cluster `RegisterCluster` connected has
+/// no Amazon EKS-managed plane for EKS Pod Identity to hand credentials through
+/// ([`crate::state::connected_cluster_refusal`]) — in this operation's own error channel.
+///
+/// ONE reading, shared by the resolution that precedes the role's trust question and the
+/// one the writing guard repeats, so the two cannot answer differently.
+fn cluster_refusal(
+    cluster: Option<&crate::state::ClusterRecord>,
+    cluster_name: &str,
+) -> Option<UpdatePodIdentityAssociationError> {
+    let Some(cluster) = cluster else {
+        return Some(
+            UpdatePodIdentityAssociationErrorModeled::ResourceNotFoundException(
+                crate::state::cluster_not_found(cluster_name),
+            )
+            .into(),
+        );
+    };
+    cluster.is_connected().then(|| {
+        UpdatePodIdentityAssociationErrorModeled::ClientException(
+            crate::state::connected_cluster_refusal(cluster_name),
+        )
+        .into()
+    })
 }

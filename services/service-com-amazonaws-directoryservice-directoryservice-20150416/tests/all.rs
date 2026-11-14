@@ -15,6 +15,8 @@
 mod ad_assessment;
 #[path = "all/ad_connector.rs"]
 mod ad_connector;
+#[path = "all/add_region_resolves_the_directory_first.rs"]
+mod add_region_resolves_the_directory_first;
 #[path = "all/alias_reassignment.rs"]
 mod alias_reassignment;
 #[path = "all/aws_worded_diagnostics.rs"]

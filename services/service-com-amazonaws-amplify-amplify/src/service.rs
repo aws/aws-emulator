@@ -73,11 +73,14 @@
 //! A deployed branch is VISITED, at the default domain the control plane reports for it:
 //! `Branch$displayName` "is used as the default domain prefix" and `App$defaultDomain`
 //! is "the default domain for the Amplify app", so the site of a branch answers at
-//! `<displayName>.<defaultDomain>`. The first label of such a host names a branch rather
-//! than a service, so the framework resolves no service from it and nothing would claim
-//! the request — which is why [`Service::can_handle`] claims a request whose HOST names
-//! a branch THIS store holds, and [`Service::override_routing_error`] answers it with
-//! the files that branch's latest successful deployment published
+//! `<displayName>.<defaultDomain>`. An app announced under Amplify's own hosting zone is
+//! therefore addressed by a HOST whose first label names a branch rather than a service, so
+//! the framework resolves no service from it and nothing would claim the request; an app
+//! announced on this emulator's OWN endpoint (`crate::state::announced_default_domain`) is
+//! addressed by the PATH this plane serves its sites under, which names the app and the
+//! branch and binds no modelled operation (`crate::state::hosted_site_path`). Either way [`Service::can_handle`] claims a request
+//! that addresses a branch THIS store holds, and [`Service::override_routing_error`]
+//! answers it with the files that branch's latest successful deployment published
 //! (`crate::state::AmplifyBranch::site`).
 //!
 //! The edge READS: a request for a path the site carries is answered with those bytes
@@ -326,14 +329,14 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         resp
     }
 
-    /// Whether this request is addressed to a BRANCH's default domain — the hosting edge
-    /// of a branch this store holds — rather than to this service's endpoint.
-    fn hosts_a_branch(&self, host: &str) -> bool {
+    /// Whether this request is addressed to a BRANCH's site — the hosting edge of a branch
+    /// this store holds — rather than to this service's endpoint.
+    fn hosts_a_branch(&self, address: &crate::state::HostedSiteAddress<'_>) -> bool {
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return false;
         };
         let store = state.lock();
-        store.hosts_a_branch(host)
+        store.hosts_a_branch(address)
     }
 
     /// Serve one request to a branch's hosting edge from what that branch's latest
@@ -355,7 +358,12 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     ///
     /// A served file additionally carries the headers the app's `customHeaders` rules
     /// state for its path, which is what that document configures them for.
-    fn serve_hosted_site(&self, req: &RtRequest, host: &str) -> RtResponse {
+    fn serve_hosted_site(
+        &self,
+        req: &RtRequest,
+        address: &crate::state::HostedSiteAddress<'_>,
+        path: &str,
+    ) -> RtResponse {
         let method = req.method();
         if method != "GET" && method != "HEAD" {
             return plane_error(405, "MethodNotAllowed", SITE_METHOD_MESSAGE);
@@ -363,7 +371,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return plane_error(500, "InternalFailureException", SITE_STORE_MESSAGE);
         };
-        let path = ::service_common::request_path(req.uri()).to_string();
+        let path = path.to_string();
         // The credentials the visitor presents are read from the request here, so the
         // store is handed the pair to verify and never the header.
         let presented =
@@ -373,7 +381,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         // happens while other callers are waiting on the one store.
         let visit = {
             let mut store = state.lock();
-            match store.hosted_visit(host, &path, presented.as_deref()) {
+            match store.hosted_visit(address, &path, presented.as_deref()) {
                 Some(visit) => visit,
                 None => return plane_error(404, "NotFound", SITE_NOT_FOUND_MESSAGE),
             }
@@ -536,12 +544,19 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
     }
 
     fn can_handle(&self, parts: &http::request::Parts) -> bool {
-        // A request addressed to a BRANCH's default domain is this service's, because
-        // that is the host the control plane told the caller its site is at: the host's
-        // first label names a branch, so the framework resolves no service from it and
-        // nothing else would claim the request. The host a request addressed is read by
-        // the workspace's one reader of data-plane addressing. See
+        // A request addressed to a BRANCH's site is this service's, because that is the
+        // address the control plane told the caller its site is at: either the HOST whose
+        // first label names a branch rather than a service — from which the framework
+        // resolves no service, so nothing else would claim the request — or, for an app
+        // announced on this emulator's own endpoint, the PATH under the reserved
+        // data-plane marker, which binds no modelled operation. The host a request
+        // addressed is read by the workspace's one reader of data-plane addressing. See
         // [`Self::hosts_a_branch`].
+        if let Some((address, _within)) = crate::state::addressed_hosted_site(parts.uri.path()) {
+            if self.hosts_a_branch(&address) {
+                return true;
+            }
+        }
         if let Some(host) = ::service_common::data_plane_addressing::addressed_host(
             &parts.uri.to_string(),
             parts
@@ -549,7 +564,7 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
                 .get(::http::header::HOST)
                 .and_then(|value| value.to_str().ok()),
         ) {
-            if self.hosts_a_branch(&host) {
+            if self.hosts_a_branch(&crate::state::HostedSiteAddress::Host(&host)) {
                 return true;
             }
         }
@@ -622,20 +637,26 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // A request to an upload destination this service handed out is exactly that
         // case by construction — the model binds no operation to the upload path — so
         // this is where `CreateDeployment`'s destinations are served, and a request to a
-        // branch's default domain the same way: the site's paths are the DEPLOYMENT's,
-        // and the model binds no operation to any of them. Anything else keeps the
-        // framework's default.
+        // branch's site the same way: the site's paths are the DEPLOYMENT's, and the
+        // model binds no operation to any of them. Anything else keeps the framework's
+        // default.
         let uri = req.uri().to_string();
+        let request_path = ::service_common::request_path(req.uri());
+        if let Some((address, within)) = crate::state::addressed_hosted_site(request_path) {
+            if self.hosts_a_branch(&address) {
+                return Some(self.serve_hosted_site(req, &address, within));
+            }
+        }
         if let Some(host) = ::service_common::data_plane_addressing::addressed_host(
             &uri,
             req.headers().get("host"),
         ) {
-            if self.hosts_a_branch(&host) {
-                return Some(self.serve_hosted_site(req, &host));
+            let address = crate::state::HostedSiteAddress::Host(&host);
+            if self.hosts_a_branch(&address) {
+                return Some(self.serve_hosted_site(req, &address, request_path));
             }
         }
-        let target =
-            crate::state::parse_deployment_upload_path(::service_common::request_path(req.uri()))?;
+        let target = crate::state::parse_deployment_upload_path(request_path)?;
         Some(self.serve_deployment_upload(req, &target))
     }
 

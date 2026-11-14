@@ -169,6 +169,8 @@ mod peer_resolution_is_grounded;
 mod pod_identity_and_rotation_refusals;
 #[path = "all/pod_identity_associations.rs"]
 mod pod_identity_associations;
+#[path = "all/pod_identity_resolves_the_cluster_first.rs"]
+mod pod_identity_resolves_the_cluster_first;
 #[path = "all/refusal_contract.rs"]
 mod refusal_contract;
 #[path = "all/refusal_message_wording.rs"]

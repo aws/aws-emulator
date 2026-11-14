@@ -14,7 +14,10 @@
 //! caller never reaches:
 //!
 //! * the id names no stored directory — `DirectoryDoesNotExistException`, "The specified
-//!   directory does not exist in the system";
+//!   directory does not exist in the system". It is resolved BEFORE the placement the
+//!   request's `VPCSettings` describe is resolved against the service that owns subnets,
+//!   so a call that names no directory is answered as that not-found whatever VPC or
+//!   subnets it asks for;
 //! * it names a directory whose type or edition does not replicate across Regions —
 //!   `UnsupportedOperationException`. Multi-Region replication is a feature of the
 //!   Enterprise edition of AWS Managed Microsoft AD, so a Simple AD directory, an AD
@@ -208,6 +211,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // THE DIRECTORY the request NAMES is resolved before the placement its settings
+        // describe: a call that names no directory of this account cannot replicate
+        // anything, so it is answered as the not-found it is whatever the VPC and subnets
+        // it asks for turn out to be. The guard is taken for that resolution alone and
+        // released again, because the two questions below are in-process calls to the
+        // service that owns the placement.
+        {
+            let mut store = state.lock();
+            store.advance_clock(::std::time::SystemTime::now());
+            if !store.directories.contains_key(&input.directory_id) {
+                return Err(AddRegionErrorModeled::DirectoryDoesNotExistException(
+                    crate::state::refusal(crate::state::no_such_directory(&input.directory_id)),
+                )
+                .into());
+            }
+        }
+
         // The other half of that rule: two DIFFERENT subnets still have to be in two
         // different zones, which only the service that owns subnets can answer — asked in
         // the Region the replication is being added to, since that is where those subnets
@@ -245,6 +265,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut store = state.lock();
         store.advance_clock(::std::time::SystemTime::now());
 
+        // Resolved AGAIN under the guard that writes, because the guard taken for the
+        // resolution above was released while the placement was asked about: no
+        // replication is recorded on a directory that stopped existing in between.
         let directory = store
             .directories
             .get_mut(&input.directory_id)

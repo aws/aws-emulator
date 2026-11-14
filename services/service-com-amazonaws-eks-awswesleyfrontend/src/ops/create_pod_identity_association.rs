@@ -12,9 +12,12 @@
 //! the request carries is checked for its documented FORM before any resource is
 //! resolved: the cluster name, the target IAM role ARN and the Kubernetes names, so
 //! a request that cannot name anything is an `InvalidParameterException` rather than
-//! a not-found. With the forms sound, the role's TRUST RELATIONSHIP is resolved
-//! against IAM: an association is only written for a role the EKS Pod Identity
-//! principal may assume ([`crate::state::pod_identity_role_trust_refusal`]),
+//! a not-found. With the forms sound, the CLUSTER the association would be a child
+//! of is resolved ([`cluster_refusal`]) — a request naming no cluster of this account
+//! is the not-found it is, whatever the role it carries trusts — and only then is the
+//! role's TRUST RELATIONSHIP resolved against IAM: an association is only written for
+//! a role the EKS Pod Identity principal may assume
+//! ([`crate::state::pod_identity_role_trust_refusal`]),
 //! because one bound to any other role could never issue credentials to a Pod.
 //!
 //! Shared types live in `super::types`; the error channel in `crate::scaffolded`.
@@ -318,6 +321,29 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let region = state::request_region(ctx.parts());
 
+        let now = SystemTime::now();
+
+        // THE CLUSTER COMES BEFORE THE ROLE'S TRUST RELATIONSHIP. An association is a
+        // child of a cluster ("You can view your available clusters with
+        // ListClusters"), so the cluster the request names is resolved FIRST: a request
+        // naming a cluster this account does not hold is answered as the not-found it
+        // is, whatever the trust policy of the role it carries says, because a role is
+        // only judged for an association there is a cluster to write it under. The
+        // guard is taken for that resolution alone and released again, because the
+        // trust question below is a call out to another service.
+        {
+            let mut guard = store.lock();
+            guard.materialize_due_transitions(now);
+            if let Some(refusal) = cluster_refusal(
+                guard
+                    .clusters
+                    .get(&(region.clone(), input.cluster_name.clone())),
+                &input.cluster_name,
+            ) {
+                return Err(refusal);
+            }
+        }
+
         // THE ROLE'S TRUST RELATIONSHIP, once the request's own forms are sound:
         // the role is one Amazon EKS assumes FOR THIS ASSOCIATION, so an
         // association bound to a role that does not let the EKS Pod Identity
@@ -331,34 +357,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(invalid_parameter(why.to_string()));
         }
 
-        let now = SystemTime::now();
         let mut guard = store.lock();
         guard.materialize_due_transitions(now);
 
-        // An association is a child of a cluster, so the cluster is resolved
-        // before anything is written: "You can view your available clusters with
-        // ListClusters."
-        let Some(cluster) = guard
-            .clusters
-            .get(&(region.clone(), input.cluster_name.clone()))
-        else {
-            return Err(
-                CreatePodIdentityAssociationErrorModeled::ResourceNotFoundException(
-                    crate::state::cluster_not_found(&input.cluster_name),
-                )
-                .into(),
-            );
-        };
-
-        // EKS Pod Identity hands credentials to Pods through the Amazon EKS-managed
-        // plane, which a cluster `RegisterCluster` connected has none of: this operation
-        // does not apply to it. The gate is a fact about the CLUSTER, so it is answered
-        // as soon as the cluster is resolved, before anything is written.
-        if cluster.is_connected() {
-            return Err(CreatePodIdentityAssociationErrorModeled::ClientException(
-                crate::state::connected_cluster_refusal(&input.cluster_name),
-            )
-            .into());
+        // The cluster is resolved AGAIN under the guard that writes, because the guard
+        // taken for the resolution above was released while IAM was asked: nothing is
+        // written under a cluster that stopped existing in between.
+        if let Some(refusal) = cluster_refusal(
+            guard
+                .clusters
+                .get(&(region.clone(), input.cluster_name.clone())),
+            &input.cluster_name,
+        ) {
+            return Err(refusal);
         }
 
         // One service account in one namespace can hold at most one association:
@@ -490,4 +501,38 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             association: Some(association),
         })
     }
+}
+
+/// Why no association can be written under the cluster `cluster_name` names, or `None`
+/// when it is a cluster of this account that EKS Pod Identity applies to.
+///
+/// Both refusals are facts about the CLUSTER rather than about the body, which is why
+/// they are answered as soon as the cluster is resolved:
+///
+/// * a cluster this store does not hold is the not-found this operation models
+///   ([`crate::state::cluster_not_found`]);
+/// * EKS Pod Identity hands credentials to Pods through the Amazon EKS-managed plane,
+///   which a cluster `RegisterCluster` connected has none of: this operation does not
+///   apply to it ([`crate::state::connected_cluster_refusal`]).
+///
+/// ONE reading, shared by the resolution that precedes the role's trust question and the
+/// one the writing guard repeats, so the two cannot answer differently.
+fn cluster_refusal(
+    cluster: Option<&crate::state::ClusterRecord>,
+    cluster_name: &str,
+) -> Option<CreatePodIdentityAssociationError> {
+    let Some(cluster) = cluster else {
+        return Some(
+            CreatePodIdentityAssociationErrorModeled::ResourceNotFoundException(
+                crate::state::cluster_not_found(cluster_name),
+            )
+            .into(),
+        );
+    };
+    cluster.is_connected().then(|| {
+        CreatePodIdentityAssociationErrorModeled::ClientException(
+            crate::state::connected_cluster_refusal(cluster_name),
+        )
+        .into()
+    })
 }
