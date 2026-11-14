@@ -113,7 +113,8 @@ struct NamesNoClass {
 /// precondition answer identically (corpus `simparity-wire-aws-v1`, fixtures
 /// `lambda-resource-policy-revision-mismatch`,
 /// `lambda-resource-policy-conditional-update-and-stale-revision` and
-/// `lambda-resource-policy-precondition-conflict`) — and the PARAMETER refusal of
+/// `lambda-resource-policy-precondition-conflict`) — the refusal of the CODE-SIGNING
+/// CONFIGURATION a request addresses by its ARN, and the PARAMETER refusal of
 /// `ListVersionsByFunction`. The same shape raised by another operation of this service —
 /// the `RevisionId` precondition of `AddPermission` and `RemovePermission`, recorded WITH the
 /// member, and the parameter refusal of the sibling listings, recorded with it too — is not
@@ -126,6 +127,40 @@ const NAMES_NO_CLASS: &[NamesNoClass] = &[
     NamesNoClass {
         operation: "DeleteResourcePolicy",
         shape: "PreconditionFailedException",
+    },
+    // The refusal of the CODE-SIGNING CONFIGURATION the request addresses: the four
+    // operations that take a configuration as their own resource bind `CodeSigningConfigArn`
+    // as their `@httpLabel`
+    // (`smithy_query(query="operation",operation="GetCodeSigningConfig,UpdateCodeSigningConfig,DeleteCodeSigningConfig,ListFunctionsByCodeSigningConfig",model_path="services/service-com-amazonaws-lambda-awsgirapiservice/smithy-model/com-amazonaws-lambda-awsgirapiservice.json")`),
+    // and a refusal about the configuration so addressed — it is not there
+    // (`ResourceNotFoundException`), or another operation holds it (the
+    // `ResourceConflictException` only the deletion models) — is recorded with its message
+    // alone (corpus `simparity-wire-aws-v1`, fixtures
+    // `lambda-code-signing-config-enforcement`, `lambda-codesigning-config-crud-and-list`,
+    // `lambda-function-codesigning-attach-detach-lifecycle` and
+    // `lambda-function-codesigning-attach-error-paths`). The FUNCTION-scoped code-signing
+    // operations — which address a function and name a configuration in the body, if at all
+    // — are recorded WITH the member, which is why these rows name those four operations
+    // and no other.
+    NamesNoClass {
+        operation: "GetCodeSigningConfig",
+        shape: "ResourceNotFoundException",
+    },
+    NamesNoClass {
+        operation: "UpdateCodeSigningConfig",
+        shape: "ResourceNotFoundException",
+    },
+    NamesNoClass {
+        operation: "DeleteCodeSigningConfig",
+        shape: "ResourceNotFoundException",
+    },
+    NamesNoClass {
+        operation: "DeleteCodeSigningConfig",
+        shape: "ResourceConflictException",
+    },
+    NamesNoClass {
+        operation: "ListFunctionsByCodeSigningConfig",
+        shape: "ResourceNotFoundException",
     },
     // The PARAMETER refusal of `ListVersionsByFunction`, recorded with its message alone
     // (corpus `simparity-wire-aws-v1`, fixture
@@ -375,6 +410,10 @@ mod tests {
     /// listed refusal, plus the operations that share its shape and its status.
     #[test]
     fn a_refusal_recorded_without_the_member_keeps_its_message_alone() {
+        /// A shape no row of [`NAMES_NO_CLASS`] names, for the rows that check a refusal
+        /// the table does not match.
+        const OTHER_SHAPE: &str = "TooManyRequestsException";
+
         let mut cases: Vec<(String, &str, &str, Option<&str>)> = Vec::new();
         for refusal in NAMES_NO_CLASS {
             cases.push((
@@ -389,15 +428,31 @@ mod tests {
             cases.push((
                 format!("{} answering another shape", refusal.operation),
                 refusal.operation,
-                "ResourceNotFoundException",
+                OTHER_SHAPE,
                 Some(USER_FAULT),
             ));
         }
-        for operation in ["AddPermission", "RemovePermission"] {
+        // One operation per listed shape that is NOT listed with it: the permission
+        // operations take the same revision precondition, and the function-scoped
+        // code-signing operations raise the same not-found and conflict shapes about a
+        // configuration they merely name.
+        for (operation, shape) in [
+            ("AddPermission", "PreconditionFailedException"),
+            ("RemovePermission", "PreconditionFailedException"),
+            ("PutFunctionCodeSigningConfig", "ResourceNotFoundException"),
+            ("PutFunctionCodeSigningConfig", "ResourceConflictException"),
+            ("GetFunctionCodeSigningConfig", "ResourceNotFoundException"),
+            (
+                "DeleteFunctionCodeSigningConfig",
+                "ResourceConflictException",
+            ),
+            ("CreateCodeSigningConfig", "InvalidParameterValueException"),
+            ("ListCodeSigningConfigs", "InvalidParameterValueException"),
+        ] {
             cases.push((
-                format!("{operation} answering the same shape"),
+                format!("{operation} answering {shape}"),
                 operation,
-                "PreconditionFailedException",
+                shape,
                 Some(USER_FAULT),
             ));
         }

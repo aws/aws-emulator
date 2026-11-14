@@ -79,6 +79,8 @@ mod capacity_providers;
 mod code_signing_config_deletion;
 #[path = "all/code_signing_config_listing.rs"]
 mod code_signing_config_listing;
+#[path = "all/code_signing_config_refusal_fault_class.rs"]
+mod code_signing_config_refusal_fault_class;
 #[path = "all/code_signing_config_update.rs"]
 mod code_signing_config_update;
 #[path = "all/code_signing_configs.rs"]
