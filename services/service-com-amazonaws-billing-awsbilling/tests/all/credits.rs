@@ -5,8 +5,9 @@
 //! Every assertion here is about the RULE the operation follows: it REPORTS the
 //! credits persisted in `ComAmazonawsBillingAwsbillingState::credits` — those owned
 //! by the account named in `accountId`, or every account of the consolidated billing
-//! family when the management account sets `payerAccountFlag`, narrowed to the
-//! credits whose own life overlaps the requested period — and it changes nothing.
+//! family when the caller is the management account and sets `payerAccountFlag`,
+//! narrowed to the credits whose own life overlaps the requested period — and it
+//! changes nothing.
 //! The tables span the class of inputs the rule generalises over (credit id length,
 //! currency, which optional members are recorded, list sizes, every value of each
 //! modeled enum, period placement, the account asked about, and the documented
@@ -552,44 +553,136 @@ async fn only_credits_overlapping_the_requested_period_are_reported() {
     );
 }
 
-#[tokio::test]
-async fn payer_account_flag_aggregates_the_whole_billing_family() {
-    let (router, engine) = emulator();
-    seed(
-        &engine,
-        vec![
-            credit("21", ACCOUNT_ID),
-            credit("22", LINKED_ACCOUNT_ID),
-            credit("23", UNKNOWN_ACCOUNT_ID),
-        ],
-    );
+/// One row of the `payerAccountFlag` table below.
+struct FamilyCase {
+    /// What the row varies, for the assertion messages.
+    case: &'static str,
+    /// Which account pays the consolidated billing family's bill. The caller is
+    /// always `caller_account_id()` (= [`ACCOUNT_ID`]), so any other value here is a
+    /// caller that does NOT pay for the family.
+    payer_account_id: &'static str,
+    /// The account the request asks about.
+    account_id: &'static str,
+    /// `payerAccountFlag`, absent when the row omits the member.
+    flag: Option<bool>,
+    /// The `creditId`s the request must select, in the order they are reported.
+    expected: Vec<&'static str>,
+}
 
-    // (case, accountId, payerAccountFlag, the creditIds the request selects)
-    let cases: Vec<(&str, &str, Option<bool>, Vec<&str>)> = vec![
-        ("management account, flag omitted", ACCOUNT_ID, None, vec!["21"]),
-        ("management account, flag false", ACCOUNT_ID, Some(false), vec!["21"]),
-        (
-            "management account, flag true",
-            ACCOUNT_ID,
-            Some(true),
-            vec!["21", "22", "23"],
-        ),
-        ("linked account, flag omitted", LINKED_ACCOUNT_ID, None, vec!["22"]),
-        (
-            "linked account cannot aggregate the family",
-            LINKED_ACCOUNT_ID,
-            Some(true),
-            vec!["22"],
-        ),
-        (
-            "another member account, flag true",
-            UNKNOWN_ACCOUNT_ID,
-            Some(true),
-            vec!["23"],
-        ),
+/// `payerAccountFlag` is keyed on the CALLER, not on the account the request asks
+/// about: when the caller pays the consolidated billing family's bill, the flag
+/// aggregates the whole family whichever account `accountId` names, and when it does
+/// not, the flag changes nothing.
+///
+/// From `GetCreditsRequest$payerAccountFlag`: "When true and the caller is the
+/// management account, the response aggregates credits across the entire consolidated
+/// billing family. When false or omitted, returns only credits for the specified
+/// accountId."
+#[tokio::test]
+async fn payer_account_flag_aggregates_the_whole_billing_family_for_the_paying_caller() {
+    let cases = vec![
+        FamilyCase {
+            case: "paying caller, own account, flag omitted",
+            payer_account_id: ACCOUNT_ID,
+            account_id: ACCOUNT_ID,
+            flag: None,
+            expected: vec!["21"],
+        },
+        FamilyCase {
+            case: "paying caller, own account, flag false",
+            payer_account_id: ACCOUNT_ID,
+            account_id: ACCOUNT_ID,
+            flag: Some(false),
+            expected: vec!["21"],
+        },
+        FamilyCase {
+            case: "paying caller, own account, flag true",
+            payer_account_id: ACCOUNT_ID,
+            account_id: ACCOUNT_ID,
+            flag: Some(true),
+            expected: vec!["21", "22", "23"],
+        },
+        FamilyCase {
+            case: "paying caller, a member account, flag omitted",
+            payer_account_id: ACCOUNT_ID,
+            account_id: LINKED_ACCOUNT_ID,
+            flag: None,
+            expected: vec!["22"],
+        },
+        FamilyCase {
+            case: "paying caller, a member account, flag false",
+            payer_account_id: ACCOUNT_ID,
+            account_id: LINKED_ACCOUNT_ID,
+            flag: Some(false),
+            expected: vec!["22"],
+        },
+        FamilyCase {
+            case: "paying caller, a member account, flag true",
+            payer_account_id: ACCOUNT_ID,
+            account_id: LINKED_ACCOUNT_ID,
+            flag: Some(true),
+            expected: vec!["21", "22", "23"],
+        },
+        FamilyCase {
+            case: "paying caller, a third account, flag true",
+            payer_account_id: ACCOUNT_ID,
+            account_id: UNKNOWN_ACCOUNT_ID,
+            flag: Some(true),
+            expected: vec!["21", "22", "23"],
+        },
+        FamilyCase {
+            case: "non-paying caller, own account, flag omitted",
+            payer_account_id: LINKED_ACCOUNT_ID,
+            account_id: ACCOUNT_ID,
+            flag: None,
+            expected: vec!["21"],
+        },
+        FamilyCase {
+            case: "non-paying caller cannot aggregate its own account",
+            payer_account_id: LINKED_ACCOUNT_ID,
+            account_id: ACCOUNT_ID,
+            flag: Some(true),
+            expected: vec!["21"],
+        },
+        FamilyCase {
+            case: "non-paying caller cannot aggregate another account",
+            payer_account_id: LINKED_ACCOUNT_ID,
+            account_id: LINKED_ACCOUNT_ID,
+            flag: Some(true),
+            expected: vec!["22"],
+        },
+        FamilyCase {
+            case: "caller of a family paid by a third account, flag true",
+            payer_account_id: UNKNOWN_ACCOUNT_ID,
+            account_id: UNKNOWN_ACCOUNT_ID,
+            flag: Some(true),
+            expected: vec!["23"],
+        },
     ];
 
-    for (case, account_id, flag, expected) in cases {
+    for FamilyCase {
+        case,
+        payer_account_id,
+        account_id,
+        flag,
+        expected,
+    } in cases
+    {
+        let (router, engine) = emulator();
+        seed(
+            &engine,
+            vec![
+                credit("21", ACCOUNT_ID),
+                credit("22", LINKED_ACCOUNT_ID),
+                credit("23", UNKNOWN_ACCOUNT_ID),
+            ],
+        );
+        {
+            let store = engine.state::<ComAmazonawsBillingAwsbillingState>();
+            let mut store = store.lock();
+            store.billing_family_management_account_id = payer_account_id.to_string();
+        }
+
         let mut body = request(account_id, 60);
         if let Some(flag) = flag {
             body["payerAccountFlag"] = json!(flag);

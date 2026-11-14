@@ -1110,12 +1110,11 @@ impl ComAmazonawsBillingAwsbillingState {
     /// The credits `GetCredits` reports, in `creditId` order.
     ///
     /// `account_id` selects the owning account. `whole_family` widens the
-    /// selection to every account of the consolidated billing family — every
-    /// account this store knows, since the emulator's own account
-    /// (`engine::emulator_account_id`) is the payer account of its own
-    /// consolidated billing family. Both bounds of the requested period are
-    /// inclusive, on [`epoch_secs`]' scale, and a credit is reported when its
-    /// own life overlaps it.
+    /// selection to every account of the consolidated billing family this store
+    /// holds credits for — the decision to widen belongs to the caller, which
+    /// consults [`Self::is_billing_family_management_account`]. Both bounds of
+    /// the requested period are inclusive, on [`epoch_secs`]' scale, and a
+    /// credit is reported when its own life overlaps it.
     ///
     /// A pure read: it answers from the store and changes nothing in it.
     pub fn credits_for_period(

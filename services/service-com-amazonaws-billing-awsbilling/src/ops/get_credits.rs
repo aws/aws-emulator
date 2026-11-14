@@ -3,8 +3,9 @@
 //! @op GetCredits
 //! IMPLEMENTED: every answer is computed from
 //! [`crate::state::ComAmazonawsBillingAwsbillingState::credits`] — the credits the
-//! store holds for the requested account (or, with `payerAccountFlag`, for the whole
-//! consolidated billing family), narrowed to the requested period. This is a pure
+//! store holds for the requested account (or, when the CALLER is the management
+//! account of the consolidated billing family and `payerAccountFlag` is set, for that
+//! whole family), narrowed to the requested period. This is a pure
 //! read: it writes nothing, so a later caller sees exactly what it saw.
 //!
 //! ## Shape of an operation
@@ -215,11 +216,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "When the caller is the management account of a consolidated billing
         // family and payerAccountFlag is true, the response aggregates credits
         // across the entire family. Otherwise, the response includes only credits
-        // owned by the account specified in accountId." The emulator's own account
-        // is the management account of its family, so a request naming any other
-        // account is answered from that account's own credits alone.
+        // owned by the account specified in accountId." Both branches are keyed on
+        // WHO IS CALLING, never on the account the request asks about: the flag
+        // aggregates for a caller that pays the family's bill, whichever member of
+        // it `accountId` names, and is inert for any other caller.
         let whole_family = input.payer_account_flag.unwrap_or(false)
-            && input.account_id == ::engine::emulator_account_id();
+            && state.is_billing_family_management_account(crate::state::caller_account_id());
 
         let credits = state
             .credits_for_period(&input.account_id, whole_family, start_secs, end_secs)
