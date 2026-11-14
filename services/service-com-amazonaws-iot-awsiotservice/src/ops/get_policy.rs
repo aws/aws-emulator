@@ -153,11 +153,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // A pure read of the policy registry: the record is cloned out and reported
         // with "the policy document of the default version", and a name the registry
-        // does not hold is a 404, never a hollow 200.
+        // does not hold is a 404, never a hollow 200. This reader resolves the name
+        // through that DEFAULT VERSION, which is what the miss is worded after
+        // ([`crate::state::missing_policy_default_version_message`]) rather than after
+        // the name the request carried.
         let store = state.lock();
         let policy = store.policies.get(&input.policy_name).ok_or_else(|| {
             GetPolicyErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
-                message: Some(crate::state::missing_policy_message(&input.policy_name)),
+                message: Some(crate::state::missing_policy_default_version_message()),
             })
         })?;
 

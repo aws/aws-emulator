@@ -3033,7 +3033,17 @@ pub use streams::{
 // they hang off.
 pub mod policy_versions;
 pub use policy_versions::{
-    missing_policy_version_message, policy_versions_limit_message, MAX_POLICY_VERSIONS,
+    missing_policy_default_version_message, missing_policy_version_message,
+    policy_versions_limit_message, MAX_POLICY_VERSIONS,
+};
+
+// What holds the DELETE of a policy back — the versions it still holds and the targets
+// that still name it — and what removing one does to the registry, lives in
+// `state/policy_deletion.rs`, beside the versions and the attachment relation it reads.
+pub mod policy_deletion;
+pub use policy_deletion::{
+    attached_principals_deletion_message, non_default_versions_deletion_message,
+    PolicyDeletionRefusal,
 };
 
 /// This service's store in the shared engine: call it with a handler's `&*self.engine`.

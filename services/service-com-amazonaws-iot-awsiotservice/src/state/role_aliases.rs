@@ -126,4 +126,29 @@ impl RegisteredRoleAlias {
             last_modified_date: Some(::aws_smithy_types::DateTime::from(self.last_modified_date)),
         }
     }
+
+    /// Apply an `UpdateRoleAlias` to this record at `now`.
+    ///
+    /// `UpdateRoleAlias` takes `roleArn` and `credentialDurationSeconds` as OPTIONAL
+    /// members beside the `@httpLabel` that names the alias
+    /// (`smithy_query(query="operation",operation="UpdateRoleAlias")`), so an update
+    /// replaces exactly the members the request carried and leaves every other one as
+    /// the create wrote it — the alias's name, its ARN and its owner are its identity
+    /// and no update member names them. The moment of the write becomes the record's
+    /// "UNIX timestamp of when the role alias was last modified", which is what every
+    /// later reader reports.
+    pub fn apply_update(
+        &mut self,
+        role_arn: Option<String>,
+        credential_duration_seconds: Option<i32>,
+        now: SystemTime,
+    ) {
+        if let Some(role_arn) = role_arn {
+            self.role_arn = role_arn;
+        }
+        if let Some(credential_duration_seconds) = credential_duration_seconds {
+            self.credential_duration_seconds = credential_duration_seconds;
+        }
+        self.last_modified_date = now;
+    }
 }

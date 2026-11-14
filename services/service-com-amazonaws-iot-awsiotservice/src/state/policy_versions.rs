@@ -45,6 +45,19 @@ pub fn missing_policy_version_message(policy_name: &str, policy_version_id: &str
     format!("Version {policy_version_id} of policy {policy_name} does not exist")
 }
 
+/// How a reader of the policy's DEFAULT version refuses a name the registry does not
+/// hold.
+///
+/// `GetPolicy` reports "the policy document of the default version"
+/// (`smithy_query(query="doc",shape="GetPolicy")`), so it resolves the requested name
+/// through that version — and AWS words its miss after the version it could not find
+/// rather than after the name it was given, which is why this sentence is entirely fixed
+/// text with no variable part, unlike [`super::missing_policy_message`], which every
+/// operation addressing the policy RECORD states a miss with.
+pub fn missing_policy_default_version_message() -> String {
+    "Policy default version not found".to_string()
+}
+
 impl super::RegisteredPolicy {
     /// Add `document` as a new version, making it the default when the request asked
     /// for that, and answer the id it was given — or `None` when the policy is

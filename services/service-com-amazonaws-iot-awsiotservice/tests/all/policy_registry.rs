@@ -717,12 +717,14 @@ async fn reading_an_unknown_policy_is_refused() {
             Some("ResourceNotFoundException"),
             "case {policy_name:?}: expected ResourceNotFoundException, got {read:?}"
         );
-        // The refusal's message is built from the request: it names the policy that
-        // was asked for, so it is never one fixed string.
+        // `GetPolicy` reports "the policy document of the default version", so it
+        // resolves the requested name through that version and AWS words its miss after
+        // the version it could not find: fixed text with no variable part, unlike the
+        // sentence every operation addressing the policy RECORD states a miss with.
         assert_eq!(
             read.text("message"),
-            Some(format!("Policy {policy_name} does not exist")),
-            "case {policy_name:?}: the refusal must name the policy asked for, got {read:?}"
+            Some("Policy default version not found".to_string()),
+            "case {policy_name:?}: unexpected not-found message, got {read:?}"
         );
     }
 }

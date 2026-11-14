@@ -83,6 +83,8 @@ mod package_version_update;
 mod package_versions;
 #[path = "all/policy_attachments.rs"]
 mod policy_attachments;
+#[path = "all/policy_deletion.rs"]
+mod policy_deletion;
 #[path = "all/policy_registry.rs"]
 mod policy_registry;
 #[path = "all/policy_versions.rs"]
@@ -93,6 +95,8 @@ mod provisioning_templates;
 mod role_alias_deletion;
 #[path = "all/role_alias_registry.rs"]
 mod role_alias_registry;
+#[path = "all/role_alias_update.rs"]
+mod role_alias_update;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
 #[path = "all/streams.rs"]
