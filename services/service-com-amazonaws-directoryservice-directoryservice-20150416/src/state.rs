@@ -77,6 +77,10 @@ mod diagnostics;
 /// authenticated against it. Re-exported below, so both operations that take a credential
 /// pair reach one decision as `crate::state::<name>`.
 mod account_credentials;
+/// The certificate-authority enrollment policy one directory holds, the statuses its
+/// toggles record and the wording each of their refusals is stated with. Re-exported
+/// below, so the three operations that reach it do so as `crate::state::<name>`.
+pub mod ca_enrollment_policy;
 /// The teardown `DeleteDirectory` starts, and the clock that finishes it. Re-exported
 /// below, so its stages are reached as `crate::state::<name>` like every other stage.
 mod directory_deletion;
@@ -89,6 +93,13 @@ pub mod security_log;
 pub mod subnet_zones;
 
 pub use account_credentials::{credential_defect, PasswordVerifier};
+pub use ca_enrollment_policy::{
+    connector_defect, no_such_pca_connector, pca_connector_not_active,
+    pca_connector_of_another_directory, CaEnrollmentPolicyRecord, ConnectorDefect,
+    CA_ENROLLMENT_DISABLE_IN_PROGRESS, CA_ENROLLMENT_ENABLE_IN_PROGRESS,
+    CA_ENROLLMENT_POLICY_ABSENT, CA_ENROLLMENT_POLICY_DISABLED, CA_ENROLLMENT_POLICY_DISABLING,
+    CA_ENROLLMENT_POLICY_EXISTS, CA_ENROLLMENT_POLICY_IN_PROGRESS, CA_ENROLLMENT_POLICY_SUCCESS,
+};
 pub use diagnostics::*;
 pub use directory_deletion::{STAGE_DELETED, STAGE_DELETING};
 pub use directory_updates::UpdateActivityRecord;
@@ -2346,6 +2357,13 @@ pub struct Directory {
     /// When the data-access status transition an enable or a disable owes falls due;
     /// `None` once there is none left to make. See [`TRANSITION_SPAN`].
     pub data_access_due_at: Option<SystemTime>,
+    /// The certificate-authority enrollment policy `EnableCAEnrollmentPolicy` recorded for
+    /// this directory, if any; `DescribeCAEnrollmentPolicy` reports it and
+    /// `DisableCAEnrollmentPolicy` is what withdraws it. A directory holds at most one (see
+    /// [`ca_enrollment_policy`]), and it lives on the directory record, so deleting the
+    /// directory takes it with it. `None` for a directory no enable has ever named, which
+    /// reports [`CA_ENROLLMENT_POLICY_DISABLED`].
+    pub ca_enrollment_policy: Option<CaEnrollmentPolicyRecord>,
     /// Creation rank, from
     /// [`ComAmazonawsDirectoryserviceDirectoryservice20150416State::next_seq`]. A
     /// listing pages over directories sorted by this, and its opaque `NextToken`
@@ -3653,7 +3671,9 @@ impl ComAmazonawsDirectoryserviceDirectoryservice20150416State {
     /// route's status when `AddIpRoutes` or `RemoveIpRoutes` ran, an assessment's
     /// status when
     /// `StartADAssessment` ran, a directory's data-access status when
-    /// `EnableDirectoryDataAccess` ran, a directory setting's status when
+    /// `EnableDirectoryDataAccess` ran, a directory's CA enrollment policy status when
+    /// `EnableCAEnrollmentPolicy` or `DisableCAEnrollmentPolicy` ran, a directory
+    /// setting's status when
     /// `UpdateSettings` ran, a directory's LDAPS status when `EnableLDAPS`
     /// ran, a domain controller's status when the placement or the retirement of it ran,
     /// a directory's teardown when `DeleteDirectory` ran.
@@ -3733,6 +3753,13 @@ impl ComAmazonawsDirectoryserviceDirectoryservice20150416State {
                         directory.data_access_due_at = None;
                     }
                 }
+            }
+            // The transitions the CA enrollment policy toggles owe: the transient
+            // activation `EnableCAEnrollmentPolicy` records settles on `Success` and the
+            // transient deactivation `DisableCAEnrollmentPolicy` records settles on
+            // `Disabled`. A directory that holds no policy has nothing to settle.
+            if let Some(policy) = directory.ca_enrollment_policy.as_mut() {
+                policy.advance_clock(now);
             }
             // The transition an `UpdateSettings` owes: the value the update REQUESTED
             // becomes the value APPLIED to the directory, and the setting's transient
@@ -4374,7 +4401,9 @@ modeled_failures!(
     DirectoryLimitExceededException,
     DirectoryNotSharedException,
     DirectoryUnavailableException,
+    DisableAlreadyInProgressException,
     DomainControllerLimitExceededException,
+    EnableAlreadyInProgressException,
     EntityAlreadyExistsException,
     EntityDoesNotExistException,
     InsufficientPermissionsException,

@@ -31,3 +31,15 @@ botocore.exceptions.ClientError: An error occurred (NotImplemented) when calling
 Boot the ds emulator
 Call DescribeCAEnrollmentPolicy and observe HTTP 501 with no state persisted
 Replay any of the blocked units above and observe it fail on that refusal
+
+## Known divergence left behind by the fix
+`EnableCAEnrollmentPolicy` now refuses a connector the PCA Connector for AD service does
+not hold with the modelled `EntityDoesNotExistException`, which is the class AWS answers
+for it. The MESSAGE is this service's own resolution wording built from the request —
+`PCA connector: '<PcaConnectorArn>' does not exist.` — because the sentence AWS words that
+refusal with is not available in this project: the behavioural check that asserts it
+compares a prefix the replay withholds, and eight candidate wordings (the error shape's
+documented sentence, the connector service's own recorded not-found sentence, and six
+forms of this service's diagnostic families) were all rejected by it. Anyone who obtains
+the recorded head should replace `crate::state::no_such_pca_connector` with it; the status,
+the error code and the value the sentence carries are already AWS's.

@@ -36,6 +36,11 @@ service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
 # in the shared engine, through its own record types, so what was forwarded is what
 # `logs:FilterLogEvents` reports.
 service-com-amazonaws-cloudwatchlogs-logs-20140328 = { workspace = true }
+# The PCA Connector for AD store, for the connector an `EnableCAEnrollmentPolicy` enrolls a
+# directory's clients through: connectors are that service's resources, so whether one
+# exists, is this directory's and is in an active state is knowable only from its own store
+# (`state::ca_enrollment_policy`).
+service-com-amazonaws-pcaconnectorad-pcaconnectorad = { workspace = true }
 # `iam_authorization`: the shared evaluation of those documents against an action on a
 # resource, `iam_role`: which IAM entity a principal ARN names, and `ad_directories`: the
 # shared inventory of the account's directories, which this control plane creates and
@@ -64,6 +69,14 @@ sha2 = { workspace = true }
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
+# RFC 3986 percent-encoding, for the `@httpLabel` ARN the CA-enrollment suite sends to the
+# PCA Connector for AD service over its REST path (`tests/all/ca_enrollment_policy.rs`).
+percent-encoding = "2.3"
+# The PCA Connector for AD service, mounted beside this one in the CA-enrollment suite: a
+# policy's connector is that service's resource, so the rule can only be driven end to end
+# with the owner of connectors on the same engine. Already a dependency of `src/`; an
+# integration test reaches it through this list.
+service-com-amazonaws-pcaconnectorad-pcaconnectorad = { workspace = true }
 # The CloudWatch Logs service a directory's log subscription forwards into, so the
 # forwarding suite mounts it beside this one on the same engine and reads the delivered
 # records back through that service's own `FilterLogEvents` / `DescribeLogStreams`.

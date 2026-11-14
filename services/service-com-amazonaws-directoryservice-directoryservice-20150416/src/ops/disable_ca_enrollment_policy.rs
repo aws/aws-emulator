@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DisableCAEnrollmentPolicy
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DisableCAEnrollmentPolicy`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DisableCAEnrollmentPolicy::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Withdraws the certificate-authority enrollment policy a directory holds: the policy
+//! answers in the transient `Disabling` status its own documentation names ("the policy is
+//! being deactivated"), which the clock settles on `Disabled` one transition span later
+//! ([`crate::state::ComAmazonawsDirectoryserviceDirectoryservice20150416State::advance_clock`]),
+//! and `DescribeCAEnrollmentPolicy` is what reports it throughout.
+//!
+//! Withdrawing the enrollment changes the directory itself, so the call needs a directory
+//! that is in service (`DirectoryUnavailableException` otherwise); a directory holding no
+//! policy to withdraw is refused with `EntityDoesNotExistException`, and a deactivation
+//! whose transition is still outstanding with `DisableAlreadyInProgressException`.
 //!
 //! ## Shape of an operation
 //!
@@ -147,23 +149,87 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::DISABLE_CA_ENROLLMENT_POLICY_OUTPUT_SCHEMA;
     const SUCCESS_STATUS: u16 = 200u16;
 
+    /// Withdraw the CA enrollment policy the directory holds.
+    ///
+    /// Authorization comes first, then the directory is resolved, then the stage gate, then
+    /// the state of the policy itself — the same order the activation takes them in, so the
+    /// two toggles refuse a call for the same reasons in the same sequence.
     async fn handle(
         &self,
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DisableCAEnrollmentPolicy` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DisableCAEnrollmentPolicyErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DisableCAEnrollmentPolicy"))
+        let state = crate::state::service_state(&*self.engine)
+            .ok_or_else(crate::state::state_unavailable)?;
+
+        // Authorization comes FIRST, on the ARN of the directory the request NAMED, so a
+        // caller IAM does not permit is refused before the store is written and learns
+        // nothing about whether that directory exists.
+        crate::service::authorization::authorize(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &crate::service::authorization::directory_arn(ctx, &input.directory_id),
+        )
+        .map_err(DisableCAEnrollmentPolicyErrorModeled::AccessDeniedException)?;
+
+        let now = ::std::time::SystemTime::now();
+        let mut store = state.lock();
+        store.advance_clock(now);
+
+        let directory = store
+            .directories
+            .get_mut(&input.directory_id)
+            .ok_or_else(|| {
+                DisableCAEnrollmentPolicyErrorModeled::DirectoryDoesNotExistException(
+                    crate::state::refusal(crate::state::no_such_directory(&input.directory_id)),
+                )
+            })?;
+
+        // Withdrawing the enrollment changes the directory itself, so it needs a directory
+        // that is in service: one still being built by the transition its create owes is
+        // unavailable, which is the modelled refusal for exactly that.
+        if directory.stage != crate::state::STAGE_ACTIVE {
+            return Err(
+                DisableCAEnrollmentPolicyErrorModeled::DirectoryUnavailableException(
+                    crate::state::refusal(crate::state::directory_unavailable(
+                        &input.directory_id,
+                    )),
+                )
+                .into(),
+            );
+        }
+
+        // A deactivation whose transition is still outstanding is the one failure this
+        // operation models an in-progress error for.
+        let policy_absent = || {
+            DisableCAEnrollmentPolicyErrorModeled::EntityDoesNotExistException(
+                crate::state::refusal(crate::state::CA_ENROLLMENT_POLICY_ABSENT),
+            )
+        };
+        let policy = directory
+            .ca_enrollment_policy
+            .as_mut()
+            .ok_or_else(policy_absent)?;
+        if policy.status == crate::state::CA_ENROLLMENT_POLICY_DISABLING {
+            return Err(
+                DisableCAEnrollmentPolicyErrorModeled::DisableAlreadyInProgressException(
+                    crate::state::refusal(crate::state::CA_ENROLLMENT_DISABLE_IN_PROGRESS),
+                )
+                .into(),
+            );
+        }
+        // A policy already withdrawn is no entity this call can withdraw again: the
+        // directory holds the record of what it was last enrolled through, and no
+        // enrollment to stop.
+        if !policy.in_force() {
+            return Err(policy_absent().into());
+        }
+
+        // Automatic enrollment does not stop the instant this call answers: the move to
+        // `Disabled` is owed by the clock, like the activation's move to `Success`.
+        policy.start_disabling(now);
+
+        Ok(DisableCAEnrollmentPolicyOutput {})
     }
 }

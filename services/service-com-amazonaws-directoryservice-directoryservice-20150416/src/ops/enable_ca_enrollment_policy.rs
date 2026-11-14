@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op EnableCAEnrollmentPolicy
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `EnableCAEnrollmentPolicy`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`EnableCAEnrollmentPolicy::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Records the certificate-authority enrollment policy for a directory: the PCA connector
+//! the request names becomes the one the directory enrolls its clients through, and the
+//! policy answers in the transient `InProgress` status its own documentation names ("the
+//! policy is being activated"), which the clock settles on `Success` one transition span
+//! later ([`crate::state::ComAmazonawsDirectoryserviceDirectoryservice20150416State::advance_clock`]).
+//! `DescribeCAEnrollmentPolicy` is what reports it back.
+//!
+//! Enrolling clients changes the directory itself, so the call needs a directory that is
+//! in service (`DirectoryUnavailableException` otherwise), and a directory that already
+//! holds a policy is refused rather than silently re-pointed: while the activation an
+//! earlier call started is still outstanding with `EnableAlreadyInProgressException`, and
+//! once the policy is in force with `EntityAlreadyExistsException`.
 //!
 //! ## Shape of an operation
 //!
@@ -155,23 +159,127 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::ENABLE_CA_ENROLLMENT_POLICY_OUTPUT_SCHEMA;
     const SUCCESS_STATUS: u16 = 200u16;
 
+    /// Record the CA enrollment policy the request asks for.
+    ///
+    /// Authorization comes first, then the directory is resolved, then the stage gate, then
+    /// the state of the policy the directory already holds — so a caller learns nothing
+    /// about a directory it may not read, and an id no directory is stored under is refused
+    /// before any of the directory's own state is consulted.
     async fn handle(
         &self,
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `EnableCAEnrollmentPolicy` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(EnableCAEnrollmentPolicyErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("EnableCAEnrollmentPolicy"))
+        let state = crate::state::service_state(&*self.engine)
+            .ok_or_else(crate::state::state_unavailable)?;
+
+        // Authorization comes FIRST, on the ARN of the directory the request NAMED, so a
+        // caller IAM does not permit is refused before the store is written and learns
+        // nothing about whether that directory exists.
+        crate::service::authorization::authorize(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &crate::service::authorization::directory_arn(ctx, &input.directory_id),
+        )
+        .map_err(EnableCAEnrollmentPolicyErrorModeled::AccessDeniedException)?;
+
+        let now = ::std::time::SystemTime::now();
+        let mut store = state.lock();
+        store.advance_clock(now);
+
+        let directory = store
+            .directories
+            .get_mut(&input.directory_id)
+            .ok_or_else(|| {
+                EnableCAEnrollmentPolicyErrorModeled::DirectoryDoesNotExistException(
+                    crate::state::refusal(crate::state::no_such_directory(&input.directory_id)),
+                )
+            })?;
+
+        // Enrolling the directory's clients changes the directory itself, so it needs a
+        // directory that is in service: one still being built by the transition its create
+        // owes is unavailable, which is the modelled refusal for exactly that.
+        if directory.stage != crate::state::STAGE_ACTIVE {
+            return Err(
+                EnableCAEnrollmentPolicyErrorModeled::DirectoryUnavailableException(
+                    crate::state::refusal(crate::state::directory_unavailable(
+                        &input.directory_id,
+                    )),
+                )
+                .into(),
+            );
+        }
+
+        if let Some(policy) = directory.ca_enrollment_policy.as_ref() {
+            // An activation whose transition is still outstanding is the one failure this
+            // operation models an in-progress error for, so it is told apart from a policy
+            // that is already there.
+            if policy.status == crate::state::CA_ENROLLMENT_POLICY_IN_PROGRESS {
+                return Err(
+                    EnableCAEnrollmentPolicyErrorModeled::EnableAlreadyInProgressException(
+                        crate::state::refusal(crate::state::CA_ENROLLMENT_ENABLE_IN_PROGRESS),
+                    )
+                    .into(),
+                );
+            }
+            // Any other policy the directory still holds — active, or on its way out under
+            // a disable whose transition is outstanding — is an entity this call cannot
+            // make a second of.
+            if policy.in_force() {
+                return Err(
+                    EnableCAEnrollmentPolicyErrorModeled::EntityAlreadyExistsException(
+                        crate::state::refusal(crate::state::CA_ENROLLMENT_POLICY_EXISTS),
+                    )
+                    .into(),
+                );
+            }
+        }
+
+        // Enrollment is performed by the connector, which belongs to the service that owns
+        // connectors: a policy this service reported as operational while nothing could
+        // enroll a certificate would be a success backed by nothing. So the connector is
+        // resolved THERE, and the refusal says which of the operation's requirements of it
+        // failed — it must exist, be this directory's, and be in an active state.
+        if let Some(defect) =
+            crate::state::connector_defect(&*self.engine, &input.directory_id, &input.pca_connector_arn, now)
+        {
+            return Err(match defect {
+                crate::state::ConnectorDefect::Absent => {
+                    EnableCAEnrollmentPolicyErrorModeled::EntityDoesNotExistException(
+                        crate::state::refusal(crate::state::no_such_pca_connector(
+                            &input.pca_connector_arn,
+                        )),
+                    )
+                }
+                crate::state::ConnectorDefect::NotActive => {
+                    EnableCAEnrollmentPolicyErrorModeled::InvalidParameterException(
+                        crate::state::refusal(crate::state::pca_connector_not_active(
+                            &input.pca_connector_arn,
+                        )),
+                    )
+                }
+                crate::state::ConnectorDefect::OtherDirectory => {
+                    EnableCAEnrollmentPolicyErrorModeled::InvalidParameterException(
+                        crate::state::refusal(
+                            crate::state::pca_connector_of_another_directory(
+                                &input.pca_connector_arn,
+                                &input.directory_id,
+                            ),
+                        ),
+                    )
+                }
+            }
+            .into());
+        }
+
+        // The policy is not operational the instant this call answers: the move to
+        // `Success` is owed by the clock, like a create's stage transition.
+        directory.ca_enrollment_policy = Some(crate::state::CaEnrollmentPolicyRecord::enabling(
+            input.pca_connector_arn.clone(),
+            now,
+        ));
+
+        Ok(EnableCAEnrollmentPolicyOutput {})
     }
 }

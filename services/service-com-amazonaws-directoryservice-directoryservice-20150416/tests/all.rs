@@ -19,6 +19,8 @@ mod ad_connector;
 mod alias_reassignment;
 #[path = "all/aws_worded_diagnostics.rs"]
 mod aws_worded_diagnostics;
+#[path = "all/ca_enrollment_policy.rs"]
+mod ca_enrollment_policy;
 #[path = "all/certificate_absence_message.rs"]
 mod certificate_absence_message;
 #[path = "all/certificate_deregistration.rs"]

@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DescribeCAEnrollmentPolicy
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DescribeCAEnrollmentPolicy`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DescribeCAEnrollmentPolicy::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports the certificate-authority enrollment policy stored for a directory — the one
+//! `EnableCAEnrollmentPolicy` records and `DisableCAEnrollmentPolicy` withdraws, with the
+//! status settled by the clock through
+//! [`crate::state::ComAmazonawsDirectoryserviceDirectoryservice20150416State::advance_clock`]
+//! — and nothing else: a directory no enable has ever named reports
+//! [`crate::state::CA_ENROLLMENT_POLICY_DISABLED`] with no connector and no modification
+//! instant, because that is what the store holds for it.
+//!
+//! This is a REPORTING operation: the only write it performs is the clock advance every
+//! handler of this service makes, which materialises transitions that were already due.
+//! An id no directory is stored under is refused with `DirectoryDoesNotExistException`.
 //!
 //! ## Shape of an operation
 //!
@@ -159,23 +162,49 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::DESCRIBE_CA_ENROLLMENT_POLICY_OUTPUT_SCHEMA;
     const SUCCESS_STATUS: u16 = 200u16;
 
+    /// Report the CA enrollment policy of the directory the request names.
+    ///
+    /// A REPORT and nothing else: the only write it performs is the one the clock had
+    /// already made due, so two reads of an untouched directory answer alike and the
+    /// status a toggle's transition owes settles whether or not anybody polls it.
+    ///
+    /// The directory is resolved in the store, so an id no directory is stored under is
+    /// refused with the modelled `DirectoryDoesNotExistException`. A directory that holds
+    /// no policy is NOT such a failure — the model declares no absent-entity error for
+    /// this read — and reports the `Disabled` status the `CaEnrollmentPolicyStatus`
+    /// member's own documentation gives for an inactive policy. The read needs no
+    /// particular directory stage: it reports what the store holds.
     async fn handle(
         &self,
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DescribeCAEnrollmentPolicy` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DescribeCAEnrollmentPolicyErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DescribeCAEnrollmentPolicy"))
+        // This read takes no authorization decision of its own: the model declares no
+        // `AccessDeniedException` for it (see `crate::service::authorization`).
+        let _ = ctx;
+        let state = crate::state::service_state(&*self.engine)
+            .ok_or_else(crate::state::state_unavailable)?;
+
+        let mut store = state.lock();
+        store.advance_clock(::std::time::SystemTime::now());
+
+        let directory = store.directories.get(&input.directory_id).ok_or_else(|| {
+            DescribeCAEnrollmentPolicyErrorModeled::DirectoryDoesNotExistException(
+                crate::state::refusal(crate::state::no_such_directory(&input.directory_id)),
+            )
+        })?;
+        let policy = directory.ca_enrollment_policy.as_ref();
+
+        Ok(DescribeCAEnrollmentPolicyOutput {
+            // The id of the directory the record was found under, so the answer names the
+            // directory this policy belongs to rather than echoing the request.
+            directory_id: Some(directory.directory_id.clone()),
+            pca_connector_arn: policy.map(|policy| policy.pca_connector_arn.clone()),
+            ca_enrollment_policy_status: Some(directory.ca_enrollment_policy_status().to_string()),
+            last_updated_date_time: policy
+                .map(|policy| crate::state::as_timestamp(policy.last_updated)),
+            ca_enrollment_policy_status_reason: policy
+                .and_then(|policy| policy.status_reason.clone()),
+        })
     }
 }
