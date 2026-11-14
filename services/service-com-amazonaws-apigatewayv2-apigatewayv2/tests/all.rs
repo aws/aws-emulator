@@ -89,6 +89,8 @@ mod domain_name_endpoint_required;
 mod domain_name_lifecycle;
 #[path = "all/domain_name_pagination.rs"]
 mod domain_name_pagination;
+#[path = "all/domain_name_tls_preconditions.rs"]
+mod domain_name_tls_preconditions;
 #[path = "all/empty_answer_framing.rs"]
 mod empty_answer_framing;
 #[path = "all/http_api_access_logging.rs"]

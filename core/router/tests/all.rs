@@ -1993,3 +1993,6 @@ mod iam_secretsmanager_denial_envelope_by_protocol;
 // (`zz_probe` is declared once, further up this tail: a module may be declared only once.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared once, further up this
 // file: a module may be declared only once.)
+// (That suite is declared ONCE, in the sorted span at the head of this file: a module may be
+// declared only once, and two branches landing at once declared it twice.)
+// (`zz_probe` is declared ONCE, in the span above: a module may be declared only once.)

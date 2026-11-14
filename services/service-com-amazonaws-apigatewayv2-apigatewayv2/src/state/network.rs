@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! The ONE client this crate asks another emulated service a question through.
+//! The clients this crate asks another emulated service a question through.
 //!
-//! Built here, in a module of its own, because it answers no question itself: it is the
-//! transport the questions in [`super::ec2_subnets`] are put over. Keeping it apart is what
-//! lets that module read as the question it asks — which subnets the account has, and
-//! whether they agree on a VPC — rather than as client configuration.
+//! Built here, in a module of its own, because they answer no question themselves: they are
+//! the transport the questions in [`super::ec2_subnets`] and
+//! [`super::acm_certificate_issuance`] are put over. Keeping them apart is what lets those
+//! modules read as the questions they ask — which subnets the account has and whether they
+//! agree on a VPC, and how a certificate was issued — rather than as client configuration.
 //!
 //! The transport is the emulator's own in-process callback
 //! ([`smithy_server_runtime::OperationContext::callback`]), so this crate names no other
@@ -47,4 +48,29 @@ pub(super) fn ec2(
         )
         .build();
     Some(::aws_sdk_ec2::Client::from_conf(config))
+}
+
+/// An AWS SDK client for Certificate Manager over the in-process callback into this same
+/// emulator, built the way [`ec2`] is and reading the Region the same way.
+pub(super) fn acm(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+) -> Option<::aws_sdk_acm::Client> {
+    let region = ::service_common::arn::region_label(region)?;
+    let config = ::aws_sdk_acm::Config::builder()
+        .behavior_version(::aws_sdk_acm::config::BehaviorVersion::latest())
+        .http_client(ctx.callback().http_client())
+        .credentials_provider(ctx.callback().aws_credentials_provider())
+        .region(::aws_sdk_acm::config::Region::new(region.to_string()))
+        .endpoint_url(format!("https://acm.{region}.amazonaws.com"))
+        // In-process, exactly as in [`ec2`]: nothing to retry, time out or watch for a
+        // stalled stream, and the credentials the callback hands over are used directly.
+        .retry_config(::aws_sdk_acm::config::retry::RetryConfig::disabled())
+        .timeout_config(::aws_sdk_acm::config::timeout::TimeoutConfig::disabled())
+        .identity_cache(::aws_sdk_acm::config::IdentityCache::no_cache())
+        .stalled_stream_protection(
+            ::aws_sdk_acm::config::StalledStreamProtectionConfig::disabled(),
+        )
+        .build();
+    Some(::aws_sdk_acm::Client::from_conf(config))
 }

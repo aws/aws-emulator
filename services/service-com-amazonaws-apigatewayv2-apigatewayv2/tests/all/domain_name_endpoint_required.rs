@@ -121,7 +121,7 @@ async fn a_create_naming_any_endpoint_configuration_is_accepted() {
                     "certificateArn": certificate_arn("accepted-two-b"),
                     "certificateName": "accepted-two",
                     "endpointType": "EDGE",
-                    "securityPolicy": "TLS_1_0",
+                    "securityPolicy": "TLS_1_2",
                     "ipAddressType": "dualstack"
                 }
             ]),
@@ -130,7 +130,7 @@ async fn a_create_naming_any_endpoint_configuration_is_accepted() {
             "three bare entries",
             json!([
                 {"ipAddressType": "dualstack"},
-                {"securityPolicy": "TLS_1_0"},
+                {"securityPolicy": "TLS_1_2"},
                 {"endpointType": "EDGE"}
             ]),
         ),
@@ -187,7 +187,7 @@ async fn a_patch_that_would_remove_every_endpoint_is_refused() {
             json!([
                 {"certificateArn": certificate_arn("seed-a")},
                 {"certificateArn": certificate_arn("seed-b"), "endpointType": "EDGE"},
-                {"certificateArn": certificate_arn("seed-c"), "securityPolicy": "TLS_1_0"}
+                {"certificateArn": certificate_arn("seed-c"), "securityPolicy": "TLS_1_2"}
             ]),
         ),
     ];

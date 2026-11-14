@@ -149,7 +149,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
+        let region = crate::state::request_region(ctx.parts());
 
         // `None` here means the patch named no routing mode, so the stored one stands:
         // the catalog check and its wording are shared with `create_domain_name`, but a
@@ -178,41 +178,68 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 "UpdateDomainName",
             ));
         };
+
+        // Mutual TLS has a precondition on the certificate each endpoint PRESENTS, and a
+        // patch may carry those endpoints or leave the stored ones in place — so what this
+        // call would LEAVE BEHIND is read first, and the certificates it would present are
+        // weighed with the service that holds them. That answer is awaited, so it is
+        // settled with no lock held and before anything is written: a refused patch leaves
+        // no half-configured domain name behind.
+        //
+        // The refusals this operation decides on its OWN — a name the account does not
+        // hold, and a resource mid-migration — are taken first, under that same read: they
+        // need no other service, and a patch AWS refuses outright must not turn into a hop
+        // either. See `crate::state::acm_certificate_issuance`.
+        let now = ::std::time::SystemTime::now();
+        let patched = {
+            let store = state.lock();
+            let Some(record) = store.domain_names.get(&input.domain_name) else {
+                return Err(not_found());
+            };
+            // "If the status is UPDATING, the domain cannot be modified further until the
+            // existing operation is complete. If it is AVAILABLE, the domain can be
+            // updated" (`DomainNameConfiguration$DomainNameStatus`). A domain name
+            // mid-migration is therefore refused with the modelled `ConflictException` —
+            // "the requested operation would cause a conflict with the current state of a
+            // service resource" — and nothing is written. The status is read off the clock,
+            // so the refusal lifts of its own accord once the migration this service owes
+            // comes due.
+            if record.status(now) == crate::state::DOMAIN_NAME_STATUS_UPDATING {
+                return Err(mid_migration(&input.domain_name));
+            }
+            (
+                requested_configurations
+                    .clone()
+                    .unwrap_or_else(|| record.configurations.clone()),
+                input
+                    .mutual_tls_authentication
+                    .clone()
+                    .or_else(|| record.mutual_tls_authentication.clone()),
+            )
+        };
+        let (configurations, mutual_tls) = patched;
+        if let Err(message) = crate::state::acm_certificate_issuance::resolve_mutual_tls_ownership(
+            ctx,
+            &region,
+            &configurations,
+            mutual_tls.as_ref(),
+        )
+        .await
+        {
+            return Err(bad_request(&message));
+        }
+
         let mut store = state.lock();
 
+        // Both refusals again under the WRITE lock: the read above was taken before the
+        // awaited hop, so a patch that began a migration in between must refuse this one
+        // rather than be overwritten by it, and the record resolved here is the one written
+        // through.
         let Some(record) = store.domain_names.get_mut(&input.domain_name) else {
-            // The message AWS answers for a domain name the account does not hold; see
-            // the sibling refusal in `get_domain_name`. It names no value from the
-            // request.
-            return Err(UpdateDomainNameErrorModeled::NotFoundException(
-                NotFoundException {
-                    message: Some(crate::state::INVALID_DOMAIN_NAME_IDENTIFIER.to_string()),
-                    resource_type: ::std::option::Option::None,
-                },
-            )
-            .into());
+            return Err(not_found());
         };
-
-        // "If the status is UPDATING, the domain cannot be modified further until the
-        // existing operation is complete. If it is AVAILABLE, the domain can be updated"
-        // (`DomainNameConfiguration$DomainNameStatus`). A domain name mid-migration is
-        // therefore refused with the modelled `ConflictException` — "the requested
-        // operation would cause a conflict with the current state of a service resource"
-        // — and nothing is written. The status is read off the clock, so the refusal
-        // lifts of its own accord once the migration this service owes comes due.
-        let now = ::std::time::SystemTime::now();
         if record.status(now) == crate::state::DOMAIN_NAME_STATUS_UPDATING {
-            return Err(UpdateDomainNameErrorModeled::ConflictException(
-                ConflictException {
-                    message: Some(format!(
-                        "The domain name {} is {} and cannot be modified until the existing \
-                         operation is complete.",
-                        input.domain_name,
-                        crate::state::DOMAIN_NAME_STATUS_UPDATING
-                    )),
-                },
-            )
-            .into());
+            return Err(mid_migration(&input.domain_name));
         }
 
         // The update is a PATCH (`PATCH /v2/domainnames/{DomainName}`): a member the
@@ -279,6 +306,33 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 fn bad_request(message: &str) -> UpdateDomainNameError {
     UpdateDomainNameErrorModeled::BadRequestException(BadRequestException {
         message: Some(message.to_string()),
+    })
+    .into()
+}
+
+/// This operation's refusal of a name the account holds no domain name under: the modelled
+/// `NotFoundException`, with the sentence AWS answers for it — see the sibling refusal in
+/// `get_domain_name`. It names no value from the request. Written once, because the record
+/// is resolved both before the certificate hop and again under the write lock.
+fn not_found() -> UpdateDomainNameError {
+    UpdateDomainNameErrorModeled::NotFoundException(NotFoundException {
+        message: Some(crate::state::INVALID_DOMAIN_NAME_IDENTIFIER.to_string()),
+        resource_type: ::std::option::Option::None,
+    })
+    .into()
+}
+
+/// This operation's refusal of a domain name whose endpoints are mid-migration: the
+/// modelled `ConflictException` ("the requested operation would cause a conflict with the
+/// current state of a service resource"), naming the resource and the status it is in.
+/// Written once, for the same reason [`not_found`] is.
+fn mid_migration(domain_name: &str) -> UpdateDomainNameError {
+    UpdateDomainNameErrorModeled::ConflictException(ConflictException {
+        message: Some(format!(
+            "The domain name {domain_name} is {} and cannot be modified until the existing \
+             operation is complete.",
+            crate::state::DOMAIN_NAME_STATUS_UPDATING
+        )),
     })
     .into()
 }

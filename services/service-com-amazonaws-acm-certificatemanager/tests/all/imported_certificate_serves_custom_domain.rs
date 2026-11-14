@@ -108,7 +108,7 @@ fn rows() -> Vec<Row> {
             rotation: Rotation::ToASecondCertificateArn,
         },
         Row {
-            case: "a P-384 wildcard certificate on an explicit REGIONAL/TLS_1_0 \
+            case: "a P-384 wildcard certificate on an explicit REGIONAL/TLS_1_2 \
                    endpoint configured for mutual TLS",
             domain_name: "sockets.rotation-wildcard.example.com",
             initial: Blueprint {
@@ -121,10 +121,11 @@ fn rows() -> Vec<Row> {
             with_chain: false,
             // `EndpointType` is REGIONAL | EDGE and `SecurityPolicy` is TLS_1_0 | TLS_1_2
             // (`smithy_query(query="shape", shape="com.amazonaws.apigatewayv2#EndpointType")`
-            // and `…#SecurityPolicy`); this row names the non-default policy.
+            // and `…#SecurityPolicy`); this row names both members rather than leaving
+            // them to the defaults.
             configuration: json!({
                 "endpointType": "REGIONAL",
-                "securityPolicy": "TLS_1_0",
+                "securityPolicy": "TLS_1_2",
                 "certificateName": "imported-wildcard"
             }),
             mutual_tls: Some(json!({
@@ -132,7 +133,7 @@ fn rows() -> Vec<Row> {
                 "truststoreVersion": "1"
             })),
             endpoint_type: "REGIONAL",
-            security_policy: "TLS_1_0",
+            security_policy: "TLS_1_2",
             ip_address_type: DEFAULT_IP_ADDRESS_TYPE,
             replacement: Blueprint {
                 common_name: Some("*.rotation-wildcard.example.com"),

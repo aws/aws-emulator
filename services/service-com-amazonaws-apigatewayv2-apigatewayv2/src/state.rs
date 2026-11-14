@@ -20,8 +20,11 @@
 //!
 //! One fact a request names is NOT this service's to hold: the subnets of the account a
 //! VPC link is placed in are Amazon EC2's resources, so they are resolved against the
-//! service that owns them in [`ec2_subnets`].
+//! service that owns them in [`ec2_subnets`], and how a certificate a custom domain name
+//! presents was issued is Certificate Manager's, resolved in
+//! [`acm_certificate_issuance`].
 
+pub mod acm_certificate_issuance;
 pub mod authorizer_cache;
 pub mod cors;
 pub mod cors_origin;
@@ -359,14 +362,30 @@ pub const DEFAULT_ROUTING_MODE: &str = "API_MAPPING_ONLY";
 /// edge-optimized form the member's certificate wording belongs to.
 pub const DEFAULT_ENDPOINT_TYPE: &str = "REGIONAL";
 
-/// The `SecurityPolicy` a domain name configuration gets when the request names none,
-/// out of `SECURITY_POLICY_VALUES` (`TLS_1_0 | TLS_1_2`).
+/// The `SecurityPolicy` every custom domain name of this api type is served under,
+/// whatever a request names, out of `SECURITY_POLICY_VALUES` (`TLS_1_0 | TLS_1_2`).
 ///
-/// A CHOSEN default, not a figure AWS publishes: `DomainNameConfiguration$SecurityPolicy`
-/// documents only that "The valid values are TLS_1_0 and TLS_1_2", so this takes the
-/// later TLS version of the two, which is the one a domain name minted today can
-/// actually be reached over.
-pub const DEFAULT_SECURITY_POLICY: &str = "TLS_1_2";
+/// `DomainNameConfiguration$SecurityPolicy` models both values, but API Gateway v2
+/// enforces the later TLS version as the FLOOR for a domain name: a configuration naming
+/// the earlier one is refused rather than stored (see
+/// [`unsupported_security_policy_message`]), so the catalog's lower value can never be the
+/// policy one of this service's endpoints is reached over.
+pub const ENFORCED_SECURITY_POLICY: &str = "TLS_1_2";
+
+/// The `SecurityPolicy` a domain name configuration gets when the request names none:
+/// the one policy the service serves a domain name under, so an entry that names it and
+/// one that leaves it out describe the same endpoint.
+pub const DEFAULT_SECURITY_POLICY: &str = ENFORCED_SECURITY_POLICY;
+
+/// The sentence a `DomainNameConfigurations` entry naming a `SecurityPolicy` other than
+/// [`ENFORCED_SECURITY_POLICY`] is refused with.
+///
+/// API Gateway states this refusal in terms of the POLICY that was asked for and the api
+/// type that does not serve it, naming neither the member's path nor the domain name; the
+/// policy is the one variable part and comes from the request.
+pub fn unsupported_security_policy_message(security_policy: &str) -> String {
+    format!("{security_policy} is not supported for APIGatewayV2 domainName.")
+}
 
 /// The `ApiMappingSelectionExpression` every domain name reports.
 ///
@@ -535,6 +554,17 @@ pub const MAX_MATCH_HEADERS_CONDITIONS: usize = 2;
 /// sentence as [`MAX_MATCH_HEADERS_CONDITIONS`].
 pub const MAX_MATCH_BASE_PATHS_CONDITIONS: usize = 1;
 
+/// The refusal a `Conditions` entry that does not name EXACTLY ONE match clause takes —
+/// one naming neither, which selects no request, and one naming both, which says two
+/// things where the structure offers a choice.
+///
+/// Fixed text: it names the two alternatives in the wire spelling
+/// (`RoutingRuleCondition$MatchBasePaths` carries `jsonName` `matchBasePaths` and
+/// `$MatchHeaders` carries `matchHeaders`) and carries no index and no value from the
+/// request.
+pub const ROUTING_RULE_CONDITION_ALTERNATIVES: &str = "Invalid conditions for RoutingRule. \
+     Each condition can only be either matchBasePaths or matchHeaders.";
+
 /// The refusal a routing rule whose `Conditions` carry more of one kind than the
 /// documented sentence allows takes: the constraint itself, naming nothing from the
 /// request.
@@ -579,13 +609,14 @@ pub fn validate_routing_rule(
     let mut match_base_paths = 0usize;
     for (index, condition) in conditions.iter().enumerate() {
         let member = format!("Conditions[{index}]");
-        validate_exclusive_choice(
-            &member,
-            &[
-                ("MatchBasePaths", condition.match_base_paths.is_some()),
-                ("MatchHeaders", condition.match_headers.is_some()),
-            ],
-        )?;
+        // Exactly one of the two alternatives, refused with the service's own fixed
+        // sentence for this member rather than with the generic exclusive-choice wording
+        // ([`validate_exclusive_choice`]) the other members of this model take.
+        let named = usize::from(condition.match_base_paths.is_some())
+            + usize::from(condition.match_headers.is_some());
+        if named != 1 {
+            return Err(ROUTING_RULE_CONDITION_ALTERNATIVES.to_string());
+        }
         if let Some(base_paths) = &condition.match_base_paths {
             match_base_paths += 1;
             if base_paths.any_of.is_empty() {
@@ -4227,6 +4258,12 @@ pub fn resolve_domain_name_endpoint(
         DEFAULT_SECURITY_POLICY,
         wire::SECURITY_POLICY_VALUES,
     )?;
+    // A policy the catalog carries but this service does not serve a domain name under is
+    // refused here, in the ONE place every writer of the resource resolves an entry: see
+    // [`ENFORCED_SECURITY_POLICY`].
+    if security_policy != ENFORCED_SECURITY_POLICY {
+        return Err(unsupported_security_policy_message(&security_policy));
+    }
     let ip_address_type = checked_enum(
         index,
         "IpAddressType",

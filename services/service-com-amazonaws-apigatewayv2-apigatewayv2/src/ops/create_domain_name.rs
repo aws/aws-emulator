@@ -199,6 +199,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             Err(message) => return Err(bad_request(&message)),
         };
 
+        // Mutual TLS has a precondition on the certificate each endpoint PRESENTS, which
+        // only the service that holds the certificate can settle, so it is resolved before
+        // the store is reached: a refused create leaves no half-configured domain name
+        // behind. See `crate::state::acm_certificate_issuance`.
+        if let Err(message) = crate::state::acm_certificate_issuance::resolve_mutual_tls_ownership(
+            ctx,
+            &region,
+            &configurations,
+            input.mutual_tls_authentication.as_ref(),
+        )
+        .await
+        {
+            return Err(bad_request(&message));
+        }
+
         let Some(state) = crate::state::service_state(&*self.engine) else {
             // Unreachable in the assembled emulator — see the note in `create_api`.
             return Err(crate::scaffolded::Scaffolded::not_implemented(

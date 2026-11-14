@@ -47,7 +47,7 @@ use service_com_amazonaws_apigatewayv2_apigatewayv2::state::paging::MAX_PAGE_SIZ
 use service_com_amazonaws_apigatewayv2_apigatewayv2::state::{
     routing_rule_priority_range_message, EMPTY_ROUTING_RULE_ACTIONS, EMPTY_ROUTING_RULE_CONDITIONS,
     INVALID_DOMAIN_NAME_IDENTIFIER, INVALID_NEXT_TOKEN_MESSAGE, MAX_ROUTING_RULES_PER_DOMAIN,
-    ROUTING_RULE_CONDITION_LIMITS,
+    ROUTING_RULE_CONDITION_ALTERNATIVES, ROUTING_RULE_CONDITION_LIMITS,
 };
 
 use crate::api_lifecycle::{as_str, assert_minted_id, call_in_region, emulator, error_code};
@@ -464,7 +464,7 @@ async fn a_rule_that_describes_nothing_evaluable_is_refused_and_persists_nothing
         (
             "a condition naming neither alternative",
             json!({ "priority": 1, "actions": [action.clone()], "conditions": [{}] }),
-            "MatchBasePaths",
+            ROUTING_RULE_CONDITION_ALTERNATIVES,
         ),
         (
             "a condition naming both alternatives",
@@ -478,7 +478,7 @@ async fn a_rule_that_describes_nothing_evaluable_is_refused_and_persists_nothing
                     }
                 }]
             }),
-            "MatchHeaders",
+            ROUTING_RULE_CONDITION_ALTERNATIVES,
         ),
         (
             "a base-path condition with nothing to match on",

@@ -177,7 +177,7 @@ fn create_cases() -> Vec<CreateCase> {
                     "certificateArn": certificate_arn("explicit"),
                     "certificateName": "explicit-cert",
                     "endpointType": "EDGE",
-                    "securityPolicy": "TLS_1_0",
+                    "securityPolicy": "TLS_1_2",
                     "ipAddressType": "dualstack"
                 }],
                 "routingMode": "ROUTING_RULE_ONLY"
@@ -185,7 +185,7 @@ fn create_cases() -> Vec<CreateCase> {
             expect_routing_mode: "ROUTING_RULE_ONLY".to_string(),
             expect_configurations: vec![(
                 "EDGE".to_string(),
-                "TLS_1_0".to_string(),
+                "TLS_1_2".to_string(),
                 "dualstack".to_string(),
                 certificate_arn("explicit"),
             )],
@@ -197,7 +197,7 @@ fn create_cases() -> Vec<CreateCase> {
             extra: json!({
                 "domainNameConfigurations": [
                     {"certificateArn": certificate_arn("first"), "ipAddressType": "dualstack"},
-                    {"certificateArn": certificate_arn("second"), "securityPolicy": "TLS_1_0"},
+                    {"certificateArn": certificate_arn("second"), "securityPolicy": "TLS_1_2"},
                     {"certificateArn": certificate_arn("third"), "endpointType": "EDGE"}
                 ],
                 "mutualTlsAuthentication": {
@@ -217,7 +217,7 @@ fn create_cases() -> Vec<CreateCase> {
                 ),
                 (
                     DEFAULT_ENDPOINT_TYPE.to_string(),
-                    "TLS_1_0".to_string(),
+                    "TLS_1_2".to_string(),
                     DEFAULT_IP_ADDRESS_TYPE.to_string(),
                     certificate_arn("second"),
                 ),
@@ -485,7 +485,7 @@ fn patch_cases() -> Vec<PatchCase> {
             patch: json!({
                 "domainNameConfigurations": [{
                     "certificateArn": certificate_arn("all"),
-                    "securityPolicy": "TLS_1_0"
+                    "securityPolicy": "TLS_1_2"
                 }],
                 "mutualTlsAuthentication": {"truststoreUri": "s3://truststores/all.pem"},
                 "routingMode": "ROUTING_RULE_THEN_API_MAPPING"

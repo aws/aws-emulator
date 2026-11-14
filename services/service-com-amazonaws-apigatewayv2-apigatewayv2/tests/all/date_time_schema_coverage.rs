@@ -265,7 +265,7 @@ async fn the_shape_outside_the_list_reports_no_instant() {
                 "domainNameConfigurations": [
                     {"certificateArn": certificate_arn("no-instant-first")},
                     {"certificateArn": certificate_arn("no-instant-second"), "endpointType": "EDGE"},
-                    {"certificateArn": certificate_arn("no-instant-third"), "securityPolicy": "TLS_1_0"}
+                    {"certificateArn": certificate_arn("no-instant-third"), "securityPolicy": "TLS_1_2"}
                 ]
             }),
         ),

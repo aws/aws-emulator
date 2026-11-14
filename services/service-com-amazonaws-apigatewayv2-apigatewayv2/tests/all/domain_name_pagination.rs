@@ -203,7 +203,7 @@ async fn get_domain_names_reports_the_record_get_domain_name_reports() {
                     "certificateArn": certificate_arn("listed-explicit"),
                     "certificateName": "listed-explicit-cert",
                     "endpointType": "EDGE",
-                    "securityPolicy": "TLS_1_0",
+                    "securityPolicy": "TLS_1_2",
                     "ipAddressType": "dualstack"
                 }],
                 "routingMode": "API_MAPPING_ONLY"
@@ -215,7 +215,7 @@ async fn get_domain_names_reports_the_record_get_domain_name_reports() {
             json!({
                 "domainNameConfigurations": [
                     {"certificateArn": certificate_arn("listed-first"), "ipAddressType": "dualstack"},
-                    {"certificateArn": certificate_arn("listed-second"), "securityPolicy": "TLS_1_0"},
+                    {"certificateArn": certificate_arn("listed-second"), "securityPolicy": "TLS_1_2"},
                     {"certificateArn": certificate_arn("listed-third"), "endpointType": "EDGE"}
                 ],
                 "mutualTlsAuthentication": {

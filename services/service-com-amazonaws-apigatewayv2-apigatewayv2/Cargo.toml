@@ -33,6 +33,12 @@ tracing = { workspace = true }
 # account has rather than deciding it here. Only the generated client is needed — the
 # emulator supplies the transport.
 aws-sdk-ec2 = { version = "1", default-features = false }
+# The AWS SDK for Certificate Manager, driven over the same in-process callback: how the
+# certificate a custom domain name presents was issued is that service's fact, and the
+# mutual-TLS precondition of `CreateDomainName`/`UpdateDomainName` turns on it, so
+# `src/state/acm_certificate_issuance.rs` asks the owner of certificates rather than
+# deciding it here.
+aws-sdk-acm = { version = "1", default-features = false }
 # The AWS SDK for Lambda, driven over the same in-process callback: an `AWS_PROXY` route
 # and a `REQUEST` authorizer are answered by the function they name, which lives in the
 # Lambda service, so `src/service/invoke/` asks Lambda to run it rather than deciding the
@@ -150,6 +156,14 @@ quick-xml = "0.41"
 # writes lands in a log group that service holds, and `tests/all/http_api_access_logging.rs`
 # reads the delivery back through its own `FilterLogEvents`. DEV-ONLY.
 service-com-amazonaws-cloudwatchlogs-logs-20140328 = { workspace = true }
+# Certificate Manager, mounted beside this one in the test harness: how the certificate a
+# custom domain name presents was issued is that service's fact, so the mutual-TLS
+# precondition is driven end to end against the owner of certificates on the same engine
+# rather than against an ARN written into a test. DEV-ONLY.
+service-com-amazonaws-acm-certificatemanager = { workspace = true }
+# Generates the certificate material a case imports into that service, the way a client
+# brings its own: something other than the code under test. DEV-ONLY.
+rcgen = "0.13"
 # Percent-encodes the `ConnectionId` a test addresses a `@connections` operation by, the way
 # an SDK client encodes a path label: a minted id is base64, whose alphabet carries `/` and
 # `+`. DEV-ONLY.
