@@ -5,8 +5,9 @@
 //!
 //! CloudFront adds headers of its own to an origin request — the `CloudFront-*` family —
 //! and they describe the VIEWER'S CONNECTION rather than anything the viewer asked for:
-//! where the viewer is (`CloudFront-Viewer-Country`) and which scheme it dialled
-//! (`CloudFront-Forwarded-Proto`). Two consequences, and this module owns both:
+//! where the viewer is (`CloudFront-Viewer-Country`), which scheme it dialled
+//! (`CloudFront-Forwarded-Proto`) and the address it came from
+//! (`CloudFront-Viewer-Address`). Two consequences, and this module owns both:
 //!
 //! * the edge GENERATES them for every viewer request, including one that sent none of them,
 //!   so an origin that reads them reads a value for every request it serves;
@@ -36,6 +37,14 @@
 //! answers both `http://` and `https://` on one address and states which it served —
 //! `crate::state::edge_endpoint`), and `https` is what every other address of this emulator
 //! is reached over.
+//!
+//! The ADDRESS is the one the request came from, by the ONE reading of it this emulator has
+//! ([`viewer_address`]): a request served in process crossed no socket from a remote peer, so
+//! the address is the one its forwarded-for header states and the loopback address it really
+//! arrived from otherwise. It is the same reading the real-time log record reports as `c-ip`
+//! and the one a web ACL's address rules are evaluated against, so one viewer has one address
+//! whichever part of the edge asks — which is what makes a signed URL's source-address
+//! condition ([`super::signed_access`]) and the header an origin reads the same value.
 
 use aws_smithy_runtime_api::http::Request as RtRequest;
 
@@ -53,6 +62,9 @@ pub const VIEWER_COUNTRY: &str = "cloudfront-viewer-country";
 /// `CloudFront-Forwarded-Proto`: the scheme the viewer dialled the edge over.
 pub const FORWARDED_PROTO: &str = "cloudfront-forwarded-proto";
 
+/// `CloudFront-Viewer-Address`: the address the viewer's request came from.
+pub const VIEWER_ADDRESS: &str = "cloudfront-viewer-address";
+
 /// The country the edge reports for a viewer whose location it is told nothing about.
 ///
 /// A real `ISO 3166-1 alpha-2` code, as every value of this header is: the code of the
@@ -69,6 +81,17 @@ pub const DEFAULT_SCHEME: &str = "https";
 
 /// The scheme a viewer that dialled the plaintext half of an address used.
 pub const PLAINTEXT_SCHEME: &str = "http";
+
+/// The header a viewer that traversed a proxy states its own address in, and the address a
+/// request that states none came from.
+///
+/// WAFv2's own reading of the same question for the same requests
+/// (`service_com_amazonaws_wafv2_awswaf_20190729::service::edge`), so a rule that inspects the
+/// viewer's address and the header an origin reads it from cannot disagree about one request.
+const FORWARDED_FOR_HEADER: &str =
+    ::service_com_amazonaws_wafv2_awswaf_20190729::service::edge::FORWARDED_FOR_HEADER;
+const IN_PROCESS_CLIENT_IP: &str =
+    ::service_com_amazonaws_wafv2_awswaf_20190729::service::edge::IN_PROCESS_CLIENT_IP;
 
 /// Whether `name` is a header name CloudFront generates itself, rather than one a viewer
 /// states.
@@ -88,6 +111,8 @@ pub struct Generated {
     pub country: String,
     /// `CloudFront-Forwarded-Proto`.
     pub scheme: &'static str,
+    /// `CloudFront-Viewer-Address`.
+    pub address: String,
 }
 
 impl Generated {
@@ -96,17 +121,36 @@ impl Generated {
         Self {
             country: viewer_country(req),
             scheme: viewer_scheme(req.uri()),
+            address: viewer_address(req).to_string(),
         }
     }
 
     /// The generated headers as `(name, value)` pairs, lowercased as an origin request
     /// carries them.
-    pub fn headers(&self) -> [(String, String); 2] {
+    pub fn headers(&self) -> [(String, String); 3] {
         [
             (VIEWER_COUNTRY.to_string(), self.country.clone()),
             (FORWARDED_PROTO.to_string(), self.scheme.to_string()),
+            (VIEWER_ADDRESS.to_string(), self.address.clone()),
         ]
     }
+}
+
+/// The address one viewer request came from — the ONE value this request's address has, read
+/// by the signed-URL source-address condition, by the web ACL's address rules and by the
+/// header an origin receives alike.
+///
+/// The first address the forwarded-for header states, when it states one that parses as an
+/// address, and the loopback address the request really arrived from otherwise: a request this
+/// plane serves is dispatched in process, so no remote peer address exists to report and none
+/// is invented.
+pub fn viewer_address(req: &RtRequest) -> &str {
+    req.headers()
+        .get(FORWARDED_FOR_HEADER)
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|address| address.parse::<::std::net::IpAddr>().is_ok())
+        .unwrap_or(IN_PROCESS_CLIENT_IP)
 }
 
 /// The country the edge resolves for one viewer request — the ONE value this request's
@@ -255,6 +299,66 @@ mod tests {
                         .all(|letter| letter.is_ascii_uppercase()),
                 "case {case:?}: expected a two-letter uppercase country code, got {:?}",
                 generated.country
+            );
+        }
+    }
+
+    #[test]
+    fn the_edge_reads_one_address_for_one_viewer() {
+        // Rows differ along what the request says about where it came from: nothing, one
+        // address, a proxy chain (the viewer is the FIRST entry), an entry that is not an
+        // address at all, an IPv6 address, and a header whose single entry is blank.
+        // (case, the headers it carried, the address the edge reads for it)
+        type Row = (&'static str, &'static [(&'static str, &'static str)], &'static str);
+        let cases: [Row; 7] = [
+            ("a request that stated nothing", &[], IN_PROCESS_CLIENT_IP),
+            (
+                "a viewer that stated its address",
+                &[(FORWARDED_FOR_HEADER, "203.0.113.7")],
+                "203.0.113.7",
+            ),
+            (
+                "a proxy chain, whose first entry is the viewer",
+                &[(FORWARDED_FOR_HEADER, "203.0.113.7, 198.51.100.2")],
+                "203.0.113.7",
+            ),
+            (
+                "a chain whose entries carry spaces",
+                &[(FORWARDED_FOR_HEADER, "  198.51.100.2 , 203.0.113.7")],
+                "198.51.100.2",
+            ),
+            (
+                "a value that is not an address",
+                &[(FORWARDED_FOR_HEADER, "unknown")],
+                IN_PROCESS_CLIENT_IP,
+            ),
+            (
+                "an IPv6 viewer",
+                &[(FORWARDED_FOR_HEADER, "2001:db8::1")],
+                "2001:db8::1",
+            ),
+            ("an empty value", &[(FORWARDED_FOR_HEADER, "")], IN_PROCESS_CLIENT_IP),
+        ];
+        for (case, headers, expected) in cases {
+            let req = request("/obj", headers);
+            let actual = viewer_address(&req);
+            assert_eq!(
+                actual, expected,
+                "case {case:?}: expected the viewer address {expected:?}, got {actual:?}"
+            );
+            // Whatever it resolved to, it is an address: the source-address condition of a
+            // signed URL is evaluated against it.
+            assert!(
+                actual.parse::<::std::net::IpAddr>().is_ok(),
+                "case {case:?}: expected an IP address, got {actual:?}"
+            );
+            // And it is the value the generated header carries, so one viewer has one
+            // address wherever the edge reports it.
+            let generated = Generated::of_request(&req);
+            assert_eq!(
+                generated.address, expected,
+                "case {case:?}: expected the generated header to carry {expected:?}, got {:?}",
+                generated.address
             );
         }
     }

@@ -1927,6 +1927,14 @@ mod cloudformation_metric_stream_estate_is_drainable;
 // cluster and then read the alarm's state.
 #[path = "all/redshift_health_alarms_evaluate.rs"]
 mod redshift_health_alarms_evaluate;
+// stack-deployed metric-stream pipeline exports before and after an update rewrites its filter
+// spans CloudFormation, IAM, CloudWatch, Firehose and Amazon S3 at once, so no single service
+// crate's test target can deploy the pipeline and then read the objects it delivered.
+#[path = "all/cloudformation_metric_stream_filter_update.rs"]
+mod cloudformation_metric_stream_filter_update;
+// Both suites below are declared ONCE, in the sorted span above beside the other
+// CloudFormation suites: the pair was appended here as well while two branches were landing
+// at once, which declared each of them a second time and compiled neither.
 // (`zz_probe` is declared once further up this tail: a module may be declared only once.)
 // (`zz_probe` is declared ONCE, further up this tail: it was appended here as well while two
 // branches were landing at once, which declared it a second time and compiled neither.)
@@ -2005,6 +2013,12 @@ mod cloudformation_scripted_queue_deploy;
 // observe both ends of it.
 #[path = "all/cloudformation_domain_endpoint_is_dialled_by_consumers.rs"]
 mod cloudformation_domain_endpoint_is_dialled_by_consumers;
+// Declared in the appended tail, which is where every new suite inserts its lines: the HTTPS
+// front door, its TLS terminator and its per-connection accept loop are the router's own, not
+// any one service's, and the suite drives the BINARY this build produces over its data port,
+// which only this target links.
+#[path = "all/https_front_door_concurrent_pooled_producer.rs"]
+mod https_front_door_concurrent_pooled_producer;
 // (`cloudformation_metric_stream_estate_is_drainable` is declared once, above.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared ONCE, in the span above:
 // a module may be declared only once.)
@@ -2034,6 +2048,13 @@ mod cognito_rules_role_mapping;
 // crate's own test target can ask it.
 #[path = "all/iam_secretsmanager_denial_envelope_by_protocol.rs"]
 mod iam_secretsmanager_denial_envelope_by_protocol;
+// `apigateway_cognito_authorizer_app_client_audience` is declared ONCE, in the head region
+// above: two landings each appended their own copy here, and a module declared twice loads
+// the same file twice, which compiles neither.
+// `zz_probe` is declared ONCE, in the span above: two landings each appended their own copy
+// here, and a module declared twice loads the same file twice, which compiles neither.
+// `cloudformation_metric_stream_estate_is_drainable` is declared ONCE, further up this tail:
+// two landings each appended their own copy, and a module declared twice compiles neither.
 // (`apigateway_cognito_authorizer_app_client_audience` is declared in the head region above:
 // (`zz_probe` is declared further up this tail already: a module may be declared only once.)
 // (`zz_probe` is declared once, further up this tail: a module may be declared only once.)

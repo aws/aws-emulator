@@ -137,6 +137,8 @@ mod edge_realtime_logs;
 mod edge_request_metrics;
 #[path = "all/edge_request_shaping.rs"]
 mod edge_request_shaping;
+#[path = "all/edge_signed_access.rs"]
+mod edge_signed_access;
 #[path = "all/edge_web_acl.rs"]
 mod edge_web_acl;
 #[path = "all/enum_value_set_message.rs"]

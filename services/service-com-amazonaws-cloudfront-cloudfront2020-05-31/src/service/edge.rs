@@ -36,11 +36,17 @@
 //! 5. that behaviour's `AllowedMethods` decide whether the viewer's METHOD is served at
 //!    all. A method the behaviour does not allow is refused BY CLOUDFRONT with `403` and
 //!    `X-Cache: Error from cloudfront`, and no origin request is made;
-//! 6. that behaviour's `CachedMethods` and cache policy decide whether the answer may
+//! 6. that behaviour's `TrustedKeyGroups` decide whether the viewer is AUTHORIZED at all:
+//!    "when a cache behavior contains trusted key groups, CloudFront requires signed URLs or
+//!    signed cookies for all requests that match the cache behavior", so a request carrying
+//!    no signature, one whose key is not in those groups, or one whose policy's conditions do
+//!    not hold is refused BY CLOUDFRONT with `403` under its own error code, before the cache
+//!    is read and with no origin request made ([`signed_access`]);
+//! 7. that behaviour's `CachedMethods` and cache policy decide whether the answer may
 //!    come from the edge cache: a cacheable method whose TTL has not run out is answered
 //!    `X-Cache: Hit from cloudfront` without touching the origin, and everything else
 //!    goes to the origin and is answered `X-Cache: Miss from cloudfront`;
-//! 7. only then is the ORIGIN the behaviour's `TargetOriginId` names fetched, in process,
+//! 8. only then is the ORIGIN the behaviour's `TargetOriginId` names fetched, in process,
 //!    through the emulator this service is running within — over the scheme that origin's
 //!    own `OriginProtocolPolicy` names ([`origin_uri`]) and as the distribution's own origin
 //!    access control says that origin is to be addressed (see below).
@@ -64,12 +70,13 @@
 //! ([`origin_accepts_scheme`]).
 //!
 //! One origin shape is worth naming because it is the one the Lambda-function-URL
-//! topology uses: a function URL host is served by nothing in this emulator — Lambda has
-//! no in-process runtime for a deployment package, so `Invoke` answers `501` (see
-//! `services/service-com-amazonaws-lambda-awsgirapiservice/src/ops/invoke.rs`) and there
-//! is no function response to fetch. The edge therefore reaches that origin and gets
-//! nothing, which is the `502` above; the enforcement in steps 1–4, which is CloudFront's
-//! own and needs no origin, is served in full.
+//! topology uses: a function URL host is served by Lambda's own function-URL data plane
+//! (`services/service-com-amazonaws-lambda-awsgirapiservice/src/service/function_url.rs`),
+//! so whether such an origin answers at all — and what it answers — is that plane's
+//! decision, and whatever it answers is what the edge serves and caches. Nothing is
+//! invented for it here: an origin that answers nothing is the `502` above. The enforcement
+//! in steps 1-6, which is CloudFront's own and needs no origin, is served in full whatever
+//! the origin does.
 //!
 //! Two things the fetch will not do. A REQUEST LOOP is refused instead of followed: an
 //! origin whose host the edge itself serves, and a request that has already been through
@@ -129,6 +136,9 @@ pub mod generated_headers;
 /// The real-time log RECORD one served viewer request produces, and the Kinesis data streams
 /// the cache behaviour's real-time log configuration delivers it to.
 pub mod realtime_logs;
+/// SIGNED URLs and SIGNED COOKIES: whether a cache behaviour that restricts its content to
+/// trusted signers serves one viewer request.
+pub mod signed_access;
 
 use aws_smithy_runtime_api::client::http::HttpConnector;
 use aws_smithy_runtime_api::http::{Request as RtRequest, Response as RtResponse, StatusCode};
@@ -141,6 +151,7 @@ use super::origin_access::{self, OriginAccess};
 use compression::Encoding;
 use crate::ops::types::{
     AllowedMethods, CacheBehavior, DefaultCacheBehavior, ForwardedValues, Origin,
+    TrustedKeyGroups,
 };
 use crate::state::{
     managed_cache_policy, matches_path_pattern, same_domain, CachedEdgeResponse,
@@ -586,6 +597,10 @@ struct Behavior {
     /// shapes.
     viewer_protocol_policy: String,
     allowed_methods: Option<AllowedMethods>,
+    /// `TrustedKeyGroups` — "a list of key groups that CloudFront can use to validate signed
+    /// URLs or signed cookies": a behaviour that enables one serves only a request carrying a
+    /// signature one of those groups' public keys verifies ([`signed_access`]).
+    trusted_key_groups: Option<TrustedKeyGroups>,
     cache_policy_id: Option<String>,
     origin_request_policy_id: Option<String>,
     /// `Compress` — "whether you want CloudFront to automatically compress certain files
@@ -609,6 +624,7 @@ impl Behavior {
             target_origin_id: behavior.target_origin_id.clone(),
             viewer_protocol_policy: behavior.viewer_protocol_policy.clone(),
             allowed_methods: behavior.allowed_methods.clone(),
+            trusted_key_groups: behavior.trusted_key_groups.clone(),
             cache_policy_id: behavior.cache_policy_id.clone(),
             origin_request_policy_id: behavior.origin_request_policy_id.clone(),
             compress: behavior.compress.unwrap_or(DEFAULT_COMPRESS),
@@ -626,6 +642,7 @@ impl Behavior {
             target_origin_id: behavior.target_origin_id.clone(),
             viewer_protocol_policy: behavior.viewer_protocol_policy.clone(),
             allowed_methods: behavior.allowed_methods.clone(),
+            trusted_key_groups: behavior.trusted_key_groups.clone(),
             cache_policy_id: behavior.cache_policy_id.clone(),
             origin_request_policy_id: behavior.origin_request_policy_id.clone(),
             compress: behavior.compress.unwrap_or(DEFAULT_COMPRESS),
@@ -858,6 +875,9 @@ enum Plan {
     /// CloudFront answers this itself: a status it generated and the detail line its
     /// error page carries.
     Generated { status: u16, detail: &'static str },
+    /// CloudFront refuses this itself because the behaviour restricts its content to
+    /// trusted signers and this request's signed access did not hold ([`signed_access`]).
+    Refused { refusal: signed_access::Refusal },
     /// CloudFront sends this viewer to the HTTPS url of what it asked for, the matched
     /// behaviour's `ViewerProtocolPolicy` being `redirect-to-https`.
     Redirect {
@@ -998,6 +1018,11 @@ pub async fn serve<Eng: Send + Sync + 'static>(
                 edge_metrics::ServedFrom::CloudFront,
                 None,
             ),
+            Plan::Refused { refusal } => (
+                refused_signed_access(refusal, &cf_id),
+                edge_metrics::ServedFrom::CloudFront,
+                None,
+            ),
             Plan::Redirect { location } => (
                 redirected(&location, &cf_id),
                 edge_metrics::ServedFrom::CloudFront,
@@ -1078,6 +1103,65 @@ pub async fn serve<Eng: Send + Sync + 'static>(
             realtime_logs::deliver(ctx, &configured, &record, &cf_id).await;
         }
     }
+    response
+}
+
+/// The URLs one viewer request addresses, which a signed URL's policy `Resource` is matched
+/// against ([`signed_access`]).
+///
+/// "The base URL, including the query string, if any" — built from the names the distribution
+/// answers at: its own `DomainName`, "the domain name that CloudFront assigns when you create
+/// a distribution", and each of its `Aliases`, which are "the CNAMEs, if any, for this
+/// distribution". A policy may be written for any name a viewer reaches the distribution by,
+/// and the viewer's own `Host` is not among the candidates because the request has already
+/// been resolved to THIS distribution: whichever of its names was dialled, the policy has to
+/// name one of them.
+///
+/// The CloudFront signature parameters are not part of the URL a policy was signed for — they
+/// are what carries the signature — so they are dropped from the query string here.
+fn resource_urls(
+    distribution: &StoredDistribution,
+    scheme: &str,
+    viewer_path: &str,
+    query: &str,
+) -> Vec<String> {
+    let signed_query = signed_access::resource_query(query);
+    let suffix = if signed_query.is_empty() {
+        viewer_path.to_string()
+    } else {
+        format!("{viewer_path}?{signed_query}")
+    };
+    ::std::iter::once(&distribution.domain_name)
+        .chain(
+            distribution
+                .config
+                .aliases
+                .as_ref()
+                .and_then(|aliases| aliases.items.as_ref())
+                .into_iter()
+                .flatten(),
+        )
+        .map(|host| format!("{scheme}://{host}{suffix}"))
+        .collect()
+}
+
+/// The answer the edge serves for a viewer request whose SIGNED ACCESS did not hold: `403`
+/// under the error code and sentence CloudFront states for that failure, carrying no origin
+/// bytes and reported as an answer CloudFront produced itself.
+fn refused_signed_access(refusal: signed_access::Refusal, cf_id: &str) -> RtResponse {
+    let body = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <Error><Code>{}</Code><Message>{}</Message></Error>",
+        refusal.code(),
+        refusal.message()
+    );
+    let mut response = served(FORBIDDEN, body.into_bytes(), CACHE_ERROR, cf_id);
+    let _ = response
+        .headers_mut()
+        .try_insert(CONTENT_TYPE, "text/xml".to_string());
+    let _ = response
+        .headers_mut()
+        .try_insert("server", SERVER.to_string());
     response
 }
 
@@ -1237,6 +1321,38 @@ fn plan_resolved(
             status: FORBIDDEN,
             detail: BAD_REQUEST_DETAIL,
         };
+    }
+    // Enforced HERE, by CloudFront, before the edge cache is read and before any origin
+    // request exists: "when a cache behavior contains trusted key groups, CloudFront
+    // requires signed URLs or signed cookies for all requests that match the cache
+    // behavior". The groups and the public keys in them are read from the store on THIS
+    // request, so a key an update has taken out of the group stops admitting the URLs it
+    // signed; and because the decision is made before the cache, a signature that does not
+    // hold cannot be answered with an object another viewer already fetched.
+    if let Some(refusal) = signed_access::refusal(
+        store,
+        behavior.trusted_key_groups.as_ref(),
+        &signed_access::SignedRequest {
+            query: addressed.query,
+            cookies: req.headers().get(COOKIE).unwrap_or_default(),
+            resource_urls: resource_urls(
+                resolved.distribution,
+                generated_headers::viewer_scheme(req.uri()),
+                &viewer_path,
+                addressed.query,
+            ),
+            address: generated_headers::viewer_address(req),
+        },
+        now,
+    ) {
+        ::tracing::debug!(
+            distribution = %distribution_id,
+            path_pattern = ?behavior.path_pattern,
+            code = refusal.code(),
+            "this behaviour restricts its content to trusted signers and this request's \
+             signed access did not hold; the edge refuses it and makes no origin request"
+        );
+        return Plan::Refused { refusal };
     }
     let ttl = cache_ttl(store, &behavior);
     // What the behaviour's POLICIES make of this request: which of its parts take part in
@@ -2460,6 +2576,7 @@ mod tests {
                 target_origin_id: "primary".to_string(),
                 viewer_protocol_policy: "allow-all".to_string(),
                 allowed_methods: None,
+                trusted_key_groups: None,
                 cache_policy_id: None,
                 origin_request_policy_id: policy.map(str::to_string),
                 compress: false,
@@ -2746,6 +2863,7 @@ mod tests {
             target_origin_id: "primary".to_string(),
             viewer_protocol_policy: "allow-all".to_string(),
             allowed_methods: None,
+            trusted_key_groups: None,
             cache_policy_id: Some(CACHE_POLICY.to_string()),
             origin_request_policy_id: Some(ORIGIN_REQUEST_POLICY.to_string()),
             compress: true,

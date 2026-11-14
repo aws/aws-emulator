@@ -359,18 +359,12 @@ impl LoggedRequest<'_> {
         }
     }
 
-    /// The address the request came from, by the ONE reading of it this emulator has: a
-    /// request served in process crossed no socket from a remote peer, so the address is the
-    /// one its forwarded-for header states, and the loopback address it really arrived from
-    /// otherwise.
+    /// The address the request came from, by the ONE reading of it this emulator has
+    /// ([`super::generated_headers::viewer_address`]) — the same value the
+    /// `CloudFront-Viewer-Address` header carries to the origin, so a record and an origin
+    /// never report one viewer two addresses.
     fn client_ip(&self) -> &str {
-        self.req
-            .headers()
-            .get(FORWARDED_FOR_HEADER)
-            .and_then(|value| value.split(',').next())
-            .map(str::trim)
-            .filter(|address| address.parse::<std::net::IpAddr>().is_ok())
-            .unwrap_or(IN_PROCESS_CLIENT_IP)
+        super::generated_headers::viewer_address(self.req)
     }
 
     /// One header of the viewer request, and [`NO_VALUE`] for a header it did not carry.
@@ -395,16 +389,6 @@ impl LoggedRequest<'_> {
 /// The `PathPattern` reported for the DEFAULT cache behaviour, which "CloudFront applies …
 /// if none of the path patterns match" — the pattern that matches every path.
 const DEFAULT_BEHAVIOR_PATH_PATTERN: &str = "*";
-
-/// The header a viewer that traversed a proxy states its own address in, and the address a
-/// request that states none came from — the reading
-/// `service_com_amazonaws_wafv2_awswaf_20190729::service::edge::InspectedRequest` takes of
-/// the same question for the same requests, so the edge reports one viewer one address
-/// whichever of the two asks.
-const FORWARDED_FOR_HEADER: &str =
-    ::service_com_amazonaws_wafv2_awswaf_20190729::service::edge::FORWARDED_FOR_HEADER;
-const IN_PROCESS_CLIENT_IP: &str =
-    ::service_com_amazonaws_wafv2_awswaf_20190729::service::edge::IN_PROCESS_CLIENT_IP;
 
 /// Deliver `record` to every data stream `configured` names.
 ///

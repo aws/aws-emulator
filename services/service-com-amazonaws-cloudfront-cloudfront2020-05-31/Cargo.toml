@@ -99,6 +99,17 @@ x509-cert = "0.2"
 # so what a viewer decodes is what the origin sent.
 brotli = "9"
 flate2 = "1"
+# VERIFIES the RSA PKCS#1 v1.5 signature over a signed URL's or signed cookie's policy
+# statement, which CloudFront's signing procedure makes over the statement's SHA-1 digest
+# (`service::edge::signed_access`). The cryptography provider this workspace already builds.
+aws-lc-rs = "1"
+# DECODES the base64 a signed URL carries its `Policy` and `Signature` in, in the alphabet the
+# signing procedure substitutes for a URL (`service::edge::signed_access`).
+base64 = "0.22"
+# Reads the `AWS:SourceIp` CIDR of a signed URL's policy condition and asks whether the
+# viewer's address lies in it, rather than comparing the text by hand
+# (`service::edge::signed_access`).
+ipnet = "2"
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
@@ -106,9 +117,6 @@ emulator-core-build-support = { workspace = true }
 [dev-dependencies]
 sha2 = { workspace = true }
 hex = { workspace = true }
-# DECODES the `Data` of a record this suite reads back off a Kinesis data stream, which that
-# API carries base64-encoded. TEST-ONLY.
-base64 = "0.22"
 # The Kinesis data stream the real-time log suite creates and polls, mounted on the same
 # router: the record the edge delivers is read back through Kinesis itself. TEST-ONLY.
 service-com-amazonaws-kinesis-kinesis-20131202 = { workspace = true }
@@ -138,6 +146,14 @@ service-com-amazonaws-s3-amazons3 = { workspace = true }
 # process, exactly as a viewer handed that name does: tokio's socket and byte-stream halves
 # carry the HTTP exchange on it.
 tokio = { workspace = true, features = ["io-util", "net", "time"] }
+# The signed-access suite SIGNS a URL the way a client's signer does: CloudFront's scheme is
+# RSA over a SHA-1 digest, which no RSA implementation this workspace builds will SIGN with
+# (`aws-lc-rs` offers that digest for verification only), so the suite composes the
+# RSASSA-PKCS1-v1_5 encoding itself over the modular exponentiation `num-bigint` provides and
+# the key parts `pkcs1`/`pkcs8` read out of the generated key. TEST-ONLY.
+num-bigint = "0.4"
+pkcs1 = "0.7"
+pkcs8 = "0.10"
 
 [lints]
 workspace = true

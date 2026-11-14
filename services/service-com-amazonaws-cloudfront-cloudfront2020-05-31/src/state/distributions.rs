@@ -46,7 +46,11 @@ pub(super) const MAX_GLOB_COMPARISONS: usize = 1 << 16;
 
 /// The wildcard match itself, over characters: the standard linear walk with one
 /// backtrack point per `*`.
-pub(super) fn matches_glob(pattern: &str, subject: &str) -> bool {
+///
+/// Public because CloudFront matches a caller-written pattern against a subject in one more
+/// place than a path: a signed URL's policy `Resource` names the URLs it was signed for with
+/// the same `*` and `?` wildcards (`crate::service::edge::signed_access`).
+pub fn matches_glob(pattern: &str, subject: &str) -> bool {
     let pattern: Vec<char> = pattern.chars().collect();
     let subject: Vec<char> = subject.chars().collect();
     let (mut at_pattern, mut at_subject) = (0usize, 0usize);
