@@ -119,6 +119,8 @@ mod state_roundtrip;
 mod stop_pipeline_execution;
 #[path = "all/terminal_state_refusals.rs"]
 mod terminal_state_refusals;
+#[path = "all/third_party_job_details.rs"]
+mod third_party_job_details;
 #[path = "all/third_party_job_failure_results.rs"]
 mod third_party_job_failure_results;
 #[path = "all/third_party_job_results.rs"]

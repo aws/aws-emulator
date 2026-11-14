@@ -1927,12 +1927,6 @@ mod cloudformation_metric_stream_estate_is_drainable;
 // cluster and then read the alarm's state.
 #[path = "all/redshift_health_alarms_evaluate.rs"]
 mod redshift_health_alarms_evaluate;
-// are declared in the head region above: a module may be declared only once.)
-// stack-deployed metric-stream pipeline exports before and after an update rewrites its filter
-// spans CloudFormation, IAM, CloudWatch, Firehose and Amazon S3 at once, so no single service
-// crate's test target can deploy the pipeline and then read the objects it delivered.
-#[path = "all/cloudformation_metric_stream_filter_update.rs"]
-mod cloudformation_metric_stream_filter_update;
 // (`zz_probe` is declared once further up this tail: a module may be declared only once.)
 // (`zz_probe` is declared ONCE, further up this tail: it was appended here as well while two
 // branches were landing at once, which declared it a second time and compiled neither.)
@@ -2146,3 +2140,6 @@ mod ses_delivery_event_advances_the_subscribed_queue;
 // tail: a module may be declared only once.)
 // (Declared ONCE, further up this tail: the same declaration was appended here as well while
 // two branches were landing at once, which declared the module a second time and compiled
+// of the sorted list above: a module may be declared only once.)
+// (`cloudformation_metric_stream_estate_is_drainable` is declared ONCE, in the head region
+// of the appended tail above: a module may be declared only once.)

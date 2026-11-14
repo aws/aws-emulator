@@ -521,6 +521,44 @@ impl ThirdPartyJobRecord {
         }
     }
 
+    /// This job as `GetThirdPartyJobDetails` reports it to the worker that holds it:
+    /// the job's id, the `nonce` that admits a worker to it, and what the store holds
+    /// about the work itself.
+    ///
+    /// `action_type` is the identity of the queue the job waits in
+    /// ([`ComAmazonawsCodepipelineCodepipeline20150709State::third_party_job`]), which
+    /// is what `ThirdPartyJobData$actionTypeId` reports, and the continuation token is
+    /// the one the last result reported for the job.
+    ///
+    /// The remaining `ThirdPartyJobData` members — the action's configuration, the
+    /// pipeline context, the artifacts, the artifact store's encryption key and the
+    /// temporary credentials for it — are what a DISPATCH captures on the job it
+    /// queues, the way a `Custom`-owned action's [`JobRecord`] captures them. This
+    /// record carries no such capture, because a partner job is queued for a
+    /// registered partner integration and nothing in the assembled emulator creates
+    /// one ([`ComAmazonawsCodepipelineCodepipeline20150709State::third_party_jobs`]),
+    /// so each is ABSENT here rather than invented per read: a worker is told what the
+    /// service holds about its job and nothing it does not.
+    pub fn to_details(&self, action_type: &ActionTypeId) -> crate::ops::types::ThirdPartyJobDetails {
+        crate::ops::types::ThirdPartyJobDetails {
+            id: Some(self.job_id.clone()),
+            data: Some(crate::ops::types::ThirdPartyJobData {
+                action_type_id: Some(action_type.clone()),
+                action_configuration: None,
+                pipeline_context: None,
+                input_artifacts: None,
+                output_artifacts: None,
+                artifact_credentials: None,
+                continuation_token: self.continuation_token.clone(),
+                encryption_key: None,
+            }),
+            // "A system-generated random number that CodePipeline uses to ensure that
+            // the job is being worked on by only one job worker" — the value the
+            // worker then presents to `AcknowledgeThirdPartyJob`, read off the job.
+            nonce: Some(self.nonce.clone()),
+        }
+    }
+
     /// Whether a job worker may still report a result for this job.
     ///
     /// Only a job the worker has acknowledged and not yet completed: a job still

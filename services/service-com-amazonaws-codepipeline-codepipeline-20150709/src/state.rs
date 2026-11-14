@@ -1530,12 +1530,38 @@ impl ComAmazonawsCodepipelineCodepipeline20150709State {
                 // store.
                 ThirdPartyJobProblem::NotFound(not_found(job_id))
             })?;
-        if job.client_token != client_token {
-            return Err(ThirdPartyJobProblem::ClientToken(format!(
-                "the clientToken given does not grant access to job {job_id}"
-            )));
+        if let Some(problem) = third_party_client_token_problem(job, client_token) {
+            return Err(problem);
         }
         Ok(job)
+    }
+
+    /// [`Self::third_party_job_mut`] for a caller that only REPORTS the job it
+    /// resolved — `GetThirdPartyJobDetails` — together with the identity of the
+    /// action type whose queue the job waits in.
+    ///
+    /// The same two refusals in the same order, from the same rule: an id no retained
+    /// job carries is "not found" whatever token accompanies it, and only a job that
+    /// WAS found can reject the token it was handed out with. The action type comes
+    /// with the job because it is the queue the job is filed under rather than
+    /// anything the record repeats, and a worker reading its job's details is told
+    /// which action type it is performing (`ThirdPartyJobData$actionTypeId`).
+    pub fn third_party_job(
+        &self,
+        job_id: &str,
+        client_token: &str,
+        not_found: fn(&str) -> String,
+    ) -> Result<(ActionTypeId, &ThirdPartyJobRecord), ThirdPartyJobProblem> {
+        let (key, job) = self
+            .third_party_jobs
+            .iter()
+            .flat_map(|(key, queue)| queue.iter().map(move |job| (key, job)))
+            .find(|(_, job)| job.job_id == job_id)
+            .ok_or_else(|| ThirdPartyJobProblem::NotFound(not_found(job_id)))?;
+        if let Some(problem) = third_party_client_token_problem(job, client_token) {
+            return Err(problem);
+        }
+        Ok((key.to_id(), job))
     }
 
     /// Register `record` under `key`, answering whether the store took it.
@@ -2195,8 +2221,9 @@ fn is_cidr_range(range: &str) -> bool {
 }
 
 /// Why a job worker's call naming a third-party job cannot be served, as
+/// [`ComAmazonawsCodepipelineCodepipeline20150709State::third_party_job`] and
 /// [`ComAmazonawsCodepipelineCodepipeline20150709State::third_party_job_mut`]
-/// answers it.
+/// answer it.
 ///
 /// Each variant names the modelled error shape that states it — every third-party
 /// operation models both — so the whole worker-side surface refuses one condition in
@@ -2208,6 +2235,27 @@ pub enum ThirdPartyJobProblem {
     /// Refused as `InvalidClientTokenException`: the token is not the one the job
     /// was handed out with, so the caller is not the worker that holds it.
     ClientToken(String),
+}
+
+/// Whether `client_token` reaches `job` at all, and what the refusal states when it
+/// does not.
+///
+/// The `clientToken` a third-party operation carries is what "verif[ies] that the
+/// calling entity is allowed access to the job and its details", so exactly the token
+/// a job was handed out with reaches it. One source, shared by the reporting lookup
+/// and the mutating one, so the two cannot drift on which token is admitted or on how
+/// the refusal is worded; the rejected value is never repeated back, since the
+/// condition is about the JOB the token was presented for.
+fn third_party_client_token_problem(
+    job: &ThirdPartyJobRecord,
+    client_token: &str,
+) -> Option<ThirdPartyJobProblem> {
+    (job.client_token != client_token).then(|| {
+        ThirdPartyJobProblem::ClientToken(format!(
+            "the clientToken given does not grant access to job {}",
+            job.job_id
+        ))
+    })
 }
 
 /// One stored pipeline: the declaration exactly as the caller sent it (with the
