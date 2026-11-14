@@ -22,7 +22,6 @@
 use std::time::{Duration, UNIX_EPOCH};
 
 use serde_json::{json, Value};
-use service_com_amazonaws_billing_awsbilling::ComAmazonawsBillingAwsbillingState;
 
 use crate::billing_views::{call, emulator_with_engine, ACCOUNT_ID, PRIMARY_ARN};
 
@@ -53,7 +52,7 @@ struct PlantedView {
 ///
 /// Only `CUSTOM` views can be made through the API, so the managed types the
 /// rule also covers (a Billing Conductor billing group, a billing transfer) are
-/// written to the store the way the other suites plant records, cloning the
+/// written to the store through the harness's planting helper, which clones the
 /// account's `PRIMARY` view as the template so every unrelated field is a shape
 /// the service itself produced.
 fn plant_view(
@@ -63,23 +62,16 @@ fn plant_view(
     created_secs: i64,
 ) -> PlantedView {
     let arn = format!("arn:aws:billing::{ACCOUNT_ID}:billingview/{id}");
-    let state = engine.state::<ComAmazonawsBillingAwsbillingState>();
-    let mut state = state.lock();
-    let mut view = state
-        .billing_views
-        .get(PRIMARY_ARN)
-        .cloned()
-        .expect("the account's PRIMARY view");
-    view.arn = arn.clone();
-    view.name = format!("planted-{id}");
-    view.description = None;
-    view.billing_view_type = view_type.to_string();
-    view.created_at = if created_secs >= 0 {
-        UNIX_EPOCH + Duration::from_secs(created_secs.unsigned_abs())
-    } else {
-        UNIX_EPOCH - Duration::from_secs(created_secs.unsigned_abs())
-    };
-    state.billing_views.insert(arn.clone(), view);
+    crate::billing_views::plant_view(engine, &arn, |view| {
+        view.name = format!("planted-{id}");
+        view.description = None;
+        view.billing_view_type = view_type.to_string();
+        view.created_at = if created_secs >= 0 {
+            UNIX_EPOCH + Duration::from_secs(created_secs.unsigned_abs())
+        } else {
+            UNIX_EPOCH - Duration::from_secs(created_secs.unsigned_abs())
+        };
+    });
     PlantedView {
         arn,
         view_type,

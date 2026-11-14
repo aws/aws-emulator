@@ -555,4 +555,54 @@ mod tests {
             );
         }
     }
+
+    /// A schedule's period — what a query stating no lookback of its own reads back over — is
+    /// the span between two consecutive instants the schedule names, and it does not depend on
+    /// the instant it is asked about: two runs of one query read windows of the same length
+    /// however long is left until the next instant when each was triggered.
+    #[test]
+    fn a_schedules_period_is_the_span_between_two_of_its_instants() {
+        const MINUTE_MS: i64 = 60 * 1_000;
+        const HOUR_MS: i64 = 60 * MINUTE_MS;
+        const DAY_MS: i64 = 24 * HOUR_MS;
+
+        // (case, the expression, the timezone it is evaluated in, its period)
+        let schedules: [(&str, &str, Option<&str>, i64); 6] = [
+            ("a daily cron", "cron(0 3 * * ? *)", None, DAY_MS),
+            (
+                "a daily cron in a named timezone",
+                "cron(0 3 * * ? *)",
+                Some("America/New_York"),
+                DAY_MS,
+            ),
+            ("an hourly cron", "cron(0 * * * ? *)", None, HOUR_MS),
+            ("a five-minute cron", "cron(*/5 * * * ? *)", None, 5 * MINUTE_MS),
+            ("a rate of one day", "rate(1 day)", None, DAY_MS),
+            ("a rate of five minutes", "rate(5 minutes)", None, 5 * MINUTE_MS),
+        ];
+        // The instants span what the period must NOT depend on: a moment after an instant the
+        // daily cron names, a moment before the next one, the middle of the gap between two,
+        // and a date in another month.
+        let instants = [
+            "2026-06-01T03:00:01Z",
+            "2026-06-01T02:59:59Z",
+            "2026-06-01T14:17:23Z",
+            "2026-11-09T00:00:00Z",
+        ];
+        for (case, expression, timezone, period) in schedules {
+            let schedule = schedule_of(expression)
+                .unwrap_or_else(|| panic!("case {case:?}: {expression:?} names a schedule"));
+            for instant in instants {
+                let at = ::chrono::DateTime::parse_from_rfc3339(instant)
+                    .expect("a fixed instant")
+                    .timestamp_millis();
+                let actual = schedule.interval_after(at, timezone);
+                assert_eq!(
+                    actual,
+                    Some(period),
+                    "case {case:?} at {instant}: expected a period of {period} ms, got {actual:?}"
+                );
+            }
+        }
+    }
 }

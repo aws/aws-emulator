@@ -120,6 +120,34 @@ pub(crate) fn error_code(body: &Value) -> String {
         .to_string()
 }
 
+/// Plant one billing view directly in the store under `arn`, cloning the
+/// account's `PRIMARY` view as the template and handing the clone to `shape` for
+/// the fields the calling suite varies.
+///
+/// `CreateBillingView` mints a `CUSTOM` view in the CALLER's own account only, so
+/// a suite about any other record the store can hold — a view type the service
+/// manages, a view that came into existence in the past, a record under an ARN of
+/// another account — writes it the way the service would. The template is a
+/// record the service itself produced, so every field the caller does not set
+/// holds a value the service made.
+pub(crate) fn plant_view(
+    engine: &Arc<engine::InMemoryEngine>,
+    arn: &str,
+    shape: impl FnOnce(&mut service_com_amazonaws_billing_awsbilling::state::BillingView),
+) {
+    let state = engine
+        .state::<service_com_amazonaws_billing_awsbilling::ComAmazonawsBillingAwsbillingState>();
+    let mut state = state.lock();
+    let mut view = state
+        .billing_views
+        .get(PRIMARY_ARN)
+        .cloned()
+        .expect("the account's PRIMARY view is stored at stand-up");
+    view.arn = arn.to_string();
+    shape(&mut view);
+    state.billing_views.insert(arn.to_string(), view);
+}
+
 /// One row of the create/get round-trip table: a billing view this emulator must
 /// store and report back unchanged.
 struct ViewRow {

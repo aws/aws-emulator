@@ -2367,3 +2367,11 @@ mod cloudformation_deployed_crawler_crawls_its_s3_target;
 // and READS out of, the account's object store is asserted there, and a module may be
 // `cloudformation_domain_endpoint_is_dialled_by_consumers` are each declared once, further
 // up this tail: a module may be declared only once.)
+// region of this file: it was appended here as well while two branches were landing at once,
+// at the top of this file: it was appended here as well while two branches were landing at
+// once, and a module declared twice loads the same file twice, which compiles neither.)
+// (`https_front_door_concurrent_pooled_producer` is declared ONCE, a few lines up this tail:
+// it was appended here as well while two branches were landing at once, and a module declared
+// (`cloudformation_metric_stream_estate_is_drainable` is declared in the head region above
+// and `zz_probe` once further up this tail: two branches landing at once appended a second
+// declaration of each here, which compiled neither. A module may be declared only once.)

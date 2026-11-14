@@ -37,6 +37,8 @@ mod credit_allocation_family;
 mod credit_allocation_history;
 #[path = "all/credits.rs"]
 mod credits;
+#[path = "all/cross_account_existence_signal.rs"]
+mod cross_account_existence_signal;
 #[path = "all/enterprise_support_charge_summary.rs"]
 mod enterprise_support_charge_summary;
 #[path = "all/enterprise_support_linked_account_charges.rs"]

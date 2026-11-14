@@ -31,12 +31,12 @@ use crate::rejection_fidelity::message;
 /// How one row of the operation table builds its request body from the ARN under
 /// test: the member carrying the ARN differs between operations (`arn` for the
 /// billing-view surface, `resourceArn` for the tagging and policy surface).
-type BodyOf = fn(&str) -> Value;
+pub(crate) type BodyOf = fn(&str) -> Value;
 
 /// Every implemented operation that identifies a billing view by its own `arn`
 /// member, with the rest of its required input. `ListBillingViews` reaches the
 /// ARN through its `arns` filter.
-const BILLING_VIEW_ARN_OPERATIONS: [(&str, BodyOf); 7] = [
+pub(crate) const BILLING_VIEW_ARN_OPERATIONS: [(&str, BodyOf); 7] = [
     ("GetBillingView", |arn| json!({ "arn": arn })),
     ("UpdateBillingView", |arn| {
         json!({ "arn": arn, "name": "renamed" })
@@ -57,7 +57,7 @@ const BILLING_VIEW_ARN_OPERATIONS: [(&str, BodyOf); 7] = [
 /// Every implemented operation that identifies a resource by `resourceArn` — the
 /// tagging and policy plane, whose modeled `ResourceArn` admits any resource type
 /// segment, not just `billingview/`.
-const RESOURCE_ARN_OPERATIONS: [(&str, BodyOf); 4] = [
+pub(crate) const RESOURCE_ARN_OPERATIONS: [(&str, BodyOf); 4] = [
     ("TagResource", |arn| {
         json!({ "resourceArn": arn, "resourceTags": [{ "key": "team", "value": "finance" }] })
     }),
@@ -66,6 +66,34 @@ const RESOURCE_ARN_OPERATIONS: [(&str, BodyOf); 4] = [
     }),
     ("ListTagsForResource", |arn| json!({ "resourceArn": arn })),
     ("GetResourcePolicy", |arn| json!({ "resourceArn": arn })),
+];
+
+/// ARNs outside the caller's account in the `billingview/` form every
+/// `BillingViewArn` member takes. They vary the foreign account id, the partition
+/// and the resource id — including `primary`, which names a view that DOES exist
+/// in the caller's own account, and a nested resource id — so no answer to one of
+/// them can be coming from a store lookup. Shared with the suite that asserts the
+/// same ARNs against a store that HOLDS a record under each of them
+/// (`cross_account_existence_signal.rs`), so the two cannot drift apart.
+pub(crate) const FOREIGN_BILLING_VIEW_ARNS: [&str; 5] = [
+    "arn:aws:billing::111122223333:billingview/primary",
+    "arn:aws:billing::123456789012:billingview/does-not-exist",
+    "arn:aws-us-gov:billing::111122223333:billingview/primary",
+    "arn:aws-cn:billing::999999999999:billingview/custom-1",
+    "arn:aws:billing::111122223333:billingview/a/nested/id",
+];
+
+/// ARNs outside the caller's account whose resource type segment is NOT
+/// `billingview/`: the boundary is about the account the ARN embeds, not about
+/// what the segment names, and only the tagging and policy plane's `resourceArn`
+/// admits these.
+///
+/// Source: the `resourceArn` member of `TagResource`,
+/// `smithy_query(query="operation", operation="TagResource")` — pattern
+/// `^arn:aws[a-z-]*:(billing)::[0-9]{12}:[a-zA-Z0-9/:_\+=\.\@-]{0,70}[a-zA-Z0-9]$`.
+pub(crate) const FOREIGN_RESOURCE_TYPE_ARNS: [&str; 2] = [
+    "arn:aws:billing::111122223333:budget/none",
+    "arn:aws:billing::111122223333:x",
 ];
 
 /// Create one `CUSTOM` billing view drawing from the account's `PRIMARY` view and
@@ -124,17 +152,14 @@ async fn every_arn_addressed_operation_refuses_a_foreign_account_arn_before_any_
         .1
         .to_string();
 
-    // The rows vary the foreign account id, the partition and the resource id —
-    // including `primary`, which exists in the caller's own account, and the
-    // resource id of the view created above, so neither answer can be coming
+    // The shared table above, plus the resource id of the view created here: that
+    // id resolves in the caller's own account, so neither answer can be coming
     // from a store lookup.
-    let foreign_arns = vec![
-        "arn:aws:billing::111122223333:billingview/primary".to_string(),
-        "arn:aws:billing::123456789012:billingview/does-not-exist".to_string(),
-        "arn:aws-us-gov:billing::111122223333:billingview/primary".to_string(),
-        "arn:aws-cn:billing::999999999999:billingview/custom-1".to_string(),
-        format!("arn:aws:billing::111122223333:{own_id}"),
-    ];
+    let foreign_arns: Vec<String> = FOREIGN_BILLING_VIEW_ARNS
+        .iter()
+        .map(|arn| (*arn).to_string())
+        .chain([format!("arn:aws:billing::111122223333:{own_id}")])
+        .collect();
 
     for arn in &foreign_arns {
         for (operation, body_of) in BILLING_VIEW_ARN_OPERATIONS {
@@ -145,18 +170,9 @@ async fn every_arn_addressed_operation_refuses_a_foreign_account_arn_before_any_
         }
     }
 
-    // `ResourceArn` admits any resource type segment, and the boundary is about
-    // the account the ARN embeds, not about what the segment names: the tagging
-    // and policy plane refuses these the same way.
-    //
-    // Source: the `resourceArn` member of `TagResource`,
-    // `smithy_query(query="operation", operation="TagResource")` — pattern
-    // `^arn:aws[a-z-]*:(billing)::[0-9]{12}:[a-zA-Z0-9/:_\+=\.\@-]{0,70}[a-zA-Z0-9]$`.
-    for arn in [
-        "arn:aws:billing::111122223333:budget/none",
-        "arn:aws:billing::111122223333:billingview/a/nested/id",
-        "arn:aws:billing::111122223333:x",
-    ] {
+    // A resource type segment that is not `billingview/` is refused the same way
+    // by the plane that admits it.
+    for arn in FOREIGN_RESOURCE_TYPE_ARNS {
         for (operation, body_of) in RESOURCE_ARN_OPERATIONS {
             assert_cross_account_refusal(&router, operation, body_of, arn).await;
         }
