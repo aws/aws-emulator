@@ -300,27 +300,43 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let region = crate::state::request_region(ctx.parts());
         // Whether the caller may read this catalog at all is decided BEFORE the entity
         // lookup: a `CatalogId` of another account is reachable only through that
-        // catalog's own resource policy (see `crate::state::foreign_catalog_refusal`).
-        if let Some(message) =
-            crate::state::foreign_catalog_refusal(&catalog_id, &region, Self::NAME)
-        {
-            return Err(GetTableErrorModeled::AccessDeniedException(
-                AccessDeniedException {
-                    message: Some(message),
-                },
-            )
-            .into());
+        // catalog's own resource policy (see `crate::state::catalog_refusal`).
+        let catalog_refusal =
+            crate::state::catalog_refusal(&state.lock(), &catalog_id, &region, Self::NAME);
+        match catalog_refusal {
+            None => {}
+            Some(crate::state::CatalogRefusal::NotFound(message)) => {
+                return Err(GetTableErrorModeled::EntityNotFoundException(
+                    EntityNotFoundException {
+                        message: Some(message),
+                        from_federation_source: None,
+                    },
+                )
+                .into())
+            }
+            Some(crate::state::CatalogRefusal::NotAuthorized(message)) => {
+                return Err(GetTableErrorModeled::AccessDeniedException(
+                    AccessDeniedException {
+                        message: Some(message),
+                    },
+                )
+                .into())
+            }
         }
         // The answer is built under the store's guard and the guard released before KMS
         // is asked anything: the key material travels out with the answer.
         let (table, encryption) = {
             let store = state.lock();
             let Some(database) = store.database(&catalog_id, &input.database_name) else {
+                // This read words BOTH its misses the same way: the recorded refusal for a
+                // table this read cannot resolve names neither the table nor the database
+                // ([`crate::state::messages::TABLE_ENTITY_NOT_FOUND`]), and an absent
+                // DATABASE is the same miss of the same entity — so it is reported in that
+                // one fixed sentence rather than in the templated database miss the
+                // operations that address a database by name answer.
                 return Err(GetTableErrorModeled::EntityNotFoundException(
                     EntityNotFoundException {
-                        message: Some(crate::state::messages::database_not_found(
-                            &input.database_name,
-                        )),
+                        message: Some(crate::state::messages::TABLE_ENTITY_NOT_FOUND.to_string()),
                         from_federation_source: None,
                     },
                 )

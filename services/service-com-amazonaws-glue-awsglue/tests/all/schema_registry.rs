@@ -490,7 +490,9 @@ async fn reading_a_schema_changes_nothing() {
     )
     .await;
 
-    let id = json!({ "SchemaId": { "SchemaName": "idempotent-read" } });
+    let id = json!({
+        "SchemaId": { "SchemaName": "idempotent-read", "RegistryName": DEFAULT_REGISTRY_NAME },
+    });
     let first = ok(&router, "GetSchema", &id).await;
     let second = ok(&router, "GetSchema", &id).await;
     assert_eq!(
@@ -704,7 +706,7 @@ async fn a_duplicate_schema_name_is_refused_per_registry() {
     let reread = ok(
         &router,
         "GetSchema",
-        &json!({ "SchemaId": { "SchemaName": "twice" } }),
+        &json!({ "SchemaId": { "SchemaName": "twice", "RegistryName": DEFAULT_REGISTRY_NAME } }),
     )
     .await;
     assert_eq!(
@@ -718,9 +720,10 @@ async fn a_duplicate_schema_name_is_refused_per_registry() {
 // References that resolve to nothing
 // ---------------------------------------------------------------------------
 
-/// How a `SchemaId` fails: a wrapper carrying neither member, or an ARN that is not a Glue
-/// schema ARN, or two members disagreeing, is a bad parameter; one that is well formed but
-/// names nothing this endpoint holds is a miss.
+/// How a `SchemaId` fails: a wrapper carrying neither member, one naming only half of the
+/// registry-and-schema pair, an ARN that is not a Glue schema ARN, or two members
+/// disagreeing, is a bad parameter; one that addresses a schema set completely but names
+/// nothing this endpoint holds is a miss.
 #[tokio::test]
 async fn an_unresolvable_schema_id_is_refused() {
     let (router, _engine) = emulator_with_seeded_registry();
@@ -783,8 +786,20 @@ async fn an_unresolvable_schema_id_is_refused() {
             "InvalidInputException",
         ),
         (
+            // The read resolves a reference rather than writing one, so a `SchemaName`
+            // carrying no `RegistryName` addresses no schema set at all.
+            "a SchemaName with no RegistryName",
+            json!({ "SchemaId": { "SchemaName": "present" } }),
+            "InvalidInputException",
+        ),
+        (
+            "a RegistryName with no SchemaName",
+            json!({ "SchemaId": { "RegistryName": DEFAULT_REGISTRY_NAME } }),
+            "InvalidInputException",
+        ),
+        (
             "a name no registry holds",
-            json!({ "SchemaId": { "SchemaName": "absent" } }),
+            json!({ "SchemaId": { "SchemaName": "absent", "RegistryName": DEFAULT_REGISTRY_NAME } }),
             "EntityNotFoundException",
         ),
         (

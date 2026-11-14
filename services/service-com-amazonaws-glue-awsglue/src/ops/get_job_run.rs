@@ -188,19 +188,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut store = state.lock();
         // `JobName` and `RunId` are both `@required` with `length 1..255`, so an absent
         // or over-long one is refused at the boundary: reaching here, the only question
-        // is whether THIS Region holds that job and that job holds that run.
+        // is whether THIS Region holds a run under that pair.
+        //
+        // A run is addressed by the PAIR, and the service answers one fixed sentence
+        // whenever the pair resolves to no run
+        // ([`crate::state::messages::JOB_RUN_NOT_FOUND`]) — whether the job holds no such
+        // run or this endpoint holds no such job at all. It carries neither the requested
+        // run id nor the job name, so the refusal a client matches on does not depend on
+        // what was asked, and it never blames the job for a stale run id. Naming the JOB
+        // as the thing that is missing is the refusal of the operations that address a job
+        // definition ([`crate::state::messages::JOB_NOT_FOUND`]), not of this one.
         let Some(job) = store.job_mut(&region, &input.job_name) else {
             return Err(not_found(
-                crate::state::messages::JOB_NOT_FOUND.to_string(),
+                crate::state::messages::JOB_RUN_NOT_FOUND.to_string(),
             ));
         };
         // The only write a read makes: the state changes the clock had already made due.
         job.settle_due_runs(now);
 
-        // A run this job does not hold is refused in the service's own fixed words for
-        // that miss ([`crate::state::messages::JOB_RUN_NOT_FOUND`]), which carry neither
-        // the requested run id nor the job name: the refusal a client matches on does not
-        // depend on what was asked.
         let Some(run) = job.run(&input.run_id) else {
             return Err(not_found(
                 crate::state::messages::JOB_RUN_NOT_FOUND.to_string(),

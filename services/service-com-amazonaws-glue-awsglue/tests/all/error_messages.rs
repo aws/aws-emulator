@@ -260,15 +260,18 @@ async fn a_duplicate_database_create_withholds_the_name() {
     );
 }
 
-/// Every operation that addresses a database the catalog does not hold answers the same
-/// database template, built from the requested name alone: no catalog id, no account id
-/// and no other member of the request.
+/// Every operation that NAMES the database it could not resolve answers the same database
+/// template, built from the requested name alone — rendered in the Hive-compatible fold the
+/// catalog keys a name under, with no catalog id, no account id and no other member of the
+/// request.
 ///
 /// The rows are the cross product of the name axis of [`absent_names`] with every
-/// operation that resolves a database: the three that address it by `Name`
-/// (`GetDatabase`, `DeleteDatabase`, `UpdateDatabase`) and the six that address it by
-/// `DatabaseName` while naming tables (`GetTable`, `GetTables`, `CreateTable`,
-/// `UpdateTable`, `DeleteTable`, `BatchDeleteTable`).
+/// operation that resolves a database and names it: the three that address it by `Name`
+/// (`GetDatabase`, `DeleteDatabase`, `UpdateDatabase`) and the five that address it by
+/// `DatabaseName` while naming tables (`GetTables`, `CreateTable`, `UpdateTable`,
+/// `DeleteTable`, `BatchDeleteTable`). `GetTable` is NOT one of them: it words both of its
+/// misses in the fixed sentence naming no entity, which
+/// [`the_table_read_and_the_table_writes_refuse_with_different_wording`] pins.
 #[tokio::test]
 async fn a_database_miss_names_the_requested_database_and_nothing_else() {
     let router = emulator();
@@ -277,7 +280,7 @@ async fn a_database_miss_names_the_requested_database_and_nothing_else() {
     create_database(&router, "present_db").await;
 
     for (case, name) in &absent_names() {
-        let expected = format!("Database {name} not found.");
+        let expected = format!("Database {} not found.", name.to_ascii_lowercase());
         let by_name: [(&str, Value); 3] = [
             ("GetDatabase", json!({ "Name": name })),
             ("DeleteDatabase", json!({ "Name": name })),
@@ -286,8 +289,7 @@ async fn a_database_miss_names_the_requested_database_and_nothing_else() {
                 json!({ "Name": name, "DatabaseInput": { "Name": name } }),
             ),
         ];
-        let by_database_name: [(&str, Value); 6] = [
-            ("GetTable", json!({ "DatabaseName": name, "Name": "any_table" })),
+        let by_database_name: [(&str, Value); 5] = [
             ("GetTables", json!({ "DatabaseName": name })),
             (
                 "CreateTable",
@@ -330,7 +332,8 @@ async fn a_database_miss_names_the_requested_database_and_nothing_else() {
 /// `GetTable` on one side and the table writes (`DeleteTable`, `UpdateTable`) on the
 /// other refuse a table the database does not hold with their OWN wording, which a
 /// client can tell apart: the read answers a constant naming neither table nor
-/// database, and a write answers a template built from the request's table name and
+/// database — for a missing DATABASE as much as for a missing table — and a write answers
+/// a template built from the request's table name, folded as the catalog keys it, and
 /// naming no database.
 ///
 /// The rows span the name axis of [`absent_names`] and reach the miss two ways — a
@@ -355,6 +358,7 @@ async fn the_table_read_and_the_table_writes_refuse_with_different_wording() {
     ));
 
     for (case, name) in &cases {
+        let folded = name.to_ascii_lowercase();
         let read = assert_refusal(
             &router,
             &format!("{case} via GetTable"),
@@ -374,7 +378,7 @@ async fn the_table_read_and_the_table_writes_refuse_with_different_wording() {
             "DeleteTable",
             &json!({ "DatabaseName": "present_db", "Name": name }),
             "EntityNotFoundException",
-            &format!("Table {name} not found."),
+            &format!("Table {folded} not found."),
         )
         .await;
         // The delete's refusal names the table, but never its parent database.
@@ -394,7 +398,7 @@ async fn the_table_read_and_the_table_writes_refuse_with_different_wording() {
             "UpdateTable",
             &json!({ "DatabaseName": "present_db", "TableInput": { "Name": name } }),
             "EntityNotFoundException",
-            &format!("Table {name} not found."),
+            &format!("Table {folded} not found."),
         )
         .await;
         assert_withholds(case, &error_message(&updated), "present_db");

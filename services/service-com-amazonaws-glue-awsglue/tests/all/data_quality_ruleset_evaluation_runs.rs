@@ -663,8 +663,8 @@ async fn a_start_whose_data_source_the_catalog_does_not_hold_is_refused() {
             "Table no_such_table not found.".to_string(),
         ),
         (
-            // The refusal names the table as THIS request spelled it, not as the catalog
-            // folds a name to store it.
+            // The refusal names the table as the catalog KEYS it — the Hive-compatible
+            // fold a name is stored and looked up under — not as this request spelled it.
             "a missing table spelled in mixed case",
             start_body(
                 &glue_table_source("Evaluated_DB", "No_Such_Table", json!({})),
@@ -672,7 +672,7 @@ async fn a_start_whose_data_source_the_catalog_does_not_hold_is_refused() {
                 json!({}),
             ),
             "EntityNotFoundException",
-            "Table No_Such_Table not found.".to_string(),
+            "Table no_such_table not found.".to_string(),
         ),
         (
             "a catalog of another account",
@@ -976,14 +976,14 @@ async fn a_run_whose_table_is_dropped_while_it_is_in_flight_fails() {
             expected_error: Some("Table dropped_additional not found."),
         },
         SettleCase {
-            // The failed run names the table as the START spelled it, not as the catalog
-            // folds a name to store it.
+            // The failed run names the table as the catalog KEYS it — the Hive-compatible
+            // fold — not as the START spelled it.
             case: "the evaluated table is dropped, addressed in mixed case",
             database: "Drop_DB_Mixed",
             table: "Dropped_Mixed",
             additional: None,
             dropped: Some(("Drop_DB_Mixed", "Dropped_Mixed")),
-            expected_error: Some("Table Dropped_Mixed not found."),
+            expected_error: Some("Table dropped_mixed not found."),
         },
         SettleCase {
             case: "every evaluated table is still stored",

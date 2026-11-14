@@ -112,12 +112,13 @@ async fn given_schema(router: &MultiServiceRouter, name: &str, compatibility: &s
     .await;
 }
 
-/// The `GetSchema` answer for the schema set `name` of the default registry.
+/// The `GetSchema` answer for the schema set `name` of the default registry. `GetSchema`
+/// takes a COMPLETE reference, so the read names the registry as well as the schema.
 async fn schema_read(router: &MultiServiceRouter, name: &str) -> Value {
     ok(
         router,
         "GetSchema",
-        &json!({ "SchemaId": { "SchemaName": name } }),
+        &json!({ "SchemaId": { "SchemaName": name, "RegistryName": DEFAULT_REGISTRY_NAME } }),
     )
     .await
 }

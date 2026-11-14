@@ -509,7 +509,7 @@ async fn a_batch_naming_no_stored_table_is_refused_whole() {
             "a database the catalog does not hold, mixed case",
             request("Absent_DB", TABLE, &sent),
             MISS_CODE,
-            "Database Absent_DB not found.".to_string(),
+            "Database absent_db not found.".to_string(),
         ),
         (
             "a table the database does not hold",

@@ -177,16 +177,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let region = crate::state::request_region(ctx.parts());
         // Whether the caller may address this catalog at all is decided BEFORE the entity
         // lookup, exactly as it is for every other catalog operation (see
-        // `crate::state::foreign_catalog_refusal`).
-        if let Some(message) =
-            crate::state::foreign_catalog_refusal(&catalog_id, &region, Self::NAME)
-        {
-            return Err(CreateTableOptimizerErrorModeled::AccessDeniedException(
-                AccessDeniedException {
-                    message: Some(message),
-                },
-            )
-            .into());
+        // `crate::state::catalog_refusal`).
+        let catalog_refusal =
+            crate::state::catalog_refusal(&state.lock(), &catalog_id, &region, Self::NAME);
+        match catalog_refusal {
+            None => {}
+            Some(crate::state::CatalogRefusal::NotFound(message)) => {
+                return Err(CreateTableOptimizerErrorModeled::EntityNotFoundException(
+                    EntityNotFoundException {
+                        message: Some(message),
+                        from_federation_source: None,
+                    },
+                )
+                .into())
+            }
+            Some(crate::state::CatalogRefusal::NotAuthorized(message)) => {
+                return Err(CreateTableOptimizerErrorModeled::AccessDeniedException(
+                    AccessDeniedException {
+                        message: Some(message),
+                    },
+                )
+                .into())
+            }
         }
 
         let mut store = state.lock();

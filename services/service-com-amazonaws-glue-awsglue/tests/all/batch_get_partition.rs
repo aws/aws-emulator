@@ -587,7 +587,7 @@ async fn a_batch_read_naming_no_stored_table_is_refused_whole() {
             "Ghost_DB",
             "batch_get_present_table",
             &one_key,
-            "Database Ghost_DB not found.",
+            "Database ghost_db not found.",
         ),
         (
             "no such database, no key requested",
@@ -608,7 +608,7 @@ async fn a_batch_read_naming_no_stored_table_is_refused_whole() {
             "batch_get_present_db",
             "Ghost_Table",
             &one_key,
-            "Table Ghost_Table not found.",
+            "Table ghost_table not found.",
         ),
         (
             "no such table, no key requested",

@@ -2416,3 +2416,11 @@ mod events_one_envelope_reaches_every_target_kind;
 // read the answer the deciding service gives.
 #[path = "all/sts_session_credential_refusals.rs"]
 mod sts_session_credential_refusals;
+// `cloudformation_provisions_cloudfront_resources` is declared once, in the sorted span at
+// the head of this file: two `mod` items for one name is a redefinition that compiles
+// neither.
+// (`apigateway_cognito_authorizer_app_client_audience` is declared once, in the sorted span
+// at the head of this file: the entry was appended here as well while two branches were
+// (`cloudformation_metric_stream_estate_is_drainable` and `redshift_health_alarms_evaluate`
+// are declared ONCE each, further up this file: a module may be declared only once, and two
+// branches landing at once appended each of them here as well.)

@@ -213,16 +213,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let region = crate::state::request_region(ctx.parts());
         // Whether the caller may read this catalog at all is decided BEFORE the entity
         // lookup: a `CatalogId` of another account is reachable only through that
-        // catalog's own resource policy (see `crate::state::foreign_catalog_refusal`).
-        if let Some(message) =
-            crate::state::foreign_catalog_refusal(&catalog_id, &region, Self::NAME)
-        {
-            return Err(GetTableVersionsErrorModeled::AccessDeniedException(
-                AccessDeniedException {
-                    message: Some(message),
-                },
-            )
-            .into());
+        // catalog's own resource policy (see `crate::state::catalog_refusal`).
+        let catalog_refusal =
+            crate::state::catalog_refusal(&state.lock(), &catalog_id, &region, Self::NAME);
+        match catalog_refusal {
+            None => {}
+            Some(crate::state::CatalogRefusal::NotFound(message)) => {
+                return Err(GetTableVersionsErrorModeled::EntityNotFoundException(
+                    EntityNotFoundException {
+                        message: Some(message),
+                        from_federation_source: None,
+                    },
+                )
+                .into())
+            }
+            Some(crate::state::CatalogRefusal::NotAuthorized(message)) => {
+                return Err(GetTableVersionsErrorModeled::AccessDeniedException(
+                    AccessDeniedException {
+                        message: Some(message),
+                    },
+                )
+                .into())
+            }
         }
 
         // Absent `MaxResults`, page at the largest value the model accepts for it
@@ -252,9 +264,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .tables
                 .get(&crate::state::fold_name(&input.table_name))
             else {
+                // The version listing NAMES the table it could not resolve
+                // ([`crate::state::messages::table_not_found`]), as the writes that
+                // address one table do — it is `GetTable` alone that answers its misses in
+                // the fixed sentence naming no entity.
                 return Err(GetTableVersionsErrorModeled::EntityNotFoundException(
                     EntityNotFoundException {
-                        message: Some(crate::state::messages::TABLE_ENTITY_NOT_FOUND.to_string()),
+                        message: Some(crate::state::messages::table_not_found(&input.table_name)),
                         from_federation_source: None,
                     },
                 )

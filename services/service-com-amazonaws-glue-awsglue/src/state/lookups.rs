@@ -352,29 +352,82 @@ pub(super) fn glue_arn_for_account(region: &str, account_id: &str, resource: &st
     fields.join(":")
 }
 
-/// The refusal a request addressed to the Data Catalog `catalog_id` earns when that
-/// catalog belongs to another account, or `None` when the request addresses the catalog
-/// this emulator serves.
+/// The AUTHORIZATION refusal alone, for the operations whose modelled error set has no
+/// entity miss in it: `CreateDatabase`, `CreateConnection`, `BatchDeleteConnection`,
+/// `SearchTables`, `GetDataCatalogEncryptionSettings`,
+/// `PutDataCatalogEncryptionSettings`, `GetCatalogImportStatus` and `ImportCatalogToGlue`
+/// model no `EntityNotFoundException`, so a catalog that does not exist cannot be reported
+/// to their callers as a missing entity — an error code outside an operation's modelled
+/// set is one no strongly typed client can map — and the one thing they can state about a
+/// `CatalogId` that is not this account's own is that the caller may not act on it.
 ///
-/// Authorization comes BEFORE the entity lookup: a `CatalogId` of another account is
-/// reachable on the real service only through that catalog's own resource-based policy,
-/// so a caller holding no grant on it is refused as unauthorized rather than told the
-/// entity does not exist — which would also answer a cross-account read out of the
-/// caller's OWN catalog whenever the two hold a same-named entity. This store holds one
-/// catalog ([`is_known_catalog`]) and can hold no resource policy of a FOREIGN catalog —
-/// `PutResourcePolicy` attaches a policy only to a resource of the account this endpoint
-/// serves ([`resolve_policy_resource_arn`]) — so no grant on a foreign catalog can exist
-/// here and every cross-account request for one is refused.
-///
-/// `action` is the operation's own name, which the refusal names as the IAM action
-/// ([`IAM_ACTION_PREFIX`]) the caller may not perform.
+/// Every other catalog-addressed operation goes through [`catalog_refusal`], which tells
+/// the missing catalog and the foreign one apart; the sentence here is the same one that
+/// decision carries for a foreign catalog, so the two cannot disagree about it.
 pub fn foreign_catalog_refusal(catalog_id: &str, region: &str, action: &str) -> Option<String> {
+    (!is_known_catalog(catalog_id))
+        .then(|| messages::not_authorized_on_catalog(action, &catalog_arn(region, catalog_id)))
+}
+
+/// Why a request addressed to the Data Catalog `catalog_id` cannot be served, decided
+/// BEFORE the entity lookup ([`catalog_refusal`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CatalogRefusal {
+    /// `catalog_id` names no Data Catalog at all: it is not an Amazon Web Services account
+    /// number, so it addresses no account's Data Catalog, and it names no catalog this
+    /// account holds either — there is no catalog for an entity to be looked up in.
+    /// Carries the sentence the miss is reported with ([`messages::CATALOG_NOT_FOUND`]),
+    /// to be answered as the operation's own `EntityNotFoundException`.
+    NotFound(String),
+    /// `catalog_id` names the Data Catalog of ANOTHER account. Carries the authorization
+    /// sentence, to be answered as `AccessDeniedException`.
+    NotAuthorized(String),
+}
+
+/// The refusal a request addressed to the Data Catalog `catalog_id` earns before any
+/// entity of it is looked up, or `None` when that catalog is one this endpoint serves —
+/// the account's own Data Catalog ([`is_known_catalog`]) or a catalog resource a
+/// `CreateCatalog` registered in it ([`ComAmazonawsGlueAwsglueState::catalog_definition`]).
+///
+/// The two refusals answer two different faults, and WHICH one an id earns is decided by
+/// what the id addresses rather than by what the store happens to hold:
+///
+/// * An id that is an account number other than this endpoint's own addresses that
+///   account's Data Catalog, which is reachable on the real service only through that
+///   catalog's own resource-based policy. A caller holding no grant on it is refused as
+///   unauthorized rather than told the entity does not exist — which would also answer a
+///   cross-account read out of the caller's OWN catalog whenever the two hold a same-named
+///   entity. This store can hold no resource policy of a FOREIGN catalog —
+///   `PutResourcePolicy` attaches a policy only to a resource of the account this endpoint
+///   serves ([`resolve_policy_resource_arn`]) — so no such grant can exist here and every
+///   cross-account request is refused.
+/// * An id that addresses no account's Data Catalog and no catalog of this account names
+///   NOTHING, and a request naming nothing is a miss: the catalog does not exist, so
+///   authorization over it is not a question the service can even reach, and reporting one
+///   would send a client to write IAM policy for a catalog that is absent.
+///
+/// `action` is the operation's own name, which the authorization refusal names as the IAM
+/// action ([`IAM_ACTION_PREFIX`]) the caller may not perform.
+pub fn catalog_refusal(
+    store: &ComAmazonawsGlueAwsglueState,
+    catalog_id: &str,
+    region: &str,
+    action: &str,
+) -> Option<CatalogRefusal> {
     if is_known_catalog(catalog_id) {
         return None;
     }
-    Some(messages::not_authorized_on_catalog(
-        action,
-        &catalog_arn(region, catalog_id),
+    let reference = parse_catalog_reference(catalog_id);
+    if !is_served_account(&reference.account_id) {
+        return Some(CatalogRefusal::NotAuthorized(
+            messages::not_authorized_on_catalog(action, &catalog_arn(region, catalog_id)),
+        ));
+    }
+    if store.catalog_definition(&reference).is_some() {
+        return None;
+    }
+    Some(CatalogRefusal::NotFound(
+        messages::CATALOG_NOT_FOUND.to_string(),
     ))
 }
 

@@ -9,9 +9,14 @@
 //! persisted is what this reports, and a `SchemaId` naming nothing this endpoint holds is
 //! refused with `EntityNotFoundException`.
 //!
-//! A `SchemaId` carrying a `SchemaName` and no `RegistryName` addresses the default
-//! registry, which is the registry a `CreateSchema` that named none wrote into
-//! ([`crate::state::schema_reference`] is the one resolution both go through).
+//! A `SchemaId` addresses a schema set COMPLETELY or it addresses none: by the schema's
+//! own `SchemaArn`, or by its `RegistryName` and `SchemaName` together. A reference naming
+//! only one half of that pair is a bad parameter, refused with `InvalidInputException` —
+//! this read resolves a reference rather than writing one, so there is no registry for it
+//! to default to ([`crate::state::complete_schema_reference`]). The registry is then
+//! resolved before the schema set, so a reference into a registry this endpoint holds none
+//! of reports the REGISTRY as absent
+//! ([`crate::state::ComAmazonawsGlueAwsglueState::schema_or_miss`]).
 //!
 //! This operation only REPORTS: it writes nothing, so a read never changes what a later
 //! caller sees.
@@ -185,7 +190,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         let region = crate::state::request_region(ctx.parts());
 
-        let reference = match crate::state::schema_reference(&input.schema_id, &region) {
+        let reference = match crate::state::complete_schema_reference(&input.schema_id, &region) {
             Ok(reference) => reference,
             Err(message) => {
                 return Err(GetSchemaErrorModeled::InvalidInputException(
@@ -214,14 +219,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let store = state.lock();
-        let Some(schema) = store.schema(&registry_name, &schema_name) else {
-            return Err(GetSchemaErrorModeled::EntityNotFoundException(
-                EntityNotFoundException {
-                    message: Some(crate::state::messages::SCHEMA_NOT_FOUND.to_string()),
-                    from_federation_source: None,
-                },
-            )
-            .into());
+        // The registry is resolved before the schema set it would hold, so a reference into
+        // a registry this endpoint holds none of is reported as the REGISTRY being absent
+        // rather than as the schema being absent
+        // ([`crate::state::ComAmazonawsGlueAwsglueState::schema_or_miss`]).
+        let schema = match store.schema_or_miss(&registry_name, &schema_name) {
+            Ok(schema) => schema,
+            Err(message) => {
+                return Err(GetSchemaErrorModeled::EntityNotFoundException(
+                    EntityNotFoundException {
+                        message: Some(message),
+                        from_federation_source: None,
+                    },
+                )
+                .into())
+            }
         };
 
         Ok(GetSchemaOutput {

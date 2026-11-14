@@ -3027,6 +3027,29 @@ impl ComAmazonawsGlueAwsglueState {
             .and_then(|registry| registry.schemas.get(schema_name))
     }
 
+    /// The stored schema set `schema_name` of registry `registry_name`, or the SENTENCE a
+    /// read that resolved its `SchemaId` to that pair is refused with.
+    ///
+    /// The container is resolved before what it holds, so the two misses are told apart: a
+    /// registry this endpoint holds none of is reported as the REGISTRY being absent
+    /// ([`messages::registry_not_found_for_schema`], which names it), and only a registry
+    /// that exists but holds no such schema set is the schema miss
+    /// ([`messages::SCHEMA_NOT_FOUND`]). A client is therefore never told to create a
+    /// schema inside a registry that does not exist.
+    pub fn schema_or_miss(
+        &self,
+        registry_name: &str,
+        schema_name: &str,
+    ) -> Result<&SchemaEntry, String> {
+        let Some(registry) = self.registries.get(registry_name) else {
+            return Err(messages::registry_not_found_for_schema(registry_name));
+        };
+        registry
+            .schemas
+            .get(schema_name)
+            .ok_or_else(|| messages::SCHEMA_NOT_FOUND.to_string())
+    }
+
     /// The stored schema set `schema_name` of registry `registry_name`, mutably.
     pub fn schema_mut(
         &mut self,

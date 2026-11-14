@@ -704,9 +704,13 @@ raise RuntimeError("this attempt failed after writing its object")
 /// fails on the script's own exception and no host socket, process, library or file is
 /// reached from a Glue job run.
 ///
-/// The rows are one per primitive a script could try to reach the host with, and each is
-/// attempted FROM the script. The control is the row that writes an object instead, which
-/// must succeed — so the table cannot pass by every script failing for some other reason.
+/// The rows are one per primitive a script could try to reach the host with — a socket, a
+/// process, a native library, a guest thread, the trace hook and recursion limit the bounds
+/// are spent through, the filesystem and the environment through `os`, the import machinery
+/// (`importlib` and the import builtin) and the `open` builtin that needs no import at all —
+/// and each is attempted FROM the script. The control is the row that writes an object
+/// instead, which must succeed — so the table cannot pass by every script failing for some
+/// other reason.
 ///
 /// What each row asserts is decided by the script's own EXECUTION and by nothing else: the
 /// module a contained script reaches for is one the engine never registered, so the script
@@ -719,7 +723,7 @@ raise RuntimeError("this attempt failed after writing its object")
 #[tokio::test]
 async fn a_script_reaches_nothing_of_the_host() {
     // (case, the script, whether it must come to rest having succeeded)
-    let rows: [(&str, &str, bool); 7] = [
+    let rows: [(&str, &str, bool); 12] = [
         (
             "connecting a socket to a host",
             "import socket\nsocket.socket().connect((\"example.com\", 80))\n",
@@ -736,6 +740,28 @@ async fn a_script_reaches_nothing_of_the_host() {
             false,
         ),
         (
+            "reading the host filesystem through the os module",
+            "import os\nos.listdir(\"/\")\n",
+            false,
+        ),
+        (
+            "reading a host environment variable",
+            "import os\nos.environ[\"PATH\"]\n",
+            false,
+        ),
+        (
+            // The same reach made through the import machinery rather than a statement, and
+            // through the import builtin, so the refusal is not one `import` spells alone.
+            "importing a host module through importlib",
+            "import importlib\nimportlib.import_module(\"subprocess\")\n",
+            false,
+        ),
+        (
+            "importing a host module through the import builtin",
+            "__import__(\"subprocess\").run([\"/bin/ls\"])\n",
+            false,
+        ),
+        (
             "starting a guest thread",
             "import _thread\n_thread.start_new_thread(lambda: None, ())\n",
             false,
@@ -748,6 +774,12 @@ async fn a_script_reaches_nothing_of_the_host() {
         (
             "raising the recursion limit",
             "import sys\nsys.setrecursionlimit(10 ** 6)\n",
+            false,
+        ),
+        (
+            // The builtin that reads a host path without importing anything at all.
+            "opening a host file through the open builtin",
+            "open(\"/etc/hostname\").read()\n",
             false,
         ),
         // The control: a script that reaches only this emulator does its work.

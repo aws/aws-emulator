@@ -524,7 +524,7 @@ async fn a_batch_naming_no_stored_table_is_refused_whole() {
             "no such database, mixed case",
             "Ghost_DB",
             "present_delete_table",
-            "Database Ghost_DB not found.",
+            "Database ghost_db not found.",
         ),
         (
             "no such table",
@@ -536,7 +536,7 @@ async fn a_batch_naming_no_stored_table_is_refused_whole() {
             "no such table, mixed case",
             "present_delete_db",
             "Ghost_Table",
-            "Table Ghost_Table not found.",
+            "Table ghost_table not found.",
         ),
     ];
 

@@ -17,9 +17,14 @@
 //! The recorded case — one `GetJob` for a name whose job a `DeleteJob` had just removed —
 //! is ONE row of the tables below. The rows differ along the requested name's value,
 //! length, casing and character set, along WHICH operation resolves the name (a read, an
-//! update, a run read, a run listing, a batch's per-run detail and a trigger's action),
-//! and along HOW the name came to hold no job (never created, created then deleted, or
-//! held only by another Region's endpoint).
+//! update, a run listing, a batch's per-run detail and a trigger's action), and along HOW
+//! the name came to hold no job (never created, created then deleted, or held only by
+//! another Region's endpoint).
+//!
+//! `GetJobRun` is the one job operation that does NOT report this sentence: it addresses a
+//! RUN by the (job name, run id) pair, so an absent job is its RUN miss, which
+//! [`a_run_read_of_an_absent_job_is_the_run_miss`] pins here and
+//! [`crate::job_run_miss_message`] pins for a job that exists.
 //!
 //! The expected sentence is written out here as a literal rather than read from the
 //! service's own constant, so this suite pins the wording instead of restating it.
@@ -29,7 +34,7 @@ use std::collections::BTreeSet;
 use serde_json::{json, Value};
 use service_com_amazonaws_glue_awsglue::state::JOB_RUN_ID_PREFIX;
 
-use crate::error_messages::{assert_refusal, assert_withholds};
+use crate::error_messages::{assert_refusal, assert_withholds, JOB_RUN_NOT_FOUND_MESSAGE};
 use crate::wire::{call, call_in_region, emulator, error_code, error_message, ok, ERROR_DETAIL_TAG};
 
 /// The refusal every job-definition miss answers with: fixed text, trailing period
@@ -85,14 +90,17 @@ fn job_update() -> Value {
     })
 }
 
-/// A run id of the shape a start mints that no start ever minted: a `GetJobRun` resolves
-/// its job before its run, so this id never decides the refusal.
+/// A run id of the shape a start mints that no start ever minted, for the read that
+/// addresses a RUN rather than a job definition: `GetJobRun` resolves a run by the (job
+/// name, run id) pair and words its miss as the RUN miss, so it is not one of the
+/// job-definition lookups below — [`crate::job_run_miss_message`] pins its sentence, and
+/// [`a_run_read_of_an_absent_job_is_the_run_miss`] pins it for a job nothing holds.
 fn unminted_run_id() -> String {
     format!("{JOB_RUN_ID_PREFIX}{:064x}", 1)
 }
 
 /// The operations that resolve a `JobName` and answer the miss as their own top-level
-/// error, each with the request that addresses `name`.
+/// error.
 fn job_name_requests(name: &str) -> Vec<(&'static str, Value)> {
     vec![
         ("GetJob", json!({ "JobName": name })),
@@ -100,12 +108,72 @@ fn job_name_requests(name: &str) -> Vec<(&'static str, Value)> {
             "UpdateJob",
             json!({ "JobName": name, "JobUpdate": job_update() }),
         ),
-        (
-            "GetJobRun",
-            json!({ "JobName": name, "RunId": unminted_run_id() }),
-        ),
         ("GetJobRuns", json!({ "JobName": name })),
     ]
+}
+
+/// `GetJobRun` is NOT one of them: it addresses a RUN by the (job name, run id) pair, and
+/// the service answers its one fixed run-miss sentence whenever that pair resolves to no
+/// run — including for a `JobName` this Region holds no job under, which must not be
+/// reported as the JOB being missing.
+///
+/// The rows span the name axis of [`absent_names`] crossed with how the name misses.
+#[tokio::test]
+async fn a_run_read_of_an_absent_job_is_the_run_miss() {
+    let router = emulator();
+    ok(&router, "CreateJob", &job_body("held-job")).await;
+    // A name whose job was created and then deleted is as absent as one nothing created.
+    ok(&router, "CreateJob", &job_body("deleted-run-job")).await;
+    ok(
+        &router,
+        "DeleteJob",
+        &json!({ "JobName": "deleted-run-job" }),
+    )
+    .await;
+
+    let mut rows: Vec<(String, String)> = absent_names()
+        .into_iter()
+        .map(|(case, name)| (format!("never created / {case}"), name))
+        .collect();
+    rows.push((
+        "created then deleted".to_string(),
+        "deleted-run-job".to_string(),
+    ));
+
+    for (case, name) in rows {
+        let body = assert_refusal(
+            &router,
+            &case,
+            "GetJobRun",
+            &json!({ "JobName": name, "RunId": unminted_run_id() }),
+            ENTITY_NOT_FOUND,
+            JOB_RUN_NOT_FOUND_MESSAGE,
+        )
+        .await;
+        let message = error_message(&body);
+        assert_ne!(
+            message, JOB_NOT_FOUND,
+            "case {case}: a run read must not blame the job definition, got {message:?}"
+        );
+        assert_withholds(&case, &message, &name);
+    }
+
+    // The job this Region holds still serves the run read's own miss for an id it does not
+    // hold, so the sentence above is the one miss of the pair and not a broken lookup.
+    let body = assert_refusal(
+        &router,
+        "a job that exists and a run it does not hold",
+        "GetJobRun",
+        &json!({ "JobName": "held-job", "RunId": unminted_run_id() }),
+        ENTITY_NOT_FOUND,
+        JOB_RUN_NOT_FOUND_MESSAGE,
+    )
+    .await;
+    assert_withholds(
+        "a job that exists and a run it does not hold",
+        &error_message(&body),
+        "held-job",
+    );
 }
 
 /// Every operation that resolves a job name answers one and the same fixed sentence for a

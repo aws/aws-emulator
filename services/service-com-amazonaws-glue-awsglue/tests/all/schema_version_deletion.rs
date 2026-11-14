@@ -183,7 +183,13 @@ async fn a_version_span_deletes_exactly_the_versions_it_names() {    // (case, t
             "case {case:?}: expected the set to hold {remaining:?}, got {held:?}"
         );
 
-        let read = ok(&router, "GetSchema", &json!({ "SchemaId": { "SchemaName": SCHEMA } })).await;
+        // `GetSchema` takes a COMPLETE reference, so the read-back names the registry too.
+        let read = ok(
+            &router,
+            "GetSchema",
+            &json!({ "SchemaId": { "SchemaName": SCHEMA, "RegistryName": DEFAULT_REGISTRY_NAME } }),
+        )
+        .await;
         // A version NUMBER is assigned once and never reused, so deleting versions frees
         // neither their numbers nor the numbers above them: the schema set keeps reporting
         // the highest number it ever assigned, whichever of those versions it still holds.

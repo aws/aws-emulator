@@ -425,15 +425,18 @@ pub fn event_queue_action_withheld(
     )
 }
 
-/// A job run addressed by id that the job it was addressed through does not hold —
-/// the read (`GetJobRun`), the retry a start names (`StartJobRun$JobRunId`) and each
-/// entry of a stop the job holds no such run for (`BatchStopJobRun`).
+/// A job run addressed by the (job name, run id) PAIR that this endpoint holds no run
+/// under — the read (`GetJobRun`), the retry a start names (`StartJobRun$JobRunId`) and
+/// each entry of a stop the job holds no such run for (`BatchStopJobRun`).
 ///
 /// Recorded CONSTANT, and the whole message: the service states the pair it could not
 /// resolve a run for — the job name and the run id — in fixed words and echoes back
 /// neither of them, so the refusal a client matches on is the same whatever was
 /// asked. Shared by every job-run lookup, so one operation's miss cannot drift from
-/// another's.
+/// another's — and it is the refusal for EITHER half of the pair being unknown to the
+/// read, which resolves the run by the pair rather than the job first
+/// ([`crate::ops::get_job_run`]); only an operation that addresses the job DEFINITION
+/// reports the job itself as missing ([`JOB_NOT_FOUND`]).
 pub const JOB_RUN_NOT_FOUND: &str = "Job run not found for the given job name and runId.";
 
 /// A bookmark operation (`GetJobBookmark`, `ResetJobBookmark`) addressing a job that
@@ -743,11 +746,20 @@ pub fn page_size_below_minimum(requested: i32, minimum: i32) -> String {
 
 /// Any Data Catalog operation whose `DatabaseName`/`Name` names no database
 /// (`GetDatabase`, `DeleteDatabase`, `UpdateDatabase`, and the parent-database miss
-/// of every table operation: `GetTable`, `GetTables`, `CreateTable`, `UpdateTable`,
-/// `DeleteTable`, `BatchDeleteTable`). Built from the requested name alone — the
+/// of every table operation that names the database it could not resolve:
+/// `GetTables`, `CreateTable`, `UpdateTable`, `DeleteTable`, `BatchDeleteTable`). The
 /// catalog the emulator resolved is not part of the refusal.
+///
+/// RECORDED template: the one variable part is the database the request addressed, and
+/// it is rendered as the catalog KEYS it rather than as the request spelled it — the
+/// Hive-compatible fold every catalog name is stored and looked up under
+/// ([`super::fold_name`]), which the model states for the member ("The name of the
+/// database. For Hive compatibility, this is folded to lowercase when it is stored",
+/// `DatabaseInput$Name`). So a mixed-case
+/// request is refused in the canonical name, and a client matching the refusal against
+/// the name the catalog holds matches.
 pub fn database_not_found(name: &str) -> String {
-    format!("Database {name} not found.")
+    format!("Database {} not found.", super::fold_name(name))
 }
 
 /// `CreateDatabase` (and `UpdateDatabase`, whose rename collides the same way) for
@@ -862,12 +874,19 @@ pub const CONNECTION_ALREADY_EXISTS: &str = "Connection already exists.";
 /// read's refusal names neither the table nor the database.
 pub const TABLE_ENTITY_NOT_FOUND: &str = "Entity Not Found";
 
-/// `DeleteTable` (and `UpdateTable`, the other write that addresses one table) for a
-/// table the database does not hold. Recorded template, built from the request's
-/// `Name` and naming no database — a different refusal from `GetTable`'s, which is
-/// why the two are not one shared string.
+/// `DeleteTable` (and `UpdateTable`, the other write that addresses one table), the
+/// version listing (`GetTableVersions`) and every partition operation's parent-table
+/// miss, for a table the database does not hold. Recorded template naming no database —
+/// a different refusal from `GetTable`'s, which is why the two are not one shared
+/// string.
+///
+/// Its one variable part is the table the request addressed, rendered in the same
+/// Hive-compatible fold the catalog keys it under as [`database_not_found`] renders its
+/// database — the model states it of this member too ("The table name. For Hive
+/// compatibility, this is folded to lowercase when it is stored", `TableInput$Name`) —
+/// so the refusal names the table the catalog holds, not the casing the request sent.
 pub fn table_not_found(name: &str) -> String {
-    format!("Table {name} not found.")
+    format!("Table {} not found.", super::fold_name(name))
 }
 
 /// `CreateTable` for a table name the database already holds. NOT recorded either:
@@ -928,6 +947,20 @@ pub const TABLE_VERSION_IS_LATEST: &str = "VersionId cannot be equal to the late
 /// registry name alone, like [`database_not_found`].
 pub fn registry_not_found(name: &str) -> String {
     format!("Registry {name} not found.")
+}
+
+/// The schema READ (`GetSchema`) for a `SchemaId` whose registry this endpoint holds
+/// none of: the registry is resolved before the schema set, so the refusal reports the
+/// container that is missing rather than the schema inside it
+/// ([`ComAmazonawsGlueAwsglueState::schema_or_miss`]).
+///
+/// RECORDED template: the fixed text is "Registry is not found. RegistryName: " and the
+/// one variable part is the registry the `SchemaId` resolved to, taken from the request.
+/// It is a THIRD wording for a registry miss — a different sentence from
+/// [`registry_not_found`], which is what an operation addressing a registry by
+/// `RegistryId` answers — which is why the two are not one string.
+pub fn registry_not_found_for_schema(name: &str) -> String {
+    format!("Registry is not found. RegistryName: {name}")
 }
 
 /// An operation of the integration API family that addresses ONE record by the ARN of

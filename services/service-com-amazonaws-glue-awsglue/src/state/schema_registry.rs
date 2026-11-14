@@ -203,6 +203,19 @@ pub const REGISTRY_ID_REQUIRES_ONE: &str =
 /// `SchemaName` has to be provided."
 pub const SCHEMA_ID_REQUIRES_ONE: &str = "One of SchemaArn or SchemaName has to be provided.";
 
+/// The sentence the schema READ refuses a `SchemaId` that addresses no schema set
+/// COMPLETELY with ([`complete_schema_reference`]).
+///
+/// RECORDED constant, and the whole message: the read states the two ways a schema set is
+/// addressed — the registry and the schema together, or the schema's own ARN — and
+/// interpolates nothing from the request. It is what the read answers for a reference
+/// naming the schema alone, so the model's own prose for the member ("One of SchemaArn or
+/// SchemaName has to be provided", [`SCHEMA_ID_REQUIRES_ONE`]) is not the whole rule: a
+/// `SchemaName` carrying no `RegistryName` addresses no schema set, and is a bad parameter
+/// rather than a miss of the registry a create would have defaulted to.
+pub const SCHEMA_ID_REQUIRES_PAIR_OR_ARN: &str =
+    "At least one of (registryName and schemaName) or schemaArn has to be provided.";
+
 /// The sentence a refusal carries for a version READ that addresses no version at all.
 /// Stated by the model: "This field is required for fetching by schema ID. Either this or
 /// the `SchemaId` wrapper has to be provided" (`GetSchemaVersionInput$SchemaVersionId`) —
@@ -291,6 +304,30 @@ pub fn registry_reference(
              must name the same registry"
         )),
     }
+}
+
+/// The registry and schema names a `SchemaId` names for an operation that requires the
+/// reference to address a schema set COMPLETELY: the schema's own `SchemaArn`, or its
+/// `RegistryName` and `SchemaName` together.
+///
+/// This is the schema READ's rule ([`crate::ops::get_schema`]): the read resolves a
+/// reference rather than writing one, so there is no registry for it to default to, and a
+/// reference naming only half of the name pair is refused as a bad parameter
+/// ([`SCHEMA_ID_REQUIRES_PAIR_OR_ARN`]) instead of being resolved against
+/// [`DEFAULT_REGISTRY_NAME`]. A complete reference is then resolved exactly as
+/// [`schema_reference`] resolves one, so the two cannot disagree about what a `SchemaId`
+/// names.
+pub fn complete_schema_reference(
+    schema_id: &SchemaId,
+    region: &str,
+) -> Result<Reference<(String, String)>, String> {
+    let by_arn = non_empty(schema_id.schema_arn.as_deref()).is_some();
+    let by_pair = non_empty(schema_id.schema_name.as_deref()).is_some()
+        && non_empty(schema_id.registry_name.as_deref()).is_some();
+    if !by_arn && !by_pair {
+        return Err(SCHEMA_ID_REQUIRES_PAIR_OR_ARN.to_string());
+    }
+    schema_reference(schema_id, region)
 }
 
 /// The registry and schema names a `SchemaId` names, as served in `region`.

@@ -165,6 +165,8 @@ mod delete_partition;
 mod derived_resource_identities;
 #[path = "all/duplicate_create_refusals.rs"]
 mod duplicate_create_refusals;
+#[path = "all/entity_lookup_refusal_wording.rs"]
+mod entity_lookup_refusal_wording;
 #[path = "all/error_classification.rs"]
 mod error_classification;
 #[path = "all/error_messages.rs"]

@@ -16,7 +16,7 @@
 //! holds but nothing has written a database into yet lists none, which is an empty page
 //! and not a miss; a `CatalogId` of another account is refused before any database is
 //! looked up, exactly as every other catalog read refuses one
-//! ([`crate::state::foreign_catalog_refusal`]).
+//! ([`crate::state::catalog_refusal`]).
 //!
 //! Every input member IS acted on: `CatalogId` selects the catalog, `MaxResults` and
 //! `NextToken` page, `AttributesToGet` projects each returned database (and its
@@ -356,16 +356,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let region = crate::state::request_region(ctx.parts());
         // Whether the caller may read this catalog at all is decided BEFORE any database
         // is looked up: a `CatalogId` of another account is reachable only through that
-        // catalog's own resource policy (see `crate::state::foreign_catalog_refusal`).
-        if let Some(message) =
-            crate::state::foreign_catalog_refusal(&catalog_id, &region, Self::NAME)
-        {
-            return Err(GetDatabasesErrorModeled::AccessDeniedException(
-                AccessDeniedException {
-                    message: Some(message),
-                },
-            )
-            .into());
+        // catalog's own resource policy (see `crate::state::catalog_refusal`).
+        let catalog_refusal =
+            crate::state::catalog_refusal(&state.lock(), &catalog_id, &region, Self::NAME);
+        match catalog_refusal {
+            None => {}
+            Some(crate::state::CatalogRefusal::NotFound(message)) => {
+                return Err(GetDatabasesErrorModeled::EntityNotFoundException(
+                    EntityNotFoundException {
+                        message: Some(message),
+                        from_federation_source: None,
+                    },
+                )
+                .into())
+            }
+            Some(crate::state::CatalogRefusal::NotAuthorized(message)) => {
+                return Err(GetDatabasesErrorModeled::AccessDeniedException(
+                    AccessDeniedException {
+                        message: Some(message),
+                    },
+                )
+                .into())
+            }
         }
 
         // Absent `MaxResults`, page at the largest value the model accepts for it

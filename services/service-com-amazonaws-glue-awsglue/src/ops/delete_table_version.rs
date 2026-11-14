@@ -196,18 +196,32 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let catalog_id = crate::state::resolve_catalog_id(input.catalog_id.as_ref());
         // Whether the caller may address this catalog at all is decided BEFORE the entity
         // lookup: a `CatalogId` of another account is reachable only through that
-        // catalog's own resource policy (see `crate::state::foreign_catalog_refusal`).
-        if let Some(message) = crate::state::foreign_catalog_refusal(
+        // catalog's own resource policy (see `crate::state::catalog_refusal`).
+        let catalog_refusal = crate::state::catalog_refusal(
+            &state.lock(),
             &catalog_id,
             &crate::state::request_region(ctx.parts()),
             Self::NAME,
-        ) {
-            return Err(DeleteTableVersionErrorModeled::AccessDeniedException(
-                AccessDeniedException {
-                    message: Some(message),
-                },
-            )
-            .into());
+        );
+        match catalog_refusal {
+            None => {}
+            Some(crate::state::CatalogRefusal::NotFound(message)) => {
+                return Err(DeleteTableVersionErrorModeled::EntityNotFoundException(
+                    EntityNotFoundException {
+                        message: Some(message),
+                        from_federation_source: None,
+                    },
+                )
+                .into())
+            }
+            Some(crate::state::CatalogRefusal::NotAuthorized(message)) => {
+                return Err(DeleteTableVersionErrorModeled::AccessDeniedException(
+                    AccessDeniedException {
+                        message: Some(message),
+                    },
+                )
+                .into())
+            }
         }
         let folded_table = crate::state::fold_name(&input.table_name);
 
