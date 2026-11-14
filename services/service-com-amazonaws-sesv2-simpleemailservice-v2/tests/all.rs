@@ -149,6 +149,8 @@ mod message_insights;
 mod metric_data;
 #[path = "all/multi_region_endpoints.rs"]
 mod multi_region_endpoints;
+#[path = "all/outbound_message_id_form.rs"]
+mod outbound_message_id_form;
 #[path = "all/page_cursor_refusal_wording.rs"]
 mod page_cursor_refusal_wording;
 #[path = "all/recommendations.rs"]

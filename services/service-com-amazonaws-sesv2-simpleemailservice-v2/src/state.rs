@@ -1761,21 +1761,46 @@ impl ComAmazonawsSesv2SimpleemailserviceV2State {
         body.chars().take(MAX_STORED_BODY_CHARS).collect()
     }
 
-    /// Mint the next outbound message id.
+    /// Mint the next outbound message id, in the shape SES answers an accepted send
+    /// with: [`MESSAGE_ID_VERSION_PREFIX`] and a time field — sixteen hexadecimal
+    /// digits together — then a hyphen-separated 8-4-4-4-12 hexadecimal field, then
+    /// the trailing zero field.
     ///
-    /// `OutboundMessageId` carries no documented format, so the shape mirrors what
-    /// SES hands back (`0100` + a timestamp + a body + a trailing field) while the
-    /// only guarantee this makes is the documented one: the id is unique per
-    /// accepted message. Uniqueness is structural — the monotonic sequence number
-    /// is part of the id — so two sends in the same millisecond still differ.
+    /// `OutboundMessageId` carries no modelled constraint, so the FORM is the one the
+    /// service hands back — the same shape the classic SES surface over these same
+    /// accounts mints, since one message id identifies one accepted message whichever
+    /// surface accepted it — while the only guarantee this makes is the documented one:
+    /// the id is unique per accepted message. Uniqueness is STRUCTURAL rather than
+    /// probabilistic: the LAST field is the store's own monotonic sequence number, so
+    /// two ids this store minted always differ in it — two sends in the same
+    /// millisecond included — and the fields before it only keep the rest of the id
+    /// opaque.
     pub fn next_message_id(&mut self, now: SystemTime) -> String {
         self.message_sequence += 1;
-        let millis = now
+        let since_epoch = now
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        let sequence = self.message_sequence;
-        format!("0100{millis:012x}-{sequence:016x}-000000")
+            .unwrap_or_default();
+        let millis = since_epoch.as_millis();
+        let nanos = since_epoch.as_nanos();
+        let mut hex = String::with_capacity(32);
+        for salt in [0_u64, u64::from_be_bytes(*b"Outbound")] {
+            let mut hasher = DefaultHasher::new();
+            salt.hash(&mut hasher);
+            nanos.hash(&mut hasher);
+            self.message_sequence.hash(&mut hasher);
+            write!(hex, "{:016x}", hasher.finish()).expect("writing to a String cannot fail");
+        }
+        // The sequence number fills the last field, which is twelve hexadecimal digits
+        // wide: a store that minted more ids than that field can hold would have to
+        // mint 2^48 of them, far past the log this service keeps.
+        let sequence = self.message_sequence & 0xffff_ffff_ffff;
+        format!(
+            "{MESSAGE_ID_VERSION_PREFIX}{millis:012x}-{}-{}-{}-{}-{sequence:012x}-000000",
+            &hex[..8],
+            &hex[8..12],
+            &hex[12..16],
+            &hex[16..20],
+        )
     }
 
     /// Mint the id of a new multi-region endpoint.

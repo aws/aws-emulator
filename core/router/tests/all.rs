@@ -1924,12 +1924,6 @@ mod cloudformation_metric_stream_estate_is_drainable;
 // cluster and then read the alarm's state.
 #[path = "all/redshift_health_alarms_evaluate.rs"]
 mod redshift_health_alarms_evaluate;
-// are declared in the head region above: a module may be declared only once.)
-// stack-deployed metric-stream pipeline exports before and after an update rewrites its filter
-// spans CloudFormation, IAM, CloudWatch, Firehose and Amazon S3 at once, so no single service
-// crate's test target can deploy the pipeline and then read the objects it delivered.
-#[path = "all/cloudformation_metric_stream_filter_update.rs"]
-mod cloudformation_metric_stream_filter_update;
 // (`zz_probe` is declared ONCE, further up this tail: it was appended here as well while two
 // branches were landing at once, which declared it a second time and compiled neither.)
 // (`cloudwatch_alarm_ssm_ops_item_action` is declared in the head region above: a module may
@@ -2130,3 +2124,11 @@ mod dynamodb_write_capacity_metrics_drive_the_alarm_chain;
 // it a second time and compiled neither.)
 // a module may be declared only once, and it was appended here as well while two branches
 // were landing at once, which compiled it nowhere.)
+// Declared HERE, beside the sibling suite it shares its wiring helpers with, for the same
+#[path = "all/ses_delivery_event_advances_the_subscribed_queue.rs"]
+mod ses_delivery_event_advances_the_subscribed_queue;
+// (Two suites that were appended here as well while branches were landing at once — the
+// Cognito authorizer audience suite and the drainable metric-stream estate suite — are
+// declared ONCE in the regions above, which is where they stay: a module may be declared
+// only once, and declaring it twice compiles neither.)
+// (`zz_probe` is declared once, further up this tail.)

@@ -381,19 +381,40 @@ impl ComAmazonawsPinpointemailAmazonpinpointemailserviceState {
         }
     }
 
-    /// Mint the next `MessageId`: an opaque, never-repeated id.
+    /// Mint the next `MessageId`: an opaque, never-repeated id in the shape SES answers
+    /// an accepted send with — the version prefix and a time field, sixteen hexadecimal
+    /// digits together, then a hyphen-separated 8-4-4-4-12 hexadecimal field, then the
+    /// trailing zero field.
     ///
-    /// `OutboundMessageId` is an unconstrained string whose value AWS does not document,
-    /// so the only requirements are opacity and uniqueness. Uniqueness comes from the
-    /// monotone counter, which is advanced here; the timestamp prefix only makes the id
-    /// sort by send time the way a real one does.
+    /// `OutboundMessageId` carries no modelled constraint, so the FORM is the one the
+    /// service answers with (the same shape the two SES surfaces over these same accounts
+    /// mint, since one accepted message is identified in one form whichever API accepted
+    /// it) while the guarantee this makes is the documented one: the id is unique per
+    /// accepted message. Uniqueness is STRUCTURAL rather than probabilistic: the LAST
+    /// field is this store's own monotone counter, so two ids it minted always differ in
+    /// it — two sends in the same instant included — and the fields before it only keep
+    /// the rest of the id opaque.
     pub fn mint_message_id(&mut self, sent_at: SystemTime) -> String {
         self.minted_message_ids += 1;
-        let micros = sent_at
+        let since_epoch = sent_at
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_micros();
-        format!("0100{micros:012x}-{:012x}-000000", self.minted_message_ids)
+            .unwrap_or_default();
+        let millis = since_epoch.as_millis();
+        let mut digest = Sha256::new();
+        digest.update(since_epoch.as_nanos().to_be_bytes());
+        digest.update(self.minted_message_ids.to_be_bytes());
+        let hex = hex::encode(digest.finalize());
+        // The counter fills the last field, which is twelve hexadecimal digits wide: a
+        // store that minted more ids than that field can hold would have to mint 2^48 of
+        // them, far past the log this service keeps.
+        let minted = self.minted_message_ids & 0xffff_ffff_ffff;
+        format!(
+            "0100{millis:012x}-{}-{}-{}-{}-{minted:012x}-000000",
+            &hex[..8],
+            &hex[8..12],
+            &hex[12..16],
+            &hex[16..20],
+        )
     }
 }
 
