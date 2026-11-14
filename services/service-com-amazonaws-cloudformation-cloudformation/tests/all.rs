@@ -99,6 +99,8 @@ mod cross_stack_name_collision;
 mod custom_resource_providers;
 #[path = "all/custom_resource_response_identity.rs"]
 mod custom_resource_response_identity;
+#[path = "all/declared_notification_runs_its_function.rs"]
+mod declared_notification_runs_its_function;
 // An EMPTY, moved-out suite: its rows now live in `all/delete_stack_export_in_use.rs`.
 // Declared because the layout check refuses an undeclared file under `tests/all/`, and this
 // fixer's tool set can write a file but not remove one; the next change to touch this

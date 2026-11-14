@@ -811,16 +811,19 @@ def send(
 /// The file extension the source of an inline function carries, for the runtime family the
 /// declaration names.
 ///
-/// Source: the handler file each runtime's documented handler format names —
-/// `index.py` for Python, `index.mjs` for the Node.js runtimes, `index.rb` for Ruby. A
-/// runtime whose inline form the CloudFormation user guide does not publish (the compiled
-/// runtimes, which cannot be declared inline at all) gets no extension, so the archive
-/// carries the handler's own file name.
+/// Source: the file each runtime loads a handler module from by DEFAULT, which is the one an
+/// inline declaration's `Handler` (`index.handler`) resolves against — `index.py` for Python,
+/// `index.js` for the Node.js runtimes, `index.rb` for Ruby. For Node that is the plain `.js`
+/// source file, not the `.mjs` one: a Node runtime reads a `.mjs` entry as an ES module only,
+/// so an inline handler written the documented way — `exports.handler` with `require` — would
+/// not load at all, while a `.js` entry carries either form. A runtime whose inline form the
+/// CloudFormation user guide does not publish (the compiled runtimes, which cannot be declared
+/// inline at all) gets no extension, so the archive carries the handler's own file name.
 fn source_extension(runtime: &str) -> &'static str {
     if runtime.starts_with("python") {
         ".py"
     } else if runtime.starts_with("nodejs") {
-        ".mjs"
+        ".js"
     } else if runtime.starts_with("ruby") {
         ".rb"
     } else {
@@ -1025,7 +1028,8 @@ mod tests {
                 "app.py",
                 Some("cfnresponse.py"),
             ),
-            ("node", "index.handler", "nodejs20.x", "index.mjs", None),
+            ("node", "index.handler", "nodejs20.x", "index.js", None),
+            ("node under another file", "app.handler", "nodejs22.x", "app.js", None),
             ("ruby", "index.handler", "ruby3.3", "index.rb", None),
             (
                 "a runtime with no inline form",
