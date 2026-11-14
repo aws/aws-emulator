@@ -55,6 +55,25 @@ pub fn report_not_found() -> ResourceNotFoundException {
     ResourceNotFoundException { message: None }
 }
 
+/// The refusal for an UPDATE whose definition renames a report onto a name the account
+/// ALREADY holds — the same resource-state condition `PutReportDefinition` reports as
+/// `DuplicateReportNameException`.
+///
+/// `ModifyReportDefinition` declares no duplicate-name error: `ValidationException` is its
+/// only client-input error (`smithy_query(operation="ModifyReportDefinition")`), so the
+/// condition is reported under that code. It is built with NO `Message`, for the same
+/// reason as [`report_not_found`]: the modelled exception's only member is an OPTIONAL
+/// `Message`, the error shape's own documentation describes the error CLASS rather than
+/// being text this service puts on the wire, and nothing from the request — least of all a
+/// report name — is echoed back in it. Unlike [`report_to_update_not_found`], which has to
+/// identify the report the lookup did not find, this refusal reports a condition the
+/// request already states both sides of, so its code and HTTP status are the whole of it.
+/// One constructor, so the create and the update path cannot drift apart about the one
+/// condition they share.
+pub fn report_name_already_held() -> ValidationException {
+    ValidationException { message: None }
+}
+
 /// The type every report definition this service holds is of.
 ///
 /// The service's one resource is the Cost and Usage Report, and no member of the model

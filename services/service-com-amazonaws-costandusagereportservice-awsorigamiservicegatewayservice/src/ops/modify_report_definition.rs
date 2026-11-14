@@ -132,14 +132,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ///
     /// The supplied definition takes the place of the stored one wholesale — including
     /// its `ReportName`, so a definition carrying a different name renames the report,
-    /// keeping its position in creation order and its tags. A `ReportName` the account
-    /// does not hold is refused with `ValidationException` (this operation's only
-    /// modelled client-input error) naming the report the update could not find
-    /// ([`crate::state::report_to_update_not_found`]) rather than silently succeeding,
-    /// and so is a rename onto a name another report already holds and a definition whose
-    /// Parquet preference is not usable
-    /// ([`crate::state::parquet_preference_is_usable`]) — the replacement has to be a
-    /// definition the service could deliver.
+    /// keeping its position in creation order and its tags. Three conditions are refused
+    /// instead of applied, all under `ValidationException`, this operation's only modelled
+    /// client-input error:
+    ///
+    /// * a `ReportName` the account does not hold, with a message identifying the report
+    ///   the update could not find ([`crate::state::report_to_update_not_found`]) rather
+    ///   than silently succeeding;
+    /// * a rename onto a name another report already holds — the condition the create path
+    ///   refuses, answered the way this service answers a resource-state condition: the
+    ///   error code and HTTP status alone ([`crate::state::report_name_already_held`]);
+    /// * a definition whose Parquet preference is not usable
+    ///   ([`crate::state::parquet_preference_is_usable`]) — the replacement has to be a
+    ///   definition the service could deliver.
     async fn handle(
         &self,
         input: Self::Input,
@@ -164,17 +169,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         // A rename may not collide with another report: report names are the resource's
-        // identity, so two reports cannot share one.
-        let new_name = input.report_definition.report_name.clone();
-        let renames_onto_another = store.position(&new_name).is_some_and(|other| other != at);
+        // identity, so two reports cannot share one. This is the condition the create
+        // path refuses, so it is answered the same way — the error code and HTTP status
+        // alone, with neither the model's error-class prose nor the requested name on the
+        // wire (`crate::state::report_name_already_held`).
+        let new_name = &input.report_definition.report_name;
+        let renames_onto_another = store.position(new_name).is_some_and(|other| other != at);
         if renames_onto_another {
             return Err(ModifyReportDefinitionErrorModeled::ValidationException(
-                ValidationException {
-                    message: Some(format!(
-                        "A report with the name {new_name} already exists in the account. \
-                         Specify a different report name."
-                    )),
-                },
+                crate::state::report_name_already_held(),
             )
             .into());
         }
