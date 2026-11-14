@@ -7,9 +7,13 @@
 //!
 //! * a `KeyConditionExpression` operand is held to the `AttributeValue` datatypes the
 //!   operator or function it was written with compares — the three scalar key types for a
-//!   comparison, String or Binary for `begins_with` — BEFORE it is held to the type the
-//!   table declared for the key it is compared with, and the refusal names the operator
-//!   as the expression WROTE it;
+//!   comparison, String or Binary for `begins_with` — where the operand BINDS to the key
+//!   attribute its comparison names: after the addressed table has been resolved, before
+//!   the operand is held to the type that table declared for the key, and the refusal
+//!   names the operator as the expression WROTE it;
+//! * a defect the REQUEST alone settles — the expression's syntax, a substitution token it
+//!   uses but never defined — is refused before any table is resolved, so those are the
+//!   only key-condition refusals a query against an absent table can earn;
 //! * either side of a comparison may carry the operand: `:v >= sk` states about the
 //!   attribute exactly what `sk <= :v` does;
 //! * every defect is reported where the reading of the expression reaches it, so the
@@ -348,7 +352,10 @@ async fn the_defect_a_key_condition_states_first_is_the_one_answered() {
             "the bad operand is written first",
             "begins_with(sk, :n) AND pk = :undef",
             json!({":n": {"N": "1"}}),
-            incorrect_operand("begins_with", "N"),
+            // The undefined token is a defect of the REQUEST, read as the expression is
+            // parsed; an operand's type is judged later, where it binds to the key, so
+            // the undefined token is answered whichever of the two the text states first.
+            undefined.to_string(),
         ),
         (
             "a stray operator between the two operands",

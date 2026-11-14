@@ -162,8 +162,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
-        // The Region this request was signed for, which a connector's ARN — and so
-        // the refusal that names one — is built for.
+        // The Region this request was signed for, which the connector ARN this
+        // read resolves an id to — and so the refusal that names one — is built for.
         let region = crate::state::request_region(ctx.parts());
         // The same identifier rule every operation addressed by one applies
         // ([`crate::state::identifier`]), settled before the store is read.
@@ -225,7 +225,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let Some((connector, _)) = store.settled_mut(&input.identifier, now) else {
             return Err(
                 ListNetworkConnectorVersionsErrorModeled::ResourceNotFoundException(
-                    crate::state::connector_not_found(&region, &input.identifier),
+                    crate::state::connector_not_found_resolved(&region, &input.identifier),
                 )
                 .into(),
             );

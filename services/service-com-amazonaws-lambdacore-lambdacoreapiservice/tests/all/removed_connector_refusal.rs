@@ -4,14 +4,12 @@
 //!
 //! THE RULE: a `DeleteNetworkConnector` whose identifier names no connector of this
 //! account and Region is refused with the modelled `ResourceNotFoundException` — HTTP 404,
-//! "the specified network connector does not exist" — and the refusal names the RESOURCE
-//! the identifier determines: `Network connector not found: ` followed by the connector's
-//! ARN for an identifier that is an ARN or an `Id` (an ARN already carries the resource
-//! segment, and an `Id` IS that segment, `NetworkConnectorArn` being
-//! `…:network-connector:[a-zA-Z0-9-_]+`), and by the value as supplied for a NAME, which
-//! determines no ARN. Which form it is follows from the identifier and not from the
-//! operation, so every operation bound under `/{Identifier}` answers one identifier with
-//! one message. `DeleteNetworkConnector`'s documented idempotency ("calling delete on a
+//! "the specified network connector does not exist" — and the refusal names what the
+//! operation addressed: `Network connector not found: ` followed by the identifier as
+//! SUPPLIED, a delete being a write of the connector the caller addressed. An operation
+//! that REPORTS the connector resolves that identifier to the resource it determines
+//! instead (`crate::not_found_message` states the whole rule and both forms).
+//! `DeleteNetworkConnector`'s documented idempotency ("calling delete on a
 //! connector that is already deleting or has been deleted succeeds without error") covers a
 //! connector this account still HAS — the window in which the record is there in `DELETING`
 //! state — and ends the instant the record is gone, which is the same instant
@@ -127,8 +125,10 @@ async fn delete_and_wait_until_removed(router: &MultiServiceRouter, name: &str) 
     poll_get(router, name, "became absent", |answer| answer.status == 404).await;
 }
 
-/// Assert `answer` is the modelled 404 naming the resource `identifier` determines.
-fn assert_refused(case: &str, answer: &Answer, identifier: &str) {
+/// Assert `answer` is the modelled 404 naming what the operation addressed: the resource
+/// `identifier` determines when the operation REPORTS a connector, the identifier as
+/// supplied when it changes one.
+fn assert_refused(case: &str, answer: &Answer, identifier: &str, reports: bool) {
     assert_eq!(
         answer.status, 404,
         "case {case:?}: an identifier that names no connector is refused with HTTP 404, \
@@ -141,7 +141,7 @@ fn assert_refused(case: &str, answer: &Answer, identifier: &str) {
         "case {case:?}: expected the error code ResourceNotFoundException, got {code:?}"
     );
     let message = text(&answer.body, "/Message");
-    let expected = expected_message(identifier);
+    let expected = expected_message(reports, identifier);
     assert_eq!(
         message, expected,
         "case {case:?}: expected the message {expected:?}, got {message:?}"
@@ -208,13 +208,14 @@ async fn a_delete_after_the_removal_is_refused_naming_the_resource_the_identifie
                 &format!("{case}: the delete repeated (attempt {attempt})"),
                 &repeated,
                 &identifier,
+                false,
             );
         }
 
-        // And the same identifier through every other operation bound under it: one
-        // identifier, one message.
+        // And the same identifier through every other operation bound under it: each names
+        // what IT addressed.
         let reported = get(&router, &identifier).await;
-        assert_refused(&format!("{case}: through Get"), &reported, &identifier);
+        assert_refused(&format!("{case}: through Get"), &reported, &identifier, true);
         if !names_a_version(&identifier) {
             let updated = update(
                 &router,
@@ -222,12 +223,18 @@ async fn a_delete_after_the_removal_is_refused_naming_the_resource_the_identifie
                 json!({ "Configuration": minimal_configuration() }),
             )
             .await;
-            assert_refused(&format!("{case}: through Update"), &updated, &identifier);
+            assert_refused(
+                &format!("{case}: through Update"),
+                &updated,
+                &identifier,
+                false,
+            );
             let versions = list_versions(&router, &identifier, "").await;
             assert_refused(
                 &format!("{case}: through ListVersions"),
                 &versions,
                 &identifier,
+                true,
             );
         }
     }
@@ -244,7 +251,7 @@ async fn the_refusal_does_not_depend_on_what_was_deleted_since() {
     delete_and_wait_until_removed(&router, name).await;
 
     let before = delete(&router, &id).await;
-    assert_refused("the removed connector, by id", &before, &id);
+    assert_refused("the removed connector, by id", &before, &id, false);
 
     // Two more connectors created and deleted after it, so the answer for the first one is
     // asked for again with other deletions behind it.
@@ -254,12 +261,18 @@ async fn the_refusal_does_not_depend_on_what_was_deleted_since() {
     }
 
     let after = delete(&router, &id).await;
-    assert_refused("the same removed connector, two deletions later", &after, &id);
+    assert_refused(
+        "the same removed connector, two deletions later",
+        &after,
+        &id,
+        false,
+    );
     let by_name = delete(&router, name).await;
     assert_refused(
         "the same removed connector, addressed by the name it held",
         &by_name,
         name,
+        false,
     );
 }
 

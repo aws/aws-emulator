@@ -201,7 +201,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(GetNetworkConnectorErrorModeled::ServiceException(
                 crate::state::store_unavailable(),
@@ -209,8 +208,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
-        // The Region this request was signed for, which a connector's ARN — and so
-        // the refusal that names one — is built for.
+        // The Region this request was signed for, which the connector ARN this
+        // read resolves an id to — and so the refusal that names one — is built for.
         let region = crate::state::request_region(ctx.parts());
         // An `Identifier` spelled as an ARN has to be a network-connector ARN of
         // this account before it can name anything
@@ -241,7 +240,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // anybody called; nothing else here writes.
         let Some((connector, qualified)) = store.settled_mut(&input.identifier, now) else {
             return Err(GetNetworkConnectorErrorModeled::ResourceNotFoundException(
-                crate::state::connector_not_found(&region, &input.identifier),
+                crate::state::connector_not_found_resolved(&region, &input.identifier),
             )
             .into());
         };
@@ -251,7 +250,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // version", which must be a version the connector still holds.
         let Some(version) = connector.version(qualified) else {
             return Err(GetNetworkConnectorErrorModeled::ResourceNotFoundException(
-                crate::state::connector_not_found(&region, &input.identifier),
+                crate::state::connector_not_found_resolved(&region, &input.identifier),
             )
             .into());
         };

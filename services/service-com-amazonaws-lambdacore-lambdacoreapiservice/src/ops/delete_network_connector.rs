@@ -173,7 +173,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        ctx: &smithy_server_runtime::OperationContext<'_>,
+        _ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(DeleteNetworkConnectorErrorModeled::ServiceException(
@@ -183,9 +183,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let now = ::std::time::SystemTime::now();
-        // The Region this request was signed for, which a connector's ARN — and so
-        // the refusal that names one — is built for.
-        let region = crate::state::request_region(ctx.parts());
         // The same identifier rule every operation addressed by one applies
         // ([`crate::state::identifier`]), settled before the store is read.
         if let Some(unusable) = crate::state::identifier::unusable(&input.identifier) {
@@ -216,7 +213,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "the specified network connector does not exist".
         let Some((connector, qualified)) = store.settled_mut(&input.identifier, now) else {
             return Err(DeleteNetworkConnectorErrorModeled::ResourceNotFoundException(
-                crate::state::connector_not_found(&region, &input.identifier),
+                crate::state::connector_not_found(&input.identifier),
             )
             .into());
         };
@@ -257,7 +254,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     });
                 }
                 return Err(DeleteNetworkConnectorErrorModeled::ResourceNotFoundException(
-                    crate::state::connector_not_found(&region, &input.identifier),
+                    crate::state::connector_not_found(&input.identifier),
                 )
                 .into());
             };

@@ -7,20 +7,27 @@
 //! (`smithy_query(query="shape",shape="NetworkConnectorIdentifier")`) — refuses an
 //! identifier that names no connector, and an identifier that qualifies a version the
 //! connector does not hold, with `HTTP 404` / `ResourceNotFoundException` whose `Message`
-//! is BUILT FROM THE REQUEST: `Network connector not found: <the resource the identifier
-//! determines>`. Which form that resource takes follows from the IDENTIFIER and not from
-//! the operation: an ARN is already one, and an `Id` IS an ARN's resource part
-//! (`NetworkConnectorArn` is `…:network-connector:[a-zA-Z0-9-_]+`), so an id-addressed
-//! request is refused naming the ARN it determines, while a NAME determines no ARN and is
-//! stated exactly as supplied. A version-qualified identifier keeps its suffix. Nothing is
-//! read off a record — the record is gone, or never existed.
+//! is BUILT FROM THE REQUEST: `Network connector not found: ` followed by what the
+//! operation addressed. Which of the three interchangeable forms that is follows from what
+//! the operation DOES:
+//!
+//! * an operation that REPORTS a connector (`GetNetworkConnector`,
+//!   `ListNetworkConnectorVersions`) resolves the identifier to the resource it would have
+//!   reported, and names that: an ARN is one already, and an `Id` IS an ARN's resource part
+//!   (`NetworkConnectorArn` is `…:network-connector:[a-zA-Z0-9-_]+`), so a read addressed by
+//!   id is refused naming the ARN that id determines, while a NAME determines no ARN and is
+//!   stated exactly as supplied;
+//! * an operation that CHANGES one (`UpdateNetworkConnector`, `DeleteNetworkConnector`)
+//!   names the identifier the request supplied, byte for byte, resolved into no other form.
+//!
+//! A version-qualified identifier keeps its suffix either way: the version is part of what
+//! was not found. Nothing is read off a record — the record is gone, or never existed.
 //!
 //! The rows span what the rule generalises over:
 //!
 //! * which OPERATION refuses (`GetNetworkConnector`, `UpdateNetworkConnector`,
 //!   `DeleteNetworkConnector`, `ListNetworkConnectorVersions` — every operation this model
-//!   binds under `/{Identifier}`), since the message is the service's and not one
-//!   handler's, and every one of them states the same resource for the same identifier;
+//!   binds under `/{Identifier}`), which is what decides between the two forms above;
 //! * which identifier FORM was supplied (a name, a connector id, an unqualified ARN, a
 //!   version-qualified ARN), and the length of it (one character, and the 140 characters
 //!   `NetworkConnectorIdentifier`'s `@length` admits at most);
@@ -96,6 +103,12 @@ impl Addressed {
     fn reporting(identifier: &str) -> Vec<Self> {
         Self::reaching(identifier)
     }
+
+    /// Whether this operation REPORTS a connector, which is what makes its refusal name the
+    /// resource the identifier determines rather than the identifier as supplied.
+    fn reports(self) -> bool {
+        matches!(self, Self::Get | Self::ListVersions)
+    }
 }
 
 /// Whether `identifier` qualifies a version: its last colon-separated segment is a positive
@@ -129,18 +142,21 @@ async fn send(
     }
 }
 
-/// The message the rule requires for `identifier`, whichever operation refuses it: the ARN
-/// of the connector the identifier determines (an `Id` determines one, an ARN is one
-/// already and is stated as supplied), and the identifier as supplied for a name, which
-/// determines no ARN.
-pub(crate) fn expected_message(identifier: &str) -> String {
+/// The message the rule requires for `identifier` from an operation that REPORTS a
+/// connector (`reports`) or from one that CHANGES one: the resource the identifier
+/// determines for the first — the ARN for an id, an ARN as supplied, a name as supplied,
+/// each keeping any version suffix — and the identifier exactly as supplied for the second.
+pub(crate) fn expected_message(reports: bool, identifier: &str) -> String {
+    if !reports {
+        return format!("Network connector not found: {identifier}");
+    }
     let (addressed, version) = match identifier.rsplit_once(':') {
         Some((head, suffix)) if names_a_version(identifier) => (head, Some(suffix)),
         _ => (identifier, None),
     };
-    let names_the_resource =
+    let determines_the_resource =
         !identifier.contains(":network-connector:") && names_a_connector_id(addressed);
-    if !names_the_resource {
+    if !determines_the_resource {
         return format!("Network connector not found: {identifier}");
     }
     let arn = expected_arn(addressed);
@@ -150,8 +166,8 @@ pub(crate) fn expected_message(identifier: &str) -> String {
     }
 }
 
-/// Assert the answer is the modelled 404 naming the resource `identifier` determines.
-fn assert_not_found(case: &str, identifier: &str, answer: &Answer) {
+/// Assert the answer is the modelled 404 naming what `operation` addressed.
+fn assert_not_found(case: &str, operation: Addressed, identifier: &str, answer: &Answer) {
     assert_eq!(
         answer.status, 404,
         "case {case:?}: an identifier that names no connector is refused with HTTP 404, \
@@ -164,7 +180,7 @@ fn assert_not_found(case: &str, identifier: &str, answer: &Answer) {
         "case {case:?}: expected the error code {RESOURCE_NOT_FOUND}, got {code:?}"
     );
     let message = text(&answer.body, "/Message");
-    let expected = expected_message(identifier);
+    let expected = expected_message(operation.reports(), identifier);
     assert_eq!(
         message, expected,
         "case {case:?}: expected the message {expected:?}, got {message:?}"
@@ -213,6 +229,7 @@ async fn an_identifier_that_names_no_connector_is_refused_naming_it() {
             let answer = send(&router, operation, identifier).await;
             assert_not_found(
                 &format!("{case} through {operation:?}"),
+                operation,
                 identifier,
                 &answer,
             );
@@ -221,8 +238,8 @@ async fn an_identifier_that_names_no_connector_is_refused_naming_it() {
 }
 
 /// RULE, the case the recording was taken from: a connector that EXISTED and was deleted is
-/// refused naming the resource the identifier determines — never the id of the record that
-/// is gone when the caller did not name it.
+/// refused naming the identifier that was asked for — never another form of the connector
+/// whose record is gone, which the caller did not use.
 #[tokio::test]
 async fn a_deleted_connector_is_refused_naming_the_identifier_that_was_asked_for() {
     let router = emulator();
@@ -267,20 +284,108 @@ async fn a_deleted_connector_is_refused_naming_the_identifier_that_was_asked_for
             let answer = send(&router, operation, identifier).await;
             assert_not_found(
                 &format!("a deleted connector addressed by {case} through {operation:?}"),
+                operation,
                 identifier,
                 &answer,
             );
             let message = text(&answer.body, "/Message");
             assert!(
-                // A connector's ARN carries its Id in the resource segment, and the
-                // reporting operation names that ARN for an id, so an identifier that
-                // names the id itself is the only one whose refusal may carry it.
-                identifier.contains(&id) || !message.contains(&id),
+                // A connector's ARN carries its Id in its resource segment, so the id may
+                // appear only where the identifier the caller supplied carries it, or where
+                // the operation resolves an id to the ARN that carries it.
+                operation.reports() || identifier.contains(&id) || !message.contains(&id),
                 "case {case:?} through {operation:?}: the refusal must not name the \
                  connector id {id:?} the caller never used, got {message:?}"
             );
         }
     }
+}
+
+/// RULE: which form the refusal names follows from what the OPERATION does, not from the
+/// form the caller wrote: a write echoes the identifier it was given, while a read names the
+/// resource that identifier determines — so the two answers differ for exactly the one form
+/// that determines another (an `Id`, which is a connector ARN's resource part).
+///
+/// The rows are the forms `NetworkConnectorIdentifier` admits, of a connector this account
+/// held and deleted (so every form named one resource) and of one it never held, through
+/// every operation bound under `/{Identifier}`.
+#[tokio::test]
+async fn which_form_the_refusal_names_follows_from_the_operation() {
+    let router = emulator();
+    let name = "echoed-connector";
+    let created = create(&router, minimal_create(name)).await;
+    assert_eq!(
+        created.status, 202,
+        "expected HTTP 202 from CreateNetworkConnector, got {} with {:?}",
+        created.status, created.body
+    );
+    let id = text(&created.body, "/Id");
+    let arn = text(&created.body, "/Arn");
+    wait_for_the_clock();
+    let removed = delete(&router, name).await;
+    assert!(
+        removed.status < 300,
+        "expected DeleteNetworkConnector to accept the deletion, got {} with {:?}",
+        removed.status, removed.body
+    );
+    wait_for_the_clock();
+
+    // Each row: what the request supplied. The deleted connector's own three forms (plus a
+    // version-qualified one), and the same forms of a connector that never existed.
+    let supplied = [
+        ("the deleted connector's name", name.to_string()),
+        ("the deleted connector's id", id.clone()),
+        ("the deleted connector's ARN", arn.clone()),
+        ("a version of the deleted connector", format!("{arn}:1")),
+        ("a name that never existed", "never-held".to_string()),
+        ("an id that never existed", "nc-00000000000000ff".to_string()),
+        ("an ARN that never existed", expected_arn("nc-00000000000000ff")),
+    ];
+    for (case, identifier) in &supplied {
+        for operation in Addressed::reaching(identifier) {
+            let answer = send(&router, operation, identifier).await;
+            let message = text(&answer.body, "/Message");
+            let expected = expected_message(operation.reports(), identifier);
+            assert_eq!(
+                message, expected,
+                "case {case:?} through {operation:?}: expected the message {expected:?}, got \
+                 {message:?}"
+            );
+            // The write's answer is the identifier itself, whatever form that is.
+            if !operation.reports() {
+                assert_eq!(
+                    message,
+                    format!("Network connector not found: {identifier}"),
+                    "case {case:?} through {operation:?}: a write states the identifier as \
+                     supplied, got {message:?}"
+                );
+            }
+        }
+    }
+
+    // The one form the two answers differ on: an id-addressed read names the ARN that id
+    // determines, while an id-addressed write names the id.
+    let read = text(&get(&router, &id).await.body, "/Message");
+    let written = text(
+        &update(
+            &router,
+            &id,
+            json!({ "Configuration": minimal_configuration() }),
+        )
+        .await
+        .body,
+        "/Message",
+    );
+    assert_eq!(
+        read,
+        format!("Network connector not found: {arn}"),
+        "case an id-addressed read: expected the ARN the id determines, got {read:?}"
+    );
+    assert_eq!(
+        written,
+        format!("Network connector not found: {id}"),
+        "case an id-addressed write: expected the id as supplied, got {written:?}"
+    );
 }
 
 /// RULE: a version-qualified identifier naming a version a LIVE connector does not hold is
@@ -307,7 +412,7 @@ async fn a_version_the_connector_does_not_hold_is_refused_naming_the_qualified_i
     ];
     for (case, identifier) in &absent_versions {
         let answer = get(&router, identifier).await;
-        assert_not_found(case, identifier, &answer);
+        assert_not_found(case, Addressed::Get, identifier, &answer);
     }
 
     // And the version it DOES hold is still served, so the refusal is about the version

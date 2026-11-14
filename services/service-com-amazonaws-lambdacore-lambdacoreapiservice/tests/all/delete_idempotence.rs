@@ -118,11 +118,12 @@ fn assert_accepted(case: &str, answer: &Answer, arn: &str, name: &str, id: &str)
 
 /// Assert `answer` is the modelled 404 for `identifier`.
 ///
-/// The refusal names the resource the identifier DETERMINES — the connector's ARN for an
-/// id or an ARN, the value as supplied for a name, which determines no ARN
-/// (`crate::not_found_message` states that rule over every identifier form and every
-/// operation addressed by one).
-fn assert_not_found(case: &str, answer: &Answer, identifier: &str) {
+/// What the refusal names follows from what the operation DOES: an operation that reports a
+/// connector (`reports`) names the resource the identifier determines — the connector's ARN
+/// for an id, the value as supplied for an ARN or a name — while one that changes a
+/// connector names the identifier as supplied (`crate::not_found_message` states that rule
+/// over every identifier form and every operation addressed by one).
+fn assert_not_found(case: &str, answer: &Answer, identifier: &str, reports: bool) {
     assert_eq!(
         answer.status, 404,
         "case {case:?}: expected HTTP 404, got {} with {:?}",
@@ -134,7 +135,7 @@ fn assert_not_found(case: &str, answer: &Answer, identifier: &str) {
         "case {case:?}: expected the error code ResourceNotFoundException, got {code:?}"
     );
     let message = text(&answer.body, "/Message");
-    let expected = expected_message(identifier);
+    let expected = expected_message(reports, identifier);
     assert_eq!(
         message, expected,
         "case {case:?}: expected the message {expected:?}, got {message:?}"
@@ -176,7 +177,12 @@ async fn a_repeated_delete_is_accepted_until_the_deletion_completes() {
             // record is forgotten and `GetNetworkConnector` refuses the identifier.
             wait_for_the_clock();
             let gone = get(&router, &name).await;
-            assert_not_found(&format!("{case}: the connector after deletion"), &gone, &name);
+            assert_not_found(
+                &format!("{case}: the connector after deletion"),
+                &gone,
+                &name,
+                true,
+            );
         }
 
         // Every form the caller could repeat the delete with resolves to the same
@@ -189,7 +195,7 @@ async fn a_repeated_delete_is_accepted_until_the_deletion_completes() {
         };
         let repeated = delete(&router, &identifier).await;
         if *completed {
-            assert_not_found(&format!("{case}: the repeat"), &repeated, &identifier);
+            assert_not_found(&format!("{case}: the repeat"), &repeated, &identifier, false);
         } else {
             assert_accepted(&format!("{case}: the repeat"), &repeated, &arn, &name, &id);
             if identifier.ends_with(":1") {
@@ -207,7 +213,12 @@ async fn a_repeated_delete_is_accepted_until_the_deletion_completes() {
         // still there, not about how many times it was asked for.
         let third = delete(&router, &identifier).await;
         if *completed {
-            assert_not_found(&format!("{case}: the third delete"), &third, &identifier);
+            assert_not_found(
+                &format!("{case}: the third delete"),
+                &third,
+                &identifier,
+                false,
+            );
         } else {
             assert_accepted(&format!("{case}: the third delete"), &third, &arn, &name, &id);
         }
@@ -219,6 +230,7 @@ async fn a_repeated_delete_is_accepted_until_the_deletion_completes() {
                 &format!("{case}: a repeated delete must not bring the connector back"),
                 &after,
                 &name,
+                true,
             );
             let listed = list(&router, "").await;
             assert_eq!(
@@ -275,7 +287,7 @@ async fn an_identifier_that_names_no_connector_is_refused() {
     ];
     for (case, identifier) in &absent {
         let answer = delete(&router, identifier).await;
-        assert_not_found(case, &answer, identifier);
+        assert_not_found(case, &answer, identifier, false);
     }
 }
 
@@ -349,6 +361,7 @@ async fn a_repeated_delete_of_a_historical_version_is_accepted() {
             &format!("a version never minted ({version})"),
             &answer,
             &identifier,
+            false,
         );
     }
 
@@ -401,23 +414,23 @@ async fn a_freed_name_rebinds_while_the_old_id_names_nothing() {
         at(&by_name.body, "/Id")
     );
 
-    // The dead id is refused by every operation addressed by one, each naming the resource
-    // that id determines (its ARN), which is the rule `crate::not_found_message` states
-    // over every form.
+    // The dead id is refused by every operation addressed by one, each naming what IT
+    // addressed — the ARN that id determines from the read, the id as supplied from the
+    // writes, which is the rule `crate::not_found_message` states over every form.
     let dead = get(&router, &first_id).await;
-    assert_not_found("the dead id through Get", &dead, &first_id);
+    assert_not_found("the dead id through Get", &dead, &first_id, true);
     let dead_update = update(
         &router,
         &first_id,
         json!({ "Configuration": minimal_configuration() }),
     )
     .await;
-    assert_not_found("the dead id through Update", &dead_update, &first_id);
+    assert_not_found("the dead id through Update", &dead_update, &first_id, false);
 
     // … and the delete too: the connector that id named is gone, so the identifier names
     // no connector of this account — not the live one that took its name either.
     let repeated = delete(&router, &first_id).await;
-    assert_not_found("the dead id through Delete", &repeated, &first_id);
+    assert_not_found("the dead id through Delete", &repeated, &first_id, false);
 
     // Deleting by NAME now addresses the live connector, which is the one that goes — and
     // it answers under its OWN ARN, whose resource segment is its own Id.
@@ -514,5 +527,6 @@ async fn the_first_read_after_a_transition_falls_due_reports_the_reached_state()
         "the first read after the deletion is due",
         &after_delete,
         "unread",
+        true,
     );
 }

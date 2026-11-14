@@ -13,8 +13,12 @@
 //! first ([`KeyCondition::resolve`]). The expression grammar is parsed here — it is
 //! DynamoDB's own, so there is no third-party parser for it — by
 //! [`parse_key_condition_expression`], which takes a comparison with the operand on
-//! either side of the operator and holds every operand to the types the operator it
-//! was written with compares ([`check_operand_type`]).
+//! either side of the operator. An expression defect the REQUEST alone settles (its
+//! syntax, a substitution token it uses but does not define) is refused there, before
+//! any table is looked up; an operand is held to the types the operator it was written
+//! with compares ([`check_operand_type`]) where it BINDS to the key attribute its
+//! comparison names, so a query addressing a table this account does not hold is
+//! refused as the absent table it names whatever its operands are.
 //!
 //! `FilterExpression` is applied AFTER the key conditions have selected the page —
 //! "a filter expression is applied after a Query finishes, but before the results are
@@ -959,6 +963,12 @@ struct Comparison {
     /// operator the expression wrote where it wrote the operand first
     /// ([`Operator::mirrored`]).
     operator: Operator,
+    /// The operator or function the EXPRESSION wrote, which is what a refusal about one of
+    /// the operands below names ([`incorrect_operand_type`]), or `None` for a comparison
+    /// the legacy `KeyConditions` map stated — that member states its comparison as an
+    /// enum value rather than as expression text, and its entries are held to their own
+    /// rules ([`crate::state::check_legacy_comparison`]).
+    written: Option<Operator>,
     operands: Vec<AttributeValue>,
 }
 
@@ -1009,17 +1019,30 @@ impl KeyCondition {
     /// PARTITION key attribute, and at most one comparison on each RANGE key attribute,
     /// taken in the order the schema declares them.
     ///
-    /// The operands are held to the type the TABLE declared for the attribute they are
-    /// compared with ([`crate::state::Table::key_condition_value`]), whichever schema
-    /// names it, so a value of another type than the key's declared one is refused before
-    /// anything is read — after the operand has been held to the types its operator
-    /// compares at all, which is a fact of the EXPRESSION rather than of the schema
-    /// ([`check_operand_type`]).
+    /// The operands are held to the datatypes the operator or function they were WRITTEN
+    /// with compares ([`check_operand_type`]) and then to the type the TABLE declared for
+    /// the attribute they are compared with
+    /// ([`crate::state::Table::key_condition_value`]), whichever schema names it — both
+    /// where the operand BINDS to that key attribute, so both only once the table the
+    /// condition is read against has been resolved.
     fn resolve(
         table: &crate::state::Table,
         schema: &[KeySchemaElement],
         comparisons: Vec<Comparison>,
     ) -> Result<Self, crate::state::RequestError> {
+        // "The following types are allowed for the attributes of a key: String, Number,
+        // Binary" — so an operand of any other `AttributeValue` type is no operand for a
+        // comparison on a key at all, and `begins_with` takes only the two types that have
+        // a prefix ([`Operator::compares`]). Read in the order the expression wrote the
+        // operands, and before each is held to the type the schema declares for its key.
+        for comparison in &comparisons {
+            let Some(written) = comparison.written else {
+                continue;
+            };
+            for operand in &comparison.operands {
+                check_operand_type(written, operand)?;
+            }
+        }
         // A key condition binds its comparisons to the key attributes of the schema it
         // reads — "You must provide the name of the partition key attribute and a single
         // value for that attribute ... Optionally, you can provide a sort key attribute"
@@ -1366,11 +1389,10 @@ fn incorrect_operand_type(written: Operator, datatype: &str) -> crate::state::Re
 /// Hold one operand of a key condition to the types its operator compares
 /// ([`Operator::compares`]).
 ///
-/// This is a fact of the EXPRESSION rather than of the table: a value no comparison can
-/// order is no operand for one whatever the key it is compared with was declared as, so
-/// it is refused before the operand is held to that declared type
-/// ([`crate::state::Table::key_condition_value`]) — and, being read where the operand
-/// sits, before any defect the expression states after it.
+/// Read where the operand BINDS to the key attribute its comparison names
+/// ([`KeyCondition::resolve`]) — so after the table the condition is read against has
+/// been resolved, and before the operand is held to the type that table declared for that
+/// key ([`crate::state::Table::key_condition_value`]).
 fn check_operand_type(
     written: Operator,
     operand: &AttributeValue,
@@ -1454,6 +1476,9 @@ fn legacy_comparison(
     Ok(Comparison {
         attribute: attribute.to_string(),
         operator,
+        // The legacy member states its comparison as a `ComparisonOperator` value, not as
+        // expression text, so no refusal here names an operator "as written".
+        written: None,
         operands,
     })
 }
@@ -1717,10 +1742,11 @@ fn invalid_key_condition_operator() -> crate::state::RequestError {
 /// `ExpressionAttributeNames` and `:placeholder` values through
 /// `ExpressionAttributeValues`.
 ///
-/// Every defect is reported where the parse READS it, so an expression carrying two of
-/// them earns the one its text states first — the operand of a type the operator does
-/// not compare ([`check_operand_type`]) and the placeholder the request never defined
-/// are each refused at the token they sit at.
+/// Every defect the PARSE reads is reported where it sits, so an expression carrying two
+/// of them earns the one its text states first: a syntax error, and a substitution token
+/// the request uses but never defined. What the parse does NOT judge is what an operand
+/// may be — that is a fact of the key the comparison binds to, read against the table the
+/// query is pointed at ([`KeyCondition::resolve`]).
 fn parse_key_condition_expression(
     expression: &str,
     names: Option<&std::collections::HashMap<String, String>>,
@@ -1862,11 +1888,12 @@ impl Parser<'_> {
                 self.expect(&Token::Open)?;
                 let attribute = self.attribute()?;
                 self.expect(&Token::Comma)?;
-                let prefix = self.operand(Operator::BeginsWith)?;
+                let prefix = self.value()?;
                 self.expect(&Token::Close)?;
                 Ok(Comparison {
                     attribute,
                     operator: Operator::BeginsWith,
+                    written: Some(Operator::BeginsWith),
                     operands: vec![prefix],
                 })
             }
@@ -1877,11 +1904,11 @@ impl Parser<'_> {
                 };
                 self.at += 1;
                 let operand = self.placeholder_value(&placeholder)?;
-                check_operand_type(written, &operand)?;
                 let attribute = self.attribute()?;
                 Ok(Comparison {
                     attribute,
                     operator: written.mirrored(),
+                    written: Some(written),
                     operands: vec![operand],
                 })
             }
@@ -1891,21 +1918,23 @@ impl Parser<'_> {
                 match self.peek().cloned() {
                     Some(Token::Compare(operator)) => {
                         self.at += 1;
-                        let operand = self.operand(operator)?;
+                        let operand = self.value()?;
                         Ok(Comparison {
                             attribute,
                             operator,
+                            written: Some(operator),
                             operands: vec![operand],
                         })
                     }
                     Some(Token::Between) => {
                         self.at += 1;
-                        let low = self.operand(Operator::Between)?;
+                        let low = self.value()?;
                         self.expect(&Token::And)?;
-                        let high = self.operand(Operator::Between)?;
+                        let high = self.value()?;
                         Ok(Comparison {
                             attribute,
                             operator: Operator::Between,
+                            written: Some(Operator::Between),
                             operands: vec![low, high],
                         })
                     }
@@ -1927,18 +1956,9 @@ impl Parser<'_> {
         }
     }
 
-    /// One operand of a comparison: a `:placeholder` token, resolved and then held to the
-    /// types `written` compares ([`check_operand_type`]).
-    fn operand(
-        &mut self,
-        written: Operator,
-    ) -> Result<AttributeValue, crate::state::RequestError> {
-        let value = self.value()?;
-        check_operand_type(written, &value)?;
-        Ok(value)
-    }
-
-    /// A `:placeholder` token, resolved through `ExpressionAttributeValues`.
+    /// A `:placeholder` token, resolved through `ExpressionAttributeValues`. What TYPE the
+    /// operand may have is not read here: it is a fact of the key the comparison binds to
+    /// ([`KeyCondition::resolve`]).
     fn value(&mut self) -> Result<AttributeValue, crate::state::RequestError> {
         match self.peek().cloned() {
             Some(Token::Value(placeholder)) => {
