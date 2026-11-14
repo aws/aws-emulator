@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateDatasetExportJob
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateDatasetExportJob`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateDatasetExportJob::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Exports a dataset's records to the Amazon S3 folder the request names, and records
+//! the job the export ran as. The request's `ingestionMode` selects WHICH records: the
+//! rows a dataset import job read into the dataset (`BULK`), the records the Amazon
+//! Personalize Events data plane put into it (`PUT`, the default), or both (`ALL`) — the
+//! rule [`crate::state::export`] states once.
+//!
+//! A dataset holding none of the requested kind is refused with the modelled
+//! `InvalidInputException` (400) and [`crate::state::export::no_data_found_message`]:
+//! there is nothing to export, so no job is recorded. An export whose work could not be
+//! carried out — a destination this emulator could not write — is recorded in the
+//! modelled `CREATE FAILED` status carrying the reason, never as a success.
 //!
 //! ## Shape of an operation
 //!
@@ -99,6 +102,16 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+use std::time::SystemTime;
+
+use crate::state::export::{
+    dataset_export_job_arn, export_rows, invalid_destination_message, no_data_found_message,
+    render_csv, DatasetExportJobRecord, DEFAULT_INGESTION_MODE, INGESTION_MODES,
+    MAX_DATASET_EXPORT_JOBS,
+};
+use crate::state::pipeline::{already_exists_message, due_after, limit_reached_message};
+use crate::state::{resource_not_found_message, MissingResource};
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -172,18 +185,179 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateDatasetExportJob` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateDatasetExportJobErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateDatasetExportJob"))
+        // See `create_schema.rs`: this operation models no server-side error, so a
+        // stateless mount is reported through the scaffold channel.
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(crate::scaffolded::Scaffolded::not_implemented(
+                "CreateDatasetExportJob",
+            ));
+        };
+        let region = crate::state::request_region(ctx.parts());
+        let now = SystemTime::now();
+
+        // 1. What the REQUEST alone settles. "The default value is PUT."
+        let ingestion_mode = input
+            .ingestion_mode
+            .clone()
+            .unwrap_or_else(|| DEFAULT_INGESTION_MODE.to_string());
+        if !INGESTION_MODES.contains(&ingestion_mode.as_str()) {
+            return Err(invalid_input(format!(
+                "The ingestion mode must be one of [{}].",
+                INGESTION_MODES.join(", ")
+            )));
+        }
+        // The destination has to name storage this emulator can write to at all;
+        // `path`'s modelled pattern admits `http` and `https` too.
+        let destination_path = input.job_output.s3_data_destination.path.clone();
+        let Some(location) = crate::state::import::parse_data_location(&destination_path) else {
+            return Err(invalid_input(invalid_destination_message(&destination_path)));
+        };
+        let key = crate::state::export::export_object_key(&location, &input.job_name);
+
+        // 2. Everything the submission is judged against, and the file to write, read
+        //    under ONE pair of locks — this service's store first and the ingestion
+        //    registry second, which is this crate's lock order. The file is rendered from
+        //    the rows under the same lock that read them, so what is written is one
+        //    consistent view of the dataset, its columns named as the dataset's own
+        //    schema spells them.
+        let (arn, dataset_active_at, prepared) = {
+            let store = state.lock();
+            let Some(dataset) = store.datasets.get(&input.dataset_arn) else {
+                return Err(not_found(&input.dataset_arn));
+            };
+            let arn = dataset_export_job_arn(&region, &input.job_name);
+            if let Some(taken) = taken(&store, &arn, &input.job_name) {
+                return Err(taken);
+            }
+            let registry = crate::state::ingestion_registry(&*self.engine);
+            let ingested = registry.as_ref().map(|registry| registry.lock());
+            let prepared = match export_rows(&store, ingested.as_deref(), dataset, &ingestion_mode)
+            {
+                Ok(rows) if rows.is_empty() => Prepared::NoData,
+                Ok(rows) => {
+                    let schema_fields = crate::state::export::schema_fields(&store, dataset);
+                    match render_csv(&schema_fields, &rows) {
+                        Ok(body) => Prepared::Ready(body),
+                        Err(reason) => Prepared::Failed(reason),
+                    }
+                }
+                Err(reason) => Prepared::Failed(reason),
+            };
+            (arn, dataset.active_at, prepared)
+        };
+
+        // 3. The write itself, awaited with NO store lock held.
+        let failure_reason = match prepared {
+            // A dataset holding none of the data the requested mode names has nothing to
+            // export: Amazon Personalize answers that as an input fault, and no job runs.
+            Prepared::NoData => {
+                return Err(invalid_input(no_data_found_message(&ingestion_mode)))
+            }
+            // A dataset this emulator cannot export in one job, or records it cannot
+            // render: the job is recorded in `CREATE FAILED` carrying the reason, as a
+            // failed import is, never as a success nothing wrote.
+            Prepared::Failed(reason) => Some(reason),
+            Prepared::Ready(body) => {
+                crate::state::export::write_export(ctx, &region, &location, &key, body)
+                    .await
+                    .err()
+            }
+        };
+
+        // Everything the submission was judged against is re-checked under the lock that
+        // inserts the record: the write was awaited without the lock, so the dataset may
+        // have been deleted and the name or the ceiling may have been taken by another
+        // submission in between. Two concurrent submissions of one name therefore cannot
+        // both land, with the later silently overwriting the earlier.
+        let mut store = state.lock();
+        if let Some(taken) = taken(&store, &arn, &input.job_name) {
+            return Err(taken);
+        }
+        if !store.datasets.contains_key(&input.dataset_arn) {
+            return Err(not_found(&input.dataset_arn));
+        }
+        store.dataset_export_jobs.insert(
+            arn.clone(),
+            DatasetExportJobRecord {
+                job_name: input.job_name,
+                dataset_export_job_arn: arn.clone(),
+                dataset_arn: input.dataset_arn,
+                ingestion_mode,
+                role_arn: input.role_arn,
+                destination_path,
+                kms_key_arn: input.job_output.s3_data_destination.kms_key_arn,
+                creation_date_time: now,
+                last_updated_date_time: now,
+                // An export of a dataset whose own create is still pending completes
+                // after that create does, so the job is never ACTIVE before the dataset
+                // it exported.
+                active_at: due_after(now, dataset_active_at),
+                failure_reason,
+                tags: input.tags.unwrap_or_default(),
+            },
+        );
+
+        Ok(CreateDatasetExportJobOutput {
+            dataset_export_job_arn: Some(arn),
+        })
     }
+}
+
+/// What one submission's export work came to, decided while the stores were locked and
+/// carried out after they were released.
+enum Prepared {
+    /// The dataset holds no record of the kind the request asked for.
+    NoData,
+    /// The file to write.
+    Ready(String),
+    /// Why the export could not be carried out, for the job's `CREATE FAILED` state.
+    Failed(String),
+}
+
+/// The refusal for a job name, or a store, that cannot take this submission: the ARN is
+/// minted from the name, so a name already in use collides on it.
+fn taken(
+    store: &crate::state::ComAmazonawsPersonalizeAmazonpersonalizeState,
+    arn: &str,
+    job_name: &str,
+) -> Option<CreateDatasetExportJobError> {
+    if store.dataset_export_jobs.contains_key(arn) {
+        return Some(
+            CreateDatasetExportJobErrorModeled::ResourceAlreadyExistsException(
+                ResourceAlreadyExistsException {
+                    message: Some(already_exists_message("dataset export job", job_name)),
+                },
+            )
+            .into(),
+        );
+    }
+    if store.dataset_export_jobs.len() >= MAX_DATASET_EXPORT_JOBS {
+        return Some(
+            CreateDatasetExportJobErrorModeled::LimitExceededException(LimitExceededException {
+                message: Some(limit_reached_message(
+                    "dataset export jobs",
+                    MAX_DATASET_EXPORT_JOBS,
+                )),
+            })
+            .into(),
+        );
+    }
+    None
+}
+
+/// This operation's modelled `InvalidInputException`, carrying `message`.
+fn invalid_input(message: impl Into<String>) -> CreateDatasetExportJobError {
+    CreateDatasetExportJobErrorModeled::InvalidInputException(InvalidInputException {
+        message: Some(message.into()),
+    })
+    .into()
+}
+
+/// This operation's modelled `ResourceNotFoundException` for a `datasetArn` this service
+/// holds no dataset for, worded the way every lookup of a dataset words the class.
+fn not_found(arn: &str) -> CreateDatasetExportJobError {
+    CreateDatasetExportJobErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
+        message: Some(resource_not_found_message(MissingResource::Dataset, arn)),
+    })
+    .into()
 }

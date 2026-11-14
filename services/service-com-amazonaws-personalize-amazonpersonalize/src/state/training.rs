@@ -38,6 +38,7 @@ use ::service_com_amazonaws_personalizeevents_amazonpersonalizeevents::state as 
 use ::service_com_amazonaws_personalizeruntime_amazonpersonalizeruntime::state as runtime;
 
 use crate::state::import::{column, Row, ACTION_ID_COLUMN, ITEM_ID_COLUMN, USER_ID_COLUMN};
+use crate::state::ingested::properties_of;
 use crate::state::{is_dataset_type, ComAmazonawsPersonalizeAmazonpersonalizeState};
 
 /// The most catalog entries one solution version retains.
@@ -232,27 +233,6 @@ fn describe(entry: &mut Entry, row: &Row, id_column: &str) {
         }
         entry.attributes.insert(name.clone(), value.clone());
     }
-}
-
-/// The string-valued members of a streamed metadata record's `properties` object.
-///
-/// A property whose value is not a string is rendered as the JSON it was ingested as, so
-/// a filter expression and a `metadataColumns` request read the value that was actually
-/// put rather than nothing at all.
-fn properties_of(record: &ingestion::Record) -> Vec<(String, String)> {
-    let Some(::serde_json::Value::Object(properties)) = record.properties.as_ref() else {
-        return Vec::new();
-    };
-    properties
-        .iter()
-        .map(|(name, value)| {
-            let rendered = match value {
-                ::serde_json::Value::String(text) => text.clone(),
-                other => other.to_string(),
-            };
-            (name.clone(), rendered)
-        })
-        .collect()
 }
 
 /// The entries of one catalog, most popular first and bounded by

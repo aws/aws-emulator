@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DescribeDatasetExportJob
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DescribeDatasetExportJob`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DescribeDatasetExportJob::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports the dataset export job an ARN names, with the status the clock and the
+//! export's own outcome give it (`crate::state::terminal_status`): the documented
+//! progression "CREATE PENDING > CREATE IN_PROGRESS > ACTIVE -or- CREATE FAILED", the
+//! last carrying the `failureReason` the export recorded. A pure read — nothing is
+//! written, so two callers reading at one instant agree.
+//!
+//! An ARN this service holds no export job for is the modelled
+//! `ResourceNotFoundException` (404).
 //!
 //! ## Shape of an operation
 //!
@@ -138,20 +138,35 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        ctx: &smithy_server_runtime::OperationContext<'_>,
+        _ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DescribeDatasetExportJob` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DescribeDatasetExportJobErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DescribeDatasetExportJob"))
+        // See `create_schema.rs`: this operation models no server-side error, so a
+        // stateless mount is reported through the scaffold channel.
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(crate::scaffolded::Scaffolded::not_implemented(
+                "DescribeDatasetExportJob",
+            ));
+        };
+
+        // A pure read. The reported status is a function of the stored due instant, the
+        // outcome the export recorded and the current time, so nothing is written.
+        let state = state.lock();
+        let Some(record) = state.dataset_export_jobs.get(&input.dataset_export_job_arn) else {
+            return Err(
+                DescribeDatasetExportJobErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: Some(crate::state::resource_not_found_message(
+                            crate::state::MissingResource::DatasetExportJob,
+                            &input.dataset_export_job_arn,
+                        )),
+                    },
+                )
+                .into(),
+            );
+        };
+
+        Ok(DescribeDatasetExportJobOutput {
+            dataset_export_job: Some(crate::state::export::dataset_export_job_of(record)),
+        })
     }
 }

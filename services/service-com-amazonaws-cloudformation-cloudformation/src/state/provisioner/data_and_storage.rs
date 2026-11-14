@@ -2258,6 +2258,13 @@ async fn discard_created_bucket(
 /// Separated from the create itself so that ONE answer covers all of them: whatever Amazon
 /// S3 refuses here leaves a bucket that exists and is not configured as declared, which is
 /// the case [`create_bucket`] undoes.
+///
+/// Every call here is awaited THROUGH A BOX, for the reason
+/// [`bucket_access_controls::apply_access_controls`] states: this create runs inside a chain
+/// of in-process service calls — a stack-declared notification configuration has Amazon S3
+/// invoke a function whose own SDK calls come back through this same router — and a frame
+/// that polls a step holds that step's awaited future, so one property more would otherwise
+/// grow this one frame for every bucket any stack declares.
 async fn configure_bucket(
     client: &::aws_sdk_s3::Client,
     resource: &StoredResource,
@@ -2275,30 +2282,34 @@ async fn configure_bucket(
         .and_then(|configuration| configuration.get("Status"))
         .and_then(Value::as_str)
     {
-        client
-            .put_bucket_versioning()
-            .bucket(bucket)
-            .versioning_configuration(
-                VersioningConfiguration::builder()
-                    .status(BucketVersioningStatus::from(status))
-                    .build(),
-            )
-            .send()
-            .await
-            .map_err(|error| s3_refusal_of(&error))?;
+        Box::pin(
+            client
+                .put_bucket_versioning()
+                .bucket(bucket)
+                .versioning_configuration(
+                    VersioningConfiguration::builder()
+                        .status(BucketVersioningStatus::from(status))
+                        .build(),
+                )
+                .send(),
+        )
+        .await
+        .map_err(|error| s3_refusal_of(&error))?;
     }
     // "NotificationConfiguration — configuration that defines how Amazon S3 handles bucket
     // notifications" (this type's own property): the declared destination configurations are
     // applied to the created bucket through `PutBucketNotificationConfiguration`, the one
     // call Amazon S3 publishes for them.
     if let Some(configuration) = declared_notification_configuration(resource)? {
-        client
-            .put_bucket_notification_configuration()
-            .bucket(bucket)
-            .notification_configuration(configuration)
-            .send()
-            .await
-            .map_err(|error| s3_refusal_of(&error))?;
+        Box::pin(
+            client
+                .put_bucket_notification_configuration()
+                .bucket(bucket)
+                .notification_configuration(configuration)
+                .send(),
+        )
+        .await
+        .map_err(|error| s3_refusal_of(&error))?;
     }
     // "AnalyticsConfigurations — specifies the configuration and any analyses for the
     // analytics filter of an Amazon S3 bucket" (this type's own property): the property is a
@@ -2306,14 +2317,16 @@ async fn configure_bucket(
     // the bucket (specified by the analytics configuration ID)", so each declared entry is
     // installed by its own call under the id it names.
     for (id, configuration) in declared_analytics_configurations(resource)? {
-        client
-            .put_bucket_analytics_configuration()
-            .bucket(bucket)
-            .id(id)
-            .analytics_configuration(configuration)
-            .send()
-            .await
-            .map_err(|error| s3_refusal_of(&error))?;
+        Box::pin(
+            client
+                .put_bucket_analytics_configuration()
+                .bucket(bucket)
+                .id(id)
+                .analytics_configuration(configuration)
+                .send(),
+        )
+        .await
+        .map_err(|error| s3_refusal_of(&error))?;
     }
     // "InventoryConfigurations — specifies the inventory configuration for an Amazon S3
     // bucket" (this type's own property): the property is a LIST keyed by `Id` and
@@ -2321,14 +2334,16 @@ async fn configure_bucket(
     // the inventory ID) to the bucket", so each declared entry is installed by its own call
     // under the id it names.
     for (id, configuration) in declared_inventory_configurations(resource)? {
-        client
-            .put_bucket_inventory_configuration()
-            .bucket(bucket)
-            .id(id)
-            .inventory_configuration(configuration)
-            .send()
-            .await
-            .map_err(|error| s3_refusal_of(&error))?;
+        Box::pin(
+            client
+                .put_bucket_inventory_configuration()
+                .bucket(bucket)
+                .id(id)
+                .inventory_configuration(configuration)
+                .send(),
+        )
+        .await
+        .map_err(|error| s3_refusal_of(&error))?;
     }
     // "IntelligentTieringConfigurations — defines how Amazon S3 handles Intelligent-Tiering
     // storage" (this type's own property): the property is a LIST keyed by `Id` and
@@ -2336,14 +2351,16 @@ async fn configure_bucket(
     // configuration to the specified bucket" one id at a time, so each declared entry is
     // installed by its own call under the id it names.
     for (id, configuration) in declared_intelligent_tiering_configurations(resource)? {
-        client
-            .put_bucket_intelligent_tiering_configuration()
-            .bucket(bucket)
-            .id(id)
-            .intelligent_tiering_configuration(configuration)
-            .send()
-            .await
-            .map_err(|error| s3_refusal_of(&error))?;
+        Box::pin(
+            client
+                .put_bucket_intelligent_tiering_configuration()
+                .bucket(bucket)
+                .id(id)
+                .intelligent_tiering_configuration(configuration)
+                .send(),
+        )
+        .await
+        .map_err(|error| s3_refusal_of(&error))?;
     }
     // "MetricsConfigurations — specifies a metrics configuration" for the CloudWatch request
     // metrics of a subset of the bucket's objects (this type's own property): the property is
@@ -2351,28 +2368,32 @@ async fn configure_bucket(
     // "specified by the metrics configuration ID", so each declared entry is installed by its
     // own call under the id it names.
     for (id, configuration) in declared_metrics_configurations(resource)? {
-        client
-            .put_bucket_metrics_configuration()
-            .bucket(bucket)
-            .id(id)
-            .metrics_configuration(configuration)
-            .send()
-            .await
-            .map_err(|error| s3_refusal_of(&error))?;
+        Box::pin(
+            client
+                .put_bucket_metrics_configuration()
+                .bucket(bucket)
+                .id(id)
+                .metrics_configuration(configuration)
+                .send(),
+        )
+        .await
+        .map_err(|error| s3_refusal_of(&error))?;
     }
     // "LifecycleConfiguration — specifies the lifecycle configuration for objects in an
     // Amazon S3 bucket" (this type's own property): the whole configuration is ONE
     // `PutBucketLifecycleConfiguration`, the call Amazon S3 publishes for it, since the API
     // takes the rule set as a single container.
     if let Some(lifecycle) = declared_lifecycle_configuration(resource)? {
-        client
-            .put_bucket_lifecycle_configuration()
-            .bucket(bucket)
-            .lifecycle_configuration(lifecycle.configuration)
-            .set_transition_default_minimum_object_size(lifecycle.minimum_object_size)
-            .send()
-            .await
-            .map_err(|error| s3_refusal_of(&error))?;
+        Box::pin(
+            client
+                .put_bucket_lifecycle_configuration()
+                .bucket(bucket)
+                .lifecycle_configuration(lifecycle.configuration)
+                .set_transition_default_minimum_object_size(lifecycle.minimum_object_size)
+                .send(),
+        )
+        .await
+        .map_err(|error| s3_refusal_of(&error))?;
     }
     // "BucketEncryption — specifies default encryption for a bucket using server-side
     // encryption with different key options" (this type's own property): the whole
@@ -2380,13 +2401,15 @@ async fn configure_bucket(
     // bucket a template declares an SSE-KMS or SSE-S3 default for behaves exactly like one
     // configured through that call — including for the writes that inherit it.
     if let Some(configuration) = declared_bucket_encryption(resource)? {
-        client
-            .put_bucket_encryption()
-            .bucket(bucket)
-            .server_side_encryption_configuration(configuration)
-            .send()
-            .await
-            .map_err(|error| s3_refusal_of(&error))?;
+        Box::pin(
+            client
+                .put_bucket_encryption()
+                .bucket(bucket)
+                .server_side_encryption_configuration(configuration)
+                .send(),
+        )
+        .await
+        .map_err(|error| s3_refusal_of(&error))?;
     }
     // "ReplicationConfiguration — configuration for replicating objects in an S3 bucket"
     // (this type's own property): the whole configuration is ONE `PutBucketReplication`, the
@@ -2394,13 +2417,15 @@ async fn configure_bucket(
     // replicates the writes it takes — under the role the configuration names, which S3
     // assumes to make each copy.
     if let Some(configuration) = declared_replication_configuration(resource)? {
-        client
-            .put_bucket_replication()
-            .bucket(bucket)
-            .replication_configuration(configuration)
-            .send()
-            .await
-            .map_err(|error| s3_refusal_of(&error))?;
+        Box::pin(
+            client
+                .put_bucket_replication()
+                .bucket(bucket)
+                .replication_configuration(configuration)
+                .send(),
+        )
+        .await
+        .map_err(|error| s3_refusal_of(&error))?;
     }
     // The bucket's ACCESS CONTROL — its Object Ownership and its Block Public Access
     // settings — each through the one call Amazon S3 publishes for it. Behind a box, for the
@@ -2429,11 +2454,7 @@ async fn configure_bucket(
                 code: "InternalFailure".to_string(),
                 message: format!("the tag set for {bucket} cannot be sent: {error}"),
             })?;
-        client
-            .put_bucket_tagging()
-            .bucket(bucket)
-            .tagging(tagging)
-            .send()
+        Box::pin(client.put_bucket_tagging().bucket(bucket).tagging(tagging).send())
             .await
             .map_err(|error| s3_refusal_of(&error))?;
     }

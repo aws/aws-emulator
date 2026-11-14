@@ -15,6 +15,8 @@
 mod already_exists_wording;
 #[path = "all/client_error_status.rs"]
 mod client_error_status;
+#[path = "all/dataset_export.rs"]
+mod dataset_export;
 #[path = "all/dataset_group_lifecycle.rs"]
 mod dataset_group_lifecycle;
 #[path = "all/dataset_type_casing.rs"]

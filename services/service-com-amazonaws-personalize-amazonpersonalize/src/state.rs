@@ -14,7 +14,9 @@
 //! ARN minting, the create-status clock, the page/token codec and the shared value
 //! checks — so the handlers of the dataset-group lifecycle cannot drift from each other.
 
+pub mod export;
 pub mod import;
+pub mod ingested;
 pub mod pipeline;
 pub mod training;
 
@@ -111,6 +113,8 @@ pub struct ComAmazonawsPersonalizeAmazonpersonalizeState {
     pub datasets: BTreeMap<String, DatasetRecord>,
     /// Dataset import jobs, keyed by `datasetImportJobArn`.
     pub dataset_import_jobs: BTreeMap<String, pipeline::DatasetImportJobRecord>,
+    /// Dataset export jobs, keyed by `datasetExportJobArn`.
+    pub dataset_export_jobs: BTreeMap<String, export::DatasetExportJobRecord>,
     /// Solutions, keyed by `solutionArn`.
     pub solutions: BTreeMap<String, pipeline::SolutionRecord>,
     /// Solution versions, keyed by `solutionVersionArn`.
@@ -272,6 +276,7 @@ pub enum MissingResource {
     DatasetGroup,
     Dataset,
     DatasetImportJob,
+    DatasetExportJob,
     Recipe,
     Solution,
     SolutionVersion,
@@ -290,6 +295,7 @@ pub fn resource_not_found_message(resource: MissingResource, arn: &str) -> Strin
         // Every other kind this service addresses by ARN reads the same sentence: the
         // ARN the caller named is its one variable part.
         MissingResource::DatasetImportJob
+        | MissingResource::DatasetExportJob
         | MissingResource::Recipe
         | MissingResource::Solution
         | MissingResource::SolutionVersion
@@ -622,6 +628,32 @@ pub fn required_schema_fields(dataset_type: &str) -> Option<&'static [&'static s
         .iter()
         .find(|(dataset_type, _)| *dataset_type == canonical)
         .map(|(_, fields)| *fields)
+}
+
+/// The field names an Avro schema document DECLARES, in the order it declares them.
+///
+/// A Personalize dataset schema "is associated with a dataset type and has a set of
+/// required field and keywords" (`smithy_query(query="doc", shape="CreateSchema")`), and
+/// those fields are the dataset's own columns: a caller spells each one in its schema, and
+/// that spelling is what the dataset's records are addressed by outside this emulator. So
+/// anything rendering a dataset's records as columns reads them from here rather than from
+/// the case-insensitive canonical names this crate matches with.
+///
+/// The same `fields` list `CreateSchema` validated the document's required fields against,
+/// parsed with `serde_json` and not by hand; a document that is not a record (which
+/// `CreateSchema` refuses) declares no fields.
+pub fn declared_schema_fields(schema_document: &str) -> Vec<String> {
+    let Ok(parsed) = ::serde_json::from_str::<::serde_json::Value>(schema_document) else {
+        return Vec::new();
+    };
+    let Some(fields) = parsed.get("fields").and_then(::serde_json::Value::as_array) else {
+        return Vec::new();
+    };
+    fields
+        .iter()
+        .filter_map(|field| field.get("name").and_then(::serde_json::Value::as_str))
+        .map(str::to_string)
+        .collect()
 }
 
 /// The one dataset type Amazon Personalize provides a tracking id with: an Action
