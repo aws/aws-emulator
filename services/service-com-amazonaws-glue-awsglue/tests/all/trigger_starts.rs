@@ -32,8 +32,7 @@ use std::time::SystemTime;
 use serde_json::{json, Value};
 use service_com_amazonaws_glue_awsglue::state::{
     messages, ComAmazonawsGlueAwsglueState, TRIGGER_STATE_ACTIVATED, TRIGGER_STATE_CREATED,
-    WORKFLOW_RUN_ID_PREFIX, WORKFLOW_RUN_NOT_EXECUTED_MESSAGE, WORKFLOW_RUN_STATUS_ERROR,
-    WORKFLOW_RUN_STATUS_RUNNING,
+    WORKFLOW_RUN_ID_PREFIX, WORKFLOW_RUN_STATUS_COMPLETED, WORKFLOW_RUN_STATUS_RUNNING,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -269,8 +268,12 @@ pub(crate) fn stored_run_ids(
         .unwrap_or_else(|| panic!("the store must hold workflow {workflow:?}"))
 }
 
-/// Move the due instant of every unsettled run of `workflow` to `at`, so a test can hold
-/// the transient window open or make the owed transition due without sleeping.
+/// Move the due instant of every unsettled run of `workflow`, and of every job run those
+/// runs' actions began, to `at` — so a test can hold the transient window open or make the
+/// owed transition due without sleeping.
+///
+/// The actions move WITH the run because a run is a composite of them: it comes to rest only
+/// once the runs it began have.
 pub(crate) fn set_due_instant(
     engine: &Arc<engine::InMemoryEngine>,
     workflow: &str,
@@ -278,6 +281,24 @@ pub(crate) fn set_due_instant(
 ) {
     let state = engine.state::<ComAmazonawsGlueAwsglueState>();
     let mut store = state.lock();
+    let actions: Vec<(String, String)> = store
+        .workflow(workflow)
+        .unwrap_or_else(|| panic!("the store must hold workflow {workflow:?}"))
+        .runs
+        .iter()
+        .flat_map(|run| run.action_job_runs.iter())
+        .map(|begun| (begun.job_name.clone(), begun.run_id.clone()))
+        .collect();
+    for (job_name, run_id) in actions {
+        if let Some(job_run) = store
+            .job_mut(REGION, &job_name)
+            .and_then(|job| job.run_mut(&run_id))
+        {
+            if job_run.settles_at.is_some() {
+                job_run.settles_at = Some(at);
+            }
+        }
+    }
     let entry = store
         .workflow_mut(workflow)
         .unwrap_or_else(|| panic!("the store must hold workflow {workflow:?}"));
@@ -380,8 +401,8 @@ async fn a_start_activates_the_trigger_and_fires_the_on_demand_ones() {
             "case {case:?}: the run must read back under the id it was given, got {read}"
         );
 
-        // Nothing here runs the actions the trigger initiates, so the status the clock
-        // owes that run says exactly that rather than reporting a result nothing computed.
+        // The run comes to rest once the runs its actions began have, and what each of them
+        // came to is reported by the run's statistics rather than by its status.
         set_due_instant(&engine, &workflow, already_past());
         let settled = ok(
             &router,
@@ -391,14 +412,16 @@ async fn a_start_activates_the_trigger_and_fires_the_on_demand_ones() {
         .await;
         assert_eq!(
             settled["Run"].get("Status").and_then(Value::as_str),
-            Some(WORKFLOW_RUN_STATUS_ERROR),
-            "case {case:?}: a run nothing executed comes to rest in \
-             {WORKFLOW_RUN_STATUS_ERROR}, got {settled}"
+            Some(WORKFLOW_RUN_STATUS_COMPLETED),
+            "case {case:?}: a run whose actions have run their course comes to rest in \
+             {WORKFLOW_RUN_STATUS_COMPLETED}, got {settled}"
         );
-        assert_eq!(
-            settled["Run"].get("ErrorMessage").and_then(Value::as_str),
-            Some(WORKFLOW_RUN_NOT_EXECUTED_MESSAGE),
-            "case {case:?}: a run nothing executed says so, got {settled}"
+        assert!(
+            settled["Run"]
+                .get("ErrorMessage")
+                .is_none_or(Value::is_null),
+            "case {case:?}: a run that was started and ran its course reports no error, got \
+             {settled}"
         );
     }
 }

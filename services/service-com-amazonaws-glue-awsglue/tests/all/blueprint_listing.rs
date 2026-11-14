@@ -24,7 +24,9 @@ use std::time::SystemTime;
 
 use serde_json::{json, Value};
 use service_com_amazonaws_glue_awsglue::ops::types::CreateBlueprintInput;
-use service_com_amazonaws_glue_awsglue::state::{BlueprintEntry, ComAmazonawsGlueAwsglueState};
+use service_com_amazonaws_glue_awsglue::state::{
+    BlueprintArchive, BlueprintEntry, ComAmazonawsGlueAwsglueState,
+};
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::wire::{call, emulator_on, ok};
@@ -52,6 +54,9 @@ fn given_blueprint(engine: &Arc<engine::InMemoryEngine>, name: &str, tags: &[(&s
                 ),
             },
             SystemTime::now(),
+            // These rows are about which blueprints a listing reports, so each is seeded as
+            // a registration whose published archive was read.
+            BlueprintArchive::Published,
         ));
 }
 

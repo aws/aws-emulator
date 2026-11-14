@@ -20,10 +20,13 @@
 //! `SchemaDefinition` is optional: with one, the create registers version
 //! [`crate::state::FIRST_SCHEMA_VERSION`] and reports its id and status; without one, the
 //! schema set exists holding no version, so its latest version is
-//! [`crate::state::NO_SCHEMA_VERSION`] and its next is the first. Whether a definition
-//! PARSES as the request's `DataFormat` is `CheckSchemaVersionValidity`'s own question and
-//! is left to that operation's issue; the modelled constraints on the member
-//! (len 1..170000, pattern `\S`) are already enforced before this handler runs.
+//! [`crate::state::NO_SCHEMA_VERSION`] and its next is the first. A definition the request's
+//! `DataFormat` does not accept registers NO version: it is no schema document of that
+//! format, so the create is refused with `InvalidInputException`
+//! ([`crate::state::schema_definition_fault`], the same reading `RegisterSchemaVersion`
+//! refuses a definition by) rather than stored as a first version nothing can read. The
+//! modelled constraints on the member (len 1..170000, pattern `\S`) are already enforced
+//! before this handler runs.
 //!
 //! ## Shape of an operation
 //!
@@ -271,6 +274,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         };
 
+        // "The schema definition using the `DataFormat` setting for the `SchemaName`": a
+        // definition that format's own parser does not accept is no schema document, so the
+        // create is refused before anything is written rather than registering a first
+        // version nothing can read.
+        if let Some(detail) = input.schema_definition.as_deref().and_then(|definition| {
+            crate::state::schema_definition_fault(&input.data_format, definition)
+        }) {
+            return Err(CreateSchemaErrorModeled::InvalidInputException(
+                InvalidInputException {
+                    message: Some(crate::state::messages::schema_definition_invalid(
+                        &input.data_format,
+                        &detail,
+                    )),
+                    from_federation_source: None,
+                },
+            )
+            .into());
+        }
+
         let now = ::std::time::SystemTime::now();
         let mut store = state.lock();
 
@@ -372,11 +394,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )]
             })
             .unwrap_or_default();
-        let checkpoint = versions
+        // The version this create registered, if it registered one: the checkpoint "the
+        // last time the compatibility mode was changed" was taken at, and the highest
+        // version number the set has assigned so far.
+        let registered_version = versions
             .last()
             .map_or(crate::state::NO_SCHEMA_VERSION, |version| {
                 version.version_number
             });
+        let checkpoint = registered_version;
         let entry = crate::state::SchemaEntry {
             name: input.schema_name.clone(),
             registry_name: registry_name.clone(),
@@ -392,6 +418,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             updated_time: now,
             tags: input.tags.clone().unwrap_or_default(),
             versions,
+            highest_version_number: registered_version,
         };
         let stored = registry
             .schemas

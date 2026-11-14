@@ -28,12 +28,14 @@ pub struct CreateDataQualityRulesetInput {
 /// Hand-declared rather than generated from the shape by
 /// `#[smithy_macros::smithy(shape = ...)]`, because the published shape binds only `Name`
 /// while the service answers a create with the stored projection of the ruleset — the
-/// identifier it assigned the record, the definition it registered, the table it targets and
-/// both of its timestamps as well. That identifier is what a client chains into the later
-/// answers about the same ruleset, which is why the create has to report it at all. The shape
+/// identifier it assigned the record, the description and the definition it registered, the
+/// table it targets and both of its timestamps as well. That identifier is what a client
+/// chains into the later answers about the same ruleset, which is why the create has to report
+/// it at all. The shape
 /// id, the member names and the member types below are the wire ones: `Name` keeps the target
-/// the model gives it (`NameString`), the definition and the association keep the ones
-/// `GetDataQualityRulesetResponse` gives the same facts (`Ruleset`: `DataQualityRulesetString`,
+/// the model gives it (`NameString`), the description, the definition and the association keep
+/// the ones `GetDataQualityRulesetResponse` gives the same facts (`Description`:
+/// `DescriptionString`, `Ruleset`: `DataQualityRulesetString`,
 /// `TargetTable`: `DataQualityTargetTable`, `CreatedOn`/`LastModifiedOn`: `Timestamp`), and the
 /// identifier carries `HashString`'s string, as every other id this service hands a data
 /// quality resource does.
@@ -44,6 +46,7 @@ pub struct CreateDataQualityRulesetInput {
 pub struct CreateDataQualityRulesetOutput {
     pub name: Option<String>,
     pub identifier: Option<String>,
+    pub description: Option<String>,
     pub ruleset: Option<String>,
     pub target_table: Option<DataQualityTargetTable>,
     pub created_on: Option<::aws_smithy_types::DateTime>,
@@ -74,6 +77,17 @@ impl CreateDataQualityRulesetOutput {
         1,
     );
 
+    const M_DESCRIPTION: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
+        ::aws_smithy_schema::ShapeId::from_static(
+            "com.amazonaws.glue#CreateDataQualityRulesetResponse$Description",
+            "com.amazonaws.glue",
+            "Description",
+        ),
+        ::aws_smithy_schema::ShapeType::String,
+        "Description",
+        2,
+    );
+
     const M_RULESET: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
         ::aws_smithy_schema::ShapeId::from_static(
             "com.amazonaws.glue#CreateDataQualityRulesetResponse$Ruleset",
@@ -82,7 +96,7 @@ impl CreateDataQualityRulesetOutput {
         ),
         ::aws_smithy_schema::ShapeType::String,
         "Ruleset",
-        2,
+        3,
     );
 
     const M_TARGET_TABLE: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
@@ -93,7 +107,7 @@ impl CreateDataQualityRulesetOutput {
         ),
         ::aws_smithy_schema::ShapeType::Structure,
         "TargetTable",
-        3,
+        4,
     );
 
     const M_CREATED_ON: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
@@ -104,7 +118,7 @@ impl CreateDataQualityRulesetOutput {
         ),
         ::aws_smithy_schema::ShapeType::Timestamp,
         "CreatedOn",
-        4,
+        5,
     );
 
     const M_LAST_MODIFIED_ON: ::aws_smithy_schema::Schema =
@@ -116,7 +130,7 @@ impl CreateDataQualityRulesetOutput {
             ),
             ::aws_smithy_schema::ShapeType::Timestamp,
             "LastModifiedOn",
-            5,
+            6,
         );
 
     pub const SCHEMA: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_struct(
@@ -129,6 +143,7 @@ impl CreateDataQualityRulesetOutput {
         &[
             &Self::M_NAME,
             &Self::M_IDENTIFIER,
+            &Self::M_DESCRIPTION,
             &Self::M_RULESET,
             &Self::M_TARGET_TABLE,
             &Self::M_CREATED_ON,
@@ -152,6 +167,9 @@ impl ::aws_smithy_schema::serde::SerializableStruct for CreateDataQualityRuleset
         }
         if let Some(__v) = self.identifier.as_ref() {
             __s.write_string(&Self::M_IDENTIFIER, __v.as_str())?;
+        }
+        if let Some(__v) = self.description.as_ref() {
+            __s.write_string(&Self::M_DESCRIPTION, __v.as_str())?;
         }
         if let Some(__v) = self.ruleset.as_ref() {
             __s.write_string(&Self::M_RULESET, __v.as_str())?;

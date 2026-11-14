@@ -37,6 +37,11 @@ use crate::wire::{call, emulator_on, error_code, error_message, ok, ACCOUNT_ID};
 /// The schema set every suite here addresses.
 const SCHEMA: &str = "payments";
 
+/// The version numbers the span suite's schema set is seeded holding, and so the numbers it
+/// has assigned: every one of them above the first version, so neither documented
+/// prohibition is in play for a span inside this history.
+const SEEDED_VERSIONS: &[i64] = &[2, 3, 4, 5, 6];
+
 /// The whole `Message` a `Versions` value the operation cannot act on is refused with,
 /// written out here rather than read from the crate's own constructor so this suite pins
 /// the wording and the member it names.
@@ -97,6 +102,13 @@ fn emulator_holding(
                         )
                     })
                     .collect(),
+                // The highest number the seeded history ever assigned, which is what the
+                // next registration would count from however many of them a delete removes.
+                highest_version_number: version_numbers
+                    .iter()
+                    .copied()
+                    .max()
+                    .unwrap_or(NO_SCHEMA_VERSION),
             },
         );
         store
@@ -132,8 +144,7 @@ fn delete_body(versions: &str) -> Value {
 /// (`3-3`), a reversed range (which covers nothing), and a span naming only versions the
 /// set does not hold.
 #[tokio::test]
-async fn a_version_span_deletes_exactly_the_versions_it_names() {
-    // (case, the `Versions` value, the version numbers left afterwards)
+async fn a_version_span_deletes_exactly_the_versions_it_names() {    // (case, the `Versions` value, the version numbers left afterwards)
     let rows: Vec<(&str, &str, Vec<i64>)> = vec![
         ("one version in the middle", "3", vec![2, 4, 5, 6]),
         ("the latest version", "6", vec![2, 3, 4, 5]),
@@ -157,7 +168,7 @@ async fn a_version_span_deletes_exactly_the_versions_it_names() {
     for (case, versions, remaining) in rows {
         // Check-pointed below every version held, and holding no version 1, so neither
         // documented prohibition is in play for these rows.
-        let (router, engine) = emulator_holding(&[2, 3, 4, 5, 6], NO_SCHEMA_VERSION);
+        let (router, engine) = emulator_holding(SEEDED_VERSIONS, NO_SCHEMA_VERSION);
         let answered = ok(&router, "DeleteSchemaVersions", &delete_body(versions)).await;
         assert_eq!(
             answered.get("SchemaVersionErrors"),
@@ -173,17 +184,24 @@ async fn a_version_span_deletes_exactly_the_versions_it_names() {
         );
 
         let read = ok(&router, "GetSchema", &json!({ "SchemaId": { "SchemaName": SCHEMA } })).await;
-        let latest = remaining.last().copied().unwrap_or(NO_SCHEMA_VERSION);
+        // A version NUMBER is assigned once and never reused, so deleting versions frees
+        // neither their numbers nor the numbers above them: the schema set keeps reporting
+        // the highest number it ever assigned, whichever of those versions it still holds.
+        let assigned = SEEDED_VERSIONS
+            .iter()
+            .copied()
+            .max()
+            .expect("the seeded history holds a version");
         assert_eq!(
             read["LatestSchemaVersion"],
-            json!(latest),
-            "case {case:?}: expected LatestSchemaVersion {latest}, got {read}"
+            json!(assigned),
+            "case {case:?}: expected LatestSchemaVersion {assigned}, got {read}"
         );
         assert_eq!(
             read["NextSchemaVersion"],
-            json!(latest + 1),
+            json!(assigned + 1),
             "case {case:?}: expected NextSchemaVersion {}, got {read}",
-            latest + 1
+            assigned + 1
         );
     }
 }

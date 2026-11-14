@@ -195,16 +195,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `Name` and `RunId` are both `@required` with `length 1..255`, so an absent or
         // over-long one is refused at the boundary: reaching here, the only question is
         // whether this account holds that workflow and that workflow holds that run.
-        let Some(workflow) = store.workflow_mut(&input.name) else {
+        if store.workflow(&input.name).is_none() {
             return Err(not_found(
                 crate::state::messages::WORKFLOW_NOT_FOUND.to_string(),
             ));
-        };
-        // The only write a read makes: the status changes the clock had already made due.
-        workflow.settle_due_runs(now);
-        // The runs this run's actions began were owed the same clock, and this read reports
-        // the state each has reached, so what it owed them is materialised too.
-        store.settle_due_action_job_runs(&region, &input.name, now);
+        }
+        // The only write a read makes: the statuses the clock had already made due to this
+        // workflow's runs and to the job runs their actions began — this read reports the
+        // state each has reached, and each was owed it whether or not anybody called.
+        store.settle_due_workflow_runs(&region, &input.name, now);
 
         let Some(run) = store
             .workflow(&input.name)

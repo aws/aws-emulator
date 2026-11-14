@@ -217,6 +217,32 @@ impl SchemaEntry {
     }
 }
 
+/// Why `definition` is not a schema document the `data_format` admits, or `None` when it
+/// is one — and `None`, too, for a format whose documents are not parsed here, so a
+/// definition this emulator cannot judge is never refused for a fault it has not shown.
+///
+/// A `SchemaDefinition` is "the schema definition using the `DataFormat` setting for the
+/// schema set", so a registration whose text that format's own parser does not accept
+/// registers no version at all: the refusal is the registration's, not a version stored as
+/// failed, which is what the compatibility check produces. `Err` carries what the parser
+/// reported, which is what names the position the document stops being one at.
+pub fn schema_definition_fault(data_format: &str, definition: &str) -> Option<String> {
+    match data_format {
+        DATA_FORMAT_AVRO => {
+            // An Avro schema document is JSON, so text that is not JSON at all stops being
+            // one at a position, and that is what the detail names; the schema parser's own
+            // answer is what names a document that is JSON but no schema.
+            if let Err(fault) = ::serde_json::from_str::<::serde_json::Value>(definition) {
+                return Some(fault.to_string());
+            }
+            ::apache_avro::Schema::parse_str(definition)
+                .err()
+                .map(|error| error.to_string())
+        }
+        _ => None,
+    }
+}
+
 /// A `SchemaDefinition` parsed into the algebra its `DataFormat`'s compatibility is decided
 /// in.
 #[derive(Debug, Clone)]

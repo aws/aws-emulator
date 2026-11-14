@@ -325,9 +325,7 @@ pub use triggers::*;
 pub use workflow_runs::*;
 pub use workflows::*;
 
-use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
@@ -794,10 +792,6 @@ pub const NODE_TYPE_JOB: &str = "JOB";
 
 /// The `NodeType` of a node that stands for a crawler. See [`NODE_TYPE_TRIGGER`].
 pub const NODE_TYPE_CRAWLER: &str = "CRAWLER";
-
-/// The widest `NameString` the model accepts, which `Node$Name` and `Node$UniqueId` are
-/// both of: "length 1..255" (`smithy_query shape=Node`).
-const MAX_NAME_STRING_CHARS: usize = 255;
 
 /// The `Version` a crawler carries straight after `CreateCrawler`: the first version of
 /// a crawler is 1, and an update moves it on. The model's `@default` of 0 on
@@ -2274,7 +2268,7 @@ impl ComAmazonawsGlueAwsglueState {
         workflow_name: &str,
         run: Option<&WorkflowRunEntry>,
     ) -> WorkflowGraph {
-        let mut graph = WorkflowGraphBuilder::default();
+        let mut graph = WorkflowGraphBuilder::for_workflow(workflow_name);
         let attached = self
             .triggers
             .get(region)
@@ -2430,6 +2424,74 @@ impl ComAmazonawsGlueAwsglueState {
         let graph =
             include_graph.then(|| self.workflow_graph(region, &run.workflow_name, Some(run)));
         run.to_workflow_run(graph, self.workflow_run_statistics(region, run))
+    }
+
+    /// Give the workflow `workflow_name`'s runs, and the job runs their actions began, the
+    /// state the CLOCK already owed each of them at `now`.
+    ///
+    /// The ONE materialisation every read of a workflow or of one of its runs performs, so
+    /// no two reads can disagree about what the clock has made of a run. It is the one write
+    /// a reporting operation makes: each state was due at the record's own settle instant
+    /// whether or not anybody called.
+    ///
+    /// A workflow run is a COMPOSITE of the work it initiated — "total number of Actions in
+    /// the workflow run", each of them a run of a job — so it comes to rest only once those
+    /// runs have: while any of them is still owed a state, the run's own due instant is held
+    /// at the latest instant one of its actions is owed one, and the run is reported as still
+    /// running. The actions are settled FIRST, so what they have come to is what decides it.
+    pub fn settle_due_workflow_runs(
+        &mut self,
+        region: &str,
+        workflow_name: &str,
+        now: SystemTime,
+    ) {
+        self.settle_due_action_job_runs(region, workflow_name, now);
+        let awaited = self.workflow_runs_awaiting_their_actions(region, workflow_name);
+        let Some(workflow) = self.workflow_mut(workflow_name) else {
+            return;
+        };
+        for run in &mut workflow.runs {
+            if let (Some(action_due), Some(due)) = (awaited.get(&run.id), run.settles_at) {
+                run.settles_at = Some(due.max(*action_due));
+            }
+            run.settle_if_due(now);
+        }
+    }
+
+    /// For each run of the workflow `workflow_name` whose actions have NOT all come to rest,
+    /// the latest instant one of those actions is owed its next state.
+    ///
+    /// A run whose actions have all come to rest, and one whose actions began no job run at
+    /// all, is absent from the answer: there is nothing left for it to wait for. An action
+    /// whose job run the store no longer holds is nothing to wait for either.
+    ///
+    /// The walk is over the runs this workflow holds, bounded by [`MAX_RUNS_PER_WORKFLOW`],
+    /// each naming the actions of one trigger.
+    fn workflow_runs_awaiting_their_actions(
+        &self,
+        region: &str,
+        workflow_name: &str,
+    ) -> BTreeMap<String, SystemTime> {
+        let Some(workflow) = self.workflow(workflow_name) else {
+            return BTreeMap::new();
+        };
+        let mut awaited = BTreeMap::new();
+        for run in &workflow.runs {
+            let latest = run
+                .action_job_runs
+                .iter()
+                .filter_map(|begun| {
+                    self.job(region, &begun.job_name)
+                        .and_then(|job| job.run(&begun.run_id))
+                })
+                .filter(|job_run| !job_run.is_terminal())
+                .filter_map(|job_run| job_run.settles_at)
+                .max();
+            if let Some(latest) = latest {
+                awaited.insert(run.id.clone(), latest);
+            }
+        }
+        awaited
     }
 
     /// Give the job runs the workflow `workflow_name`'s runs began the state the CLOCK

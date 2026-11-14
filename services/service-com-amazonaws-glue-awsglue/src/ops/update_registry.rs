@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op UpdateRegistry
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `UpdateRegistry`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`UpdateRegistry::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Writes the `Description` this request carries onto the stored registry
+//! ([`crate::state::RegistryEntry`]) the `RegistryId` names, so `GetRegistry` serves the
+//! new description afterwards, and answers with the name and ARN of the registry it
+//! updated. "The updated properties relate to the registry, and do not modify any of the
+//! schemas within the registry", so the schema sets it holds are left exactly as they are.
 //!
 //! ## Shape of an operation
 //!
@@ -154,18 +151,76 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `UpdateRegistry` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(UpdateRegistryErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("UpdateRegistry"))
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            // This operation models a server fault, so an unreachable store is reported
+            // as that rather than as a client error the caller could act on.
+            return Err(UpdateRegistryErrorModeled::InternalServiceException(
+                InternalServiceException {
+                    message: Some("the Glue schema registry store is unavailable".into()),
+                },
+            )
+            .into());
+        };
+        let region = crate::state::request_region(ctx.parts());
+
+        // The registry this update addresses is resolved first: `RegistryId` may name it by
+        // name or by ARN, and a reference that names neither is a bad parameter rather than
+        // a miss. The ONE resolution every schema-registry operation shares.
+        let reference = match crate::state::registry_reference(&input.registry_id, &region) {
+            Ok(reference) => reference,
+            Err(message) => return Err(invalid_input(message)),
+        };
+        // A registry ARN of another account or another Region names a registry of an estate
+        // this endpoint does not serve, so it names none here whatever this store holds
+        // under that name.
+        let registry_name = match reference {
+            crate::state::Reference::Local(name) => name,
+            crate::state::Reference::Elsewhere(name) => return Err(registry_not_found(&name)),
+        };
+
+        let now = ::std::time::SystemTime::now();
+        let mut store = state.lock();
+        let Some(registry) = store.registry_mut(&registry_name) else {
+            return Err(registry_not_found(&registry_name));
+        };
+
+        // `Description` is `@required` and its length and pattern are refused at the
+        // boundary, so what reaches here is the description the registry carries from now
+        // on. `UpdatedTime` moves with it, because the registry itself has changed.
+        registry.description = Some(input.description.clone());
+        registry.updated_time = now;
+        ::tracing::info!(
+            operation = "UpdateRegistry",
+            registry = %registry_name,
+            "updated a Glue schema registry"
+        );
+
+        // "The name of the updated registry" and "the Amazon Resource name (ARN) of the
+        // updated registry": the record this write landed in, addressed the way every other
+        // schema-registry answer addresses it.
+        Ok(UpdateRegistryOutput {
+            registry_name: Some(registry.name.clone()),
+            registry_arn: Some(crate::state::registry_arn(&region, &registry.name)),
+        })
     }
+}
+
+/// This operation's modelled refusal for a request member it cannot act on: "The input
+/// provided was not valid."
+fn invalid_input(message: String) -> UpdateRegistryError {
+    UpdateRegistryErrorModeled::InvalidInputException(InvalidInputException {
+        message: Some(message),
+        from_federation_source: None,
+    })
+    .into()
+}
+
+/// This operation's modelled refusal for a `RegistryId` that resolves to a registry this
+/// endpoint holds none of — the same wording every registry miss answers.
+fn registry_not_found(registry_name: &str) -> UpdateRegistryError {
+    UpdateRegistryErrorModeled::EntityNotFoundException(EntityNotFoundException {
+        message: Some(crate::state::messages::registry_not_found(registry_name)),
+        from_federation_source: None,
+    })
+    .into()
 }

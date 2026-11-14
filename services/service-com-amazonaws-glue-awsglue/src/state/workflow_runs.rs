@@ -11,15 +11,26 @@ use super::*;
 /// `ERROR`).
 pub const WORKFLOW_RUN_STATUS_RUNNING: &str = "RUNNING";
 
-/// The `WorkflowRunStatus` of a run that finished having errored. See
-/// [`WORKFLOW_RUN_STATUS_RUNNING`].
+/// The `WorkflowRunStatus` of a run that finished: "COMPLETED" names a run whose actions
+/// have run their course, whatever each of them came to — what became of an individual
+/// action is reported by the run's own statistics ([`WorkflowRunStatistics`]) and not by
+/// this status. See [`WORKFLOW_RUN_STATUS_RUNNING`].
+pub const WORKFLOW_RUN_STATUS_COMPLETED: &str = "COMPLETED";
+
+/// The `WorkflowRunStatus` of a run that finished having errored. `WorkflowRun$ErrorMessage`
+/// "describes any error that may have occurred in STARTING the workflow run", so this status
+/// is what a run that could not be started comes to rest in — not one whose actions failed,
+/// which is a completed run with failed actions. See [`WORKFLOW_RUN_STATUS_RUNNING`].
 pub const WORKFLOW_RUN_STATUS_ERROR: &str = "ERROR";
 
 /// The `WorkflowRunStatus` values a run never moves out of again: of the modelled enum
 /// quoted on [`WORKFLOW_RUN_STATUS_RUNNING`], the ones that name a finished run. The other
 /// two (`RUNNING`, `STOPPING`) each still owe a further status.
-pub const TERMINAL_WORKFLOW_RUN_STATUSES: [&str; 3] =
-    ["COMPLETED", "STOPPED", WORKFLOW_RUN_STATUS_ERROR];
+pub const TERMINAL_WORKFLOW_RUN_STATUSES: [&str; 3] = [
+    WORKFLOW_RUN_STATUS_COMPLETED,
+    "STOPPED",
+    WORKFLOW_RUN_STATUS_ERROR,
+];
 
 /// How long a workflow run stays in the status the call that started it put it in before
 /// the clock owes it the next one.
@@ -27,19 +38,11 @@ pub const TERMINAL_WORKFLOW_RUN_STATUSES: [&str; 3] =
 /// CHOSEN, not documented: Glue publishes no duration for a workflow run, so this is the
 /// emulator's own span — deliberately not zero, so a caller that polls `GetWorkflowRun`
 /// straight after `StartWorkflowRun` still observes the run in flight, and the concurrency
-/// ceiling that goes with it. The due instant is stored on the run and materialised by
-/// whichever later call reads it; nothing sleeps.
+/// ceiling that goes with it. A run whose actions are still owed a state of their own waits
+/// for them past this span
+/// ([`ComAmazonawsGlueAwsglueState::settle_due_workflow_runs`]). The due instant is stored
+/// on the run and materialised by whichever later call reads it; nothing sleeps.
 pub const WORKFLOW_RUN_SETTLES_AFTER: Duration = Duration::from_millis(500);
-
-/// `WorkflowRun$ErrorMessage` for the terminal status the clock owes every run.
-///
-/// This emulator is the Glue control plane: it records a workflow run faithfully, but
-/// nothing here runs the jobs and crawlers the workflow's triggers initiate, so a run can
-/// never reach `COMPLETED` — it comes to rest in the modelled error status carrying a
-/// reason that says exactly that, rather than reporting a result nothing computed.
-pub const WORKFLOW_RUN_NOT_EXECUTED_MESSAGE: &str =
-    "This emulator records workflow runs but runs no job or crawler, so the workflow run \
-     ended without any action being executed.";
 
 /// The prefix a Glue workflow run id carries, which is what makes an `IdString`
 /// recognisable as a workflow run id rather than any other id the service mints.
@@ -175,9 +178,17 @@ impl WorkflowRunEntry {
                 now.checked_add(WORKFLOW_RUN_SETTLES_AFTER)
                     .unwrap_or(now),
             ),
-            // Nothing here runs the actions the workflow's triggers initiate, so the
-            // status the clock owes a run that nobody stops is the modelled error status.
-            settles_to: WORKFLOW_RUN_STATUS_ERROR.to_string(),
+            // The actions a run initiates are runs of jobs this emulator really executes,
+            // so the status the clock owes a run nobody stops is the one a run whose actions
+            // have run their course comes to rest in; what each action came to is reported
+            // by the run's statistics rather than by its status.
+            //
+            // An action naming a CRAWLER initiates no execution here — this crate records no
+            // crawl — and nothing claims one ran: no counter of the run's statistics moves
+            // for it ([`ComAmazonawsGlueAwsglueState::workflow_run_statistics`]) and the
+            // crawl node of the graph reports no crawls, so a reader sees the action counted
+            // among the run's total and no outcome asserted for it.
+            settles_to: WORKFLOW_RUN_STATUS_COMPLETED.to_string(),
             // Nothing has gone wrong yet: a run carries an error message only once it has.
             error_message: None,
             total_actions,
@@ -216,12 +227,6 @@ impl WorkflowRunEntry {
         }
         self.settles_at = None;
         self.status = self.settles_to.clone();
-        // "This error message describes any error that may have occurred in starting the
-        // workflow run": the run that comes to rest in the error status carries the reason
-        // nothing executed, while one a stop brought to rest errored at nothing.
-        if self.status == WORKFLOW_RUN_STATUS_ERROR {
-            self.error_message = Some(WORKFLOW_RUN_NOT_EXECUTED_MESSAGE.to_string());
-        }
         if self.is_terminal() {
             self.completed_on = Some(due);
         }
@@ -269,6 +274,9 @@ impl WorkflowRunEntry {
 /// store.
 #[derive(Debug, Default)]
 pub(super) struct WorkflowGraphBuilder {
+    /// The workflow whose graph is being built, which is part of what identifies each of
+    /// its nodes ([`workflow_node_id`]).
+    pub(super) workflow_name: String,
     /// "A list of the the Glue components belong to the workflow represented as nodes."
     pub(super) nodes: Vec<Node>,
     /// "A list of all the directed connections between the nodes belonging to the
@@ -278,6 +286,16 @@ pub(super) struct WorkflowGraphBuilder {
     pub(super) placed_nodes: HashSet<String>,
     /// The `(SourceId, DestinationId)` of every edge already placed.
     pub(super) placed_edges: HashSet<(String, String)>,
+}
+
+impl WorkflowGraphBuilder {
+    /// A graph of the workflow `workflow_name`, with nothing placed yet.
+    pub(super) fn for_workflow(workflow_name: &str) -> Self {
+        Self {
+            workflow_name: workflow_name.to_string(),
+            ..Self::default()
+        }
+    }
 }
 
 impl WorkflowGraphBuilder {
@@ -303,7 +321,7 @@ impl WorkflowGraphBuilder {
         trigger: Option<&TriggerEntry>,
         job_runs: &[JobRun],
     ) -> String {
-        let unique_id = workflow_node_id(node_type, name);
+        let unique_id = workflow_node_id(&self.workflow_name, node_type, name);
         if self.placed_nodes.insert(unique_id.clone()) {
             self.nodes.push(Node {
                 r#type: Some(node_type.to_string()),
@@ -370,35 +388,35 @@ pub(super) fn named_components<'a>(
 
 /// `Node$UniqueId`: "the unique Id assigned to the node within the workflow."
 ///
-/// Derived from what identifies the component inside the workflow — its type and its name
-/// — so every read of the graph reports the same id for it, and a job and a trigger of the
-/// same name are still two nodes. `Node$UniqueId` is itself a `NameString`, so a component
-/// named at that bound leaves no room for the type: such a name keeps as much of itself as
-/// there IS room for, followed by a digest of the whole name, so two components whose names
-/// agree only on the part that fits still get two ids.
-pub(super) fn workflow_node_id(node_type: &str, name: &str) -> String {
-    let prefix = format!("{}_", node_type.to_ascii_lowercase());
-    let room = MAX_NAME_STRING_CHARS.saturating_sub(prefix.chars().count());
-    if name.chars().count() <= room {
-        return format!("{prefix}{name}");
-    }
-    let digest = format!("_{:016x}", name_digest(name));
-    let held: String = name
-        .chars()
-        .take(room.saturating_sub(digest.chars().count()))
-        .collect();
-    format!("{prefix}{held}{digest}")
+/// An OPAQUE id: a client correlates nodes with the graph's edges by it and reads nothing
+/// out of it, so it carries neither the kind of the component nor its name. It is DERIVED
+/// from what identifies the node — the workflow it belongs to and the type and name of the
+/// component it stands for — rather than minted per call, which is what makes every read of
+/// an unchanged graph report the same id for a node while two nodes never share one: a job
+/// and a trigger of the same name are two nodes, and the same component in two workflows is
+/// two nodes as well.
+///
+/// Spelled as 32 lowercase hexadecimal characters — 128 bits, the width every opaque id this
+/// crate hands out has ([`mint_hex_id`]) — which is inside `NameString`'s "len 1..255"
+/// however long the component's name is. The bits are the leading half of a SHA-256 of the
+/// three parts, each length-prefixed so no pair of triples can be spelled the same way. Not a
+/// credential and not a digest anything is authenticated by.
+pub(super) fn workflow_node_id(workflow_name: &str, node_type: &str, name: &str) -> String {
+    use ::sha2::Digest;
+
+    let keyed = format!(
+        "{}:{workflow_name}:{}:{node_type}:{}:{name}",
+        workflow_name.len(),
+        node_type.len(),
+        name.len()
+    );
+    let digest = ::sha2::Sha256::digest(keyed.as_bytes());
+    ::hex::encode(&digest[..NODE_ID_BYTES])
 }
 
-/// A 64-bit digest of `name`, which is what keeps two long component names apart in
-/// [`workflow_node_id`]. The standard library's own hasher, so nothing here hand-rolls one;
-/// it answers the same value for the same name throughout a process, which is what a stable
-/// id needs. NOT a cryptographic hash, and nothing here uses it as one.
-pub(super) fn name_digest(name: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    name.hash(&mut hasher);
-    hasher.finish()
-}
+/// How many bytes of the digest a node id carries: sixteen, i.e. 128 bits rendered as 32
+/// lowercase hexadecimal characters.
+const NODE_ID_BYTES: usize = 16;
 
 /// This service's store in the shared engine: call it with a handler's `&*self.engine`.
 ///

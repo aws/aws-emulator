@@ -221,7 +221,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // are per-ACCOUNT ([`crate::state::ComAmazonawsGlueAwsglueState::workflows`]) and are
         // resolved here through the very same accessor those readers use. There is no
         // narrower key to scope this lookup by.
-        let Some(workflow) = store.workflow_mut(&input.name) else {
+        // The only write a read makes: the statuses the clock had already made due to this
+        // workflow's runs and to the job runs their actions began, so each run is reported
+        // in the state it had already reached. A name no workflow of this account carries is
+        // the miss below, which the read is answered with rather than materialising
+        // anything.
+        store.settle_due_workflow_runs(&region, &input.name, now);
+        let Some(workflow) = store.workflow(&input.name) else {
             return Err(GetWorkflowRunsErrorModeled::EntityNotFoundException(
                 EntityNotFoundException {
                     message: Some(crate::state::messages::WORKFLOW_NOT_FOUND.to_string()),
@@ -230,8 +236,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
-        // The only write a read makes: the status changes the clock had already made due.
-        workflow.settle_due_runs(now);
 
         // A run history is reported newest first — the order the sibling run listing of
         // this service documents (`GetJobRuns`, "with the newest jobs returned first") —
@@ -273,9 +277,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .map(|(_, run)| (*run).clone())
             .collect();
 
-        // The runs those runs' actions began were owed the same clock, and this read reports
-        // the state each has reached, so what it owed them is materialised too.
-        store.settle_due_action_job_runs(&region, &input.name, now);
+        // The runs the page's runs' actions began have been given the state the clock owed
+        // them by the materialisation above, so what each of them reports is the state it had
+        // already reached.
 
         // "Specifies whether to include the workflow graph in response or not": the reader
         // that did not ask for one — which is also what a request naming no `IncludeGraph`

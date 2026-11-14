@@ -207,17 +207,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // held batch's firing begins is "the last execution of the workflow" this read
             // reports.
             store.settle_due_event_batches(&region, name, settled_at);
-            if let Some(entry) = store.workflow_mut(name) {
-                entry.settle_due_runs(settled_at);
-            }
-            // The runs those executions' actions began were owed the same clock, and this
-            // read reports the state each has reached.
-            store.settle_due_action_job_runs(&region, name, settled_at);
+            // This workflow's runs, and the job runs their actions began, are given the
+            // state the clock already owed each of them, so this read reports the state each
+            // had reached.
+            store.settle_due_workflow_runs(&region, name, settled_at);
             // ONE lookup decides both lists, so every requested name is accounted for in
             // exactly one of them: the projection when this account holds a workflow under
             // the name, and otherwise "a list of names of workflows not found" — a miss is
             // reported back to the caller rather than failing the whole batch, since this
             // operation models no not-found error.
+            //
+            // A workflow is addressed by NAME alone — "it should be unique within your
+            // account" (`CreateWorkflowRequest$Name`), and no operation the model declares
+            // over one carries a `CatalogId` or a Region member — so this batch resolves a
+            // name exactly as `GetWorkflow` does, through the one per-account namespace
+            // ([`crate::state::ComAmazonawsGlueAwsglueState::workflows`]). The Region the
+            // read is served in decides what a workflow's graph and its runs report of the
+            // TRIGGERS and JOBS attached there, which is why the calls around this one carry
+            // it.
             match store.workflow(name) {
                 Some(entry) => workflows.push(store.to_workflow(&region, entry, include_graph)),
                 None => missing_workflows.push(name.clone()),

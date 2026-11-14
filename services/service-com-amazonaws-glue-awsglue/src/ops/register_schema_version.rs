@@ -231,6 +231,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         }
 
+        // "The schema definition using the `DataFormat` setting for the schema set": a
+        // definition that format's own parser does not accept is no schema document, so the
+        // registration is refused and the schema set's version list is left untouched —
+        // before anything is compared or stored. This is NOT the compatibility check, whose
+        // outcome is a version stored with a failed status.
+        if let Some(detail) = crate::state::schema_definition_fault(
+            &schema.data_format,
+            &input.schema_definition,
+        ) {
+            return Err(invalid_input(
+                crate::state::messages::schema_definition_invalid(&schema.data_format, &detail),
+            ));
+        }
+
         // "If the same schema definition is already stored in Schema Registry as a version,
         // the schema ID of the existing schema is returned to the caller": the registration
         // asks for a version the set already holds, so nothing is added and THAT version is

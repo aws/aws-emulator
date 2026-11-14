@@ -37,6 +37,8 @@ mod batch_stop_job_run;
 mod batch_table_version_deletion;
 #[path = "all/batch_update_partition.rs"]
 mod batch_update_partition;
+#[path = "all/blueprint_archive_registration.rs"]
+mod blueprint_archive_registration;
 #[path = "all/blueprint_deletion.rs"]
 mod blueprint_deletion;
 #[path = "all/blueprint_lifecycle_miss.rs"]
@@ -313,6 +315,8 @@ mod response_request_id;
 mod root_catalog_protection;
 #[path = "all/schema_registry.rs"]
 mod schema_registry;
+#[path = "all/schema_registry_updates.rs"]
+mod schema_registry_updates;
 #[path = "all/schema_version_by_definition.rs"]
 mod schema_version_by_definition;
 #[path = "all/schema_version_compatibility.rs"]
@@ -385,6 +389,8 @@ mod wire;
 mod workflow_batch_reads;
 #[path = "all/workflow_graph.rs"]
 mod workflow_graph;
+#[path = "all/workflow_graph_node_identity.rs"]
+mod workflow_graph_node_identity;
 #[path = "all/workflow_listing.rs"]
 mod workflow_listing;
 #[path = "all/workflow_run_actions.rs"]

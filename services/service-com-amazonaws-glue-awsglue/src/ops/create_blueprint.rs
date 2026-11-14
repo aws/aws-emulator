@@ -5,10 +5,16 @@
 //! Registers a blueprint in this account's per-account blueprint namespace
 //! ([`crate::state::ComAmazonawsGlueAwsglueState::blueprints`]): the whole registration
 //! comes from the request, the name must be free, and the create answers with the name it
-//! stored. The registration starts out `CREATING` and the clock owes it `ACTIVE`
-//! ([`crate::state::BLUEPRINT_SETTLES_AFTER`]), so a caller that reads the blueprint
-//! straight afterwards still sees it being registered. `GetBlueprint` reads the record
-//! back.
+//! stored. The registration starts out `CREATING` and the clock owes it the status its
+//! outcome decides ([`crate::state::BLUEPRINT_SETTLES_AFTER`]), so a caller that reads the
+//! blueprint straight afterwards still sees it being registered. `GetBlueprint` reads the
+//! record back.
+//!
+//! The create is ASYNCHRONOUS: it records the registration and the archive published at
+//! `BlueprintLocation` is FETCHED after it answers, so whether that archive can be read is
+//! what decides the registration's terminal status — `ACTIVE` for one the object store
+//! serves, and `FAILED` carrying the location it could not read for one it does not
+//! ([`crate::state::read_blueprint_archive`]).
 //!
 //! ## Shape of an operation
 //!
@@ -150,9 +156,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // Blueprints live in one per-account namespace, so nothing here depends on the
-        // request's Region.
-        let _ = ctx;
+        // Blueprints live in one per-account namespace, so nothing a blueprint record holds
+        // depends on the request's Region; the archive is read through the object store of
+        // the Region this request is served in, which is where the caller's own Amazon S3
+        // requests go.
+        let region = crate::state::request_region(ctx.parts());
         let Some(state) = crate::state::service_state(&*self.engine) else {
             // This operation models a server fault, so an unreachable store is reported
             // as that rather than as a client error the caller could act on.
@@ -167,41 +175,38 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `Name` and `BlueprintLocation` are `@required` and their lengths and patterns —
         // including the S3 path form `BlueprintLocation` has to take — are refused at the
         // boundary, and the model constrains nothing else this create carries, so the only
-        // checks left are the two the STORE answers.
+        // checks left are the two the STORE answers. Both are answered BEFORE the archive is
+        // read, so a create that is about to be refused does no archive work; the guard is
+        // dropped again before that read, because nothing of this store is held across an
+        // await.
         let now = ::std::time::SystemTime::now();
-        let mut store = state.lock();
-        // A blueprint is addressed by `Name` alone across the whole account, so a create
-        // for a name already taken is refused rather than overwriting the registration
-        // stored under it.
-        if store.blueprint(&input.name).is_some() {
-            return Err(CreateBlueprintErrorModeled::AlreadyExistsException(
-                AlreadyExistsException {
-                    message: Some(crate::state::messages::BLUEPRINT_ALREADY_EXISTS.to_string()),
-                },
-            )
-            .into());
+        if let Some(refusal) = refused_by_the_store(&state.lock(), &input) {
+            return Err(refusal);
         }
-        // The store is resident memory and this create is reachable by any caller, so the
-        // number of records one process will hold is bounded. Past the ceiling the request
-        // is refused with the operation's own modelled limit error.
-        if !store.can_store_blueprint() {
-            return Err(
-                CreateBlueprintErrorModeled::ResourceNumberLimitExceededException(
-                    ResourceNumberLimitExceededException {
-                        message: Some(format!(
-                            "This account already holds the maximum of {} blueprints",
-                            crate::state::MAX_BLUEPRINTS
-                        )),
-                    },
-                )
-                .into(),
-            );
+        // What the registration comes to rest in is decided by whether the archive it was
+        // pointed at can be fetched, so that read is made before the record is written, with
+        // no store guard held.
+        let archive = crate::state::read_blueprint_archive(
+            ctx.callback(),
+            &region,
+            &input.blueprint_location,
+        )
+        .await;
+        let mut store = state.lock();
+        // Answered again under THIS guard, the one the record is written through: another
+        // request may have taken the name or the last free slot while the archive was being
+        // read.
+        if let Some(refusal) = refused_by_the_store(&store, &input) {
+            return Err(refusal);
         }
 
-        store.insert_blueprint(crate::state::BlueprintEntry::from_create_input(&input, now));
+        store.insert_blueprint(crate::state::BlueprintEntry::from_create_input(
+            &input, now, archive,
+        ));
         ::tracing::info!(
             operation = "CreateBlueprint",
             blueprint = %input.name,
+            archive = ?archive,
             "registered a Glue blueprint"
         );
 
@@ -211,4 +216,42 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             name: Some(input.name),
         })
     }
+}
+
+/// Why the STORE refuses to register `input`, or `None` when it takes it.
+///
+/// The two checks a create of a blueprint has left once the model's own constraints are
+/// refused at the boundary, in one place so the answer cannot differ between the one made
+/// before the archive is read and the one made under the guard the record is written through.
+fn refused_by_the_store(
+    store: &crate::state::ComAmazonawsGlueAwsglueState,
+    input: &CreateBlueprintInput,
+) -> Option<CreateBlueprintError> {
+    // A blueprint is addressed by `Name` alone across the whole account, so a create for a
+    // name already taken is refused rather than overwriting the registration stored under it.
+    if store.blueprint(&input.name).is_some() {
+        return Some(
+            CreateBlueprintErrorModeled::AlreadyExistsException(AlreadyExistsException {
+                message: Some(crate::state::messages::BLUEPRINT_ALREADY_EXISTS.to_string()),
+            })
+            .into(),
+        );
+    }
+    // The store is resident memory and this create is reachable by any caller, so the number
+    // of records one process will hold is bounded. Past the ceiling the request is refused
+    // with the operation's own modelled limit error.
+    if !store.can_store_blueprint() {
+        return Some(
+            CreateBlueprintErrorModeled::ResourceNumberLimitExceededException(
+                ResourceNumberLimitExceededException {
+                    message: Some(format!(
+                        "This account already holds the maximum of {} blueprints",
+                        crate::state::MAX_BLUEPRINTS
+                    )),
+                },
+            )
+            .into(),
+        );
+    }
+    None
 }

@@ -26,9 +26,10 @@
 //! [`crate::state::MAX_JOB_SCRIPT_RUNS_PER_CALL`] scripts, nothing further started past
 //! [`crate::state::JOB_SCRIPT_CALL_CEILING`], each stopped at
 //! [`crate::state::JOB_SCRIPT_RUN_CEILING`]). A CRAWL is not in that position — this crate
-//! records no crawl — and the workflow run the firing began still comes to rest in the
-//! modelled error status carrying [`crate::state::WORKFLOW_RUN_NOT_EXECUTED_MESSAGE`],
-//! rather than reporting a result nothing computed.
+//! records no crawl — so a crawler action contributes nothing to the workflow run's
+//! statistics, which report what each action that DID run came to; the run itself comes to
+//! rest once the runs its actions began have
+//! ([`crate::state::ComAmazonawsGlueAwsglueState::settle_due_workflow_runs`]).
 //!
 //! ## Shape of an operation
 //!
@@ -218,6 +219,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // so starting one of those fires nothing here. A trigger that fires and belongs
             // to a workflow begins a run of that workflow, which is the run a workflow read
             // then reports.
+            //
+            // The workflow is addressed by NAME alone, with no Region, while the trigger
+            // above is addressed within the Region serving the request: the two namespaces
+            // are keyed differently because the model keys them differently. "It should be
+            // unique within your account" (`CreateWorkflowRequest$Name`), and every
+            // operation the model declares over a workflow — `GetWorkflow`,
+            // `UpdateWorkflow`, `DeleteWorkflow`, `StartWorkflowRun`, `GetWorkflowRun` —
+            // carries a `Name` and neither a `CatalogId` nor a Region member, so one
+            // account's workflow is the SAME workflow at every endpoint of that account
+            // ([`crate::state::ComAmazonawsGlueAwsglueState::workflows`], and the
+            // cross-endpoint read pinned by `tests/all/workflow_run_listing.rs`), whereas a
+            // trigger "is served only through the endpoint that created it". Both keys are
+            // inside ONE account's store: this handler reaches no other account's state, and
+            // the name it resolves is the one the trigger of this Region was created with.
             let begun_run = match workflow_name.as_deref().filter(|_| fires_on_start) {
                 Some(workflow_name) => match store.workflow_mut(workflow_name) {
                     // The workflow a trigger names has to exist for the trigger to be

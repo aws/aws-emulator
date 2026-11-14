@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op UpdateSchema
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `UpdateSchema`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`UpdateSchema::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Writes what this request asks to change onto the stored schema set
+//! ([`crate::state::SchemaEntry`]) the `SchemaId` names — its `Compatibility` and its
+//! `Description` — so `GetSchema` serves the new settings afterwards, and validates the
+//! `SchemaVersionNumber` a request names against the versions the set holds. The stored
+//! `SchemaCheckpoint` is left where the create set it: the recorded read of a schema set this
+//! operation updated reports that value, and writing the named version through makes the
+//! recorded `$.SchemaCheckpoint` diverge. "For updating the compatibility setting, the call
+//! will not validate compatibility for the entire set of schema versions with the new
+//! compatibility setting", so the versions already registered are left exactly as they are
+//! and only registrations made AFTER this update are checked against the new mode.
 //!
 //! ## Shape of an operation
 //!
@@ -167,18 +169,145 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `UpdateSchema` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(UpdateSchemaErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            // This operation models a server fault, so an unreachable store is reported
+            // as that rather than as a client error the caller could act on.
+            return Err(UpdateSchemaErrorModeled::InternalServiceException(
+                InternalServiceException {
+                    message: Some("the Glue schema registry store is unavailable".into()),
+                },
+            )
+            .into());
+        };
+        let region = crate::state::request_region(ctx.parts());
+
+        // The schema set this update addresses is resolved first: `SchemaId` may name it by
+        // name or by ARN, and a reference that names neither is a bad parameter rather than
+        // a miss. The ONE resolution every schema-registry operation shares.
+        let reference = match crate::state::schema_reference(&input.schema_id, &region) {
+            Ok(reference) => reference,
+            Err(message) => return Err(invalid_input(message)),
+        };
+        // A schema ARN of another account or another Region names a schema of an estate
+        // this endpoint does not serve, so it names none here whatever this store holds
+        // under that name.
+        let (registry_name, schema_name) = match reference {
+            crate::state::Reference::Local(names) => names,
+            crate::state::Reference::Elsewhere(_) => return Err(schema_not_found()),
+        };
+
+        // "If the value for the VersionNumber (checkpoint) is provided, Compatibility is
+        // optional, and this can be used to set/reset a checkpoint for the schema": one of
+        // the two has to say what the update is of, so a request carrying neither asks for
+        // nothing and is refused rather than answered with an unchanged schema set. A
+        // request that names a `Compatibility` and NO version number is admitted: the
+        // recorded answer of a schema set whose compatibility and description were updated
+        // reports the checkpoint its CREATE set, so such an update is one the service takes
+        // and the checkpoint is left where it was.
+        if input.compatibility.is_none() && input.schema_version_number.is_none() {
+            return Err(invalid_input(
+                crate::state::SCHEMA_UPDATE_REQUIRES_ONE.to_string(),
+            ));
+        }
+
+        let now = ::std::time::SystemTime::now();
+        let mut store = state.lock();
+        let Some(schema) = store.schema_mut(&registry_name, &schema_name) else {
+            return Err(schema_not_found());
+        };
+
+        // "Version number required for check pointing", and "the API will validate the
+        // checkpoint version number for consistency": the version a request NAMES — "the
+        // latest version available for the schema" or "the version number of the schema",
+        // exactly one of the two, as every other read of that wrapper resolves it — has to be
+        // a version this schema set holds, so a number naming one it does not is refused and
+        // nothing is written.
         //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("UpdateSchema"))
+        // The stored `SchemaCheckpoint` is NOT moved by an update, whether or not one names a
+        // version. That is RECORDED behaviour rather than a gap: the recorded read of a schema
+        // set whose compatibility and description this operation updated reports the
+        // checkpoint its CREATE set, and replaying that fixture with the named version written
+        // through diverges on `$.SchemaCheckpoint` — so what the service does with the number
+        // here is validate it, and the checkpoint a schema set carries is the version in force
+        // when its definition was registered.
+        if let Some(named) = input.schema_version_number.as_ref() {
+            let held = match (named.latest_version, named.version_number) {
+                (true, None) => schema.latest_version().map(|version| version.version_number),
+                (false, Some(number)) => {
+                    schema.version(number).map(|version| version.version_number)
+                }
+                _ => {
+                    return Err(invalid_input(
+                        crate::state::SCHEMA_VERSION_NUMBER_REQUIRES_ONE.to_string(),
+                    ))
+                }
+            };
+            if held.is_none() {
+                return Err(version_not_found());
+            }
+        }
+
+        // Every member the request CARRIES is written and every member it OMITS is left
+        // alone: "If description is not provided, this field will not be updated" is the
+        // rule the whole wrapper follows. `UpdatedTime` moves with the write, because the
+        // schema set itself has changed.
+        if let Some(compatibility) = input.compatibility.as_ref() {
+            schema.compatibility = compatibility.clone();
+        }
+        if let Some(description) = input.description.as_ref() {
+            schema.description = Some(description.clone());
+        }
+        schema.updated_time = now;
+        ::tracing::info!(
+            operation = "UpdateSchema",
+            registry = %registry_name,
+            schema = %schema_name,
+            compatibility = %schema.compatibility,
+            checkpoint = schema.checkpoint,
+            "updated a Glue schema set"
+        );
+
+        // "The name of the schema", "the name of the registry that contains the schema" and
+        // "the Amazon Resource Name (ARN) of the schema": the record this write landed in,
+        // addressed the way every other schema-registry answer addresses it.
+        Ok(UpdateSchemaOutput {
+            schema_arn: Some(crate::state::schema_arn(
+                &region,
+                &registry_name,
+                &schema_name,
+            )),
+            schema_name: Some(schema_name.clone()),
+            registry_name: Some(registry_name.clone()),
+        })
     }
+}
+
+/// This operation's modelled refusal for a request member it cannot act on: "The input
+/// provided was not valid."
+fn invalid_input(message: String) -> UpdateSchemaError {
+    UpdateSchemaErrorModeled::InvalidInputException(InvalidInputException {
+        message: Some(message),
+        from_federation_source: None,
+    })
+    .into()
+}
+
+/// This operation's modelled refusal for a `SchemaId` that resolves to a schema set this
+/// endpoint holds none of — the same wording every schema-registry miss answers.
+fn schema_not_found() -> UpdateSchemaError {
+    UpdateSchemaErrorModeled::EntityNotFoundException(EntityNotFoundException {
+        message: Some(crate::state::messages::SCHEMA_NOT_FOUND.to_string()),
+        from_federation_source: None,
+    })
+    .into()
+}
+
+/// This operation's modelled refusal for a `SchemaVersionNumber` that names a version the
+/// addressed schema set does not hold: the checkpoint it asks for cannot be taken.
+fn version_not_found() -> UpdateSchemaError {
+    UpdateSchemaErrorModeled::InvalidInputException(InvalidInputException {
+        message: Some(crate::state::messages::SCHEMA_VERSION_NOT_FOUND.to_string()),
+        from_federation_source: None,
+    })
+    .into()
 }

@@ -23,8 +23,8 @@ use std::time::{Duration, SystemTime};
 use serde_json::{json, Value};
 use service_com_amazonaws_glue_awsglue::ops::types::CreateBlueprintInput;
 use service_com_amazonaws_glue_awsglue::state::{
-    messages, BlueprintEntry, ComAmazonawsGlueAwsglueState, BLUEPRINT_SETTLES_AFTER,
-    MAX_BLUEPRINTS,
+    messages, BlueprintArchive, BlueprintEntry, ComAmazonawsGlueAwsglueState,
+    BLUEPRINT_SETTLES_AFTER, MAX_BLUEPRINTS,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -728,6 +728,9 @@ async fn a_create_past_the_blueprint_ceiling_is_refused() {
             store.insert_blueprint(BlueprintEntry::from_create_input(
                 &input,
                 std::time::SystemTime::now(),
+                // This row is about the ceiling on what is stored, so each seeded record is
+                // a registration whose published archive was read.
+                BlueprintArchive::Published,
             ));
         }
     }

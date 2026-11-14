@@ -192,7 +192,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the last execution of the workflow" this read reports — so it is materialised
         // here, before the workflow is read, exactly as the statuses its runs were owed are.
         store.settle_due_event_batches(&region, &input.name, now);
-        let Some(entry) = store.workflow_mut(&input.name) else {
+        if store.workflow(&input.name).is_none() {
             return Err(GetWorkflowErrorModeled::EntityNotFoundException(
                 EntityNotFoundException {
                     message: Some(crate::state::messages::WORKFLOW_NOT_FOUND.to_string()),
@@ -200,11 +200,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 },
             )
             .into());
-        };
-        entry.settle_due_runs(now);
-        // The runs those executions' actions began were owed the same clock, and this read
-        // reports the state each has reached, so what it owed them is materialised too.
-        store.settle_due_action_job_runs(&region, &input.name, now);
+        }
+        // The runs of this workflow, and the job runs their actions began, are given the
+        // state the clock already owed each of them — the one write this read makes.
+        store.settle_due_workflow_runs(&region, &input.name, now);
 
         // "Specifies whether to include a graph when returning the workflow resource
         // metadata": the reader that did not ask for one is answered without it, which is

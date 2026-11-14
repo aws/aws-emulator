@@ -218,6 +218,14 @@ pub const SCHEMA_VERSION_REQUIRES_ID_OR_NUMBER: &str =
 pub const SCHEMA_VERSION_NUMBER_REQUIRES_ONE: &str =
     "One of LatestVersion or VersionNumber has to be provided.";
 
+/// The sentence a refusal carries for an `UpdateSchema` that asks for neither of the two
+/// things it can change about a schema set. Stated by the operation: "If the value for the
+/// VersionNumber (checkpoint) is provided, Compatibility is optional and this can be used
+/// to set/reset a checkpoint for the schema", so one of the two has to say what the update
+/// is of.
+pub const SCHEMA_UPDATE_REQUIRES_ONE: &str =
+    "One of VersionNumber or Compatibility has to be provided.";
+
 /// How a member the request did not carry is spelled where a refusal renders the whole
 /// `SchemaId` wrapper back ([`schema_id_description`]).
 const ABSENT_MEMBER: &str = "null";
@@ -434,16 +442,27 @@ pub struct SchemaEntry {
     /// The versions registered against it, in registration order, so the last is the
     /// latest.
     pub versions: Vec<SchemaVersionEntry>,
+    /// The highest `VersionNumber` ever registered against this schema set, and
+    /// [`NO_SCHEMA_VERSION`] for a set nothing has ever been registered against.
+    ///
+    /// A version NUMBER is assigned once and never reused: it counts the registrations a
+    /// schema set has taken, not the versions it still holds, so deleting a version frees
+    /// neither its number nor the numbers above it ([`Self::next_schema_version`]). That is
+    /// why the counter lives on the set rather than being read off [`Self::versions`],
+    /// which a delete shortens ([`crate::ops::delete_schema_versions`]).
+    pub highest_version_number: i64,
 }
 
 impl SchemaEntry {
     /// `LatestSchemaVersion`, "the latest version of the schema associated with the
-    /// returned schema definition": the number of the last version registered, or
-    /// [`NO_SCHEMA_VERSION`] for a schema set that holds none.
+    /// returned schema definition": the number of the latest version registered, or
+    /// [`NO_SCHEMA_VERSION`] for a schema set nothing has been registered against.
+    ///
+    /// Read off [`Self::highest_version_number`], so a set whose latest version has been
+    /// deleted still reports the number that registration took: version numbers are
+    /// assigned once and never reused.
     pub fn latest_schema_version(&self) -> i64 {
-        self.versions
-            .last()
-            .map_or(NO_SCHEMA_VERSION, |version| version.version_number)
+        self.highest_version_number
     }
 
     /// `NextSchemaVersion`: the number the next registration would take, which is one past
@@ -518,6 +537,9 @@ impl SchemaEntry {
         let version_number = self.next_schema_version();
         let registered = SchemaVersionEntry::new(version_number, definition, status, now);
         self.versions.push(registered.clone());
+        // The number this registration took is now the highest the set has ever assigned,
+        // which is what the next one counts from however many versions are later deleted.
+        self.highest_version_number = version_number;
         self.updated_time = now;
         registered
     }

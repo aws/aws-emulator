@@ -1002,6 +1002,18 @@ pub fn compatibility_does_not_allow_versioning(compatibility: &str, schema_id: &
     format!("Compatibility {compatibility} does not allow versioning. SchemaId: {schema_id}")
 }
 
+/// A `SchemaDefinition` the data format of the schema set it is being registered against
+/// does not accept ([`super::schema_definition_fault`]).
+///
+/// RECORDED template: the fixed text "Schema definition of ", the `DataFormat` of the schema
+/// set, " data format is invalid: ", and what the format's own parser reported about the
+/// document — the position it stops being one at. Only the format and the parser's own
+/// sentence are variable; the service's own parser is not the one that recorded the sentence,
+/// so the wording of that part is this emulator's parser's.
+pub fn schema_definition_invalid(data_format: &str, detail: &str) -> String {
+    format!("Schema definition of {data_format} data format is invalid: {detail}")
+}
+
 /// `CreateSchema` for a `SchemaName` its registry already holds.
 ///
 /// Recorded template: the fixed collision sentence followed by the MEMBER the create
@@ -1154,6 +1166,17 @@ pub const BLUEPRINT_NOT_FOUND: &str = "Blueprint with given name not found.";
 /// an invalid state to perform a requested operation".
 pub fn blueprint_has_no_active_definition(name: &str) -> String {
     format!("No active definition found for Blueprint: {name}")
+}
+
+/// `Blueprint$ErrorMessage` for a registration whose published archive could not be read:
+/// "An error message."
+///
+/// RECORDED template: the fixed text "Access denied on object at location: " followed by the
+/// `BlueprintLocation` the registration named, taken verbatim from the request, and a
+/// terminating period. Only the location is variable; the rest is the service's own wording
+/// for an archive it could not fetch.
+pub fn blueprint_location_not_accessible(location: &str) -> String {
+    format!("Access denied on object at location: {location}.")
 }
 
 /// A blueprint run that could not create the workflow it lays out because this account

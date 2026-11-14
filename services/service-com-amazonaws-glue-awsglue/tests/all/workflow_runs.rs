@@ -13,10 +13,10 @@
 //! `WorkflowRunStatus` until the status the clock owes it falls due, and in a terminal one
 //! afterwards. A start on a workflow with NO entry point is refused with 400 and the
 //! modelled `InvalidInputException`, and one past a concurrency ceiling the workflow named
-//! with `ConcurrentRunsExceededException`. Because nothing here runs the jobs and crawlers
-//! a workflow's triggers initiate, the status the clock owes is the modelled error status
-//! carrying the reason nothing was executed, so a run never reports a result nothing
-//! computed.
+//! with `ConcurrentRunsExceededException`. A run comes to rest once the runs its actions
+//! began have come to rest, in the modelled status of a run whose actions have run their
+//! course — what each action came to is reported by the run's own statistics and not by its
+//! status.
 //!
 //! The recorded behavioural case — a bare workflow refused for having no starting trigger,
 //! then the same workflow started once an on-demand trigger is bound to it — is TWO rows
@@ -34,12 +34,12 @@ use serde_json::{json, Value};
 use service_com_amazonaws_glue_awsglue::state::messages::WORKFLOW_NOT_FOUND;
 use service_com_amazonaws_glue_awsglue::state::{
     ComAmazonawsGlueAwsglueState, TERMINAL_WORKFLOW_RUN_STATUSES, WORKFLOW_RUN_ID_PREFIX,
-    WORKFLOW_RUN_NOT_EXECUTED_MESSAGE, WORKFLOW_RUN_STATUS_ERROR, WORKFLOW_RUN_STATUS_RUNNING,
+    WORKFLOW_RUN_STATUS_COMPLETED, WORKFLOW_RUN_STATUS_RUNNING,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::job_runs::{already_past, emulator_with_engine, far_future};
-use crate::wire::{call, error_code, error_message, ok};
+use crate::wire::{call, error_code, error_message, ok, REGION};
 
 /// The role ARN the job every trigger action below runs is registered with.
 const ROLE_ARN: &str = "arn:aws:iam::000000000000:role/sim2real-glue-job-role";
@@ -148,11 +148,33 @@ fn run_properties(run: &Value) -> Value {
     }
 }
 
-/// Move the due instant of every unsettled run of `workflow` to `at`, so a test can hold
-/// the transient window open or make the owed transition due without sleeping.
+/// Move the due instant of every unsettled run of `workflow`, and of every job run those
+/// runs' actions began, to `at` — so a test can hold the transient window open or make the
+/// owed transition due without sleeping.
+///
+/// The actions move WITH the run because a run is a composite of them: it comes to rest only
+/// once the runs it began have, so moving its own instant alone would leave it waiting.
 fn set_due_instant(engine: &Arc<engine::InMemoryEngine>, workflow: &str, at: SystemTime) {
     let state = engine.state::<ComAmazonawsGlueAwsglueState>();
     let mut store = state.lock();
+    let actions: Vec<(String, String)> = store
+        .workflow(workflow)
+        .unwrap_or_else(|| panic!("the store must hold workflow {workflow:?}"))
+        .runs
+        .iter()
+        .flat_map(|run| run.action_job_runs.iter())
+        .map(|begun| (begun.job_name.clone(), begun.run_id.clone()))
+        .collect();
+    for (job_name, run_id) in actions {
+        if let Some(job_run) = store
+            .job_mut(REGION, &job_name)
+            .and_then(|job| job.run_mut(&run_id))
+        {
+            if job_run.settles_at.is_some() {
+                job_run.settles_at = Some(at);
+            }
+        }
+    }
     let entry = store
         .workflow_mut(workflow)
         .unwrap_or_else(|| panic!("the store must hold workflow {workflow:?}"));
@@ -499,14 +521,14 @@ async fn the_owed_status_falls_due_on_the_clock() {
             "case {case}: expected one of {TERMINAL_WORKFLOW_RUN_STATUSES:?}, got {settled}"
         );
         assert_eq!(
-            status, WORKFLOW_RUN_STATUS_ERROR,
-            "case {case}: nothing executed the run's actions, so it comes to rest in \
-             {WORKFLOW_RUN_STATUS_ERROR}, got {settled}"
+            status, WORKFLOW_RUN_STATUS_COMPLETED,
+            "case {case}: the run's actions have run their course, so it comes to rest in \
+             {WORKFLOW_RUN_STATUS_COMPLETED}, got {settled}"
         );
-        assert_eq!(
-            settled.get("ErrorMessage").and_then(Value::as_str),
-            Some(WORKFLOW_RUN_NOT_EXECUTED_MESSAGE),
-            "case {case}: a run nothing executed says so, got {settled}"
+        assert!(
+            settled.get("ErrorMessage").is_none_or(Value::is_null),
+            "case {case}: a run that was started and ran its course reports no error, got \
+             {settled}"
         );
         assert!(
             settled.get("CompletedOn").and_then(Value::as_f64).is_some(),
@@ -531,7 +553,7 @@ async fn the_owed_status_falls_due_on_the_clock() {
         );
         assert_eq!(
             last_run.get("Status").and_then(Value::as_str),
-            Some(WORKFLOW_RUN_STATUS_ERROR),
+            Some(WORKFLOW_RUN_STATUS_COMPLETED),
             "case {case}: the last execution carries the status the clock reached, got {body}"
         );
     }

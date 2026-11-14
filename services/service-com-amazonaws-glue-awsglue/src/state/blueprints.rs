@@ -16,6 +16,15 @@ pub const BLUEPRINT_STATUS_CREATING: &str = "CREATING";
 /// blueprint has been successfully registered." See [`BLUEPRINT_STATUS_CREATING`].
 pub const BLUEPRINT_STATUS_ACTIVE: &str = "ACTIVE";
 
+/// The `BlueprintStatus` of a blueprint whose registration could not finish: "Failed — The
+/// blueprint registration failed." See [`BLUEPRINT_STATUS_CREATING`].
+pub const BLUEPRINT_STATUS_FAILED: &str = "FAILED";
+
+/// The `Version` of the FIRST registration of a blueprint, which is the version every
+/// blueprint a create registers holds: a blueprint's definition is versioned from one, and
+/// an update of it registers the next version.
+pub const FIRST_BLUEPRINT_VERSION: i32 = 1;
+
 /// How long a blueprint stays in the status its registration put it in before the clock
 /// owes it [`BLUEPRINT_STATUS_ACTIVE`].
 ///
@@ -25,6 +34,61 @@ pub const BLUEPRINT_STATUS_ACTIVE: &str = "ACTIVE";
 /// instant is stored on the record and materialised by whichever later call reads it;
 /// nothing sleeps.
 pub const BLUEPRINT_SETTLES_AFTER: Duration = Duration::from_secs(3);
+
+/// What a registration established about the archive published at a blueprint's
+/// `BlueprintLocation` — "specifies the path in Amazon S3 where the blueprint is published"
+/// — which is what decides the terminal status of that registration.
+///
+/// `CreateBlueprint` is asynchronous: it records the registration and Glue then FETCHES the
+/// published archive, so a registration pointed at an object the object store does not serve
+/// comes to rest having failed rather than being refused at the call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlueprintArchive {
+    /// The object store served the archive, so there is a blueprint definition to register.
+    Published,
+    /// The object store ANSWERED that the archive cannot be read — it holds nothing at that
+    /// address, the read is not permitted, or it answered something no archive can be read
+    /// through — or the location names no Amazon S3 object at all.
+    Unreadable,
+}
+
+/// Read the archive published at `location`, through this emulator's own Amazon S3, and
+/// answer what that read established.
+///
+/// The read is a HEAD of the object: what a registration needs to know is whether the
+/// archive at that address can be FETCHED, not what is in it, and heading the object answers
+/// that without buffering an archive of any size. What the store ANSWERED is read through the
+/// tree's one reading of an object store's answer
+/// ([`::service_common::s3_object_read::answered_refusal`]), so this registration and every
+/// other read this service makes of an object agree about what an answer MEANT.
+///
+/// Only what the store ANSWERED fails a registration: a failure carrying no error code is no
+/// answer about the object — there is no object store mounted to ask, or the call could not
+/// be dispatched — so nothing is established and the registration is not failed for it, the
+/// same way a job run is admitted when nothing can be shown about its role.
+pub async fn read_blueprint_archive(
+    callback: &smithy_server_runtime::EmbeddedEmulator,
+    region: &str,
+    location: &str,
+) -> BlueprintArchive {
+    // The location is checked for naming an object at all BEFORE anything is asked of the
+    // store: a value naming no bucket, or naming a prefix rather than one object, names no
+    // archive anywhere.
+    let Some((bucket, key)) = split_s3_location(location) else {
+        return BlueprintArchive::Unreadable;
+    };
+    if key.is_empty() || key.ends_with('/') {
+        return BlueprintArchive::Unreadable;
+    }
+    let client = ::service_common::s3_client::s3_client(callback, region);
+    let Err(error) = client.head_object().bucket(bucket).key(key).send().await else {
+        return BlueprintArchive::Published;
+    };
+    match ::service_common::s3_object_read::answered_refusal(&error) {
+        ::service_common::s3_object_read::ObjectRead::Unanswered => BlueprintArchive::Published,
+        _ => BlueprintArchive::Unreadable,
+    }
+}
 
 /// A stored blueprint: the reusable workflow template a blueprint create registers.
 ///
@@ -54,6 +118,19 @@ pub struct BlueprintEntry {
     /// The instant the clock owes this blueprint its next status; `None` once it has
     /// settled.
     pub settles_at: Option<SystemTime>,
+    /// The `BlueprintStatus` the clock owes this blueprint at [`Self::settles_at`]: the
+    /// terminal status its registration is headed for, decided by whether the archive
+    /// published at [`Self::blueprint_location`] could be read ([`BlueprintArchive`]).
+    pub settles_to: String,
+    /// `Blueprint$ErrorMessage`: "An error message", which a registration carries only once
+    /// it has come to rest having failed.
+    pub error_message: Option<String>,
+    /// The `ErrorMessage` the clock gives this blueprint when it moves it into
+    /// [`Self::settles_to`], and `None` for a registration whose archive was read.
+    pub settles_with_error: Option<String>,
+    /// `Blueprint$Version`: the version of the definition this registration holds, which
+    /// for the registration a create wrote is [`FIRST_BLUEPRINT_VERSION`].
+    pub version: i32,
     /// The tags the blueprint was registered with, which the modelled `Blueprint` shape
     /// does not carry.
     ///
@@ -77,7 +154,23 @@ impl BlueprintEntry {
     /// [`BLUEPRINT_SETTLES_AFTER`] out — "Creating — The blueprint registration is in
     /// progress" — and every other member taken from the request, which carries the whole
     /// registration.
-    pub fn from_create_input(input: &CreateBlueprintInput, now: SystemTime) -> Self {
+    pub fn from_create_input(
+        input: &CreateBlueprintInput,
+        now: SystemTime,
+        archive: BlueprintArchive,
+    ) -> Self {
+        // A registration whose archive the object store serves is owed the status of a
+        // blueprint that was registered; one whose archive it cannot serve is owed the
+        // terminal failure status carrying the location that could not be read.
+        let (settles_to, settles_with_error) = match archive {
+            BlueprintArchive::Published => (BLUEPRINT_STATUS_ACTIVE, None),
+            BlueprintArchive::Unreadable => (
+                BLUEPRINT_STATUS_FAILED,
+                Some(messages::blueprint_location_not_accessible(
+                    &input.blueprint_location,
+                )),
+            ),
+        };
         Self {
             name: input.name.clone(),
             blueprint_location: input.blueprint_location.clone(),
@@ -86,6 +179,13 @@ impl BlueprintEntry {
             last_modified_on: now,
             status: BLUEPRINT_STATUS_CREATING.to_string(),
             settles_at: Some(now.checked_add(BLUEPRINT_SETTLES_AFTER).unwrap_or(now)),
+            settles_to: settles_to.to_string(),
+            // Nothing has gone wrong yet: a registration carries an error message only once
+            // it has come to rest having failed.
+            error_message: None,
+            settles_with_error,
+            // The registration a create wrote is the first version of the blueprint.
+            version: FIRST_BLUEPRINT_VERSION,
             tags: input.tags.clone().unwrap_or_default(),
             // A blueprint a registration wrote has not been run.
             runs: Vec::new(),
@@ -107,7 +207,10 @@ impl BlueprintEntry {
             return;
         }
         self.settles_at = None;
-        self.status = BLUEPRINT_STATUS_ACTIVE.to_string();
+        self.status = self.settles_to.clone();
+        // "An error message": the registration that comes to rest without having read the
+        // archive it was pointed at carries the reason it did not.
+        self.error_message = self.settles_with_error.clone();
     }
 
     /// Whether this blueprint's registration has finished, i.e. is in
@@ -185,8 +288,11 @@ impl BlueprintEntry {
             // here copies the archive, so there is no such path a caller could read.
             blueprint_service_location: None,
             status: Some(self.status.clone()),
-            // "An error message": a registration this store accepted has none.
-            error_message: None,
+            // "An error message": a registration that came to rest having failed carries the
+            // reason it did, and one whose archive was read carries none.
+            error_message: self.error_message.clone(),
+            // The version of the definition this registration holds.
+            version: Some(self.version),
             // "When there are multiple versions of a blueprint and the latest version has
             // some errors, this attribute indicates the last successful blueprint
             // definition": the registration stored here is itself the latest and has no

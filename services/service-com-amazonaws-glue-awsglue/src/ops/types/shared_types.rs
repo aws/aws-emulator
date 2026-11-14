@@ -183,6 +183,7 @@ pub struct ResourceNotReadyException {
 #[smithy_macros::smithy(shape = "com.amazonaws.glue#Blueprint")]
 #[derive(Debug, Clone, Default)]
 pub struct Blueprint {
+    pub version: Option<i32>,
     pub name: Option<String>,
     pub description: Option<String>,
     pub created_on: Option<::aws_smithy_types::DateTime>,

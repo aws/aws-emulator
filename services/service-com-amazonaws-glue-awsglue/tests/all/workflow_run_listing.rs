@@ -32,8 +32,7 @@ use std::time::{Duration, SystemTime};
 use serde_json::{json, Value};
 use service_com_amazonaws_glue_awsglue::state::messages::WORKFLOW_NOT_FOUND;
 use service_com_amazonaws_glue_awsglue::state::{
-    ComAmazonawsGlueAwsglueState, WORKFLOW_RUN_NOT_EXECUTED_MESSAGE, WORKFLOW_RUN_STATUS_ERROR,
-    WORKFLOW_RUN_STATUS_RUNNING,
+    ComAmazonawsGlueAwsglueState, WORKFLOW_RUN_STATUS_COMPLETED, WORKFLOW_RUN_STATUS_RUNNING,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -133,11 +132,33 @@ fn set_start_instants(engine: &Arc<engine::InMemoryEngine>, workflow: &str, offs
     }
 }
 
-/// Move the due instant of every run of `workflow` to `at`, so a row can hold the transient
-/// window open or make the owed transition due without sleeping.
+/// Move the due instant of every run of `workflow`, and of every job run those runs'
+/// actions began, to `at` — so a row can hold the transient window open or make the owed
+/// transition due without sleeping.
+///
+/// The actions move WITH the run because a run is a composite of them: it comes to rest only
+/// once the runs it began have.
 fn set_due_instant(engine: &Arc<engine::InMemoryEngine>, workflow: &str, at: SystemTime) {
     let state = engine.state::<ComAmazonawsGlueAwsglueState>();
     let mut store = state.lock();
+    let actions: Vec<(String, String)> = store
+        .workflow(workflow)
+        .unwrap_or_else(|| panic!("the store must hold workflow {workflow:?}"))
+        .runs
+        .iter()
+        .flat_map(|run| run.action_job_runs.iter())
+        .map(|begun| (begun.job_name.clone(), begun.run_id.clone()))
+        .collect();
+    for (job_name, run_id) in actions {
+        if let Some(job_run) = store
+            .job_mut(REGION, &job_name)
+            .and_then(|job| job.run_mut(&run_id))
+        {
+            if job_run.settles_at.is_some() {
+                job_run.settles_at = Some(at);
+            }
+        }
+    }
     let entry = store
         .workflow_mut(workflow)
         .unwrap_or_else(|| panic!("the store must hold workflow {workflow:?}"));
@@ -587,13 +608,13 @@ async fn listing_runs_reports_the_state_the_clock_owes_and_changes_nothing_else(
     for run in listed_runs(&settled) {
         assert_eq!(
             run["Status"].as_str(),
-            Some(WORKFLOW_RUN_STATUS_ERROR),
+            Some(WORKFLOW_RUN_STATUS_COMPLETED),
             "case \"the transition fell due\": expected the status the clock owed, got {run}"
         );
-        assert_eq!(
-            run["ErrorMessage"].as_str(),
-            Some(WORKFLOW_RUN_NOT_EXECUTED_MESSAGE),
-            "case \"the transition fell due\": expected the owed reason, got {run}"
+        assert!(
+            run.get("ErrorMessage").is_none_or(Value::is_null),
+            "case \"the transition fell due\": a run that ran its course reports no error, \
+             got {run}"
         );
     }
 }

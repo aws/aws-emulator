@@ -115,6 +115,8 @@ fn seeded_schema(registry_name: &str, name: &str) -> SchemaEntry {
         updated_time: SystemTime::UNIX_EPOCH,
         tags: Default::default(),
         versions: Vec::new(),
+        // Nothing has been registered against it, so no version number has been assigned.
+        highest_version_number: NO_SCHEMA_VERSION,
     }
 }
 

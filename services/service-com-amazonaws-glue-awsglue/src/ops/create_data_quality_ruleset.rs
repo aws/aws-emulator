@@ -5,9 +5,9 @@
 //! Registers a DQDL ruleset in this account's per-account data quality ruleset namespace
 //! ([`crate::state::ComAmazonawsGlueAwsglueState::data_quality_rulesets`]): the whole
 //! definition comes from the request, the name must be free, and the create answers with the
-//! record it stored — the name, the identifier it assigned the ruleset, the definition, the
-//! table it targets and both of its instants. `GetDataQualityRuleset` reads the record back
-//! and reports that same identifier, as does `UpdateDataQualityRuleset`.
+//! record it stored — the name, the identifier it assigned the ruleset, the description, the
+//! definition, the table it targets and both of its instants. `GetDataQualityRuleset` reads
+//! the record back and reports that same identifier, as does `UpdateDataQualityRuleset`.
 //!
 //! That projection is wider than the one member the modelled response below binds, which is
 //! why the response shape is hand-declared — see
@@ -137,19 +137,21 @@ impl From<CreateDataQualityRulesetErrorModeled> for CreateDataQualityRulesetErro
 }
 
 /// The answer for a stored ruleset: the record's own identity — the identifier the create
-/// assigned it and both of its instants — beside the definition and the target table it was
-/// registered with.
+/// assigned it and both of its instants — beside the description, the definition and the
+/// target table it was registered with.
 ///
 /// Every member is read off the stored record, so the create's answer, a later
 /// `GetDataQualityRuleset` and a later `UpdateDataQualityRuleset` all report the same
 /// identifier for one ruleset and a client can chain the value from whichever answer it
-/// holds. `Description` is not a member of this answer: the create reports the record's
-/// identity and definition, and the description is read back through
-/// `GetDataQualityRuleset`.
+/// holds.
 fn projection(entry: &crate::state::DataQualityRulesetEntry) -> CreateDataQualityRulesetOutput {
     CreateDataQualityRulesetOutput {
         name: Some(entry.name.clone()),
         identifier: Some(entry.identifier.clone()),
+        // "A description of the data quality ruleset", and nothing at all for a ruleset
+        // created without one: the answer reports the absence the create expressed rather
+        // than an empty string.
+        description: entry.description.clone(),
         ruleset: Some(entry.ruleset.clone()),
         target_table: entry.target_table.clone(),
         created_on: Some(crate::state::to_date_time(entry.created_on)),

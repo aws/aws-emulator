@@ -26,9 +26,10 @@ use crate::wire::{call, emulator, error_code, ok, ACCOUNT_ID};
 /// The members `CreateDataQualityRuleset` answers with: the one the published shape binds
 /// (`smithy_query shape=CreateDataQualityRulesetResponse`) plus the record's identity and
 /// definition the service reports beside it.
-const CREATE_RESPONSE_MEMBERS: [&str; 6] = [
+const CREATE_RESPONSE_MEMBERS: [&str; 7] = [
     "Name",
     "Identifier",
+    "Description",
     "Ruleset",
     "TargetTable",
     "CreatedOn",
@@ -188,6 +189,11 @@ async fn one_rulesets_identifier_is_reported_by_its_create_its_reads_and_its_upd
             created.get("TargetTable").cloned().unwrap_or(Value::Null),
             create.get("TargetTable").cloned().unwrap_or(Value::Null),
             "case {case}: expected the TargetTable the create named, got {created}"
+        );
+        assert_eq!(
+            created.get("Description").cloned().unwrap_or(Value::Null),
+            create.get("Description").cloned().unwrap_or(Value::Null),
+            "case {case}: expected the description the create registered, got {created}"
         );
         assert_eq!(
             instant(case, "CreateDataQualityRuleset", "CreatedOn", &created),
