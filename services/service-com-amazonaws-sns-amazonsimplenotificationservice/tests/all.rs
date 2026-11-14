@@ -83,6 +83,9 @@ mod filter_policy_match_budget;
 #[path = "all/filter_policy_parse_diagnostic.rs"]
 mod filter_policy_parse_diagnostic;
 
+#[path = "all/filter_policy_relaxation.rs"]
+mod filter_policy_relaxation;
+
 #[path = "all/filter_policy_wildcard_operator.rs"]
 mod filter_policy_wildcard_operator;
 
@@ -105,6 +108,12 @@ mod lambda_subscription_grants;
 
 #[path = "all/list_subscriptions.rs"]
 mod list_subscriptions;
+
+#[path = "all/message_attribute_name_charset.rs"]
+mod message_attribute_name_charset;
+
+#[path = "all/notification_envelope_layout.rs"]
+mod notification_envelope_layout;
 
 #[path = "all/notification_signature.rs"]
 mod notification_signature;

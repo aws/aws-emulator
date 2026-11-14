@@ -118,11 +118,17 @@ impl StreamDelivery {
         let message: ::std::sync::Arc<str> = if raw {
             ::std::sync::Arc::from(protocol_body)
         } else {
-            ::std::sync::Arc::from(super::notification_envelope(
-                published,
-                protocol_body,
-                &subscription.arn,
-                signer,
+            // The same notification every other enveloped subscriber receives, written on
+            // ONE line: a record is terminated by a newline so the destination's records
+            // can be read apart, which the text a queue subscriber receives — laid out
+            // over several lines — would not allow.
+            ::std::sync::Arc::from(super::envelope_layout::compact(
+                &super::notification_document(
+                    published,
+                    protocol_body,
+                    &subscription.arn,
+                    signer,
+                ),
             ))
         };
         // A raw record is the body alone; an enveloped one is terminated, so the records the

@@ -1304,9 +1304,9 @@ async fn a_message_attribute_is_refused_outside_the_rules_its_parts_carry() {
             "a character a name may not carry",
             "space here",
             Some(
-                "Message attribute name contains invalid non-alphanumeric character \
-                 '#x20'. You can use only alphanumeric characters, hyphens (-), \
-                 underscores (_), or periods (.).",
+                "Invalid non-alphanumeric character '#x20' was found in the message \
+                 attribute name. Can only include alphanumeric characters, hyphens, \
+                 underscores, or dots.",
             ),
         ),
         (

@@ -57,9 +57,15 @@ fn is_attribute_value_character(c: char) -> bool {
 }
 
 /// Whether `name` is made of the characters SNS admits in a message attribute name:
-/// letters, digits, underscore, hyphen and period.
+/// alphanumerics, underscore, hyphen and period (the Amazon SNS Developer Guide, "Amazon
+/// SNS message attributes": a name "can contain ... alphanumeric characters, hyphens (-),
+/// underscores (_), and periods (.)").
+///
+/// ALPHANUMERIC is read as the character's own class rather than as ASCII, so a letter or a
+/// digit outside ASCII is one of the characters a name may carry: the rule is about what
+/// the character IS, and a name of letters is a name whichever script writes them.
 fn is_attribute_name_character(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.'
+    c.is_alphanumeric() || c == '_' || c == '-' || c == '.'
 }
 
 /// The logical data types SNS defines for a message attribute, from the
@@ -86,10 +92,12 @@ fn invalid_name_message(name: &str) -> Option<String> {
         ));
     }
     if let Some(character) = name.chars().find(|c| !is_attribute_name_character(*c)) {
+        // The offending character is named as the character reference SNS states it by:
+        // `#x` and its code point in uppercase hex, unpadded.
         return Some(format!(
-            "Message attribute name contains invalid non-alphanumeric character \
-             '#x{:X}'. You can use only alphanumeric characters, hyphens (-), \
-             underscores (_), or periods (.).",
+            "Invalid non-alphanumeric character '#x{:X}' was found in the message \
+             attribute name. Can only include alphanumeric characters, hyphens, \
+             underscores, or dots.",
             character as u32
         ));
     }

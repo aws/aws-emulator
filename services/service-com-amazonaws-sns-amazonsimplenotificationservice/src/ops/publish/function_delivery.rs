@@ -517,11 +517,18 @@ fn records_envelope(
             serde_json::Value::from(url),
         );
     }
-    // The signature members LAST, for the reason the JSON envelope adds them last: the
-    // string that is signed is built from the members the subscriber receives.
+    // The signature members are written once the record's notification is complete,
+    // because the string that is signed is built from the members the subscriber receives;
+    // the layout then puts every member in the order a notification carries them
+    // ([`super::envelope_layout`]).
     signer.seal(
         &mut notification,
         state::notification_signature::EVENT_CERTIFICATE_URL_MEMBER,
+    );
+    let notification = super::envelope_layout::in_canonical_order(
+        notification,
+        state::notification_signature::EVENT_CERTIFICATE_URL_MEMBER,
+        UNSUBSCRIBE_URL_MEMBER,
     );
     let mut record = serde_json::Map::new();
     record.insert(

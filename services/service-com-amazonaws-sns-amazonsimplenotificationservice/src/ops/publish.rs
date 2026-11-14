@@ -163,6 +163,13 @@ use crate::state::{self, MessageRequest, PublishedMessage};
 #[path = "publish/function_delivery.rs"]
 mod function_delivery;
 
+/// The LAYOUT of a delivered notification — the order its members stand in and the text a
+/// subscriber receives them as — which every delivery path renders through, so one
+/// notification is laid out the same way whichever endpoint kind receives it. Declared with
+/// a `#[path]` for the reason [`function_delivery`] is.
+#[path = "publish/envelope_layout.rs"]
+mod envelope_layout;
+
 /// Whether the KMS key a subscribed queue encrypts its messages with lets this service seal
 /// the notification it hands over: one concern of its own, for the reason
 /// [`function_delivery`] is — it is answered by another service, against a document of its
@@ -2172,18 +2179,51 @@ fn notification_envelope(
     subscription_arn: &str,
     signer: &state::notification_signature::Signer,
 ) -> String {
+    envelope_layout::delivered(&notification_document(
+        published,
+        body,
+        subscription_arn,
+        signer,
+    ))
+}
+
+/// The members of that same notification, in the order a delivered notification carries
+/// them ([`envelope_layout`]).
+///
+/// `pub(super)` because a record put into a stream carries this document on ONE line rather
+/// than as the text a queue subscriber receives ([`stream_delivery`]), so that path
+/// serializes the same members for itself.
+pub(super) fn notification_document(
+    published: &PublishedMessage,
+    body: &str,
+    subscription_arn: &str,
+    signer: &state::notification_signature::Signer,
+) -> ::serde_json::Map<String, ::serde_json::Value> {
     let mut envelope = notification_members(published, body);
     if let Some(url) = unsubscribe_url(&published.topic_arn, subscription_arn) {
-        envelope.insert("UnsubscribeURL".to_string(), serde_json::Value::from(url));
+        envelope.insert(
+            UNSUBSCRIBE_URL_MEMBER.to_string(),
+            serde_json::Value::from(url),
+        );
     }
-    // The signature members LAST, because the string that is signed is built from the
-    // members the subscriber receives ([`state::notification_signature`]).
+    // The signature is taken over the members the subscriber receives
+    // ([`state::notification_signature`]), so the envelope is sealed once it is complete
+    // and the three members it writes are then moved into their place in the layout.
     signer.seal(
         &mut envelope,
         state::notification_signature::CERTIFICATE_URL_MEMBER,
     );
-    serde_json::Value::Object(envelope).to_string()
+    envelope_layout::in_canonical_order(
+        envelope,
+        state::notification_signature::CERTIFICATE_URL_MEMBER,
+        UNSUBSCRIBE_URL_MEMBER,
+    )
 }
+
+/// The member the JSON notification envelope carries the unsubscribe link under, as that
+/// envelope spells it — a function's event record spells the same link `UnsubscribeUrl`
+/// ([`function_delivery`]).
+const UNSUBSCRIBE_URL_MEMBER: &str = "UnsubscribeURL";
 
 /// The members every notification of `published` carries, whichever subscriber receives it:
 /// its type, id, topic, subject, body, sequence number, attributes and the instant it was
@@ -2222,7 +2262,7 @@ fn notification_members(
         envelope.insert("Subject".to_string(), serde_json::Value::from(subject));
     }
     envelope.insert("Message".to_string(), serde_json::Value::from(body));
-    if let Some(timestamp) = state::rfc3339(published.published_at) {
+    if let Some(timestamp) = envelope_layout::timestamp(published.published_at) {
         envelope.insert("Timestamp".to_string(), serde_json::Value::from(timestamp));
     }
     if let Some(sequence_number) = published.sequence_number.as_deref() {
