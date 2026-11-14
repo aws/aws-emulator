@@ -13,11 +13,12 @@
 //! (`smithy_query(query="operation", operation="ListRecommendations,ListEnrollmentStatuses")`)
 //! — and a read confined to the caller's own account is served.
 //!
-//! The PREFERENCE writes are not here: a write only the account that pays for
-//! the spend a preference is about may make is refused with the modelled
+//! The PREFERENCE writes are not here: a write only the management account of
+//! the organization a preference is about may make is refused with the modelled
 //! `ValidationException` that operation declares rather than with this 403, and
-//! `preference_gates` owns both of its rules (`organization_wide_preference_owner`
-//! owns which account that is).
+//! `preference_gates` owns both of its rules
+//! (`management_account_only_discount_visibility` and
+//! `organization_wide_preference_owner` own which account that is).
 //!
 //! Each rule is asserted over a table that spans the member's values, the
 //! members it is sent beside, and the operations that declare it.

@@ -14,11 +14,13 @@
 //! stored:
 //!
 //! * `memberAccountDiscountVisibility` is a preference of the organization, not
-//!   of one account, so it belongs to the account that PAYS for the spend it is
-//!   about: the organization's management account, or — for an account that is
-//!   in no organization another account manages — that account itself, which
-//!   pays its own bills (`crate::state::...::discount_visibility_owner`). Only
-//!   that account may set it, and only it is reported the member by a read;
+//!   of one account, so it belongs to the account that PAYS for the member
+//!   accounts' spend it is about: the organization's MANAGEMENT account
+//!   (`crate::state::...::discount_visibility_owner`). Only that account may
+//!   set it, and only it is reported the member by a read; an account that
+//!   manages no organization — which is the account this emulator presents —
+//!   has no member accounts to show discounts to, so the preference is not
+//!   its to set either;
 //! * `savingsEstimationMode` = `AfterDiscounts` reports figures net of the
 //!   discounts member accounts' spend carries, so it is available only while
 //!   the organization has made those discounts visible
@@ -194,7 +196,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             let mut store = state.lock();
 
             // The organization-wide preference is the preference of the
-            // account that pays for the spend it is about, so only that account
+            // MANAGEMENT account of the organization it is about — the account
+            // that pays for the member accounts' spend — so only that account
             // may set it; a value outside its modelled enum never reaches here,
             // because the framework's constraint walk answers it in this
             // service's structured `ValidationException` first.
@@ -267,11 +270,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
 /// Refuse a caller the organization-wide member-account discount-visibility
 /// preference where the preference is not the caller's: it belongs to the
-/// account that pays for the spend it is about, which for a member account is
-/// its organization's management account. The modelled `ValidationException`
-/// (400), stating the rule that rejects the request in the service's own words
-/// for it, so a client can tell this refusal from the field-validation summary a
-/// value outside the member's enum is answered with.
+/// account that pays for the member accounts' spend it is about, the management
+/// account of the organization those accounts belong to. The modelled
+/// `ValidationException` (400), stating the rule that rejects the request in the
+/// service's own words for it, so a client can tell this refusal from the
+/// field-validation summary a value outside the member's enum is answered with.
 fn discount_visibility_is_the_management_accounts() -> UpdatePreferencesError {
     UpdatePreferencesErrorModeled::ValidationException(
         crate::service::stated_validation_exception(

@@ -9,10 +9,10 @@
 //! empty record, because the service always acts on one preference per member —
 //! bar `memberAccountDiscountVisibility`, which has no default and is a
 //! preference of the ORGANIZATION rather than of one account: it is reported to
-//! the account that pays for the spend it is about alone — the organization's
-//! management account, or an account in no organization another account manages
-//! — and then only once that account has set it
-//! (`crate::state::...::effective_preferences`).
+//! the account that pays for the member accounts' spend it is about alone — the
+//! MANAGEMENT account of that organization — and then only once that account
+//! has set it (`crate::state::...::effective_preferences`). Every other caller
+//! is reported the record without that member at all.
 //!
 //! ## Shape of an operation
 //!

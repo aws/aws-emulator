@@ -2,23 +2,27 @@
 
 //! Who the organization-wide `memberAccountDiscountVisibility` preference
 //! belongs to, driven end-to-end over the wire (`awsJson1_0`) through the same
-//! multi-service router the emulator boots — with NOTHING recorded in the store
-//! in-process, because the point of this suite is what a CLIENT can reach.
+//! multi-service router the emulator boots.
 //!
 //! The rule under test: the preference is one setting of the organization rather
-//! than of one account, so it belongs to the account that PAYS for the spend it
-//! is about — the organization's management account, or, for an account that is
-//! in no organization another account manages, that account itself, which pays
-//! its own bills. That account sets either value of the member
+//! than of one account, so it belongs to the account that PAYS for the member
+//! accounts' spend it is about — the MANAGEMENT account of that organization.
+//! That account sets either value of the member
 //! (`smithy_query(query="shape", shape="MemberAccountDiscountVisibility")`:
 //! `All | None`), is reported it by a read, and so can reach
 //! `savingsEstimationMode` = `AfterDiscounts`, which is available only while the
-//! discounts are visible; an account whose organization another account manages
-//! is refused both, because neither preference is its own.
+//! discounts are visible; every other caller is refused both, because neither
+//! preference is its own.
+//!
+//! Which accounts an organization has is an Organizations fact this emulator
+//! records none of, so the accepting arm's caller is recorded as its
+//! organization's management account in the store
+//! (`management_account_router`) and then drives nothing but wire calls;
+//! `management_account_only_discount_visibility` owns the arm every client of a
+//! freshly booted emulator meets, whose account manages no organization at all.
 //!
 //! `preference_gates` owns the two rules' tables of inputs; this suite is about
-//! the account the rules are decided for, so every row here is sent by a plain
-//! client over the wire.
+//! the account the rules are decided for.
 
 use serde_json::{json, Value};
 use service_com_amazonaws_costoptimizationhub_costoptimizationhubservice as cost_optimization_hub;
@@ -30,8 +34,9 @@ use cost_optimization_hub::ops::types::shared_types::{
 use cost_optimization_hub::state::{AFTER_DISCOUNTS, BEFORE_DISCOUNTS, DISCOUNT_VISIBILITY_NONE};
 
 use crate::cost_optimization_hub::{
-    assert_stated_rule_refusal, call, enrolled_router, member_account_router, ok,
-    preferences_record, router, DISCOUNT_VISIBILITY_ALL, MODE_MEMBER, VISIBILITY_MEMBER,
+    assert_stated_rule_refusal, call, enrolled_router_with_discounts_visible,
+    management_account_router, member_account_router, ok, preferences_record,
+    DISCOUNT_VISIBILITY_ALL, MODE_MEMBER, VISIBILITY_MEMBER,
 };
 
 /// The `savingsPercentage` an answer reports, which `SummaryMetricsResult`
@@ -54,7 +59,7 @@ async fn updated(router: &MultiServiceRouter, case: &str, request: &Value) -> Va
     payload
 }
 
-/// A client that has recorded no organization sets either value of
+/// The management account of an organization sets either value of
 /// `memberAccountDiscountVisibility`: the write is accepted, echoed back, and
 /// reported by a following `GetPreferences`.
 ///
@@ -63,7 +68,7 @@ async fn updated(router: &MultiServiceRouter, case: &str, request: &Value) -> Va
 /// row starts from a fresh store, so a row's answer is about the request and not
 /// about what another row left.
 #[tokio::test]
-async fn the_payer_of_its_own_spend_sets_the_discount_visibility_preference() {
+async fn the_payer_of_the_member_accounts_spend_sets_the_discount_visibility_preference() {
     // (case, the other members sent beside the visibility)
     let companions: Vec<(&str, Value)> = vec![
         ("alone", json!({})),
@@ -90,7 +95,7 @@ async fn the_payer_of_its_own_spend_sets_the_discount_visibility_preference() {
     for visibility in MEMBER_ACCOUNT_DISCOUNT_VISIBILITY_VALUES {
         for (companion, extra) in &companions {
             let case = format!("{visibility} {companion}");
-            let router = router();
+            let router = management_account_router();
 
             let mut request = extra.clone();
             request
@@ -126,8 +131,9 @@ async fn the_payer_of_its_own_spend_sets_the_discount_visibility_preference() {
 }
 
 /// The discount-adjusted savings estimation mode is reachable with nothing but
-/// wire calls: making the discounts visible is what the mode needs, and the
-/// account that owns that preference is the one asking for the mode.
+/// wire calls once the caller is the organization's management account: making
+/// the discounts visible is what the mode needs, and the account that owns that
+/// preference is the one asking for the mode.
 ///
 /// The rows differ in how the pair is reached — in two requests, in one, and the
 /// two states of the visibility that leave the mode unavailable — and each row
@@ -168,7 +174,7 @@ async fn the_discounted_mode_is_reachable_over_the_wire() {
     ];
 
     for (case, setup, available) in &cases {
-        let router = router();
+        let router = management_account_router();
         for request in setup {
             updated(&router, case, request).await;
         }
@@ -206,7 +212,7 @@ async fn the_discounted_mode_is_reachable_over_the_wire() {
     // And both members in one request: the pair the request leaves is the one
     // the rule judges, so enabling the visibility and asking for the mode
     // together is accepted from a fresh store.
-    let router = router();
+    let router = management_account_router();
     let together = updated(
         &router,
         "both members at once",
@@ -228,16 +234,16 @@ async fn the_discounted_mode_is_reachable_over_the_wire() {
     );
 }
 
-/// What the reachable mode changes downstream: a client that makes the discounts
-/// visible and moves to the discounted mode is reported a `savingsPercentage`
-/// FIGURE, where the same request under the undiscounted mode carries the
-/// description of why the metric is unsupported.
+/// What the mode changes downstream: the organization's management account, which
+/// has made the discounts visible and moved to the discounted mode, is reported a
+/// `savingsPercentage` FIGURE, where the same request under the undiscounted mode
+/// carries the description of why the metric is unsupported.
 ///
 /// The rows are the grouping dimensions the answer can be asked for, so the
 /// metric is shown to follow the preference and not the grouping.
 #[tokio::test]
-async fn the_savings_percentage_metric_follows_the_mode_a_client_can_reach() {
-    let router = enrolled_router().await;
+async fn the_savings_percentage_metric_follows_the_mode_the_management_account_reaches() {
+    let router = enrolled_router_with_discounts_visible().await;
 
     for group_by in ["Region", "ActionType", "ResourceType"] {
         let request = json!({"groupBy": group_by, "metrics": ["SavingsPercentage"]});
@@ -249,7 +255,9 @@ async fn the_savings_percentage_metric_follows_the_mode_a_client_can_reach() {
         );
     }
 
-    // The two wire calls that move the account to the discounted mode.
+    // The wire calls that move the account to the discounted mode: the
+    // visibility the organization's management account owns (written again
+    // here, which is the state it is already in), and then the mode it gates.
     updated(
         &router,
         "make the discounts visible",

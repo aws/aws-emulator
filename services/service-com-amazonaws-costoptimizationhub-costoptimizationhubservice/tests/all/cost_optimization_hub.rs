@@ -131,10 +131,11 @@ pub(crate) const OTHER_MANAGEMENT_ACCOUNT: &str = "111122223333";
 /// it holds is managed by [`OTHER_MANAGEMENT_ACCOUNT`], so the organization-wide
 /// preferences belong to that account and not to the caller.
 ///
-/// This is the refusing arm of the rule that the organization-wide
-/// `memberAccountDiscountVisibility` preference belongs to the account paying
-/// for the spend it is about: the account the emulator presents pays its own
-/// bills unless this store says another account pays them.
+/// This is one of the two refusing arms of the rule that the organization-wide
+/// `memberAccountDiscountVisibility` preference belongs to the management
+/// account of the organization it is about; the other is the store that records
+/// no organization at all, which is where every client of a freshly booted
+/// emulator starts ([`router`]).
 pub(crate) fn member_account_router() -> MultiServiceRouter {
     let (router, store) = router_with_store();
     store.lock().organization_management_account_id = Some(OTHER_MANAGEMENT_ACCOUNT.to_string());
@@ -172,10 +173,10 @@ pub(crate) fn management_account_router_with_store() -> (MultiServiceRouter, Sto
 /// Enable the organization-wide member-account discount visibility over the
 /// wire, which is the state `savingsEstimationMode=AfterDiscounts` requires.
 ///
-/// The caller must own the preference — the account the emulator presents does
-/// unless the store records another account as its organization's management
-/// account ([`member_account_router`]); the call is the same `UpdatePreferences`
-/// a client makes.
+/// The caller must own the preference, which it does only where the store
+/// records it as its organization's management account
+/// ([`management_account_router`]); the call is the same `UpdatePreferences` a
+/// client makes.
 pub(crate) async fn enable_member_account_discount_visibility(router: &MultiServiceRouter) {
     let updated = ok(
         router,
@@ -461,8 +462,9 @@ pub(crate) async fn enrolled_router() -> MultiServiceRouter {
 /// to put the account into the discount-adjusted savings estimation mode, and
 /// the organization view beside it ([`management_account_router`]).
 ///
-/// The visibility itself needs no recorded organization: the account the
-/// emulator presents owns that preference and sets it over the wire
+/// The visibility needs the recorded organization: the preference is the
+/// management account's, so the caller sets it over the wire only where the
+/// store records the caller as that account
 /// (`organization_wide_preference_owner`).
 pub(crate) async fn enrolled_router_with_discounts_visible() -> MultiServiceRouter {
     let router = enrolled(management_account_router()).await;

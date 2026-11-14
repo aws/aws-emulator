@@ -19,8 +19,8 @@
 //!   back as the default the service applies for it, where it has one —
 //!   `memberAccountDiscountVisibility` has none, so it is reported only once it
 //!   has been set. That one member is a preference of the ORGANIZATION rather
-//!   than of the account, so it lives in the record of the account that pays for
-//!   the spend it is about
+//!   than of the account, so it lives in the record of the organization's
+//!   management account
 //!   ([`ComAmazonawsCostoptimizationhubCostoptimizationhubserviceState::discount_visibility_owner`])
 //!   and is read through
 //!   [`ComAmazonawsCostoptimizationhubCostoptimizationhubserviceState::member_account_discount_visibility`].
@@ -1046,11 +1046,12 @@ pub struct ComAmazonawsCostoptimizationhubCostoptimizationhubserviceState {
     ///   the field holds `None` and a read reaching past the caller is refused
     ///   for want of an organization to read;
     /// * the organization-wide member-account discount-visibility preference
-    ///   belongs to the account that PAYS for the spend the preference is about
-    ///   ([`Self::owns_member_account_discount_visibility`]): the recorded
-    ///   management account, or — where no organization is recorded — the
-    ///   account itself, which then pays its own bills and is a member of
-    ///   nobody else's organization.
+    ///   belongs to the management account of the organization it is about
+    ///   ([`Self::owns_member_account_discount_visibility`]), the account that
+    ///   PAYS for its member accounts' spend. Where the field holds `None` the
+    ///   preference belongs to no account at all: an account that manages no
+    ///   organization has no member accounts whose discounts it could show or
+    ///   hide, so it neither sets the preference nor is reported it.
     pub organization_management_account_id: Option<String>,
 }
 
@@ -1066,19 +1067,17 @@ impl ComAmazonawsCostoptimizationhubCostoptimizationhubserviceState {
     }
 
     /// The account the organization-wide member-account discount-visibility
-    /// preference belongs to: the one that pays for the spend the preference is
-    /// about.
+    /// preference belongs to: the management account of the organization the
+    /// preference is about, which is the account that pays for the member
+    /// accounts' spend the discounts are on.
     ///
-    /// That is the recorded management account where this store records an
-    /// organization, and otherwise the account the emulator presents
-    /// ([`caller_account_id`]): an account that is in no organization another
-    /// account manages pays its own bills, so the preference over the discounts
-    /// that spend carries is its own — there is no other account whose
-    /// preference it could be.
-    pub fn discount_visibility_owner(&self) -> &str {
-        self.organization_management_account_id
-            .as_deref()
-            .unwrap_or(caller_account_id())
+    /// `None` where this store records no organization — the state every client
+    /// of this emulator meets, the account it presents managing no organization
+    /// of its own. The preference is then NO account's: with no member accounts
+    /// to show discounts to, there is nothing for it to decide, so no caller
+    /// sets it and no read reports it.
+    pub fn discount_visibility_owner(&self) -> Option<&str> {
+        self.organization_management_account_id.as_deref()
     }
 
     /// Whether `account_id` is the account the organization-wide member-account
@@ -1086,7 +1085,7 @@ impl ComAmazonawsCostoptimizationhubCostoptimizationhubserviceState {
     /// set it, and the only one a read reports it to
     /// ([`Self::discount_visibility_owner`] says which account that is).
     pub fn owns_member_account_discount_visibility(&self, account_id: &str) -> bool {
-        self.discount_visibility_owner() == account_id
+        self.discount_visibility_owner() == Some(account_id)
     }
 
     /// The organization-wide member-account discount-visibility preference in
@@ -1098,7 +1097,7 @@ impl ComAmazonawsCostoptimizationhubCostoptimizationhubserviceState {
     /// stored value is not the preference in effect.
     pub fn member_account_discount_visibility(&self) -> Option<&str> {
         self.preferences
-            .get(self.discount_visibility_owner())?
+            .get(self.discount_visibility_owner()?)?
             .member_account_discount_visibility
             .as_deref()
     }
@@ -1870,18 +1869,29 @@ mod tests {
                 "case {account:?}: no account is the management account of an \
                  organization this emulator does not record"
             );
+            assert!(
+                !state.owns_member_account_discount_visibility(account),
+                "case {account:?}: the organization-wide preference belongs to no \
+                 account while no organization is recorded"
+            );
         }
+        assert_eq!(
+            state.discount_visibility_owner(),
+            None,
+            "expected no owner of the organization-wide preference, got {:?}",
+            state.discount_visibility_owner()
+        );
     }
 
     /// The organization-wide `memberAccountDiscountVisibility` preference is
-    /// read, and reported, for the account that PAYS for the spend it is about
-    /// alone — the recorded management account, or, where no organization is
-    /// recorded, the account the emulator presents: a record that holds the
-    /// member for any other account is not reported it, and the preference in
-    /// effect — which is what the discount-adjusted savings estimation mode is
-    /// gated on — is the owner's.
+    /// read, and reported, for the MANAGEMENT account of the recorded
+    /// organization alone: a record that holds the member for any other
+    /// account — the caller's own included — is not reported it, and the
+    /// preference in effect, which is what the discount-adjusted savings
+    /// estimation mode is gated on, is the management account's. While no
+    /// organization is recorded the preference is no account's at all.
     #[test]
-    fn the_discount_visibility_preference_belongs_to_the_payer_of_the_spend() {
+    fn the_discount_visibility_preference_belongs_to_the_management_account() {
         let member = "111122223333";
         let management = "444455556666";
         let mut state = ComAmazonawsCostoptimizationhubCostoptimizationhubserviceState::default();
@@ -1898,10 +1908,15 @@ mod tests {
             );
         }
 
-        // No organization recorded: the account the emulator presents pays its
-        // own bills, so the preference is ITS record's and no other account's is
-        // reported or in effect.
-        for account in [member, management] {
+        // No organization recorded: the preference is no account's, so no
+        // record's value is reported or in effect — not even the caller's.
+        let caller = caller_account_id();
+        state
+            .preferences
+            .entry(caller.to_string())
+            .or_default()
+            .member_account_discount_visibility = Some(DISCOUNT_VISIBILITY_ALL.to_string());
+        for account in [member, management, caller] {
             assert_eq!(
                 state
                     .effective_preferences(account)
@@ -1913,13 +1928,14 @@ mod tests {
         }
         assert!(
             !state.member_account_discounts_visible(),
-            "case no organization: expected the owner's unset preference, got {:?}",
+            "case no organization: expected no preference in effect, got {:?}",
             state.member_account_discount_visibility()
         );
 
-        // The owner's own record is read and reported, with no organization
-        // recorded at all.
-        let caller = caller_account_id();
+        // With the caller recorded as the organization's management account,
+        // its own record is the one that holds the preference, and its value
+        // decides whether the discounts are visible.
+        state.organization_management_account_id = Some(caller.to_string());
         for value in [DISCOUNT_VISIBILITY_ALL, DISCOUNT_VISIBILITY_NONE] {
             state
                 .preferences
@@ -1932,21 +1948,22 @@ mod tests {
                     .member_account_discount_visibility
                     .as_deref(),
                 Some(value),
-                "case no organization, the caller set {value:?}: expected the preference \
-                 reported back"
+                "case the caller manages the organization and set {value:?}: expected the \
+                 preference reported back"
             );
             assert_eq!(
                 state.member_account_discounts_visible(),
                 value == DISCOUNT_VISIBILITY_ALL,
-                "case no organization, the caller set {value:?}: expected the visibility to \
-                 follow the value, got {:?}",
+                "case the caller manages the organization and set {value:?}: expected the \
+                 visibility to follow the value, got {:?}",
                 state.member_account_discount_visibility()
             );
         }
 
-        // With the organization recorded, the management account's record is
-        // the one that holds it — and the caller's own stored value is no
-        // longer reported to it, because another account pays for the spend.
+        // With another account recorded as the management account, ITS record
+        // is the one that holds the preference — and the caller's own stored
+        // value is no longer reported to it, because the organization is not
+        // the caller's.
         state.organization_management_account_id = Some(management.to_string());
         assert_eq!(
             state

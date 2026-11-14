@@ -8,12 +8,11 @@
 //! account belongs to rather than about the values a request carries:
 //!
 //! 1. `memberAccountDiscountVisibility` is a preference of the organization,
-//!    not of one account, so it belongs to the account that pays for the spend
-//!    it is about — the organization's management account, or an account in no
-//!    organization another account manages, which pays its own bills. Only that
-//!    account may set it and only it is reported the member by a read; every
-//!    other account's request for it is refused with the operation's modelled
-//!    `ValidationException` (400) and changes nothing.
+//!    not of one account, so it belongs to the account that pays for the member
+//!    accounts' spend it is about — the MANAGEMENT account of that
+//!    organization. Only that account may set it and only it is reported the
+//!    member by a read; every other account's request for it is refused with the
+//!    operation's modelled `ValidationException` (400) and changes nothing.
 //! 2. `savingsEstimationMode` = `AfterDiscounts` reports figures net of the
 //!    discounts member accounts' spend carries, so it is available only while
 //!    the organization has made those discounts visible (rule 1's preference set

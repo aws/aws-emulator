@@ -27,6 +27,8 @@ mod efficiency_metrics_period_refusal;
 mod enrollment_read_scope_gate;
 #[path = "all/management_account_gating.rs"]
 mod management_account_gating;
+#[path = "all/management_account_only_discount_visibility.rs"]
+mod management_account_only_discount_visibility;
 #[path = "all/max_results_bounds.rs"]
 mod max_results_bounds;
 #[path = "all/one_view_for_every_recommendation_reader.rs"]
