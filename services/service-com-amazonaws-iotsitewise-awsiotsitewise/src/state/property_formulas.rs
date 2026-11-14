@@ -81,8 +81,9 @@ pub const MAX_TUMBLING_INTERVAL: Duration = Duration::from_secs(7 * 24 * 60 * 60
 /// also use `s` to represent seconds in `offset`." The seconds letter is read
 /// here too, so a value spelled with it is BOUND-CHECKED as the span it names
 /// rather than refused for its spelling.
-/// The letters are matched EXACTLY as the documentation spells them — lowercase —
-/// so a spelling the real service does not accept is not accepted here either.
+///
+/// The letter is read WITHOUT REGARD TO CASE (see [`window_span`]), so the table
+/// holds one entry per unit rather than one per spelling of it.
 const INTERVAL_UNITS: [(char, u64); 5] = [
     ('s', 1),
     ('m', 60),
@@ -257,6 +258,12 @@ pub fn formula_identifiers(expression: &str) -> Vec<FormulaIdentifier> {
 /// `offset` parameters support the ISO 8601 format. For example, `PT5S`
 /// represents 5 seconds"), read through the one ISO 8601 span reading this
 /// workspace shares rather than a second grammar written here.
+///
+/// The unit letter of the shorthand names its unit WHATEVER ITS CASE: the member
+/// documents the same unit letters in both spellings and the ISO 8601 one spells
+/// them uppercase (`PT5M` "represents 5 minutes" while `5m` is 5 minutes too), so
+/// the case of the letter is not what picks the unit, and a span is read from the
+/// count and the unit alone.
 #[must_use]
 pub fn window_span(value: &str) -> Option<Duration> {
     if value
@@ -269,7 +276,7 @@ pub fn window_span(value: &str) -> Option<Duration> {
     let unit = value.chars().next_back()?;
     let (_, seconds) = INTERVAL_UNITS
         .into_iter()
-        .find(|(letter, _)| unit == *letter)?;
+        .find(|(letter, _)| unit.eq_ignore_ascii_case(letter))?;
     let count: u64 = value[..value.len() - unit.len_utf8()].parse().ok()?;
     count.checked_mul(seconds).map(Duration::from_secs)
 }

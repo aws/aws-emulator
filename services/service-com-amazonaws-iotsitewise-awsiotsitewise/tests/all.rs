@@ -47,6 +47,14 @@ mod assistant_invocation;
 #[path = "all/variable_reference_resolution.rs"]
 mod variable_reference_resolution;
 
+// `window_interval_spellings` is declared HERE, beside the suite above whose
+// resolution rules it reads back over a table of window spellings, for the reason
+// the notes above give: the sorted list and the END of this file are both
+// stretches every concurrent iotsitewise change puts a declaration of its own in.
+// Fold it into the list once the churn settles.
+#[path = "all/window_interval_spellings.rs"]
+mod window_interval_spellings;
+
 // `property_paths_and_notifications` is declared HERE, beside the suite above,
 // for the reason the notes above give: the sorted list and the END of this file
 // are both stretches every concurrent iotsitewise change puts a declaration of
