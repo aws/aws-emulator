@@ -41,6 +41,8 @@ mod resource_tagging;
 mod resource_untagging;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
+#[path = "all/trust_anchor_addressed_miss_refusals.rs"]
+mod trust_anchor_addressed_miss_refusals;
 #[path = "all/trust_anchor_and_profile_lifecycle.rs"]
 mod trust_anchor_and_profile_lifecycle;
 #[path = "all/trust_anchor_enablement.rs"]
