@@ -20962,6 +20962,7 @@ name = "service-common"
 version = "0.1.0"
 dependencies = [
  "aws-credential-types",
+ "aws-emulator-engine",
  "aws-emulator-server",
  "aws-emulator-smithy-schema-server",
  "aws-emulator-smithy-server-runtime",

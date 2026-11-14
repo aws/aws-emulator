@@ -123,6 +123,12 @@ fn sessions_state<Eng: Send + Sync + 'static>(
 /// to mint one with (see the module docs) — the seam signs with the credential the framework
 /// hands this emulator's handlers, which is what every other in-process call presents.
 /// `None` where there is no seam at all, which is a run with no SDK.
+///
+/// It also carries the records of WHICH service answers at an address this emulator
+/// published for a resource's own data plane, out of the same shared engine the roles above
+/// live in: a handler that read such an address out of a control-plane response and dials it
+/// is reaching the service that published it
+/// ([`::service_common::published_data_planes`]).
 #[must_use]
 pub fn function_sdk_access<Eng: Send + Sync + 'static>(
     engine: &Eng,
@@ -139,7 +145,11 @@ pub fn function_sdk_access<Eng: Send + Sync + 'static>(
         SystemTime::now(),
     );
     Some(
-        super::AwsAccess::new(ctx.callback().clone(), region)?.signing_as(identity),
+        super::AwsAccess::new(ctx.callback().clone(), region)?
+            .signing_as(identity)
+            .resolving_published_planes(
+                ::service_common::published_data_planes::PublishedPlanes::of(engine),
+            ),
     )
 }
 

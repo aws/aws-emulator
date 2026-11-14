@@ -1165,6 +1165,10 @@ pub struct AwsAccess {
     /// It is the HOST's, like the credential beside it: guest code cannot read it off this
     /// seam or set one of its own, so a handler cannot hand its call a chain it chose.
     trace_header: Option<String>,
+    /// Which service answers at an address this emulator published for a resource's own
+    /// data plane, for a request the handler SENDS ITSELF to one
+    /// ([`super::guest_http`]). `None` where this emulator vends no such records.
+    published: Option<::service_common::published_data_planes::PublishedPlanes>,
 }
 
 impl AwsAccess {
@@ -1179,6 +1183,7 @@ impl AwsAccess {
             region: region.to_string(),
             identity: None,
             trace_header: None,
+            published: None,
         })
     }
 
@@ -1200,6 +1205,22 @@ impl AwsAccess {
     #[must_use]
     pub fn tracing(mut self, trace_header: String) -> Self {
         self.trace_header = Some(trace_header);
+        self
+    }
+
+    /// The same access, resolving an address this emulator PUBLISHED for a resource's own
+    /// data plane against `published` — the records the service that opened that listener
+    /// wrote ([`::service_common::published_data_planes`]).
+    ///
+    /// `None` leaves such an address resolving to nothing, so a request the handler sends to
+    /// one is reported as a request that was not made: the position every address was in
+    /// before a service published one.
+    #[must_use]
+    pub fn resolving_published_planes(
+        mut self,
+        published: Option<::service_common::published_data_planes::PublishedPlanes>,
+    ) -> Self {
+        self.published = published;
         self
     }
 
@@ -1391,6 +1412,7 @@ impl AwsAccess {
                 body: &body,
                 within,
                 identity: self.identity.as_ref(),
+                published: self.published.as_ref(),
             },
         ))
     }

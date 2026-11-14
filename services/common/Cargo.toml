@@ -67,6 +67,10 @@ aws-sdk-dynamodbstreams = { version = "1", default-features = false }
 # `resolve_route_key` / `ROOT_PATH_SEGMENT`: the framework's own routing-key rule,
 # which this crate narrows rather than replaces.
 emulator-server = { workspace = true }
+# `published_data_planes`: the SHARED ENGINE the records of which service answers at an
+# address this emulator published live in, as every store two services hand off through
+# does — the state handle, and nothing else of the engine.
+engine = { workspace = true }
 http = { workspace = true }
 # `front_door`: the operation wrapper, the schema it reads a member's HTTP binding
 # off, the constraint walk it runs and the request/response types it serves.

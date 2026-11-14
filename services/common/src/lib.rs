@@ -362,6 +362,11 @@ pub mod dynamodb_stream_event;
 /// a host names a service at all — for every service that serves one, so the planes cannot
 /// drift on which requests they claim.
 pub mod data_plane_addressing;
+/// WHICH service answers at an ADDRESS this emulator published for a resource's own data
+/// plane — recorded by the service that OPENED the core listener and read by whatever has to
+/// route an in-process client that was handed that address, which cannot read a service off
+/// an address the way it can off an endpoint host.
+pub mod published_data_planes;
 /// The ONE rendering of a `restJson1` timestamp whose model declares the `date-time` form,
 /// for every service of that class — which the generated member schemas drop, so without it
 /// such a member goes on the wire as the protocol's default epoch-seconds NUMBER.

@@ -355,6 +355,10 @@ mod cloudformation_opensearch_domain_deployments;
 mod cloudformation_opensearch_vpc_endpoint_access;
 #[path = "all/cloudformation_search_indexing_pipeline_outputs.rs"]
 mod cloudformation_search_indexing_pipeline_outputs;
+#[path = "all/cloudformation_monitored_alb_search_estate.rs"]
+mod cloudformation_monitored_alb_search_estate;
+#[path = "all/cloudformation_domain_endpoint_outputs.rs"]
+mod cloudformation_domain_endpoint_outputs;
 #[path = "all/cloudformation_ec2_ebs_instance_estate.rs"]
 mod cloudformation_ec2_ebs_instance_estate;
 // the sorted `k…` span (beside the other kinesis suites) are both regions concurrently
@@ -638,10 +642,6 @@ mod cloudtrail_channel_routing;
 // region, while this span of the sorted list is untouched by those appends.
 #[path = "all/cloudtrail_import_failures_routing.rs"]
 mod cloudtrail_import_failures_routing;
-// Declared here, in the SORTED block beside the other CloudTrail suites rather than
-// appended at the end: the tail is where every suite landing in the same window appends.
-#[path = "all/cloudtrail_read_only_api_calls.rs"]
-mod cloudtrail_read_only_api_calls;
 // tail is where every suite landing in the same window appends, so a line added there
 // conflicts with every other one; this span of the sorted list is untouched by those
 // appends.
@@ -1495,6 +1495,11 @@ mod s3_access_point_policy_denial;
 // a bucket a stack created carries, which CloudFormation stamps and Amazon S3 reports.
 #[path = "all/cloudformation_stamps_s3_bucket_stack_provenance.rs"]
 mod cloudformation_stamps_s3_bucket_stack_provenance;
+// The stack CLOCK the suites above drive instead of waiting for it: one helper, because
+// `settle` is global over the CloudFormation store, so every suite that asserts a settled
+// stack pulls the due instants into the past the same way.
+#[path = "all/cloudformation_stack_clock.rs"]
+mod cloudformation_stack_clock;
 // outputs of a stack whose deployment COMPLETED — the create and the revision that swaps
 // which role its deployed domain allows — each carrying the value the owning service holds.
 #[path = "all/cloudformation_updated_stack_outputs.rs"]
@@ -1846,6 +1851,14 @@ mod ec2_management_events;
 // no single crate's test target can make the call and then read the item it wrote.
 #[path = "all/apigateway_dynamodb_service_integration.rs"]
 mod apigateway_dynamodb_service_integration;
+// client that dials the address an Application Load Balancer PUBLISHES is answered with when
+// the listener forwards to a `lambda` target group spans CloudFormation (which archives the
+// handler into a deployment package), IAM and STS (the execution role and its session), Amazon
+// SQS (the queue the handler reports each invocation to), AWS Lambda (which runs it) and ELBv2
+// (which opens the address and makes the invocation), so no single service crate's test target
+// can ask whether the address the assembled emulator publishes answers at all.
+#[path = "all/elbv2_lambda_target_published_address.rs"]
+mod elbv2_lambda_target_published_address;
 // EventBridge at once, so no single service crate's test target can deploy it. Declared
 // once, in the head region above.
 // it. Declared once, in the head region above.
@@ -1874,24 +1887,33 @@ mod apigateway_sns_service_integration;
 // Declared in the appended tail, which is where every new suite inserts its lines. Both
 // suites exist under tests/all/ and had lost their declaration when two branches removed
 // the same duplicated pair, which compiles them nowhere.
-#[path = "all/cloudformation_monitored_alb_search_estate.rs"]
-mod cloudformation_monitored_alb_search_estate;
-#[path = "all/cloudformation_domain_endpoint_outputs.rs"]
-mod cloudformation_domain_endpoint_outputs;
-// The stack CLOCK the suites above drive instead of waiting for it: one helper, because
-// `settle` is global over the CloudFormation store, so every suite that asserts a settled
-// stack pulls the due instants into the past the same way.
-#[path = "all/cloudformation_stack_clock.rs"]
-mod cloudformation_stack_clock;
-// client that dials the address an Application Load Balancer PUBLISHES is answered with when
-// the listener forwards to a `lambda` target group spans CloudFormation (which archives the
-// handler into a deployment package), IAM and STS (the execution role and its session), Amazon
-// SQS (the queue the handler reports each invocation to), AWS Lambda (which runs it) and ELBv2
-// (which opens the address and makes the invocation), so no single service crate's test target
-// can ask whether the address the assembled emulator publishes answers at all.
-#[path = "all/elbv2_lambda_target_published_address.rs"]
-mod elbv2_lambda_target_published_address;
 // (`cloudformation_monitored_alb_search_estate` and `cloudformation_domain_endpoint_outputs`
+// are declared in the head region above: a module may be declared only once.)
+// Appended here, which is where a new suite inserts its lines: a Lambda function's own
+// aoss-signed write to the endpoint an OpenSearch Serverless collection publishes spans
+// Lambda, OpenSearch Serverless, IAM, STS and CloudFormation at once, so no single service
+// crate's test target can drive it.
+#[path = "all/lambda_signed_write_to_an_aoss_collection_endpoint.rs"]
+mod lambda_signed_write_to_an_aoss_collection_endpoint;
+// Declared here, in this same head region, for the reason the entry above records: which app
+// client's token a COGNITO_USER_POOLS authorizer admits spans Amazon Cognito user pools (which
+// mints the tokens) and API Gateway's execute-api data plane (which reads them), so neither
+// crate's own test target can mint a pool token and then present it to a deployed method.
+#[path = "all/apigateway_cognito_authorizer_app_client_audience.rs"]
+mod apigateway_cognito_authorizer_app_client_audience;
+#[path = "all/cloudformation_metric_stream_estate_is_drainable.rs"]
+mod cloudformation_metric_stream_estate_is_drainable;
+// Declared here, in the SORTED block beside the other CloudTrail suites rather than
+// appended at the end: the tail is where every suite landing in the same window appends.
+#[path = "all/cloudtrail_read_only_api_calls.rs"]
+mod cloudtrail_read_only_api_calls;
+// EMPTY, and declared only because the build script requires every file under `tests/all/`
+// to be declared: `zz_probe.rs` held a throwaway probe for the pre-existing stack overflow
+// in `all/s3_notification_invokes_its_lambda_target.rs` and carries no test now. The file
+// stays because this fixer's tool set can write a file but not remove one; the next change
+// to touch this directory should delete both it and this declaration.
+#[path = "all/zz_probe.rs"]
+mod zz_probe;
 // are declared further up this tail already: a module may be declared only once.)
 // Declared at the end of the appended tail, which is where every new suite inserts its lines:
 // whether a CloudWatch alarm over the health series an Amazon Redshift cluster publishes about

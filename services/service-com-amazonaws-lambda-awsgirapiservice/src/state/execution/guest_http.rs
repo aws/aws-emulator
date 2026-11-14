@@ -15,13 +15,18 @@
 //!
 //! What the guest can and cannot do here:
 //!
-//! * The destination is ALWAYS this emulator, and always a service of it: the URL has to
-//!   name one — a host of AWS's own naming, whose endpoint prefix names the service
-//!   ([`endpoint_prefix_of`]), or this emulator's own endpoint with a data plane named in
-//!   the path under `service_common::data_plane_addressing::EMULATOR_PATH_NAMESPACE`, which
-//!   is the address such a plane publishes. A URL naming neither is REFUSED and nothing is
-//!   sent. No host name is resolved and no socket is opened on any path: the request is
-//!   handed to the callback transport, so it cannot leave this process.
+//! * The destination is ALWAYS this emulator, and always an endpoint it PUBLISHES: the URL
+//!   has to name one — a host of AWS's own naming, whose endpoint prefix names the service
+//!   ([`endpoint_prefix_of`]), this emulator's own endpoint with a data plane named in the
+//!   path under `service_common::data_plane_addressing::EMULATOR_PATH_NAMESPACE`, or the
+//!   `host:port` the core published a RESOURCE's own listener at
+//!   ([`addressed_resource_plane`]) — the address a search collection, a database or a
+//!   gateway reports in its control plane for a client to dial, which is an ADDRESS and so
+//!   names no service in its host: WHICH service answers there is what the service that
+//!   opened the listener recorded (`service_common::published_data_planes`). A URL naming
+//!   none of them is REFUSED and nothing is sent. No host name is resolved and no socket is
+//!   opened on any path: the request is handed to the callback transport, so it cannot leave
+//!   this process.
 //! * The guest never sees a credential. The signature is put on by host code with the
 //!   credential the framework hands this emulator's handlers, exactly as the SDK seam signs
 //!   its calls ([`super::aws_api`]), and the authorization headers the guest supplied are
@@ -104,6 +109,11 @@ pub struct Sending<'a> {
     /// WHO it is made as: the credential the invocation was given
     /// ([`super::aws_api::CallerIdentity`]).
     pub identity: Option<&'a super::aws_api::CallerIdentity>,
+    /// Which service answers at an address this emulator published for a resource's own
+    /// data plane, for a URL that addresses one ([`addressed_resource_plane`]). `None`
+    /// where this emulator vends no such records, and then only the two addressings that
+    /// name a service in the URL itself resolve.
+    pub published: Option<&'a ::service_common::published_data_planes::PublishedPlanes>,
 }
 
 /// Make ONE request, as `sending` states it.
@@ -117,8 +127,11 @@ pub async fn sent(sending: &Sending<'_>) -> Result<Answered, Refusal> {
     if sending.body.len() > MAX_REQUEST_BYTES {
         return Err(Refusal::RequestTooLarge);
     }
-    let addressed =
-        addressed(sending.url, sending.default_region).ok_or(Refusal::UnknownService)?;
+    let addressed = addressed(sending.url, sending.default_region)
+        .or_else(|| {
+            addressed_resource_plane(sending.url, sending.published, sending.default_region)
+        })
+        .ok_or(Refusal::UnknownService)?;
     match ::tokio::time::timeout(
         sending.within,
         dispatch(
@@ -155,22 +168,7 @@ struct Addressed {
 /// Read `url` as the address of a service of THIS emulator, or `None` for a URL that names
 /// none — which is a request this seam does not make.
 fn addressed(url: &str, default_region: &str) -> Option<Addressed> {
-    let (scheme, rest) = url.split_once("://")?;
-    if !matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https") {
-        return None;
-    }
-    let (authority, path) = match rest.find(['/', '?', '#']) {
-        Some(at) => (&rest[..at], &rest[at..]),
-        None => (rest, "/"),
-    };
-    if authority.is_empty() || !::service_common::data_plane_addressing::is_host_shaped(authority) {
-        return None;
-    }
-    let target = if path.starts_with('/') {
-        path.to_string()
-    } else {
-        format!("/{path}")
-    };
+    let (authority, target) = authority_and_target(url)?;
     // A host of AWS's OWN naming names the service in it: the endpoint prefix, which is
     // also what a request to that service is signed for.
     let host = host_only(authority);
@@ -196,6 +194,64 @@ fn addressed(url: &str, default_region: &str) -> Option<Addressed> {
         return None;
     }
     let signing_name = plane.to_string();
+    Some(Addressed {
+        signing_name,
+        host: authority.to_string(),
+        target,
+        region: default_region.to_string(),
+    })
+}
+
+/// The authority and the request target `url` names, or `None` for a value that is no
+/// HTTP(S) URL at all — which addresses nothing and is a request this seam does not make.
+///
+/// Read by hand rather than with a URL parser because what the guest handed over is a
+/// STRING: a value that is not a URL has to come back as "no address" rather than as a
+/// parser's own error.
+fn authority_and_target(url: &str) -> Option<(&str, String)> {
+    let (scheme, rest) = url.split_once("://")?;
+    if !matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https") {
+        return None;
+    }
+    let (authority, path) = match rest.find(['/', '?', '#']) {
+        Some(at) => (&rest[..at], &rest[at..]),
+        None => (rest, "/"),
+    };
+    if authority.is_empty() || !::service_common::data_plane_addressing::is_host_shaped(authority) {
+        return None;
+    }
+    let target = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+    Some((authority, target))
+}
+
+/// WHERE a URL addressing a RESOURCE's own published listener goes, or `None` for one that
+/// addresses no such listener.
+///
+/// A resource whose data plane speaks its own protocol is published on a listener the CORE
+/// opened for it (`engine.listeners()`), and what the owning service reports for a client to
+/// dial is that listener's `host:port` — an ADDRESS on the machine this emulator runs on,
+/// which is the only address a client here resolves. A handler reading an endpoint out of a
+/// control-plane response (a collection's `collectionEndpoint`, a cluster's `Endpoint`) was
+/// told to dial exactly that.
+///
+/// Nothing about such an address names a service: its host is an address, so the two readings
+/// above answer nothing for it. WHICH service answers there is what the service that OPENED
+/// the listener recorded ([`::service_common::published_data_planes`]), so the request is
+/// signed for — and routed inside this emulator to — the service that published the very
+/// address the handler dialled, and an address this emulator published nothing at stays a
+/// request this seam does not make. The Region is the invocation's own: a listener of this
+/// emulator is not an endpoint of another Region.
+fn addressed_resource_plane(
+    url: &str,
+    published: Option<&::service_common::published_data_planes::PublishedPlanes>,
+    default_region: &str,
+) -> Option<Addressed> {
+    let (authority, target) = authority_and_target(url)?;
+    let signing_name = published?.answering_service(authority)?;
     Some(Addressed {
         signing_name,
         host: authority.to_string(),
@@ -967,6 +1023,137 @@ mod tests {
                 actual.as_deref(),
                 *expected,
                 "case {case:?}: expected {expected:?}, got {actual:?}"
+            );
+        }
+    }
+
+    /// WHICH of a handler's own requests addresses a RESOURCE's own published listener, over
+    /// a table whose rows span what the rule generalises over: every shape of address the
+    /// core publishes such a listener at (a loopback literal with a port, a loopback name, a
+    /// bracketed IPv6 literal, an interface address the operator bound), two services' own
+    /// listeners on one engine, and the requests that address no published listener at all
+    /// (another port of the same host, a listener that has been withdrawn, a host that is a
+    /// name, a value that is no URL).
+    #[test]
+    fn a_published_listener_address_is_addressed_for_the_service_that_published_it() {
+        use ::service_common::published_data_planes::PublishedPlanes;
+
+        /// One row: the URL the handler dialled, and the signing name, target and Region the
+        /// request is dispatched with.
+        struct Row {
+            case: &'static str,
+            url: &'static str,
+            expected: Option<(&'static str, &'static str, &'static str)>,
+        }
+        let engine = ::engine::InMemoryEngine::new();
+        let published = PublishedPlanes::of(&engine).expect("the engine vends the records");
+        // The addresses two services opened listeners at, as each published them.
+        for (authority, signing_name) in [
+            ("127.0.0.1:37333", "aoss"),
+            ("localhost:37334", "aoss"),
+            ("[::1]:37335", "aoss"),
+            ("10.1.2.3:8443", "rds-data"),
+            ("127.0.0.1:37336", "aoss"),
+        ] {
+            published.publish(authority, signing_name);
+        }
+        // One of them is closed again, so its address stops resolving.
+        published.withdraw("127.0.0.1:37336");
+        let rows: &[Row] = &[
+            Row {
+                case: "a collection's own listener on the loopback interface",
+                url: "https://127.0.0.1:37333/items/_doc/good-doc",
+                expected: Some(("aoss", "/items/_doc/good-doc", "us-west-2")),
+            },
+            Row {
+                case: "a listener on the loopback name, with a query",
+                url: "https://localhost:37334/items/_search?size=1",
+                expected: Some(("aoss", "/items/_search?size=1", "us-west-2")),
+            },
+            Row {
+                case: "a listener bound to the IPv6 loopback",
+                url: "https://[::1]:37335/items",
+                expected: Some(("aoss", "/items", "us-west-2")),
+            },
+            Row {
+                case: "another service's listener, addressed with no path at all",
+                url: "https://10.1.2.3:8443",
+                expected: Some(("rds-data", "/", "us-west-2")),
+            },
+            Row {
+                case: "a listener whose port has been closed again",
+                url: "https://127.0.0.1:37336/items",
+                expected: None,
+            },
+            Row {
+                case: "another port of a host that has a listener",
+                url: "https://127.0.0.1:9297/items",
+                expected: None,
+            },
+            Row {
+                case: "a host that is a name nothing was published at",
+                url: "https://example.test/items",
+                expected: None,
+            },
+            Row {
+                case: "a scheme that is not HTTP",
+                url: "ftp://127.0.0.1:37333/items",
+                expected: None,
+            },
+            Row {
+                case: "a value that is no URL at all",
+                url: "not a url",
+                expected: None,
+            },
+        ];
+        for row in rows {
+            let case = row.case;
+            let addressed = addressed_resource_plane(row.url, Some(&published), "us-west-2");
+            let actual = addressed.as_ref().map(|addressed| {
+                (
+                    addressed.signing_name.as_str(),
+                    addressed.target.as_str(),
+                    addressed.region.as_str(),
+                )
+            });
+            assert_eq!(
+                actual, row.expected,
+                "case {case:?}: expected {:?}, got {actual:?}",
+                row.expected
+            );
+        }
+        // An emulator vending no such records resolves none of them, which is the position
+        // every address was in before a service published one.
+        let unrecorded = addressed_resource_plane("https://127.0.0.1:37333/items", None, "us-west-2");
+        assert!(
+            unrecorded.is_none(),
+            "case \"an emulator holding no published addresses\": expected no address, got \
+             {unrecorded:?}"
+        );
+        // The two readings that name a service in the ADDRESS itself answer FIRST, so a plane
+        // named in the path keeps its own signing name and an AWS-shaped host keeps its
+        // endpoint prefix, whatever has been published.
+        for (case, url, expected) in [
+            (
+                "a plane named in the path of the emulator's own endpoint",
+                "https://127.0.0.1:37333/_aws/es/things/index/_doc/1",
+                "es",
+            ),
+            (
+                "a host of AWS's own naming",
+                "https://s3.us-west-2.amazonaws.com/bucket/key",
+                "s3",
+            ),
+        ] {
+            let addressed = addressed(url, "us-west-2")
+                .or_else(|| addressed_resource_plane(url, Some(&published), "us-west-2"));
+            let actual = addressed
+                .as_ref()
+                .map(|addressed| addressed.signing_name.as_str());
+            assert_eq!(
+                actual,
+                Some(expected),
+                "case {case:?}: expected the address to name {expected:?}, got {actual:?}"
             );
         }
     }

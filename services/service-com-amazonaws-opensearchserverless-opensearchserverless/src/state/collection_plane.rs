@@ -37,6 +37,15 @@
 //! An emulator that can open no listener at all (a host driving it on a runtime with no IO)
 //! publishes the addresses [`super::announced_endpoints`] announces instead, so a
 //! collection is never left reporting an address nothing serves.
+//!
+//! # Who answers at that address
+//!
+//! The address is an ADDRESS, so nothing can be read off its host: a client inside this
+//! emulator that is handed one (a running function that read `collectionEndpoint` out of the
+//! control plane and dials it) cannot tell which service answers there the way it can for an
+//! endpoint host. So the authority is recorded with this service's signing name where every
+//! such reader looks ([`::service_common::published_data_planes`]) — for as long as the port
+//! is open, which is why the handle that keeps it open is what withdraws the record.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -48,6 +57,13 @@ use super::ComAmazonawsOpensearchserverlessOpensearchserverlessState as ServiceS
 pub struct CollectionPlane {
     /// `https://<host:port>`, the base every endpoint of this collection is built on.
     base_url: String,
+    /// The `host:port` of that base, as it was recorded where a reader resolves which
+    /// service answers at an address, so the drop below can withdraw the very key the
+    /// publish wrote.
+    authority: String,
+    /// Where that record lives, for as long as this handle does. `None` on an engine that
+    /// vends no such records, where nothing was recorded either.
+    published: Option<::service_common::published_data_planes::PublishedPlanes>,
     /// Held only to keep the port open; the core owns the socket and its TLS. Dropping it
     /// closes the port and severs what is in flight.
     _listener: ::emulator_server::ResourceListener,
@@ -58,6 +74,18 @@ impl CollectionPlane {
     #[must_use]
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+}
+
+/// The record of WHO answers at this address lasts exactly as long as the port does: the
+/// listener closes as this handle drops ([`super::ServiceState::remove_collection`] drops it
+/// when the collection is purged), so the address stops resolving to this service at the
+/// same instant rather than naming a service for a port nothing listens on.
+impl Drop for CollectionPlane {
+    fn drop(&mut self) {
+        if let Some(published) = &self.published {
+            published.withdraw(&self.authority);
+        }
     }
 }
 
@@ -127,6 +155,10 @@ async fn open<Eng: Send + Sync + 'static>(
     collection_id: &str,
 ) -> Option<CollectionPlane> {
     let listeners = shared_engine(&*engine)?.listeners();
+    // Where the address this listener is opened at is recorded, read before the engine is
+    // handed to the handler below. `None` on an engine that vends no such records, which
+    // records nothing and withdraws nothing.
+    let published = ::service_common::published_data_planes::PublishedPlanes::of(&*engine);
     let handler = CollectionRestServer {
         engine,
         state: state.clone(),
@@ -159,15 +191,22 @@ async fn open<Eng: Send + Sync + 'static>(
         }
         Err(_cancelled) => return None,
     };
+    // The core's OWN reading of the address a client dials, which names the loopback
+    // interface for a wildcard bind — where the bound address would be `0.0.0.0`, an address
+    // no client dials — and brackets an IPv6 one, so the URL parses wherever the operator
+    // bound it.
+    let authority = ::service_common::data_plane_addressing::listener_authority(&listener);
+    // Recorded as the port opens, under this service's own signing name — which is the
+    // credential scope a client signs a request to this address with — so a client inside
+    // this emulator that was handed the address can be routed to this service (see the
+    // module docs). Withdrawn when the handle below is dropped.
+    if let Some(published) = &published {
+        published.publish(&authority, super::ARN_NAMESPACE);
+    }
     Some(CollectionPlane {
-        // The core's OWN reading of the address a client dials, which names the loopback
-        // interface for a wildcard bind — where the bound address would be `0.0.0.0`, an
-        // address no client dials — and brackets an IPv6 one, so the URL parses wherever
-        // the operator bound it.
-        base_url: format!(
-            "https://{}",
-            ::service_common::data_plane_addressing::listener_authority(&listener)
-        ),
+        base_url: format!("https://{authority}"),
+        authority,
+        published,
         _listener: listener,
     })
 }

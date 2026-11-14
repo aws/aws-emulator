@@ -611,3 +611,144 @@ async fn the_accounts_own_credential_is_bounded_by_the_network_policy_alone() {
         "case reading the created index back: expected 200, got {status} with {answer}"
     );
 }
+
+/// RULE: a request the data access policies do not admit is refused with HTTP 403 and the
+/// OpenSearch error document the endpoint's own authorization layer answers a denial with —
+/// the fixed error type `forbidden`, with the status repeated in the document — and nothing
+/// the refused request asked for is performed.
+///
+/// The rows span WHY the request is not admitted: no data access policy at all, a policy
+/// naming another principal (the principal dimension — nothing was ever granted to the
+/// caller), and a policy naming the caller but withholding the permission the route takes
+/// (the permission dimension). Every one of them is the same refusal, and a route the policy
+/// does admit is not refused at all.
+#[tokio::test]
+async fn a_request_no_data_access_policy_admits_is_refused_with_the_forbidden_document() {
+    /// One case: what the stored policy grants and to whom, and whether the write is
+    /// admitted.
+    struct Row {
+        case: &'static str,
+        /// The permissions the policy grants, or `None` for no data access policy at all.
+        granted: Option<&'static [&'static str]>,
+        /// Whether the policy names the signing principal; `false` names another one.
+        names_the_caller: bool,
+        admitted: bool,
+    }
+    let rows: &[Row] = &[
+        Row {
+            case: "no data access policy at all",
+            granted: None,
+            names_the_caller: true,
+            admitted: false,
+        },
+        Row {
+            case: "a policy naming another principal",
+            granted: Some(&["aoss:WriteDocument"]),
+            names_the_caller: false,
+            admitted: false,
+        },
+        Row {
+            case: "a policy naming the caller but withholding the write",
+            granted: Some(&["aoss:ReadDocument"]),
+            names_the_caller: true,
+            admitted: false,
+        },
+        Row {
+            case: "a policy naming the caller and granting the write",
+            granted: Some(&["aoss:WriteDocument"]),
+            names_the_caller: true,
+            admitted: true,
+        },
+    ];
+    for Row {
+        case,
+        granted,
+        names_the_caller,
+        admitted,
+    } in rows
+    {
+        let router = emulator();
+        create_security_policy(
+            &router,
+            "network",
+            "net-policy",
+            &network_policy(&["collection/*"]),
+        )
+        .await;
+        let (user_arn, access_key_id) = iam_user(&router, "document-writer").await;
+        let (other_arn, _) = iam_user(&router, "someone-else").await;
+        if let Some(granted) = granted {
+            let principal = if *names_the_caller {
+                user_arn.as_str()
+            } else {
+                other_arn.as_str()
+            };
+            create_access_policy(
+                &router,
+                "data-policy",
+                &data_policy("index", &["index/refused/*"], granted, &[principal]),
+            )
+            .await;
+        }
+        let collection = active_collection(&router, "refused").await;
+        let host = endpoint_host(&collection);
+        // The index itself is created by the account's own published credential, which the
+        // data access policies do not bound, so each row is about the WRITE alone.
+        let (status, answer) = rest(
+            &router,
+            &host,
+            AMBIENT_ACCESS_KEY_ID,
+            "PUT",
+            "/refused-index",
+            Some(&knn_index_body(4)),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {case}: setup expected the index create accepted, got {status} with {answer}"
+        );
+
+        let (status, answer) = rest(
+            &router,
+            &host,
+            &access_key_id,
+            "PUT",
+            "/refused-index/_doc/one",
+            Some(&json!({ "vector": [1.0, 0.0, 0.0, 0.0] })),
+        )
+        .await;
+        if *admitted {
+            assert_eq!(
+                status, 201,
+                "case {case}: a write the policy grants must be served, got {status} with \
+                 {answer}"
+            );
+            continue;
+        }
+        assert_eq!(
+            (
+                status,
+                text(&answer, "error.type").as_str(),
+                answer["status"].as_u64()
+            ),
+            (403, "forbidden", Some(403)),
+            "case {case}: expected 403 with the forbidden error document, got {status} with \
+             {answer}"
+        );
+        // Nothing the refused write asked for landed: the account's own credential, which
+        // may read every document, finds none.
+        let (held, body) = rest(
+            &router,
+            &host,
+            AMBIENT_ACCESS_KEY_ID,
+            "GET",
+            "/refused-index/_doc/one",
+            None,
+        )
+        .await;
+        assert_eq!(
+            held, 404,
+            "case {case}: the refused write must have landed nothing, got {held} with {body}"
+        );
+    }
+}

@@ -45,6 +45,16 @@
 //! IAM store), and an unsigned request, which presents no credential to resolve. The
 //! NETWORK decision above is not about a principal and applies to every request, so an
 //! unbounded caller is still refused at a collection no network policy covers.
+//!
+//! # How a refusal is worded
+//!
+//! Each of the two decisions answers the status its own layer refuses with and an
+//! OpenSearch error document carrying it: a collection no network policy admits answers 401,
+//! which a client of the endpoint reads as an authentication failure, and a principal no
+//! data access policy grants answers 403 with the fixed error type `forbidden` ([`forbidden`])
+//! — the document the endpoint's authorization layer answers a denial with, as recorded for a
+//! role absent from every data access policy. Neither is an error of the ENGINE: the request
+//! is refused before an index, a document or a query is read.
 
 use ::aws_smithy_runtime_api::http::Response as RtResponse;
 
@@ -63,10 +73,31 @@ const SECURITY_EXCEPTION: &str = "security_exception";
 /// network policy is — and this names what was not admitted.
 const UNAUTHORIZED: &str = "Unauthorized";
 
-/// The reason a request whose principal no data access policy grants is refused with: the
-/// sentence that refusal is reported by, as a service that forwards it names it (Amazon
-/// Bedrock renders this leg as "error message: Bad Authorization").
-const BAD_AUTHORIZATION: &str = "Bad Authorization";
+/// The error type a request whose principal no data access policy grants is refused under:
+/// the fixed text the endpoint's own authorization layer answers a denial with
+/// ([`forbidden`]).
+const FORBIDDEN: &str = "forbidden";
+
+/// The reason that refusal states: the status line of the answer it carries, which is what
+/// an authorization layer that has not asked the engine anything can say about it.
+const FORBIDDEN_REASON: &str = "403 Forbidden";
+
+/// The document a request no data access policy admits is refused with: the status, and the
+/// fixed `forbidden` error type a denial on this endpoint carries.
+///
+/// Not one of the ENGINE's errors ([`super::error`]): no index, document or query was read,
+/// because the request was refused before the collection's own records were touched at all,
+/// so the document carries the authorization layer's own error and no `root_cause` of the
+/// engine's.
+fn forbidden() -> RtResponse {
+    super::rendered(
+        403,
+        &::serde_json::json!({
+            "error": { "type": FORBIDDEN, "reason": FORBIDDEN_REASON },
+            "status": 403,
+        }),
+    )
+}
 
 /// Which resource of a collection a request addresses.
 #[derive(Debug, PartialEq, Eq)]
@@ -185,7 +216,7 @@ pub(super) fn refusal(
     if store.data_access_grants(&caller.principals, &resource, permission) {
         return None;
     }
-    Some(super::error(403, SECURITY_EXCEPTION, BAD_AUTHORIZATION))
+    Some(forbidden())
 }
 
 /// The resource `request` addresses and the permission it takes, or `None` for a route this
