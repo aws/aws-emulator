@@ -34,20 +34,33 @@ fn router(engine: &Arc<InMemoryEngine>) -> MultiServiceRouter {
     router
 }
 
-/// A signed-looking request addressing `path` on `host`.
-fn request(host: &str, method: &str, path: &str, body: Vec<u8>) -> http::Request<Bytes> {
+/// A signed-looking request addressing `path` on `host`, presenting `access_key_id` as its
+/// SigV4 credential.
+fn request(
+    access_key_id: &str,
+    host: &str,
+    method: &str,
+    path: &str,
+    body: Vec<u8>,
+) -> http::Request<Bytes> {
     http::Request::builder()
         .method(method)
         .uri(format!("https://{host}{path}"))
         .header("host", host)
         .header(
             "authorization",
-            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260101/us-east-1/execute-api/aws4_request, \
-             SignedHeaders=host, Signature=0",
+            format!(
+                "AWS4-HMAC-SHA256 Credential={access_key_id}/20260101/us-east-1/execute-api/\
+                 aws4_request, SignedHeaders=host, Signature=0"
+            ),
         )
         .body(Bytes::from(body))
         .expect("the test request is well formed")
 }
+
+/// The access key id a request presents unless a case names another: one this emulator holds
+/// no record for, which is the position the account's own published credential is in.
+pub const DEFAULT_ACCESS_KEY_ID: &str = "AKIDEXAMPLE";
 
 /// Dispatch one request through the production router and return its status and body.
 pub async fn call(
@@ -87,8 +100,24 @@ pub async fn call_with_headers(
     path: &str,
     body: Vec<u8>,
 ) -> (u16, http::HeaderMap, Bytes) {
+    call_signed_by(engine, DEFAULT_ACCESS_KEY_ID, host, method, path, body).await
+}
+
+/// As [`call_with_headers`], presenting `access_key_id` as the request's SigV4 credential.
+///
+/// WHICH credential a call presents is part of the answer: every `@connections` call is
+/// authorized against the principal that credential speaks for, so a suite about that
+/// decision signs with the key of the session or user it seeded.
+pub async fn call_signed_by(
+    engine: &Arc<InMemoryEngine>,
+    access_key_id: &str,
+    host: &str,
+    method: &str,
+    path: &str,
+    body: Vec<u8>,
+) -> (u16, http::HeaderMap, Bytes) {
     let response = router(engine)
-        .dispatch(request(host, method, path, body))
+        .dispatch(request(access_key_id, host, method, path, body))
         .await;
     let status = response.status().as_u16();
     let headers = response.headers().clone();

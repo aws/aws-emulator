@@ -21,7 +21,7 @@
 
 use std::any::Any;
 
-use ::service_common::execute_api_connections_endpoint::EndpointAuthority;
+use ::service_common::execute_api_connections_endpoint::{AddressedStage, EndpointAuthority};
 
 use super::data_plane::{api_id_of_host, host_name, path_segments};
 use crate::state::ComAmazonawsApigatewayv2Apigatewayv2State as ServiceStore;
@@ -35,7 +35,11 @@ pub fn install<Eng: Send + Sync + 'static>(engine: &Eng) {
     let Some(cell) = crate::state::connections_endpoint_authority(engine) else {
         return;
     };
-    cell.lock().install(judged);
+    let mut cell = cell.lock();
+    cell.install(judged);
+    // The same records answer WHICH api's stage an addressing resolved to, which is the
+    // resource an `execute-api` permission over the `@connections` surface is written about.
+    cell.install_addressed_stage(addressed);
 }
 
 /// What the endpoint `host` and the invoke-path `prefix` in front of the modelled
@@ -55,21 +59,53 @@ fn judged(engine: &dyn Any, host: Option<&str>, prefix: &str) -> EndpointAuthori
     judged_in(&store, host, prefix)
 }
 
+/// WHICH api's stage the endpoint `host` and the invoke-path `prefix` resolve to, or `None`
+/// for an addressing that resolves no deployed stage of this service.
+///
+/// Installed as a `service_common::execute_api_connections_endpoint::AddressedStageReading`
+/// beside [`judged`], and resolved by the same reading ([`resolved_in`]) so the verdict and
+/// the resource it is about cannot disagree.
+fn addressed(engine: &dyn Any, host: Option<&str>, prefix: &str) -> Option<AddressedStage> {
+    let engine = engine.downcast_ref::<::engine::InMemoryEngine>()?;
+    let state = crate::state::service_state(engine)?;
+    let store = state.lock();
+    resolved_in(&store, host, prefix)
+}
+
 /// [`judged`] against a store already taken: the whole reading, stated over records alone.
+///
+/// The VERDICT is the resolution ([`resolved_in`]) read as a yes or no, so the addressing a
+/// request is served on and the resource it is authorized against are one answer: an
+/// addressing that names no stage at all is judged by nobody, one that resolves a deployed
+/// stage is the caller's to invoke, and every other is not.
 fn judged_in(store: &ServiceStore, host: Option<&str>, prefix: &str) -> EndpointAuthority {
-    // The emulator's own rewriting of an api's endpoint carries the api id in the path ahead
-    // of the stage, because a client on this machine resolves the api's `execute-api` host
-    // nowhere; what is left after it is the stage path, exactly as on the documented host.
-    let (addressed_api, stage_path) = match super::invoke::local_endpoint_path(prefix) {
-        Some((api_id, rest)) => (Some(api_id), rest),
-        None => (host.and_then(api_id_of_host), prefix),
-    };
-    let segments = path_segments(stage_path);
-    let Some(stage_name) = segments.first() else {
+    let addressed = addressing(store, host, prefix);
+    if path_segments(addressed.1).is_empty() {
         // The modelled path itself: the addressing names no stage, so there is nothing here
         // to judge.
         return EndpointAuthority::Unjudged;
-    };
+    }
+    match resolved(store, host, addressed) {
+        Some(_stage) => EndpointAuthority::Deployed,
+        None => EndpointAuthority::Undeployed,
+    }
+}
+
+/// [`addressed`] against a store already taken: WHICH api's stage the addressing resolves to.
+fn resolved_in(store: &ServiceStore, host: Option<&str>, prefix: &str) -> Option<AddressedStage> {
+    resolved(store, host, addressing(store, host, prefix))
+}
+
+/// The stage one already-read `addressing` resolves — the api it names and the stage path left
+/// after it — so the verdict and the resource are one resolution read once.
+fn resolved<'s>(
+    store: &'s ServiceStore,
+    host: Option<&str>,
+    addressing: (Option<&'s str>, &'s str),
+) -> Option<AddressedStage> {
+    let (addressed_api, stage_path) = addressing;
+    let segments = path_segments(stage_path);
+    let stage_name = *segments.first()?;
 
     // A custom domain name's BASE PATH is the other addressing that reaches a stage: the
     // mapping on that path names the api and the stage, and the host names the domain.
@@ -79,7 +115,7 @@ fn judged_in(store: &ServiceStore, host: Option<&str>, prefix: &str) -> Endpoint
     {
         let base_path = segments.join("/");
         if let Some(mapping) = domain.api_mapping_for_key(&base_path, None) {
-            return authority(serves_stage(store, &mapping.api_id, &mapping.stage));
+            return served_stage(store, &mapping.api_id, &mapping.stage);
         }
     }
 
@@ -87,32 +123,56 @@ fn judged_in(store: &ServiceStore, host: Option<&str>, prefix: &str) -> Endpoint
     match addressed_api {
         // An addressing that names an api id answers for THAT api alone, whether or not this
         // emulator holds it: an endpoint of an api that does not exist serves no stage.
-        Some(api_id) => authority(serves_stage(store, api_id, stage_name)),
+        Some(api_id) => served_stage(store, api_id, stage_name),
         // An addressing that names NO api id: a client on this machine cannot resolve an
         // api's `execute-api` host, so it reaches the emulator's own address, which carries
         // none. The stage is then resolved across the apis this emulator serves.
-        None => authority(
-            store
-                .apis
-                .keys()
-                .any(|api_id| serves_stage(store, api_id, stage_name)),
-        ),
+        None => store
+            .apis
+            .keys()
+            .find_map(|api_id| served_stage(store, api_id, stage_name)),
     }
 }
 
-/// Whether `api_id` holds a stage named `stage_name` with a deployment released to it — what
-/// makes an `execute-api` endpoint serve that stage at all
-/// ([`super::websocket::integration::deployed`] states the same rule for the WebSocket
-/// plane's own handshake).
-fn serves_stage(store: &ServiceStore, api_id: &str, stage_name: &str) -> bool {
-    super::websocket::integration::deployed(store, api_id, stage_name).is_some()
+/// The api the addressing NAMES, and the stage path left after it.
+///
+/// The emulator's own rewriting of an api's endpoint carries the api id in the path ahead of
+/// the stage, because a client on this machine resolves the api's `execute-api` host nowhere;
+/// what is left after it is the stage path, exactly as on the documented host.
+///
+/// A WEBSOCKET api is reached at a socket of its own, and the address that socket landed on is
+/// the endpoint its `ApiEndpoint` announces and its `@connections` calls are made at
+/// ([`crate::state::websocket_transport::WebSocketTransport::api_at`]) — so a request that
+/// arrived there addresses THAT api, whatever other api of this emulator holds a stage of the
+/// same name.
+fn addressing<'a>(
+    store: &'a ServiceStore,
+    host: Option<&'a str>,
+    prefix: &'a str,
+) -> (Option<&'a str>, &'a str) {
+    if let Some((api_id, rest)) = super::invoke::local_endpoint_path(prefix) {
+        return (Some(api_id), rest);
+    }
+    if let Some(api_id) = host.and_then(|host| store.websocket_transport.api_at(host)) {
+        return (Some(api_id), prefix);
+    }
+    (host.and_then(api_id_of_host), prefix)
 }
 
-/// The authority a resolution answers with.
-fn authority(deployed: bool) -> EndpointAuthority {
-    if deployed {
-        EndpointAuthority::Deployed
-    } else {
-        EndpointAuthority::Undeployed
-    }
+/// `api_id`'s stage `stage_name` as the resource an addressing resolved, when that api holds
+/// such a stage with a deployment released to it — what makes an `execute-api` endpoint serve
+/// that stage at all ([`super::websocket::integration::deployed`] states the same rule for
+/// the WebSocket plane's own handshake).
+fn served_stage(
+    store: &ServiceStore,
+    api_id: &str,
+    stage_name: &str,
+) -> Option<AddressedStage> {
+    let (api, _stage, _deployed) =
+        super::websocket::integration::deployed(store, api_id, stage_name)?;
+    Some(AddressedStage {
+        api_id: api_id.to_string(),
+        region: api.region.clone(),
+        stage_name: stage_name.to_string(),
+    })
 }

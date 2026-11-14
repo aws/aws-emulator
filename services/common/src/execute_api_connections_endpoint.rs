@@ -46,6 +46,29 @@ pub enum EndpointAuthority {
 /// (`"/dev"`, `"/v1/socket"`, or empty for the modelled path itself).
 pub type EndpointReading = fn(&dyn Any, Option<&str>, &str) -> EndpointAuthority;
 
+/// WHICH api's stage an endpoint addressing resolves to.
+///
+/// What it is FOR: an `execute-api` permission is written about a RESOURCE
+/// (`arn:aws:execute-api:{region}:{account}:{api-id}/{stage}/…`), so a service that
+/// authorizes a `@connections` request has to name the api, the stage and the Region the
+/// addressing resolved to — and those are the records of the service that owns apis and
+/// stages, exactly as the verdict in [`EndpointAuthority`] is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddressedStage {
+    /// The id of the api the endpoint serves.
+    pub api_id: String,
+    /// The Region that api was created in, which is the Region of its resource ARNs.
+    pub region: String,
+    /// The stage of that api the invoke path names.
+    pub stage_name: String,
+}
+
+/// One reading of WHICH api's stage an addressing resolves to, taking the same three values
+/// as an [`EndpointReading`] and answering `None` for an addressing that resolves no deployed
+/// stage — the addressings [`EndpointAuthority::Undeployed`] and
+/// [`EndpointAuthority::Unjudged`] cover.
+pub type AddressedStageReading = fn(&dyn Any, Option<&str>, &str) -> Option<AddressedStage>;
+
 /// The installed reading.
 ///
 /// Registered in the shared engine under THIS type, so the service that owns apis and stages
@@ -56,6 +79,9 @@ pub type EndpointReading = fn(&dyn Any, Option<&str>, &str) -> EndpointAuthority
 pub struct ConnectionsEndpointAuthority {
     /// The reading the owner of apis and stages installed, or `None` while none is mounted.
     reading: Option<EndpointReading>,
+    /// The reading of WHICH api's stage an addressing resolves to, installed by that same
+    /// owner, or `None` while none is mounted.
+    addressed: Option<AddressedStageReading>,
 }
 
 impl ConnectionsEndpointAuthority {
@@ -68,10 +94,24 @@ impl ConnectionsEndpointAuthority {
         self.reading = Some(reading);
     }
 
+    /// Install `reading` as the one resolution of WHICH api's stage an addressing names.
+    ///
+    /// Installed beside [`Self::install`] by the same owner and for the same reason: the
+    /// records are that service's, and a service that authorizes a `@connections` request
+    /// needs the resource the addressing resolved to.
+    pub fn install_addressed_stage(&mut self, reading: AddressedStageReading) {
+        self.addressed = Some(reading);
+    }
+
     /// The installed reading, by value so the caller can release this cell's lock before
     /// calling it.
     pub fn installed(&self) -> Option<EndpointReading> {
         self.reading
+    }
+
+    /// The installed stage resolution, by value for the same reason.
+    pub fn installed_addressed_stage(&self) -> Option<AddressedStageReading> {
+        self.addressed
     }
 }
 
@@ -96,6 +136,56 @@ mod tests {
             cell.installed().is_none(),
             "case \"no owner mounted\": expected no reading, got one"
         );
+        assert!(
+            cell.installed_addressed_stage().is_none(),
+            "case \"no owner mounted\": expected no stage resolution, got one"
+        );
+    }
+
+    /// A stage resolution standing in for the owner's own records, for the same reason
+    /// [`deployed_only_dev`] stands in for its verdict.
+    fn dev_stage_of_one_api(
+        _engine: &dyn Any,
+        _host: Option<&str>,
+        prefix: &str,
+    ) -> Option<AddressedStage> {
+        (prefix == "/dev").then(|| AddressedStage {
+            api_id: "a1b2c3d4e5".to_string(),
+            region: "us-east-1".to_string(),
+            stage_name: "dev".to_string(),
+        })
+    }
+
+    /// RULE: the cell hands back the stage resolution the owner installed, which answers for
+    /// the addressing that resolves a deployed stage and `None` for every other.
+    #[test]
+    fn an_installed_stage_resolution_answers_for_the_addressing_it_resolves() {
+        let mut cell = ConnectionsEndpointAuthority::default();
+        cell.install_addressed_stage(dev_stage_of_one_api);
+        let reading = cell
+            .installed_addressed_stage()
+            .expect("case \"an owner mounted\": the installed resolution must be handed back");
+        // The rows span what the resolution generalises over: the prefix naming the deployed
+        // stage, one naming another stage, and the modelled path's empty one.
+        for (case, prefix, expected) in [
+            (
+                "the deployed stage",
+                "/dev",
+                Some(AddressedStage {
+                    api_id: "a1b2c3d4e5".to_string(),
+                    region: "us-east-1".to_string(),
+                    stage_name: "dev".to_string(),
+                }),
+            ),
+            ("another stage", "/test", None),
+            ("no prefix at all", "", None),
+        ] {
+            let answered = reading(&() as &dyn Any, None, prefix);
+            assert_eq!(
+                answered, expected,
+                "case {case:?}: expected {expected:?} for prefix {prefix:?}, got {answered:?}"
+            );
+        }
     }
 
     #[test]

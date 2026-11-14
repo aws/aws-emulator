@@ -244,6 +244,72 @@ impl SerializableStruct for BadRequestException {
     }
 }
 
+/// The `message` member of the synthetic `AccessDeniedException` error shape.
+static ACCESS_DENIED_MESSAGE: Schema = Schema::new_member(
+    ShapeId::from_static(
+        "smithy.framework#AccessDeniedException$message",
+        "smithy.framework",
+        "message",
+    ),
+    ShapeType::String,
+    "message",
+    0,
+)
+.with_xml_name("Message");
+
+/// Schema for the synthetic `AccessDeniedException` error shape.
+///
+/// In the `smithy.framework` namespace for the same reason as the shapes above: the shape is
+/// not in this service's model, so it must not collide with a modelled one. The model's own
+/// `ForbiddenException` is memberless — there is nothing to serialize a sentence into — while
+/// an `execute-api` endpoint refuses a call IAM does not allow with the sentence naming the
+/// principal, the action and the resource, in the `AccessDeniedException` class every AWS
+/// surface words an authorization failure in. The wrapper is the only place an operation can
+/// answer an error its own model does not declare, which is what this variant is for; see
+/// `crate::service::manage_connections_authorization` for the decision it carries.
+pub static ACCESS_DENIED_SCHEMA: Schema = Schema::new_struct(
+    ShapeId::from_static(
+        "smithy.framework#AccessDeniedException",
+        "smithy.framework",
+        "AccessDeniedException",
+    ),
+    ShapeType::Structure,
+    &[&ACCESS_DENIED_MESSAGE],
+);
+
+/// The payload of an `AccessDeniedException`: why the caller may not make this call.
+#[derive(Debug, Clone)]
+pub struct AccessDeniedException {
+    pub message: String,
+}
+
+impl AccessDeniedException {
+    /// An `AccessDeniedException` carrying `message`.
+    ///
+    /// Word it the way IAM words an authorization failure — the principal, the action and the
+    /// resource — so the caller can tell which grant would lift the refusal.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for AccessDeniedException {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AccessDeniedException: {}", self.message)
+    }
+}
+
+impl std::error::Error for AccessDeniedException {}
+
+impl SerializableStruct for AccessDeniedException {
+    fn serialize_members(&self, s: &mut dyn ShapeSerializer) -> Result<(), SerdeError> {
+        s.write_string(&ACCESS_DENIED_MESSAGE, self.message.as_str())?;
+        Ok(())
+    }
+}
+
 /// An operation's error channel: either the synthetic scaffold signal, or one of the
 /// operation's own modeled errors.
 #[derive(Debug)]
@@ -268,6 +334,11 @@ pub enum Scaffolded<E> {
     /// [`BAD_REQUEST_SCHEMA`] for why this service needs it and
     /// [`Scaffolded::bad_request`] for when to answer it.
     BadRequest(BadRequestException),
+    /// The caller may not make this call: HTTP 403 with the error code
+    /// `AccessDeniedException`, carrying the sentence IAM words an authorization failure in.
+    /// See [`ACCESS_DENIED_SCHEMA`] for why this service needs it and
+    /// [`Scaffolded::access_denied`] for when to answer it.
+    AccessDenied(AccessDeniedException),
 }
 
 impl<E> Scaffolded<E> {
@@ -303,6 +374,17 @@ impl<E> Scaffolded<E> {
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self::BadRequest(BadRequestException::new(message))
     }
+
+    /// Refuse the request with HTTP 403 `AccessDeniedException`.
+    ///
+    /// Reach for this where IAM does not allow the caller the action it asked for: the
+    /// `execute-api` endpoint these operations are published on authorizes every call against
+    /// the caller's own policies, and AWS refuses one it does not allow in this class with the
+    /// sentence naming the principal, the action and the resource — not in the model's
+    /// memberless `ForbiddenException`, which carries no sentence at all.
+    pub fn access_denied(message: impl Into<String>) -> Self {
+        Self::AccessDenied(AccessDeniedException::new(message))
+    }
 }
 
 impl<E: std::fmt::Display> std::fmt::Display for Scaffolded<E> {
@@ -312,6 +394,7 @@ impl<E: std::fmt::Display> std::fmt::Display for Scaffolded<E> {
             Self::Modeled(e) => write!(f, "{e}"),
             Self::ValidationException(e) => write!(f, "{e}"),
             Self::BadRequest(e) => write!(f, "{e}"),
+            Self::AccessDenied(e) => write!(f, "{e}"),
         }
     }
 }
@@ -325,6 +408,7 @@ impl<E: std::error::Error + 'static> std::error::Error for Scaffolded<E> {
             Self::Modeled(e) => e.source(),
             Self::ValidationException(e) => e.source(),
             Self::BadRequest(e) => e.source(),
+            Self::AccessDenied(e) => e.source(),
         }
     }
 }
@@ -340,6 +424,7 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
             Self::Modeled(e) => e.as_serializable(),
             Self::ValidationException(e) => e,
             Self::BadRequest(e) => e,
+            Self::AccessDenied(e) => e,
         }
     }
 
@@ -349,6 +434,7 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
             Self::Modeled(e) => e.variant_schema(),
             Self::ValidationException(_) => &VALIDATION_EXCEPTION_SCHEMA,
             Self::BadRequest(_) => &BAD_REQUEST_SCHEMA,
+            Self::AccessDenied(_) => &ACCESS_DENIED_SCHEMA,
         }
     }
 
@@ -362,6 +448,7 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
             Self::Modeled(e) => e.shape_name(),
             Self::ValidationException(_) => "ValidationException",
             Self::BadRequest(_) => "BadRequestException",
+            Self::AccessDenied(_) => "AccessDeniedException",
         }
     }
 
@@ -375,6 +462,8 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
             Self::Modeled(e) => e.http_status(),
             Self::ValidationException(_) => 400,
             Self::BadRequest(_) => 400,
+            // The status every `execute-api` endpoint refuses an unauthorized call with.
+            Self::AccessDenied(_) => 403,
         }
     }
 
@@ -388,6 +477,7 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
             // Same reason: the synthetic shape carries no `awsQueryError` trait.
             Self::ValidationException(_) => None,
             Self::BadRequest(_) => None,
+            Self::AccessDenied(_) => None,
         }
     }
 }

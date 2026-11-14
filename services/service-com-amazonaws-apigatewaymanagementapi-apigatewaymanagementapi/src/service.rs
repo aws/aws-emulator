@@ -47,6 +47,10 @@
 /// The ENDPOINT a `@connections` request was addressed through, and the refusal an endpoint
 /// serving no deployed stage earns.
 mod connections_endpoint;
+/// Whether IAM lets the caller MANAGE the connections of the stage it addressed — the
+/// `execute-api:ManageConnections` decision the three operations take before they read the
+/// connection store.
+pub(crate) mod manage_connections_authorization;
 /// What this service's error body carries on the wire: the error shape's own modelled
 /// members and nothing else.
 mod rest_json_error_body;

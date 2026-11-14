@@ -181,6 +181,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(crate::state::registry_unavailable(Self::NAME));
         };
+        // Every `@connections` call is authorized by IAM on the stage it addressed, and that
+        // decision is taken BEFORE the request it carries is read at all: a caller holding no
+        // `execute-api:ManageConnections` grant learns nothing about which connections exist
+        // (`crate::service::manage_connections_authorization`).
+        if let Some(denied) =
+            crate::service::manage_connections_authorization::denial(&*self.engine, ctx)
+        {
+            return Err(crate::scaffolded::Scaffolded::access_denied(denied));
+        }
         // A `ConnectionId` that is not of the shape this service mints names no connection
         // anywhere, so the request is refused from the VALUE alone, before the registry is
         // consulted: a caller prunes its own record of a connection on the 410, so

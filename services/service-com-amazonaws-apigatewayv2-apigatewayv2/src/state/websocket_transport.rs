@@ -101,6 +101,21 @@ impl WebSocketTransport {
         self.listeners.get(api_id).map(|l| authority_of(l))
     }
 
+    /// The api whose data plane is reached at `authority`, or `None` when that address is no
+    /// api's socket.
+    ///
+    /// The reverse of [`Self::authority`], for a request that arrived at one of these
+    /// addresses: the socket an api is served on IS that api's whole `execute-api` endpoint —
+    /// its `ApiEndpoint` announces it and its `@connections` calls are made at it — so the
+    /// address a request reached names the api it addressed, which no `execute-api` host and
+    /// no path segment of a locally reached endpoint does.
+    pub fn api_at(&self, authority: &str) -> Option<&str> {
+        self.listeners
+            .iter()
+            .find(|(_api_id, listener)| authority_of(listener) == authority)
+            .map(|(api_id, _listener)| api_id.as_str())
+    }
+
     /// Close `api_id`'s socket — what an api being deleted does to its data plane. Dropping
     /// the handle severs every connection that was open on it, and the task serving each one
     /// then forgets it in the connection registry.

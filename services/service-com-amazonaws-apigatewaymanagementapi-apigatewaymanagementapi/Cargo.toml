@@ -29,6 +29,14 @@ tracing = { workspace = true }
 # bytes, so `src/state.rs` decodes a caller's id with this maintained implementation rather
 # than with a hand-written alphabet or length rule.
 base64 = "0.22"
+# Every `@connections` call is authorized by IAM — the caller needs
+# `execute-api:ManageConnections` on the stage it addressed
+# (`src/service/manage_connections_authorization.rs`) — so the decision reads the principal
+# the request's access key id speaks for from the token service's own session registry and
+# the policies in force on it from the IAM store, each over the shared engine, which needs
+# the owning service's state TYPE.
+service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
+service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

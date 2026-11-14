@@ -23,6 +23,8 @@ mod connection_lifecycle;
 mod connections_error_layer;
 #[path = "all/invoke_path_routing.rs"]
 mod invoke_path_routing;
+#[path = "all/manage_connections_authorization.rs"]
+mod manage_connections_authorization;
 #[path = "all/probe.rs"]
 mod probe;
 #[path = "all/state_roundtrip.rs"]
