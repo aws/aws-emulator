@@ -18,8 +18,6 @@
 //! cluster, a snapshot still being created, a repeated grant, a malformed
 //! grantee) and over the bound on the set and one grant past it.
 
-use std::time::Duration;
-
 use service_com_amazonaws_redshift_redshiftserviceversion20121201::state;
 
 use crate::cluster_lifecycle::{all_text, Answer, Emulator};
@@ -54,8 +52,13 @@ pub(crate) type LocatorCase<'a> = (&'a str, &'a str, Vec<(&'a str, &'a str)>);
 /// An emulator holding [`CLUSTER`] and a snapshot of it that is still
 /// `creating` — the clock-owed `creating` -> `available` transition has not
 /// fallen due yet. Returns the snapshot's ARN, which the locator rows name it by.
+///
+/// The emulator's clock is STOPPED before anything is created, so the records
+/// stay in their transient state however long a case takes over the calls that
+/// read them, and [`seeded_emulator`] crosses the span by advancing that clock.
 pub(crate) async fn creating_emulator(snapshots: &[&str]) -> (Emulator, String) {
     let emulator = Emulator::new();
+    emulator.stop_clock();
     let created = emulator
         .call(
             "CreateCluster",
@@ -109,8 +112,10 @@ pub(crate) async fn creating_emulator(snapshots: &[&str]) -> (Emulator, String) 
 pub(crate) async fn seeded_emulator() -> (Emulator, String) {
     let (emulator, arn) = creating_emulator(&[SNAPSHOT]).await;
     // Only an `available` snapshot can be shared, and the transition is due a
-    // span after the call that minted it.
-    tokio::time::sleep(state::PROVISIONING_SPAN + Duration::from_millis(250)).await;
+    // span after the call that minted it — crossed by advancing the stopped
+    // clock, so the record is settled before the first call rather than after a
+    // wait the host's speed decides.
+    emulator.advance_clock(state::PROVISIONING_SPAN);
     (emulator, arn)
 }
 
@@ -479,7 +484,7 @@ async fn a_snapshot_still_being_created_cannot_be_shared_yet() {
         "InvalidClusterSnapshotState",
     );
 
-    tokio::time::sleep(state::PROVISIONING_SPAN + Duration::from_millis(250)).await;
+    emulator.advance_clock(state::PROVISIONING_SPAN);
     let later = authorize(&emulator, account, &[("SnapshotIdentifier", SNAPSHOT)]).await;
     assert_eq!(
         later.status, 200,
@@ -498,7 +503,7 @@ async fn a_snapshot_still_being_created_cannot_be_shared_yet() {
 #[tokio::test]
 async fn a_grant_touches_only_the_snapshot_it_names() {
     let (emulator, _) = creating_emulator(&[SNAPSHOT, OTHER_SNAPSHOT]).await;
-    tokio::time::sleep(state::PROVISIONING_SPAN + Duration::from_millis(250)).await;
+    emulator.advance_clock(state::PROVISIONING_SPAN);
     let account = "777788889999";
 
     let answer = authorize(&emulator, account, &[("SnapshotIdentifier", SNAPSHOT)]).await;

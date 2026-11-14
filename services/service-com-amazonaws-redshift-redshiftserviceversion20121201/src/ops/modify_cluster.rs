@@ -448,8 +448,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> ModifyCluster<Eng
             }
         }
 
+        // One reading of the emulator's own clock for everything this call does:
+        // the transitions it materialises and the due instants it records are
+        // then dated by the same instant, which is also the one the read that
+        // materialises them is decided against.
+        let now = ::service_common::clock::now(&*self.engine);
         let mut store = state.lock();
-        store.settle(::std::time::Instant::now());
+        store.settle(now);
 
         let Some(position) = store.cluster_position(&input.cluster_identifier) else {
             return Err(ModifyClusterErrorModeled::ClusterNotFoundFault(
@@ -609,7 +614,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> ModifyCluster<Eng
         // disagree about what the cluster is becoming.
         if resized {
             stored.resize = Some(st::StoredResize::started(
-                ::std::time::Instant::now(),
+                now,
                 source_shape,
                 st::ClusterShape {
                     node_type: stored.cluster.node_type.clone(),
@@ -729,7 +734,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> ModifyCluster<Eng
             // changes is applied to the record here, so nothing else is pending.
             stored.cluster.pending_modified_values =
                 Some(st::pending_master_user_password(Some(password.as_str())));
-            stored.available_at = ::std::time::Instant::now() + st::PROVISIONING_SPAN;
+            stored.available_at = now + st::PROVISIONING_SPAN;
             stored.master_user_password = Some(password);
         }
         // A port change moves the endpoint the caller connects to.

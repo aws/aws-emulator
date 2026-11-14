@@ -39,15 +39,14 @@ pub(crate) const POLL_DEADLINE: Duration = Duration::from_secs(10);
 /// The gap between two polls of one loop.
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
-/// How many FRESH resources a case is allowed to start before it calls a
-/// transient state unobservable.
+/// How many FRESH reads a case makes of one resource inside the span, to show
+/// that reading it materialises nothing the clock has not already made due.
 ///
-/// A resource is transient for a whole span, and two reads of it take
-/// microseconds, so only an attempt that happens to straddle the due instant
-/// misses the window — and each attempt starts its own resource, so a loaded
-/// runner costs a case more attempts rather than failing it. An implementation
-/// where reading settles the resource leaves no attempt a window at all.
-const TRANSIENT_ATTEMPTS: usize = 64;
+/// The clock is STOPPED while they are made, so the span stays open across all of
+/// them however long the host takes: an implementation where a read settles the
+/// resource it reports fails on the second one, and no number of them can fail a
+/// correct implementation.
+const READS_INSIDE_THE_SPAN: usize = 3;
 
 /// The IAM Identity Center instances the ACCOUNT holds in every suite of this
 /// crate.
@@ -759,6 +758,33 @@ impl Emulator {
         )
         .await
     }
+
+    /// Stop this emulator's clock where it stands, so nothing this service owes
+    /// can fall due until [`Emulator::advance_clock`] brings it there.
+    ///
+    /// The emulator's clock is the one place this service reads time from: every
+    /// due instant an operation records is taken from it and every transition it
+    /// materialises is compared against it. A case that has to observe the
+    /// TRANSIENT side of a span stops the clock first, so the span stays open
+    /// however long the host takes over the calls inside it — which is what keeps
+    /// such a case from passing on one machine and failing on a loaded one.
+    pub(crate) fn stop_clock(&self) {
+        ::service_common::clock::stop(&*self.engine)
+            .expect("the emulator holds the clock its transitions are decided against");
+    }
+
+    /// Move this emulator's clock on by `span`.
+    ///
+    /// Stops the clock first if it is still running, at an instant no earlier
+    /// than every due instant already recorded, so an advance by a whole span
+    /// always crosses a due instant one of this suite's earlier calls recorded —
+    /// whatever the host was doing in between. The transitions it brings due are
+    /// materialised by the next reporting call, exactly as they are when the span
+    /// passes on a running clock; nothing sleeps for them.
+    pub(crate) fn advance_clock(&self, span: Duration) {
+        ::service_common::clock::advance(&*self.engine, span)
+            .expect("the emulator holds the clock its transitions are decided against");
+    }
 }
 
 /// Percent-encode one form value, escaping everything outside the RFC 3986
@@ -970,8 +996,9 @@ async fn the_cluster_lifecycle_is_consistent_across_calls() {
 
     // DESCRIBE — the stored record comes back with the values create persisted.
     // Past the provisioning span, so the cluster is serving and publishes the
-    // endpoint a client connects to.
-    tokio::time::sleep(state::PROVISIONING_SPAN + Duration::from_millis(250)).await;
+    // endpoint a client connects to: the span is crossed by advancing this
+    // emulator's own clock, not by waiting for it.
+    emulator.advance_clock(state::PROVISIONING_SPAN);
     let described = emulator
         .call(
             "DescribeClusters",
@@ -1578,145 +1605,151 @@ async fn pagination_walks_the_whole_collection_through_the_marker() {
 /// the clock already owed: it neither moves the resource on by itself nor jumps
 /// the span.
 ///
-/// Both halves are decided by a CONDITION, never by how fast the host runs. The
-/// transient half retries on a FRESH cluster until one attempt's two
-/// back-to-back reads both land inside the span: a read never advances a
-/// resource, so such an attempt reports the transient status twice, while an
-/// attempt whose reads straddle the due instant observed no transient window at
-/// all and is retried rather than asserted on. An implementation where a read
-/// settles the resource — before or after reporting it — produces no such
-/// attempt for any cluster, so [`TRANSIENT_ATTEMPTS`] attempts all failing to
-/// see it is what fails the test; nothing here is bounded by the clock. The
-/// settled half then polls each reporting operation until the clock-owed
-/// transition is materialised, making no mutating call while it waits.
+/// Both halves are decided by the store's own clock, which this case STOPS and
+/// then advances by a known amount — so neither depends on how fast the host
+/// runs. While the clock stands inside the span every read reports the transient
+/// status, however many reads are made and however long the host takes over
+/// them; the advance that reaches the due instant is what makes the settled
+/// status observable, and the reads after it agree with one another.
+///
+/// The table walks the span: no advance at all, part of it, one tick short of
+/// the due instant, exactly the due instant, and well past it. The due instant
+/// is a [`state::PROVISIONING_SPAN`] after the call that started the work and
+/// the transition is materialised AT it, so the rows short of it must report the
+/// transient status and the rows at or past it the settled one — for the
+/// cluster, for the snapshot taken of it, and for the endpoint a cluster
+/// publishes only once it is serving.
 #[tokio::test]
 async fn provisioning_settles_on_the_clock_and_a_read_changes_nothing_else() {
-    let emulator = Emulator::new();
+    let span = state::PROVISIONING_SPAN;
+    let cases: [(&str, Duration, bool); 5] = [
+        ("no advance at all", Duration::ZERO, false),
+        ("part of the span", span / 2, false),
+        (
+            "one tick short of the due instant",
+            span - Duration::from_nanos(1),
+            false,
+        ),
+        ("exactly the due instant", span, true),
+        ("well past the due instant", span * 4, true),
+    ];
 
-    let mut observed_transient = None;
-    for attempt in 1..=TRANSIENT_ATTEMPTS {
-        let cluster = format!("clock-cluster-{attempt}");
-        let snapshot_id = format!("clock-snap-{attempt}");
+    for (case, advance, settled) in cases {
+        let emulator = Emulator::new();
+        // Stopped BEFORE the work starts, so both due instants are this clock's
+        // and the span is crossed only by the advance below.
+        emulator.stop_clock();
 
-        let created = emulator.create_minimal(&cluster).await;
+        let created = emulator.create_minimal("clock-cluster").await;
         assert_eq!(
             created.text("ClusterStatus").as_deref(),
-            Some("creating"),
-            "case create {cluster}: the span is never zero, so the caller sees the transient \
-             status, got {:?}",
+            Some(state::STATUS_CREATING),
+            "case {case}: the span is never zero, so the create reports the transient status, \
+             got {:?}",
             created.text("ClusterStatus")
         );
         let snapshot = emulator
             .call(
                 "CreateClusterSnapshot",
                 &[
-                    ("SnapshotIdentifier", snapshot_id.as_str()),
-                    ("ClusterIdentifier", cluster.as_str()),
+                    ("SnapshotIdentifier", "clock-snap"),
+                    ("ClusterIdentifier", "clock-cluster"),
                 ],
             )
             .await;
         assert_eq!(
             snapshot.text("Status").as_deref(),
-            Some("creating"),
-            "case snapshot {snapshot_id}: expected the transient status, got {:?}",
+            Some(state::STATUS_CREATING),
+            "case {case}: expected the snapshot's transient status, got {:?}",
             snapshot.text("Status")
         );
 
-        // Two reads back to back. Both reporting the transient status is the
-        // claim: a read never moves the resource on by itself.
-        let first = emulator
-            .call("DescribeClusters", &[("ClusterIdentifier", &cluster)])
-            .await;
-        let second = emulator
-            .call("DescribeClusters", &[("ClusterIdentifier", &cluster)])
-            .await;
-        let read_statuses = (first.text("ClusterStatus"), second.text("ClusterStatus"));
-        let observed = (read_statuses.0.as_deref(), read_statuses.1.as_deref());
-        if observed == (Some(state::STATUS_CREATING), Some(state::STATUS_CREATING)) {
-            observed_transient = Some((cluster, snapshot_id));
-            break;
-        }
-        // Neither read may ever REGRESS, whichever side of the due instant it
-        // fell on: the only transition this cluster owes is creating ->
-        // available.
-        for (which, status) in [("first", observed.0), ("second", observed.1)] {
-            assert!(
-                status == Some(state::STATUS_CREATING) || status == Some(state::STATUS_AVAILABLE),
-                "case repeated read of {cluster}: expected the {which} read to report creating \
-                 or available, got {status:?}"
+        // Reads inside the span, with the clock standing still: every one of
+        // them reports the transient status, so no read moved either resource on
+        // by itself.
+        for read in 1..=READS_INSIDE_THE_SPAN {
+            let cluster_read = emulator
+                .call("DescribeClusters", &[("ClusterIdentifier", "clock-cluster")])
+                .await;
+            assert_eq!(
+                cluster_read.text("ClusterStatus").as_deref(),
+                Some(state::STATUS_CREATING),
+                "case {case}: read {read} inside the span expected the cluster to stay \
+                 creating, got {:?}",
+                cluster_read.text("ClusterStatus")
+            );
+            let snapshot_read = emulator
+                .call(
+                    "DescribeClusterSnapshots",
+                    &[("SnapshotIdentifier", "clock-snap")],
+                )
+                .await;
+            assert_eq!(
+                snapshot_read.text("Status").as_deref(),
+                Some(state::STATUS_CREATING),
+                "case {case}: read {read} inside the span expected the snapshot to stay \
+                 creating, got {:?}",
+                snapshot_read.text("Status")
             );
         }
-        assert!(
-            observed.0 != Some(state::STATUS_AVAILABLE)
-                || observed.1 != Some(state::STATUS_CREATING),
-            "case repeated read of {cluster}: expected no read to regress, got {:?} then {:?}",
-            observed.0,
-            observed.1
-        );
+
+        emulator.advance_clock(advance);
+
+        // What the clock now owes, and nothing else. `ClusterAvailabilityStatus`
+        // follows the status under the mapping its own documentation states
+        // ("Available - The cluster is available for queries", "Modifying - …
+        // intermittently available for queries due to changes that modify the
+        // cluster", from `smithy_query(query="doc", shape="Cluster",
+        // member="ClusterAvailabilityStatus")`), so a cluster still being
+        // brought up reports `Modifying`.
+        let expected_status = if settled {
+            state::STATUS_AVAILABLE
+        } else {
+            state::STATUS_CREATING
+        };
+        let expected_availability = if settled { "Available" } else { "Modifying" };
+        // Read TWICE past the advance as well: the second read agrees with the
+        // first, whichever side of the due instant the advance landed on.
+        for read in 1..=2 {
+            let cluster_read = emulator
+                .call("DescribeClusters", &[("ClusterIdentifier", "clock-cluster")])
+                .await;
+            assert_eq!(
+                (
+                    cluster_read.text("ClusterStatus").as_deref(),
+                    cluster_read.text("ClusterAvailabilityStatus").as_deref()
+                ),
+                (Some(expected_status), Some(expected_availability)),
+                "case {case}: read {read} after advancing {advance:?} expected \
+                 {expected_status}/{expected_availability}, got {:?}/{:?}",
+                cluster_read.text("ClusterStatus"),
+                cluster_read.text("ClusterAvailabilityStatus")
+            );
+            // The endpoint a client dials is published exactly when the cluster
+            // is serving, which is the same clock-owed transition.
+            assert_eq!(
+                cluster_read.text("Port").is_some(),
+                settled,
+                "case {case}: read {read} after advancing {advance:?} expected the endpoint \
+                 published={settled}, got Port={:?} Address={:?}",
+                cluster_read.text("Port"),
+                cluster_read.text("Address")
+            );
+            let snapshot_read = emulator
+                .call(
+                    "DescribeClusterSnapshots",
+                    &[("SnapshotIdentifier", "clock-snap")],
+                )
+                .await;
+            assert_eq!(
+                snapshot_read.text("Status").as_deref(),
+                Some(expected_status),
+                "case {case}: read {read} after advancing {advance:?} expected the snapshot \
+                 {expected_status}, got {:?}",
+                snapshot_read.text("Status")
+            );
+        }
     }
-    let Some((cluster, snapshot_id)) = observed_transient else {
-        panic!(
-            "case repeated read: none of {TRANSIENT_ATTEMPTS} fresh clusters reported the \
-             transient status to two reads in a row — a read that settles the resource it \
-             reports leaves no transient window for any of them"
-        );
-    };
-
-    // Past the due instant the clock-owed transition is materialised — reached
-    // by polling the read alone, so nothing but the clock can have moved it.
-    let (settled, _) = emulator
-        .poll_until(
-            "settled cluster",
-            "DescribeClusters",
-            &[("ClusterIdentifier", &cluster)],
-            |answer| answer.text("ClusterStatus").as_deref() == Some(state::STATUS_AVAILABLE),
-        )
-        .await;
-    assert_eq!(
-        settled.text("ClusterStatus").as_deref(),
-        Some("available"),
-        "case settled cluster: expected available once the span has passed, got {:?}",
-        settled.text("ClusterStatus")
-    );
-    assert_eq!(
-        settled.text("ClusterAvailabilityStatus").as_deref(),
-        Some("Available"),
-        "case settled cluster: expected the availability status to follow, got {:?}",
-        settled.text("ClusterAvailabilityStatus")
-    );
-    // And a read of the settled cluster still changes nothing: the next one
-    // reports the same thing.
-    let again = emulator
-        .call("DescribeClusters", &[("ClusterIdentifier", &cluster)])
-        .await;
-    assert_eq!(
-        (
-            again.text("ClusterStatus"),
-            again.text("ClusterAvailabilityStatus")
-        ),
-        (
-            settled.text("ClusterStatus"),
-            settled.text("ClusterAvailabilityStatus")
-        ),
-        "case settled cluster read twice: expected the second read to agree, got {:?} / {:?}",
-        again.text("ClusterStatus"),
-        again.text("ClusterAvailabilityStatus")
-    );
-
-    let (settled_snapshots, _) = emulator
-        .poll_until(
-            "settled snapshot",
-            "DescribeClusterSnapshots",
-            &[("SnapshotIdentifier", &snapshot_id)],
-            |answer| answer.text("Status").as_deref() == Some(state::STATUS_AVAILABLE),
-        )
-        .await;
-    assert_eq!(
-        settled_snapshots.text("Status").as_deref(),
-        Some("available"),
-        "case settled snapshot: expected available once the span has passed, got {:?}",
-        settled_snapshots.text("Status")
-    );
 }
 
 #[tokio::test]
@@ -2098,8 +2131,9 @@ async fn a_rename_re_keys_the_cluster_and_keeps_its_namespace() {
         .text("ClusterNamespaceArn")
         .expect("case create: the cluster reports a namespace ARN");
     // The endpoint is published once the cluster is serving, so the hostname a
-    // rename moves is read past the provisioning span.
-    tokio::time::sleep(state::PROVISIONING_SPAN + Duration::from_millis(250)).await;
+    // rename moves is read past the provisioning span — crossed by advancing
+    // this emulator's own clock rather than by waiting for it.
+    emulator.advance_clock(state::PROVISIONING_SPAN);
     let serving = emulator
         .call("DescribeClusters", &[("ClusterIdentifier", "rename-me")])
         .await;

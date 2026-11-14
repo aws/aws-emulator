@@ -175,7 +175,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let recorded_at = ::aws_smithy_types::DateTime::from(::std::time::SystemTime::now());
 
         let mut store = state.lock();
-        store.settle(::std::time::Instant::now());
+        store.settle(::service_common::clock::now(&*self.engine));
 
         // The cluster whose data the partner would reach has to EXIST: it is a
         // record of this service's control plane, so the identifier is resolved

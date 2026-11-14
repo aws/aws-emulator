@@ -342,6 +342,11 @@ pub mod cfn_provisioning;
 /// destination the stage names — for both API Gateway planes, which configure and render it
 /// the same way, so a REST stage and an HTTP api's stage cannot write one format differently.
 pub mod api_gateway_access_logs;
+/// The ONE clock an emulated service's clock-owed transitions are decided against — the due
+/// instants a transient status is recorded with and the comparisons that materialise them —
+/// for every service that reports one, so a caller can hold a span open or cross it instead
+/// of waiting for it, and two services of one emulator cannot disagree about what time it is.
+pub mod clock;
 /// The ONE rule for what a caller-supplied CloudWatch Logs log group NAME may be, for
 /// every service whose API takes one and then writes into the group it names — so two
 /// services asked whether CloudWatch Logs could hold a name cannot answer differently.

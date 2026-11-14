@@ -185,7 +185,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into(),
             );
         };
-        let started = ::std::time::Instant::now();
+        let started = ::service_common::clock::now(&*self.engine);
 
         // The grantee, in the shape the snapshot stores it in: an account
         // identifier under `AccountId`, the documented Amazon Web Services

@@ -176,7 +176,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut store = state.lock();
         // The only write a read makes: the `creating` / `modifying` ->
         // `active` transitions the clock already owes.
-        store.settle(::std::time::Instant::now());
+        store.settle(::service_common::clock::now(&*self.engine));
 
         // The integrations this request reports: the ONE the ARN names, or every
         // one the account holds when it names none. ONE lookup decides both, so

@@ -442,7 +442,10 @@ async fn a_cluster_that_cannot_take_the_configuration_is_refused_with_its_own_se
     }
 
     // A cluster the service is still working on takes no configuration change
-    // either, which is the state fault rather than the not-found one.
+    // either, which is the state fault rather than the not-found one. The clock
+    // is STOPPED first, so the cluster stays inside its provisioning span
+    // however long the calls below take and the refusal is asserted outright.
+    emulator.stop_clock();
     let busy = emulator.create_minimal("lakehouse-creating").await;
     assert_eq!(
         busy.status, 200,
@@ -457,18 +460,13 @@ async fn a_cluster_that_cannot_take_the_configuration_is_refused_with_its_own_se
         ],
     )
     .await;
-    // The provisioning span may have fallen due before the call ran, in which
-    // case the cluster was serving and the write is the OTHER rule — asserted by
-    // the round-trip case above. Only the refusal is asserted on here.
-    if refused.status != 200 {
-        assert_eq!(
-            (refused.status, refused.error_code().as_deref()),
-            (400, Some("InvalidClusterState")),
-            "case a cluster still being provisioned: expected 400 InvalidClusterState, got {} / \
-             {:?} with body {}",
-            refused.status,
-            refused.error_code(),
-            refused.body
-        );
-    }
+    assert_eq!(
+        (refused.status, refused.error_code().as_deref()),
+        (400, Some("InvalidClusterState")),
+        "case a cluster still being provisioned: expected 400 InvalidClusterState, got {} / \
+         {:?} with body {}",
+        refused.status,
+        refused.error_code(),
+        refused.body
+    );
 }

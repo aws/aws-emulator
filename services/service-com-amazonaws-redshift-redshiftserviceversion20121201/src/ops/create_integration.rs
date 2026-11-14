@@ -335,7 +335,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The clock is read once the target has been resolved, so the span the
         // integration's own transition is owed starts from the call that records
         // it rather than from before the resolution.
-        let started = ::std::time::Instant::now();
+        let started = ::service_common::clock::now(&*self.engine);
         let created_at = ::aws_smithy_types::DateTime::from(::std::time::SystemTime::now());
 
         let mut store = state.lock();

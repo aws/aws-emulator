@@ -214,7 +214,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let mut store = state.lock();
-        store.settle(::std::time::Instant::now());
+        store.settle(::service_common::clock::now(&*self.engine));
 
         // The copy is configured ON a cluster, so the cluster has to be there,
         // and it has to be in the state that admits a configuration change.

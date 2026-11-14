@@ -580,6 +580,10 @@ async fn every_logging_precondition_is_refused_with_the_fault_that_names_it() {
 async fn enabling_logging_on_a_cluster_that_is_not_available_is_refused() {
     let case = "a cluster that is still being provisioned";
     let emulator = Emulator::with_s3();
+    // The clock is STOPPED before the create below, so the cluster stays inside
+    // its provisioning span however long the calls take: the refusal asserted is
+    // the one a cluster the service is still bringing up carries.
+    emulator.stop_clock();
     create_bucket(
         &emulator,
         DELIVERABLE_BUCKET,

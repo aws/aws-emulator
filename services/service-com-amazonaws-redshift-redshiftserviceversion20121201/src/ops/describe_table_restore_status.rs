@@ -188,7 +188,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let mut store = state.lock();
-        store.settle(::std::time::Instant::now());
+        store.settle(::service_common::clock::now(&*self.engine));
 
         // "The Amazon Redshift cluster that the table is being restored to": a
         // name this account holds no cluster under names no restore either, and

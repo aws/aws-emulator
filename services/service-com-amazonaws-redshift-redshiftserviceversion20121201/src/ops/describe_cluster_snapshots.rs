@@ -276,7 +276,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let mut store = state.lock();
-        store.settle(::std::time::Instant::now());
+        store.settle(::service_common::clock::now(&*self.engine));
 
         if let Some(wanted) = input.snapshot_identifier.as_deref() {
             if store.snapshot(wanted).is_none() {

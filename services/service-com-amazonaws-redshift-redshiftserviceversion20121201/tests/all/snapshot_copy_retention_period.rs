@@ -25,8 +25,6 @@
 //! bound of each range and values past it, and the order a sequence of changes
 //! arrives in — rather than one recorded request.
 
-use std::time::Duration;
-
 use service_com_amazonaws_redshift_redshiftserviceversion20121201::state;
 
 use crate::cluster_lifecycle::{Answer, Emulator};
@@ -355,10 +353,10 @@ async fn a_cluster_that_cannot_take_the_change_is_refused() {
 
     // A cluster the service is still bringing up cannot take a configuration
     // change — and that refusal precedes the one for a cluster that is not
-    // copying, which a cluster this young is as well. The guard keeps the
-    // assertion honest on a loaded runner: if the span has already elapsed the
-    // transient state was simply not observable.
-    let started = std::time::Instant::now();
+    // copying, which a cluster this young is as well. The clock is STOPPED
+    // first, so the cluster stays inside its provisioning span however long the
+    // calls take and the refusal is asserted outright.
+    emulator.stop_clock();
     let created = emulator.create_minimal("provisioning-cluster").await;
     assert_eq!(
         created.status, 200,
@@ -366,13 +364,8 @@ async fn a_cluster_that_cannot_take_the_change_is_refused() {
         created.status, created.body
     );
     let during = modify(&emulator, "provisioning-cluster", "7", None).await;
-    if started.elapsed() < state::PROVISIONING_SPAN {
-        assert_refused("a cluster still creating", &during, 400, "InvalidClusterState");
-    }
-    tokio::time::sleep(
-        state::PROVISIONING_SPAN.saturating_sub(started.elapsed()) + Duration::from_millis(250),
-    )
-    .await;
+    assert_refused("a cluster still creating", &during, 400, "InvalidClusterState");
+    emulator.advance_clock(state::PROVISIONING_SPAN);
 
     // An available cluster that is not copying has no retention period to
     // change, whatever the request asks for.

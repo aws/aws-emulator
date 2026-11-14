@@ -41,7 +41,9 @@
 //! reported only once the cluster is serving),
 //! and the clock-owed `creating` -> `available` transitions (see
 //! [`PROVISIONING_SPAN`]) and the faster in-place `modifying` -> `available` one
-//! an IAM role change owes (see [`IAM_ROLE_APPLY_SPAN`]).
+//! an IAM role change owes (see [`IAM_ROLE_APPLY_SPAN`]), every one of them
+//! measured against the emulator's own clock (see [`Clock`]) rather than against
+//! the process clock.
 
 use crate::ops::types::{
     AccountAttribute, AccountWithRestoreAccess, AquaConfiguration, Association,
@@ -88,6 +90,9 @@ pub mod identity_center;
 
 /// The store's own operations, on the state struct this module declares.
 mod store;
+/// The clock the due instants this store records, and the transitions it
+/// materialises, are measured against.
+mod clock;
 /// The wording of the resource-policy ARN resolution in
 /// [`resolve_policy_resource`].
 mod policy_resources;
@@ -141,6 +146,7 @@ pub mod cluster_metrics;
 
 pub use cluster_metrics::*;
 
+pub use clock::*;
 pub use cluster_data::*;
 pub use clusters::*;
 pub use data_shares::*;

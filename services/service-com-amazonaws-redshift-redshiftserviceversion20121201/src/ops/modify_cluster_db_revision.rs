@@ -185,7 +185,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> ModifyClusterDbRe
             );
         };
 
-        let started = ::std::time::Instant::now();
+        let started = ::service_common::clock::now(&*self.engine);
         let mut store = state.lock();
         store.settle(started);
 

@@ -221,7 +221,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> DeleteClusterSnap
                 .into(),
             );
         };
-        let started = ::std::time::Instant::now();
+        let started = ::service_common::clock::now(&*self.engine);
 
         // A request carrying an empty identifier names no snapshot to delete,
         // which is a malformed request rather than a missing snapshot — the same

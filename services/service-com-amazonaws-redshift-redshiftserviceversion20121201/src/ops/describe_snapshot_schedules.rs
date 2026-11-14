@@ -184,7 +184,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // them here shows nothing a later caller could not already have seen —
         // and the association state a schedule reports for a cluster is read off
         // that cluster's own status.
-        store.settle(::std::time::Instant::now());
+        store.settle(::service_common::clock::now(&*self.engine));
 
         // The schedule the cluster a `ClusterIdentifier` names is associated
         // with, resolved ONCE before the walk: a cluster carries at most one

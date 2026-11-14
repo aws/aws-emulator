@@ -217,7 +217,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let region = st::request_region(ctx);
 
         let mut store = state.lock();
-        store.settle(::std::time::Instant::now());
+        store.settle(::service_common::clock::now(&*self.engine));
 
         // The cluster first: every other member of this request describes a
         // configuration OF it.

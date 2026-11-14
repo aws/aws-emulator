@@ -22,8 +22,6 @@
 //! which parameter group it joins, and what it asks of the retired AQUA
 //! parameter.
 
-use std::time::Duration;
-
 use service_com_amazonaws_redshift_redshiftserviceversion20121201::state;
 
 use crate::cluster_lifecycle::{all_text, Answer, Emulator};
@@ -350,7 +348,7 @@ async fn a_reported_cluster_carries_every_member_derived_from_its_configuration(
     // the hostname that carries its own name, the port it listens on and the VPC
     // interface endpoint it is reached through, whose network interface is in the
     // cluster's own Availability Zone.
-    tokio::time::sleep(state::PROVISIONING_SPAN + Duration::from_millis(250)).await;
+    emulator.advance_clock(state::PROVISIONING_SPAN);
     for (index, case) in cases.iter().enumerate() {
         let name = case.case;
         let identifier = format!("structure-{index:02}");
@@ -670,7 +668,7 @@ async fn the_availability_status_is_the_published_mapping_of_the_cluster_status(
         created.text("ClusterAvailabilityStatus")
     );
 
-    tokio::time::sleep(state::PROVISIONING_SPAN + Duration::from_millis(250)).await;
+    emulator.advance_clock(state::PROVISIONING_SPAN);
     let settled = emulator
         .call(
             "DescribeClusters",

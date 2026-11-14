@@ -251,7 +251,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> CopyClusterSnapsh
             );
         };
         let region = st::request_region(ctx);
-        let started = ::std::time::Instant::now();
+        let started = ::service_common::clock::now(&*self.engine);
         let created_at = ::aws_smithy_types::DateTime::from(::std::time::SystemTime::now());
 
         // A request carrying an empty identifier names no snapshot to copy, which

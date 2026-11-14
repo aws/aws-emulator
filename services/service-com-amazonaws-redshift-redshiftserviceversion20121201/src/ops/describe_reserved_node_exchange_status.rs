@@ -180,7 +180,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into(),
             );
         };
-        let read_at = ::std::time::Instant::now();
+        let read_at = ::service_common::clock::now(&*self.engine);
 
         let mut store = state.lock();
         // A reporting operation: the ONE write it makes is materialising the

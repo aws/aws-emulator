@@ -22,8 +22,6 @@
 //! admits), whether the create names a description, an encryption key or tags, and
 //! which filter a read narrows the report by.
 
-use std::time::Duration;
-
 use service_com_amazonaws_redshift_redshiftserviceversion20121201::state;
 
 use crate::cluster_lifecycle::{all_text, Answer, Emulator, REGION};
@@ -60,7 +58,11 @@ async fn seeded() -> (Emulator, String) {
     let namespace = created
         .text("ClusterNamespaceArn")
         .expect("case seed: the cluster reports its namespace ARN");
-    tokio::time::sleep(state::PROVISIONING_SPAN + Duration::from_millis(250)).await;
+    // Crossed by ADVANCING this emulator's own clock, so the cluster is serving
+    // before the first row runs however loaded the host is — and the clock then
+    // stands still, which is what keeps a record a later row means to read in
+    // its transient state in it.
+    emulator.advance_clock(state::PROVISIONING_SPAN);
     (emulator, namespace)
 }
 
@@ -221,7 +223,7 @@ async fn an_integration_is_recorded_against_the_namespace_it_replicates_into() {
     );
 
     // The clock owes each integration its `active` status.
-    tokio::time::sleep(state::PROVISIONING_SPAN + Duration::from_millis(250)).await;
+    emulator.advance_clock(state::PROVISIONING_SPAN);
     let settled = emulator.call("DescribeIntegrations", &[]).await;
     assert_eq!(
         all_text(&settled.body, "Status"),

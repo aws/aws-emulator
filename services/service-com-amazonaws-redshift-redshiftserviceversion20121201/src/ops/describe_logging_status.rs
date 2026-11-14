@@ -177,7 +177,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut store = state.lock();
         // The only write a read makes: every transition the clock already owed at
         // this instant, which a later caller would have seen anyway.
-        store.settle(::std::time::Instant::now());
+        store.settle(::service_common::clock::now(&*self.engine));
 
         let Some(stored) = store.cluster(&input.cluster_identifier) else {
             return Err(DescribeLoggingStatusErrorModeled::ClusterNotFoundFault(

@@ -182,7 +182,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut store = state.lock();
         // The clock already owed these transitions at this instant, so applying
         // them here shows nothing a later caller could not already have seen.
-        store.settle(::std::time::Instant::now());
+        store.settle(::service_common::clock::now(&*self.engine));
 
         // Refuse before doing any work: the endpoint is resolved first, then the
         // cluster, so a request naming neither an existing endpoint nor an

@@ -214,7 +214,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let _ = ctx;
         let now = ::aws_smithy_types::DateTime::from(::std::time::SystemTime::now());
         let mut store = state.lock();
-        store.settle(::std::time::Instant::now());
+        store.settle(::service_common::clock::now(&*self.engine));
 
         let Some(position) = store.cluster_position(&input.cluster_identifier) else {
             return Err(ModifyClusterMaintenanceErrorModeled::ClusterNotFoundFault(

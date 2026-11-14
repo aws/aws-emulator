@@ -30,17 +30,9 @@
 //! once, nothing), in which direction, and whether the cluster is encrypted (which
 //! decides the reported target encryption type).
 
-use std::time::Duration;
-
 use service_com_amazonaws_redshift_redshiftserviceversion20121201::state;
 
 use crate::cluster_lifecycle::{Answer, Emulator};
-
-/// Long enough for a resize's clock-owed completion to fall due: the service's
-/// own provisioning span, which the resize is owed, plus a margin.
-fn past_the_resize() -> Duration {
-    state::PROVISIONING_SPAN + Duration::from_millis(200)
-}
 
 /// Create a cluster of this shape, and answer nothing: every assertion below
 /// reads the cluster back through a service read.
@@ -218,6 +210,10 @@ const ROWS: &[Row] = &[
 #[tokio::test]
 async fn a_shape_change_is_a_resize_the_cluster_then_reports() {
     let emulator = Emulator::new();
+    // The clock is STOPPED for the whole table, so a resize this case means to
+    // read while it is still running stays running however long the calls take,
+    // and its completion falls due only where the case advances the clock.
+    emulator.stop_clock();
 
     for row in ROWS {
         let case = row.case;
@@ -270,8 +266,9 @@ async fn a_shape_change_is_a_resize_the_cluster_then_reports() {
         }
 
         // And once the span the resize was owed has passed it is finished — and
-        // still reported, because a cluster holds its LAST resize.
-        tokio::time::sleep(past_the_resize()).await;
+        // still reported, because a cluster holds its LAST resize. The span is
+        // crossed by advancing the stopped clock, not by waiting for it.
+        emulator.advance_clock(state::PROVISIONING_SPAN);
         let finished = describe_resize(&emulator, row.identifier).await;
         assert_eq!(
             (

@@ -271,7 +271,7 @@ async fn a_serverless_pair_that_resolves_is_registered_and_released() {
             released.text("Status"),
             released.body
         );
-        settle().await;
+        settle(&emulator);
         assert!(
             stored(&emulator, &namespace).is_empty(),
             "case {case}: expected the registration to be gone once the release fell due, got {:?}",

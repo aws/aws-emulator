@@ -19,7 +19,6 @@
 //! while a delete makes the limit absent from every later read.
 
 use std::collections::BTreeSet;
-use std::time::Duration;
 
 use service_com_amazonaws_redshift_redshiftserviceversion20121201::ops::types::CreateUsageLimitOutput;
 use service_com_amazonaws_redshift_redshiftserviceversion20121201::state;
@@ -73,8 +72,9 @@ fn borrowed(params: &[(String, String)]) -> Vec<(&str, &str)> {
 /// a usage limit may be set in.
 ///
 /// The clock-owed `creating` -> `available` transition falls due
-/// [`state::PROVISIONING_SPAN`] after the create, so this waits that span out
-/// (plus a margin for a loaded runner) rather than reaching into the store.
+/// [`state::PROVISIONING_SPAN`] after the create, so this ADVANCES this
+/// emulator's own clock across that span rather than waiting for it or reaching
+/// into the store.
 async fn available_cluster(emulator: &Emulator, identifier: &str) {
     let created = emulator.create_minimal(identifier).await;
     assert_eq!(
@@ -82,7 +82,7 @@ async fn available_cluster(emulator: &Emulator, identifier: &str) {
         "case seed cluster {identifier}: expected 200, got {} with body {}",
         created.status, created.body
     );
-    tokio::time::sleep(state::PROVISIONING_SPAN + Duration::from_millis(250)).await;
+    emulator.advance_clock(state::PROVISIONING_SPAN);
 }
 
 /// `CreateUsageLimit` with the four required members plus `extra`.
@@ -597,10 +597,10 @@ async fn a_usage_limit_needs_an_available_cluster() {
     }
 
     // A cluster inside its provisioning span is not available yet, so the limit
-    // is refused for its state rather than its absence. The guard keeps the
-    // assertion honest on a loaded runner: if the span has already elapsed the
-    // transient state was simply not observable.
-    let started = std::time::Instant::now();
+    // is refused for its state rather than its absence. The clock is STOPPED
+    // first, so the cluster stays inside that span however long the calls take
+    // and the refusal is asserted outright.
+    emulator.stop_clock();
     let created = emulator.create_minimal("provisioning-cluster").await;
     assert_eq!(
         created.status, 200,
@@ -615,16 +615,11 @@ async fn a_usage_limit_needs_an_available_cluster() {
         "5",
     )
     .await;
-    if started.elapsed() < state::PROVISIONING_SPAN {
-        assert_refused("a cluster still creating", &during, 400, "InvalidClusterState");
-    }
+    assert_refused("a cluster still creating", &during, 400, "InvalidClusterState");
 
     // Past the due instant the same request is accepted, and the refusals before
     // it created nothing.
-    tokio::time::sleep(
-        state::PROVISIONING_SPAN.saturating_sub(started.elapsed()) + Duration::from_millis(250),
-    )
-    .await;
+    emulator.advance_clock(state::PROVISIONING_SPAN);
     let after = create_limit_on_feature(
         &emulator,
         "provisioning-cluster",

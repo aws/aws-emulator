@@ -199,7 +199,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
-        let started = ::std::time::Instant::now();
+        let started = ::service_common::clock::now(&*self.engine);
 
         // The request's own values first, so a limit nothing could meter is
         // refused before the store is touched at all.

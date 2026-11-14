@@ -194,7 +194,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // whose delete has fallen due has left the store — so applying them here
         // shows nothing a later caller could not already have seen, and the scope
         // below is resolved against the clusters the account holds NOW.
-        store.settle(::std::time::Instant::now());
+        store.settle(::service_common::clock::now(&*self.engine));
         let store = &*store;
 
         // Each scope member names the ONE cluster the recommendations are

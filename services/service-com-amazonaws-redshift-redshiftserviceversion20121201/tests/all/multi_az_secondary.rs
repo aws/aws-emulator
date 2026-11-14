@@ -36,6 +36,8 @@
 //! cluster is in (a Region publishes its own number of zones, so the secondary is
 //! chosen from a different set).
 
+use service_com_amazonaws_redshift_redshiftserviceversion20121201::state;
+
 use crate::cluster_lifecycle::{all_text, element_blocks, Answer, Emulator, REGION};
 
 /// The two values `Cluster$MultiAZ` takes, spelled out here so a change to the
@@ -373,10 +375,12 @@ async fn the_reported_secondary_unit_is_stable_across_reads() {
     );
 }
 
-/// Wait out the clock-owed transition a write started, so the next write sees an
-/// `available` cluster. [`state::PROVISIONING_SPAN`] is 500 ms.
-async fn settle() {
-    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+/// Cross the clock-owed transition a write started, so the next write sees an
+/// `available` cluster — by ADVANCING this emulator's own clock across
+/// [`state::PROVISIONING_SPAN`] rather than waiting for it, so no case of this
+/// suite depends on how fast the host runs.
+fn settle(emulator: &Emulator) {
+    emulator.advance_clock(state::PROVISIONING_SPAN);
 }
 
 #[tokio::test]
@@ -402,7 +406,7 @@ async fn failing_over_a_multi_az_cluster_swaps_its_two_zones() {
         "case {case:?}: expected HTTP 200 from CreateCluster, got {} with body {}",
         created.status, created.body
     );
-    settle().await;
+    settle(&emulator);
 
     let before = described(&emulator, case, REGION, identifier).await;
     let (primary_before, _, _) = primary_unit(&before);
@@ -428,7 +432,7 @@ async fn failing_over_a_multi_az_cluster_swaps_its_two_zones() {
         "case {case:?}: expected the failover to put the cluster in modifying, got {}",
         answered.body
     );
-    settle().await;
+    settle(&emulator);
 
     let after = described(&emulator, case, REGION, identifier).await;
     let (primary_after, _, multi_az_after) = primary_unit(&after);
@@ -499,6 +503,10 @@ const REFUSALS: &[Refusal] = &[
 async fn a_multi_az_cluster_that_is_not_available_yet_cannot_fail_over_either() {
     let case = "a Multi-AZ cluster that is still being provisioned";
     let emulator = Emulator::new();
+    // The clock is STOPPED before the create, so the cluster stays inside its
+    // provisioning span however long the failover call takes: what is asserted
+    // is the refusal a cluster that is still coming up carries.
+    emulator.stop_clock();
     let identifier = "failover-still-creating";
     let created = emulator
         .call(
@@ -564,7 +572,7 @@ async fn a_cluster_that_is_not_multi_az_cannot_fail_its_primary_over() {
                 "case {case:?}: expected HTTP 200 from CreateCluster, got {} with body {}",
                 created.status, created.body
             );
-            settle().await;
+            settle(&emulator);
         }
 
         let answered = emulator

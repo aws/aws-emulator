@@ -250,7 +250,8 @@ pub fn drive_cluster_health_metrics<Eng: Send + Sync + 'static>(engine: &Arc<Eng
         // has already released its claim inside the one critical section that observed it.
         let mut capped = true;
         for _ in 0..MAX_CLOCK_WAKE_UPS {
-            let Some(wait) = next_wait_or_release(&mut state.lock(), generation) else {
+            let read_at = ::service_common::clock::now(&*engine);
+            let Some(wait) = next_wait_or_release(&mut state.lock(), generation, read_at) else {
                 capped = false;
                 break;
             };
@@ -307,8 +308,11 @@ fn release_clock(store: &mut RedshiftState, generation: u64) {
 /// makes the hand-over race-free: a write holds this same lock to store the cluster BEFORE it
 /// tries to claim the clock, so either this call sees that cluster and the running clock keeps
 /// it, or the write's claim finds the flag cleared and starts a clock of its own.
-fn next_wait_or_release(store: &mut RedshiftState, generation: u64) -> Option<Duration> {
-    let now = Instant::now();
+fn next_wait_or_release(
+    store: &mut RedshiftState,
+    generation: u64,
+    now: Instant,
+) -> Option<Duration> {
     let due = store
         .health_metrics
         .series
@@ -350,7 +354,9 @@ fn publish_due_health_status<Eng: Send + Sync + 'static>(engine: &Eng) {
         return;
     };
     let now = SystemTime::now();
-    let instant = Instant::now();
+    // The pass is dated by the EMULATOR's clock, like every transition it
+    // materialises: a clock that stands still owes no datapoint yet.
+    let instant = ::service_common::clock::now(engine);
     let published = {
         let mut store = state.lock();
         // A cluster whose provisioning span has passed is available at this instant whether or
@@ -480,7 +486,7 @@ fn due_datapoints(
         let Some(series) = store.health_metrics.series.get_mut(&identifier) else {
             continue;
         };
-        let stamp = advance(series);
+        let stamp = advance(series, instant);
         let datum = |stamp: SystemTime| cloudwatch::StoredDatum {
             timestamp_secs: epoch_secs(stamp),
             // One observation: this check's own verdict on the cluster.
@@ -503,8 +509,9 @@ fn due_datapoints(
     published
 }
 
-/// Take the time stamp of the datapoint that is due and schedule the next one.
-fn advance(series: &mut SeriesClock) -> SystemTime {
+/// Take the time stamp of the datapoint that is due and schedule the next one, `instant` being
+/// what the store's clock read when this pass started.
+fn advance(series: &mut SeriesClock, instant: Instant) -> SystemTime {
     let stamp = series.next_stamp;
     series.next_stamp = stamp.checked_add(PUBLISH_INTERVAL).unwrap_or(stamp);
     // While the series is still behind the present it is published at the accelerated spacing;
@@ -517,9 +524,7 @@ fn advance(series: &mut SeriesClock) -> SystemTime {
         .duration_since(SystemTime::now())
         .unwrap_or(ACCELERATED_SPACING)
         .min(PUBLISH_INTERVAL);
-    series.next_due_at = Instant::now()
-        .checked_add(wait)
-        .unwrap_or_else(Instant::now);
+    series.next_due_at = instant.checked_add(wait).unwrap_or(instant);
     stamp
 }
 

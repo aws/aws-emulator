@@ -165,7 +165,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into(),
             );
         };
-        let started = ::std::time::Instant::now();
+        let started = ::service_common::clock::now(&*self.engine);
 
         // "The number of reserved nodes that you want to purchase. Default: 1":
         // an absent member takes that default, and a count that reserves no node

@@ -2025,7 +2025,6 @@ mod cloudformation_domain_endpoint_is_dialled_by_consumers;
 // already: a module may be declared only once.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared once, above.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared ONCE, in the span above:
-// a module may be declared only once.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared once, in the head region
 // above: a module may be declared only once, and two branches landing at once appended it
 // here as well.)
@@ -2052,8 +2051,6 @@ mod cognito_rules_role_mapping;
 // crate's own test target can ask it.
 #[path = "all/iam_secretsmanager_denial_envelope_by_protocol.rs"]
 mod iam_secretsmanager_denial_envelope_by_protocol;
-// (`apigateway_cognito_authorizer_app_client_audience` is declared in the head region above:
-// (`zz_probe` is declared further up this tail already: a module may be declared only once.)
 // (`zz_probe` is declared once, further up this tail: a module may be declared only once.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared once, further up this
 // file: a module may be declared only once.)
@@ -2098,7 +2095,6 @@ mod lambda_durable_execution_status_events_reach_sqs;
 // (`apigateway_cognito_authorizer_app_client_audience` is declared once, in the head region
 // above, for the reason the note above records.)
 // (`cloudwatch_alarm_ssm_ops_item_action` is declared once, in the head region above: a
-// module may be declared only once.)
 // (`zz_probe` is declared once, in the span above.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared once, in the span above.)
 // above: two branches landing at once appended it here as well, which declared it twice and
@@ -2182,15 +2178,6 @@ mod ses_delivery_event_advances_the_subscribed_queue;
 // (The API Gateway/Cognito authorizer-audience suite and the metric-stream estate suite are
 // declared ONCE each, in the sorted span above: both were appended here as well while two
 // branches were landing at once, which declared each a second time and compiled neither.)
-// (`cloudformation_provisions_cloudfront_resources` is declared once, in the sorted span
-// are declared once, further up this tail: a module may be declared only once, and two
-// branches landing at once each re-added the pair here.)
-// (The Amazon Cognito authorizer suite is declared ONCE, in the head region above: a module
-// may be declared only once, and two branches landing at once appended it here as well.)
-// Declared ONCE, in the head region above beside the other API Gateway suites: it was
-// appended here as well while two branches were landing at once, which declared it a second
-// time and compiled neither.
-// above, and `cloudformation_metric_stream_estate_is_drainable` once further down this tail:
 // a module may be declared only once. Declaring it again here compiled nothing and broke this
 // target's build, which is what the duplicate below was removed for too.)
 // at the top of this file: two branches landing at once had appended a second declaration
@@ -2306,3 +2293,12 @@ mod route53_health_check_string_match;
 // same file twice, which compiles neither.)
 // head of this file: two branches landing at once each appended their own copy here, and a
 // module declared twice loads the same file twice, which compiles neither.)
+// (`cloudformation_provisions_cloudfront_resources` is declared in the head region above: a
+// module may be declared only once, and two `mod` items for one file compile the suite twice.)
+// (`apigateway_sns_service_integration`, `cloudformation_monitored_alb_search_estate` and
+// `cloudformation_domain_endpoint_outputs` are each declared ONCE in the spans above: a
+// be declared only once, and two `mod` items for one file compile the suite twice.)
+// head of this file: a module may be declared only once.)
+// (`zz_probe` is declared ONCE, in the span above: a module may be declared only once, and
+// `zz_probe.rs` is the empty file the build script requires a declaration for.)
+// tail: a module may be declared only once.))

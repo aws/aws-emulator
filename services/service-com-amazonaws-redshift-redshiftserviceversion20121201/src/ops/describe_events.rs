@@ -224,7 +224,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // which was due to leave the log at this instant whether or not anybody
         // called.
         let mut store = state.lock();
-        store.settle(::std::time::Instant::now());
+        store.settle(::service_common::clock::now(&*self.engine));
 
         // Selected by REFERENCE, so only the page is cloned: the work done under
         // the state lock is proportional to the page, not to the whole log. The

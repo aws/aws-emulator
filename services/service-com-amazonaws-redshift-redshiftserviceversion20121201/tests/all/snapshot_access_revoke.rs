@@ -411,7 +411,7 @@ async fn a_request_that_names_no_snapshot_or_no_account_is_refused() {
 #[tokio::test]
 async fn a_revoke_touches_only_the_snapshot_it_names() {
     let (emulator, _) = creating_emulator(&[SNAPSHOT, OTHER_SNAPSHOT]).await;
-    tokio::time::sleep(state::PROVISIONING_SPAN + std::time::Duration::from_millis(250)).await;
+    emulator.advance_clock(state::PROVISIONING_SPAN);
     let account = "777788889999";
 
     for snapshot in [SNAPSHOT, OTHER_SNAPSHOT] {

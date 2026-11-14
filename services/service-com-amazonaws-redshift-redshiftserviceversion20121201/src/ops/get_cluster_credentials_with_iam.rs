@@ -188,7 +188,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // is measured from.
         let issued_at = ::std::time::SystemTime::now();
         let mut store = state.lock();
-        store.settle(::std::time::Instant::now());
+        store.settle(::service_common::clock::now(&*self.engine));
 
         // The cluster the request names is resolved BEFORE anything else about
         // the request is judged — the order every cluster-scoped operation of

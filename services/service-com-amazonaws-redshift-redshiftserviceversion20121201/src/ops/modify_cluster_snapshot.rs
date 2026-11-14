@@ -156,7 +156,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into(),
             );
         };
-        let started = ::std::time::Instant::now();
+        let started = ::service_common::clock::now(&*self.engine);
         let now = ::aws_smithy_types::DateTime::from(::std::time::SystemTime::now());
 
         // A request carrying an empty identifier names no snapshot to modify,

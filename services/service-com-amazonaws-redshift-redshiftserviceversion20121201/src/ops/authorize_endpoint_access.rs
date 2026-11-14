@@ -183,7 +183,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into(),
             );
         };
-        let started = ::std::time::Instant::now();
+        let started = ::service_common::clock::now(&*self.engine);
 
         // Every name the request carries is resolved BEFORE the SHAPE of the
         // request is judged, so a name that resolves to nothing is answered with

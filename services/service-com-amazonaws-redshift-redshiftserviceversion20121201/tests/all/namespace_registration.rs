@@ -30,19 +30,19 @@
 //! one that does — is [`crate::namespace_registration_serverless`], which
 //! mounts that service beside Redshift as the assembled emulator does.
 
-use std::time::Duration;
-
 use service_com_amazonaws_redshift_redshiftserviceversion20121201::state;
 
 use crate::cluster_lifecycle::{Answer, Emulator};
 
-/// Wait out the span a clock-owed change falls due after, plus a margin for a
-/// loaded runner.
-pub(crate) async fn settle() {
-    tokio::time::sleep(
-        state::PROVISIONING_SPAN + state::NAMESPACE_REGISTRATION_SPAN + Duration::from_millis(250),
-    )
-    .await;
+/// Cross the span a clock-owed change falls due after — a cluster's provisioning
+/// and a registration's own transition — by ADVANCING this emulator's own clock
+/// across both rather than waiting for them.
+///
+/// Between two advances the clock stands still, so a record a case means to read
+/// in its TRANSIENT state stays in it however long the calls take, and nothing
+/// here depends on how fast the host runs.
+pub(crate) fn settle(emulator: &Emulator) {
+    emulator.advance_clock(state::PROVISIONING_SPAN + state::NAMESPACE_REGISTRATION_SPAN);
 }
 
 /// The `ClusterStatus` a `DescribeClusters` reports for one cluster, or `None`
@@ -149,7 +149,7 @@ pub(crate) fn stored(
 ) -> Vec<(String, String)> {
     let store = state::service_state(&*emulator.engine).expect("the Redshift store");
     let mut store = store.lock();
-    store.settle(std::time::Instant::now());
+    store.settle(::service_common::clock::now(&*emulator.engine));
     store
         .namespace_registrations
         .iter()
@@ -177,7 +177,7 @@ async fn available_cluster(emulator: &Emulator, identifier: &str, shape: &[(&str
         "case seed {identifier}: expected the create to answer 200, got {} with body {}",
         created.status, created.body
     );
-    settle().await;
+    settle(emulator);
 }
 
 /// One row of the registration table: the case name, the namespace it
@@ -270,7 +270,7 @@ async fn a_registration_is_recorded_reported_and_released() {
                 state::STATUS_MODIFYING,
                 cluster_status(&emulator, cluster_identifier).await
             );
-            settle().await;
+            settle(&emulator);
             assert_eq!(
                 cluster_status(&emulator, cluster_identifier).await.as_deref(),
                 Some(state::STATUS_AVAILABLE),
@@ -298,7 +298,7 @@ async fn a_registration_is_recorded_reported_and_released() {
         );
         // The repeated registration left the cluster being modified too, so the
         // release is admitted once that change has fallen due.
-        settle().await;
+        settle(&emulator);
 
         // The release finds what the registration stored, so it is accepted and
         // reports the release as under way.
@@ -333,7 +333,7 @@ async fn a_registration_is_recorded_reported_and_released() {
         // And the release ENDS: once its span has passed the namespace is
         // registered to that account no longer, whether or not anybody called,
         // so there is nothing left to release.
-        settle().await;
+        settle(&emulator);
         assert!(
             stored(&emulator, &namespace).is_empty(),
             "case {case}: expected the registration to be gone once the release fell due, got {:?}",
@@ -389,7 +389,7 @@ async fn a_registration_is_held_per_consumer_account_and_per_namespace() {
         );
         // A registration against the cluster leaves it being modified, and the
         // next one is admitted once that change has fallen due.
-        settle().await;
+        settle(&emulator);
     }
     assert_eq!(
         stored(&emulator, &cluster),
@@ -423,7 +423,7 @@ async fn a_registration_is_held_per_consumer_account_and_per_namespace() {
         "case release the first account: expected 200, got {} with body {}",
         released.status, released.body
     );
-    settle().await;
+    settle(&emulator);
     assert_eq!(
         stored(&emulator, &cluster),
         vec![(
@@ -578,7 +578,7 @@ async fn a_namespace_that_cannot_take_a_registration_change_is_refused() {
 
     // A refused call changed NOTHING: the cluster it named was simply left to
     // finish provisioning, and takes a registration once it is available.
-    settle().await;
+    settle(&emulator);
     let accepted = register(
         &emulator,
         &provisioned("register-provisioning"),

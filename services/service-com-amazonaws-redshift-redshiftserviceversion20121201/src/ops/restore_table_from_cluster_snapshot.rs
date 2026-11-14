@@ -217,11 +217,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let requested_at = ::aws_smithy_types::DateTime::from(::std::time::SystemTime::now());
+        // One reading of the emulator's own clock for the whole precondition
+        // block below: what it settles to and what it counts as in progress are
+        // then decided at the same instant.
+        let now = ::service_common::clock::now(&*self.engine);
         // The guard is taken for the preconditions ALONE and released before the
         // copy, because the copy awaits.
         let (cluster_identifier, data) = {
             let mut store = state.lock();
-            store.settle(::std::time::Instant::now());
+            store.settle(now);
 
             let Some(position) = store.cluster_position(&input.cluster_identifier) else {
                 return Err(
@@ -288,7 +292,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
             // How many restores this emulator serves at once is its own bound, and
             // it is asked BEFORE the copy: a request past it copies nothing.
-            if store.table_restores_in_progress(::std::time::Instant::now())
+            if store.table_restores_in_progress(now)
                 >= st::IN_PROGRESS_TABLE_RESTORE_QUOTA
             {
                 return Err(
@@ -427,7 +431,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // neither is reported rather than a volume nothing weighed.
             ..Default::default()
         };
-        let started = ::std::time::Instant::now();
+        let started = ::service_common::clock::now(&*self.engine);
         let mut store = state.lock();
         // A BOUNDED append: the store keeps at most `st::TABLE_RESTORE_QUOTA` of
         // these records and drops the oldest to stay inside it, so one record per

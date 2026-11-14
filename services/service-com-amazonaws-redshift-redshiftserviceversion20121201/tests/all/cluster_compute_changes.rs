@@ -28,14 +28,6 @@ use service_com_amazonaws_redshift_redshiftserviceversion20121201::state;
 
 use crate::cluster_lifecycle::{Answer, Emulator};
 
-/// How many fresh clusters a case that has to observe a resize WHILE IT RUNS
-/// starts before it calls that window unobservable.
-///
-/// Each attempt starts its own cluster and reads it immediately, so only an
-/// attempt that happens to straddle the due instant misses the window: a loaded
-/// runner costs the case more attempts rather than failing it.
-const TRANSIENT_ATTEMPTS: usize = 64;
-
 /// The parameters one row of a table sends beside the cluster it names.
 type Params = Vec<(&'static str, &'static str)>;
 
@@ -501,47 +493,44 @@ async fn only_a_running_resize_can_be_cancelled() {
     assert_refused("a finished resize", &too_late, 404, "ResizeNotFound");
 
     // A resize still in flight IS cancelled, and the cluster goes back onto the
-    // shape the resize found it on. Each attempt starts its own cluster, so a
-    // loaded host costs attempts rather than failing the case.
-    let mut cancelled: Option<(String, Answer)> = None;
-    for attempt in 0..TRANSIENT_ATTEMPTS {
-        let identifier = format!("cancelled-resize-cluster-{attempt}");
-        create(
-            &emulator,
-            "a running resize is cancelled",
-            &identifier,
-            &[("NumberOfNodes", "2")],
+    // shape the resize found it on. The clock is STOPPED once the cluster is
+    // serving, so the resize below is still running when the cancel reaches it
+    // however long the host takes over the two calls.
+    let identifier = "cancelled-resize-cluster";
+    create(
+        &emulator,
+        "a running resize is cancelled",
+        identifier,
+        &[("NumberOfNodes", "2")],
+    )
+    .await;
+    await_status(
+        &emulator,
+        "a running resize is cancelled",
+        identifier,
+        state::STATUS_AVAILABLE,
+    )
+    .await;
+    emulator.stop_clock();
+    let resized = emulator
+        .call(
+            "ResizeCluster",
+            &[("ClusterIdentifier", identifier), ("NumberOfNodes", "6")],
         )
         .await;
-        await_status(
-            &emulator,
-            "a running resize is cancelled",
-            &identifier,
-            state::STATUS_AVAILABLE,
-        )
+    assert_eq!(
+        resized.status, 200,
+        "case a running resize is cancelled: expected the resize served, got {} with body {}",
+        resized.status, resized.body
+    );
+    let answer = emulator
+        .call("CancelResize", &[("ClusterIdentifier", identifier)])
         .await;
-        let resized = emulator
-            .call(
-                "ResizeCluster",
-                &[("ClusterIdentifier", &identifier), ("NumberOfNodes", "6")],
-            )
-            .await;
-        assert_eq!(
-            resized.status, 200,
-            "case a running resize is cancelled: expected the resize served, got {} with body {}",
-            resized.status, resized.body
-        );
-        let answer = emulator
-            .call("CancelResize", &[("ClusterIdentifier", &identifier)])
-            .await;
-        if answer.status == 200 {
-            cancelled = Some((identifier, answer));
-            break;
-        }
-    }
-    let (identifier, answer) = cancelled.expect(
-        "case a running resize is cancelled: no attempt observed the resize while it was \
-         still running",
+    assert_eq!(
+        answer.status, 200,
+        "case a running resize is cancelled: expected the cancel of a resize still running to \
+         be served, got {} with body {}",
+        answer.status, answer.body
     );
     assert_eq!(
         answer.text("Status").as_deref(),
@@ -560,11 +549,14 @@ async fn only_a_running_resize_can_be_cancelled() {
          got {:?}",
         answer.text("TargetNumberOfNodes")
     );
-    // … and the cluster really is back on it once the cancellation falls due.
+    // … and the cluster really is back on it once the cancellation falls due —
+    // reached by advancing the stopped clock across the span the cancellation is
+    // owed, not by waiting for it.
+    emulator.advance_clock(state::PROVISIONING_SPAN);
     let served = await_status(
         &emulator,
         "a running resize is cancelled",
-        &identifier,
+        identifier,
         state::STATUS_AVAILABLE,
     )
     .await;
@@ -579,7 +571,7 @@ async fn only_a_running_resize_can_be_cancelled() {
         .poll_until(
             "a cancelled resize never succeeds",
             "DescribeResize",
-            &[("ClusterIdentifier", &identifier)],
+            &[("ClusterIdentifier", identifier)],
             |answer| answer.text("Status").as_deref() == Some(state::RESIZE_STATUS_FAILED),
         )
         .await;

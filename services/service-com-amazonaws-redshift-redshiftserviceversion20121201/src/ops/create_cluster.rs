@@ -442,7 +442,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> CreateCluster<Eng
             .into());
         };
         let region = st::request_region(ctx);
-        let started = ::std::time::Instant::now();
+        let started = ::service_common::clock::now(&*self.engine);
         let created_at = ::aws_smithy_types::DateTime::from(::std::time::SystemTime::now());
 
         if let Err(message) = st::check_identifier(

@@ -18,8 +18,6 @@
 //! parameter group), the kind of change that was pending, and the states a
 //! restart is refused in.
 
-use std::time::Duration;
-
 use service_com_amazonaws_redshift_redshiftserviceversion20121201::state;
 
 use crate::cluster_lifecycle::{all_text, Answer, Emulator};
@@ -35,10 +33,13 @@ fn borrowed(params: &[(String, String)]) -> Vec<(&str, &str)> {
         .collect()
 }
 
-/// Wait out the span a clock-owed change falls due after, plus a margin for a
-/// loaded runner.
-async fn settle() {
-    tokio::time::sleep(state::PROVISIONING_SPAN + Duration::from_millis(250)).await;
+/// Cross the span a clock-owed change falls due after, by ADVANCING this
+/// emulator's own clock across it rather than waiting for it: the transition is
+/// then materialised by the next call whatever the host is doing, and the clock
+/// stands still in between, so a transient state stays observable for as long as
+/// a case needs it.
+fn settle(emulator: &Emulator) {
+    emulator.advance_clock(state::PROVISIONING_SPAN);
 }
 
 /// `RebootCluster` for one cluster identifier.
@@ -123,7 +124,7 @@ async fn a_restart_reports_the_outage_and_ends_at_the_due_instant() {
         );
         // A restart is admitted in the available state, so the provisioning this
         // create started has to have fallen due first.
-        settle().await;
+        settle(&emulator);
 
         let restarted = reboot(&emulator, identifier).await;
         assert_eq!(
@@ -178,7 +179,7 @@ async fn a_restart_reports_the_outage_and_ends_at_the_due_instant() {
 
         // And it ENDS: the cluster is available again once the restart's span has
         // passed, whether or not anybody called in between.
-        settle().await;
+        settle(&emulator);
         let after = describe(&emulator, identifier).await;
         assert_eq!(
             after.text("ClusterStatus").as_deref(),
@@ -210,7 +211,7 @@ async fn a_restart_reports_the_outage_and_ends_at_the_due_instant() {
             again.status,
             again.text("ClusterStatus")
         );
-        settle().await;
+        settle(&emulator);
     }
 }
 
@@ -230,15 +231,16 @@ async fn a_cluster_that_cannot_take_a_restart_is_refused_and_unchanged() {
         "case seed the restarting cluster: expected 200, got {} with body {}",
         restarting.status, restarting.body
     );
-    settle().await;
+    settle(&emulator);
     let accepted = reboot(&emulator, "reboot-restarting").await;
     assert_eq!(
         accepted.status, 200,
         "case seed the restarting cluster: expected its first restart to be accepted, got {} with body {}",
         accepted.status, accepted.body
     );
-    // And one cluster still being provisioned, created LAST so neither transient
-    // state has fallen due while the table runs.
+    // And one cluster still being provisioned. The clock has stood still since
+    // the settle above, so neither transient state can fall due while the table
+    // runs — whatever the host is doing.
     let created = emulator.create_minimal("reboot-provisioning").await;
     assert_eq!(
         created.status, 200,
@@ -296,7 +298,7 @@ async fn a_cluster_that_cannot_take_a_restart_is_refused_and_unchanged() {
     // A refused restart changed NOTHING: the provisioning cluster was never put
     // into the restarting state, so it is simply available once its own span has
     // passed.
-    settle().await;
+    settle(&emulator);
     let read = describe(&emulator, "reboot-provisioning").await;
     assert_eq!(
         read.text("ClusterStatus").as_deref(),
@@ -418,7 +420,7 @@ async fn the_not_found_message_is_this_operations_own_sentence() {
 
     // The stored cluster is still restartable once it is available: the rows
     // above refused the NAME, not the operation.
-    settle().await;
+    settle(&emulator);
     let accepted = reboot(&emulator, "reboot-message-present").await;
     assert_eq!(
         accepted.status, 200,
@@ -475,7 +477,7 @@ async fn a_restart_applies_the_parameter_changes_that_were_waiting_for_one() {
     for (case, group, identifier, parameters, before) in cases {
         create_group(&emulator, group).await;
         create_cluster_on(&emulator, identifier, group).await;
-        settle().await;
+        settle(&emulator);
 
         let changed = modify(&emulator, group, parameters).await;
         assert_eq!(
@@ -519,7 +521,7 @@ async fn a_restart_applies_the_parameter_changes_that_were_waiting_for_one() {
             "case {case}: expected every apply status to be {:?} after the restart, got {statuses:?}",
             state::PARAMETER_APPLY_STATUS_IN_SYNC
         );
-        settle().await;
+        settle(&emulator);
     }
 }
 
@@ -533,7 +535,7 @@ async fn a_restart_applies_the_pending_cluster_modification() {
         "case seed the cluster: expected 200, got {} with body {}",
         created.status, created.body
     );
-    settle().await;
+    settle(&emulator);
 
     // A new admin password is applied asynchronously, so the modify leaves it in
     // `PendingModifiedValues` — reported as the mask, never the password.

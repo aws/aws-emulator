@@ -201,7 +201,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> BatchDeleteCluste
                 .into(),
             );
         };
-        let started = ::std::time::Instant::now();
+        let started = ::service_common::clock::now(&*self.engine);
 
         // A list longer than the published limit is a property of the REQUEST, so
         // it refuses the whole call rather than reporting a per-entry failure:

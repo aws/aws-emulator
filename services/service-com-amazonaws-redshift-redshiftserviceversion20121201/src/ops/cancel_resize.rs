@@ -211,7 +211,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
-        let now = ::std::time::Instant::now();
+        let now = ::service_common::clock::now(&*self.engine);
         let mut store = state.lock();
         store.settle(now);
 

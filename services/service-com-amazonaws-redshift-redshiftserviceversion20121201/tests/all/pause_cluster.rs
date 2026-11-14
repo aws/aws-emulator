@@ -20,15 +20,6 @@ use service_com_amazonaws_redshift_redshiftserviceversion20121201::state;
 
 use crate::cluster_lifecycle::{Answer, Emulator};
 
-/// How many FRESH clusters a case may start before it calls the transient
-/// `creating` window unobservable.
-///
-/// A cluster is `creating` for a whole span and two calls take microseconds, so
-/// only an attempt that happens to straddle the due instant misses the window —
-/// and each attempt starts its own cluster, so a loaded runner costs a case more
-/// attempts rather than failing it. Nothing here is bounded by the clock.
-const TRANSIENT_ATTEMPTS: usize = 64;
-
 /// `PauseCluster` for one cluster identifier.
 async fn pause(emulator: &Emulator, cluster_identifier: &str) -> Answer {
     emulator
@@ -192,38 +183,22 @@ async fn a_pause_of_a_running_cluster_suspends_it_at_the_due_instant() {
 async fn a_pause_of_a_cluster_still_being_provisioned_is_refused_and_changes_nothing() {
     let emulator = Emulator::new();
 
-    // A cluster is `creating` for a whole span; the attempt that happens to
-    // straddle the due instant is RETRIED on a fresh cluster rather than
-    // asserted on, so the case ends on a condition and never on the clock.
-    let mut refused_while_creating = None;
-    for attempt in 1..=TRANSIENT_ATTEMPTS {
-        let identifier = format!("pause-creating-{attempt}");
-        let created = emulator.create_minimal(&identifier).await;
-        assert_eq!(
-            created.text("ClusterStatus").as_deref(),
-            Some(state::STATUS_CREATING),
-            "case create {identifier}: the span is never zero, so the caller sees the transient \
-             status, got {:?}",
-            created.text("ClusterStatus")
-        );
+    // The clock is STOPPED before the create, so the cluster stays inside its
+    // provisioning span however long the calls below take: what is asserted is
+    // the refusal a cluster the service is still bringing up carries, and no
+    // part of the case depends on how fast the host runs.
+    emulator.stop_clock();
 
-        let refused = pause(&emulator, &identifier).await;
-        if refused.status == 200 {
-            // The attempt straddled the due instant: the cluster was serving by
-            // the time the pause ran, which is the OTHER rule and is asserted
-            // by the suspend case above.
-            continue;
-        }
-        refused_while_creating = Some((identifier, refused));
-        break;
-    }
-    let Some((identifier, refused)) = refused_while_creating else {
-        panic!(
-            "case a cluster still being provisioned: none of {TRANSIENT_ATTEMPTS} fresh clusters \
-             was still creating when its pause ran — an implementation where the create leaves no \
-             transient window gives none of them one"
-        );
-    };
+    let identifier = "pause-creating";
+    let created = emulator.create_minimal(identifier).await;
+    assert_eq!(
+        created.text("ClusterStatus").as_deref(),
+        Some(state::STATUS_CREATING),
+        "case create {identifier}: the span is never zero, so the caller sees the transient \
+         status, got {:?}",
+        created.text("ClusterStatus")
+    );
+    let refused = pause(&emulator, identifier).await;
 
     assert_eq!(
         (refused.status, refused.error_code().as_deref()),
@@ -243,18 +218,20 @@ async fn a_pause_of_a_cluster_still_being_provisioned_is_refused_and_changes_not
         refused.text("Message")
     );
     assert!(
-        !refused.text("Message").unwrap_or_default().contains(&identifier),
+        !refused.text("Message").unwrap_or_default().contains(identifier),
         "case a cluster still being provisioned: the sentence has no variable part, so it must \
          not name the cluster, got {:?}",
         refused.text("Message")
     );
 
     // The refused pause changed NOTHING: the cluster simply becomes available
-    // once its own provisioning span has passed, rather than suspended.
+    // once its own provisioning span has passed, rather than suspended — and the
+    // span is crossed by advancing the stopped clock, not by waiting for it.
+    emulator.advance_clock(state::PROVISIONING_SPAN);
     poll_for_status(
         &emulator,
         "a cluster still being provisioned",
-        &identifier,
+        identifier,
         state::STATUS_AVAILABLE,
     )
     .await;

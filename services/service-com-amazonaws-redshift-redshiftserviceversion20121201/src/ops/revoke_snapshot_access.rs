@@ -175,7 +175,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into(),
             );
         };
-        let started = ::std::time::Instant::now();
+        let started = ::service_common::clock::now(&*self.engine);
 
         // The grantee to release, in the shape the snapshot stores it in — the
         // same rule `AuthorizeSnapshotAccess` recorded it under, so a revoke

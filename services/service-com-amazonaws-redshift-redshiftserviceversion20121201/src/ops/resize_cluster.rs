@@ -227,7 +227,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> ResizeCluster<Eng
             .into());
         };
 
-        let started = ::std::time::Instant::now();
+        let started = ::service_common::clock::now(&*self.engine);
         let mut store = state.lock();
         store.settle(started);
 

@@ -69,7 +69,9 @@ aws-sdk-dynamodbstreams = { version = "1", default-features = false }
 emulator-server = { workspace = true }
 # `published_data_planes`: the SHARED ENGINE the records of which service answers at an
 # address this emulator published live in, as every store two services hand off through
-# does — the state handle, and nothing else of the engine.
+# does — the state handle, and nothing else of the engine. `clock`: the emulator's own
+# CLOCK is one of those stores, so a service reads the clock of the emulator it is serving
+# rather than one per crate.
 engine = { workspace = true }
 http = { workspace = true }
 # `front_door`: the operation wrapper, the schema it reads a member's HTTP binding

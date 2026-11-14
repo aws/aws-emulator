@@ -11,8 +11,6 @@
 //! call, a role already associated, a role that is not associated, both lists in
 //! one call, and ARN forms this service never resolves.
 
-use std::time::Duration;
-
 use service_com_amazonaws_redshift_redshiftserviceversion20121201::state;
 
 use crate::cluster_lifecycle::{all_text, Answer, Emulator};
@@ -86,13 +84,15 @@ async fn available_cluster(emulator: &Emulator, identifier: &str, roles: &[&str]
         "case seed cluster {identifier}: expected 200, got {} with body {}",
         created.status, created.body
     );
-    settle(emulator).await;
+    settle(emulator);
 }
 
-/// Wait out the span a clock-owed change falls due after, plus a margin for a
-/// loaded runner.
-async fn settle(_emulator: &Emulator) {
-    tokio::time::sleep(state::PROVISIONING_SPAN + Duration::from_millis(250)).await;
+/// Cross the span a clock-owed change falls due after, by ADVANCING this
+/// emulator's own clock across it rather than waiting for it: the transition is
+/// then materialised by the next read whatever the host is doing, so no case of
+/// this suite can pass on one machine and fail on a loaded one.
+fn settle(emulator: &Emulator) {
+    emulator.advance_clock(state::PROVISIONING_SPAN);
 }
 
 /// `ModifyClusterIamRoles` with these add and remove lists.
@@ -262,7 +262,7 @@ async fn add_and_remove_move_the_cluster_role_set_through_its_apply_statuses() {
             answered.text("ClusterAvailabilityStatus")
         );
 
-        settle(&emulator).await;
+        settle(&emulator);
         let read = describe(&emulator, cluster).await;
         assert_eq!(
             read.status, 200,
@@ -347,7 +347,7 @@ async fn the_default_role_follows_the_member_the_call_carries() {
             "case {case}: expected ClusterStatus={expected_status:?}, got {:?}",
             answered.text("ClusterStatus")
         );
-        settle(&emulator).await;
+        settle(&emulator);
         let read = describe(&emulator, cluster).await;
         assert_eq!(
             read.text("DefaultIamRoleArn").as_deref(),
@@ -381,7 +381,7 @@ async fn the_default_role_follows_the_member_the_call_carries() {
         "case default role before its removal: expected 200, got {} with body {}",
         set_default.status, set_default.body
     );
-    settle(&emulator).await;
+    settle(&emulator);
     let removed = modify_roles(&emulator, cluster, &[], &[ROLE_SPECTRUM]).await;
     assert_eq!(
         removed.text("DefaultIamRoleArn"),
@@ -389,7 +389,7 @@ async fn the_default_role_follows_the_member_the_call_carries() {
         "case removing the default role: expected no default to remain, got {:?}",
         removed.text("DefaultIamRoleArn")
     );
-    settle(&emulator).await;
+    settle(&emulator);
     let read = describe(&emulator, cluster).await;
     assert_eq!(
         read.text("DefaultIamRoleArn"),
@@ -422,7 +422,9 @@ async fn a_cluster_that_cannot_take_the_change_is_refused() {
     );
 
     // A cluster still being provisioned is not in the state a configuration
-    // change is admitted in.
+    // change is admitted in. The clock is STOPPED first, so the cluster stays
+    // inside its provisioning span however long the calls below take.
+    emulator.stop_clock();
     let created = emulator.create_minimal("provisioning-cluster").await;
     assert_eq!(
         created.status, 200,
@@ -446,7 +448,7 @@ async fn a_cluster_that_cannot_take_the_change_is_refused() {
     );
     // Refused, so nothing was associated: the cluster still carries no role once
     // it is available.
-    settle(&emulator).await;
+    settle(&emulator);
     let read = describe(&emulator, "provisioning-cluster").await;
     assert!(
         associated_arns(&read.body).is_empty(),

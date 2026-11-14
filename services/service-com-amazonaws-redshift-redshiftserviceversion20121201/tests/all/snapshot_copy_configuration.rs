@@ -24,8 +24,6 @@
 //! each retention range and one value past it — rather than one recorded
 //! request.
 
-use std::time::Duration;
-
 use service_com_amazonaws_redshift_redshiftserviceversion20121201::state;
 
 use crate::cluster_lifecycle::{all_text, Answer, Emulator};
@@ -123,8 +121,12 @@ pub(crate) async fn available_cluster(emulator: &Emulator, identifier: &str) {
     available_clusters(emulator, std::slice::from_ref(&identifier.to_string())).await;
 }
 
-/// Create every cluster a table's rows need, then wait the provisioning span
-/// out ONCE: the span is owed from each create, and the last one started it.
+/// Create every cluster a table's rows need, then cross the provisioning span
+/// ONCE by ADVANCING this emulator's own clock: the span is owed from each
+/// create, and the last one started it.
+///
+/// Advancing rather than waiting also stops the clock, so a record a later case
+/// means to read in its transient state stays in it however long the calls take.
 pub(crate) async fn available_clusters(emulator: &Emulator, identifiers: &[String]) {
     for identifier in identifiers {
         let created = emulator.create_minimal(identifier).await;
@@ -134,7 +136,7 @@ pub(crate) async fn available_clusters(emulator: &Emulator, identifiers: &[Strin
             created.status, created.body
         );
     }
-    tokio::time::sleep(state::PROVISIONING_SPAN + Duration::from_millis(250)).await;
+    emulator.advance_clock(state::PROVISIONING_SPAN);
 }
 
 /// Create the grant the rows that name one are configured with.
@@ -465,9 +467,10 @@ async fn a_cluster_that_cannot_take_the_configuration_is_refused() {
     }
 
     // A cluster the service is still bringing up cannot take a configuration
-    // change. The guard keeps the assertion honest on a loaded runner: if the
-    // span has already elapsed the transient state was simply not observable.
-    let started = std::time::Instant::now();
+    // change. The clock is STOPPED first, so the cluster stays inside its
+    // provisioning span however long the calls take and the refusal is asserted
+    // outright.
+    emulator.stop_clock();
     let created = emulator.create_minimal("provisioning-cluster").await;
     assert_eq!(
         created.status, 200,
@@ -475,13 +478,8 @@ async fn a_cluster_that_cannot_take_the_configuration_is_refused() {
         created.status, created.body
     );
     let during = enable(&emulator, "provisioning-cluster", "us-east-1", &[]).await;
-    if started.elapsed() < state::PROVISIONING_SPAN {
-        assert_refused("a cluster still creating", &during, 400, "InvalidClusterState");
-    }
-    tokio::time::sleep(
-        state::PROVISIONING_SPAN.saturating_sub(started.elapsed()) + Duration::from_millis(250),
-    )
-    .await;
+    assert_refused("a cluster still creating", &during, 400, "InvalidClusterState");
+    emulator.advance_clock(state::PROVISIONING_SPAN);
 
     // Past the due instant the same request is served, and the refusal before it
     // configured nothing.
