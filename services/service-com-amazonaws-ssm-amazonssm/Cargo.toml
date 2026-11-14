@@ -64,6 +64,13 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 # A window's schedule is evaluated "in Internet Assigned Numbers Authority (IANA) format"
 # time zone, whose database this crate carries.
 chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
+# The `aws:changeInstanceState` step of an Automation runbook brings the instances it names
+# to the desired state by calling Amazon EC2 itself, whose awsQuery answers are XML
+# documents; roxmltree is the pure-Rust XML reader this tree already uses for them.
+roxmltree = "0.20"
+# An awsQuery request's parameters are a form body, so each one is percent-encoded the way
+# an AWS SDK sends it and the SigV4 canonical request assumes.
+percent-encoding = "2"
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

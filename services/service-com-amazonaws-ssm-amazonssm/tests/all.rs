@@ -21,6 +21,8 @@ mod association_updates_and_deletes;
 mod automation_execution_reports;
 #[path = "all/automation_executions.rs"]
 mod automation_executions;
+#[path = "all/automation_instance_state.rs"]
+mod automation_instance_state;
 #[path = "all/automation_step_executions.rs"]
 mod automation_step_executions;
 #[path = "all/boundary_refusal_wording.rs"]

@@ -455,6 +455,8 @@ mod service_role_permissions;
 mod signalling_instance_gates;
 #[path = "all/ssm_association_resources.rs"]
 mod ssm_association_resources;
+#[path = "all/ssm_document_resources.rs"]
+mod ssm_document_resources;
 #[path = "all/ssm_typed_parameters.rs"]
 mod ssm_typed_parameters;
 #[path = "all/stack_configuration_and_provider_limits.rs"]

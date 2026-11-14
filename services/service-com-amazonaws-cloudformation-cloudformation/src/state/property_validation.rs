@@ -199,6 +199,13 @@ pub const REQUIRED_PROPERTIES: &[RequiredProperties] = &[
         resource_type: "AWS::SSM::Parameter",
         required: &["Type", "Value"],
     },
+    // `AWS::SSM::Document`: `CreateDocument` declares `Content` required beside the `Name`
+    // CloudFormation generates — a document is the content it carries — so a declaration
+    // stating none declares no document.
+    RequiredProperties {
+        resource_type: crate::state::provisioner::ssm_documents::SSM_DOCUMENT,
+        required: &["Content"],
+    },
     // `AWS::SNS::Subscription`: `Subscribe` declares `TopicArn` and `Protocol` required —
     // there is no subscription without the topic it is on and the protocol it is delivered
     // over.

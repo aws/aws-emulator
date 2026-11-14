@@ -2742,6 +2742,15 @@ pub fn replacement_properties(resource_type: &str) -> &'static [&'static str] {
         // node an association was created for cannot be changed on it, so a declaration
         // naming another node asks for a different association.
         SSM_ASSOCIATION => &["InstanceId"],
+        // A document's TYPE is fixed when Systems Manager makes it: `DocumentType` is a member
+        // of `CreateDocument` and of no member of `UpdateDocument` — no call of that service
+        // turns a command document into a runbook — and so is `Requires`, so a declaration
+        // restating either asks for a different document. Every other property is a member of
+        // that update, so stating one differently is a change to the document the stack
+        // already has (`crate::state::provisioner::update_ssm_document`).
+        crate::state::provisioner::ssm_documents::SSM_DOCUMENT => {
+            &["DocumentType", "Requires"]
+        }
         // An Amazon Cognito user pool's sign-in aliases and its username attributes and their
         // case sensitivity are fixed when the pool is made: each is a member of
         // `CreateUserPool` and of no member of `UpdateUserPool`, so a declaration restating

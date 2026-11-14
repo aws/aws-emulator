@@ -230,6 +230,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Systems Manager is regional: an automation runs at the endpoint its start was
         // sent to, which is the Region this request was signed for.
         let region = request_region(ctx.parts());
+        // What a step whose work is Amazon EC2's has reached in that service is owed at the
+        // same instant whether or not anybody called, and only a CALL can learn it — so it
+        // is driven here, off the store lock, before anything is read
+        // (`crate::state::automation::instance_state`).
+        crate::state::automation::instance_state::drive_due(&*self.engine, ctx).await;
         let now = ::std::time::SystemTime::now();
         let mut store = state.lock();
         // The one write this report makes: everything the clock already owed at `now` — an

@@ -855,6 +855,16 @@ pub(super) enum Provisioner {
     /// `template::identity_is_service_assigned` names the type and the create replaces the
     /// stand-in the naming rules computed with the id Systems Manager answered.
     SsmAssociation,
+    /// `AWS::SSM::Document`: a document of AWS Systems Manager — a command document, a
+    /// runbook, a session document — which `CreateDocument` creates under the name the stack
+    /// decided, `UpdateDocument` adds a new version to and `DeleteDocument` removes.
+    ///
+    /// The name is the document's identity: every Systems Manager call on a document takes it
+    /// (`GetDocument$Name`, and `StartAutomationExecution$DocumentName` for a runbook), and it
+    /// is what this type's `Ref` returns — so the stand-in the naming rules computed IS the
+    /// identifier, and a stack that reports the resource created is one whose document that
+    /// service really holds under that name ([`ssm_documents`]).
+    SsmDocument,
     StepFunctionsActivity,
     SchedulerScheduleGroup,
     SchedulerSchedule,
@@ -1094,6 +1104,7 @@ pub(super) fn provisioner_for(resource_type: &str) -> Option<Provisioner> {
         RESOURCE_GROUPS_GROUP => Some(Provisioner::ResourceGroupsGroup),
         SSM_PARAMETER => Some(Provisioner::SsmParameter),
         SSM_ASSOCIATION => Some(Provisioner::SsmAssociation),
+        ssm_documents::SSM_DOCUMENT => Some(Provisioner::SsmDocument),
         STEP_FUNCTIONS_ACTIVITY => Some(Provisioner::StepFunctionsActivity),
         SCHEDULER_SCHEDULE_GROUP => Some(Provisioner::SchedulerScheduleGroup),
         SCHEDULER_SCHEDULE => Some(Provisioner::SchedulerSchedule),
@@ -1478,6 +1489,13 @@ impl Provisioner {
             // documents and managed nodes rather than the associations between them — so the
             // type is not taggable and no tags are propagated to one.
             Self::SsmAssociation => create_ssm_association(ctx, region, resource).await,
+            // `AWS::SSM::Document` publishes `Tags` as the `[{Key, Value}]` list most types
+            // do, which is the shape `CreateDocument`'s own `Tags` member takes, so a
+            // document a stack creates carries the tags CloudFormation gives it beside the
+            // ones the declaration asks for.
+            Self::SsmDocument => {
+                create_ssm_document(ctx, region, resource, propagated).await
+            }
             Self::StepFunctionsActivity => {
                 create_activity(ctx, region, resource, propagated).await
             }
@@ -2082,6 +2100,13 @@ impl Provisioner {
             Self::SageMakerNotebookInstance => {
                 notebook_instance_readiness(ctx, region, physical_resource_id).await
             }
+            // `CreateDocument` answers a document `Creating` — "the document is being
+            // created" — and Systems Manager reports it `Active` once it is in place, so the
+            // resource is held open until that service resolves the document by the name the
+            // stack publishes ([`ssm_documents::ssm_document_readiness`]).
+            Self::SsmDocument => {
+                ssm_document_readiness(ctx, region, physical_resource_id).await
+            }
             _ => Ok(Readiness::Ready),
         }
     }
@@ -2329,6 +2354,13 @@ impl Provisioner {
             // declaration reaches that service as a new version of the same association
             // rather than replacing it.
             Self::SsmAssociation => update_ssm_association(ctx, region, resource, declared)
+                .await
+                .map(Some),
+            // `UpdateDocument` "updates one or more values for an SSM document" — it adds the
+            // declared content to the document that NAME belongs to as a new version — so a
+            // changed declaration reaches that service as a version of the same document, and
+            // the version it created becomes the default one every later run resolves.
+            Self::SsmDocument => update_ssm_document(ctx, region, resource, declared)
                 .await
                 .map(Some),
             // `UpdateGroup` "updates any of the properties for precedence, IAM role, or
@@ -3004,6 +3036,8 @@ impl Provisioner {
             Self::SsmAssociation => {
                 delete_ssm_association(ctx, region, physical_resource_id).await
             }
+            // A document is addressed by its name, which is this resource's physical id.
+            Self::SsmDocument => delete_ssm_document(ctx, region, physical_resource_id).await,
             Self::StepFunctionsActivity => {
                 delete_activity(ctx, region, physical_resource_id).await
             }
@@ -3488,6 +3522,11 @@ impl Provisioner {
             Self::SsmAssociation => {
                 describe_ssm_association(ctx, region, physical_resource_id).await
             }
+            // Systems Manager's own read of the document the stack created, by the name it was
+            // created under.
+            Self::SsmDocument => {
+                describe_ssm_document(ctx, region, physical_resource_id).await
+            }
             Self::StepFunctionsActivity => {
                 describe_activity(ctx, region, physical_resource_id).await
             }
@@ -3823,6 +3862,9 @@ mod network_and_delivery;
 /// keyed by its own ARN rather than by a name.
 mod s3_table_buckets;
 mod ssm_associations;
+/// The AWS Systems Manager DOCUMENT arms: visible to the rest of this service's state because
+/// the type's own NAME lives here, beside the arms that provision it.
+pub(in crate::state) mod ssm_documents;
 mod resource_groups;
 pub(super) mod elasticache_caches;
 /// The Amazon RDS DB CLUSTER arm: the cluster an `AWS::RDS::DBCluster` declares, created in
@@ -3833,6 +3875,7 @@ use elasticache_caches::*;
 use rds_db_clusters::*;
 use redshift_parameter_groups::*;
 use ssm_associations::*;
+use ssm_documents::*;
 use resource_groups::*;
 use compute_fleet::*;
 pub(crate) use network_and_delivery::*;

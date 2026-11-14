@@ -130,7 +130,7 @@ pub const READ_ONLY_API_PREFIXES: &[&str] =
 /// by what that reference says it does, against the three `ImpactType` descriptions
 /// (`AutomationExecutionPreview$StepPreviews`).
 pub const MUTATING_ACTIONS: &[&str] = &[
-    "aws:changeInstanceState",
+    super::automation::instance_state::ACTION_CHANGE_INSTANCE_STATE,
     "aws:copyImage",
     "aws:createImage",
     "aws:createStack",

@@ -278,6 +278,12 @@ pub(super) fn naming_rules(resource_type: &str) -> Option<NameRules> {
         // Systems Manager `PutParameter.Name`: `PSParameterName`,
         // `@length(min: 1, max: 2048)` (the SSM model's own bound).
         SSM_PARAMETER => rules(2048, Characters::AsGenerated),
+        // Systems Manager `CreateDocument.Name`: `DocumentName`, pattern
+        // `^[a-zA-Z0-9_\-.]{3,128}$` (that same model), which admits the letters, digits and
+        // hyphens a generated name is built from but is shorter than one may be.
+        crate::state::provisioner::ssm_documents::SSM_DOCUMENT => {
+            rules(128, Characters::AsGenerated)
+        }
         // EventBridge Scheduler `CreateScheduleGroup.Name` (`ScheduleGroupName`) and
         // `CreateSchedule.Name` (`Name`): each `@length(min: 1, max: 64)` with pattern
         // `^[0-9a-zA-Z-_.]+$` (that service's own Smithy model), which a generated name is

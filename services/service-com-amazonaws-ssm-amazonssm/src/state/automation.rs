@@ -24,6 +24,11 @@
 //!   `Timestamp` names, read with the one ISO 8601 reading this emulator has
 //!   (`service_common::iso8601_span`), and the step is reported `InProgress` until that
 //!   instant has passed;
+//! * `aws:changeInstanceState` brings the Amazon EC2 instances its `InstanceIds` name to
+//!   the state its `DesiredState` asks for, by calling THAT service — the instance is its
+//!   resource and the transition is its own — and the step is reported `InProgress` until
+//!   that service reports every named instance at a state the step accepts
+//!   ([`instance_state`]);
 //! * `aws:pause` stops the walk with the step `Waiting`, which is what the action does:
 //!   the execution resumes on the `Resume` signal a caller sends, and
 //!   `SendAutomationSignal` is a separate scaffold, so it stays `Waiting` until that
@@ -80,6 +85,10 @@ pub mod runbook;
 /// The report of the executions a Region holds: which of them a request's filters select,
 /// and the metadata each is reported as.
 pub mod report;
+
+/// The `aws:changeInstanceState` action: the step that changes the state of the Amazon EC2
+/// instances it names, in that service itself.
+pub mod instance_state;
 
 /// The `AutomationExecutionStatus` an execution is minted with: nothing has picked it up
 /// yet. From the modelled enum (`crate::ops::types::AUTOMATION_EXECUTION_STATUS_VALUES`).
@@ -326,6 +335,10 @@ pub struct StepExecutionRecord {
     /// "If a step failed, this message explains why the execution failed"
     /// (`StepExecution$FailureMessage`).
     pub failure_message: Option<String>,
+    /// What this step asked Amazon EC2 for, for the one action whose work is that service's
+    /// ([`instance_state`]); `None` for every other step. The step is running until that
+    /// service reports the instances at the state it asked for.
+    pub instance_state: Option<instance_state::InstanceStateChange>,
 }
 
 impl StepExecutionRecord {
@@ -341,6 +354,7 @@ impl StepExecutionRecord {
             ended_at: None,
             due_at: None,
             failure_message: None,
+            instance_state: None,
         }
     }
 
@@ -661,6 +675,30 @@ impl AutomationExecutionRecord {
         if step.status == STATUS_PENDING {
             return self.start_step(index, now);
         }
+        // A step whose work is another service's is running until that service answers: what
+        // it asked for is recorded on the step, and the answer is fed back into it
+        // ([`Self::record_instance_state`]), so the walk reads the outcome here rather than
+        // deciding one of its own.
+        if let Some(change) = step.instance_state.clone() {
+            let name = step.definition.name.clone();
+            if let Some(why) = change.failure {
+                return self.fail_step(index, now, why);
+            }
+            if change.settled {
+                return self.succeed_step(index, now, None);
+            }
+            // "DesiredStateTransitionTimeout — The amount of time to complete the desired
+            // state transition": past it the instances are not where the step asked for
+            // them, which fails the step.
+            return match step.due_at {
+                Some(due) if due <= now => self.fail_step(
+                    index,
+                    now,
+                    instance_state::transition_timed_out_message(&change, &name),
+                ),
+                _ => Walked::Running,
+            };
+        }
         // The only step the walk leaves running is a wait, and what it is waiting for is
         // its own instant.
         match step.due_at {
@@ -697,6 +735,9 @@ impl AutomationExecutionRecord {
         match definition.action.as_str() {
             ACTION_BRANCH => self.run_branch(index, now, &resolved),
             ACTION_SLEEP => self.run_sleep(index, now, &definition.name, &resolved),
+            instance_state::ACTION_CHANGE_INSTANCE_STATE => {
+                self.run_change_instance_state(index, now, &definition.name, &resolved)
+            }
             // "aws:pause … pauses the automation": the execution waits for the caller's
             // signal, which is exactly what the action does.
             ACTION_PAUSE => {
@@ -808,6 +849,79 @@ impl AutomationExecutionRecord {
             return Walked::Running;
         }
         self.succeed_step(index, now, None)
+    }
+
+    /// Record what an `aws:changeInstanceState` step asks Amazon EC2 for and leave the step
+    /// running.
+    ///
+    /// The instance is that service's resource and the transition is its own, so nothing is
+    /// decided here: the call is made off the store lock
+    /// ([`instance_state::drive_due`]) and its answer comes back through
+    /// [`Self::record_instance_state`]. The step's own window is the one its
+    /// `DesiredStateTransitionTimeout` asks for, which is what [`Self::enter_step`] holds it
+    /// to.
+    fn run_change_instance_state(
+        &mut self,
+        index: usize,
+        now: SystemTime,
+        name: &str,
+        inputs: &Map<String, Value>,
+    ) -> Walked {
+        let change = match instance_state::change_of(inputs, name) {
+            Ok(change) => change,
+            Err(why) => return self.fail_step(index, now, why),
+        };
+        let Some(due) = now.checked_add(change.transition_timeout) else {
+            return self.fail_step(
+                index,
+                now,
+                format!(
+                    "The DesiredStateTransitionTimeout of step {name} names no instant this \
+                     step could wait until"
+                ),
+            );
+        };
+        if let Some(step) = self.steps.get_mut(index) {
+            step.due_at = Some(due);
+            step.instance_state = Some(change);
+        }
+        Walked::Running
+    }
+
+    /// Record what Amazon EC2 answered about the step `step_execution_id`, and let the walk
+    /// go on from where it stopped.
+    ///
+    /// The one way that service's answer reaches this execution: a step waiting on it is
+    /// `InProgress` until the answer says the instances are where it asked for them
+    /// ([`instance_state::Answered::Settled`]), that service refused the call
+    /// ([`instance_state::Answered::Failed`], which fails the step as the action's own
+    /// failure does), or the step's window runs out — and the walk decides each of those in
+    /// [`Self::enter_step`], so the transition is the walk's whatever a caller polls.
+    pub fn record_instance_state(
+        &mut self,
+        step_execution_id: &str,
+        answered: instance_state::Answered,
+        now: SystemTime,
+    ) {
+        let Some(step) = self
+            .steps
+            .iter_mut()
+            .find(|step| step.step_execution_id == step_execution_id)
+        else {
+            return;
+        };
+        let Some(change) = step.instance_state.as_mut() else {
+            return;
+        };
+        match answered {
+            instance_state::Answered::Asked => change.asked = true,
+            instance_state::Answered::Settled => {
+                change.asked = true;
+                change.settled = true;
+            }
+            instance_state::Answered::Failed(why) => change.failure = Some(why),
+        }
+        self.materialize_due(now);
     }
 
     /// End the step at `index` with `status`, closing its execution window.
