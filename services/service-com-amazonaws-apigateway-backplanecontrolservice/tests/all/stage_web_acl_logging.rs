@@ -11,8 +11,8 @@
 //! > applied and the rule that applied it, and showing each component the configuration's
 //! > `RedactedFields` names as `REDACTED` in place of what the client sent. A web ACL with
 //! > no logging configuration logs nothing; a configuration whose `LoggingFilter` drops a
-//! > record delivers none for that request; a destination that names no log group has
-//! > nothing written anywhere.
+//! > record delivers none for that request; a destination naming a resource of another kind
+//! > than a log group has nothing written into a log group.
 //!
 //! Only a cross-service suite can pin this: the api and its stage are API Gateway's, the
 //! web ACL and its logging configuration are WAFv2's, and the group the record lands in is
@@ -677,7 +677,9 @@ struct DeliveryRow {
 
 /// The rows: a request each terminating action decided, one the default action decided, a
 /// web ACL with no logging configuration at all, a filter that drops the record of a
-/// blocked request, a filter that keeps it, and a destination naming no log group.
+/// blocked request, a filter that keeps it, and a destination naming a bucket rather than a
+/// log group (the delivery a bucket destination takes is the WAFv2 crate's
+/// `tests/all/logging_destination_delivery.rs` subject).
 fn delivery_rows() -> Vec<DeliveryRow> {
     let keeping = |behavior: &str, action: &str| {
         json!({
@@ -751,7 +753,7 @@ fn delivery_rows() -> Vec<DeliveryRow> {
             filter: Some(keeping("DROP", "BLOCK")),
         },
         DeliveryRow {
-            case: "a destination that names no log group has nothing written anywhere",
+            case: "a destination naming a bucket writes nothing into a log group of that name",
             name: "bucketed",
             default_action: json!({ "Allow": {} }),
             rules: json!([rule_on_the_path("deny", json!({ "Block": {} }))]),

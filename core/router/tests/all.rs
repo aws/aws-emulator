@@ -1879,26 +1879,18 @@ mod logs_vended_group_lambda_subscriber_permission;
 // stage, the topic and the topic's queue subscriber is observable end to end.
 #[path = "all/apigateway_sns_service_integration.rs"]
 mod apigateway_sns_service_integration;
-// `cloudformation_provisions_cloudfront_resources` is declared once, just below: two `mod`
-// items for one name is a redefinition that compiles neither.
-// are declared ONCE, in the head region above beside the other `cloudformation_…` suites.
-// Two branches each re-declared the pair in this tail, which compiles neither: a suite is
-// declared in exactly one place.
-// are declared ONCE each, in the head region above: a module declared twice in this file
-// compiles the suite twice, which the workspace's lints refuse.
-// are declared once, in the span above: two branches each re-added the pair here after both
-// had removed it, which declares each of them twice and compiles nowhere.
-// Declared in the appended tail, which is where every new suite inserts its lines. Both
-// suites exist under tests/all/ and had lost their declaration when two branches removed
-// the same duplicated pair, which compiles them nowhere.
-// (`cloudformation_monitored_alb_search_estate` and `cloudformation_domain_endpoint_outputs`
-// are declared in the head region above: a module may be declared only once.)
+// (`cloudformation_provisions_cloudfront_resources`,
+// `cloudformation_monitored_alb_search_estate`, `cloudformation_domain_endpoint_outputs`,
+// `cloudformation_stack_clock` and `elbv2_lambda_target_published_address` are each
+// declared ONCE above: a module may be declared only once.)
 // Appended here, which is where a new suite inserts its lines: a Lambda function's own
 // aoss-signed write to the endpoint an OpenSearch Serverless collection publishes spans
 // Lambda, OpenSearch Serverless, IAM, STS and CloudFormation at once, so no single service
 // crate's test target can drive it.
 #[path = "all/lambda_signed_write_to_an_aoss_collection_endpoint.rs"]
 mod lambda_signed_write_to_an_aoss_collection_endpoint;
+// (`apigateway_cognito_authorizer_app_client_audience` is declared in the head region
+// above: a module may be declared only once.)
 // (`apigateway_cognito_authorizer_app_client_audience` is declared ONCE, in the sorted head
 // region above beside the other `apigateway_…` suites: two `mod` items for one name is a
 // redefinition that compiles neither.)
@@ -1933,11 +1925,15 @@ mod zz_probe;
 // cluster and then read the alarm's state.
 #[path = "all/redshift_health_alarms_evaluate.rs"]
 mod redshift_health_alarms_evaluate;
+// (`cloudwatch_alarm_ssm_ops_item_action` is declared in the head region above: a module may
+// be declared only once.)
+// are declared in the head region above: a module may be declared only once.)
 // stack-deployed metric-stream pipeline exports before and after an update rewrites its filter
 // spans CloudFormation, IAM, CloudWatch, Firehose and Amazon S3 at once, so no single service
 // crate's test target can deploy the pipeline and then read the objects it delivered.
 #[path = "all/cloudformation_metric_stream_filter_update.rs"]
 mod cloudformation_metric_stream_filter_update;
+// (`zz_probe` is declared once, above.)
 // (`zz_probe` is declared ONCE, a few lines above: a module may be declared only once.)
 // (`zz_probe` is declared once, further up this tail: a module may be declared only once,
 // and two branches landing at once appended it here as well.)
@@ -1976,6 +1972,7 @@ mod cloudformation_domain_endpoint_is_dialled_by_consumers;
 // which only this target links.
 #[path = "all/https_front_door_concurrent_pooled_producer.rs"]
 mod https_front_door_concurrent_pooled_producer;
+// (`cloudformation_metric_stream_estate_is_drainable` is declared once, above.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared ONCE, in the span above:
 // a module may be declared only once.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared once, in the head region

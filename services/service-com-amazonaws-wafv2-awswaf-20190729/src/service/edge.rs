@@ -471,6 +471,14 @@ struct Recorded {
     /// One entry per rule dimension that is sending metrics, and the action it
     /// applied.
     acted: Vec<super::metrics::ActedDimension>,
+    /// One entry per rule that MATCHED the request without ending the evaluation, and
+    /// the action it applied: the rule as a record names it, and
+    /// [`COUNT_ACTION_VALUE`] or [`EXCLUDED_AS_COUNT_ACTION_VALUE`]. Unlike the two
+    /// above, this is kept whatever the dimension's `VisibilityConfig` says, because
+    /// it is part of the LOG RECORD of the request ([`super::logs`]) rather than of
+    /// WAF's own reporting, and a logging configuration is enabled on the web ACL
+    /// rather than per rule.
+    non_terminating: Vec<(String, String)>,
 }
 
 /// The instants one rate-based aggregation instance has been seen at.
@@ -605,14 +613,9 @@ fn decided<Eng: Send + Sync + 'static>(
 ) -> Option<EdgeDecision> {
     let state: ::engine::ServiceState<ComAmazonawsWafv2Awswaf20190729State> =
         crate::state::service_state(engine)?;
-    // PHASE 1, under a shared read: the web ACL, the entities its rules reference, the
-    // rate counts already recorded for it, and the logging configuration in front of it.
-    let (entry, catalogue, counts, logging): (
-        WebAclEntry,
-        Catalogue,
-        HashMap<RateInstanceKey, Vec<RateBucket>>,
-        Option<LoggingConfiguration>,
-    ) = {
+    // PHASE 1, under a shared read: the web ACL, the entities its rules reference, and the
+    // logging configuration in front of it.
+    let (entry, catalogue, logging): (WebAclEntry, Catalogue, Option<LoggingConfiguration>) = {
         let store = state.lock();
         let entry = store.web_acl_by_arn(web_acl_arn)?.clone();
         let catalogue = Catalogue::referenced_by(
@@ -620,21 +623,31 @@ fn decided<Eng: Send + Sync + 'static>(
             &entry.scope,
             entry.web_acl.rules.as_deref().unwrap_or_default(),
         );
-        let counts = store
-            .rate_based_counts
-            .iter()
-            .filter(|(key, _)| {
-                key.scope == entry.scope && key.web_acl_id == entry.web_acl.id
-            })
-            .map(|(key, buckets)| (key.clone(), buckets.clone()))
-            .collect();
         // The customer-owned configuration, which is the one `PutLoggingConfiguration`
         // enables "to start logging from a web ACL"; a configuration of another
         // `LogScope` belongs to the service that owns that scope.
         let logging = store.logging_configuration(web_acl_arn, None).cloned();
-        (entry, catalogue, counts, logging)
+        (entry, catalogue, logging)
     };
     let now = crate::state::now_millis();
+
+    // The count one aggregation INSTANCE already holds over the window the rule asking
+    // looks back over, answered from the store at the moment the rule asks: a lookup of
+    // that one key and a sum over its buckets, under a shared lock held for no longer.
+    //
+    // The counts are NOT copied out ahead of the evaluation: how many instances a
+    // rate-based rule holds is chosen by the REQUESTS (each distinct address, header value
+    // or key combination is another one, up to
+    // [`crate::state::MAX_RATE_INSTANCES_PER_RULE`] per rule), so a copy of them all would
+    // make the work one request costs grow with the traffic that came before it. A request
+    // needs exactly the instance it belongs to, per rate-based rule it reaches.
+    let counted_within = |key: &RateInstanceKey, window: i64| -> u64 {
+        let store = state.lock();
+        store
+            .rate_based_counts
+            .get(key)
+            .map_or(0, |buckets| count_within(buckets, now, window))
+    };
 
     // PHASE 2, off the lock: the evaluation itself.
     let evaluation = Evaluation {
@@ -644,16 +657,22 @@ fn decided<Eng: Send + Sync + 'static>(
         scope: entry.scope.clone(),
         web_acl_id: entry.web_acl.id.clone(),
         now,
+        counted_within: &counted_within,
     };
-    let (decision, recorded, counted) = evaluation.run(&entry.web_acl, &counts);
+    let (decision, recorded, counted) = evaluation.run(&entry.web_acl);
 
     // PHASE 3, under an exclusive lock: the bookkeeping WAF keeps about the requests it
     // evaluated. Written here, once, for the request that has just been decided —
     // never on a read.
     {
         let mut store = state.lock();
+        // The instances nothing will count again are released ONCE for the request,
+        // whatever how many rate-based rules counted it.
+        if !counted.is_empty() {
+            release_spent_rate_instances(&mut store, now);
+        }
         for key in counted {
-            prune_rate_instances(&mut store, &key, now);
+            make_room_for_rate_instance(&mut store, &key);
             let buckets = store.rate_based_counts.entry(key).or_default();
             record_request(buckets, now);
         }
@@ -693,33 +712,41 @@ fn decided<Eng: Send + Sync + 'static>(
         protected_resource,
         request,
         &decision,
+        &recorded.non_terminating,
         now,
     );
     Some(decision)
 }
 
-/// Release the aggregation instances nothing will count again, and make room, if there
-/// is none, for one more instance of the rate-based rule `key` belongs to.
+/// Release the aggregation instances nothing will count again.
 ///
 /// A rate-based rule's aggregation instances are chosen by the REQUEST — each distinct
 /// forwarded address, header value or key combination is another one, and each is held
-/// under the value the request chose — so both how many of them one rule holds and how
-/// long each is held have to be this side's choice. An instance whose newest bucket is
-/// older than the longest window any rule can look back over can never be counted
-/// again, so it is dropped and its key released; and the instances per rule are capped
-/// at [`MAX_RATE_INSTANCES_PER_RULE`], the one evicted to make room being the instance
-/// whose newest request is oldest.
-fn prune_rate_instances(
-    store: &mut ComAmazonawsWafv2Awswaf20190729State,
-    key: &RateInstanceKey,
-    now: i64,
-) {
+/// under the value the request chose — so how long each is held has to be this side's
+/// choice. An instance whose newest bucket is older than the longest window any rule can
+/// look back over can never be counted again, so it is dropped and its key released.
+///
+/// Called ONCE per request that counted anything, not once per instance it counted.
+fn release_spent_rate_instances(store: &mut ComAmazonawsWafv2Awswaf20190729State, now: i64) {
     let oldest = now
         .div_euclid(1_000)
         .saturating_sub(crate::state::MAX_EVALUATION_WINDOW_SEC);
     store
         .rate_based_counts
         .retain(|_, buckets| buckets.iter().any(|bucket| bucket.second >= oldest));
+}
+
+/// Make room, if there is none, for one more instance of the rate-based rule `key` belongs
+/// to.
+///
+/// How MANY instances one rule holds is this side's choice for the reason
+/// [`release_spent_rate_instances`] gives: they are capped at
+/// [`MAX_RATE_INSTANCES_PER_RULE`], the one evicted to make room being the instance whose
+/// newest request is oldest.
+fn make_room_for_rate_instance(
+    store: &mut ComAmazonawsWafv2Awswaf20190729State,
+    key: &RateInstanceKey,
+) {
     if store.rate_based_counts.contains_key(key) {
         return;
     }
@@ -967,9 +994,14 @@ struct Evaluation<'a> {
     scope: String,
     /// The web ACL's id, for the same key.
     web_acl_id: String,
-    /// The instant the request is being evaluated at, in milliseconds since the Unix
+    /// The instant the request is being decided at, in milliseconds since the Unix
     /// epoch.
     now: i64,
+    /// The count one aggregation instance ALREADY holds over a window, answered from the
+    /// store by the entry point that owns the lock discipline ([`decide`]): a rate-based
+    /// rule asks for the one instance this request belongs to, so the work one request
+    /// costs does not grow with how many instances the traffic before it created.
+    counted_within: &'a dyn Fn(&RateInstanceKey, i64) -> u64,
 }
 
 /// What one rule made of the request.
@@ -1013,12 +1045,12 @@ impl Evaluation<'_> {
     /// Walk the web ACL's rules and settle on a terminating action, recording what WAF
     /// reports about the request ([`Recorded`]) and the rate counts the walk incurred.
     ///
-    /// `counts` are the rate counts already recorded for this web ACL; the counts this
-    /// request ADDS come back as the third element, so the walk itself writes nothing.
+    /// The counts this request ADDS come back as the third element, so the walk itself
+    /// writes nothing; the counts already recorded are asked for one instance at a time
+    /// ([`Self::counted_within`]).
     fn run(
         &self,
         web_acl: &WebACL,
-        counts: &HashMap<RateInstanceKey, Vec<RateBucket>>,
     ) -> (EdgeDecision, Recorded, Vec<RateInstanceKey>) {
         let mut cx = MatchContext {
             request: self.request,
@@ -1042,7 +1074,6 @@ impl Evaluation<'_> {
                 &mut cx,
                 &mut inserted,
                 &mut counted,
-                counts,
                 &namespace,
                 &mut recorded,
             );
@@ -1144,7 +1175,6 @@ impl Evaluation<'_> {
         cx: &mut MatchContext<'_>,
         inserted: &mut Vec<(String, String)>,
         counted: &mut Vec<RateInstanceKey>,
-        counts: &HashMap<RateInstanceKey, Vec<RateBucket>>,
         namespace: &str,
         recorded: &mut Recorded,
     ) -> RuleOutcome {
@@ -1185,14 +1215,13 @@ impl Evaluation<'_> {
                 cx,
                 inserted,
                 counted,
-                counts,
                 recorded,
                 &rule.visibility_config,
             );
         }
 
         let matched = if let Some(rate) = rule.statement.rate_based_statement.as_deref() {
-            self.rate_based_matches(rate, &rule_path(None, &rule.name), cx, counted, counts)
+            self.rate_based_matches(rate, &rule_path(None, &rule.name), cx, counted)
         } else {
             cx.matches(&rule.statement)
         };
@@ -1206,6 +1235,9 @@ impl Evaluation<'_> {
             // this request is one the rule COUNTED: it belongs to the rule's own
             // dimension exactly as a terminating match does, and the next rule runs.
             if let Some(counted_as) = counting_action_value(rule.action.as_ref()) {
+                recorded
+                    .non_terminating
+                    .push((rule.name.clone(), counted_as.to_string()));
                 self.record_outcome(
                     recorded,
                     &rule.visibility_config,
@@ -1275,6 +1307,9 @@ impl Evaluation<'_> {
             // request: it belongs to the dimension of the web ACL rule that runs the
             // group, named by the group rule that counted it.
             if let Some(counted_as) = decided.counted_as {
+                recorded
+                    .non_terminating
+                    .push((named.clone(), counted_as.to_string()));
                 self.record_outcome(
                     recorded,
                     visibility,
@@ -1302,7 +1337,6 @@ impl Evaluation<'_> {
         cx: &mut MatchContext<'_>,
         inserted: &mut Vec<(String, String)>,
         counted: &mut Vec<RateInstanceKey>,
-        counts: &HashMap<RateInstanceKey, Vec<RateBucket>>,
         recorded: &mut Recorded,
         visibility: &VisibilityConfig,
     ) -> RuleOutcome {
@@ -1314,7 +1348,6 @@ impl Evaluation<'_> {
                     &rule_path(Some(rule_name), &group_rule.name),
                     cx,
                     counted,
-                    counts,
                 )
             } else {
                 cx.matches(&group_rule.statement)
@@ -1353,6 +1386,9 @@ impl Evaluation<'_> {
             // terminating counted the request, under the dimension of the web ACL
             // rule that runs the group.
             if let Some(counted_as) = decided.counted_as {
+                recorded
+                    .non_terminating
+                    .push((named.clone(), counted_as.to_string()));
                 self.record_outcome(
                     recorded,
                     visibility,
@@ -1395,7 +1431,6 @@ impl Evaluation<'_> {
         rule_path: &str,
         cx: &MatchContext<'_>,
         counted: &mut Vec<RateInstanceKey>,
-        counts: &HashMap<RateInstanceKey, Vec<RateBucket>>,
     ) -> bool {
         if let Some(scope_down) = rate.scope_down_statement.as_deref() {
             if !cx.matches(scope_down) {
@@ -1415,9 +1450,7 @@ impl Evaluation<'_> {
             aggregate_key,
         };
         let window = evaluation_window_millis(rate.evaluation_window_sec);
-        let already = counts
-            .get(&key)
-            .map_or(0, |buckets| count_within(buckets, self.now, window));
+        let already = (self.counted_within)(&key, window);
         counted.push(key);
         already.saturating_add(1) > rate.limit.max(0) as u64
     }

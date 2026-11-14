@@ -61,6 +61,8 @@ mod list_resources_for_web_acl;
 mod list_rule_groups;
 #[path = "all/logging_configuration.rs"]
 mod logging_configuration;
+#[path = "all/logging_destination_delivery.rs"]
+mod logging_destination_delivery;
 #[path = "all/logging_destination_names.rs"]
 mod logging_destination_names;
 #[path = "all/logging_redacted_fields.rs"]

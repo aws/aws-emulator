@@ -65,11 +65,43 @@ bigdecimal = "0.4"
 # `cloudwatch_logs`: the one reading of a log group's ARN this tree holds, which is how a
 # web ACL's logging destination naming a log group is resolved, and the in-process
 # CloudWatch Logs client the record of a decided request is delivered through
-# (`service::logs`).
+# (`service::logs`). `s3_client`: the in-process Amazon S3 client the same record is
+# delivered through when the destination names a bucket, and `arn`: the one reading of a
+# resource ARN that tells which kind of destination the configuration named.
 service-common = { path = "../common" }
+# `service::logs::delivered_objects`: a WAF log file delivered into a destination bucket IS
+# a gzip stream, so it is written with the maintained DEFLATE implementation this workspace
+# already compresses a vended log file with rather than by laying the framing out here.
+flate2 = "1"
+# ... and the UTC calendar fields that object's key is laid out by (the year, month, day,
+# hour and minute of its prefix and the minute in its name), from the maintained calendar
+# crate rather than by slicing a rendered timestamp.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+# The Amazon S3 request types the delivery above builds (the object's body stream), from the
+# SDK the shared client is constructed from. Only the generated client is needed: the
+# emulator supplies the transport, so the SDK's own HTTPS stack is left out.
+aws-sdk-s3 = { version = "1", default-features = false }
+# `service::logs::delivered_streams`: the in-process Amazon Data Firehose client the same
+# record is handed to when the destination names a delivery stream, pinned at the version
+# every other service that delivers into a stream (cognito-idp, logs, cloudwatch) declares.
+aws-sdk-firehose = { version = "=1.126.0", default-features = false }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
+
+[dev-dependencies]
+# `tests/all/logging_destination_delivery.rs` asserts where a web ACL's log records really
+# ARRIVE, so each destination is created through the wire of the service that OWNS it and
+# each delivered record is read back through that service's own reader: CloudWatch Logs for
+# a log group, Amazon S3 for a bucket, Amazon Data Firehose for a delivery stream. The
+# request the records are about is one the web ACL in front of an Amazon Cognito user pool
+# decides — a user pool is one of the resource kinds `AssociateWebACL` takes — and that
+# service takes this one as a normal dependency (it asks this crate for the decision), so
+# the cycle closes through a dev-dependency, which Cargo allows. DEV-ONLY.
+service-com-amazonaws-cognitoidentityprovider-awscognitoidentityproviderservice = { workspace = true }
+service-com-amazonaws-cloudwatchlogs-logs-20140328 = { workspace = true }
+service-com-amazonaws-firehose-firehose-20150804 = { workspace = true }
+service-com-amazonaws-s3-amazons3 = { workspace = true }
 
 [lints]
 workspace = true
