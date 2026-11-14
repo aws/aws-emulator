@@ -175,6 +175,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // than reported as a group that merely is not held, which is what the not-found
         // error below means. This is the split `crate::ops::batch_get_reports` makes for
         // the other resource a report operation addresses by ARN alone.
+        // The ARN's own FIELDS are read first, and in order: a region field that cannot
+        // be a Region is the first one at fault, so it is what the refusal names (see
+        // `crate::state::arn_region_violation`) and the resource behind it is never read.
+        if let Some(message) = crate::state::arn_region_violation(&input.report_group_arn) {
+            return Err(GetReportGroupTrendErrorModeled::InvalidInputException(
+                InvalidInputException {
+                    message: Some(message),
+                },
+            )
+            .into());
+        }
+
         if crate::state::report_group_name_from_arn(&input.report_group_arn).is_none() {
             return Err(GetReportGroupTrendErrorModeled::InvalidInputException(
                 InvalidInputException {

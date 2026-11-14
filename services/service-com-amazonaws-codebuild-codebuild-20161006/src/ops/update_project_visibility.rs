@@ -209,6 +209,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // come back out of the ARN before the store can be read. An input that is not a
         // CodeBuild project ARN names no project at all, which is a malformed input
         // rather than a missing resource.
+        // The ARN's own FIELDS are read first, and in order: a region field that cannot
+        // be a Region is the first one at fault, so it is what the refusal names (see
+        // `crate::state::arn_region_violation`) and the resource behind it is never read.
+        if let Some(message) = crate::state::arn_region_violation(&input.project_arn) {
+            crate::state::audit(
+                Self::NAME,
+                ctx.parts(),
+                crate::state::AuditOutcome::ValidationRefused,
+                Some(&input.project_arn),
+            );
+            return Err(UpdateProjectVisibilityErrorModeled::InvalidInputException(
+                InvalidInputException {
+                    message: Some(message),
+                },
+            )
+            .into());
+        }
+
         let Some(name) = crate::state::project_name_from_arn(&input.project_arn) else {
             crate::state::audit(
                 Self::NAME,

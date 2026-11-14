@@ -156,6 +156,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // store is read, the way `crate::ops::put_resource_policy` parses the ARN it
         // writes against: a value that is not the ARN of a resource this service
         // attaches a policy to is a malformed input rather than a missing one.
+        // The ARN's own FIELDS are read first, and in order: a region field that cannot
+        // be a Region is the first one at fault, so it is what the refusal names (see
+        // `crate::state::arn_region_violation`) and the resource behind it is never read.
+        if let Some(message) = crate::state::arn_region_violation(&input.resource_arn) {
+            return Err(GetResourcePolicyErrorModeled::InvalidInputException(
+                InvalidInputException {
+                    message: Some(message),
+                },
+            )
+            .into());
+        }
+
         if crate::state::PolicyTarget::of_arn(&input.resource_arn).is_none() {
             return Err(GetResourcePolicyErrorModeled::InvalidInputException(
                 InvalidInputException {

@@ -154,6 +154,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // is refused with the operation's own input error rather than reported as a
         // successful deletion of nothing — the rule `crate::ops::delete_report_group`
         // applies to the other resource this service addresses by ARN alone.
+        // The ARN's own FIELDS are read first, and in order: a region field that cannot
+        // be a Region is the first one at fault, so it is what the refusal names (see
+        // `crate::state::arn_region_violation`) and the resource behind it is never read.
+        if let Some(message) = crate::state::arn_region_violation(&input.arn) {
+            crate::state::audit(
+                Self::NAME,
+                ctx.parts(),
+                crate::state::AuditOutcome::ValidationRefused,
+                Some(&input.arn),
+            );
+            return Err(DeleteFleetErrorModeled::InvalidInputException(
+                InvalidInputException {
+                    message: Some(message),
+                },
+            )
+            .into());
+        }
+
         if crate::state::fleet_id_from_arn(&input.arn).is_none() {
             crate::state::audit(
                 Self::NAME,

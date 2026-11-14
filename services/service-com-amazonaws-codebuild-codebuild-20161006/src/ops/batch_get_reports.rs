@@ -150,6 +150,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `reportsNotFound` means. One malformed value refuses the request: the answer
         // is positional, so a caller could not be told which half a value it cannot
         // even address belongs in.
+        // The ARN's own FIELDS are read first, and in order: a region field that cannot
+        // be a Region is the first one at fault, so it is what the refusal names (see
+        // `crate::state::arn_region_violation`) and the resource behind it is never read.
+        // The first value in the request at fault is the one the refusal is about, for
+        // the reason one malformed value refuses the whole batch below.
+        let region_at_fault = input
+            .report_arns
+            .iter()
+            .find_map(|arn| crate::state::arn_region_violation(arn));
+        if let Some(message) = region_at_fault {
+            return Err(BatchGetReportsErrorModeled::InvalidInputException(
+                InvalidInputException {
+                    message: Some(message),
+                },
+            )
+            .into());
+        }
+
         if input
             .report_arns
             .iter()

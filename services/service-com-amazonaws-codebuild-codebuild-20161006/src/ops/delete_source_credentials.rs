@@ -151,6 +151,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // reading `crate::ops::get_resource_policy` applies to the resource ARN it
         // resolves, and it is settled with no lock held: the constraint is on the request
         // alone.
+        // The ARN's own FIELDS are read first, and in order: the region field comes
+        // before the resource, so an ARN whose region cannot be a Region is refused on
+        // that field, naming it and quoting its value, and the server type behind it is
+        // never examined. See `crate::state::arn_region_violation`.
+        if let Some(message) = crate::state::arn_region_violation(&input.arn) {
+            return Err(
+                DeleteSourceCredentialsErrorModeled::InvalidInputException(
+                    InvalidInputException {
+                        message: Some(message),
+                    },
+                )
+                .into(),
+            );
+        }
+
         if crate::state::source_credential_server_type_from_arn(&input.arn).is_none() {
             return Err(
                 DeleteSourceCredentialsErrorModeled::InvalidInputException(

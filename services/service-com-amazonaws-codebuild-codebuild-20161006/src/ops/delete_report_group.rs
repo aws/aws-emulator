@@ -141,6 +141,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // a value that is not a report-group ARN of this service names no resource and
         // is refused with the operation's own input error rather than reported as a
         // successful deletion of nothing.
+        // The ARN's own FIELDS are read first, and in order: a region field that cannot
+        // be a Region is the first one at fault, so it is what the refusal names (see
+        // `crate::state::arn_region_violation`) and the resource behind it is never read.
+        if let Some(message) = crate::state::arn_region_violation(&input.arn) {
+            crate::state::audit(
+                Self::NAME,
+                ctx.parts(),
+                crate::state::AuditOutcome::ValidationRefused,
+                Some(&input.arn),
+            );
+            return Err(DeleteReportGroupErrorModeled::InvalidInputException(
+                InvalidInputException {
+                    message: Some(message),
+                },
+            )
+            .into());
+        }
+
         if crate::state::report_group_name_from_arn(&input.arn).is_none() {
             crate::state::audit(
                 Self::NAME,

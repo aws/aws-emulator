@@ -166,6 +166,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // call is refused with the operation's own input error rather than reported as a
         // group that merely is not held, which is what the not-found error below means.
         // This is the split every report-group-addressing operation makes.
+        // The ARN's own FIELDS are read first, and in order: a region field that cannot
+        // be a Region is the first one at fault, so it is what the refusal names (see
+        // `crate::state::arn_region_violation`) and the resource behind it is never read.
+        if let Some(message) = crate::state::arn_region_violation(&arn) {
+            crate::state::audit(
+                Self::NAME,
+                ctx.parts(),
+                crate::state::AuditOutcome::ValidationRefused,
+                Some(&arn),
+            );
+            return Err(UpdateReportGroupErrorModeled::InvalidInputException(
+                InvalidInputException {
+                    message: Some(message),
+                },
+            )
+            .into());
+        }
+
         if crate::state::report_group_name_from_arn(&arn).is_none() {
             crate::state::audit(
                 Self::NAME,

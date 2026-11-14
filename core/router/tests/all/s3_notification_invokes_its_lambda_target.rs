@@ -751,8 +751,9 @@ async fn assert_logged(
         }
         tokio::time::sleep(LOOK_INTERVAL).await;
     }
-    panic!(
+    let rendered = format!(
         "case {case:?}: expected the group {group:?} to hold the record the handler logged \
          ({opens:?} … {wanted:?}), got {last}"
     );
+    panic!("{rendered}");
 }

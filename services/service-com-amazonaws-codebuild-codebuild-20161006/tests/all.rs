@@ -13,6 +13,8 @@
 mod absent_resource_preconditions;
 #[path = "all/absent_resource_wording.rs"]
 mod absent_resource_wording;
+#[path = "all/arn_region_field.rs"]
+mod arn_region_field;
 #[path = "all/batch_delete_builds.rs"]
 mod batch_delete_builds;
 #[path = "all/batch_get_reports.rs"]

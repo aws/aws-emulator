@@ -43,6 +43,8 @@ use crate::ops::types::{
     SSMSession, Sandbox, SandboxSession, SandboxSessionPhase, SourceCredentialsInfo,
 };
 
+/// The FIELDS of an ARN an ARN-addressed operation is handed, and the first one at fault.
+mod arn_fields;
 /// Where a build's output artifacts go, and whether that destination exists.
 mod artifacts;
 /// Which builds the `batch` section of a buildspec declares a batch build is made of.
@@ -57,6 +59,7 @@ mod identifiers;
 /// The runtimes a build environment has, and the ones a build's buildspec installs.
 mod runtime_versions;
 
+pub use arn_fields::*;
 pub use artifacts::*;
 pub use batchspec::*;
 pub use buildspec::*;
