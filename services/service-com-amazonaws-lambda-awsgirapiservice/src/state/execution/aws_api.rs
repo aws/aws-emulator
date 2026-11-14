@@ -733,6 +733,32 @@ pub const APIS: &[Api] = &[
         protocol: Protocol::RestJson(&LAMBDA),
         answer_model: Some(&LAMBDA_ANSWERS),
     },
+    // `services/service-com-amazonaws-glue-awsglue/smithy-model/
+    // com-amazonaws-glue-awsglue.json`: awsJson1_1, sigv4Name `glue`, endpointPrefix `glue`,
+    // sdkId `Glue`, service shape `AWSGlue`.
+    //
+    // THE DATA CATALOG is what a program that reads or writes a data lake resolves its tables
+    // against: a script handed a database and a table name reads that table's metadata — where
+    // its data lives and which columns it declares — before it can read a row of it, and
+    // registers what it wrote afterwards. A program that cannot reach this service cannot
+    // perform a catalog-backed read at all, and the Lake Formation governance of such a read is
+    // what this service applies to it.
+    //
+    // No model is held for it here: its requests are bound by the AWS JSON protocol above —
+    // the operation in the target header, the input document as the body — so nothing of its
+    // model is read to build one.
+    Api {
+        sdk_token: "glue",
+        signing_name: "glue",
+        endpoint_prefix: "glue",
+        model: None,
+        protocol: Protocol::AwsJson {
+            target_prefix: "AWSGlue",
+            json_version: "1.1",
+            query_compatible: false,
+        },
+        answer_model: None,
+    },
 ];
 
 /// Whether `named` and `asked` name the ONE service.

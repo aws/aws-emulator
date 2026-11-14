@@ -243,16 +243,18 @@ const JOB_SCRIPT_STACK_BYTES: usize = 16 * 1024 * 1024;
 
 /// How many traced events one script may execute.
 ///
-/// CHOSEN: large enough for any ETL script a client runs here — it is several times the
-/// events the scripts of this crate's own suites deliver, the AWS SDK calls they make
-/// included — and small enough that a loop with no exit ends in a small part of the host time
-/// one run may take ([`JOB_SCRIPT_HOST_CEILING`]), so such a loop is answered by THIS budget
-/// rather than by that ceiling. It is a count of the script's OWN work, so it is the same
-/// count on an idle host and on a loaded one, which is what makes the answer to a script that
-/// computes without end the same on both. The span the run's clock gives it allows for this
-/// whole budget ([`JOB_SCRIPT_CLOCK_TICK`]), so a script that spends the budget is reported on
-/// the budget it ran past rather than on the clock.
-pub const MAX_JOB_SCRIPT_STEPS: u64 = 1_000_000;
+/// CHOSEN: large enough for any ETL script a client runs here — a Glue job script resolves
+/// its imports against the ETL library and the Spark runtime this emulator supplies
+/// ([`crate::state::glue_etl`]), which are themselves Python, so standing those modules up
+/// and then running the script's own work both spend from this budget — and small enough
+/// that a loop with no exit ends in a small part of the host time one run may take
+/// ([`JOB_SCRIPT_HOST_CEILING`]), so such a loop is answered by THIS budget rather than by
+/// that ceiling. It is a count of the script's OWN work, so it is the same count on an idle
+/// host and on a loaded one, which is what makes the answer to a script that computes
+/// without end the same on both. The span the run's clock gives it allows for this whole
+/// budget ([`JOB_SCRIPT_CLOCK_TICK`]), so a script that spends the budget is reported on the
+/// budget it ran past rather than on the clock.
+pub const MAX_JOB_SCRIPT_STEPS: u64 = 2_000_000;
 
 /// How much memory one script may add to this process. CHOSEN, for the same reason.
 const MAX_JOB_SCRIPT_MEMORY_BYTES: u64 = 512 * 1024 * 1024;
@@ -279,6 +281,13 @@ pub const JOB_LANGUAGE_ARGUMENT: &str = "--job-language";
 /// default when a job names no language. A job whose script is in any other language is one
 /// no engine here runs, and its run says exactly that rather than reporting an outcome.
 pub const PYTHON_JOB_LANGUAGE: &str = "python";
+
+/// The job argument naming the JOB a run belongs to, which the SERVICE supplies on the
+/// script's command line: "`--JOB_NAME` … Internal to Glue. Do not set." (AWS Glue's special
+/// job parameters.) A script resolves it like any other argument, so it is on the line every
+/// run's script reads ([`JobScriptPlan::command_line_arguments`]) — and only there: it is not
+/// one of the run's own `Arguments`, which are what the caller and the job definition stated.
+pub const JOB_NAME_ARGUMENT: &str = "JOB_NAME";
 
 /// `JobRun$ErrorMessage` of a run whose job names no script to run.
 ///
@@ -459,6 +468,10 @@ pub struct JobScriptPlan {
     /// Name (ARN) of the IAM role associated with this job" (`Job$Role`), resolved by the
     /// crate's one reading of that member ([`glue_role_reference`]).
     pub role_arn: String,
+    /// `Job$GlueVersion`, as the run carries it: "Glue version determines the versions of
+    /// Apache Spark and Python that Glue supports", so it is what decides the Spark the
+    /// script is run against ([`crate::state::glue_etl`]).
+    pub glue_version: String,
 }
 
 impl JobScriptPlan {
@@ -477,6 +490,7 @@ impl JobScriptPlan {
                 .collect(),
             timeout_minutes: run.timeout,
             role_arn: glue_role_reference(&job.role).arn,
+            glue_version: run.glue_version.clone(),
         })
     }
 
@@ -497,9 +511,22 @@ impl JobScriptPlan {
     /// the script's own path followed by each argument as `--name value` — in name order, so
     /// one run's line does not depend on a map's iteration order. A stored name that does
     /// not already carry the marker is given it, because that is the form a script resolves.
+    ///
+    /// The line also carries [`JOB_NAME_ARGUMENT`], which the SERVICE supplies rather than
+    /// the caller — so a script that resolves it reads the name of the job being run — and
+    /// never twice: an argument the run itself carries under that name is the one on the
+    /// line.
     #[must_use]
     pub fn command_line_arguments(&self) -> Vec<String> {
-        let mut line = Vec::with_capacity(self.arguments.len() * 2);
+        let mut line = Vec::with_capacity(self.arguments.len() * 2 + 2);
+        if !self
+            .arguments
+            .keys()
+            .any(|name| name.trim_start_matches('-') == JOB_NAME_ARGUMENT)
+        {
+            line.push(format!("--{JOB_NAME_ARGUMENT}"));
+            line.push(self.job_name.clone());
+        }
         for (name, value) in &self.arguments {
             let flagged = if name.starts_with("--") {
                 name.clone()
@@ -918,20 +945,14 @@ async fn run_script(
         "arguments": plan.command_line_arguments(),
     })
     .to_string();
-    let modules = vec![
-        PackageModule {
-            path: format!("{SCRIPT_ENTRY_MODULE}.py"),
-            source: SCRIPT_ENTRY_SOURCE.to_string(),
-        },
-        PackageModule {
-            path: "awsglue/__init__.py".to_string(),
-            source: AWSGLUE_SOURCE.to_string(),
-        },
-        PackageModule {
-            path: "awsglue/utils.py".to_string(),
-            source: AWSGLUE_UTILS_SOURCE.to_string(),
-        },
-    ];
+    let modules = ::std::iter::once(PackageModule {
+        path: format!("{SCRIPT_ENTRY_MODULE}.py"),
+        source: SCRIPT_ENTRY_SOURCE.to_string(),
+    })
+    // The AWS Glue ETL library and the Spark runtime under it, which is what a job script
+    // resolves its own imports against ([`crate::state::glue_etl`]).
+    .chain(crate::state::glue_etl_modules(&plan.glue_version))
+    .collect::<Vec<_>>();
     let run_id = plan.run_id.clone();
     let handler = format!("{SCRIPT_ENTRY_MODULE}.{SCRIPT_ENTRY_FUNCTION}");
     let (sender, receiver) = ::tokio::sync::oneshot::channel();
@@ -1077,61 +1098,8 @@ def run(event, context):
     return None
 "#;
 
-/// `awsglue`: the package AWS Glue ships on a job script's import path. Only the part this
-/// emulator can serve is here ([`AWSGLUE_UTILS_SOURCE`]); importing anything else of it
-/// raises, as it does in an environment that does not have it.
-const AWSGLUE_SOURCE: &str = r#"
-"""The `awsglue` package, as this emulator supplies it on a job script's import path."""
-"#;
-
-/// `awsglue.utils`: the argument resolution a Glue job script reads its parameters through.
-///
-/// "`getResolvedOptions(args, options)`" takes `sys.argv` and the names the script wants,
-/// and answers a dictionary of them — AWS documents it as the way "to retrieve the arguments
-/// that were passed", and a job argument is named on the command line as `--name value`. A
-/// name the line does not carry raises `GlueArgumentError`, because the script asked for a
-/// parameter the run was not given.
-const AWSGLUE_UTILS_SOURCE: &str = r#"
-"""Resolving a Glue job's own arguments off the command line it was run with."""
-
-
-class GlueArgumentError(Exception):
-    """A requested job argument the run was not given."""
-
-
-def _named_arguments(args):
-    """Every `--name value` (or `--name=value`) pair of a command line, by name."""
-    named = {}
-    index = 0
-    while index < len(args):
-        token = args[index]
-        index += 1
-        if not token.startswith("--"):
-            continue
-        name = token[2:]
-        if "=" in name:
-            name, value = name.split("=", 1)
-            named[name] = value
-            continue
-        if index < len(args) and not args[index].startswith("--"):
-            named[name] = args[index]
-            index += 1
-        else:
-            named[name] = ""
-    return named
-
-
-def getResolvedOptions(args, options):
-    """The job arguments `options` names, read off the command line `args`."""
-    named = _named_arguments(list(args))
-    resolved = {}
-    for option in options or []:
-        name = option[2:] if option.startswith("--") else option
-        if name not in named:
-            raise GlueArgumentError("argument --%s is required" % name)
-        resolved[name] = named[name]
-    return resolved
-"#;
+// `awsglue` and the Spark runtime under it live in [`crate::state::glue_etl`], which is
+// what a script's own imports resolve against.
 
 #[cfg(test)]
 mod tests {

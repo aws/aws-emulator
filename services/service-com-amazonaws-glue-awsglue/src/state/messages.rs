@@ -779,6 +779,20 @@ pub fn insufficient_lake_formation_describe(database_name: &str) -> String {
     format!("Insufficient Lake Formation permission(s): Required Describe on {database_name}")
 }
 
+/// A Data Catalog metadata read of a TABLE the caller holds no Lake Formation permission on
+/// ([`super::lake_formation`]), refused as unauthorized rather than answered.
+///
+/// The TABLE-level wording, which is not the database-level one
+/// ([`insufficient_lake_formation_describe`]): Lake Formation words a refusal about a table
+/// as "Insufficient Lake Formation permission(s) on " and the table the request addressed,
+/// so the fixed text is that and the one variable part is the table name, taken from the
+/// request. No recording of this service's table-level refusal is held here, so the wording
+/// is the one Lake Formation publishes for it rather than one derived from the sibling
+/// above.
+pub fn insufficient_lake_formation_describe_table(table_name: &str) -> String {
+    format!("Insufficient Lake Formation permission(s) on {table_name}")
+}
+
 /// A read that addresses ONE catalog resource by its `CatalogId` (`GetCatalog`) for a
 /// name the addressed account's Data Catalog holds no catalog under. Recorded
 /// constant: the whole sentence is fixed text, and the id the request addressed is

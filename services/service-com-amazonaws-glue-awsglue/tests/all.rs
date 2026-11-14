@@ -255,6 +255,8 @@ mod job_run_state_progression;
 mod job_runs;
 #[path = "all/job_script_bounds.rs"]
 mod job_script_bounds;
+#[path = "all/job_script_catalog_read.rs"]
+mod job_script_catalog_read;
 #[path = "all/job_script_execution.rs"]
 mod job_script_execution;
 #[path = "all/job_script_execution_wait.rs"]

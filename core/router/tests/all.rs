@@ -2533,3 +2533,12 @@ mod cloudformation_provisions_cloudfront_resources;
 // CloudTrail suites above: two landings each appended their own copy, and a module declared
 // (`cloudwatch_alarm_ssm_ops_item_action` is declared in the head region above as well, for
 // tail: two landings each appended their own copy here, and a module declared twice loads
+// (The suite about which app client's token a COGNITO_USER_POOLS authorizer admits is
+// declared ONCE, in the sorted span at the head of this file: the line was appended here as
+// well while two branches were landing at once, which declared it a second time and compiled
+// head of this file: the line was appended here as well while two branches were landing at
+// (`zz_probe` is declared ONCE, further up this tail: the line was appended here as well
+// (`https_front_door_concurrent_pooled_producer` is declared ONCE, further up this tail: the
+// line was appended here as well while two branches were landing at once, which declared it a
+// (The metric-stream estate suite is declared ONCE, in the head region above, for the same
+// reason the pair of CloudFormation suites above records.)

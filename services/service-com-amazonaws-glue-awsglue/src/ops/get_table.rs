@@ -37,6 +37,15 @@
 //! deleted — makes this read `GlueEncryptionException` with KMS's own refusal relayed
 //! (`crate::state::catalog_encryption`).
 //!
+//! A table is also GOVERNED BY LAKE FORMATION: its metadata is answered only to a principal
+//! that holds a Lake Formation permission on that table — on the table itself, on named
+//! columns of it, on a filter over its cells, or on every table of its database — or over
+//! the whole data lake as an administrator. A caller none of those cover is refused
+//! `AccessDeniedException` rather than served (`crate::state::lake_formation`), which is what
+//! an engine reading the table's data learns before it reads a row of it. Lake Formation owns
+//! those grants, so they are read from it rather than kept here, and an emulator with none
+//! mounted governs nothing: no read is refused on its behalf.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -370,6 +379,38 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 entry.encryption.clone(),
             )
         };
+
+        // A Data Catalog TABLE is governed by Lake Formation: its metadata is answered only
+        // to a principal that holds a Lake Formation permission on that table — on the table
+        // itself, on named columns of it, on a filter over its cells, or on every table of
+        // its database — or over the whole data lake as an administrator, so once the grant
+        // the table was created carrying is revoked a principal holding nothing is refused
+        // rather than served (see `crate::state::lake_formation`). This is the read an engine
+        // performing a catalog-backed query makes before it reads a row, which is why a
+        // governed table's data is unreachable until a grant exists. Asked with no store
+        // guard held: Lake Formation reads this same Data Catalog to resolve the resources
+        // its grants name.
+        let permissions = crate::state::lake_formation::catalog_permissions(
+            &*self.engine,
+            ctx,
+            &region,
+            &catalog_id,
+        )
+        .await;
+        if permissions
+            .is_some_and(|held| !held.may_describe_table(&input.database_name, &input.name))
+        {
+            return Err(GetTableErrorModeled::AccessDeniedException(
+                AccessDeniedException {
+                    message: Some(
+                        crate::state::messages::insufficient_lake_formation_describe_table(
+                            &input.name,
+                        ),
+                    ),
+                },
+            )
+            .into());
+        }
 
         // A table written while its catalog encrypted catalog writes under a KMS key is
         // readable only while that key is: the definition is answered once KMS has opened

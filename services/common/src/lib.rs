@@ -618,6 +618,9 @@ pub mod shared_path;
 /// How AWS Signer states a refusal of an input member a request supplied nothing for, for
 /// the two service crates that are two views of that one endpoint.
 pub mod signer_input_refusals;
+/// The ONE `pyspark` package this emulator puts on a caller-supplied Spark program's
+/// import path, for every service whose data plane RUNS one.
+pub mod spark_runtime;
 /// The ONE home for the half of a constraint refusal the framework's walk cannot state —
 /// the COLLECTION a clause about a collection member is about — served as the
 /// per-operation wrapper that is the only layer with the request it has to be read from.

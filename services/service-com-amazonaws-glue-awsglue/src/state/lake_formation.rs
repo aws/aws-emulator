@@ -7,7 +7,10 @@
 //! database's metadata only while it holds at least one Lake Formation permission on that
 //! database — in its own name, through the `IAM_ALLOWED_PRINCIPALS` group every IAM user
 //! and role belongs to, or on a resource INSIDE it, since a grant on a table makes the
-//! table's parent database describable. A data lake administrator holds every permission
+//! table's parent database describable. A TABLE's metadata needs a permission on that table
+//! itself — on the table, on named columns of it, on a filter over its cells, or on every
+//! table of its database through a table wildcard — because a database's own permissions are
+//! granted over the database resource. A data lake administrator holds every permission
 //! of its catalog implicitly. A read by a principal none of those cover is refused.
 //!
 //! Lake Formation OWNS those grants, so they are read from Lake Formation rather than kept
@@ -65,6 +68,13 @@ pub struct CatalogPermissions {
     /// The stored (folded) names of the databases the caller holds a Lake Formation
     /// permission on, either on the database itself or on a resource inside it.
     databases: BTreeSet<String>,
+    /// The stored (folded) `(database, table)` pairs the caller holds a Lake Formation
+    /// permission on — a grant on the table itself, on named columns of it, or on a filter
+    /// over its cells.
+    tables: BTreeSet<(String, String)>,
+    /// The stored (folded) names of the databases the caller holds a permission on EVERY
+    /// table of, which is what a grant naming a table wildcard confers.
+    every_table_of: BTreeSet<String>,
 }
 
 impl CatalogPermissions {
@@ -76,6 +86,29 @@ impl CatalogPermissions {
     #[must_use]
     pub fn may_describe_database(&self, name: &str) -> bool {
         self.admin || self.databases.contains(&super::fold_name(name))
+    }
+
+    /// Whether the caller may read the metadata of the table `table` of the database
+    /// `database`: it is a data lake administrator, or it holds a Lake Formation permission
+    /// on that table — on the table itself, on named columns of it, on a filter over its
+    /// cells, or on every table of its database through a table wildcard.
+    ///
+    /// A permission on the DATABASE is not one of them: Lake Formation grants a database's
+    /// permissions over the database resource, and the metadata of a table inside it is
+    /// answered to a principal that holds a permission on that table.
+    ///
+    /// Both names are matched as the catalog STORES them ([`super::fold_name`]), so the
+    /// spelling a request used cannot decide the answer.
+    #[must_use]
+    pub fn may_describe_table(&self, database: &str, table: &str) -> bool {
+        if self.admin {
+            return true;
+        }
+        let database = super::fold_name(database);
+        if self.every_table_of.contains(&database) {
+            return true;
+        }
+        self.tables.contains(&(database, super::fold_name(table)))
     }
 }
 
@@ -129,6 +162,8 @@ pub async fn catalog_permissions<Eng: Send + Sync + 'static>(
     });
 
     let mut databases = BTreeSet::new();
+    let mut tables = BTreeSet::new();
+    let mut every_table_of = BTreeSet::new();
     for principal in &principals {
         let mut next_token: Option<String> = None;
         let mut pages = 0usize;
@@ -170,6 +205,15 @@ pub async fn catalog_permissions<Eng: Send + Sync + 'static>(
                 if let Some(database) = granted_database(entry.resource(), catalog_id) {
                     databases.insert(database);
                 }
+                match granted_table(entry.resource(), catalog_id) {
+                    Some(GrantedTable::Named { database, table }) => {
+                        tables.insert((database, table));
+                    }
+                    Some(GrantedTable::EveryTableOf { database }) => {
+                        every_table_of.insert(database);
+                    }
+                    None => {}
+                }
             }
             next_token = page.next_token().map(str::to_string);
             if next_token.is_none() {
@@ -191,7 +235,12 @@ pub async fn catalog_permissions<Eng: Send + Sync + 'static>(
         }
     }
 
-    Some(CatalogPermissions { admin, databases })
+    Some(CatalogPermissions {
+        admin,
+        databases,
+        tables,
+        every_table_of,
+    })
 }
 
 /// The database a grant on `resource` makes describable, as the catalog stores its name:
@@ -223,6 +272,58 @@ fn granted_database(resource: Option<&Resource>, catalog_id: &str) -> Option<Str
             .then(|| super::fold_name(database));
     }
     None
+}
+
+/// Which TABLE a grant on `resource` makes readable: the table it names, or every table of
+/// the database it names a table wildcard of.
+///
+/// `None` for a resource that is not in `catalog_id` and for every resource that is not a
+/// table or a thing inside one — a grant on the database, the catalog, a data location, an
+/// LF-tag or a tag policy names no one table.
+fn granted_table(resource: Option<&Resource>, catalog_id: &str) -> Option<GrantedTable> {
+    let resource = resource?;
+    if let Some(table) = resource.table() {
+        if !in_catalog(table.catalog_id(), catalog_id) {
+            return None;
+        }
+        let database = super::fold_name(table.database_name());
+        // "A wildcard object representing every table under a database": the grant covers
+        // the tables the database holds now and the ones created in it later, so it is kept
+        // as the database it covers rather than as the tables it happened to cover.
+        if table.table_wildcard().is_some() {
+            return Some(GrantedTable::EveryTableOf { database });
+        }
+        return table
+            .name()
+            .filter(|name| !name.is_empty())
+            .map(|name| GrantedTable::Named {
+                database,
+                table: super::fold_name(name),
+            });
+    }
+    if let Some(table) = resource.table_with_columns() {
+        return in_catalog(table.catalog_id(), catalog_id).then(|| GrantedTable::Named {
+            database: super::fold_name(table.database_name()),
+            table: super::fold_name(table.name()),
+        });
+    }
+    if let Some(filter) = resource.data_cells_filter() {
+        let database = filter.database_name()?;
+        let table = filter.table_name()?;
+        return in_catalog(filter.table_catalog_id(), catalog_id).then(|| GrantedTable::Named {
+            database: super::fold_name(database),
+            table: super::fold_name(table),
+        });
+    }
+    None
+}
+
+/// What a grant on one resource says about the TABLES of a catalog.
+enum GrantedTable {
+    /// One table, by name.
+    Named { database: String, table: String },
+    /// Every table of one database, which is what a table wildcard names.
+    EveryTableOf { database: String },
 }
 
 /// Whether a resource member that names `named` sits in `catalog_id`: the catalog it names,
