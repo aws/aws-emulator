@@ -1,91 +1,98 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op InvokeInlineAgent
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` once a
-//! request satisfies the model's input constraints, and asserts NOTHING about
-//! `InvokeInlineAgent`'s real behaviour. Implement it here — this is the ONLY file to touch
-//! for this operation.
 //!
-//! HAND-AUTHORED, not generated: the op-stub generator declined this operation because its
-//! `completion` output member is a `@streaming` event stream it cannot frame
-//! (`SKIPPED_STUBS.md`), and an operation with no module at all is in no routing table, so
-//! requests to `POST /agents/{sessionId}` reached no handler and were claimed by the
-//! build-time plane's own `POST /agents/{agentId}/` route — which validated a member this
-//! operation does not have. The request half is declared in
-//! `super::types::invoke_inline_agent_types`, so the framework validates THIS operation's
-//! members before `handle` runs; the response stream is what remains unimplemented.
+//! `POST /agents/{sessionId} -> 200`. Serves one invocation of an agent the REQUEST
+//! composes — "Invokes an inline Amazon Bedrock agent using the configurations you provide
+//! with the request" — as a `vnd.amazon.eventstream` body: the `chunk` event the modelled
+//! `InlineAgentResponseStream` declares for the agent's answer.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`InvokeInlineAgent::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! ## What is real here
 //!
-//! ## Shape of an operation
+//! * there is NO stored agent to resolve: the agent is composed by the call, so what is
+//!   resolved instead is the `foundationModel` it orchestrates with, read in the plane that
+//!   owns the model catalogue (`crate::state::inline_agent`) — an identifier naming no model
+//!   this emulator publishes is the modelled `ValidationException` (400) or
+//!   `ResourceNotFoundException` (404), exactly as the inference plane classifies it, and
+//!   never an empty stream. What the reference does NOT have to do is serve inference: no
+//!   model is invoked here, so a model past its end of life still composes an inline agent,
+//!   while one of a non-text modality — which generates no turn of a conversation at all —
+//!   is refused;
+//! * the `sessionId` label is checked against the model before anything is looked up, so a
+//!   malformed one is the modelled `ValidationException` (400);
+//! * the caller's permission for `bedrock:InvokeInlineAgent` on that model is decided before
+//!   any store is read, so an unauthorized call is answered the same way whether or not the
+//!   model exists;
+//! * the CONVERSATION is this plane's own store: the caller's own `sessionId` opens one,
+//!   reusing it continues the same conversation, `endSession` ends it, and one idle past its
+//!   `idleSessionTTLInSeconds` is released — which is why the answer can report which turn
+//!   of which conversation was served.
 //!
-//! Each operation is a struct that owns the shared engine and implements
-//! [`smithy_server_runtime::Operation`]. The framework constructs one per service via
-//! `InvokeInlineAgent::new(engine)` and drives it through the centralized request walk:
-//! deserialize → validate → `handle` → serialize. You write ONLY the `handle` body.
+//! NO LANGUAGE MODEL RUNS IN THIS EMULATOR, and nothing here pretends otherwise. The
+//! `chunk` events carry the notice the Bedrock Runtime plane of this same emulator answers
+//! every inference surface with, extended with the facts of the invocation that was really
+//! served (`crate::state::inline_agent::completion_notice`): the model the agent was
+//! composed against, the turn and conversation, and the capabilities the request configured
+//! that went unused. The caller's own `inputText` is never handed back as if an agent had
+//! replied to it, and a chunk carries no `attribution`: no knowledge base was queried, so
+//! there is no source to cite.
 //!
-//! ## Reaching this service's state
+//! ## What it refuses rather than answers
 //!
-//! The engine is held on `self` (constructor-injected), NOT passed per request — so
-//! engine access is guaranteed by the time any request runs. Reach the store through
-//! [`crate::state::service_state`] and read and write it through the guard it hands back.
+//! A leg this emulator cannot compute is REFUSED with the modelled `ValidationException`,
+//! because a plausible-looking success is worse than an error: `guardrailConfiguration` and
+//! `streamingConfigurations.applyGuardrailInterval` (no guardrail policy is evaluated, so
+//! neither an intervention nor its absence can be reported), `promptOverrideConfiguration`
+//! and `promptCreationConfigurations` (both change a prompt nothing reads),
+//! `inlineSessionState` (its attributes replace those placeholders and its
+//! `returnControlInvocationResults` answer an invocation this service returned control for
+//! nowhere), `collaborators` / `collaboratorConfigurations` / a non-`DISABLED`
+//! `agentCollaboration` (no collaboration is orchestrated) and `customOrchestration` /
+//! `orchestrationType: CUSTOM_ORCHESTRATION` (a custom orchestration runs a function this
+//! emulator invokes nothing of).
 //!
-//! `ctx` ([`smithy_server_runtime::OperationContext`]) carries request metadata only —
-//! headers, URI, method, and anything middleware placed in `ctx.parts().extensions`.
-//! The engine is NOT reached through `ctx`.
+//! `actionGroups` and `knowledgeBases` are SERVED: each configures a capability the agent
+//! uses only once its model elicits an action or a query, and AWS answers such a request
+//! with a plain `chunk` whenever none is elicited — so the configuration does not change
+//! what this invocation can answer, and the notice states how many of each were configured
+//! and that none was used. `enableTrace` is served for the opposite reason: it adds a
+//! report ALONGSIDE the answer rather than changing it, so the request is answered and the
+//! notice states that the trace carries no step, because a trace reports the orchestration
+//! steps a model took and no model took any — a `trace` event is never invented for steps
+//! nothing performed. `bedrockModelConfigurations` names a latency profile, which does not
+//! change what an answer says, and `streamingConfigurations.streamFinalResponse` is
+//! honoured as the FRAMING it is: the same notice delivered in several `chunk` events
+//! instead of one.
 //!
-//! ---
-//!
-//! # Modeled contract for `InvokeInlineAgent`
-//!
-//! What AWS documents for this operation, from this service's Smithy model. For the FULL
-//! text of any one item, ask the model rather than reading the raw JSON:
-//!
-//! ```text
-//! smithy_query(query="operation",operation="InvokeInlineAgent",model_path="services/service-com-amazonaws-bedrockagentruntime-amazonbedrockagentruntimeservice/smithy-model/com-amazonaws-bedrockagentruntime-amazonbedrockagentruntimeservice.json")
-//! ```
-//!
-//! Invokes an inline Amazon Bedrock agent using the configurations you provide with the
-//! request.
-//!
-//! ## Route
-//!
-//! `POST /agents/{sessionId} -> 200`
+//! This operation is hand-authored rather than generated: its output is a `@streaming`
+//! union, which the op-stub generator declines (`src/ops/SKIPPED_STUBS.md`) and whose
+//! generated `ErasedOperation` shim would decline the request. The framing and the routing
+//! seam live in `service_common::event_stream`, the shapes in
+//! `super::types::invoke_inline_agent_types`, and `crate::service` routes a request here
+//! through `Service::override_operation`.
 //!
 //! ## Input
 //!
-//! * `sessionId` (SessionId, len 2..100, pattern ^[0-9a-zA-Z._:-]+$, @httpLabel)
-//!   **required** — The unique identifier of the session.
-//! * `foundationModel` (ModelIdentifier, len 1..2048, pattern
-//!   (^arn:aws(-[^:]+)?:bedrock:[a-z0-9-]{1,20}:(([0-9]{12}:custom-model/… …) **required**
-//!   — The model identifier (ID) of the model to use for orchestration.
-//! * `instruction` (Instruction, len 40.., @sensitive) **required** — The instructions that
-//!   tell the inline agent what it should do.
-//! * `customerEncryptionKeyArn` (KmsKeyArn, len 1..2048, pattern
-//!   ^arn:aws(|-cn|-us-gov):kms:[a-zA-Z0-9-]*:[0-9]{12}:key/[a-zA-Z0-9-]{36}$) — The ARN of
-//!   the customer-managed key to use for encryption.
-//! * `idleSessionTTLInSeconds` (SessionTTL, range 60..3600) — How long the session is kept.
-//! * `agentName` (Name, pattern ^([0-9a-zA-Z][_-]?){1,100}$, @sensitive),
-//!   `agentCollaboration` (AgentCollaboration, one of: DISABLED | SUPERVISOR |
-//!   SUPERVISOR_ROUTER), `orchestrationType` (OrchestrationType, one of:
-//!   CUSTOM_ORCHESTRATION | DEFAULT), `inputText` (InputText, len ..25000000, @sensitive),
-//!   `endSession` (Boolean), `enableTrace` (Boolean).
+//! * `sessionId` (SessionId, len 2..100, pattern `^[0-9a-zA-Z._:-]+$`, `@httpLabel`)
+//!   **required** — the conversation the turn is served in.
+//! * `foundationModel` (ModelIdentifier, len 1..2048) **required** — the model the agent
+//!   orchestrates with.
+//! * `instruction` (Instruction, len 40.., `@sensitive`) **required**.
+//! * `customerEncryptionKeyArn` (KmsKeyArn), `idleSessionTTLInSeconds` (SessionTTL, range
+//!   60..3600), `agentName` (Name, `@sensitive`), `agentCollaboration`
+//!   (AgentCollaboration), `orchestrationType` (OrchestrationType), `inputText` (InputText,
+//!   len ..25000000, `@sensitive`), `endSession` (Boolean), `enableTrace` (Boolean).
 //! * The structured members — `actionGroups`, `knowledgeBases`, `guardrailConfiguration`,
 //!   `promptOverrideConfiguration`, `collaboratorConfigurations`, `collaborators`,
 //!   `inlineSessionState`, `streamingConfigurations`, `promptCreationConfigurations`,
-//!   `bedrockModelConfigurations` and `customOrchestration` — are the ones
-//!   `super::types::invoke_inline_agent_types` lists as unsupported.
+//!   `bedrockModelConfigurations` and `customOrchestration`.
 //!
 //! ## Output
 //!
-//! * `completion` (InlineAgentResponseStream, @httpPayload, @streaming) **required** — the
-//!   event stream carrying the agent's answer.
-//! * `contentType` (@httpHeader x-amzn-bedrock-agent-content-type) **required**,
-//!   `sessionId` (@httpHeader x-amz-bedrock-agent-session-id) **required**.
+//! * `completion` (InlineAgentResponseStream, `@httpPayload`, `@streaming`) **required** —
+//!   the body.
+//! * `contentType` (`@httpHeader x-amzn-bedrock-agent-content-type`) **required**,
+//!   `sessionId` (`@httpHeader x-amz-bedrock-agent-session-id`) **required**.
 //!
 //! ## Errors
 //!
@@ -100,19 +107,22 @@ use super::types::*;
 
 use aws_smithy_runtime_api::http::{Request, Response};
 use aws_smithy_schema_server::ProtocolError;
-use service_common::event_stream::EventStreamOperation;
-use smithy_server_runtime::{BoxFuture, OperationContext, Refusal, Service};
+use service_common::event_stream::{
+    error_response, event_stream_response, frame_event, read_request, EventStreamOperation,
+    RequestRefusal,
+};
+use smithy_server_runtime::{BoxFuture, OperationContext, Refusal, ServerHttpProtocol, Service};
 
-// `#[operation_error]` below expands to an invocation of the LOCAL declarative
-// `smithy!` macro, which this line is what emits into the module.
+use crate::state::inline_agent as inline;
+
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-bedrockagentruntime-amazonbedrockagentruntimeservice.json");
 
-// The operation's MODELED errors. `#[operation_error]` accepts only variants the
-// model declares for this operation, so the scaffold's `NotImplemented` cannot live
-// here — hence the `InvokeInlineAgentError` alias below.
+/// The operation's MODELED errors; `#[operation_error]` accepts only variants the model
+/// declares for it. No `Scaffolded` wrapper: this operation is implemented, so the 501
+/// channel has nothing to carry.
 #[smithy_macros::operation_error("com.amazonaws.bedrockagentruntime#InvokeInlineAgent")]
 #[derive(Debug)]
-pub enum InvokeInlineAgentErrorModeled {
+pub enum InvokeInlineAgentError {
     AccessDeniedException(AccessDeniedException),
     BadGatewayException(BadGatewayException),
     ConflictException(ConflictException),
@@ -124,25 +134,67 @@ pub enum InvokeInlineAgentErrorModeled {
     ValidationException(ValidationException),
 }
 
-/// This operation's error channel, as the generated `impl Operation` names it
-/// (`crate::ops::invoke_inline_agent::InvokeInlineAgentError`). Wrapping the modeled enum
-/// is what lets a scaffolded operation answer 501.
-pub type InvokeInlineAgentError = crate::scaffolded::Scaffolded<InvokeInlineAgentErrorModeled>;
-
-/// Lets `?` and `.into()` lift a modeled failure into the error channel, so an
-/// implemented handler writes `Err(SomeModeledError.into())` rather than naming the
-/// wrapper variant.
-impl From<InvokeInlineAgentErrorModeled> for InvokeInlineAgentError {
-    fn from(modeled: InvokeInlineAgentErrorModeled) -> Self {
-        crate::scaffolded::Scaffolded::Modeled(modeled)
-    }
+/// This operation's modelled 400 `ValidationException`, naming the member that was wrong
+/// and what it requires — the caller has to fix the request from this text alone.
+fn validation(message: impl Into<String>) -> InvokeInlineAgentError {
+    InvokeInlineAgentError::ValidationException(ValidationException {
+        message: Some(message.into()),
+    })
 }
+
+/// This operation's modelled 404 `ResourceNotFoundException`.
+fn not_found(message: String) -> InvokeInlineAgentError {
+    InvokeInlineAgentError::ResourceNotFoundException(ResourceNotFoundException {
+        message: Some(message),
+    })
+}
+
+/// This operation's modelled 500 `InternalServerException`: a store this emulator should
+/// carry is not on the engine, which is never reported as a client fault.
+fn internal(message: impl Into<String>) -> InvokeInlineAgentError {
+    InvokeInlineAgentError::InternalServerException(InternalServerException {
+        message: Some(message.into()),
+        reason: None,
+    })
+}
+
+/// This operation's modelled 400 `ServiceQuotaExceededException`, answered when a resource
+/// guard of this emulator's store is reached.
+fn quota(message: String) -> InvokeInlineAgentError {
+    InvokeInlineAgentError::ServiceQuotaExceededException(ServiceQuotaExceededException {
+        message: Some(message),
+    })
+}
+
+/// The `InlineAgentResponseStream` member one part of the agent's answer travels under,
+/// which the frame carries as its `:event-type`
+/// (`smithy_query(query="shape",shape="InlineAgentResponseStream")`).
+const CHUNK_EVENT: &str = "chunk";
+
+/// The operation name, which names the IAM action this call is authorized against
+/// (`bedrock:InvokeInlineAgent`). Declared here because this operation has no generated
+/// `impl Operation` to carry a `NAME`.
+const OPERATION_NAME: &str = "InvokeInlineAgent";
+
+/// The member path the model reference travels in, so a refusal about it names the member
+/// the caller actually carried.
+const FOUNDATION_MODEL_MEMBER: &str = "foundationModel";
+
+/// The `AgentCollaboration` value that asks for NO collaboration, which is the only one
+/// this service serves (`smithy_query(query="shape",shape="AgentCollaboration")` ->
+/// DISABLED, SUPERVISOR, SUPERVISOR_ROUTER).
+const COLLABORATION_DISABLED: &str = "DISABLED";
+
+/// The `OrchestrationType` that asks for an orchestration driven by the caller's own
+/// function (`smithy_query(query="shape",shape="OrchestrationType")` -> DEFAULT,
+/// CUSTOM_ORCHESTRATION).
+const CUSTOM_ORCHESTRATION: &str = "CUSTOM_ORCHESTRATION";
 
 /// The `InvokeInlineAgent` operation.
 ///
-/// Owns the shared engine (the constructor seam) and implements
-/// [`smithy_server_runtime::Operation`]. Generic over the engine type `Eng`, so this
-/// crate names no concrete engine type.
+/// Owns the shared engine (the constructor seam). Held by `crate::service` behind an
+/// `EventStreamRoute`, because the generated routing table cannot serve a
+/// `@streaming`-output operation.
 pub struct InvokeInlineAgent<Eng> {
     engine: ::std::sync::Arc<Eng>,
 }
@@ -156,39 +208,270 @@ impl<Eng> InvokeInlineAgent<Eng> {
     }
 }
 
-impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_runtime::Operation
-    for InvokeInlineAgent<Eng>
-{
-    type Input = InvokeInlineAgentInput;
-    type Output = InvokeInlineAgentOutput;
-    type Error = InvokeInlineAgentError;
-
-    const NAME: &'static str = "InvokeInlineAgent";
-    const INPUT_SCHEMA: &'static ::aws_smithy_schema::Schema =
-        super::types::INVOKE_INLINE_AGENT_INPUT_SCHEMA;
-    const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema =
-        super::types::INVOKE_INLINE_AGENT_OUTPUT_SCHEMA;
-    const SUCCESS_STATUS: u16 = 200u16;
-
-    async fn handle(
+impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> InvokeInlineAgent<Eng> {
+    /// The whole request once it has been read: authorize it, resolve the model the agent
+    /// orchestrates with, refuse what cannot be computed, record the turn and frame the
+    /// answer.
+    fn respond(
         &self,
-        input: Self::Input,
-        ctx: &smithy_server_runtime::OperationContext<'_>,
-    ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `InvokeInlineAgent` here — the agent's `completion` event stream —
-        // then delete the SCAFFOLDED marker at the top of this file. Return modeled
-        // failures as `Err(InvokeInlineAgentErrorModeled::Variant(..).into())`.
-        //
-        // Modeled constraints are already refused BEFORE this handler runs, so reaching
-        // here means the input satisfies every one of them: a malformed `foundationModel`,
-        // `instruction` or `sessionId` never gets this far.
-        Err(crate::scaffolded::Scaffolded::not_implemented(
-            "InvokeInlineAgent",
-        ))
+        protocol: &dyn ServerHttpProtocol,
+        input: &InvokeInlineAgentInput,
+        ctx: &OperationContext<'_>,
+    ) -> Result<Response, InvokeInlineAgentError> {
+        // Authorization is decided against the model the agent orchestrates with — the one
+        // resource this call names, and the resource an identity-based policy for
+        // `bedrock:InvokeInlineAgent` can scope to — and before any store is read, so an
+        // unauthorized call is answered the same way whether or not that model exists.
+        let resource = crate::state::target_model::model_resource_arn(ctx, &input.foundation_model);
+        if let Err(denied) = crate::state::authorize(&*self.engine, ctx, OPERATION_NAME, &resource)
+        {
+            return Err(InvokeInlineAgentError::AccessDeniedException(denied));
+        }
+
+        let model_id = inline::resolve_model(
+            &*self.engine,
+            FOUNDATION_MODEL_MEMBER,
+            &input.foundation_model,
+        )
+        .map_err(|refusal| match refusal {
+            inline::OrchestrationRefusal::StoreUnavailable => {
+                internal("the model catalogue is unavailable")
+            }
+            inline::OrchestrationRefusal::InvalidModel(message) => validation(message),
+            inline::OrchestrationRefusal::ModelNotFound(message) => not_found(message),
+        })?;
+
+        // Only once the model has RESOLVED is a leg this service cannot compute refused: a
+        // reference naming no model is refused whatever else the request carries, so
+        // resolution comes first and this is what a caller whose model exists is told.
+        unservable_leg(input)?;
+
+        let served = self.record_turn(input, &model_id)?;
+        let notice = inline::completion_notice(&served);
+        // `streamFinalResponse` is about FRAMING: with it the one answer is delivered in
+        // several chunks, whose concatenation is the same text a single chunk carries.
+        let parts = if streams_final_response(input) {
+            inline::streamed_chunks(&notice)
+        } else {
+            vec![notice]
+        };
+        let mut frames = Vec::new();
+        for part in parts {
+            let frame = frame_event(
+                protocol,
+                CHUNK_EVENT,
+                false,
+                &InlineAgentPayloadPart {
+                    bytes: Some(part.into_bytes()),
+                    // No knowledge base was queried on this path, so there is no retrieved
+                    // source for the chunk to be attributed to.
+                    attribution: None,
+                },
+                &InlineAgentPayloadPart::SCHEMA,
+            )
+            .map_err(|error| {
+                internal(format!(
+                    "the {CHUNK_EVENT} event could not be framed: {error}"
+                ))
+            })?;
+            frames.extend_from_slice(&frame);
+        }
+
+        event_stream_response(
+            protocol,
+            OPERATION_NAME,
+            &InvokeInlineAgentOutput {
+                content_type: crate::state::agent_invocation::RESPONSE_CONTENT_TYPE.to_string(),
+                session_id: served.session_id.clone(),
+            },
+            &InvokeInlineAgentOutput::SCHEMA,
+            frames,
+        )
+        .map_err(|error| internal(format!("the response could not be serialized: {error}")))
     }
+
+    /// Record the served turn in the conversation the request's `sessionId` addresses,
+    /// opening one when this store holds none under that id, and answer the facts of the
+    /// invocation the response reports.
+    ///
+    /// The expiry the clock already owes is materialised FIRST, so an id whose conversation
+    /// has idled out begins a new one — which is what the member documents — and the lookup,
+    /// the write and the ending all happen under ONE hold of the store, so the turn the
+    /// answer reports is the turn this store really holds.
+    fn record_turn(
+        &self,
+        input: &InvokeInlineAgentInput,
+        model_id: &str,
+    ) -> Result<inline::ServedInvocation, InvokeInlineAgentError> {
+        let store = crate::state::service_state(&*self.engine)
+            .ok_or_else(|| internal("the inline agent session store is unavailable"))?;
+        let at = crate::state::now();
+        let mut guard = store.lock();
+        inline::expire_idle_conversations(&mut guard.inline_agent_sessions, at);
+        let sessions = &mut guard.inline_agent_sessions;
+        // A request whose id this store holds none of OPENS a conversation, so what is
+        // bounded there is the store; a request that continues one is bounded by the turns
+        // that conversation already holds.
+        if !sessions.contains_key(&input.session_id)
+            && sessions.len() >= inline::MAX_INLINE_AGENT_SESSIONS
+        {
+            return Err(quota(
+                crate::state::knowledge_base_session::session_quota_message(
+                    inline::MAX_INLINE_AGENT_SESSIONS,
+                    "inline agent sessions",
+                ),
+            ));
+        }
+        let session = sessions
+            .entry(input.session_id.clone())
+            .or_insert_with(|| {
+                inline::InlineAgentSession::opened(
+                    input.session_id.clone(),
+                    input
+                        .idle_session_ttl_in_seconds
+                        .unwrap_or(inline::DEFAULT_IDLE_SESSION_TTL_SECONDS),
+                    input.customer_encryption_key_arn.clone(),
+                    at,
+                )
+            });
+        if session.turns.len() >= inline::MAX_TURNS_PER_INLINE_AGENT_SESSION {
+            return Err(quota(
+                crate::state::knowledge_base_session::session_quota_message(
+                    inline::MAX_TURNS_PER_INLINE_AGENT_SESSION,
+                    "turns in one inline agent session",
+                ),
+            ));
+        }
+        // An inline agent is composed afresh by every request, so the conversation is
+        // maintained under the configuration of its latest turn: a turn that names an idle
+        // lifetime or a key is the one the conversation is kept under from then on.
+        if let Some(ttl) = input.idle_session_ttl_in_seconds {
+            session.idle_ttl_seconds = ttl;
+        }
+        if input.customer_encryption_key_arn.is_some() {
+            session.encryption_key_arn = input.customer_encryption_key_arn.clone();
+        }
+        session.record(inline::InlineAgentTurn {
+            input_characters: input
+                .input_text
+                .as_deref()
+                .unwrap_or_default()
+                .chars()
+                .count(),
+            model_id: model_id.to_string(),
+            at,
+        });
+        let turn = session.turns.len();
+        let session_ended = input.end_session == Some(true);
+        if session_ended {
+            // Ending the session releases the conversation, so a later request under the
+            // same id begins a new one.
+            sessions.remove(&input.session_id);
+        }
+        Ok(inline::ServedInvocation {
+            session_id: input.session_id.clone(),
+            model_id: model_id.to_string(),
+            agent_name: input.agent_name.clone(),
+            turn,
+            action_groups: input.action_groups.as_ref().map_or(0, Vec::len),
+            knowledge_bases: input.knowledge_bases.as_ref().map_or(0, Vec::len),
+            session_ended,
+            trace_requested: input.enable_trace == Some(true),
+        })
+    }
+}
+
+/// Whether the request asked for the final response to be STREAMED, which is the one thing
+/// `streamingConfigurations` decides here: "Specifies whether to enable streaming for the
+/// final response. This is set to `false` by default"
+/// (`smithy_query(query="shape",shape="StreamingConfigurations")`).
+fn streams_final_response(input: &InvokeInlineAgentInput) -> bool {
+    input
+        .streaming_configurations
+        .as_ref()
+        .is_some_and(|streaming| streaming.stream_final_response)
+}
+
+/// The first leg of the request this service cannot compute, as the sentence the modelled
+/// `ValidationException` states. See the module docs for why each one is refused.
+fn unservable_leg(input: &InvokeInlineAgentInput) -> Result<(), InvokeInlineAgentError> {
+    if input.guardrail_configuration.is_some() {
+        return Err(validation(
+            "guardrailConfiguration: it names the guardrail the invocation is governed by, \
+             and this service evaluates no guardrail policy, so neither an intervention nor \
+             its absence can be reported; omit guardrailConfiguration to take the answer \
+             ungoverned",
+        ));
+    }
+    if input
+        .streaming_configurations
+        .as_ref()
+        .is_some_and(|streaming| streaming.apply_guardrail_interval.is_some())
+    {
+        return Err(validation(
+            "streamingConfigurations.applyGuardrailInterval: it is how often a guardrail is \
+             applied while the response is generated, and this service evaluates no \
+             guardrail policy, so neither an intervention nor its absence can be reported; \
+             omit it to take the response ungoverned",
+        ));
+    }
+    if input.prompt_override_configuration.is_some() {
+        return Err(validation(
+            "promptOverrideConfiguration: it replaces the prompt templates of the agent \
+             sequence, and no prompt is read in this emulator, so an override cannot change \
+             what this invocation answers; omit it",
+        ));
+    }
+    if input.prompt_creation_configurations.is_some() {
+        return Err(validation(
+            "promptCreationConfigurations: it selects which of the session's earlier turns \
+             populate the agent prompt, and no prompt is read in this emulator, so the \
+             selection cannot change what this invocation answers; omit it",
+        ));
+    }
+    if input.inline_session_state.is_some() {
+        return Err(validation(
+            "inlineSessionState: its attributes replace the placeholders of a prompt nothing \
+             reads here, its returnControlInvocationResults answer an action-group \
+             invocation whose invocationId must match one an earlier InvokeInlineAgent \
+             response returned and this service returns control for no action, and its files \
+             are read by a code interpreter nothing runs; omit inlineSessionState to invoke \
+             the inline agent with the request's own inputText",
+        ));
+    }
+    if input.collaborators.is_some() || input.collaborator_configurations.is_some() {
+        return Err(validation(
+            "collaborators and collaboratorConfigurations: each names another agent this \
+             invocation would hand work to, and nothing here orchestrates a collaboration, \
+             so no collaborator is invoked and its answer cannot be part of this one; omit \
+             both to invoke the inline agent alone",
+        ));
+    }
+    if input
+        .agent_collaboration
+        .as_deref()
+        .is_some_and(|collaboration| collaboration != COLLABORATION_DISABLED)
+    {
+        return Err(validation(format!(
+            "agentCollaboration: it is how a supervisor agent coordinates the answers of its \
+             collaborators, and nothing here orchestrates a collaboration; \
+             {COLLABORATION_DISABLED} is the only value this service serves"
+        )));
+    }
+    if input.custom_orchestration.is_some()
+        || input
+            .orchestration_type
+            .as_deref()
+            .is_some_and(|orchestration| orchestration == CUSTOM_ORCHESTRATION)
+    {
+        return Err(validation(format!(
+            "customOrchestration and orchestrationType: {CUSTOM_ORCHESTRATION} drives the \
+             agent from the function customOrchestration names, and this emulator invokes \
+             no such function, so the orchestration it defines never runs; omit both to \
+             invoke the inline agent with the default orchestration"
+        )));
+    }
+    Ok(())
 }
 
 /// The literal first segment of this operation's modelled URI, `POST /agents/{sessionId}`.
@@ -220,13 +503,10 @@ pub fn addresses(req: &Request) -> bool {
 /// a `@streaming`-output operation declines the request (it cannot drive
 /// `serialize_as_event_stream<P>` through an object-safe `run`).
 ///
-/// What is served is the REQUEST half: the model's own constraints over this operation's own
-/// input, through the framework's deserializer and constraint walk
-/// (`service_common::validation::refusing_violations`), refused in this service's own
-/// wording (`Service::override_refusal`, so a refusal here reads exactly like one from a
-/// non-streaming operation of the same service). A request that satisfies the model reaches
-/// the part that is NOT written — the `completion` event stream — and gets the scaffold's
-/// 501, the same answer every other unimplemented operation of this service gives.
+/// The request half is the model's own: the framework's deserializer and constraint walk
+/// over THIS operation's input, refused in this service's own wording
+/// (`Service::override_refusal`), so a malformed URI label or body member is refused exactly
+/// as one from a non-streaming operation of the same service.
 impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> EventStreamOperation
     for InvokeInlineAgent<Eng>
 {
@@ -237,26 +517,32 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> EventStreamOperat
         ctx: &'r OperationContext<'r>,
     ) -> BoxFuture<'r, Response> {
         Box::pin(async move {
-            let _ = ctx;
             let definition = svc.definition();
-            let violations = service_common::validation::refusing_violations::<Self>(
-                definition.protocol(),
+            let protocol = definition.protocol();
+            let input = match read_request::<InvokeInlineAgentInput>(
+                protocol,
                 req,
-            );
-            if !violations.is_empty() {
-                let chosen = svc.override_refusal(&Refusal::Invalid(violations.clone()));
-                return definition.refusal_response(
-                    ProtocolError::Invalid(violations),
-                    chosen,
-                    req,
-                );
+                &InvokeInlineAgentInput::SCHEMA,
+            ) {
+                Ok(input) => input,
+                Err(RequestRefusal::Invalid(violations)) => {
+                    let chosen = svc.override_refusal(&Refusal::Invalid(violations.clone()));
+                    return definition.refusal_response(
+                        ProtocolError::Invalid(violations),
+                        chosen,
+                        req,
+                    );
+                }
+                // A body the protocol's codec could not parse has no violation form, so
+                // the reader's own sentence is what the modelled 400 carries.
+                Err(RequestRefusal::Unreadable(message)) => {
+                    return error_response(protocol, &validation(message))
+                }
+            };
+            match self.respond(protocol, &input, ctx) {
+                Ok(response) => response,
+                Err(error) => error_response(protocol, &error),
             }
-            service_common::event_stream::error_response(
-                definition.protocol(),
-                &crate::scaffolded::Scaffolded::<InvokeInlineAgentErrorModeled>::not_implemented(
-                    "InvokeInlineAgent",
-                ),
-            )
         })
     }
 }

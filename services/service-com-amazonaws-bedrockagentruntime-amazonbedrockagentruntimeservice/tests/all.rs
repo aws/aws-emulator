@@ -21,6 +21,8 @@ mod collection_length_refusals;
 mod date_time_wire_form;
 #[path = "all/document_content.rs"]
 mod document_content;
+#[path = "all/inline_agent_invocations.rs"]
+mod inline_agent_invocations;
 #[path = "all/invocations.rs"]
 mod invocations;
 #[path = "all/knowledge_base_retrieval.rs"]

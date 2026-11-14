@@ -229,6 +229,42 @@ impl ComAmazonawsBedrockruntimeAmazonbedrockfrontendserviceState {
         }
     }
 
+    /// Resolve a `modelId` for a call that NAMES a model without invoking it.
+    ///
+    /// The identifier is interpreted BEFORE the inventory is consulted, exactly as
+    /// [`Self::resolve_model_for_inference`] describes, and the two failures are
+    /// classified the same way — so a caller that only has to know WHICH model an
+    /// identifier names states one refusal per class with the rest of the service.
+    /// What it does not decide is the model's LIFECYCLE: "a model id stays a
+    /// recognised identifier after its model reaches end of life", and whether a
+    /// model still serves inference is a fact of an inference call, so a caller
+    /// that runs none takes the entry the catalogue holds whatever its lifecycle.
+    pub fn recognise_model(&self, model_id: &str) -> Result<&ModelEntry, ModelRejection> {
+        let (key, named_by_arn) = match interpret_model_id(model_id) {
+            ModelIdentifier::BaseModel { key, named_by_arn } => (key, named_by_arn),
+            // A well-formed ARN of an account-scoped resource: a custom model, a
+            // provisioned throughput, an imported model, a custom-model
+            // deployment, a prompt, a prompt router or a SageMaker endpoint.
+            // This emulator holds no such resource, so the ARN names one that
+            // does not exist.
+            ModelIdentifier::AccountResource => {
+                return Err(ModelRejection::NotFound(format!(
+                    "Could not resolve the resource named by the provided model identifier: \
+                     {model_id}"
+                )))
+            }
+        };
+        match self.models.get(key.as_str()) {
+            Some(entry) => Ok(entry),
+            None if named_by_arn => Err(ModelRejection::NotFound(format!(
+                "Could not resolve the model named by the provided model identifier: {model_id}"
+            ))),
+            None => Err(ModelRejection::Invalid(
+                INVALID_MODEL_IDENTIFIER_MESSAGE.to_string(),
+            )),
+        }
+    }
+
     /// Resolve a `modelId` for a call that is about to run inference against it.
     ///
     /// The identifier is interpreted BEFORE the inventory is consulted, because
@@ -247,33 +283,16 @@ impl ComAmazonawsBedrockruntimeAmazonbedrockfrontendserviceState {
     /// Keeping the two apart is what lets an SDK classify the failure: 400 is a
     /// non-retryable client fault, while 404 is routinely retried as
     /// eventual consistency.
+    ///
+    /// Which model an identifier names is [`Self::recognise_model`]'s; what this
+    /// adds is the one refusal inference owes beyond it — a model past its end of
+    /// life serves none.
     pub fn resolve_model_for_inference(&self, model_id: &str) -> Result<&ModelEntry, ModelRejection> {
-        let (key, named_by_arn) = match interpret_model_id(model_id) {
-            ModelIdentifier::BaseModel { key, named_by_arn } => (key, named_by_arn),
-            // A well-formed ARN of an account-scoped resource: a custom model, a
-            // provisioned throughput, an imported model, a custom-model
-            // deployment, a prompt, a prompt router or a SageMaker endpoint.
-            // This emulator holds no such resource, so the ARN names one that
-            // does not exist.
-            ModelIdentifier::AccountResource => {
-                return Err(ModelRejection::NotFound(format!(
-                    "Could not resolve the resource named by the provided model identifier: \
-                     {model_id}"
-                )))
-            }
-        };
-        match self.models.get(key.as_str()) {
-            Some(entry) if entry.lifecycle == ModelLifecycle::EndOfLife => {
-                Err(ModelRejection::NotFound(END_OF_LIFE_MESSAGE.to_string()))
-            }
-            Some(entry) => Ok(entry),
-            None if named_by_arn => Err(ModelRejection::NotFound(format!(
-                "Could not resolve the model named by the provided model identifier: {model_id}"
-            ))),
-            None => Err(ModelRejection::Invalid(
-                INVALID_MODEL_IDENTIFIER_MESSAGE.to_string(),
-            )),
+        let entry = self.recognise_model(model_id)?;
+        if entry.lifecycle == ModelLifecycle::EndOfLife {
+            return Err(ModelRejection::NotFound(END_OF_LIFE_MESSAGE.to_string()));
         }
+        Ok(entry)
     }
 
     /// The next async-invoke id: 12 lowercase alphanumeric characters, as the

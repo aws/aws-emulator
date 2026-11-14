@@ -170,8 +170,10 @@ fn invalid_model_id(detail: &str) -> String {
 const VALIDATION_FAILED: &str =
     "Input validation failed. Check your request parameters and retry the request.";
 
-/// The resource an identity-based policy for `bedrock:OptimizePrompt` names: the model the
-/// prompt is optimized for.
+/// The resource an identity-based policy for a `bedrock:` action on a MODEL names: the
+/// model the call is made against — the model a prompt is optimized for
+/// (`bedrock:OptimizePrompt`), and the model an inline agent orchestrates with
+/// (`bedrock:InvokeInlineAgent`, `crate::ops::invoke_inline_agent`).
 ///
 /// An identifier that is already an ARN IS that resource; a bare model id names the
 /// foundation model of that id in the region the caller signed for, built by the data

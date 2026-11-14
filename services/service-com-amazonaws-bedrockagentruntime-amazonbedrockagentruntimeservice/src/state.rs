@@ -37,6 +37,11 @@
 //!   which IS this service's own store: the turns one caller has taken against a knowledge
 //!   base, under a `sessionId` only this service mints.
 //!
+//! The INLINE agent of [`inline_agent`] is composed by the request rather than stored, so
+//! that submodule holds the two things such an invocation really reads and writes: the
+//! model it orchestrates with, read in the plane that owns the catalogue, and the
+//! conversation the caller's own `sessionId` addresses.
+//!
 //! The MEMORY of an agent alias is this plane's own ([`agent_memory`]): the summaries of
 //! the sessions an alias held live in the store below, while the agent and the alias they
 //! belong to are the build-time plane's, so that submodule is where both memory
@@ -56,6 +61,9 @@ pub mod flow_invocation;
 /// See the module docs: the response a knowledge-base query is answered with, and the
 /// model it is generated against.
 pub mod generated_answer;
+/// See the module docs: the model an INLINE agent is composed against, the conversation its
+/// `sessionId` addresses, and what its response stream says.
+pub mod inline_agent;
 /// See the module docs: what a knowledge-base retrieval may report.
 pub mod knowledge_base_retrieval;
 /// See the module docs: the conversational session a knowledge-base query is served in.
@@ -230,6 +238,11 @@ pub struct ComAmazonawsBedrockagentruntimeAmazonbedrockagentruntimeserviceState 
     /// `sessionId` this service minted for it. See [`knowledge_base_session`] for what a
     /// session holds and why a caller can only continue one it was handed.
     pub knowledge_base_sessions: BTreeMap<String, knowledge_base_session::KnowledgeBaseSession>,
+    /// Every conversation an `InvokeInlineAgent` has opened, keyed by the `sessionId` the
+    /// CALLER chose for it — an inline agent is composed by the request, so the id is the
+    /// caller's. See [`inline_agent`] for what a conversation holds, and for the three rules
+    /// that open, continue and release one.
+    pub inline_agent_sessions: BTreeMap<String, inline_agent::InlineAgentSession>,
     /// Monotonic counter handing out [`InvocationStepRecord::order`] values.
     pub order_counter: u64,
     /// The secret the addresses this service hands out for the content of an ingested

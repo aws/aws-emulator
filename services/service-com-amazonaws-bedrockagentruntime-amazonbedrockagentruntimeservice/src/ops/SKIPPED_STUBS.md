@@ -27,14 +27,16 @@ handler returns an error, so it never has to construct a value.
 
 ## Hand-authored since
 
-`InvokeInlineAgent` is now written by hand in `ops/invoke_inline_agent.rs`, with the
-request half of its shapes in `ops/types/invoke_inline_agent_types.rs` and the
-`completion` event stream in that file's `unsupported = [..]` list. `src/service.rs`
-routes a request to it through `Service::override_operation` behind
-`service_common::event_stream::EventStreamRoute`, because the GENERATED
-`ErasedOperation` shim of a `@streaming`-output operation declines the request. So its
-own input is validated against the model, and the response stream — the part nobody has
-written — answers the scaffold's 501.
+`InvokeInlineAgent` is now written by hand in `ops/invoke_inline_agent.rs`, with its shapes
+in `ops/types/invoke_inline_agent_types.rs` and the `completion` event stream in that file's
+`unsupported = [..]` list. `src/service.rs` routes a request to it through
+`Service::override_operation` behind `service_common::event_stream::EventStreamRoute`,
+because the GENERATED `ErasedOperation` shim of a `@streaming`-output operation declines the
+request. It is IMPLEMENTED: its request is validated against the model, the model the inline
+agent orchestrates with is resolved in the plane that owns the catalogue, the conversation
+its `sessionId` addresses is this plane's own store, and its answer is the
+`InlineAgentResponseStream`'s `chunk` event, framed through
+`service_common::event_stream::frame_event`.
 
 `OptimizePrompt` is written by hand in `ops/optimize_prompt.rs`, with its shapes in
 `ops/types/optimize_prompt_types.rs`, and is routed the same way. It is IMPLEMENTED:
@@ -46,8 +48,8 @@ its request is validated against the model and its answer is the
 written by hand too — `ops/invoke_agent.rs`, `ops/invoke_flow.rs`,
 `ops/agentic_retrieve_stream.rs` and `ops/retrieve_and_generate_stream.rs`, with their
 shapes in the `_types` module beside each — and routed the same way. All four are
-IMPLEMENTED. Only `InvokeInlineAgent` still answers the scaffold's 501, for the response
-stream nobody has written.
+IMPLEMENTED, so every streaming operation of this service is now served by a real
+handler.
 
 Note that an operation listed above is unwired only until a file exists for it in
 `ops/`: `build.rs` scans `src/ops/*.rs` and puts every `//! @op <Name>` header it finds in
