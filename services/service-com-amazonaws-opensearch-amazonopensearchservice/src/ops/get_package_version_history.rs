@@ -211,9 +211,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         store.settle_packages(now);
 
         // "The unique identifier of the package": the history belongs to the package
-        // the request names, so an id this account holds no package under names no
-        // history — refused as the bad input value it is rather than as an empty page.
-        let package = store.packages.get(&input.package_id).ok_or_else(|| {
+        // the request names, resolved among the packages visible to this account — the
+        // ones the SERVICE publishes beside the ones the account created — so an id
+        // neither set holds names no history and is refused as the bad input value it
+        // is rather than as an empty page.
+        let package = store.visible_package(&input.package_id).ok_or_else(|| {
             GetPackageVersionHistoryErrorModeled::ValidationException(package_not_found())
         })?;
 

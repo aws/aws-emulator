@@ -77,7 +77,12 @@ async fn update(emulator: &Emulator, package_id: &str, case: &str) {
     );
 }
 
-/// The packages `DescribePackages` reports, which is the stored set of the account.
+/// The packages `DescribePackages` reports for THIS ACCOUNT, which is its stored set.
+///
+/// The listing reports "all packages available to Amazon OpenSearch Service" — the
+/// plugin packages the SERVICE publishes beside the ones the account created — and a
+/// published package is owned by its publisher rather than by the account, so the
+/// stored set is the listing narrowed by `PackageOwner`.
 async fn described(emulator: &Emulator, case: &str) -> Vec<Value> {
     let answer = emulator
         .call(
@@ -99,7 +104,12 @@ async fn described(emulator: &Emulator, case: &str) -> Vec<Value> {
                 answer.body
             )
         })
-        .clone()
+        .iter()
+        .filter(|details| {
+            details["PackageOwner"].as_str() == Some(::engine::emulator_account_id())
+        })
+        .cloned()
+        .collect()
 }
 
 /// The `PackageStatus` the listing reports for `package_id`, or `None` where the

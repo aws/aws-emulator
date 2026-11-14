@@ -27,6 +27,14 @@
 //! plausible and stable; it is not a transcription of what the service offers
 //! today. What the operations guarantee is the shape and the resolution rule
 //! above, so a row may be added or reworded without changing any of it.
+//!
+//! The SIBLING statement of the same content is
+//! `service-com-amazonaws-opensearch-amazonopensearchservice`'s own
+//! `state/package_catalog.rs`: the current API version of this service publishes the
+//! same plugin catalog through its larger `PackageDetails` shape (per engine release,
+//! with the plugin's properties and the package's configuration), so the two tables
+//! are two projections of one catalog and an edit to the plugins one of them names
+//! belongs in both.
 
 use std::time::{Duration, SystemTime};
 

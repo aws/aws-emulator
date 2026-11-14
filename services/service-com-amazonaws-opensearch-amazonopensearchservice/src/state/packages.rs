@@ -93,6 +93,13 @@ pub struct PackageVersionRecord {
     /// `PackageVersionHistory$CreatedAt`: "the date and time when the package was
     /// created", for this version of its content.
     pub created_at: SystemTime,
+    /// `PackageVersionHistory$PluginProperties`: "additional information about plugin
+    /// properties if the package is a `ZIP-PLUGIN` package". Absent for a package
+    /// whose plugin descriptor this emulator never read — every package a CALLER
+    /// imports, whose archive is not fetched — and carried by the plugin packages the
+    /// service publishes itself, whose properties the catalog states
+    /// ([`PublishedPackage`]).
+    pub plugin_properties: Option<PluginProperties>,
     /// `PackageVersionHistory$PackageConfiguration`: the configuration stored with
     /// this version of the content, absent where the import carried none.
     pub configuration: Option<PackageConfiguration>,
@@ -116,11 +123,13 @@ impl PackageVersionRecord {
             package_version: Some(self.version.to_string()),
             commit_message: self.commit_message.clone(),
             created_at: Some(datetime(self.created_at)),
-            // The plugin's name, class and uncompressed size are read out of the
-            // descriptor inside the plugin's own archive, which this emulator does not
-            // fetch, so they stay absent rather than being invented — exactly as
+            // The plugin's name, class and uncompressed size are the ones recorded for
+            // this version: the catalog states them for a package the SERVICE
+            // publishes, and a package a caller imported has none, because the
+            // descriptor inside its archive is not fetched — so they stay absent there
+            // rather than being invented, exactly as
             // `PackageDetails$AvailablePluginProperties` does in [`Package::to_details`].
-            plugin_properties: None,
+            plugin_properties: self.plugin_properties.clone(),
             package_configuration: self.configuration.clone(),
         }
     }
@@ -171,6 +180,11 @@ pub struct Package {
     /// `PackageDetails$AvailablePackageConfiguration`, absent when the create carried
     /// no configuration.
     pub configuration: Option<PackageConfiguration>,
+    /// `PackageDetails$AvailablePluginProperties`: what the plugin inside a
+    /// `ZIP-PLUGIN` package is. Carried by the plugin packages the service publishes
+    /// itself ([`PublishedPackage`]), whose properties its catalog states, and absent
+    /// for a package a CALLER imported, whose archive this emulator does not fetch.
+    pub plugin_properties: Option<PluginProperties>,
     /// `PackageDetails$PackageVendingOptions`, absent when the create carried none.
     pub vending_options: Option<PackageVendingOptions>,
     /// `PackageDetails$PackageEncryptionOptions`, absent when the create carried
@@ -263,6 +277,10 @@ impl Package {
             commit_message,
             created_at,
             configuration,
+            // A caller's own package carries no plugin descriptor this emulator read,
+            // so its versions report none; the ones the catalog publishes are built
+            // with their properties in place ([`PublishedPackage::record`]).
+            plugin_properties: None,
             content,
         });
     }
@@ -301,10 +319,11 @@ impl Package {
             // package is not, so there is nothing to report.
             error_details: None,
             engine_version: self.engine_version.clone(),
-            // The plugin's name, class and uncompressed size are read out of the
-            // descriptor inside the plugin's own archive, which this emulator does not
-            // fetch, so they stay absent rather than being invented.
-            available_plugin_properties: None,
+            // The plugin's name, class and uncompressed size are the catalog's own for
+            // a package the SERVICE publishes; for one a caller imported they are read
+            // out of the descriptor inside the plugin's archive, which this emulator
+            // does not fetch, so they stay absent there rather than being invented.
+            available_plugin_properties: self.plugin_properties.clone(),
             available_package_configuration: self.configuration.clone(),
             // "Lists the accounts that the package was shared with": reported only
             // once the package has been shared with one.

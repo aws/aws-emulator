@@ -243,6 +243,8 @@ mod published_catalog_order;
 mod published_domain_address;
 #[path = "all/published_instance_type_value_set.rs"]
 mod published_instance_type_value_set;
+#[path = "all/published_package_catalog.rs"]
+mod published_package_catalog;
 #[path = "all/reference_catalogs.rs"]
 mod reference_catalogs;
 #[path = "all/reserved_instance_offerings.rs"]

@@ -260,15 +260,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let end = start.saturating_add(page_size).min(associations.len());
 
         // Each association is reported through the package it links to, which is where
-        // the package's own name and type live: the ONE stored package record, so a
-        // package operation and this listing cannot report the same package
-        // differently. An association whose package is no longer stored names no
-        // package to report, so it is left out rather than reported half-empty.
+        // the package's own name and type live: the ONE record of that package —
+        // whether the account created it or the SERVICE publishes it — so a package
+        // operation and this listing cannot report the same package differently. An
+        // association whose package is no longer visible names no package to report,
+        // so it is left out rather than reported half-empty.
         let page: Vec<DomainPackageDetails> = associations[start..end]
             .iter()
             .filter_map(|association| {
-                let package = store.packages.get(&association.package_id)?;
-                Some(association.to_details(&input.domain_name, package))
+                let package = store.visible_package(&association.package_id)?;
+                Some(association.to_details(&input.domain_name, &package))
             })
             .collect();
 

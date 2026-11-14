@@ -188,7 +188,13 @@ async fn drive(emulator: &Emulator, op: Op, package_id: &str, live: &str) -> Ans
     }
 }
 
-/// The `PackageID`s `DescribePackages` reports, which is the stored set of the account.
+/// The `PackageID`s `DescribePackages` reports for THIS ACCOUNT, which is its stored
+/// set.
+///
+/// The listing reports "all packages available to Amazon OpenSearch Service" — the
+/// plugin packages the SERVICE publishes beside the ones the account created — and a
+/// published package is owned by its publisher rather than by the account, so the
+/// stored set is the listing narrowed by `PackageOwner`.
 async fn stored_ids(emulator: &Emulator, case: &str) -> Vec<String> {
     let answer = emulator
         .call(
@@ -211,6 +217,9 @@ async fn stored_ids(emulator: &Emulator, case: &str) -> Vec<String> {
             )
         })
         .iter()
+        .filter(|details| {
+            details["PackageOwner"].as_str() == Some(::engine::emulator_account_id())
+        })
         .filter_map(|details| details["PackageID"].as_str().map(str::to_owned))
         .collect()
 }

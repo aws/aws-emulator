@@ -124,13 +124,18 @@ aws-sdk-sns = { version = "1", default-features = false }
 # reads it in the store `service-quotas` answers `GetServiceQuota` from — the way the IAM,
 # Cognito, S3, CloudWatch Logs, KMS and Certificate Manager stores above are read.
 service-com-amazonaws-servicequotas-servicequotasv20190624 = { workspace = true }
+# The digest the id of a package the SERVICE publishes is derived from
+# (`state::published_package_id`): a published package is addressed by a stable,
+# opaque `pkg-<hex>` id, so it is a digest of what the package IS rather than a
+# fresh value, and the maintained implementations state that digest and its hex
+# rendering rather than code written here.
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
-sha2 = { workspace = true }
-hex = { workspace = true }
 # The Amazon SNS and Amazon SQS services, mounted beside this one on ONE shared engine by
 # the alerting suite: a monitor trigger's notification is published to an SNS topic and
 # read back off the SQS queue subscribed to it, so what the suite asserts is where a client

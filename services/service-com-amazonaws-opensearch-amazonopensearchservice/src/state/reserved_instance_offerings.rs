@@ -261,7 +261,7 @@ pub(super) fn reserved_instance_offering(
 
 /// Where one offering sits in the catalog the service PUBLISHES: the instance type it
 /// reserves, in the order the published instance-type catalog lists them
-/// (`OpenSearchPartitionInstanceType`), then the term shortest first, then the payment
+/// ([`published_instance_types`]), then the term shortest first, then the payment
 /// option in the order `ReservedInstancePaymentOption` declares them.
 ///
 /// A price list is published per instance type, so that is the key a page of it is read
@@ -277,7 +277,7 @@ pub(super) fn offering_catalog_rank(offering: &ReservedInstanceOffering) -> (usi
     };
     (
         position(
-            OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES,
+            published_instance_type_order(),
             offering.instance_type.as_deref(),
         ),
         offering.duration,
@@ -288,18 +288,33 @@ pub(super) fn offering_catalog_rank(offering: &ReservedInstanceOffering) -> (usi
     )
 }
 
+/// The published instance-type order ([`published_instance_types`]), derived ONCE.
+///
+/// The order is a function of the catalog table alone, so it is the same on every call:
+/// ranking an offering is a lookup in it rather than a fresh walk of the catalog, which
+/// is what keeps ordering a page of a catalog spanning every instance type, term and
+/// payment option proportional to the page rather than to the catalog per entry.
+fn published_instance_type_order() -> &'static [&'static str] {
+    static ORDER: ::std::sync::OnceLock<Vec<&'static str>> = ::std::sync::OnceLock::new();
+    ORDER.get_or_init(published_instance_types)
+}
+
 /// The whole offering catalog, keyed by `ReservedInstanceOfferingId`.
 ///
 /// Reserved Instance offerings are published BY the service for a Region, not created
 /// by a caller, so the catalog is seeded with the state rather than grown by an
 /// operation: it is what `DescribeReservedInstanceOfferings` reports and what a
 /// purchase resolves an offering id against. It spans one entry per instance type the
-/// model's `OpenSearchPartitionInstanceType` enum declares — the only published record
-/// of which instance types exist — times each term in [`RESERVED_INSTANCE_TERMS`] and
-/// each value of `ReservedInstancePaymentOption`, so it is bounded and complete.
+/// service PUBLISHES ([`published_instance_types`] — the one record of which instance
+/// types exist, which carries the current generations the checked-in
+/// `OpenSearchPartitionInstanceType` value set, an older snapshot of the same catalog,
+/// does not list) times each term in [`RESERVED_INSTANCE_TERMS`] and each value of
+/// `ReservedInstancePaymentOption`, so it is bounded and complete: an instance type a
+/// client can RUN is one it can reserve, and the two catalogs cannot disagree about
+/// which those are.
 pub(super) fn seed_reserved_instance_offerings() -> BTreeMap<String, ReservedInstanceOffering> {
     let mut catalog = BTreeMap::new();
-    for instance_type in OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES {
+    for instance_type in published_instance_types() {
         for duration in RESERVED_INSTANCE_TERMS {
             for payment_option in RESERVED_INSTANCE_PAYMENT_OPTION_VALUES {
                 let Some(offering) =

@@ -2247,3 +2247,7 @@ mod route53_health_check_string_match;
 // (`lambda_signed_write_to_an_aoss_collection_endpoint` is declared once, in the span above:
 // two landings each appended their own copy here, and a file loaded as a module twice does
 // not compile.)
+// (`cloudformation_metric_stream_filter_update` is declared ONCE, in the sorted block at the
+// and a module declared twice loads the same file twice, which compiles neither.)
+// (`https_front_door_concurrent_pooled_producer` is declared ONCE, further up this tail: it
+// was appended here as well while two branches were landing at once, and a module declared

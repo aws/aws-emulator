@@ -276,6 +276,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             versions: Vec::new(),
             engine_version: input.engine_version,
             configuration: configuration.clone(),
+            // What plugin a caller's `ZIP-PLUGIN` archive carries is read out of the
+            // descriptor inside it, which this emulator does not fetch, so a package a
+            // create imports reports no plugin properties. The plugin packages the
+            // SERVICE publishes carry the ones its catalog states.
+            plugin_properties: None,
             vending_options: input.package_vending_options,
             encryption_options: input.package_encryption_options,
             // Which accounts the package is vended to is set by a later scope update;

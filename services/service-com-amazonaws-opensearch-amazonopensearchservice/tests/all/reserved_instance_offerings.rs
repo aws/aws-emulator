@@ -36,13 +36,11 @@
 use std::collections::BTreeSet;
 
 use serde_json::Value;
-use service_com_amazonaws_opensearch_amazonopensearchservice::ops::types::{
-    OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES, RESERVED_INSTANCE_PAYMENT_OPTION_VALUES,
-};
+use service_com_amazonaws_opensearch_amazonopensearchservice::ops::types::RESERVED_INSTANCE_PAYMENT_OPTION_VALUES;
 use service_com_amazonaws_opensearch_amazonopensearchservice::state::{
-    is_guid, PAYMENT_OPTION_ALL_UPFRONT, PAYMENT_OPTION_NO_UPFRONT, PAYMENT_OPTION_PARTIAL_UPFRONT,
-    RECURRING_CHARGE_HOURLY, RESERVED_INSTANCE_CURRENCY_CODE, RESERVED_INSTANCE_OFFERING_PAGE,
-    RESERVED_INSTANCE_TERMS, TERM_ONE_YEAR, TERM_THREE_YEARS,
+    is_guid, published_instance_types, PAYMENT_OPTION_ALL_UPFRONT, PAYMENT_OPTION_NO_UPFRONT,
+    PAYMENT_OPTION_PARTIAL_UPFRONT, RECURRING_CHARGE_HOURLY, RESERVED_INSTANCE_CURRENCY_CODE,
+    RESERVED_INSTANCE_OFFERING_PAGE, RESERVED_INSTANCE_TERMS, TERM_ONE_YEAR, TERM_THREE_YEARS,
 };
 
 use super::domain_lifecycle::{
@@ -165,10 +163,12 @@ fn find<'a>(
         })
 }
 
-/// How many offerings the catalog publishes: one per instance type the model declares,
-/// times each term, times each payment option.
+/// How many offerings the catalog publishes: one per instance type the SERVICE
+/// publishes — which is the one record of which instance types exist, and carries the
+/// current generations the checked-in modelled value set does not list — times each
+/// term, times each payment option.
 fn expected_catalog_size() -> usize {
-    OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES.len()
+    published_instance_types().len()
         * RESERVED_INSTANCE_TERMS.len()
         * RESERVED_INSTANCE_PAYMENT_OPTION_VALUES.len()
 }
@@ -197,8 +197,9 @@ async fn catalog_spans_every_instance_type_term_and_payment_option() {
         let case = format!("{instance_type} / {duration}s / {payment_option}");
 
         assert!(
-            OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES.contains(&instance_type.as_str()),
-            "case {case}: InstanceType is a value of the modelled enum, got {instance_type}"
+            published_instance_types().contains(&instance_type.as_str()),
+            "case {case}: InstanceType is an instance type the service publishes, got \
+             {instance_type}"
         );
         assert!(
             RESERVED_INSTANCE_TERMS.contains(&i32::try_from(duration).unwrap_or_default()),
@@ -284,14 +285,14 @@ async fn catalog_spans_every_instance_type_term_and_payment_option() {
         }
     }
 
-    // Every triple the model allows is published, not merely as many offerings as
-    // there are triples.
-    for instance_type in OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES {
+    // Every triple the published catalog allows is offered, not merely as many
+    // offerings as there are triples.
+    for instance_type in published_instance_types() {
         for duration in RESERVED_INSTANCE_TERMS {
             for payment_option in RESERVED_INSTANCE_PAYMENT_OPTION_VALUES {
                 assert!(
                     keys.contains(&(
-                        (*instance_type).to_string(),
+                        instance_type.to_string(),
                         i64::from(duration),
                         (*payment_option).to_string()
                     )),

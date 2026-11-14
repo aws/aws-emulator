@@ -222,13 +222,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // has fallen due is reported in the status it is then in.
         store.settle_packages(now);
 
-        // Order-stable, because the store is keyed by package id: the same request
+        // Order-stable, because the merged set is keyed by package id: the same request
         // reports the same order twice, which is what lets a token name a place in the
-        // set. Bounded by the store itself — [`crate::state::PACKAGE_QUOTA`] — rather
-        // than unbounded.
-        let matching: Vec<&Package> = store
-            .packages
-            .values()
+        // set. It is every package available to this account — the plugin packages the
+        // SERVICE publishes beside the ones the account created — bounded by the
+        // published catalog and by the store itself
+        // ([`crate::state::PACKAGE_QUOTA`]) rather than unbounded.
+        let visible = store.visible_packages();
+        let matching: Vec<&Package> = visible
+            .iter()
             .filter(|package| matches_every_filter(package, &filters))
             .collect();
 

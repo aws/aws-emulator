@@ -147,6 +147,9 @@ mod indexes;
 mod snapshots;
 /// A package of this account and its association with a domain.
 mod packages;
+/// The plugin packages the service itself publishes, which every account reads beside
+/// its own.
+mod package_catalog;
 
 /// Which instance types an engine version offers, what each can be scaled to, and the
 /// domain configurations that catalog refuses.
@@ -167,6 +170,7 @@ pub use capabilities::*;
 pub use domains::*;
 pub use indexes::*;
 pub use instance_types::*;
+pub use package_catalog::*;
 pub use packages::*;
 pub use projections::*;
 pub use refusals::*;
@@ -216,7 +220,7 @@ use crate::ops::types::{
     OffPeakWindowOptionsStatus, OptionStatus, OutboundConnection, OutboundConnectionStatus,
     PackageAssociationConfiguration, PackageConfiguration, PackageDetails,
     PackageEncryptionOptions, PackageSource,
-    PackageVendingOptions, PackageVersionHistory,
+    PackageVendingOptions, PackageVersionHistory, PluginProperties,
     RecurringCharge, ReservedInstance,
     ReservedInstanceOffering, ResourceAlreadyExistsException, ResourceNotFoundException,
     RollbackServiceSoftwareOptions, SAMLOptionsOutput, ScheduledAction,

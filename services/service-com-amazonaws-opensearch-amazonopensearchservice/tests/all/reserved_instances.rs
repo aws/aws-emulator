@@ -35,13 +35,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{json, Value};
-use service_com_amazonaws_opensearch_amazonopensearchservice::ops::types::{
-    OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES, RESERVED_INSTANCE_PAYMENT_OPTION_VALUES,
-};
+use service_com_amazonaws_opensearch_amazonopensearchservice::ops::types::RESERVED_INSTANCE_PAYMENT_OPTION_VALUES;
 use service_com_amazonaws_opensearch_amazonopensearchservice::state::{
-    PAYMENT_OPTION_ALL_UPFRONT, PAYMENT_OPTION_NO_UPFRONT, PAYMENT_OPTION_PARTIAL_UPFRONT,
-    RECURRING_CHARGE_HOURLY, RESERVATION_STATE_ACTIVE, RESERVATION_STATE_PAYMENT_PENDING,
-    RESERVED_INSTANCE_CURRENCY_CODE, RESERVED_INSTANCE_QUOTA, RESERVED_INSTANCE_TERMS,
+    published_instance_types, PAYMENT_OPTION_ALL_UPFRONT, PAYMENT_OPTION_NO_UPFRONT,
+    PAYMENT_OPTION_PARTIAL_UPFRONT, RECURRING_CHARGE_HOURLY, RESERVATION_STATE_ACTIVE,
+    RESERVATION_STATE_PAYMENT_PENDING, RESERVED_INSTANCE_CURRENCY_CODE, RESERVED_INSTANCE_QUOTA,
+    RESERVED_INSTANCE_TERMS,
 };
 
 use super::domain_lifecycle::{
@@ -265,12 +264,13 @@ async fn the_catalog_carries_one_offering_per_type_term_and_payment_option() {
     let emulator = Emulator::new();
     let catalog = fetch_catalog(&emulator).await;
 
-    // The instance types the catalog prices are `OpenSearchPartitionInstanceType`'s
-    // own values (`smithy_query(query="shape",
-    // shape="OpenSearchPartitionInstanceType")`, re-exported as
-    // `OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES`), so the catalog is checked
-    // against the model's list rather than against a list written beside it.
-    for instance_type in OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES {
+    // The instance types the catalog prices are the ones the SERVICE publishes
+    // (`published_instance_types`, the one record of which instance types exist — it
+    // carries the current generations the checked-in
+    // `OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES` snapshot does not list), so the
+    // catalog is checked against that catalog rather than against a list written
+    // beside it.
+    for instance_type in published_instance_types() {
         let case = format!("instance type {instance_type}");
         for duration in RESERVED_INSTANCE_TERMS {
             for payment_option in RESERVED_INSTANCE_PAYMENT_OPTION_VALUES {
@@ -325,7 +325,7 @@ async fn the_catalog_carries_one_offering_per_type_term_and_payment_option() {
 
     assert_eq!(
         catalog.len(),
-        OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES.len()
+        published_instance_types().len()
             * RESERVED_INSTANCE_TERMS.len()
             * RESERVED_INSTANCE_PAYMENT_OPTION_VALUES.len(),
         "the catalog holds exactly one offering per type, term and payment option, got {}",

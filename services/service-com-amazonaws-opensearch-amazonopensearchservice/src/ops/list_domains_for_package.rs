@@ -221,23 +221,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // runs.
         //
         // Each association is reported through the package it links to, which is where
-        // the package's own name and type live — the ONE stored package record, so a
-        // package operation and this listing cannot report the same package differently
-        // — so the row carries that record and an id resolving to none selects no row at
-        // all.
+        // the package's own name and type live — the ONE record of that package, whether
+        // the account created it or the SERVICE publishes it, so a package operation and
+        // this listing cannot report the same package differently — so the row carries
+        // that record and an id resolving to none selects no row at all.
         //
         // Order-stable, because the store is keyed by domain name and a domain holds at
         // most ONE association per package: the same request reports the same order
         // twice, which is what lets a token name a place in the set.
-        type Row<'a> = (
-            &'a String,
-            &'a crate::state::PackageAssociation,
-            &'a crate::state::Package,
-        );
-        let associated: Vec<Row<'_>> = store
-            .packages
-            .get(&input.package_id)
-            .map(|package| {
+        let package = store.visible_package(&input.package_id);
+        type Row<'a> = (&'a String, &'a crate::state::PackageAssociation);
+        let associated: Vec<Row<'_>> = package
+            .as_ref()
+            .map(|_| {
                 store
                     .domains
                     .iter()
@@ -245,7 +241,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         domain
                             .package_associations
                             .get(&input.package_id)
-                            .map(|association| (name, association, package))
+                            .map(|association| (name, association))
                     })
                     .collect()
             })
@@ -259,7 +255,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             None => 0,
             Some(token) => associated
                 .iter()
-                .position(|(name, _, _)| *name == token)
+                .position(|(name, _)| *name == token)
                 .ok_or_else(|| {
                     ListDomainsForPackageErrorModeled::ValidationException(invalid_next_token())
                 })?,
@@ -277,7 +273,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let page: Vec<DomainPackageDetails> = associated[start..end]
             .iter()
-            .map(|(name, association, package)| association.to_details(name, package))
+            .filter_map(|(name, association)| {
+                Some(association.to_details(name, package.as_ref()?))
+            })
             .collect();
 
         Ok(ListDomainsForPackageOutput {
@@ -285,7 +283,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // "When nextToken is returned, there are more results available": the token
             // is the domain the next page starts at, and there is none once this page
             // ended the set.
-            next_token: associated.get(end).map(|(name, _, _)| (*name).clone()),
+            next_token: associated.get(end).map(|(name, _)| (*name).clone()),
         })
     }
 }

@@ -899,6 +899,33 @@ impl ComAmazonawsOpensearchAmazonopensearchserviceState {
             .map(|data_source| &mut data_source.tags)
     }
 
+    /// Every package VISIBLE to this account, in `PackageID` order: the plugin
+    /// packages the SERVICE publishes ([`published_packages`]) and the packages this
+    /// account created itself.
+    ///
+    /// This is the set every package READ reports and resolves an id against —
+    /// `DescribePackages` describes "all packages available to Amazon OpenSearch
+    /// Service", not only the ones a caller created. The published entries are
+    /// computed from the read-only catalog table on each call rather than inserted
+    /// into the store, so reporting them writes nothing, and the merged set is ordered
+    /// by package id — the order the store itself keys the account's packages in — so
+    /// two calls report the same order and a pagination token names a place in it.
+    pub fn visible_packages(&self) -> Vec<Package> {
+        let mut visible = published_packages();
+        visible.extend(self.packages.values().cloned());
+        visible.sort_by(|left, right| left.package_id.cmp(&right.package_id));
+        visible
+    }
+
+    /// The visible package carrying `package_id` — one this account created, else one
+    /// the service publishes — and `None` for an id neither set holds.
+    pub fn visible_package(&self, package_id: &str) -> Option<Package> {
+        self.packages
+            .get(package_id)
+            .cloned()
+            .or_else(|| published_package(package_id))
+    }
+
     /// The package `package_name` names, if the account holds one.
     ///
     /// The store is keyed by `PackageID`, but a package NAME is unique across the
@@ -960,9 +987,12 @@ impl ComAmazonawsOpensearchAmazonopensearchserviceState {
             .domains
             .get(domain_name)
             .ok_or_else(|| AssociationRefusal::DomainUnresolved(domain_name.to_string()))?;
+        // Resolved against the packages VISIBLE to this account
+        // ([`Self::visible_package`]): a plugin package the service publishes is
+        // associated with a domain exactly as one the account created is, so an id the
+        // catalog publishes names a package here too.
         let package = self
-            .packages
-            .get(&request.package_id)
+            .visible_package(&request.package_id)
             .ok_or_else(|| AssociationRefusal::Validation(package_not_found()))?;
 
         // A package can be put on a domain only once its content is in place: until
@@ -994,7 +1024,7 @@ impl ComAmazonawsOpensearchAmazonopensearchserviceState {
                     &request.package_id,
                 )));
             }
-            if !self.packages.contains_key(prerequisite) {
+            if self.visible_package(prerequisite).is_none() {
                 return Err(AssociationRefusal::Validation(package_not_found()));
             }
             // A prerequisite "must be linked to the domain before or simultaneously
@@ -1012,7 +1042,7 @@ impl ComAmazonawsOpensearchAmazonopensearchserviceState {
             }
         }
 
-        Ok(package.clone())
+        Ok(package)
     }
 
     /// Make the association `request` asks for on `domain_name` and hand back the
@@ -1098,8 +1128,7 @@ impl ComAmazonawsOpensearchAmazonopensearchserviceState {
             .get(domain_name)
             .ok_or_else(|| AssociationRefusal::DomainUnresolved(domain_name.to_string()))?;
         let package = self
-            .packages
-            .get(package_id)
+            .visible_package(package_id)
             .ok_or_else(|| AssociationRefusal::Validation(package_not_found()))?;
 
         // The service runs one change to a domain's package associations at a time, so
@@ -1126,7 +1155,7 @@ impl ComAmazonawsOpensearchAmazonopensearchserviceState {
             return Err(AssociationRefusal::Validation(package_not_associated()));
         }
 
-        Ok(package.clone())
+        Ok(package)
     }
 
     /// Take the package off `domain_name` and hand back the stored record as
@@ -1175,7 +1204,10 @@ impl ComAmazonawsOpensearchAmazonopensearchserviceState {
     pub fn published_reserved_instance_offerings(&self) -> Vec<&ReservedInstanceOffering> {
         let mut catalog: Vec<&ReservedInstanceOffering> =
             self.reserved_instance_offerings.values().collect();
-        catalog.sort_by_key(|offering| offering_catalog_rank(offering));
+        // Keyed ONCE per offering rather than once per comparison: the catalog spans
+        // every instance type the service publishes times every term times every
+        // payment option, so its order is computed from one pass over it.
+        catalog.sort_by_cached_key(|offering| offering_catalog_rank(offering));
         catalog
     }
 

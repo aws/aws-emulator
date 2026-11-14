@@ -32,11 +32,11 @@
 use serde_json::{json, Value};
 use service_com_amazonaws_opensearch_amazonopensearchservice::ops::types::PACKAGE_TYPE_VALUES;
 use service_com_amazonaws_opensearch_amazonopensearchservice::state::{
-    PACKAGE_ALREADY_IN_DESIRED_STATE, PACKAGE_QUOTA, PACKAGE_STATUS_AVAILABLE,
-    PACKAGE_STATUS_COPYING, PACKAGE_TYPE_ZIP_PLUGIN,
+    published_packages, PACKAGE_ALREADY_IN_DESIRED_STATE, PACKAGE_QUOTA,
+    PACKAGE_STATUS_AVAILABLE, PACKAGE_STATUS_COPYING, PACKAGE_TYPE_ZIP_PLUGIN,
 };
 
-use super::domain_lifecycle::{error_code, Answer, Emulator, PREFIX, SETTLE_WAIT};
+use super::domain_lifecycle::{error_code, poll_until, Answer, Emulator, PREFIX};
 
 /// `CreatePackage`: `POST /2021-01-01/packages`.
 async fn create(emulator: &Emulator, body: Value) -> Answer {
@@ -66,6 +66,42 @@ fn details(answer: &Answer, case: &str) -> Value {
         answer.body
     );
     details.clone()
+}
+
+/// The entries of a listing that are packages of THIS ACCOUNT.
+///
+/// `DescribePackages` reports "all packages available to Amazon OpenSearch Service" —
+/// the plugin packages the SERVICE publishes beside the packages the account created
+/// — and a published package is owned by its publisher, not by the account, so a case
+/// about what a CREATE stored narrows the listing by `PackageOwner`.
+fn account_owned(reported: &[Value]) -> Vec<Value> {
+    reported
+        .iter()
+        .filter(|package| {
+            package["PackageOwner"].as_str() == Some(engine::emulator_account_id())
+        })
+        .cloned()
+        .collect()
+}
+
+/// The names the SERVICE's published catalog reports for one filter field and value,
+/// so a case about a filter expects the account's matching packages AND the published
+/// ones. The mapping from a `DescribePackagesFilterName` to the `PackageDetails`
+/// member it selects on is restated here as the suite's own expectation.
+fn published_matching(field: &str, value: &str) -> Vec<String> {
+    published_packages()
+        .into_iter()
+        .filter(|package| match field {
+            "PackageID" => package.package_id == value,
+            "PackageName" => package.package_name == value,
+            "PackageStatus" => package.status == value,
+            "PackageType" => package.package_type == value,
+            "EngineVersion" => package.engine_version.as_deref() == Some(value),
+            "PackageOwner" => package.owner == value,
+            _ => false,
+        })
+        .map(|package| package.package_name)
+        .collect()
 }
 
 /// The `PackageDetailsList` of a listing, with the case named on failure.
@@ -375,14 +411,23 @@ async fn a_create_mints_one_package_the_listing_then_reports() {
         created.push((id, package));
     }
 
-    // The listing reports EXACTLY the stored set, each record as the create answered
-    // it: the create's answer and a later read cannot disagree.
+    // The listing reports EXACTLY the stored set beside the catalog the service
+    // publishes, each stored record as the create answered it: the create's answer and
+    // a later read cannot disagree.
     let listing = describe(&emulator, json!({})).await;
-    let reported_list = reported(&listing, "DescribePackages(unpaged)");
+    let whole_list = reported(&listing, "DescribePackages(unpaged)");
+    let reported_list = account_owned(&whole_list);
     assert_eq!(
         reported_list.len(),
         created.len(),
         "case DescribePackages(unpaged): expected every created package, got {reported_list:?}"
+    );
+    assert_eq!(
+        whole_list.len(),
+        created.len() + published_packages().len(),
+        "case DescribePackages(unpaged): expected the account's packages beside the \
+         published catalog, got {} entries",
+        whole_list.len()
     );
     for (id, package) in &created {
         let found = reported_list
@@ -420,10 +465,20 @@ async fn a_package_becomes_available_once_the_copy_span_has_passed() {
         ));
     }
 
-    tokio::time::sleep(SETTLE_WAIT).await;
+    // The CONDITION the clock owes, polled rather than waited out: every created
+    // package is reported in the status its copy left it in, however fast the host runs.
+    poll_until("the copies the clock owed have landed", || async {
+        account_owned(&reported(
+            &describe(&emulator, json!({})).await,
+            "DescribePackages(settling)",
+        ))
+        .iter()
+        .all(|package| package["PackageStatus"].as_str() == Some(PACKAGE_STATUS_AVAILABLE))
+    })
+    .await;
 
     let listing = describe(&emulator, json!({})).await;
-    for package in reported(&listing, "DescribePackages(settled)") {
+    for package in account_owned(&reported(&listing, "DescribePackages(settled)")) {
         let id = member(&package, "PackageID", "DescribePackages(settled)");
         let case = format!("DescribePackages(settled {id})");
         assert_eq!(
@@ -671,6 +726,7 @@ async fn the_listing_selects_on_every_modelled_filter_field() {
             .collect();
         names.sort();
         let mut expected = expected;
+        expected.extend(published_matching(field, &value));
         expected.sort();
         assert_eq!(
             names, expected,
@@ -837,7 +893,7 @@ async fn the_package_store_is_bounded() {
 
     let listing = describe(&emulator, json!({ "MaxResults": 100 })).await;
     assert_eq!(
-        reported(&listing, case).len(),
+        account_owned(&reported(&listing, case)).len(),
         PACKAGE_QUOTA,
         "case {case}: the refused create left the stored set at the quota"
     );

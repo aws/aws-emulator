@@ -425,9 +425,7 @@ async fn a_start_activates_the_trigger_and_fires_the_on_demand_ones() {
              {WORKFLOW_RUN_STATUS_COMPLETED}, got {settled}"
         );
         assert!(
-            settled["Run"]
-                .get("ErrorMessage")
-                .is_none_or(Value::is_null),
+            settled["Run"].get("ErrorMessage").is_none_or(Value::is_null),
             "case {case:?}: a run that was started and ran its course reports no error, got \
              {settled}"
         );

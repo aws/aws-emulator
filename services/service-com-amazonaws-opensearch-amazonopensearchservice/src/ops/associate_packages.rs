@@ -218,15 +218,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
-        // Each entry is then read and checked against the store, and the pass refuses at
-        // the first entry it cannot serve. Every entry names a DISTINCT package the
-        // store holds, so the work and the records kept are bounded by the store — a
-        // request naming more than the account holds is refused by the entry that names
-        // a package that does not exist, which is the same refusal the per-package
-        // decision below makes.
+        // Each entry is then read and checked against the packages VISIBLE to this
+        // account — the ones the SERVICE publishes beside the ones the account created
+        // — and the pass refuses at the first entry it cannot serve. Every entry names
+        // a DISTINCT visible package, so the work and the records kept are bounded by
+        // the published catalog and the store: a request naming more than that is
+        // refused by the entry that names a package that does not exist, which is the
+        // same refusal the per-package decision below makes.
         let mut asked: Vec<AssociationRequest> = Vec::new();
         for entry in &input.package_list {
-            if !store.packages.contains_key(&entry.package_id) {
+            if store.visible_package(&entry.package_id).is_none() {
                 return Err(AssociatePackagesErrorModeled::ValidationException(
                     package_not_found(),
                 )

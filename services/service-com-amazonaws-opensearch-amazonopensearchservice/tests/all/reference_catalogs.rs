@@ -33,10 +33,10 @@
 use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
-use service_com_amazonaws_opensearch_amazonopensearchservice::ops::types::{
-    OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES, RESERVED_INSTANCE_PAYMENT_OPTION_VALUES,
+use service_com_amazonaws_opensearch_amazonopensearchservice::ops::types::RESERVED_INSTANCE_PAYMENT_OPTION_VALUES;
+use service_com_amazonaws_opensearch_amazonopensearchservice::state::{
+    published_instance_types, RESERVED_INSTANCE_TERMS,
 };
-use service_com_amazonaws_opensearch_amazonopensearchservice::state::RESERVED_INSTANCE_TERMS;
 
 use super::compatible_versions::{compatible, entries, target_versions};
 use super::domain_lifecycle::{string_member, Emulator, SETTLE_WAIT};
@@ -464,7 +464,7 @@ async fn the_offering_catalog_is_published_in_catalog_order() {
         };
         (
             position(
-                OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES,
+                &published_instance_types(),
                 offering["InstanceType"].as_str(),
             ),
             offering["Duration"].as_i64().unwrap_or_default(),
@@ -482,7 +482,7 @@ async fn the_offering_catalog_is_published_in_catalog_order() {
         .collect();
     terms.sort_unstable();
     let mut expected: Vec<(usize, i64, usize)> = Vec::new();
-    for instance_type in 0..OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES.len() {
+    for instance_type in 0..published_instance_types().len() {
         for duration in &terms {
             for payment_option in 0..RESERVED_INSTANCE_PAYMENT_OPTION_VALUES.len() {
                 expected.push((instance_type, *duration, payment_option));
