@@ -263,6 +263,8 @@ mod s3_table_integration_sources;
 mod scheduled_queries;
 #[path = "all/scheduled_query_configuration_rules.rs"]
 mod scheduled_query_configuration_rules;
+#[path = "all/scheduled_query_default_lookback.rs"]
+mod scheduled_query_default_lookback;
 #[path = "all/scheduled_query_enumeration.rs"]
 mod scheduled_query_enumeration;
 #[path = "all/scheduled_query_history.rs"]

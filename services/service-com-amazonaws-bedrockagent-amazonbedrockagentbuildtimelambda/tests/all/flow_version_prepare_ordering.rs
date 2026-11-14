@@ -9,6 +9,11 @@
 //! arrives — never prepared, prepared and then changed, being prepared, left
 //! `Failed` by a preparation a defect stopped, and prepared — so the rule is
 //! asserted over the whole modelled enum rather than over one recorded status.
+//! A second table takes the same statuses across the two forms the modelled
+//! `FlowIdentifier` admits and across how often the refused cut is repeated,
+//! because what decides the refusal is the addressed flow's stored status and
+//! nothing else: not how the request spelled the identifier, not how many times
+//! it was taken, and not what another flow in the same store stands in.
 //!
 //! Every assertion here goes through the router, so it exercises the real wire
 //! path (route matching, model constraint validation, serialization) rather than
@@ -198,8 +203,23 @@ impl Emulator {
     }
 
     async fn create_flow_version(&self, flow_id: &str) -> Answer {
-        self.call("POST", &format!("/flows/{flow_id}/versions"), Some(json!({})))
+        self.create_flow_version_as(flow_id, json!({})).await
+    }
+
+    /// `CreateFlowVersion` addressed by an already-escaped `@httpLabel`
+    /// identifier, carrying the request body the case sends.
+    async fn create_flow_version_as(&self, identifier: &str, body: Value) -> Answer {
+        self.call("POST", &format!("/flows/{identifier}/versions"), Some(body))
             .await
+    }
+
+    async fn get_flow_version(&self, identifier: &str, version: &str) -> Answer {
+        self.call(
+            "GET",
+            &format!("/flows/{identifier}/versions/{version}/"),
+            None,
+        )
+        .await
     }
 
     async fn list_flow_versions(&self, flow_id: &str) -> Answer {
@@ -229,6 +249,26 @@ impl Emulator {
             .await;
         self.prepare_flow(case, flow_id).await;
         self.settle_preparation(case, flow_id);
+    }
+
+    /// Drive a freshly created flow into the status a row attempts the cut in.
+    async fn drive_into(&self, case: &str, flow_id: &str, drive: Drive) {
+        match drive {
+            Drive::Created => {}
+            Drive::ChangedAfterPreparing => {
+                self.prepare_flow(case, flow_id).await;
+                self.settle_preparation(case, flow_id);
+                self.update_flow(case, flow_id, passthrough_definition())
+                    .await;
+            }
+            Drive::Preparing => {
+                self.prepare_flow(case, flow_id).await;
+            }
+            Drive::PreparationFailed | Drive::Prepared => {
+                self.prepare_flow(case, flow_id).await;
+                self.settle_preparation(case, flow_id);
+            }
+        }
     }
 }
 
@@ -393,23 +433,7 @@ async fn create_flow_version_is_ordered_behind_preparation() {
         let flow = emulator.create_flow(case, definition).await;
         let flow_id = flow.string(&["id"]);
 
-        match drive {
-            Drive::Created => {}
-            Drive::ChangedAfterPreparing => {
-                emulator.prepare_flow(case, &flow_id).await;
-                emulator.settle_preparation(case, &flow_id);
-                emulator
-                    .update_flow(case, &flow_id, passthrough_definition())
-                    .await;
-            }
-            Drive::Preparing => {
-                emulator.prepare_flow(case, &flow_id).await;
-            }
-            Drive::PreparationFailed | Drive::Prepared => {
-                emulator.prepare_flow(case, &flow_id).await;
-                emulator.settle_preparation(case, &flow_id);
-            }
-        }
+        emulator.drive_into(case, &flow_id, *drive).await;
 
         // The status the rule reads is the one the service reports for the flow.
         let read = emulator.get_flow(&flow_id).await;
@@ -542,5 +566,248 @@ async fn the_version_guard_follows_the_flow_through_its_statuses() {
         emulator.list_flow_versions(&flow_id).await.listed_versions(),
         vec!["DRAFT".to_string(), "1".to_string(), "2".to_string()],
         "case {case}: the refusal left the versions already cut exactly as they were"
+    );
+}
+
+/// The `@httpLabel` spelling of a flow identifier: the `:` and `/` an ARN
+/// carries are percent-encoded, which is how a client sends a label holding
+/// them.
+fn escaped(identifier: &str) -> String {
+    identifier.replace(':', "%3A").replace('/', "%2F")
+}
+
+/// How a row addresses the flow it attempts the cut on: the two forms the
+/// modelled `FlowIdentifier` admits (pattern
+/// `^(arn:aws:bedrock:[a-z0-9-]{1,20}:[0-9]{12}:flow/[0-9a-zA-Z]{10})|([0-9a-zA-Z]{10})$`).
+/// Both name the same stored flow, so both are answered by that flow's status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Address {
+    /// The bare `flowId`.
+    BareId,
+    /// The flow's own ARN, as the create reported it.
+    Arn,
+}
+
+impl Address {
+    /// The `@httpLabel` value this form sends for the created flow.
+    fn label(self, flow: &Answer) -> String {
+        match self {
+            Self::BareId => flow.string(&["id"]),
+            Self::Arn => escaped(&flow.string(&["arn"])),
+        }
+    }
+}
+
+/// An idempotency token shaped as the modelled `ClientToken` (len 33..256,
+/// pattern `^[a-zA-Z0-9](-*[a-zA-Z0-9]){0,256}$`).
+const CLIENT_TOKEN: &str = "prepare-ordering-refusal-token-0001";
+
+/// The rows of [`STATUS_CASES`] a cut is refused in: every modelled
+/// `FlowStatus` other than `Prepared`, with the token the service reports for a
+/// flow driven into it.
+const REFUSING_STATUSES: &[(&str, Drive, &str)] = &[
+    ("never prepared", Drive::Created, "NotPrepared"),
+    (
+        "changed after it was prepared",
+        Drive::ChangedAfterPreparing,
+        "NotPrepared",
+    ),
+    ("preparation in flight", Drive::Preparing, "Preparing"),
+    (
+        "preparation a cyclic definition failed",
+        Drive::PreparationFailed,
+        "Failed",
+    ),
+];
+
+/// How many times a row takes the refused cut before the flow is prepared: a
+/// refusal that writes nothing writes nothing however often it is repeated.
+const ATTEMPTS: &[u32] = &[1, 3];
+
+/// The rule across the inputs it generalises over: the refusal is decided by
+/// the ADDRESSED flow's stored status, so it is the same whichever admitted
+/// identifier form names the flow and however often the cut is attempted — and
+/// it writes nothing, which the cut served after the flow reaches `Prepared`
+/// proves by being version 1, by replaying the token the refused calls carried,
+/// and by being the first version `GetFlowVersion` can read at all.
+#[tokio::test]
+async fn the_refused_cut_is_decided_by_the_addressed_flow_and_writes_nothing() {
+    for (status_case, drive, expected_status) in REFUSING_STATUSES {
+        for address in [Address::BareId, Address::Arn] {
+            for attempts in ATTEMPTS {
+                let case =
+                    format!("{status_case}, addressed by {address:?}, refused {attempts} time(s)");
+                let case = case.as_str();
+                let emulator = Emulator::new();
+                let definition = if *drive == Drive::PreparationFailed {
+                    cyclic_definition()
+                } else {
+                    passthrough_definition()
+                };
+                let flow = emulator.create_flow(case, definition).await;
+                let flow_id = flow.string(&["id"]);
+                let label = address.label(&flow);
+                emulator.drive_into(case, &flow_id, *drive).await;
+
+                // The status the rule reads is the one the service reports.
+                let read = emulator.get_flow(&flow_id).await;
+                assert_eq!(
+                    read.string(&["status"]),
+                    *expected_status,
+                    "case {case}: expected the flow to stand in {expected_status}, got {read:?}"
+                );
+
+                for attempt in 1..=*attempts {
+                    let refused = emulator
+                        .create_flow_version_as(&label, json!({ "clientToken": CLIENT_TOKEN }))
+                        .await;
+                    assert_eq!(
+                        refused.status, 409,
+                        "case {case}: attempt {attempt} expected CreateFlowVersion -> 409, \
+                         got {refused:?}"
+                    );
+                    assert_eq!(
+                        refused.error_type.as_deref(),
+                        Some("ConflictException"),
+                        "case {case}: attempt {attempt} expected ConflictException, got {refused:?}"
+                    );
+                    assert_eq!(
+                        refused.string(&["message"]),
+                        conflict_message(expected_status),
+                        "case {case}: attempt {attempt} expected the refusal to name the \
+                         operation and the flow's status, got {refused:?}"
+                    );
+                }
+
+                // Nothing was written: the number the refused cuts would have
+                // taken is readable nowhere, the listing holds the DRAFT alone,
+                // and the flow still stands in the status it was addressed in.
+                let missing = emulator.get_flow_version(&label, "1").await;
+                assert_eq!(
+                    missing.status, 404,
+                    "case {case}: a refused cut leaves no version to read, got {missing:?}"
+                );
+                assert_eq!(
+                    missing.error_type.as_deref(),
+                    Some("ResourceNotFoundException"),
+                    "case {case}: expected ResourceNotFoundException, got {missing:?}"
+                );
+                assert_eq!(
+                    emulator.list_flow_versions(&flow_id).await.listed_versions(),
+                    vec!["DRAFT".to_string()],
+                    "case {case}: a refused cut leaves the flow with its DRAFT version alone"
+                );
+                let read = emulator.get_flow(&flow_id).await;
+                assert_eq!(
+                    read.string(&["status"]),
+                    *expected_status,
+                    "case {case}: the refusal moved the flow's status, got {read:?}"
+                );
+
+                // Prepared, the very same call is served — and takes the first
+                // version number, so the refusals consumed none.
+                emulator.drive_to_prepared(case, &flow_id).await;
+                let cut = emulator
+                    .create_flow_version_as(&label, json!({ "clientToken": CLIENT_TOKEN }))
+                    .await;
+                assert_eq!(
+                    cut.status, 201,
+                    "case {case}: the flow is versioned once it is prepared, got {cut:?}"
+                );
+                assert_eq!(
+                    cut.string(&["version"]),
+                    "1",
+                    "case {case}: the refused cuts consumed no version number, got {cut:?}"
+                );
+                assert_eq!(
+                    cut.string(&["status"]),
+                    "Prepared",
+                    "case {case}: the version snapshots the prepared DRAFT, got {cut:?}"
+                );
+
+                // The token the refused calls carried was never recorded against
+                // a version, so it binds to THIS cut and now replays it rather
+                // than cutting a second one.
+                let replayed = emulator
+                    .create_flow_version_as(&label, json!({ "clientToken": CLIENT_TOKEN }))
+                    .await;
+                assert_eq!(
+                    replayed.string(&["version"]),
+                    "1",
+                    "case {case}: the retried cut replays the version it cut, got {replayed:?}"
+                );
+                assert_eq!(
+                    emulator.list_flow_versions(&flow_id).await.listed_versions(),
+                    vec!["DRAFT".to_string(), "1".to_string()],
+                    "case {case}: the flow holds exactly the one version it was cut at"
+                );
+                let read_back = emulator.get_flow_version(&label, "1").await;
+                assert_eq!(
+                    read_back.string(&["version"]),
+                    "1",
+                    "case {case}: the cut version reads back, got {read_back:?}"
+                );
+            }
+        }
+    }
+}
+
+/// The guard is the ADDRESSED flow's, not the store's: with one prepared and
+/// one never-prepared flow held side by side, each call is answered by the
+/// status of the flow it names, and the prepared flow's numbering advances
+/// across refusals of the other.
+#[tokio::test]
+async fn each_flow_is_answered_by_its_own_status() {
+    let case = "one prepared and one unprepared flow in the same store";
+    let emulator = Emulator::new();
+
+    let prepared = emulator.create_flow(case, passthrough_definition()).await;
+    let prepared_id = prepared.string(&["id"]);
+    emulator.prepare_flow(case, &prepared_id).await;
+    emulator.settle_preparation(case, &prepared_id);
+
+    let unprepared = emulator.create_flow(case, passthrough_definition()).await;
+    let unprepared_id = unprepared.string(&["id"]);
+
+    for round in 1..=2u32 {
+        let refused = emulator.create_flow_version(&unprepared_id).await;
+        assert_eq!(
+            refused.status, 409,
+            "case {case}: round {round}: the unprepared flow is refused, got {refused:?}"
+        );
+        assert_eq!(
+            refused.string(&["message"]),
+            conflict_message("NotPrepared"),
+            "case {case}: round {round}: the refusal names the addressed flow's status, \
+             got {refused:?}"
+        );
+
+        let cut = emulator.create_flow_version(&prepared_id).await;
+        assert_eq!(
+            cut.status, 201,
+            "case {case}: round {round}: the prepared flow is versioned, got {cut:?}"
+        );
+        assert_eq!(
+            cut.string(&["version"]),
+            round.to_string(),
+            "case {case}: round {round}: the prepared flow's own numbering advances, got {cut:?}"
+        );
+    }
+
+    assert_eq!(
+        emulator
+            .list_flow_versions(&unprepared_id)
+            .await
+            .listed_versions(),
+        vec!["DRAFT".to_string()],
+        "case {case}: the refused flow holds its DRAFT version alone"
+    );
+    assert_eq!(
+        emulator
+            .list_flow_versions(&prepared_id)
+            .await
+            .listed_versions(),
+        vec!["DRAFT".to_string(), "1".to_string(), "2".to_string()],
+        "case {case}: the prepared flow holds exactly the versions it was cut at"
     );
 }

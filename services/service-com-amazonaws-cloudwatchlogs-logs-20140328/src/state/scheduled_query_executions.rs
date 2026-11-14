@@ -375,9 +375,10 @@ fn due_instants(record: &ScheduledQueryRecord, now_ms: i64) -> Vec<i64> {
 /// time the query searches from the execution time", and `endTimeOffset` "the time offset in
 /// seconds that defines the end of the lookback period". A query that states no end offset
 /// ends its window at the execution instant ([`super::DEFAULT_END_TIME_OFFSET_SECONDS`]); one
-/// that states no lookback at all reads the period since the run before it, which for a
-/// schedule naming instants at regular intervals is the gap between two of them — so
-/// consecutive runs of such a query tile the time line rather than reading nothing.
+/// that states no lookback at all reads back over one whole period of its own schedule — the
+/// gap between two instants the expression names ([`super::Schedule::interval_after`]) — so
+/// consecutive runs of such a query tile the time line rather than reading nothing, and the
+/// first run, which falls off the schedule's grid, reads a whole period too.
 fn execution_window_secs(
     record: &ScheduledQueryRecord,
     triggered_ms: i64,
