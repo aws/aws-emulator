@@ -15,6 +15,8 @@
 mod configuration_set_lifecycle;
 #[path = "all/configuration_set_names.rs"]
 mod configuration_set_names;
+#[path = "all/event_destination_deletion.rs"]
+mod event_destination_deletion;
 #[path = "all/event_destination_updates.rs"]
 mod event_destination_updates;
 #[path = "all/legacy_surface_authorization.rs"]
