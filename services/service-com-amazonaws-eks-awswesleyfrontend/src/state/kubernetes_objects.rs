@@ -114,9 +114,24 @@ pub struct ServiceAccountObject {
     pub created_at: SystemTime,
 }
 
-/// One pod object. It is never scheduled — no node of this emulator runs
-/// containers — so it stays in the phase a pod that has not been bound to a node
-/// is in, which is what a client that only needs the object's identity reads.
+/// How long a pod that has been bound to a node reports `Pending` before the
+/// clock owes it `Running`.
+///
+/// A pod is scheduled by the control plane and then STARTED on the node it was
+/// bound to, so the move is owed a span rather than being instant: a client that
+/// reads the pod straight after creating it sees the phase a pod that has not
+/// started yet is in. The span is the one this service owes its other
+/// asynchronous moves ([`UPDATE_COMPLETION_DELAY`]), it is non-zero, and the due
+/// instant is stored on the pod — nothing sleeps for it.
+pub const POD_START_DELAY: Duration = UPDATE_COMPLETION_DELAY;
+
+/// The `Pod$status.phase` a pod reports before its containers have started.
+pub const POD_PHASE_PENDING: &str = "Pending";
+/// The phase a pod whose containers have started reports.
+pub const POD_PHASE_RUNNING: &str = "Running";
+
+/// One pod object: what the create admitted, the node the cluster scheduled it
+/// on, and the phase it has reached there.
 #[derive(Debug)]
 pub struct PodObject {
     pub uid: String,
@@ -125,9 +140,234 @@ pub struct PodObject {
     /// namespace's `default` account for a pod that names none, which is what
     /// Kubernetes fills in.
     pub service_account_name: String,
+    /// The pod's `spec` AS ADMITTED: the one the create carried, with the
+    /// defaults the API server fills in — the service account it resolved to, and
+    /// the node the cluster bound the pod to.
+    ///
+    /// Held whole rather than field by field, because a client reads a pod back
+    /// to see what the cluster admitted — its containers, their environment and
+    /// the volumes they mount — and the spec a read reports is the spec the
+    /// create recorded, not the request's own text re-parsed.
+    pub spec: ::serde_json::Value,
+    /// The node the cluster bound this pod to, and `None` for a pod it could not
+    /// bind to one — a cluster with no node has nowhere to run a pod, and such a
+    /// pod reports `PodScheduled` false for the reason Kubernetes gives.
+    pub node_name: Option<String>,
+    /// The phase the pod has reached, a `Pod$status.phase` value.
+    pub phase: String,
+    /// When set, the instant at which the clock owes this pod the move from
+    /// `Pending` to `Running` on the node it was bound to. Cleared once the move
+    /// is materialised.
+    pub running_at: Option<SystemTime>,
+    /// The instant the pod's containers started, which is what
+    /// `status.startTime` and each container's `state.running.startedAt` report.
+    /// `None` until the clock owes that move.
+    pub started_at: Option<SystemTime>,
+}
+
+impl PodObject {
+    /// Bind this pod to `node`, which is what scheduling it does: the pod's spec
+    /// names the node it runs on and its containers are owed their start
+    /// [`POD_START_DELAY`] after the pod and the node were both there.
+    ///
+    /// The due instant is computed from the two stored instants — the pod's
+    /// creation and the node's join — rather than from the call that bound it, so
+    /// the pod reports the same start time to every caller.
+    pub fn bind_to(&mut self, node: &super::kubernetes_nodes::ClusterNode) {
+        self.spec["nodeName"] = ::serde_json::json!(node.name);
+        self.node_name = Some(node.name.clone());
+        self.running_at = Some(self.created_at.max(node.joined_at) + POD_START_DELAY);
+    }
+
+    /// Unbind this pod from the node it was bound to, which is what the cluster
+    /// no longer holding that node leaves it as: a pod waiting for capacity, in
+    /// the phase a pod that has not started is in.
+    pub fn unbind(&mut self) {
+        if let Some(spec) = self.spec.as_object_mut() {
+            spec.remove("nodeName");
+        }
+        self.node_name = None;
+        self.phase = POD_PHASE_PENDING.to_string();
+        self.running_at = None;
+        self.started_at = None;
+    }
+
+    /// Materialise the phase move the clock already owes at `now`.
+    ///
+    /// Like every other clock-owed move of this service, it was due at the stored
+    /// instant whether or not anybody called, so applying it on a read does not
+    /// change what a later caller sees. `started_at` is the DUE instant rather
+    /// than the instant of the call that noticed it, so every caller reads the
+    /// same start time.
+    pub fn materialize_due_transitions(&mut self, now: SystemTime) {
+        if let Some(due) = self.running_at.filter(|due| now >= *due) {
+            self.phase = POD_PHASE_RUNNING.to_string();
+            self.started_at = Some(due);
+            self.running_at = None;
+        }
+    }
+
+    /// Whether the pod's containers have started.
+    #[must_use]
+    pub fn is_running(&self) -> bool {
+        self.phase == POD_PHASE_RUNNING
+    }
+
+    /// The containers the pod's spec declares, as `status.containerStatuses`
+    /// reports them: one entry per container, ready and started exactly when the
+    /// pod itself is running.
+    fn container_statuses(&self) -> Vec<::serde_json::Value> {
+        let running = self.is_running();
+        let started_at = self.started_at.map(rfc3339_seconds);
+        self.spec
+            .get("containers")
+            .and_then(::serde_json::Value::as_array)
+            .map(|containers| containers.as_slice())
+            .unwrap_or_default()
+            .iter()
+            .map(|container| {
+                let name = container
+                    .get("name")
+                    .and_then(::serde_json::Value::as_str)
+                    .unwrap_or_default();
+                let image = container
+                    .get("image")
+                    .and_then(::serde_json::Value::as_str)
+                    .unwrap_or_default();
+                let state = match (running, started_at.as_ref()) {
+                    (true, Some(at)) => {
+                        ::serde_json::json!({ "running": { "startedAt": at } })
+                    }
+                    _ => ::serde_json::json!({
+                        "waiting": { "reason": "ContainerCreating" }
+                    }),
+                };
+                ::serde_json::json!({
+                    "name": name,
+                    "image": image,
+                    "ready": running,
+                    "started": running,
+                    "restartCount": 0,
+                    "state": state,
+                })
+            })
+            .collect()
+    }
+
+    /// The pod's `status`, computed from the phase it has reached and the node it
+    /// was bound to.
+    fn status_json(&self) -> ::serde_json::Value {
+        let running = self.is_running();
+        let scheduled_at = rfc3339_seconds(self.created_at);
+        let statuses = self.container_statuses();
+        let unready: Vec<&str> = statuses
+            .iter()
+            .filter(|status| status.get("ready").and_then(::serde_json::Value::as_bool) != Some(true))
+            .filter_map(|status| status.get("name").and_then(::serde_json::Value::as_str))
+            .collect();
+        let mut conditions = Vec::new();
+        match self.node_name.as_deref() {
+            Some(_) => conditions.push(::serde_json::json!({
+                "type": "PodScheduled",
+                "status": "True",
+                "lastTransitionTime": scheduled_at,
+            })),
+            // The reason and the sentence Kubernetes reports for a pod no node
+            // can take.
+            None => conditions.push(::serde_json::json!({
+                "type": "PodScheduled",
+                "status": "False",
+                "reason": "Unschedulable",
+                "message": "no nodes available to schedule pods",
+                "lastTransitionTime": scheduled_at,
+            })),
+        }
+        if self.node_name.is_some() {
+            let started_at = self
+                .started_at
+                .map(rfc3339_seconds)
+                .unwrap_or_else(|| scheduled_at.clone());
+            let readiness = if unready.is_empty() && running {
+                ::serde_json::json!({ "status": "True" })
+            } else {
+                ::serde_json::json!({
+                    "status": "False",
+                    "reason": "ContainersNotReady",
+                    "message": format!("containers with unready status: [{}]", unready.join(" ")),
+                })
+            };
+            for condition in ["Initialized", "ContainersReady", "Ready"] {
+                let mut entry = ::serde_json::json!({
+                    "type": condition,
+                    "lastTransitionTime": started_at,
+                });
+                let state = if condition == "Initialized" {
+                    ::serde_json::json!({ "status": if running { "True" } else { "False" } })
+                } else {
+                    readiness.clone()
+                };
+                if let Some(fields) = state.as_object() {
+                    for (key, value) in fields {
+                        entry[key] = value.clone();
+                    }
+                }
+                conditions.push(entry);
+            }
+        }
+        let mut status = ::serde_json::json!({
+            "phase": self.phase,
+            "conditions": conditions,
+            "containerStatuses": statuses,
+        });
+        if let Some(started_at) = self.started_at {
+            status["startTime"] = ::serde_json::json!(rfc3339_seconds(started_at));
+        }
+        status
+    }
 }
 
 impl ClusterObjects {
+    /// Materialise every clock-owed move of this cluster's objects: the pods a
+    /// node can take being bound to one, the pods whose node is gone being
+    /// unbound, and the pods whose containers were owed their start.
+    ///
+    /// `nodes` are the nodes of the cluster a pod can run on. A pod that was
+    /// admitted while the cluster had none is bound as soon as one is there — the
+    /// cluster's scheduler binds a pending pod the moment capacity appears,
+    /// whether or not anybody called — and its containers are then owed their
+    /// start like any other pod's. A pod whose node the cluster NO LONGER holds
+    /// (its node group deleted, its instances released) is unbound again: it is a
+    /// pod waiting for capacity rather than a workload on capacity that is gone.
+    /// Every instant comes from stored state, so every caller reads the same
+    /// binding and the same start time.
+    pub fn materialize_due_transitions(
+        &mut self,
+        now: SystemTime,
+        nodes: &[super::kubernetes_nodes::ClusterNode],
+    ) {
+        for namespace in self.namespaces.values_mut() {
+            for pod in namespace.pods.values_mut() {
+                match pod
+                    .node_name
+                    .as_deref()
+                    .map(|bound| nodes.iter().any(|node| node.name == bound))
+                {
+                    // Bound to a node the cluster still holds: nothing to do.
+                    Some(true) => {}
+                    // Bound to a node that is gone.
+                    Some(false) => pod.unbind(),
+                    // Not bound at all: bound now, if there is a node for it.
+                    None => {
+                        if let Some(node) = nodes.first() {
+                            pod.bind_to(node);
+                        }
+                    }
+                }
+                pod.materialize_due_transitions(now);
+            }
+        }
+    }
+
     /// The objects a brand new cluster's API server holds: the namespaces
     /// Kubernetes creates with a cluster ([`INITIAL_NAMESPACES`]), each already
     /// holding the `default` service account Kubernetes creates in every
@@ -304,23 +544,20 @@ impl ClusterObjects {
     /// `POST /api/v1/namespaces/{namespace}/pods`: create the pod object the
     /// manifest names and answer it with the `metadata.uid` this create minted —
     /// the uid a `TokenRequest`'s `boundObjectRef` names.
+    ///
+    /// `node` is the node the cluster schedules the pod onto — one of the nodes
+    /// its node groups registered ([`super::kubernetes_nodes`]) — and `None` when
+    /// the cluster has none, in which case the pod is admitted and stays
+    /// unscheduled, as a pod no node can take does.
     pub fn create_pod(
         &mut self,
         namespace: &str,
         manifest: &::serde_json::Value,
         now: SystemTime,
+        nodes: &[super::kubernetes_nodes::ClusterNode],
     ) -> Result<::serde_json::Value, ApiRefusal> {
         let name = manifest_name(manifest, "Pod")?;
-        let service_account_name = manifest
-            .get("spec")
-            .and_then(|spec| {
-                spec.get("serviceAccountName")
-                    .or_else(|| spec.get("serviceAccount"))
-            })
-            .and_then(::serde_json::Value::as_str)
-            .filter(|value| !value.is_empty())
-            .unwrap_or(DEFAULT_SERVICE_ACCOUNT)
-            .to_string();
+        let service_account_name = requested_service_account(manifest);
         self.namespace(namespace)?;
         // "the pod's service account must exist": a pod naming a service account
         // the namespace does not hold is refused, as the API server refuses it.
@@ -334,6 +571,21 @@ impl ClusterObjects {
                 &service_account_name,
             ));
         }
+        // The spec as the API server ADMITS it: the one the manifest carried, with
+        // the service account it resolved to filled in under both members
+        // Kubernetes reports it under.
+        let mut spec = match manifest.get("spec") {
+            None | Some(::serde_json::Value::Null) => ::serde_json::json!({}),
+            Some(spec @ ::serde_json::Value::Object(_)) => spec.clone(),
+            Some(_) => {
+                return Err(ApiRefusal::invalid(format!(
+                    "Pod \"{name}\" is invalid: spec: Invalid value: the pod's spec must be \
+                     an object"
+                )))
+            }
+        };
+        spec["serviceAccountName"] = ::serde_json::json!(service_account_name);
+        spec["serviceAccount"] = ::serde_json::json!(service_account_name);
         let held = self
             .namespaces
             .get_mut(namespace)
@@ -350,8 +602,33 @@ impl ClusterObjects {
                 uid: new_object_uid(),
                 created_at: now,
                 service_account_name,
+                spec,
+                node_name: None,
+                phase: POD_PHASE_PENDING.to_string(),
+                running_at: None,
+                started_at: None,
             },
         );
+        // Scheduling: the pod is bound to a node of this CLUSTER, which is what
+        // puts `spec.nodeName` on it and starts the clock its containers are owed
+        // their start on. A pod that NAMES a node is bound to that one — naming
+        // one is how a client bypasses the scheduler — but only when the cluster
+        // holds it: a name no node of the cluster carries is nothing to bind to,
+        // so the pod stays unscheduled, as it does on a cluster with no node at
+        // all. Either way an unbound pod is bound by the first call after a node
+        // it can run on is there.
+        let requested_node = manifest
+            .get("spec")
+            .and_then(|requested| requested.get("nodeName"))
+            .and_then(::serde_json::Value::as_str)
+            .filter(|requested| !requested.is_empty());
+        let bound = match requested_node {
+            Some(named) => nodes.iter().find(|node| node.name == named),
+            None => nodes.first(),
+        };
+        if let (Some(node), Some(pod)) = (bound, held.pods.get_mut(&name)) {
+            pod.bind_to(node);
+        }
         self.pod_json(namespace, &name)
     }
 
@@ -375,13 +652,10 @@ impl ClusterObjects {
                 "uid": pod.uid,
                 "creationTimestamp": rfc3339_seconds(pod.created_at),
             },
-            "spec": {
-                "serviceAccountName": pod.service_account_name,
-                "serviceAccount": pod.service_account_name,
-            },
-            // No node of this emulator runs containers, so the pod is never
-            // bound to one and stays in the phase an unscheduled pod is in.
-            "status": { "phase": "Pending" },
+            // The spec this create was admitted with, read back unchanged.
+            "spec": pod.spec,
+            // What the pod has reached on the node it was bound to.
+            "status": pod.status_json(),
         }))
     }
 
@@ -557,6 +831,27 @@ impl TokenPlan {
     }
 }
 
+/// The service account a pod manifest asks to run as: `spec.serviceAccountName`,
+/// or the namespace's `default` account for a manifest that names none — which is
+/// what Kubernetes fills in and what the pod reads back.
+///
+/// One reading, so the admission that decides whether this pod gets the cluster's
+/// EKS Pod Identity environment and the create that records the pod cannot
+/// disagree about which service account it runs as.
+#[must_use]
+pub fn requested_service_account(manifest: &::serde_json::Value) -> String {
+    manifest
+        .get("spec")
+        .and_then(|spec| {
+            spec.get("serviceAccountName")
+                .or_else(|| spec.get("serviceAccount"))
+        })
+        .and_then(::serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_SERVICE_ACCOUNT)
+        .to_string()
+}
+
 /// A request the API server does not serve, as the `Status` object Kubernetes
 /// answers with: the HTTP status, the machine-readable `reason`, and the sentence
 /// that names what could not be served.
@@ -604,6 +899,36 @@ impl ApiRefusal {
             status: 422,
             reason: "Invalid",
             message: message.into(),
+            resource: None,
+        }
+    }
+
+    /// The `Status` a body the API server could not decode an object out of is
+    /// answered with: `400 BadRequest`, which is what a request it could not read
+    /// at all is — as opposed to one it read and found invalid.
+    #[must_use]
+    pub fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: 400,
+            reason: "BadRequest",
+            message: message.into(),
+            resource: None,
+        }
+    }
+
+    /// The `Status` a body in a media type the API server does not read is
+    /// answered with: `415 UnsupportedMediaType`, naming the media types it does
+    /// read — the sentence Kubernetes answers an unknown body format with.
+    #[must_use]
+    pub fn unsupported_media_type(read: &[&str]) -> Self {
+        Self {
+            status: 415,
+            reason: "UnsupportedMediaType",
+            message: format!(
+                "the body of the request was in an unknown format - accepted media types \
+                 include: {}",
+                read.join(", ")
+            ),
             resource: None,
         }
     }

@@ -79,6 +79,8 @@ mod certificate_authority_material;
 mod certificate_authority_listing_order;
 #[path = "all/certificate_authority_read_refusal.rs"]
 mod certificate_authority_read_refusal;
+#[path = "all/certificate_authority_rotation.rs"]
+mod certificate_authority_rotation;
 #[path = "all/certificate_authority_trust_list.rs"]
 mod certificate_authority_trust_list;
 #[path = "all/child_create_resolves_the_cluster_first.rs"]
@@ -145,6 +147,8 @@ mod insights_listing;
 mod insights_refresh;
 #[path = "all/kubernetes_api.rs"]
 mod kubernetes_api;
+#[path = "all/kubernetes_cluster_resources.rs"]
+mod kubernetes_cluster_resources;
 #[path = "all/list_pod_identity_associations.rs"]
 mod list_pod_identity_associations;
 #[path = "all/marketplace_addon_install.rs"]

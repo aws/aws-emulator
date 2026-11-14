@@ -43,6 +43,13 @@ pub struct NodegroupCapacity {
     /// `Nodegroup$resources.remoteAccessSecurityGroup` — which exists only for a
     /// node group whose `remoteAccess` asked for that access.
     pub remote_access_security_group_id: Option<String>,
+    /// The instances the Auto Scaling group launched, as that group and Amazon
+    /// EC2 reported them. Not reported by any member of `Nodegroup`: they are
+    /// held because they are the cluster's NODES, which its Kubernetes API server
+    /// reports ([`super::kubernetes_nodes`]). Empty for a node group whose
+    /// capacity no such service created, so a cluster never reports a node no
+    /// service holds.
+    pub nodes: Vec<NodeInstance>,
 }
 
 impl NodegroupCapacity {
@@ -118,6 +125,17 @@ pub const NODEGROUP_CLUSTER_NAME_TAG: &str = "eks:cluster-name";
 
 /// The same, naming the node group itself.
 pub const NODEGROUP_NAME_TAG: &str = "eks:nodegroup-name";
+
+/// How many of a node group's instances this service records as the cluster's
+/// nodes.
+///
+/// A node group's sizes come from the caller's `scalingConfig`, so the number of
+/// instances its Auto Scaling group launches is caller-chosen; what THIS service
+/// retains for them must not be. The ceiling is CHOSEN rather than published: it
+/// is above the handful of nodes a cluster of this emulator is driven with, and it
+/// bounds both the records held per node group and the one read-back this service
+/// makes about them.
+pub const MAX_RECORDED_NODES_PER_NODEGROUP: usize = 16;
 
 /// The name of the Auto Scaling group that backs the node group
 /// `nodegroup_name`, derived from the node group's own stable id so it is
@@ -266,14 +284,107 @@ pub async fn provision_nodegroup_capacity(
         .send()
         .await;
     match created {
-        Ok(_) => capacity.auto_scaling_group_names.push(group_name),
+        Ok(_) => capacity.auto_scaling_group_names.push(group_name.clone()),
         Err(error) => ::tracing::warn!(
             nodegroup = %spec.nodegroup_name,
             error = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
             "the node group's Auto Scaling group could not be created"
         ),
     }
+    // The instances that group launched are the cluster's NODES, so they are read
+    // back from the services that own them: a node this service reports is an
+    // instance Amazon EC2 Auto Scaling and Amazon EC2 really hold.
+    if !capacity.auto_scaling_group_names.is_empty() {
+        capacity.nodes = launched_nodes(ctx, region, &group_name).await;
+    }
     capacity
+}
+
+/// The instances the Auto Scaling group `group_name` launched, as the two
+/// services that own them report them: the group names its instances and the
+/// Availability Zone and instance type each launched with, and Amazon EC2 names
+/// each instance's private DNS name and address.
+///
+/// An instance neither service reports is not a node: the list is whatever they
+/// answered, and empty when either could not be asked. At most
+/// [`MAX_RECORDED_NODES_PER_NODEGROUP`] of them are taken, so a node group whose
+/// caller-chosen sizes launched more does not grow this service's state — nor the
+/// one read-back below — by a number the caller picked.
+async fn launched_nodes(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    group_name: &str,
+) -> Vec<NodeInstance> {
+    let Some(endpoint) = peer_endpoint("autoscaling", region) else {
+        return Vec::new();
+    };
+    let described = callback_client!(aws_sdk_autoscaling, ctx, endpoint, region)
+        .describe_auto_scaling_groups()
+        .auto_scaling_group_names(group_name)
+        .send()
+        .await;
+    let groups = match described {
+        Ok(output) => output.auto_scaling_groups,
+        Err(error) => {
+            ::tracing::warn!(
+                %group_name,
+                error = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
+                "the node group's launched instances could not be read from Auto Scaling"
+            );
+            return Vec::new();
+        }
+    };
+    let mut nodes: Vec<NodeInstance> = groups
+        .into_iter()
+        .flatten()
+        .flat_map(|group| group.instances.unwrap_or_default())
+        .map(|instance| NodeInstance {
+            instance_id: instance.instance_id.unwrap_or_default(),
+            availability_zone: instance.availability_zone.unwrap_or_default(),
+            instance_type: instance.instance_type.unwrap_or_default(),
+            ..NodeInstance::default()
+        })
+        .filter(|node| !node.instance_id.is_empty())
+        .take(MAX_RECORDED_NODES_PER_NODEGROUP)
+        .collect();
+    if nodes.is_empty() {
+        return nodes;
+    }
+    let Some(endpoint) = peer_endpoint("ec2", region) else {
+        return nodes;
+    };
+    let instance_ids: Vec<String> = nodes.iter().map(|node| node.instance_id.clone()).collect();
+    let described = callback_client!(aws_sdk_ec2, ctx, endpoint, region)
+        .describe_instances()
+        .set_instance_ids(Some(instance_ids))
+        .send()
+        .await;
+    match described {
+        Ok(output) => {
+            for instance in output
+                .reservations
+                .unwrap_or_default()
+                .into_iter()
+                .flat_map(|reservation| reservation.instances.unwrap_or_default())
+            {
+                let Some(id) = instance.instance_id.as_deref() else {
+                    continue;
+                };
+                let Some(node) = nodes.iter_mut().find(|node| node.instance_id == id) else {
+                    continue;
+                };
+                node.private_dns_name = instance.private_dns_name.clone().unwrap_or_default();
+                node.private_ip_address =
+                    instance.private_ip_address.clone().unwrap_or_default();
+            }
+        }
+        Err(error) => ::tracing::warn!(
+            %group_name,
+            error = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
+            "the node group's instances could not be read from EC2"
+        ),
+    }
+    nodes
 }
 
 /// Release the capacity a deleted node group ran on.

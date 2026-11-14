@@ -173,6 +173,19 @@ pub(crate) async fn dial(
     path: &str,
     body: Option<&serde_json::Value>,
 ) -> ApiAnswer {
+    dial_as(config, case, method, path, "application/json", body).await
+}
+
+/// The same request, with the client stating the media type it wrote the body in
+/// — what a client that writes its body in another encoding sends.
+pub(crate) async fn dial_as(
+    config: &Kubeconfig,
+    case: &str,
+    method: &str,
+    path: &str,
+    content_type: &str,
+    body: Option<&serde_json::Value>,
+) -> ApiAnswer {
     let authority = config
         .endpoint
         .strip_prefix("https://")
@@ -236,7 +249,7 @@ pub(crate) async fn dial(
 
     let payload = body.map(serde_json::Value::to_string).unwrap_or_default();
     let request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {authority}\r\nContent-Type: application/json\r\n\
+        "{method} {path} HTTP/1.1\r\nHost: {authority}\r\nContent-Type: {content_type}\r\n\
          Content-Length: {}\r\nConnection: close\r\n\r\n{payload}",
         payload.len()
     );

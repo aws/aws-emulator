@@ -1986,7 +1986,6 @@ mod redshift_health_alarms_evaluate;
 // (`cloudformation_metric_stream_filter_update` is declared once, in the head region above:
 // a module may be declared only once, and two branches landing at once appended it here as
 // well.)
-// (`cloudformation_metric_stream_filter_update` is declared once, in the head region above:
 // two branches landing in the same window each declared it, and a module may be declared
 // only once.)
 // (`zz_probe` is declared further up this tail already: two branches landing in the same
@@ -1996,8 +1995,6 @@ mod redshift_health_alarms_evaluate;
 // the same file twice, which compiles neither.)
 // (`zz_probe` is declared ONCE, further up this tail, for the reason recorded there.)
 // (`zz_probe` is declared ONCE, further up this tail: a module may be declared only once.)
-// (`cloudwatch_alarm_ssm_ops_item_action` is declared once, in the head region above: a
-// module may be declared only once.)
 // (`zz_probe` is declared once, further up this tail: a module may be declared only once.)
 // (`zz_probe` is declared once further up this tail: a module may be declared only once.)
 // (`zz_probe` is declared ONCE, further up this tail: it was appended here as well while two
@@ -2011,11 +2008,6 @@ mod redshift_health_alarms_evaluate;
 mod cloudformation_metric_stream_filter_update;
 // (`cloudformation_metric_stream_filter_update` is declared ONCE, in the head region above
 // beside the other `cloudformation_…` suites: it was appended here as well while two
-// (`cloudformation_metric_stream_filter_update` is declared once, in the head region above:
-// two branches landing in the same window each declared it, and a module may be declared
-// only once.)
-// (`zz_probe` is declared further up this tail already: two branches landing in the same
-// window each appended it, and a module may be declared only once.)
 // (`cloudformation_metric_stream_filter_update` is declared ONCE, in the sorted head above:
 // two branches landing in the same window appended a second declaration of it here, which is a
 // redefinition that compiled neither, so the duplicate is removed and the first stands.)
@@ -2118,10 +2110,6 @@ mod cognito_rules_role_mapping;
 // crate's own test target can ask it.
 #[path = "all/iam_secretsmanager_denial_envelope_by_protocol.rs"]
 mod iam_secretsmanager_denial_envelope_by_protocol;
-// (`apigateway_cognito_authorizer_app_client_audience` is declared in the head region above:
-// (`zz_probe` is declared further up this tail already: a module may be declared only once.)
-// (`zz_probe` is declared once, further up this tail: a module may be declared only once.)
-// (`cloudformation_metric_stream_estate_is_drainable` is declared once, further up this
 // file: a module may be declared only once.)
 // (That suite is declared ONCE, in the sorted span at the head of this file: a module may be
 // declared only once, and two branches landing at once declared it twice.)
@@ -2334,7 +2322,6 @@ mod route53_health_check_string_match;
 // up: the second declaration of each was appended here while two branches were landing at
 // once, which compiled neither.
 // (`https_front_door_concurrent_pooled_producer` is declared ONCE, in the span above: a
-// module may be declared only once, and two branches landing at once appended it here as
 // (`https_front_door_concurrent_pooled_producer` is declared ONCE, further up this tail: a
 // above beside the other `cloudformation_…` suites: two `mod` items for one name is a
 // redefinition that compiles neither.
@@ -2438,7 +2425,6 @@ mod events_one_envelope_reaches_every_target_kind;
 // `cloudformation_metric_stream_estate_is_drainable` are declared in the head region above and
 // in this tail respectively: a module may be declared only once, and the pair was appended
 // here as well while two branches were landing at once, which compiled neither.)
-// (`https_front_door_concurrent_pooled_producer` is declared once, further up this tail: a
 // Declared in this tail: which stage refuses a request signed with a temporary credential,
 // and which document its refusal names, spans IAM (the role, the user and their documents),
 // STS (the mint and the scope it recorded) and Amazon S3 (which resolves the credential and
@@ -2460,7 +2446,6 @@ mod sts_session_credential_refusals;
 // resource changed outside the stack.
 #[path = "all/cloudformation_drift_detection_status_change_events.rs"]
 mod cloudformation_drift_detection_status_change_events;
-// (`apigateway_sns_service_integration` is declared once, further up this tail: a module may
 // be declared only once, and two branches landing at once each re-added it here.)
 // (`cloudformation_metric_stream_filter_update` is declared once, in the head region above: a
 // module may be declared only once, and two branches landing at once each re-added it here.)
@@ -2518,3 +2503,15 @@ mod cloudformation_drift_detection_status_change_events;
 // have to agree for the chain to hold, so no single crate's test target can drive it.
 #[path = "all/s3_object_created_invalidates_the_distribution_edge.rs"]
 mod s3_object_created_invalidates_the_distribution_edge;
+// ONCE, further down this tail: a module may be declared only once, and two branches landing
+// in the same window each appended their own copy here.)
+// Declared here, beside the other CloudFormation suites: whether a stack-deployed
+// metric-stream estate is drainable spans CloudFormation, IAM, CloudWatch, Firehose and
+// Amazon S3 at once, so no single service crate's test target can deploy it and then drain it.
+// (`cloudtrail_read_only_api_calls` is declared ONCE, in the sorted block at the head of
+// this file beside the other CloudTrail suites: a module may be declared only once.)
+// (`cloudformation_metric_stream_estate_is_drainable` is declared once, a few lines above in
+// this same tail: a module may be declared only once.)
+// (The HTTPS front-door suite is declared ONCE, further up this tail: a module may be
+// declared only once, and two branches landing in the same window each appended their own
+// copy here.)

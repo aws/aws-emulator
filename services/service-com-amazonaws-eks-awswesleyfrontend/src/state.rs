@@ -4758,6 +4758,7 @@ mod fargate_networking;
 // than glob re-exports: the Kubernetes API surface names its own `serve` and
 // `publish`, which say what they are only under the module that owns them.
 pub mod kubernetes_api;
+pub mod kubernetes_nodes;
 pub mod kubernetes_objects;
 mod nodegroup_capacity;
 mod nodegroups;
@@ -4779,6 +4780,7 @@ pub use derived_identifiers::*;
 pub use eks_anywhere_subscriptions::*;
 pub use fargate_networking::*;
 pub use kubernetes_api::KubernetesApiPlane;
+pub use kubernetes_nodes::NodeInstance;
 pub use nodegroup_capacity::*;
 pub use nodegroups::*;
 pub use pass_role::*;

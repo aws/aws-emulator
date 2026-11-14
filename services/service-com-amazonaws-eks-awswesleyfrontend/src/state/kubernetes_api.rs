@@ -429,6 +429,14 @@ async fn answer(
 ) -> ::http::Response<Full<Bytes>> {
     let method = request.method().clone();
     let path = request.uri().path().to_string();
+    // The media type the client wrote its body in, which is what says how the
+    // body is read ([`read_manifest`]).
+    let content_type = request
+        .headers()
+        .get(::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
     let Ok(permit) = in_flight().try_acquire_owned() else {
         return rendered(&ApiRefusal {
             status: 503,
@@ -450,7 +458,15 @@ async fn answer(
             });
         };
         let body = collected.to_bytes();
-        match serve(&state, auth.as_ref(), &key, method.as_str(), &path, &body) {
+        match serve(
+            &state,
+            auth.as_ref(),
+            &key,
+            method.as_str(),
+            &path,
+            &content_type,
+            &body,
+        ) {
             Ok((status, document)) => json_response(status, &document),
             Err(refusal) => rendered(&refusal),
         }
@@ -479,6 +495,7 @@ pub fn serve(
     key: &(String, String),
     method: &str,
     path: &str,
+    content_type: &str,
     body: &[u8],
 ) -> Result<(u16, ::serde_json::Value), ApiRefusal> {
     let segments: Vec<&str> = path
@@ -514,6 +531,49 @@ pub fn serve(
         return Err(ApiRefusal::no_such_path(path));
     };
 
+    // The resource list of the core group, which is what a client reads to learn
+    // which resources this API server serves and how each one is addressed. A
+    // client that cannot read it addresses nothing, whatever the server holds.
+    if rest.is_empty() {
+        if method != ::http::Method::GET.as_str() {
+            return Err(ApiRefusal::method_not_allowed(method, path));
+        }
+        return Ok((200, core_api_resource_list()));
+    }
+
+    // The cluster's NODES. They are not objects a client creates: they are the
+    // instances this cluster's node groups launched, so they are READ from the
+    // node groups the control plane holds ([`super::kubernetes_nodes`]).
+    match (method, rest) {
+        (method, ["nodes"]) if method == ::http::Method::GET.as_str() => {
+            let store = state.lock();
+            // A cluster this store no longer holds answers nothing, as every
+            // other path on this address does.
+            plane(&store, key)?;
+            return Ok((
+                200,
+                ::serde_json::json!({
+                    "kind": "NodeList",
+                    "apiVersion": super::kubernetes_objects::CORE_API_VERSION,
+                    "metadata": {},
+                    "items": store.cluster_nodes(&key.0, &key.1),
+                }),
+            ));
+        }
+        (method, ["nodes", name]) if method == ::http::Method::GET.as_str() => {
+            let store = state.lock();
+            plane(&store, key)?;
+            return match store.cluster_node(&key.0, &key.1, name) {
+                Some(node) => Ok((200, node)),
+                None => Err(ApiRefusal::not_found("nodes", name)),
+            };
+        }
+        (method, ["nodes", ..]) => {
+            return Err(ApiRefusal::method_not_allowed(method, path));
+        }
+        _ => {}
+    }
+
     // The token subresource is the one request that reaches beyond this service's
     // own objects: the token is minted by the EKS Auth plane, which is what
     // answers for it afterwards.
@@ -521,7 +581,7 @@ pub fn serve(
         if method != ::http::Method::POST.as_str() {
             return Err(ApiRefusal::method_not_allowed(method, path));
         }
-        let document = read_manifest(body)?;
+        let document = read_manifest(content_type, body)?;
         let plan = {
             let store = state.lock();
             plane(&store, key)?
@@ -537,10 +597,21 @@ pub fn serve(
     }
 
     let mut store = state.lock();
+
+    // The nodes of this cluster a pod can run on: the pod the request creates is
+    // scheduled onto one, and so is any pod that was admitted while the cluster
+    // had none. They are read from the control plane's own records before the
+    // objects are borrowed to write them.
+    let nodes = store.scheduler_nodes(&key.0, &key.1);
+
     let objects = &mut plane_mut(&mut store, key)?.objects;
+    // The clock-owed moves of this cluster's objects, materialised before any of
+    // them is reported: each was due at a stored instant whether or not anybody
+    // called.
+    objects.materialize_due_transitions(now, &nodes);
     match (method, rest) {
         (method, ["namespaces"]) if method == ::http::Method::POST.as_str() => {
-            let document = read_manifest(body)?;
+            let document = read_manifest(content_type, body)?;
             Ok((201, objects.create_namespace(&document, now)?))
         }
         (method, ["namespaces"]) if method == ::http::Method::GET.as_str() => {
@@ -563,8 +634,8 @@ pub fn serve(
             Ok((200, objects.namespace_json(namespace)?))
         }
         (method, ["namespaces", namespace, "pods"]) if method == ::http::Method::POST.as_str() => {
-            let document = read_manifest(body)?;
-            Ok((201, objects.create_pod(namespace, &document, now)?))
+            let document = read_manifest(content_type, body)?;
+            Ok((201, objects.create_pod(namespace, &document, now, &nodes)?))
         }
         (method, ["namespaces", namespace, "pods"]) if method == ::http::Method::GET.as_str() => {
             Ok((200, objects.pod_list_json(namespace)?))
@@ -577,7 +648,7 @@ pub fn serve(
         (method, ["namespaces", namespace, "serviceaccounts"])
             if method == ::http::Method::POST.as_str() =>
         {
-            let document = read_manifest(body)?;
+            let document = read_manifest(content_type, body)?;
             Ok((
                 201,
                 objects.create_service_account(namespace, &document, now)?,
@@ -599,6 +670,67 @@ pub fn serve(
         (method, ["namespaces", ..]) => Err(ApiRefusal::method_not_allowed(method, path)),
         _ => Err(ApiRefusal::no_such_path(path)),
     }
+}
+
+/// The resource list of the core API group: every resource this API server serves
+/// under `/api/v1`, the verbs it serves on each and whether the resource is
+/// namespaced.
+///
+/// A Kubernetes client resolves the kind it was asked for against THIS document
+/// before it addresses anything — a resource the list does not name is one the
+/// client reports the server as not having — so the list names exactly the
+/// resources the routing above serves, and no others.
+fn core_api_resource_list() -> ::serde_json::Value {
+    /// One row of the list: the resource's path, its kind, whether it lives in a
+    /// namespace, the short name a client may address it by, and the verbs served.
+    fn resource(
+        name: &str,
+        kind: &str,
+        namespaced: bool,
+        short_names: &[&str],
+        verbs: &[&str],
+    ) -> ::serde_json::Value {
+        let mut row = ::serde_json::json!({
+            "name": name,
+            "singularName": kind.to_ascii_lowercase(),
+            "namespaced": namespaced,
+            "kind": kind,
+            "verbs": verbs,
+        });
+        if !short_names.is_empty() {
+            row["shortNames"] = ::serde_json::json!(short_names);
+        }
+        row
+    }
+
+    let read = ["get", "list"];
+    let read_create = ["create", "get", "list"];
+    ::serde_json::json!({
+        "kind": "APIResourceList",
+        "apiVersion": super::kubernetes_objects::CORE_API_VERSION,
+        "groupVersion": super::kubernetes_objects::CORE_API_VERSION,
+        "resources": [
+            resource("namespaces", "Namespace", false, &["ns"], &read_create),
+            resource("nodes", "Node", false, &["no"], &read),
+            resource("pods", "Pod", true, &["po"], &read_create),
+            resource(
+                "serviceaccounts",
+                "ServiceAccount",
+                true,
+                &["sa"],
+                &read_create,
+            ),
+            // The one subresource this server serves, addressed under the service
+            // account it mints a token for.
+            resource(
+                "serviceaccounts/token",
+                "TokenRequest",
+                true,
+                &[],
+                &["create"],
+            ),
+        ],
+    })
 }
 
 /// The plane of the cluster keyed `key`, or the `Status` a request to a cluster
@@ -625,19 +757,48 @@ fn plane_mut<'store>(
         .ok_or_else(|| ApiRefusal::not_found("clusters", &key.1))
 }
 
+/// The media types this API server reads a manifest in. A client states the one
+/// it wrote the body in on `Content-Type`, and a body in any other media type is
+/// one this server cannot read — the Kubernetes protobuf media type among them,
+/// whose objects are encoded against the generated schema of each kind rather
+/// than as a document.
+pub const READ_MEDIA_TYPES: [&str; 1] = ["application/json"];
+
 /// The manifest a write request carries, read as the JSON document a Kubernetes
-/// client sends. An empty body is the empty object, which is what a request that
-/// carries no manifest sends; anything that is not a JSON object is the `Status`
-/// the API server answers an unreadable body with.
-fn read_manifest(body: &[u8]) -> Result<::serde_json::Value, ApiRefusal> {
+/// client sends.
+///
+/// An empty body is the empty object, which is what a request that carries no
+/// manifest sends. A body in a media type this server does not read is the API
+/// server's own `415`, naming the media types it does; one in a media type it
+/// does read but cannot parse is its `400`, reporting that the kind could not be
+/// read out of it — as opposed to a manifest it read and found invalid, which is
+/// the `422` above.
+fn read_manifest(content_type: &str, body: &[u8]) -> Result<::serde_json::Value, ApiRefusal> {
+    // A media type carries parameters (`application/json; charset=utf-8`); the
+    // type itself is what says how the body is encoded.
+    let media_type = content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim();
+    if !media_type.is_empty()
+        && !READ_MEDIA_TYPES
+            .iter()
+            .any(|read| media_type.eq_ignore_ascii_case(read))
+    {
+        return Err(ApiRefusal::unsupported_media_type(&READ_MEDIA_TYPES));
+    }
     if body.is_empty() {
         return Ok(::serde_json::json!({}));
     }
     match ::serde_json::from_slice::<::serde_json::Value>(body) {
         Ok(document @ ::serde_json::Value::Object(_)) => Ok(document),
-        _ => Err(ApiRefusal::invalid(
-            "the request body is not a JSON object naming a Kubernetes resource",
+        Ok(_) => Err(ApiRefusal::bad_request(
+            "couldn't get version/kind; json parse error: the body is not a JSON object",
         )),
+        Err(error) => Err(ApiRefusal::bad_request(format!(
+            "couldn't get version/kind; json parse error: {error}"
+        ))),
     }
 }
 
