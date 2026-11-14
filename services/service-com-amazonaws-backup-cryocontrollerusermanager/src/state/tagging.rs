@@ -82,6 +82,13 @@ impl ComAmazonawsBackupCryocontrollerusermanagerState {
         {
             return Ok(&configuration.tags);
         }
+        if let Some(plan) = self
+            .restore_testing_plans
+            .values()
+            .find(|plan| plan.arn == resource_arn)
+        {
+            return Ok(&plan.tags);
+        }
         Err(super::tagged_resource_not_found())
     }
 
@@ -132,6 +139,13 @@ impl ComAmazonawsBackupCryocontrollerusermanagerState {
             .find(|configuration| configuration.arn == resource_arn)
         {
             return Ok(&mut configuration.tags);
+        }
+        if let Some(plan) = self
+            .restore_testing_plans
+            .values_mut()
+            .find(|plan| plan.arn == resource_arn)
+        {
+            return Ok(&mut plan.tags);
         }
         Err(super::tagged_resource_not_found())
     }

@@ -30,6 +30,9 @@
 //!   `CreateTieringConfiguration` stores under its account-unique name, which
 //!   the tiering read, listing and delete all answer from (the `tiering`
 //!   module).
+//! * [`RestoreTestingPlanRecord`] — the restore testing plan
+//!   `CreateRestoreTestingPlan` stores under its account-unique name, which
+//!   `GetRestoreTestingPlan` answers from (the `restore_testing` module).
 //!
 //! A vault's resource policy is one of [`BackupVault`]'s own members
 //! ([`BackupVault::access_policy`]): `PutBackupVaultAccessPolicy` stores it
@@ -109,6 +112,12 @@ pub use restore_execution::*;
 /// start that carries less is refused for. Re-exported for the reason given on `events`.
 mod restore_metadata;
 pub use restore_metadata::*;
+
+/// The restore testing plans this service stores, the one read projection of
+/// one and the reading of a plan body every operation that stores one shares.
+/// Re-exported for the reason given on `events`.
+mod restore_testing;
+pub use restore_testing::*;
 
 /// The tiering configurations this service stores, and the two projections its
 /// reads answer from. Re-exported for the reason given on `events`.
@@ -563,6 +572,22 @@ pub fn tiering_configuration_arn(region: &str, name: &str) -> String {
         ARN_NAMESPACE,
         region,
         &format!("tiering-configuration:{name}"),
+    )
+}
+
+/// The ARN of a restore testing plan:
+/// `arn:aws:backup:<region>:<account>:restore-testing-plan:<name>`.
+///
+/// A restore testing plan is addressed by NAME — the name "cannot be changed
+/// after creation" (model doc for `RestoreTestingPlanName`) and is unique to the
+/// account — so the name is what its ARN carries, spelled with the resource type
+/// separated by `:` as [`backup_vault_arn`] spells `backup-vault` and
+/// [`tiering_configuration_arn`] spells `tiering-configuration`.
+pub fn restore_testing_plan_arn(region: &str, name: &str) -> String {
+    ::engine::emulator_arn(
+        ARN_NAMESPACE,
+        region,
+        &format!("restore-testing-plan:{name}"),
     )
 }
 
@@ -1080,6 +1105,23 @@ pub const AGGREGATION_PERIODS: [&str; 3] = ["ONE_DAY", "SEVEN_DAYS", "FOURTEEN_D
 /// validation result. No `Code`: this condition has no observed token.
 pub const MESSAGE_RESTORE_JOB_NOT_FOUND: &str = "Cannot find restore job";
 
+/// The sentence AWS states for "the restore testing plan asked about is not one
+/// this account holds" — fixed, and worded as the not-found conditions above
+/// are: it names no part of the request, so the name asked about does not appear
+/// in it. It answers every call that addresses a restore testing plan by name.
+/// No `Code`: this condition has no observed token.
+pub const MESSAGE_RESTORE_TESTING_PLAN_NOT_FOUND: &str = "Cannot find restore testing plan";
+
+/// The sentence AWS states for "a restore testing plan of this name already
+/// exists", worded as this service words the one RECORDED instance of that
+/// condition — a backup vault's ([`MESSAGE_VAULT_ALREADY_EXISTS`]), which every
+/// other create of a named resource in this service follows (a backup plan's,
+/// one of its selections', a tiering configuration's): fixed text that names no
+/// part of the request, so the name the create asked for does not appear in it.
+/// No `Code`: this condition has no observed token.
+pub const MESSAGE_RESTORE_TESTING_PLAN_ALREADY_EXISTS: &str =
+    "Restore testing plan with the same name already exists";
+
 /// The sentence AWS states for "the tiering configuration asked about is not
 /// one this account holds" — fixed, and worded as the conditions above are: it
 /// names no part of the request, so the name asked about does not appear in it.
@@ -1470,6 +1512,28 @@ pub fn recovery_point_not_found_value() -> InvalidParameterValueException {
 pub fn restore_job_not_found() -> ResourceNotFoundException {
     ResourceNotFoundException {
         message: Some(MESSAGE_RESTORE_JOB_NOT_FOUND.to_string()),
+        ..Default::default()
+    }
+}
+
+/// The modelled refusal for a `RestoreTestingPlanName` this account holds no
+/// restore testing plan under — see
+/// [`MESSAGE_RESTORE_TESTING_PLAN_NOT_FOUND`].
+pub fn restore_testing_plan_not_found() -> ResourceNotFoundException {
+    ResourceNotFoundException {
+        message: Some(MESSAGE_RESTORE_TESTING_PLAN_NOT_FOUND.to_string()),
+        ..Default::default()
+    }
+}
+
+/// The modelled refusal for a create naming a restore testing plan that already
+/// exists.
+///
+/// `Arn` and `CreatorRequestId` are left UNSET for the reason given on
+/// [`vault_already_exists`].
+pub fn restore_testing_plan_already_exists() -> AlreadyExistsException {
+    AlreadyExistsException {
+        message: Some(MESSAGE_RESTORE_TESTING_PLAN_ALREADY_EXISTS.to_string()),
         ..Default::default()
     }
 }
@@ -2810,6 +2874,10 @@ pub struct ComAmazonawsBackupCryocontrollerusermanagerState {
     pub legal_holds: BTreeMap<String, LegalHoldRecord>,
     /// Restore jobs by `RestoreJobId`. Bounded by [`MAX_RESTORE_JOBS`].
     pub restore_jobs: BTreeMap<String, RestoreJobRecord>,
+    /// Restore testing plans by `RestoreTestingPlanName` — the name a restore
+    /// testing plan is addressed by, so the map itself is what makes that name
+    /// unique to the account. Bounded by [`MAX_RESTORE_TESTING_PLANS`].
+    pub restore_testing_plans: BTreeMap<String, RestoreTestingPlanRecord>,
     /// Tiering configurations by `TieringConfigurationName` — the name a
     /// tiering configuration is addressed by, so the map itself is what makes
     /// that name unique to the account. Bounded by

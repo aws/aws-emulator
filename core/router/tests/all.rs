@@ -2302,3 +2302,18 @@ mod route53_health_check_string_match;
 // (`zz_probe` is declared ONCE, in the span above: a module may be declared only once, and
 // `zz_probe.rs` is the empty file the build script requires a declaration for.)
 // tail: a module may be declared only once.))
+// (`cloudformation_provisions_cloudfront_resources` is declared once, in the span above:
+// Declared HERE, once: `cloudformation_provisions_cloudfront_resources` is the suite over the
+// CloudFront resources a stack provisions, and the sorted span above no longer declares it —
+// two branches each removed the copy they saw, leaving it compiled nowhere.
+// are declared once, in the span above: a module may be declared only once in this file, and
+// two branches each appended the pair here.)
+// (`apigateway_sns_service_integration` is declared ONCE, a few lines above in this same
+// tail: two `mod` items for one name is a redefinition that compiles neither.)
+// (`cloudwatch_alarm_ssm_ops_item_action` is declared in the head region above too, for the
+// reason this span records: a module may be declared only once in this file.)
+// (`https_front_door_concurrent_pooled_producer` is declared ONCE, in the span above: two
+// `mod` items for one name is a redefinition that compiles neither.)
+// (`lambda_signed_write_to_an_aoss_collection_endpoint` and
+// `cloudformation_domain_endpoint_is_dialled_by_consumers` are declared ONCE each, in the
+// spans above: two `mod` items for one name is a redefinition that compiles neither.)

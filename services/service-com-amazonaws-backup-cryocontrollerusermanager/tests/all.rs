@@ -75,6 +75,8 @@ mod restore_job_listing;
 mod restore_job_state_change_events;
 #[path = "all/restore_metadata_validation.rs"]
 mod restore_metadata_validation;
+#[path = "all/restore_testing_plan.rs"]
+mod restore_testing_plan;
 #[path = "all/scheduled_runs_preview.rs"]
 mod scheduled_runs_preview;
 #[path = "all/state_roundtrip.rs"]
