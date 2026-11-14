@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DescribeAttack
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DescribeAttack`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DescribeAttack::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! A pure read: it answers with the one attack of the account's attack log (see
+//! [`crate::state`]) that carries the `AttackId` the call names, and with no attack
+//! detail at all for an `AttackId` no detected attack of the account holds, rather than
+//! describing an attack nothing recorded.
 //!
 //! ## Shape of an operation
 //!
@@ -140,18 +136,36 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DescribeAttack` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DescribeAttackErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(DescribeAttackErrorModeled::InternalErrorException(
+                InternalErrorException {
+                    message: Some(
+                        "the shield emulator is mounted on an engine that holds no state"
+                            .to_string(),
+                    ),
+                },
+            )
+            .into());
+        };
+
+        // A pure read of the account's attack log — the same log `ListAttacks` summarises,
+        // so a detail describes the attack the listing reported. The account's
+        // subscription does not gate it: this operation models no not-found or
+        // subscription failure at all.
         //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DescribeAttack"))
+        // An `AttackId` the log holds no attack for describes no attack: the output's
+        // `Attack` member is optional ("The attack that you requested"), so the answer
+        // carries no detail at all rather than one invented for an attack nothing
+        // detected. Shield serves such a call rather than denying it; the modelled
+        // `AccessDeniedException` is for a requester without "the appropriate permissions
+        // to access the AttackId", which is the emulator's own authorization concern and
+        // not this handler's.
+        let guard = state.lock();
+        Ok(DescribeAttackOutput {
+            attack: guard
+                .attack_by_id(&input.attack_id)
+                .map(|attack| attack.to_detail()),
+        })
     }
 }

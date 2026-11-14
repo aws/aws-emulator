@@ -19,11 +19,11 @@ use ::aws_smithy_types::date_time::Format as DateTimeFormat;
 use ::aws_smithy_types::DateTime;
 
 use crate::ops::types::{
-    ApplicationLayerAutomaticResponseConfiguration, AttackStatisticsDataItem, AttackSummary,
-    AttackVectorDescription, AttackVolume, AttackVolumeStatistics, EmergencyContact, Limit,
-    Protection, ProtectionGroup, ProtectionGroupArbitraryPatternLimits, ProtectionGroupLimits,
-    ProtectionGroupPatternTypeLimits, ProtectionLimits, Subscription, SubscriptionLimits, Tag,
-    PROTECTED_RESOURCE_TYPE_VALUES,
+    ApplicationLayerAutomaticResponseConfiguration, AttackDetail, AttackStatisticsDataItem,
+    AttackSummary, AttackVectorDescription, AttackVolume, AttackVolumeStatistics, EmergencyContact,
+    Limit, Protection, ProtectionGroup, ProtectionGroupArbitraryPatternLimits,
+    ProtectionGroupLimits, ProtectionGroupPatternTypeLimits, ProtectionLimits, Subscription,
+    SubscriptionLimits, SummarizedCounter, Tag, PROTECTED_RESOURCE_TYPE_VALUES,
 };
 
 /// The `SubscriptionState` an account with a live Shield Advanced subscription is in.
@@ -91,6 +91,27 @@ pub const INVALID_RESOURCE_MESSAGE: &str = "The referenced resource is invalid."
 
 /// How this service states that a `NextToken` is not one it issued.
 pub const INVALID_PAGINATION_TOKEN_MESSAGE: &str = "Invalid pagination token.";
+
+/// The `SummarizedCounter$Name` of the counter reporting the attack's bits per second —
+/// the unit `AttackVolume$BitsPerSecond` names, which is the member of this service's own
+/// volume shape for the same observation.
+pub const ATTACK_COUNTER_BITS_PER_SECOND: &str = "BitsPerSecond";
+/// The `SummarizedCounter$Name` of the counter reporting the attack's packets per second.
+/// See [`ATTACK_COUNTER_BITS_PER_SECOND`].
+pub const ATTACK_COUNTER_PACKETS_PER_SECOND: &str = "PacketsPerSecond";
+/// The `SummarizedCounter$Name` of the counter reporting the attack's requests per
+/// second. See [`ATTACK_COUNTER_BITS_PER_SECOND`].
+pub const ATTACK_COUNTER_REQUESTS_PER_SECOND: &str = "RequestsPerSecond";
+
+/// The `SummarizedCounter$Unit` a bits-per-second counter is measured in, from the `Unit`
+/// values this service's model declares (`BITS`, `BYTES`, `PACKETS`, `REQUESTS`).
+pub const ATTACK_COUNTER_UNIT_BITS: &str = "BITS";
+/// The `SummarizedCounter$Unit` a packets-per-second counter is measured in. See
+/// [`ATTACK_COUNTER_UNIT_BITS`].
+pub const ATTACK_COUNTER_UNIT_PACKETS: &str = "PACKETS";
+/// The `SummarizedCounter$Unit` a requests-per-second counter is measured in. See
+/// [`ATTACK_COUNTER_UNIT_BITS`].
+pub const ATTACK_COUNTER_UNIT_REQUESTS: &str = "REQUESTS";
 
 /// The `ProtectionGroupPattern` that includes every protected resource of the account.
 pub const PROTECTION_GROUP_PATTERN_ALL: &str = "ALL";
@@ -460,9 +481,9 @@ impl ProtectionGroupEntry {
 ///
 /// Shield detects attacks rather than being asked to create them, so no modelled
 /// operation writes a record here; the attack log is the single place every attack
-/// reader of this service (`DescribeAttackStatistics` and `ListAttacks`, and
-/// `DescribeAttack` once it is implemented) derives its answer from, so an account
-/// with no detected attacks and one with several are the same code path.
+/// reader of this service (`DescribeAttack`, `DescribeAttackStatistics` and
+/// `ListAttacks`) derives its answer from, so an account with no detected attacks and
+/// one with several are the same code path.
 #[derive(Debug, Clone)]
 pub struct AttackRecord {
     /// The `AttackId` that identifies this attack.
@@ -511,6 +532,69 @@ impl AttackRecord {
                     .collect(),
             ),
         }
+    }
+
+    /// This record as the modelled `AttackDetail` a describe answers with
+    /// (`AttackDetail`: "The details of a DDoS attack").
+    ///
+    /// Every member carries what the attack log holds and nothing else: the attack's own
+    /// identifier and attacked resource, the instants it spans — an attack still under way
+    /// has no `EndTime` ("The time the attack ended") — and its counters
+    /// (`AttackDetail$AttackCounters`: "List of counters that describe the attack for the
+    /// specified time period"), one per unit the attack was observed in.
+    ///
+    /// `SubResources` ("If applicable, additional detail about the resource being attacked,
+    /// for example, IP address or URL"), `AttackProperties` and `Mitigations` name detail
+    /// no record of the log carries, so none is reported rather than invented.
+    pub fn to_detail(&self) -> AttackDetail {
+        AttackDetail {
+            attack_id: Some(self.attack_id.clone()),
+            resource_arn: Some(self.resource_arn.clone()),
+            start_time: Some(DateTime::from(self.start_time)),
+            end_time: self.end_time.map(DateTime::from),
+            attack_counters: Some(self.attack_counters()),
+            sub_resources: None,
+            attack_properties: None,
+            mitigations: None,
+        }
+    }
+
+    /// One `SummarizedCounter` per unit this attack was observed in, in the order this
+    /// service's `AttackVolume` lists the units.
+    ///
+    /// The log holds the peak of each unit, so a counter reports that peak as its `Max`
+    /// (`AttackVolumeStatistics$Max`: "The maximum attack volume observed for the given
+    /// unit") and leaves the statistics the log does not hold — the average, the sum and
+    /// the number of observations — at the defaults the model gives them. A unit the attack
+    /// was never observed in has no counter at all.
+    pub fn attack_counters(&self) -> Vec<SummarizedCounter> {
+        [
+            (
+                ATTACK_COUNTER_BITS_PER_SECOND,
+                ATTACK_COUNTER_UNIT_BITS,
+                self.max_bits_per_second,
+            ),
+            (
+                ATTACK_COUNTER_PACKETS_PER_SECOND,
+                ATTACK_COUNTER_UNIT_PACKETS,
+                self.max_packets_per_second,
+            ),
+            (
+                ATTACK_COUNTER_REQUESTS_PER_SECOND,
+                ATTACK_COUNTER_UNIT_REQUESTS,
+                self.max_requests_per_second,
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(name, unit, peak)| {
+            peak.map(|max| SummarizedCounter {
+                name: Some(name.to_string()),
+                unit: Some(unit.to_string()),
+                max,
+                ..SummarizedCounter::default()
+            })
+        })
+        .collect()
     }
 }
 
@@ -647,6 +731,14 @@ impl ComAmazonawsShieldAwsshield20160616State {
             attack_count: counted.len() as i64,
             attack_volume: Some(volume),
         }]
+    }
+
+    /// The attack of the account's log with this `AttackId`, or `None` when no attack
+    /// Shield detected against the account carries it.
+    pub fn attack_by_id(&self, attack_id: &str) -> Option<&AttackRecord> {
+        self.attacks
+            .iter()
+            .find(|attack| attack.attack_id == attack_id)
     }
 
     /// The `SubscriptionState` the account is in at `now`.

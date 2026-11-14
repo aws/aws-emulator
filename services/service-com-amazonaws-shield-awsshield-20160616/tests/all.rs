@@ -13,6 +13,8 @@
 // points it into `tests/all/`.
 #[path = "all/shield_attack_statistics.rs"]
 mod shield_attack_statistics;
+#[path = "all/shield_describe_attack.rs"]
+mod shield_describe_attack;
 #[path = "all/shield_drt_access.rs"]
 mod shield_drt_access;
 #[path = "all/shield_list_attacks.rs"]
