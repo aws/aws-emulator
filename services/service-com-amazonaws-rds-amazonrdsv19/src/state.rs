@@ -268,6 +268,18 @@ pub mod default_subnet_group;
 mod ec2_security_groups;
 mod instances;
 mod clusters;
+// The weekly maintenance window both resource kinds keep: the form it is STORED in, and
+// when its next occurrence begins.
+pub mod maintenance_window;
+// What a modification the caller did not ask to apply immediately stages on a DB instance,
+// and the window those settings are applied in.
+mod instance_modification;
+pub use instance_modification::*;
+// Promoting a secondary DB cluster of a global database to be its primary: the one rule the
+// failover and the switchover of a global database both perform.
+mod global_cluster_promotion;
+pub use global_cluster_promotion::*;
+pub use maintenance_window::{stored_maintenance_window, window_is_open};
 // The Data API HTTP endpoint of a DB cluster: the one write `EnableHttpEndpoint` and
 // `DisableHttpEndpoint` share, and the preconditions both hold a request to.
 mod data_api_endpoint;
@@ -305,10 +317,11 @@ pub use storage_encryption_key::*;
 pub use service_principal_call::*;
 pub use master_user_credentials::*;
 pub use data_plane::{
-    captured_data_bytes, capture_cluster_storage, capture_instance_storage,
+    captured_data_bytes, capture_cluster_storage, capture_endpoint_storage,
+    capture_instance_storage,
     cluster_endpoint::cluster_engine_wire,
-    engine_wire, open_engine_endpoint, wire_session::SessionTarget, DbEngineEndpoint, EndpointRole,
-    EngineEndpointPlan, EngineWire, ServedEndpoint,
+    engine_wire, open_engine_endpoint, rewind_cluster_storage, wire_session::SessionTarget,
+    DbEngineEndpoint, EndpointRole, EngineEndpointPlan, EngineWire, ServedEndpoint,
 };
 pub use ec2_subnets::{invalid_subnets_message, subnet_zones, SubnetZones};
 pub use default_subnet_group::{default_vpc_network, DefaultSubnetGroupNetwork};
@@ -557,6 +570,9 @@ impl ComAmazonawsRdsAmazonrdsv19State {
         // A record whose pending change is its REMOVAL leaves the store here: the
         // keys are collected first because the range borrows the map mutably.
         let mut gone: Vec<RegionalKey> = Vec::new();
+        // A rename the clock made due in the maintenance window moves the record to a new
+        // key, so those keys are collected here too and the records moved below.
+        let mut renamed: Vec<(RegionalKey, RegionalKey)> = Vec::new();
         for (key, instance) in self
             .db_instances
             .range_mut((region.to_string(), String::new())..)
@@ -566,6 +582,11 @@ impl ComAmazonawsRdsAmazonrdsv19State {
             }
             if instance.settle(now) {
                 gone.push(key.clone());
+            } else if instance.identifier != key.1 {
+                renamed.push((
+                    key.clone(),
+                    (region.to_string(), instance.identifier.clone()),
+                ));
             }
         }
         for key in gone.drain(..) {
@@ -573,6 +594,24 @@ impl ComAmazonawsRdsAmazonrdsv19State {
             // The instance is gone from the service, so its engine endpoint goes with
             // it: dropping the record closes the port and severs every session on it.
             self.db_engine_endpoints.remove(&key);
+        }
+        for (from, to) in renamed {
+            // An identifier another instance took while the rename was pending is not one
+            // this one can be renamed to: the instance keeps the identifier it has rather
+            // than displacing a record under a key it would share.
+            if self.db_instances.contains_key(&to) {
+                if let Some(record) = self.db_instances.get_mut(&from) {
+                    record.identifier = from.1.clone();
+                }
+                continue;
+            }
+            if let Some(record) = self.db_instances.remove(&from) {
+                self.db_instances.insert(to.clone(), record);
+                // The instance's engine endpoint moves with it: the listener a client is
+                // connected to stays the endpoint this instance publishes, whatever it is
+                // now called.
+                self.move_engine_endpoint(&from, &to);
+            }
         }
         for (key, snapshot) in self
             .db_snapshots
@@ -1856,6 +1895,14 @@ pub const MODIFY_DB_CLUSTER_NOT_FOUND_MESSAGE: &str = "DBCluster not found";
 pub fn db_cluster_cannot_be_accessed_message(named: &str) -> String {
     format!("The source cluster could not be found or cannot be accessed: {named}")
 }
+
+/// The sentence a `DBClusterNotFoundFault` carries where the call BACKTRACKS the cluster.
+///
+/// `BacktrackDBCluster` words this fault as a statement about the lookup itself, with no
+/// variable part at all — neither the identifier the caller wrote nor the account the call
+/// was signed for — so it is a constant, exactly as the modification's wording
+/// ([`MODIFY_DB_CLUSTER_NOT_FOUND_MESSAGE`]) is.
+pub const BACKTRACK_DB_CLUSTER_NOT_FOUND_MESSAGE: &str = "Could not find specified DB Cluster";
 
 /// Another wording this front door gives a `DBClusterNotFoundFault`: the one the call that
 /// takes a SNAPSHOT of the cluster answers, and the one the calls that manage the cluster's

@@ -655,6 +655,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .unwrap_or(crate::state::DEFAULT_ENGINE_LIFECYCLE_SUPPORT),
         )
         .map_err(CreateDBClusterError::invalid_parameter_value)?;
+        if let Some(period) = input.performance_insights_retention_period {
+            crate::state::check_performance_insights_retention_period(period)
+                .map_err(CreateDBClusterError::invalid_parameter_value)?;
+        }
         // `DatabaseInsightsMode`: "If you set this value to advanced, you must also set the
         // PerformanceInsightsEnabled parameter to true and the
         // PerformanceInsightsRetentionPeriod parameter to 465."
@@ -795,10 +799,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // created with a scaling configuration — and only inside that range, in the
             // half-step increments the member documents, with the floor no higher than the
             // ceiling. The rule is the one `ModifyDBCluster` rescales a cluster by.
+            // A scaling configuration is held to the capacity range the cluster's engine
+            // version publishes, else the one the service publishes overall — in the
+            // half-step increments the member documents, with the floor no higher than the
+            // ceiling. The rule is the one `ModifyDBCluster` rescales a cluster by.
             if let Some(asked) = &input.serverless_v2_scaling_configuration {
                 crate::state::check_serverless_v2_scaling(
-                    &input.engine,
-                    input.engine_version.as_deref().unwrap_or("(default)"),
                     resolved_version.and_then(|entry| entry.profile.serverless_v2_scaling_range()),
                     asked.min_capacity,
                     asked.max_capacity,
@@ -1190,9 +1196,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             preferred_backup_window: input
                 .preferred_backup_window
                 .unwrap_or_else(|| crate::state::DEFAULT_PREFERRED_BACKUP_WINDOW.to_string()),
-            preferred_maintenance_window: input.preferred_maintenance_window.unwrap_or_else(
-                || crate::state::DEFAULT_PREFERRED_MAINTENANCE_WINDOW.to_string(),
-            ),
+            // `PreferredMaintenanceWindow` is stored with its day names folded, the form
+            // the service reports it in whatever case the request used
+            // ([`crate::state::stored_maintenance_window`]).
+            preferred_maintenance_window: input
+                .preferred_maintenance_window
+                .as_deref()
+                .map(crate::state::stored_maintenance_window)
+                .unwrap_or_else(|| {
+                    crate::state::DEFAULT_PREFERRED_MAINTENANCE_WINDOW.to_string()
+                }),
             // "If you don't specify a value, then the default DB cluster parameter group
             // for the specified DB engine and version is used."
             db_cluster_parameter_group_name: input.db_cluster_parameter_group_name.or_else(|| {
@@ -1286,6 +1299,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .collect(),
             domain: input.domain,
             domain_iam_role_name: input.domain_iam_role_name,
+            // The consistent points the cluster can be backtracked to are kept once its
+            // storage exists, which is after the endpoint is opened below: a cluster with
+            // backtracking off keeps none at all.
+            backtrack_points: Vec::new(),
             global_cluster_identifier: global_cluster_identifier.clone(),
             replication_source_arn,
             ca_certificate_identifier: input
@@ -1372,6 +1389,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         record.served_endpoint = endpoint.as_ref().map(|endpoint| endpoint.endpoint.clone());
         record.served_reader_endpoint = endpoint.as_ref().and_then(|endpoint| endpoint.reader.clone());
+        // A cluster created with backtracking ON keeps the consistent point it starts from:
+        // "Backtracks a DB cluster to a specific time", which it can only do to a time it
+        // kept the data of, and the cluster's own storage as the engine just opened it is
+        // the first such time ([`crate::state::DbClusterRecord::backtrack_points`]). The
+        // copy is taken off the state guard, as every engine capture is, and a cluster
+        // created with backtracking off keeps none.
+        if record.backtracking_enabled() {
+            if let Some(endpoint) = &endpoint {
+                let initial = crate::state::capture_endpoint_storage(endpoint)
+                    .await
+                    .map_err(CreateDBClusterError::internal_failure)?;
+                if let Some(storage) = initial {
+                    record.record_backtrack_point(storage);
+                }
+            }
+        }
 
         // A cluster placed in the account's `default` DB subnet group reports that group,
         // and the members created in it report the group's own record: the default VPC's

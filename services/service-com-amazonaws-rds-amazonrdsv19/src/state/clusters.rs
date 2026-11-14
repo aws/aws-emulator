@@ -209,6 +209,51 @@ pub struct DbClusterRecord {
     pub writer_identifier: Option<String>,
     /// `TagList`.
     pub tags: Vec<Tag>,
+    /// The CONSISTENT POINTS this cluster can be backtracked to, oldest first: each is the
+    /// instant and a copy of the data the cluster held at it.
+    ///
+    /// Backtracking "rewinds the DB cluster to the time you specify", which it can only do
+    /// to a point it kept the data of — "If the specified time isn't a consistent time for
+    /// the DB cluster, Aurora automatically chooses the nearest possible consistent time for
+    /// the DB cluster", and these are this service's consistent times. A point is recorded
+    /// when the cluster's storage is opened with backtracking enabled and after each
+    /// backtrack; points older than [`Self::backtrack_window`] are dropped, because a
+    /// cluster "can't be backtracked" beyond its window.
+    ///
+    /// EMPTY for a cluster created with backtracking disabled (`BacktrackWindow` zero, the
+    /// documented default), which keeps none, and for an engine this emulator serves no data
+    /// plane for, which has no data to keep.
+    pub backtrack_points: Vec<BacktrackPoint>,
+}
+
+/// How precisely two instants are compared when a backtrack picks the point it rewinds to:
+/// a millisecond, which is finer than any interval between two points this service records
+/// and coarse enough that a timestamp carried out to a client and back — through the wire
+/// format's own rounding — still names the point it was read from.
+const BACKTRACK_POINT_RESOLUTION: f64 = 0.001;
+
+/// One consistent point a DB cluster can be backtracked to: when the cluster held this
+/// data, and the data itself.
+#[derive(Clone)]
+pub struct BacktrackPoint {
+    /// The instant the cluster held this copy, which is what `BacktrackTo` reports for a
+    /// backtrack that rewound to it.
+    pub at: ::aws_smithy_types::DateTime,
+    /// The copy itself, taken by the engine the way a snapshot's is
+    /// ([`data_plane::capture_endpoint_storage`]).
+    pub storage: ::std::sync::Arc<data_plane::sql_engine::InstanceDatabase>,
+}
+
+impl std::fmt::Debug for BacktrackPoint {
+    /// The engine's database handle carries no `Debug`, and the DATA is not something a
+    /// debug line should carry anyway, so a point shows the instant it holds and the
+    /// presence of the copy.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BacktrackPoint")
+            .field("at", &self.at)
+            .finish_non_exhaustive()
+    }
 }
 
 impl DbClusterRecord {
@@ -238,6 +283,67 @@ impl DbClusterRecord {
     /// the cluster's current identifier.
     pub fn arn(&self) -> String {
         db_cluster_arn(&self.region, &self.identifier)
+    }
+
+    /// Whether this cluster keeps a backtrack window at all: "To disable backtracking, set
+    /// this value to 0", so a positive window is backtracking enabled.
+    pub fn backtracking_enabled(&self) -> bool {
+        self.backtrack_window > 0
+    }
+
+    /// `EarliestBacktrackTime`: the oldest consistent point the cluster can be backtracked
+    /// to, and `None` for a cluster that kept none ([`Self::backtrack_points`]).
+    pub fn earliest_backtrack_time(&self) -> Option<::aws_smithy_types::DateTime> {
+        self.backtrack_points.first().map(|point| point.at)
+    }
+
+    /// Keep `storage` as the consistent point the cluster holds AS OF NOW, and drop the
+    /// points that have fallen out of the backtrack window.
+    ///
+    /// A window of zero keeps nothing: backtracking is off, so there is no time the cluster
+    /// can be backtracked to.
+    pub fn record_backtrack_point(
+        &mut self,
+        storage: ::std::sync::Arc<data_plane::sql_engine::InstanceDatabase>,
+    ) {
+        if !self.backtracking_enabled() {
+            self.backtrack_points.clear();
+            return;
+        }
+        let now = now_as_wire_timestamp();
+        self.backtrack_points.push(BacktrackPoint { at: now, storage });
+        // "The target backtrack window, in seconds": a point older than the window is one
+        // the cluster can no longer be backtracked to, so it is dropped rather than kept
+        // and offered. The oldest point is kept while it is the ONLY one, because a cluster
+        // with backtracking on reports an earliest backtrack time.
+        let cutoff = now.as_secs_f64() - self.backtrack_window as f64;
+        while self.backtrack_points.len() > 1
+            && self
+                .backtrack_points
+                .first()
+                .is_some_and(|point| point.at.as_secs_f64() < cutoff)
+        {
+            self.backtrack_points.remove(0);
+        }
+    }
+
+    /// The consistent point a backtrack to `target` rewinds the cluster to: the latest
+    /// point at or before it, which is the "nearest possible consistent time for the DB
+    /// cluster" Aurora chooses when the time asked for is not itself one.
+    ///
+    /// `None` when every point the cluster kept is LATER than the time asked for, which is
+    /// a time before its earliest backtrack time — the case the request's
+    /// `UseEarliestTimeOnPointInTimeUnavailable` decides the answer to.
+    ///
+    /// The comparison allows the wire timestamp's own resolution
+    /// ([`BACKTRACK_POINT_RESOLUTION`]), so a caller that asks to be rewound to the
+    /// `EarliestBacktrackTime` the cluster reported is rewound to that point rather than
+    /// refused for the rounding of the value it was given.
+    pub fn backtrack_point_at(&self, target: ::aws_smithy_types::DateTime) -> Option<&BacktrackPoint> {
+        let target = target.as_secs_f64() + BACKTRACK_POINT_RESOLUTION;
+        self.backtrack_points
+            .iter()
+            .rfind(|point| point.at.as_secs_f64() <= target)
     }
 
     /// The cluster endpoint: "the connection endpoint for the primary instance of the DB
@@ -579,6 +685,11 @@ impl DbClusterRecord {
             http_endpoint_enabled: Some(self.http_endpoint_enabled),
             iam_database_authentication_enabled: Some(self.iam_database_authentication_enabled),
             backtrack_window: Some(self.backtrack_window),
+            // `EarliestBacktrackTime`: "the earliest time to which a database can be
+            // backtracked" — the oldest consistent point this service kept for the cluster,
+            // and nothing at all for a cluster with backtracking off, which kept none and
+            // can be backtracked to no time ([`Self::backtrack_points`]).
+            earliest_backtrack_time: self.earliest_backtrack_time(),
             enabled_cloudwatch_logs_exports: Some(self.enabled_cloudwatch_logs_exports.clone()),
             network_type: self.network_type.clone(),
             monitoring_interval: Some(self.monitoring_interval),

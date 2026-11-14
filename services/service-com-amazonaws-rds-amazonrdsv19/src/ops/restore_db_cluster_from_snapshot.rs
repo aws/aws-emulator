@@ -483,6 +483,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 );
             }
         }
+        if let Some(period) = input.performance_insights_retention_period {
+            crate::state::check_performance_insights_retention_period(period)
+                .map_err(RestoreDBClusterFromSnapshotError::invalid_parameter_value)?;
+        }
         if let Some(window) = input.backtrack_window {
             // "If specified, this value must be set to a number from 0 to 259,200 (72
             // hours)", and "Currently, Backtrack is only supported for Aurora MySQL DB
@@ -731,13 +735,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     );
                 }
             }
-            // Only a version the catalogue publishes a serverless capacity range for can be
-            // restored with a scaling configuration, and only inside that range: the rule
-            // `CreateDBCluster` creates one by and `ModifyDBCluster` rescales one by.
+            // A scaling configuration is held to the capacity range the restored cluster's
+            // engine version publishes, else the one the service publishes overall: the
+            // rule `CreateDBCluster` creates one by and `ModifyDBCluster` rescales one by.
             if let Some(asked) = &input.serverless_v2_scaling_configuration {
                 crate::state::check_serverless_v2_scaling(
-                    &input.engine,
-                    input.engine_version.as_deref().unwrap_or("(default)"),
                     resolved_version.and_then(|entry| entry.profile.serverless_v2_scaling_range()),
                     asked.min_capacity,
                     asked.max_capacity,
@@ -1098,6 +1100,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .collect(),
             domain: input.domain.clone(),
             domain_iam_role_name: input.domain_iam_role_name.clone(),
+            // A restored cluster keeps no backtrack point of the SNAPSHOT's cluster: the
+            // points a cluster can be backtracked to are its own, kept once its storage
+            // exists ([`crate::state::DbClusterRecord::backtrack_points`]).
+            backtrack_points: Vec::new(),
             // A restored cluster joins no global database and replicates nothing: it is a
             // new cluster of the snapshot's data, and this operation names neither.
             global_cluster_identifier: None,

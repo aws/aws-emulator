@@ -389,6 +389,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
+        if let Some(period) = input.performance_insights_retention_period {
+            crate::state::check_performance_insights_retention_period(period)
+                .map_err(ModifyDBInstanceError::invalid_parameter_value)?;
+        }
+
         // No store means this service was mounted on an engine it has no state in,
         // so it cannot serve the operation at all. Unreachable with the engine the
         // router builds; 501 is the honest answer, never a fabricated success.
@@ -797,66 +802,97 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
-        // Every supplied setting is written into the stored record. The settings RDS
-        // defers to the maintenance window when `ApplyImmediately` is disabled are
-        // applied immediately here: this slice keeps no pending-modified-values set,
-        // so deferring a change would mean dropping it.
-        let mut changed = false;
-        if let Some(renamed) = renamed_to {
-            changed |= renamed != record.identifier;
-            record.identifier = renamed;
+        // Every supplied setting is written into the stored record — but WHEN depends on
+        // `ApplyImmediately`: "If this parameter is disabled, changes to the DB instance
+        // are applied during the next maintenance window." Which settings those are is the
+        // modelled `PendingModifiedValues` itself — "changes that will be applied during
+        // the next maintenance window" — so a setting that structure can report is STAGED
+        // on the record and reported as pending until the window comes round
+        // ([`crate::state::DeferredModification`]), while a setting it carries no member
+        // for is applied as soon as possible whatever the parameter says, which is what
+        // those members' own documentation states ("the change is asynchronously applied
+        // as soon as possible").
+        let apply_immediately = input.apply_immediately == Some(true);
+        // `BackupRetentionPeriod` states a rule of its own inside that split: the change
+        // "applied during the next maintenance window unless the ApplyImmediately
+        // parameter is enabled" is the one that ENABLES or DISABLES automated backups
+        // ("Setting this parameter to a positive number enables backups. Setting this
+        // parameter to 0 disables automated backups"), because that is what "can result in
+        // a brief I/O suspension" — and "if you change the parameter from one non-zero
+        // value to another non-zero value, the change is asynchronously applied as soon as
+        // possible". So a period that only lengthens or shortens retention is applied now.
+        let retention_applies_at_once = input
+            .backup_retention_period
+            .is_some_and(|period| period != 0 && record.backup_retention_period != 0);
+        let staged = crate::state::DeferredModification {
+            // A rename to the identifier the instance already has changes nothing, so it
+            // stages nothing: "an instance reboot occurs immediately if you enable
+            // ApplyImmediately, or will occur during the next maintenance window".
+            identifier: renamed_to.filter(|renamed| *renamed != record.identifier),
+            db_instance_class: input.db_instance_class,
+            engine: input.engine,
+            engine_version: resolved_engine_version,
+            allocated_storage: input.allocated_storage,
+            backup_retention_period: input
+                .backup_retention_period
+                .filter(|_| !retention_applies_at_once),
+            multi_az: input.multi_az,
+            storage_type: input.storage_type,
+            iops: input.iops,
+            storage_throughput: input.storage_throughput,
+            license_model: input.license_model,
+            port: input.db_port_number,
+            db_subnet_group_name: moved_to_subnet_group,
+            ca_certificate_identifier: input.ca_certificate_identifier,
+            iam_database_authentication_enabled: input.enable_iam_database_authentication,
+            dedicated_log_volume: input.dedicated_log_volume,
+            // `MasterUserPassword` is `@sensitive` and RDS reports no member carrying it:
+            // it is never stored or returned as itself. What is staged is the DIGESTS a
+            // login on the instance's own engine endpoint is verified against, so once the
+            // change is applied the new password is the one that opens a session and the
+            // old one stops working — which is what changing it means.
+            master_user_password: input.master_user_password.as_deref().and_then(|value| {
+                record.master_username.as_ref().map(|username| {
+                    crate::state::data_plane::wire_session::MasterPasswordHash::new(
+                        username, value,
+                    )
+                })
+            }),
+        };
+        let mut changed = !staged.is_empty();
+        if retention_applies_at_once {
+            if let Some(value) = input.backup_retention_period {
+                changed = true;
+                record.backup_retention_period = value;
+            }
         }
-        if let Some(value) = input.db_instance_class {
-            changed = true;
-            record.db_instance_class = value;
-        }
-        if let Some(value) = input.engine {
-            changed = true;
-            record.engine = value;
-        }
-        if let Some(value) = resolved_engine_version {
-            changed = true;
-            record.engine_version = Some(value);
-        }
-        if let Some(value) = input.allocated_storage {
-            changed = true;
-            record.allocated_storage = Some(value);
+        if apply_immediately {
+            // "the modifications in this request and any pending modifications are
+            // asynchronously applied as soon as possible": what an earlier call staged is
+            // applied first, so a setting THIS request also names still wins.
+            changed |= record.apply_deferred_modification();
+            staged.apply(&mut record);
+        } else if !staged.is_empty() {
+            record
+                .deferred_modification
+                .get_or_insert_with(crate::state::DeferredModification::default)
+                .stage(staged);
         }
         if let Some(value) = input.max_allocated_storage {
             changed = true;
             record.max_allocated_storage = Some(value);
         }
-        if let Some(value) = input.backup_retention_period {
-            changed = true;
-            record.backup_retention_period = value;
-        }
         if let Some(value) = input.preferred_backup_window {
             changed = true;
             record.preferred_backup_window = Some(value);
         }
-        if let Some(value) = input.preferred_maintenance_window {
+        // The window itself is stored with its day names folded, the form the service
+        // reports it in whatever case the request used
+        // ([`crate::state::stored_maintenance_window`]).
+        if let Some(value) = input.preferred_maintenance_window.as_deref() {
             changed = true;
-            record.preferred_maintenance_window = Some(value);
-        }
-        if let Some(value) = input.multi_az {
-            changed = true;
-            record.multi_az = value;
-        }
-        if let Some(value) = input.storage_type {
-            changed = true;
-            record.storage_type = value;
-        }
-        if let Some(value) = input.iops {
-            changed = true;
-            record.iops = Some(value);
-        }
-        if let Some(value) = input.license_model {
-            changed = true;
-            record.license_model = Some(value);
-        }
-        if let Some(value) = input.db_port_number {
-            changed = true;
-            record.endpoint_port = value;
+            record.preferred_maintenance_window =
+                Some(crate::state::stored_maintenance_window(value));
         }
         if let Some(value) = input.publicly_accessible {
             changed = true;
@@ -874,10 +910,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             changed = true;
             record.deletion_protection = value;
         }
-        if let Some(value) = moved_to_subnet_group {
-            changed = true;
-            record.db_subnet_group_name = Some(value);
-        }
         if let Some(value) = input.db_parameter_group_name {
             changed = true;
             record.db_parameter_group_name = Some(value);
@@ -894,29 +926,38 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             changed = true;
             record.db_security_group_names = value;
         }
-        if let Some(value) = input.ca_certificate_identifier {
-            changed = true;
-            record.ca_certificate_identifier = value;
-        }
         if let Some(value) = input.monitoring_interval {
             changed = true;
             record.monitoring_interval = value;
         }
+        // The Performance Insights configuration: whether the instance collects that data,
+        // the key it is encrypted under and how long it is retained — an instance that
+        // collects none retains none, so turning the collection off clears the period the
+        // instance reports rather than leaving a retention for data nothing keeps, and
+        // turning it on without a period gives it the documented default.
         if let Some(value) = input.enable_performance_insights {
             changed = true;
             record.performance_insights_enabled = value;
+            record.performance_insights_retention_period = value.then(|| {
+                input
+                    .performance_insights_retention_period
+                    .or(record.performance_insights_retention_period)
+                    .unwrap_or(crate::state::DEFAULT_PERFORMANCE_INSIGHTS_RETENTION_PERIOD)
+            });
         }
-        if let Some(value) = input.enable_iam_database_authentication {
+        if let Some(value) = input.performance_insights_retention_period {
+            if record.performance_insights_enabled {
+                changed = true;
+                record.performance_insights_retention_period = Some(value);
+            }
+        }
+        if let Some(value) = input.performance_insights_kms_key_id {
             changed = true;
-            record.iam_database_authentication_enabled = value;
+            record.performance_insights_kms_key_id = Some(value);
         }
         if let Some(value) = input.database_insights_mode {
             changed = true;
             record.database_insights_mode = value;
-        }
-        if let Some(value) = input.dedicated_log_volume {
-            changed = true;
-            record.dedicated_log_volume = value;
         }
         if let Some(value) = input.enable_customer_owned_ip {
             changed = true;
@@ -930,10 +971,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             changed = true;
             record.engine_lifecycle_support = value;
         }
-        if let Some(value) = input.storage_throughput {
-            changed = true;
-            record.storage_throughput = value;
-        }
         // `DisableDomain` wins over `Domain`, as its name says: it leaves the domain.
         if let Some(value) = input.domain {
             changed = true;
@@ -942,17 +979,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if input.disable_domain == Some(true) {
             changed = true;
             record.domain = None;
-        }
-        // `MasterUserPassword` is `@sensitive` and RDS reports no member carrying it: it
-        // is never stored or returned as itself. What the record keeps is the DIGESTS a
-        // login on the instance's own engine endpoint is verified against, so a modified
-        // password is the one that opens a session from now on and the old one stops
-        // working — which is what changing it means.
-        if let Some(value) = input.master_user_password.as_deref() {
-            changed = true;
-            record.master_user_password = record.master_username.as_ref().map(|username| {
-                crate::state::data_plane::wire_session::MasterPasswordHash::new(username, value)
-            });
         }
         // What the Secrets Manager calls above did, recorded on the instance: the secret a
         // request that turned management ON minted is what the instance reports as

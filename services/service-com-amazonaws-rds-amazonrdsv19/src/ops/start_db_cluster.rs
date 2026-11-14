@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op StartDBCluster
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `StartDBCluster`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! IMPLEMENTED: this operation starts a DB cluster that `StopDBCluster` stopped. This is
+//! the ONLY file to touch for it.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`StartDBCluster::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Its records and their projection onto the modelled wire shapes live in
+//! [`crate::state`], shared with the other implemented DB-cluster operations.
 //!
 //! ## Shape of an operation
 //!
@@ -163,18 +159,129 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `StartDBCluster` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(StartDBClusterErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("StartDBCluster"))
+        let region = crate::state::request_region(ctx).map_err(StartDBClusterError::validation)?;
+        // "The DB cluster identifier … This parameter is stored as a lowercase string",
+        // and every member that names a DB cluster also accepts its ARN, so the lookup
+        // folds the way the stored key does.
+        let identifier = crate::state::db_cluster_identifier_of(&input.db_cluster_identifier)
+            .to_ascii_lowercase();
+
+        // No store means this service was mounted on an engine it has no state in, so it
+        // cannot serve the operation at all. Unreachable with the engine the router builds;
+        // 501 is the honest answer, never a start nothing performed.
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(crate::scaffolded::Scaffolded::not_implemented(Self::NAME));
+        };
+        let mut store = state.lock();
+        // The transitions the clock already made due — owed at this instant whether or not
+        // anybody called — so the state this start is judged against is the current one.
+        store.settle_due_transitions(&region);
+
+        // The cluster this call ADDRESSES is resolved FIRST: the operation models
+        // `DBClusterNotFoundFault` for exactly this, and a cluster that does not exist has
+        // nothing to start. RDS is regional, so only the region the request was signed for
+        // is in scope.
+        let key = (region.clone(), identifier.clone());
+        let Some(cluster) = store.db_clusters.get(&key) else {
+            return Err(StartDBClusterErrorModeled::DBClusterNotFoundFault(
+                DBClusterNotFoundFault {
+                    message: Some(crate::state::db_cluster_not_found_message(
+                        &input.db_cluster_identifier,
+                    )),
+                },
+            )
+            .into());
+        };
+        // "This operation only applies to Aurora DB clusters": a `DBClusterIdentifier`
+        // naming a cluster of the other kind names one this call cannot start at all, which
+        // is a value the parameter does not accept rather than a state the cluster is in —
+        // `InvalidParameterValue`, the Query API error this front door answers such a value
+        // with ([`crate::state::cluster_kind_unsupported_message`]).
+        if !crate::state::ClusterKind::Aurora.holds_for(&cluster.engine) {
+            let engine = cluster.engine.clone();
+            return Err(StartDBClusterError::invalid_parameter_value(
+                crate::state::cluster_kind_unsupported_message(
+                    Self::NAME,
+                    &identifier,
+                    &engine,
+                    crate::state::ClusterKind::Aurora,
+                ),
+            ));
+        }
+
+        // "Starts an Amazon Aurora DB cluster that was stopped": there has to be a stopped
+        // cluster to start, so a cluster that is running, still coming up, still stopping
+        // or on its way out cannot take a start — the modelled cluster state fault. The
+        // status the clock has yet to settle is real, so a start issued immediately after a
+        // stop sees `stopping` and is refused.
+        if cluster.status != crate::state::DB_CLUSTER_STATUS_STOPPED {
+            let status = cluster.status.clone();
+            return Err(StartDBClusterErrorModeled::InvalidDBClusterStateFault(
+                InvalidDBClusterStateFault {
+                    message: Some(crate::state::cluster_state_message(
+                        &identifier,
+                        &status,
+                        crate::state::DB_CLUSTER_STATUS_STOPPED,
+                    )),
+                },
+            )
+            .into());
+        }
+
+        // The start is accepted: the cluster reports `starting` now and the clock owes it
+        // `available`. A key this handler resolved and a lookup under it can only disagree
+        // if the record is not where the resolve said it was, which answers the same
+        // modelled 404 as a cluster that was never there: a disagreement is a "not found",
+        // never a panic that would take the whole emulator down with it.
+        let accepted = {
+            let Some(record) = store.db_clusters.get_mut(&key) else {
+                return Err(StartDBClusterErrorModeled::DBClusterNotFoundFault(
+                    DBClusterNotFoundFault {
+                        message: Some(crate::state::db_cluster_not_found_message(
+                            &input.db_cluster_identifier,
+                        )),
+                    },
+                )
+                .into());
+            };
+            record.status = crate::state::DB_CLUSTER_STATUS_STARTING.to_string();
+            record.pending_status = Some(crate::state::PendingStatus::in_a_moment(
+                crate::state::DB_CLUSTER_STATUS_AVAILABLE,
+            ));
+            record.clone()
+        };
+        // The member instances come back up with the cluster, the mirror of the stop that
+        // took them down ("when you stop a DB cluster, its DB instances are also stopped"):
+        // a member left reporting `stopped` would claim a database no client can reach in a
+        // cluster that is running. Only a member that IS stopped is started — one the clock
+        // still owes a transition keeps what it owes, because a start must not discard
+        // another call's accepted change.
+        let members: Vec<(String, String)> = store
+            .instances_in(&region)
+            .into_iter()
+            .filter(|instance| {
+                instance
+                    .db_cluster_identifier
+                    .as_ref()
+                    .is_some_and(|named| named.eq_ignore_ascii_case(&identifier))
+                    && instance.status == crate::state::DB_INSTANCE_STATUS_STOPPED
+            })
+            .map(|instance| (instance.region.clone(), instance.identifier.clone()))
+            .collect();
+        for member in members {
+            if let Some(instance) = store.db_instances.get_mut(&member) {
+                instance.status = crate::state::DB_INSTANCE_STATUS_STARTING.to_string();
+                instance.pending_status = Some(crate::state::PendingStatus::in_a_moment(
+                    crate::state::DB_INSTANCE_STATUS_AVAILABLE,
+                ));
+            }
+        }
+
+        // The answer is the cluster this call changed, projected the one way every
+        // operation of this service projects one, so the start a caller is told about is
+        // the start a following describe reports.
+        Ok(StartDBClusterOutput {
+            db_cluster: Some(store.cluster_to_wire(&accepted)),
+        })
     }
 }

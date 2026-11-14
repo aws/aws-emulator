@@ -530,6 +530,9 @@ async fn a_setting_turned_back_on_resolves_the_recommendation_it_raised() {
     );
 
     // One modify call turns the setting on — exactly the action the recommendation names.
+    // Enabling automated backups "can result in a brief I/O suspension", so that change is
+    // "applied during the next maintenance window unless the ApplyImmediately parameter is
+    // enabled for this request" — and this test is about the setting being on.
     expect_ok(
         "turn automated backups on",
         call(
@@ -537,6 +540,7 @@ async fn a_setting_turned_back_on_resolves_the_recommendation_it_raised() {
             "ModifyDBInstance",
             &[
                 ("DBInstanceIdentifier", "emu-rec-cycle"),
+                ("ApplyImmediately", "true"),
                 ("BackupRetentionPeriod", "7"),
             ],
         )
@@ -576,6 +580,7 @@ async fn a_setting_turned_back_on_resolves_the_recommendation_it_raised() {
             "ModifyDBInstance",
             &[
                 ("DBInstanceIdentifier", "emu-rec-cycle"),
+                ("ApplyImmediately", "true"),
                 ("BackupRetentionPeriod", "0"),
             ],
         )

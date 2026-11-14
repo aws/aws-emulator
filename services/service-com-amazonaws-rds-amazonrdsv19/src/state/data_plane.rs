@@ -436,6 +436,51 @@ pub async fn capture_cluster_storage(
     capture_storage(database, "DB cluster").await
 }
 
+/// A COPY of the data an endpoint that has just been opened holds, for a caller that has
+/// the endpoint in hand rather than in the store: what a DB cluster's EARLIEST backtrack
+/// point holds, taken where the cluster's listener is opened.
+///
+/// Same contract as the two captures above: the copy runs on a blocking task and `Err`
+/// carries what went wrong, which the caller answers as a failure of this emulator rather
+/// than recording a backtrack point that holds nothing.
+pub async fn capture_endpoint_storage(
+    endpoint: &DbEngineEndpoint,
+) -> Result<Option<Arc<sql_engine::InstanceDatabase>>, String> {
+    capture_storage(Some(endpoint.database()), "DB cluster").await
+}
+
+/// Put the data the DB CLUSTER `key` names back to the copy `source` holds, which is what
+/// BACKTRACKING a cluster does: "rewinds the DB cluster to the time you specify", so the
+/// rows a session reads afterwards are the rows the cluster held at that time.
+///
+/// The live storage is REPLACED rather than merged into
+/// ([`sql_engine::InstanceDatabase::load_from`]), the handle is read under the store's guard
+/// and the guard is released before the copy is awaited, and the copy itself runs on a
+/// blocking task under the engine's own deadline — the same contract the captures above
+/// hold. `Ok(())` for a cluster with no engine endpoint, which has no data to rewind.
+pub async fn rewind_cluster_storage(
+    state: &::engine::ServiceState<ComAmazonawsRdsAmazonrdsv19State>,
+    key: &RegionalKey,
+    source: Arc<sql_engine::InstanceDatabase>,
+) -> Result<(), String> {
+    let Some(live) = state
+        .lock()
+        .cluster_engine_endpoint(key)
+        .map(DbEngineEndpoint::database)
+    else {
+        return Ok(());
+    };
+    ::tokio::task::spawn_blocking(move || live.load_from(&source))
+        .await
+        .map_err(|error| format!("the DB cluster's storage could not be rewound: {error}"))?
+        .map_err(|error| {
+            format!(
+                "the DB cluster's storage could not be rewound: {}",
+                error.message
+            )
+        })
+}
+
 /// The copy itself, for a resource whose database handle has already been read out of the
 /// store: the one body the two captures above share, so a DB instance's snapshot and a DB
 /// cluster's are taken by the same engine call under the same bounds and report the same

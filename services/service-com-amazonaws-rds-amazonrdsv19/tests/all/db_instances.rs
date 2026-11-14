@@ -1653,10 +1653,16 @@ async fn modify_writes_every_supplied_setting_through_to_the_store() {
         "a modification must not disturb a setting the request did not name"
     );
 
-    // A deferred modification is refused nowhere: it is applied, so the store changes.
-    // The size is one the storage type the rows above left the instance on takes —
-    // Provisioned IOPS SSD starts at 100 GiB, and `DescribeValidDBInstanceModifications`
-    // reports exactly that, which is the bound this operation enforces.
+    // A modification the caller did not ask to apply immediately is staged for the next
+    // maintenance window: the live attribute keeps the value the instance is running
+    // under, and the staged one is reported as pending. The size is one the storage type
+    // the rows above left the instance on takes — Provisioned IOPS SSD starts at 100 GiB,
+    // and `DescribeValidDBInstanceModifications` reports exactly that, which is the bound
+    // this operation enforces.
+    let live_storage = optional_text(
+        &describe_one(&router, "before a deferred modification", "emu-mod").await,
+        "AllocatedStorage",
+    );
     let deferred = expect_ok(
         "deferred modification",
         call(
@@ -1670,10 +1676,23 @@ async fn modify_writes_every_supplied_setting_through_to_the_store() {
         )
         .await,
     );
+    let deferred = the_instance("deferred modification", &deferred);
     assert_eq!(
-        text(&the_instance("deferred modification", &deferred), "AllocatedStorage"),
+        optional_text(&deferred, "AllocatedStorage"),
+        live_storage,
+        "a deferred modification must leave the live storage alone, got {:?}",
+        optional_text(&deferred, "AllocatedStorage")
+    );
+    let pending = subtrees(&deferred, "PendingModifiedValues");
+    assert_eq!(
+        pending.len(),
+        1,
+        "a deferred modification reports pending modified values, got {pending:?}"
+    );
+    assert_eq!(
+        text(&pending[0], "AllocatedStorage"),
         "150",
-        "a deferred modification must still change the stored record"
+        "a deferred modification must report the staged storage as pending"
     );
 }
 
@@ -1719,6 +1738,12 @@ async fn modify_renames_an_instance_and_refuses_a_name_already_taken() {
             "ModifyDBInstance",
             &params![
                 "DBInstanceIdentifier" => "emu-rename-a",
+                // "When you change the DB instance identifier, an instance reboot occurs
+                // immediately if you enable ApplyImmediately, or will occur during the
+                // next maintenance window if you disable ApplyImmediately" — and what
+                // this test is about is the rename itself, so it asks for it now. The
+                // deferred form is covered by `pending_modified_values`.
+                "ApplyImmediately" => true,
                 "NewDBInstanceIdentifier" => "Emu-Rename-C",
             ],
         )

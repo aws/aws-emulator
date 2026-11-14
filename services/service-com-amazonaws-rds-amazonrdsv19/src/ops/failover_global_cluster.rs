@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op FailoverGlobalCluster
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `FailoverGlobalCluster`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! IMPLEMENTED: this operation promotes a secondary DB cluster of an Aurora global
+//! database to be its primary. This is the ONLY file to touch for it.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`FailoverGlobalCluster::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! The promotion itself is the rule both this operation and `SwitchoverGlobalCluster`
+//! perform ([`crate::state::ComAmazonawsRdsAmazonrdsv19State::promote_global_cluster_primary`]).
 //!
 //! ## Shape of an operation
 //!
@@ -183,18 +179,92 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `FailoverGlobalCluster` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(FailoverGlobalClusterErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("FailoverGlobalCluster"))
+        // A global cluster is ACCOUNT-scoped, so the region the request was signed for does
+        // not scope which global database this call reaches. It is still read: a target named
+        // by its bare identifier is resolved in the region the call was signed for, as every
+        // other cluster-naming member of this service resolves one.
+        let region = crate::state::request_region(ctx)
+            .map_err(FailoverGlobalClusterError::validation)?;
+        // "Failing over - Specify the AllowDataLoss parameter and don't specify the
+        // Switchover parameter. Switching over - Specify the Switchover parameter or omit
+        // it, but don't specify the AllowDataLoss parameter": the two members state the same
+        // constraint about each other ("Can't be specified together with the … parameter"),
+        // so a request carrying both is a combination this operation does not accept.
+        if input.allow_data_loss.is_some() && input.switchover.is_some() {
+            return Err(FailoverGlobalClusterError::invalid_parameter_combination(
+                "AllowDataLoss can't be specified together with Switchover",
+            ));
+        }
+
+        // No store means this service was mounted on an engine it has no state in, so it
+        // cannot serve the operation at all. Unreachable with the engine the router builds;
+        // 501 is the honest answer, never a promotion nothing performed.
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(crate::scaffolded::Scaffolded::not_implemented(Self::NAME));
+        };
+        // WHICH operation this is decides the transient status the global database reports
+        // while the promotion runs: a request that allows data loss "triggers a global
+        // failover operation", and one that does not is the switchover this operation also
+        // serves ("If you don't specify AllowDataLoss, the global database cluster operation
+        // defaults to a switchover").
+        let in_status = if input.allow_data_loss == Some(true) {
+            crate::state::GLOBAL_CLUSTER_STATUS_FAILING_OVER
+        } else {
+            crate::state::GLOBAL_CLUSTER_STATUS_SWITCHING_OVER
+        };
+        let promoted = state
+            .lock()
+            .promote_global_cluster_primary(
+                &region,
+                &input.global_cluster_identifier,
+                &input.target_db_cluster_identifier,
+                in_status,
+            )
+            .map_err(|rejection| -> FailoverGlobalClusterError {
+                match rejection {
+                crate::state::PromotionRejection::GlobalClusterNotFound(message) => {
+                    FailoverGlobalClusterErrorModeled::GlobalClusterNotFoundFault(
+                        GlobalClusterNotFoundFault {
+                            message: Some(message),
+                        },
+                    )
+                    .into()
+                }
+                crate::state::PromotionRejection::GlobalClusterState(message) => {
+                    FailoverGlobalClusterErrorModeled::InvalidGlobalClusterStateFault(
+                        InvalidGlobalClusterStateFault {
+                            message: Some(message),
+                        },
+                    )
+                    .into()
+                }
+                crate::state::PromotionRejection::DbClusterNotFound(message) => {
+                    FailoverGlobalClusterErrorModeled::DBClusterNotFoundFault(
+                        DBClusterNotFoundFault {
+                            message: Some(message),
+                        },
+                    )
+                    .into()
+                }
+                crate::state::PromotionRejection::DbClusterState(message) => {
+                    FailoverGlobalClusterErrorModeled::InvalidDBClusterStateFault(
+                        InvalidDBClusterStateFault {
+                            message: Some(message),
+                        },
+                    )
+                    .into()
+                }
+                crate::state::PromotionRejection::Combination(message) => {
+                    FailoverGlobalClusterError::invalid_parameter_combination(message)
+                }
+                }
+            })?;
+
+        // The answer is the global database this call changed, projected the one way every
+        // operation of this service projects one, so the promotion a caller is told about is
+        // the one a following `DescribeGlobalClusters` reports.
+        Ok(FailoverGlobalClusterOutput {
+            global_cluster: Some(promoted.to_wire()),
+        })
     }
 }

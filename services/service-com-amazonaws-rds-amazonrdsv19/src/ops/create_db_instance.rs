@@ -399,6 +399,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
+        if let Some(period) = input.performance_insights_retention_period {
+            crate::state::check_performance_insights_retention_period(period)
+                .map_err(CreateDBInstanceError::invalid_parameter_value)?;
+        }
+
         // A value this service can resolve for itself is resolved BEFORE anything is
         // stored, and before the duplicate-identifier check below: a request that is
         // wrong in its parameters is refused for the parameter, not for a conflict the
@@ -806,9 +811,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     .preferred_backup_window
                     .unwrap_or_else(|| crate::state::DEFAULT_PREFERRED_BACKUP_WINDOW.to_string()),
             ),
-            preferred_maintenance_window: Some(input.preferred_maintenance_window.unwrap_or_else(
-                || crate::state::DEFAULT_PREFERRED_MAINTENANCE_WINDOW.to_string(),
-            )),
+            // `PreferredMaintenanceWindow` is stored with its day names folded, the form
+            // the service reports it in whatever case the request used
+            // ([`crate::state::stored_maintenance_window`]).
+            preferred_maintenance_window: Some(
+                input
+                    .preferred_maintenance_window
+                    .as_deref()
+                    .map(crate::state::stored_maintenance_window)
+                    .unwrap_or_else(|| {
+                        crate::state::DEFAULT_PREFERRED_MAINTENANCE_WINDOW.to_string()
+                    }),
+            ),
             publicly_accessible,
             // `AutoMinorVersionUpgrade`: "By default, minor engine upgrades are
             // applied automatically."
@@ -844,6 +858,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // `EnableCustomerOwnedIp` and `DedicatedLogVolume` each enable something
             // the request asks for, so an instance created without them has it off.
             performance_insights_enabled: input.enable_performance_insights.unwrap_or(false),
+            // The Performance Insights configuration: the key the data is encrypted under
+            // where the request named one, and the period it is retained for — the
+            // documented default for an instance that collects it and named no period, and
+            // nothing at all for one that collects none, which retains none.
+            performance_insights_kms_key_id: input.performance_insights_kms_key_id,
+            performance_insights_retention_period: input
+                .enable_performance_insights
+                .unwrap_or(false)
+                .then(|| {
+                    input.performance_insights_retention_period.unwrap_or(
+                        crate::state::DEFAULT_PERFORMANCE_INSIGHTS_RETENTION_PERIOD,
+                    )
+                }),
             iam_database_authentication_enabled: input
                 .enable_iam_database_authentication
                 .unwrap_or(false),
@@ -870,6 +897,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // `CreateDBInstance` publishes no `AssociatedRoles` member, so an instance is
             // created with none: `AddRoleToDBInstance` is what associates a role with one.
             associated_roles: Vec::new(),
+            // A created instance has nothing staged for its maintenance window: a
+            // deferred modification is what `ModifyDBInstance` stages.
+            deferred_modification: None,
             // The instance's log starts empty; the line below is its first entry, and the
             // transitions the clock then makes due add the rest (`DbInstanceRecord`).
             engine_log: crate::state::InstanceLog::default(),

@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op SwitchoverGlobalCluster
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `SwitchoverGlobalCluster`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! IMPLEMENTED: this operation switches a secondary DB cluster of an Aurora global
+//! database over to be its primary. This is the ONLY file to touch for it.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`SwitchoverGlobalCluster::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! The promotion itself is the rule both this operation and `FailoverGlobalCluster`
+//! perform ([`crate::state::ComAmazonawsRdsAmazonrdsv19State::promote_global_cluster_primary`]).
 //!
 //! ## Shape of an operation
 //!
@@ -164,18 +160,77 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `SwitchoverGlobalCluster` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(SwitchoverGlobalClusterErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("SwitchoverGlobalCluster"))
+        // A global cluster is ACCOUNT-scoped, so the region the request was signed for does
+        // not scope which global database this call reaches. It is still read: a target named
+        // by its bare identifier is resolved in the region the call was signed for, as every
+        // other cluster-naming member of this service resolves one.
+        let region = crate::state::request_region(ctx)
+            .map_err(SwitchoverGlobalClusterError::validation)?;
+
+        // No store means this service was mounted on an engine it has no state in, so it
+        // cannot serve the operation at all. Unreachable with the engine the router builds;
+        // 501 is the honest answer, never a switchover nothing performed.
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(crate::scaffolded::Scaffolded::not_implemented(Self::NAME));
+        };
+        // "Aurora promotes the specified secondary cluster to assume full read/write
+        // capabilities and demotes the current primary cluster to a secondary": the same
+        // promotion `FailoverGlobalCluster` performs, reported under this operation's own
+        // transient status — a switchover, in which "the new primary continues operations …
+        // without losing any data".
+        let promoted = state
+            .lock()
+            .promote_global_cluster_primary(
+                &region,
+                &input.global_cluster_identifier,
+                &input.target_db_cluster_identifier,
+                crate::state::GLOBAL_CLUSTER_STATUS_SWITCHING_OVER,
+            )
+            .map_err(|rejection| -> SwitchoverGlobalClusterError {
+                match rejection {
+                crate::state::PromotionRejection::GlobalClusterNotFound(message) => {
+                    SwitchoverGlobalClusterErrorModeled::GlobalClusterNotFoundFault(
+                        GlobalClusterNotFoundFault {
+                            message: Some(message),
+                        },
+                    )
+                    .into()
+                }
+                crate::state::PromotionRejection::GlobalClusterState(message) => {
+                    SwitchoverGlobalClusterErrorModeled::InvalidGlobalClusterStateFault(
+                        InvalidGlobalClusterStateFault {
+                            message: Some(message),
+                        },
+                    )
+                    .into()
+                }
+                crate::state::PromotionRejection::DbClusterNotFound(message) => {
+                    SwitchoverGlobalClusterErrorModeled::DBClusterNotFoundFault(
+                        DBClusterNotFoundFault {
+                            message: Some(message),
+                        },
+                    )
+                    .into()
+                }
+                crate::state::PromotionRejection::DbClusterState(message) => {
+                    SwitchoverGlobalClusterErrorModeled::InvalidDBClusterStateFault(
+                        InvalidDBClusterStateFault {
+                            message: Some(message),
+                        },
+                    )
+                    .into()
+                }
+                crate::state::PromotionRejection::Combination(message) => {
+                    SwitchoverGlobalClusterError::invalid_parameter_combination(message)
+                }
+                }
+            })?;
+
+        // The answer is the global database this call changed, projected the one way every
+        // operation of this service projects one, so the switchover a caller is told about
+        // is the one a following `DescribeGlobalClusters` reports.
+        Ok(SwitchoverGlobalClusterOutput {
+            global_cluster: Some(promoted.to_wire()),
+        })
     }
 }

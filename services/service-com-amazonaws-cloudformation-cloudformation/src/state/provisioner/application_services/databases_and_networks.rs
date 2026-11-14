@@ -1729,6 +1729,196 @@ pub(crate) async fn describe_db_instance(
     }
 }
 
+/// Apply a CHANGED declaration to the DB instance a stack already created, through
+/// `ModifyDBInstance` — the call Amazon RDS changes an instance's own settings with.
+///
+/// Only the settings the modification TAKES are sent ([`MODIFY_DB_INSTANCE_MEMBERS`]): a
+/// create-only setting is not something a modification can change, so a declaration that
+/// changed one is applied as far as the modification reaches and the rest is left to the
+/// replacement CloudFormation decides elsewhere. `ApplyImmediately` is sent as the
+/// declaration asks, and defaults to applying the change at once, because a stack reports a
+/// resource updated when the update is done rather than when the instance's next maintenance
+/// window comes round.
+pub(crate) async fn update_db_instance(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    resource: &StoredResource,
+    declared: &Value,
+) -> Result<Option<Created>, Refusal> {
+    let mut parameters = query_members(
+        declared,
+        MODIFY_DB_INSTANCE_MEMBERS,
+        DB_INSTANCE_RENAMED_PROPERTIES,
+        DB_INSTANCE_UPDATE_PROPERTIES_NOT_SENT,
+        RDS_DB_INSTANCE,
+    )?;
+    parameters.push((
+        "DBInstanceIdentifier".to_string(),
+        resource.physical_resource_id.clone(),
+    ));
+    if !parameters
+        .iter()
+        .any(|(member, _)| member == "ApplyImmediately")
+    {
+        parameters.push(("ApplyImmediately".to_string(), "true".to_string()));
+    }
+    call_query(
+        ctx,
+        RDS_SIGNING_NAME,
+        region,
+        RDS_API_VERSION,
+        "ModifyDBInstance",
+        &parameters,
+    )
+    .await?;
+    // The instance keeps the identity it was created with — the ARN, the resource id and
+    // the endpoint all follow the identifier — so a modification reports no new attribute.
+    Ok(Some(Created::attributes(BTreeMap::new())))
+}
+
+/// The members `ModifyDBInstance` takes that an `AWS::RDS::DBInstance` declaration can
+/// carry, from Amazon RDS's own model (`smithy_query(query="operation",
+/// operation="ModifyDBInstance")`): the create's catalogue plus the one member only a
+/// modification has.
+const MODIFY_DB_INSTANCE_MEMBERS: &[(&str, QueryMember)] = &[
+    ("AllocatedStorage", QueryMember::Scalar),
+    ("ApplyImmediately", QueryMember::Scalar),
+    ("AutoMinorVersionUpgrade", QueryMember::Scalar),
+    ("BackupRetentionPeriod", QueryMember::Scalar),
+    ("CACertificateIdentifier", QueryMember::Scalar),
+    ("CopyTagsToSnapshot", QueryMember::Scalar),
+    ("DBParameterGroupName", QueryMember::Scalar),
+    ("DBSecurityGroups", QueryMember::List("DBSecurityGroupName")),
+    ("DBSubnetGroupName", QueryMember::Scalar),
+    ("DatabaseInsightsMode", QueryMember::Scalar),
+    ("DedicatedLogVolume", QueryMember::Scalar),
+    ("DeletionProtection", QueryMember::Scalar),
+    ("Domain", QueryMember::Scalar),
+    ("DomainAuthSecretArn", QueryMember::Scalar),
+    ("DomainDnsIps", QueryMember::List("member")),
+    ("DomainFqdn", QueryMember::Scalar),
+    ("DomainIAMRoleName", QueryMember::Scalar),
+    ("DomainOu", QueryMember::Scalar),
+    ("EnableCustomerOwnedIp", QueryMember::Scalar),
+    ("EnableIAMDatabaseAuthentication", QueryMember::Scalar),
+    ("EnablePerformanceInsights", QueryMember::Scalar),
+    ("Engine", QueryMember::Scalar),
+    ("EngineVersion", QueryMember::Scalar),
+    ("Iops", QueryMember::Scalar),
+    ("LicenseModel", QueryMember::Scalar),
+    ("ManageMasterUserPassword", QueryMember::Scalar),
+    ("MasterUserPassword", QueryMember::Scalar),
+    ("MasterUserSecretKmsKeyId", QueryMember::Scalar),
+    ("MaxAllocatedStorage", QueryMember::Scalar),
+    ("MonitoringInterval", QueryMember::Scalar),
+    ("MonitoringRoleArn", QueryMember::Scalar),
+    ("MultiAZ", QueryMember::Scalar),
+    ("MultiTenant", QueryMember::Scalar),
+    ("NetworkType", QueryMember::Scalar),
+    ("OptionGroupName", QueryMember::Scalar),
+    ("PerformanceInsightsKMSKeyId", QueryMember::Scalar),
+    ("PerformanceInsightsRetentionPeriod", QueryMember::Scalar),
+    ("PreferredBackupWindow", QueryMember::Scalar),
+    ("PreferredMaintenanceWindow", QueryMember::Scalar),
+    ("ProcessorFeatures", QueryMember::List("ProcessorFeature")),
+    ("PromotionTier", QueryMember::Scalar),
+    ("PubliclyAccessible", QueryMember::Scalar),
+    ("StorageThroughput", QueryMember::Scalar),
+    ("StorageType", QueryMember::Scalar),
+    ("VpcSecurityGroupIds", QueryMember::List("VpcSecurityGroupId")),
+];
+
+/// The properties the UPDATE does not send: the create's own list, plus every property that
+/// is not a member of `ModifyDBInstance` at all — where the instance was placed, what it was
+/// created from and the cluster it joined, none of which that call can change.
+const DB_INSTANCE_UPDATE_PROPERTIES_NOT_SENT: &[&str] = &[
+    "DBInstanceIdentifier",
+    "Tags",
+    "AvailabilityZone",
+    "BackupTarget",
+    "CertificateDetails",
+    "CharacterSetName",
+    "CustomIamInstanceProfile",
+    "CustomIAMInstanceProfile",
+    "DBClusterIdentifier",
+    "DBInstanceClass",
+    "DBName",
+    "DBSystemId",
+    "DbiResourceId",
+    "DeleteAutomatedBackups",
+    "EnableCloudwatchLogsExports",
+    "Endpoint",
+    "EngineLifecycleSupport",
+    "KmsKeyId",
+    "MasterUserAuthenticationType",
+    "MasterUserSecret",
+    "MasterUsername",
+    "NcharCharacterSetName",
+    "Port",
+    "SourceDBInstanceIdentifier",
+    "SourceDbiResourceId",
+    "SourceRegion",
+    "StorageEncrypted",
+    "TdeCredentialArn",
+    "TdeCredentialPassword",
+    "Timezone",
+    "UseDefaultProcessorFeatures",
+    "AllowMajorVersionUpgrade",
+    "CertificateRotationRestart",
+];
+
+/// The `DBInstance$DBInstanceStatus` an instance SERVES in, and the ones a new instance is
+/// still coming up out of ("Viewing DB instance status" in the Amazon RDS User Guide lists
+/// the statuses an instance is reported in, of which these are the ones a create and a
+/// modification pass through).
+///
+/// An instance in any other status is in one no wait brings a NEW instance out of, which is
+/// a resource that failed to come up rather than one still coming.
+pub(crate) const DB_INSTANCE_STATUS_AVAILABLE: &str = "available";
+pub(crate) const DB_INSTANCE_STATUSES_COMING_UP: &[&str] = &[
+    "creating",
+    "backing-up",
+    "configuring-enhanced-monitoring",
+    "configuring-log-exports",
+    "maintenance",
+    "modifying",
+    "rebooting",
+    "starting",
+    "upgrading",
+];
+
+/// Whether Amazon RDS reports the DB instance a stack created UP.
+///
+/// `CreateDBInstance` answers the instance `creating`, in which it serves no connection, so
+/// the resource's creation is held open until that service reports it `available` — which is
+/// what makes a stack that declares a database and something that uses it complete only once
+/// the database is really there. A status no new instance comes out of, and an instance
+/// Amazon RDS no longer holds, is a failure, because nothing is going to bring it up.
+pub(crate) async fn db_instance_readiness(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    physical_resource_id: &str,
+) -> Result<Readiness, Refusal> {
+    let Some(reported) = describe_db_instance(ctx, region, physical_resource_id).await? else {
+        return Ok(Readiness::Failed(format!(
+            "Amazon RDS holds no DB instance named {physical_resource_id}"
+        )));
+    };
+    let status = reported
+        .get("DBInstanceStatus")
+        .and_then(scalar_text)
+        .unwrap_or_default();
+    if status == DB_INSTANCE_STATUS_AVAILABLE {
+        return Ok(Readiness::Ready);
+    }
+    if DB_INSTANCE_STATUSES_COMING_UP.contains(&status.as_str()) {
+        return Ok(Readiness::Pending(status));
+    }
+    Ok(Readiness::Failed(format!(
+        "Amazon RDS reports the DB instance {physical_resource_id} in status {status}"
+    )))
+}
+
 /// The cluster's configuration as Amazon Redshift reports it, for drift detection. A
 /// cluster it no longer has (`ClusterNotFound`) was deleted.
 ///

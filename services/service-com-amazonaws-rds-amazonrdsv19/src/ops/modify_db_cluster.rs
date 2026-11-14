@@ -449,6 +449,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             crate::state::check_security_group_memberships("VpcSecurityGroupIds", groups)
                 .map_err(ModifyDBClusterError::invalid_parameter_value)?;
         }
+        if let Some(period) = input.performance_insights_retention_period {
+            crate::state::check_performance_insights_retention_period(period)
+                .map_err(ModifyDBClusterError::invalid_parameter_value)?;
+        }
         if let Some(exports) = &input.cloudwatch_logs_export_configuration {
             for (member, values) in [
                 ("EnableLogTypes", exports.enable_log_types.as_ref()),
@@ -652,11 +656,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .ok()
             .flatten()
             .and_then(|entry| entry.profile.serverless_v2_scaling_range());
-            let version_label =
-                effective_version.unwrap_or_else(|| "(default)".to_string());
             crate::state::check_serverless_v2_scaling(
-                &engine,
-                &version_label,
                 capacity,
                 asked.min_capacity,
                 asked.max_capacity,
@@ -870,9 +870,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             changed = true;
             record.preferred_backup_window = value;
         }
-        if let Some(value) = input.preferred_maintenance_window {
+        // The window is stored with its day names folded, the form the service reports it
+        // in whatever case the request used
+        // ([`crate::state::stored_maintenance_window`]).
+        if let Some(value) = input.preferred_maintenance_window.as_deref() {
             changed = true;
-            record.preferred_maintenance_window = value;
+            record.preferred_maintenance_window =
+                crate::state::stored_maintenance_window(value);
         }
         if let Some(value) = input.db_cluster_parameter_group_name {
             changed = true;

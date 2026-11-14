@@ -14,6 +14,90 @@
 
 use super::*;
 
+/// Which KIND of DB cluster an operation serves, for the two that serve one kind only:
+/// `StartDBCluster` and `StopDBCluster` "only appl[y] to Aurora DB clusters", and
+/// `RebootDBCluster` is for "a non-Aurora Multi-AZ DB cluster".
+///
+/// `CreateDBCluster` documents the two kinds and the engines that make each one
+/// ([`is_multi_az_db_cluster`]), so which kind a cluster IS follows from its engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusterKind {
+    /// An Aurora DB cluster — and the Aurora-style clusters of the sibling control planes
+    /// this front door serves.
+    Aurora,
+    /// A Multi-AZ DB cluster: "Multi-AZ deployments with two readable standby DB
+    /// instances".
+    MultiAz,
+}
+
+impl ClusterKind {
+    /// How the kind is NAMED in a refusal, as the operations' own documentation names it.
+    fn described(self) -> &'static str {
+        match self {
+            Self::Aurora => "an Aurora DB cluster",
+            Self::MultiAz => "a non-Aurora Multi-AZ DB cluster",
+        }
+    }
+
+    /// Whether a cluster running `engine` is of this kind.
+    pub fn holds_for(self, engine: &str) -> bool {
+        match self {
+            Self::Aurora => !is_multi_az_db_cluster(engine),
+            Self::MultiAz => is_multi_az_db_cluster(engine),
+        }
+    }
+}
+
+/// What an operation that serves ONE kind of DB cluster refuses a `DBClusterIdentifier`
+/// naming a cluster of the other kind with.
+///
+/// The identifier names a cluster the operation does not apply to at all, which is a VALUE
+/// the parameter does not accept rather than a state the cluster is in — so it is the
+/// `InvalidParameterValue` Query API error, and the sentence states the operation, the
+/// cluster, the engine that decides its kind and the kind the operation serves. One wording
+/// for every operation in that position, so none of them can drift from the others.
+pub fn cluster_kind_unsupported_message(
+    operation: &str,
+    identifier: &str,
+    engine: &str,
+    serves: ClusterKind,
+) -> String {
+    format!(
+        "invalid value '{identifier}' for DBClusterIdentifier: {operation} applies only to \
+         {}, and DB cluster {identifier} runs engine {engine}",
+        serves.described()
+    )
+}
+
+/// What an operation on a DB cluster refuses a cluster whose STATUS is not one it can act
+/// in with.
+///
+/// Amazon RDS words this one as a statement about the cluster's state and the states the
+/// call needs: the cluster (written `DbCluster`), the status it is in, and the statuses it
+/// would have to be in, all three from the record and the call itself. One wording for every
+/// operation in that position — the stop, the start, the reboot and the backtrack — so none
+/// of them can drift from the others.
+pub fn cluster_state_message(identifier: &str, status: &str, expected: &str) -> String {
+    format!(
+        "DbCluster {identifier} is in {status} state but expected it to be one of {expected}."
+    )
+}
+
+/// What `RebootDBCluster` refuses an AURORA DB cluster with.
+///
+/// "Use this operation only for a non-Aurora Multi-AZ DB cluster": Amazon RDS words this
+/// refusal as a statement about the operation and the ENGINE the cluster runs — an Aurora
+/// cluster is rebooted through its member instances instead — so the engine is the one
+/// variable part, taken from the cluster's own record.
+pub const REBOOT_AURORA_CLUSTER_UNSUPPORTED_MESSAGE: &str =
+    "Rebooting cluster isn't supported for DB engine ";
+
+/// The whole sentence, for the cluster's own engine: the fixed text above with the engine
+/// the cluster runs and the terminal period.
+pub fn reboot_cluster_unsupported_message(engine: &str) -> String {
+    format!("{REBOOT_AURORA_CLUSTER_UNSUPPORTED_MESSAGE}{engine}.")
+}
+
 /// The DB instance statuses the instance never leaves for a state a request can act in:
 /// the one an accepted delete puts it in, which this service's clock follows with the
 /// instance's removal ([`DB_INSTANCE_STATUS_DELETING`]). Every other status this service
@@ -161,33 +245,40 @@ pub fn serverless_v2_capacity_step_message(value: f64) -> String {
     )
 }
 
+/// The Aurora Serverless v2 capacity range the SERVICE publishes, for a cluster whose
+/// engine version's catalogue entry publishes none of its own.
+///
+/// `ServerlessV2FeaturesSupport` reports the limits that "differ between Aurora engine
+/// versions" — the floor a version scales to (0 ACUs where it supports the automatic
+/// pause/resume feature, half an ACU otherwise) and the ceiling it reaches ("might be 256
+/// or 128") — so the widest published pair is the envelope every scaling configuration
+/// falls in, whatever version the cluster runs.
+const SERVERLESS_V2_PUBLISHED_CAPACITY: (f64, f64) = (0.0, 256.0);
+
 /// Refuse an Aurora Serverless v2 scaling configuration a cluster cannot run, whichever
 /// operation carries it: the create that provisions the cluster and the modification that
 /// rescales it hold one rule, so neither can drift from the other.
 ///
 /// `capacity` is the capacity unit range the cluster's engine VERSION publishes
-/// (`DescribeDBEngineVersions`' capacity profile), `None` for a version that runs no
-/// Serverless v2 capacity at all; `engine` and `version` name that version in the refusal
-/// of a configuration the version cannot run at all.
-/// A capacity value is checked against the published range
+/// (`DescribeDBEngineVersions`' capacity profile), and the range the service publishes
+/// overall for a version that publishes none ([`SERVERLESS_V2_PUBLISHED_CAPACITY`]): the
+/// member is the capacity range of the CLUSTER, which the control plane takes for any
+/// Aurora cluster, so a version whose catalogue entry carries no range of its own is not
+/// one the configuration itself is refused for — whether a `db.serverless` DB instance can
+/// then be created in that cluster is that create's own answer.
+///
+/// A capacity value is checked against that range
 /// ([`serverless_v2_capacity_out_of_range_message`]) and against the half-step
 /// increments the member documents ("You can specify ACU values in half-step increments,
 /// such as 8, 8.5, 9, and so on"), and the pair against each other (the floor cannot exceed
 /// the ceiling).
 pub fn check_serverless_v2_scaling(
-    engine: &str,
-    version: &str,
     capacity: Option<(f64, f64)>,
     min_capacity: Option<f64>,
     max_capacity: Option<f64>,
     seconds_until_auto_pause: Option<i32>,
 ) -> Result<(), ServerlessV2Rejection> {
-    let Some((min_acu, max_acu)) = capacity else {
-        return Err(ServerlessV2Rejection::Combination(format!(
-            "ServerlessV2ScalingConfiguration is not supported by engine {engine} version \
-             {version}: that version runs no Aurora Serverless v2 capacity"
-        )));
-    };
+    let (min_acu, max_acu) = capacity.unwrap_or(SERVERLESS_V2_PUBLISHED_CAPACITY);
     for value in [min_capacity, max_capacity] {
         let Some(value) = value else { continue };
         if !(min_acu..=max_acu).contains(&value) {

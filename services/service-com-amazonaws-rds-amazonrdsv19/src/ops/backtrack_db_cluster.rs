@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op BacktrackDBCluster
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `BacktrackDBCluster`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! IMPLEMENTED: this operation rewinds an Aurora MySQL DB cluster to a consistent time it
+//! kept the data of. This is the ONLY file to touch for it.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`BacktrackDBCluster::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Its records and their projection onto the modelled wire shapes live in
+//! [`crate::state`], shared with the other implemented DB-cluster operations.
 //!
 //! ## Shape of an operation
 //!
@@ -170,18 +166,178 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `BacktrackDBCluster` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(BacktrackDBClusterErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("BacktrackDBCluster"))
+        let region =
+            crate::state::request_region(ctx).map_err(BacktrackDBClusterError::validation)?;
+        // "This parameter is stored as a lowercase string", and every member that names a DB
+        // cluster also accepts its ARN, so the lookup folds the way the stored key does.
+        let identifier = crate::state::db_cluster_identifier_of(&input.db_cluster_identifier)
+            .to_ascii_lowercase();
+        // "Can't contain a timestamp set in the future": a time the cluster has not reached
+        // is not a time it can be rewound to, which is a value the parameter does not accept.
+        let now = crate::state::now_as_wire_timestamp();
+        if input.backtrack_to.as_secs_f64() > now.as_secs_f64() {
+            return Err(BacktrackDBClusterError::invalid_parameter_value(
+                "invalid value for BacktrackTo: can't contain a timestamp set in the future",
+            ));
+        }
+
+        // No store means this service was mounted on an engine it has no state in, so it
+        // cannot serve the operation at all. Unreachable with the engine the router builds;
+        // 501 is the honest answer, never a backtrack nothing performed.
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(crate::scaffolded::Scaffolded::not_implemented(Self::NAME));
+        };
+        let key = (region.clone(), identifier.clone());
+        // What this backtrack is REFUSED for, and the consistent point it rewinds to,
+        // decided under one guard — which is then released, because the rewind itself is
+        // engine work and cannot be done while the guard is held. NOTHING is written in this
+        // scope, so a backtrack refused here leaves the cluster exactly as it was.
+        let (rewind_to, backtracked_to) = {
+            let mut store = state.lock();
+            // The transitions the clock already made due — owed at this instant whether or
+            // not anybody called — so this backtrack is judged against the current state.
+            store.settle_due_transitions(&region);
+
+            // The cluster this call ADDRESSES is resolved FIRST: the operation models
+            // `DBClusterNotFoundFault` for exactly this, and a cluster that does not exist
+            // has no data to rewind. RDS is regional, so only the region the request was
+            // signed for is in scope.
+            let Some(cluster) = store.db_clusters.get(&key) else {
+                return Err(BacktrackDBClusterErrorModeled::DBClusterNotFoundFault(
+                    DBClusterNotFoundFault {
+                        message: Some(
+                            crate::state::BACKTRACK_DB_CLUSTER_NOT_FOUND_MESSAGE.to_string(),
+                        ),
+                    },
+                )
+                .into());
+            };
+            // "This action applies only to Aurora MySQL DB clusters": a cluster of another
+            // engine has no backtracking at all, which is why `CreateDBCluster` refuses a
+            // backtrack window on one. The identifier names a cluster this call does not
+            // apply to — a value the parameter does not accept.
+            if !cluster
+                .engine
+                .eq_ignore_ascii_case(crate::state::BACKTRACK_ENGINE)
+            {
+                let engine = cluster.engine.clone();
+                return Err(BacktrackDBClusterError::invalid_parameter_value(format!(
+                    "invalid value '{identifier}' for DBClusterIdentifier: \
+                     {} applies only to Aurora MySQL DB clusters, and DB cluster \
+                     {identifier} runs engine {engine}",
+                    Self::NAME
+                )));
+            }
+            // A cluster whose backtrack window is zero has backtracking DISABLED ("To
+            // disable backtracking, set this value to 0"), so there is no time it can be
+            // rewound to: the cluster is not in a state this operation can be performed in,
+            // which is the modelled cluster state fault.
+            if !cluster.backtracking_enabled() {
+                return Err(BacktrackDBClusterErrorModeled::InvalidDBClusterStateFault(
+                    InvalidDBClusterStateFault {
+                        message: Some(format!(
+                            "DB cluster {identifier} does not have backtracking enabled"
+                        )),
+                    },
+                )
+                .into());
+            }
+            // Rewinding the cluster's data needs a running cluster to rewind: one still
+            // coming up, stopped, failing over, taking a modification or on its way out
+            // cannot take a backtrack. The status the clock has yet to settle is real.
+            if cluster.status != crate::state::DB_CLUSTER_STATUS_AVAILABLE {
+                let status = cluster.status.clone();
+                return Err(BacktrackDBClusterErrorModeled::InvalidDBClusterStateFault(
+                    InvalidDBClusterStateFault {
+                        message: Some(crate::state::cluster_state_message(
+                            &identifier,
+                            &status,
+                            crate::state::DB_CLUSTER_STATUS_AVAILABLE,
+                        )),
+                    },
+                )
+                .into());
+            }
+            // WHERE the cluster is rewound to: the nearest consistent time at or before the
+            // time asked for, since "if the specified time isn't a consistent time for the
+            // DB cluster, Aurora automatically chooses the nearest possible consistent time
+            // for the DB cluster". A time before every point the cluster kept is earlier
+            // than its earliest backtrack time, which
+            // `UseEarliestTimeOnPointInTimeUnavailable` decides the answer to: "backtrack
+            // the DB cluster to the earliest possible backtrack time" when it is enabled,
+            // and "an error occurs" when it is not.
+            let chosen = cluster.backtrack_point_at(input.backtrack_to).or_else(|| {
+                input
+                    .use_earliest_time_on_point_in_time_unavailable
+                    .unwrap_or(false)
+                    .then(|| cluster.backtrack_points.first())
+                    .flatten()
+            });
+            let Some(point) = chosen else {
+                let earliest = cluster
+                    .earliest_backtrack_time()
+                    .map(|at| at.fmt(::aws_smithy_types::date_time::Format::DateTime))
+                    .and_then(Result::ok)
+                    .unwrap_or_else(|| "unavailable".to_string());
+                return Err(BacktrackDBClusterError::invalid_parameter_value(format!(
+                    "invalid value for BacktrackTo: the DB cluster can't be backtracked to a \
+                     time before its earliest backtrack time ({earliest})"
+                )));
+            };
+            (point.storage.clone(), point.at)
+        };
+
+        // The rewind itself: the cluster's live storage is REPLACED with the data of the
+        // point above, which is what "rewinds the DB cluster to the time you specify" means
+        // — the rows a session reads from the cluster's endpoints afterwards are the rows it
+        // held then. Engine work, so the state guard is released for it.
+        crate::state::rewind_cluster_storage(&state, &key, rewind_to)
+            .await
+            .map_err(BacktrackDBClusterError::internal_failure)?;
+
+        let mut store = state.lock();
+        store.settle_due_transitions(&region);
+        // The cluster is answered against what the store holds NOW: the guard was released
+        // while the data was rewound, so a cluster another request deleted in the meantime
+        // is the not-found fault rather than a backtrack reported for nothing.
+        let mint = store.next_mint();
+        let Some(record) = store.db_clusters.get_mut(&key) else {
+            return Err(BacktrackDBClusterErrorModeled::DBClusterNotFoundFault(
+                DBClusterNotFoundFault {
+                    message: Some(
+                        crate::state::BACKTRACK_DB_CLUSTER_NOT_FOUND_MESSAGE.to_string(),
+                    ),
+                },
+            )
+            .into());
+        };
+        // The cluster now holds the data of the point it was rewound to, which is itself a
+        // consistent time it can be backtracked to again — Aurora keeps backtracking
+        // available after a backtrack, including "to fall back" from one.
+        let rewound = record
+            .backtrack_point_at(backtracked_to)
+            .map(|point| point.storage.clone());
+        if let Some(storage) = rewound {
+            record.record_backtrack_point(storage);
+        }
+        let cluster_identifier = record.identifier.clone();
+        // No event is recorded for the rewind: the published event table carries the
+        // `backtrack` category for the DB INSTANCE source type and no DB cluster row this
+        // service can cite an event id of, and an entry needs the id the published envelope
+        // reports ([`crate::state::events::LifecycleEvent`]).
+
+        // The work is DONE by the time this answers — the data has been rewound — so the
+        // backtrack reports the `completed` status the member publishes for one that "has
+        // successfully been applied to" the cluster, rather than a status nothing is still
+        // working towards. `BacktrackedFrom` is the time the cluster was rewound FROM, which
+        // is now, and `BacktrackTo` the consistent time it was rewound TO.
+        Ok(BacktrackDBClusterOutput {
+            backtrack_identifier: Some(crate::state::mint_uuid_token("backtrack", mint)),
+            db_cluster_identifier: Some(cluster_identifier),
+            backtrack_request_creation_time: Some(now),
+            backtracked_from: Some(now),
+            backtrack_to: Some(backtracked_to),
+            status: Some(crate::state::BACKTRACK_STATUS_COMPLETED.to_string()),
+        })
     }
 }

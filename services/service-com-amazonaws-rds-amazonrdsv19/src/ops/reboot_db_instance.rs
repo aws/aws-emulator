@@ -232,6 +232,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // now and the clock owes it `available` once the outage is over.
         record.status = "rebooting".to_string();
         record.pending_status = Some(crate::state::PendingStatus::in_a_moment("available"));
+        // "Some parameter changes can cause an outage and are applied on the next call to
+        // RebootDBInstance": a modification staged for the maintenance window
+        // (`ApplyImmediately` disabled) is applied by the restart this call performs, so
+        // the instance comes back up under those settings and has nothing pending. A
+        // staged rename is applied with the rest; the record moves to its new key on the
+        // next settle, which every handler runs before it reads the store.
+        record.apply_deferred_modification();
         // "Rebooting a DB instance restarts the database engine service": the engine's run
         // starts again here, which is what `pg_postmaster_start_time()` reports and what
         // puts a parameter change that was waiting for a reboot into force.

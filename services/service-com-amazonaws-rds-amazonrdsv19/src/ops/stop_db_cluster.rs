@@ -187,6 +187,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
+        // "This operation only applies to Aurora DB clusters": a `DBClusterIdentifier`
+        // naming a cluster of the other kind names one this call cannot stop at all, which
+        // is a value the parameter does not accept rather than a state the cluster is in —
+        // the `InvalidParameterValue` Query API error
+        // ([`crate::state::cluster_kind_unsupported_message`]).
+        if !crate::state::ClusterKind::Aurora.holds_for(&cluster.engine) {
+            let engine = cluster.engine.clone();
+            return Err(StopDBClusterError::invalid_parameter_value(
+                crate::state::cluster_kind_unsupported_message(
+                    Self::NAME,
+                    &identifier,
+                    &engine,
+                    crate::state::ClusterKind::Aurora,
+                ),
+            ));
+        }
+
         // Stopping shuts the cluster's database engine down, so there has to be one
         // running: a cluster still coming up, already stopping or stopped, failing over,
         // taking a modification or on its way out cannot take a stop, which is the
@@ -196,8 +213,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             let status = cluster.status.clone();
             return Err(StopDBClusterErrorModeled::InvalidDBClusterStateFault(
                 InvalidDBClusterStateFault {
-                    message: Some(format!(
-                        "DB cluster {identifier} is not available for a stop (status {status})"
+                    message: Some(crate::state::cluster_state_message(
+                        &identifier,
+                        &status,
+                        crate::state::DB_CLUSTER_STATUS_AVAILABLE,
                     )),
                 },
             )

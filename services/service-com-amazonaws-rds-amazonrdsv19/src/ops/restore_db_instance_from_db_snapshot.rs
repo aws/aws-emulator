@@ -782,6 +782,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // insights mode is the one a new instance gets.
                 monitoring_interval: crate::state::DEFAULT_MONITORING_INTERVAL,
                 performance_insights_enabled: false,
+                // Collecting no Performance Insights data, the restored instance retains
+                // none and names no key for it.
+                performance_insights_kms_key_id: None,
+                performance_insights_retention_period: None,
                 iam_database_authentication_enabled: input
                     .enable_iam_database_authentication
                     .unwrap_or(false),
@@ -814,6 +818,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // instance starts with none of the source's associations: each one is made
                 // against the instance that carries it.
                 associated_roles: Vec::new(),
+                // A restored instance has nothing staged for its maintenance window: a
+                // deferred modification belongs to the instance it was staged on.
+                deferred_modification: None,
                 engine_log: crate::state::InstanceLog::default(),
             };
             record.engine_log.record(format!(

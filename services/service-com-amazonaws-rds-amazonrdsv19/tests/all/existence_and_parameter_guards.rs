@@ -306,6 +306,11 @@ async fn modify_resolves_the_db_subnet_group_it_moves_the_instance_to() {
                 "ModifyDBInstance",
                 &params![
                     "DBInstanceIdentifier" => "emu-move-me",
+                    // Moving the instance to another DB subnet group "causes an outage
+                    // during the change. The change is applied during the next maintenance
+                    // window, unless you enable ApplyImmediately" — and what this case is
+                    // about is the group the instance ends up in.
+                    "ApplyImmediately" => true,
                     "DBSubnetGroupName" => group,
                 ],
             )
@@ -471,6 +476,10 @@ async fn create_and_modify_resolve_the_engine_version_against_the_report() {
             "ModifyDBInstance",
             &params![
                 "DBInstanceIdentifier" => "emu-modver",
+                // An engine-version change is "applied during the next maintenance window
+                // unless the ApplyImmediately parameter is enabled for this request", and
+                // what this case is about is the version the instance ends up running.
+                "ApplyImmediately" => true,
                 "EngineVersion" => &versions[0],
             ],
         )

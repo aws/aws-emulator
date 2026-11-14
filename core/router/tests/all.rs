@@ -2434,3 +2434,8 @@ mod cloudformation_drift_detection_status_change_events;
 // be declared only once, and two branches landing at once each re-added it here.)
 // (`cloudformation_metric_stream_filter_update` is declared once, in the head region above: a
 // module may be declared only once, and two branches landing at once each re-added it here.)
+// (`cloudformation_metric_stream_filter_update` is declared ONCE, in the head region
+// above: a module may be declared only once. Its subject — a stack-deployed metric-stream
+// pipeline's exports before and after an update rewrites its filter — spans
+// CloudFormation, IAM, CloudWatch, Firehose and Amazon S3 at once, so no single service
+// crate's test target can deploy the pipeline and then read the objects it delivered.)

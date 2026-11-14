@@ -112,6 +112,8 @@ mod tests {
             ca_certificate_identifier: DEFAULT_CA_CERTIFICATE_IDENTIFIER.to_string(),
             monitoring_interval: 0,
             performance_insights_enabled: false,
+            performance_insights_kms_key_id: None,
+            performance_insights_retention_period: None,
             iam_database_authentication_enabled: false,
             database_insights_mode: DEFAULT_DATABASE_INSIGHTS_MODE.to_string(),
             dedicated_log_volume: false,
@@ -124,6 +126,7 @@ mod tests {
             engine_started_at: now_as_wire_timestamp(),
             tags: Vec::new(),
             associated_roles: Vec::new(),
+            deferred_modification: None,
             engine_log: InstanceLog::default(),
         }
     }

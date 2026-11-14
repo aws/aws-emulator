@@ -65,6 +65,14 @@ pub const DB_INSTANCE_STATUS_STOPPED: &str = "stopped";
 /// [`STATUS_TRANSITION_DELAY`] later.
 pub const DB_INSTANCE_STATUS_STARTING: &str = "starting";
 
+/// The status a DB instance reports while its database engine restarts: "Rebooting a DB
+/// instance results in a momentary outage, during which the DB instance status is set to
+/// rebooting."
+///
+/// Transient: the clock owes [`DB_INSTANCE_STATUS_AVAILABLE`]
+/// [`STATUS_TRANSITION_DELAY`] later.
+pub const DB_INSTANCE_STATUS_REBOOTING: &str = "rebooting";
+
 /// The one `DBInstanceStatusInfo$StatusType` a DB instance reports: the member documents
 /// "this value is currently \"read replication\"".
 pub const READ_REPLICATION_STATUS_TYPE: &str = "read replication";
@@ -608,6 +616,23 @@ pub const DB_CLUSTER_STATUS_STOPPING: &str = "stopping";
 /// groups".
 pub const DB_CLUSTER_STATUS_STOPPED: &str = "stopped";
 
+/// The status a DB cluster reports while a start is running, from the same published list
+/// as [`DB_CLUSTER_STATUS_STOPPING`] (Amazon Aurora User Guide, "Viewing Amazon Aurora DB
+/// cluster status": `starting` — the DB cluster is starting).
+///
+/// Transient, like the stop's: `StartDBCluster` answers with the cluster in this status and
+/// the clock owes it [`DB_CLUSTER_STATUS_AVAILABLE`] [`STATUS_TRANSITION_DELAY`] later, so a
+/// caller reading the cluster straight back sees the start in progress.
+pub const DB_CLUSTER_STATUS_STARTING: &str = "starting";
+
+/// The status a DB cluster reports while a reboot is running, from the same published list
+/// as [`DB_CLUSTER_STATUS_STOPPING`]: "Rebooting a DB cluster results in a momentary
+/// outage, during which the DB cluster status is set to rebooting."
+///
+/// Transient: the clock owes the cluster [`DB_CLUSTER_STATUS_AVAILABLE`] once the outage is
+/// over, so a caller polling straight after `RebootDBCluster` observes the restart.
+pub const DB_CLUSTER_STATUS_REBOOTING: &str = "rebooting";
+
 /// The status a DB cluster reports while a failover is running, from the same published
 /// list as [`DB_CLUSTER_STATUS_STOPPING`].
 ///
@@ -667,6 +692,22 @@ pub const GLOBAL_CLUSTER_STATUS_AVAILABLE: &str = "available";
 /// errors that status carries, since a global cluster is not in a state another request can
 /// be taken in while one is being applied.
 pub const GLOBAL_CLUSTER_STATUS_MODIFYING: &str = "modifying";
+
+/// The status an Aurora global database cluster reports while a FAILOVER of it is running:
+/// `FailoverGlobalCluster` "promotes the specified secondary DB cluster to be the primary
+/// DB cluster", and the global database reports `failing-over` while that promotion runs
+/// (Amazon Aurora User Guide, "Monitoring an Aurora global database failover").
+///
+/// Transient, like the modify's: the clock owes the global cluster
+/// [`GLOBAL_CLUSTER_STATUS_AVAILABLE`] [`STATUS_TRANSITION_DELAY`] later, so a caller
+/// polling straight after the call observes the failover and the state errors that status
+/// carries.
+pub const GLOBAL_CLUSTER_STATUS_FAILING_OVER: &str = "failing-over";
+
+/// The status an Aurora global database cluster reports while a SWITCHOVER of it is
+/// running — `SwitchoverGlobalCluster`'s own promotion, which differs from the failover
+/// above in that "there is no data loss" — and transient for the same reason.
+pub const GLOBAL_CLUSTER_STATUS_SWITCHING_OVER: &str = "switching-over";
 
 /// The status an event notification subscription reports in the answer to the delete that
 /// was accepted for it, from `EventSubscription$Status`'s published list.
@@ -1226,16 +1267,72 @@ pub const CLUSTER_BACKUP_RETENTION_RANGE: std::ops::RangeInclusive<i32> = 1..=35
 /// backtracking, which is also the documented default.
 pub const BACKTRACK_WINDOW_RANGE: std::ops::RangeInclusive<i64> = 0..=259_200;
 
+/// The engine whose DB clusters support backtracking: `BacktrackDBCluster` "applies only to
+/// Aurora MySQL DB clusters", which is also why `BacktrackWindow` is "valid for Cluster
+/// Type: Aurora MySQL DB clusters only".
+pub const BACKTRACK_ENGINE: &str = "aurora-mysql";
+
+/// The status a backtrack reports once it "has successfully been applied to … the DB
+/// cluster", from the value list `BacktrackDBCluster`'s own `Status` member publishes
+/// (`applying | completed | failed | pending`).
+pub const BACKTRACK_STATUS_COMPLETED: &str = "completed";
+
 /// How long an Aurora Serverless v2 DB instance may be idle before Aurora pauses it
 /// (`ServerlessV2ScalingConfiguration$SecondsUntilAutoPause`: "Specify a value between 300
 /// seconds (five minutes) and 86,400 seconds (one day)").
 pub const SECONDS_UNTIL_AUTO_PAUSE_RANGE: std::ops::RangeInclusive<i32> = 300..=86_400;
 
-/// The `PerformanceInsightsRetentionPeriod` the `advanced` Database Insights mode requires
-/// (`DatabaseInsightsMode`: "If you set this value to advanced, you must also set the
+/// The `PerformanceInsightsRetentionPeriod` the `advanced` Database Insights mode requires/// (`DatabaseInsightsMode`: "If you set this value to advanced, you must also set the
 /// PerformanceInsightsEnabled parameter to true and the
 /// PerformanceInsightsRetentionPeriod parameter to 465").
 pub const ADVANCED_INSIGHTS_RETENTION_PERIOD: i32 = 465;
+
+/// How long Performance Insights data is retained for a resource whose request named no
+/// period: `PerformanceInsightsRetentionPeriod`'s "Default: 7 days".
+pub const DEFAULT_PERFORMANCE_INSIGHTS_RETENTION_PERIOD: i32 = 7;
+
+/// The number of months a `PerformanceInsightsRetentionPeriod` of the `month * 31` form
+/// may name: "where month is a number of months from 1-23".
+const PERFORMANCE_INSIGHTS_RETENTION_MONTHS: std::ops::RangeInclusive<i32> = 1..=23;
+
+/// The days in the month a `PerformanceInsightsRetentionPeriod` counts in: the member's
+/// own `month * 31`.
+const PERFORMANCE_INSIGHTS_RETENTION_MONTH_DAYS: i32 = 31;
+
+/// The longest `PerformanceInsightsRetentionPeriod` the member publishes, beside the
+/// `month * 31` values and the 7-day default: "731".
+const PERFORMANCE_INSIGHTS_RETENTION_MAX: i32 = 731;
+
+/// Hold a `PerformanceInsightsRetentionPeriod` to the values the member publishes: "7",
+/// "month * 31, where month is a number of months from 1-23" and "731". "If you specify a
+/// retention period that isn't valid, such as 94, Amazon RDS returns an error", and the
+/// error Amazon RDS answers states the whole list of values it will take.
+///
+/// One rule for every operation that takes the member — the two creates, the two
+/// modifications and the restores — so no two of them accept a different set.
+pub fn check_performance_insights_retention_period(period: i32) -> Result<(), String> {
+    if performance_insights_retention_periods().any(|valid| valid == period) {
+        return Ok(());
+    }
+    Err(format!(
+        "Invalid Performance Insights retention period. Valid values are: [{}]",
+        performance_insights_retention_periods()
+            .map(|valid| valid.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+}
+
+/// Every `PerformanceInsightsRetentionPeriod` the member publishes, ascending: the 7-day
+/// default, then `month * 31` for each of the 1-23 months, then 731.
+fn performance_insights_retention_periods() -> impl Iterator<Item = i32> {
+    std::iter::once(DEFAULT_PERFORMANCE_INSIGHTS_RETENTION_PERIOD)
+        .chain(
+            PERFORMANCE_INSIGHTS_RETENTION_MONTHS
+                .map(|months| months * PERFORMANCE_INSIGHTS_RETENTION_MONTH_DAYS),
+        )
+        .chain(std::iter::once(PERFORMANCE_INSIGHTS_RETENTION_MAX))
+}
 
 /// The `DatabaseInsightsMode` that requires Performance Insights and the 465-day retention
 /// period above.

@@ -27,6 +27,8 @@ mod ca_certificate_material;
 mod certificate_override;
 #[path = "all/cluster_create_refusal_wording.rs"]
 mod cluster_create_refusal_wording;
+#[path = "all/cluster_lifecycle_operations.rs"]
+mod cluster_lifecycle_operations;
 #[path = "all/cluster_member_deletion.rs"]
 mod cluster_member_deletion;
 #[path = "all/cluster_parameter_groups.rs"]
@@ -291,6 +293,8 @@ mod parameter_group_and_snapshot_copies;
 mod parameter_group_apply_method;
 #[path = "all/parameter_refusal_codes.rs"]
 mod parameter_refusal_codes;
+#[path = "all/pending_modified_values.rs"]
+mod pending_modified_values;
 #[path = "all/postgres_rds_namespace_parameters.rs"]
 mod postgres_rds_namespace_parameters;
 #[path = "all/published_catalog_creates.rs"]

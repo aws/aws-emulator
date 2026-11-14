@@ -1203,14 +1203,10 @@ fn output_cases() -> Vec<OutputCase> {
             // The port and the engine of a DB resource are what the TEMPLATE declares, and
             // a template declares them with an intrinsic as readily as with a literal: this
             // row takes both from parameters, so `Endpoint.Port` can only be right if the
-            // declared properties were evaluated. The last resource's engine resolves to
-            // nothing (a `Ref` to the pseudo parameter that stands for no value), so its
-            // port is reported with no value rather than defaulted to one engine's. Every
-            // resource
-            // of this row is a DB CLUSTER, a type this emulator records rather than
-            // provisions, so the row stays about evaluating the declared properties: an
-            // engine that resolves to nothing is not a create Amazon RDS would accept.
-            case: "a db port and engine declared through intrinsics, and an unresolvable engine",
+            // declared properties were evaluated. Both resources of this row are DB
+            // CLUSTERS, which this emulator PROVISIONS in Amazon RDS, so each declaration
+            // has to be one that service accepts.
+            case: "a db port and engine declared through intrinsics",
             stack_name: "db-intrinsics",
             template: concat!(
                 "Parameters:\n",
@@ -1230,23 +1226,16 @@ fn output_cases() -> Vec<OutputCase> {
                 "    Properties:\n",
                 "      DBClusterIdentifier: probe-default-port\n",
                 "      Engine: !Ref EngineName\n",
-                "  UnknownEngineDatabase:\n",
-                "    Type: AWS::RDS::DBCluster\n",
-                "    Properties:\n",
-                "      DBClusterIdentifier: probe-unknown-engine\n",
-                // The pseudo parameter that resolves to NO value at all
-                // ("AWS::NoValue … removes the corresponding resource property"), which is
-                // what makes this engine unresolvable — a declared parameter cannot be
-                // left without a value, since a declaration with no `Default` the request
-                // supplies no value for is refused outright.
-                "      Engine: !Ref AWS::NoValue\n",
+                // A THIRD cluster whose engine resolves to nothing is not declared here:
+                // `Engine` is required on `CreateDBCluster`, so Amazon RDS refuses to
+                // create such a cluster and the stack rolls back rather than reporting an
+                // output for it. An output that resolves to no value is covered by the row
+                // below, which declares no resource at all.
                 "Outputs:\n",
                 "  FixedPort:\n",
                 "    Value: !GetAtt FixedPortCluster.Endpoint.Port\n",
                 "  DefaultPort:\n",
                 "    Value: !GetAtt DefaultPortCluster.Endpoint.Port\n",
-                "  UnknownEnginePort:\n",
-                "    Value: !GetAtt UnknownEngineDatabase.Endpoint.Port\n",
             )
             .to_string(),
             parameters: params(&[("DBPort", "15432"), ("EngineName", "aurora-postgresql")]),
@@ -1256,8 +1245,6 @@ fn output_cases() -> Vec<OutputCase> {
                 // No port declared: the default of the engine the parameter named, which
                 // is only reachable if the engine itself resolved.
                 ("DefaultPort", Expected::Value("5432".to_string())),
-                // The engine resolves to nothing, so the port does too.
-                ("UnknownEnginePort", Expected::NoValue),
             ],
         },
         OutputCase {

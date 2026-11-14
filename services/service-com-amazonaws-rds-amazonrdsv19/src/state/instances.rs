@@ -104,6 +104,15 @@ pub struct DbInstanceRecord {
     pub ca_certificate_identifier: String,
     pub monitoring_interval: i32,
     pub performance_insights_enabled: bool,
+    /// `PerformanceInsightsKMSKeyId`: the key the instance's Performance Insights data is
+    /// encrypted under, for an instance whose request named one.
+    pub performance_insights_kms_key_id: Option<String>,
+    /// `PerformanceInsightsRetentionPeriod`: "the number of days to retain Performance
+    /// Insights data", as the request configured it — the documented default
+    /// ([`DEFAULT_PERFORMANCE_INSIGHTS_RETENTION_PERIOD`]) for an instance that has
+    /// Performance Insights on and named no period, and `None` for one that collects no
+    /// Performance Insights data at all, which retains none.
+    pub performance_insights_retention_period: Option<i32>,
     pub iam_database_authentication_enabled: bool,
     pub database_insights_mode: String,
     pub dedicated_log_volume: bool,
@@ -129,6 +138,11 @@ pub struct DbInstanceRecord {
     /// `RemoveRoleFromDBInstance` removes from, bounded by
     /// [`associated_roles::MAX_ASSOCIATED_ROLES`] entries.
     pub associated_roles: Vec<DBInstanceRole>,
+    /// What a modification the caller did not ask to apply immediately staged for the next
+    /// maintenance window: the settings the instance is NOT running under yet, which is
+    /// what `PendingModifiedValues` reports ([`DeferredModification`]). `None` for an
+    /// instance with nothing staged.
+    pub deferred_modification: Option<DeferredModification>,
     /// The instance's log: the lifecycle lines THIS SERVICE has recorded for it, which is
     /// what `DescribeDBLogFiles` lists and `DownloadDBLogFilePortion` serves. See
     /// [`engine_log`] for why those lines are the only honest content for it, and for the
@@ -141,6 +155,7 @@ impl DbInstanceRecord {
     /// gone — an accepted delete that has run its course — so the caller drops it from
     /// the store.
     pub(super) fn settle(&mut self, now: Instant) -> bool {
+        self.settle_deferred_modification();
         let due = self
             .pending_status
             .as_ref()
@@ -162,6 +177,48 @@ impl DbInstanceRecord {
             None => {}
         }
         false
+    }
+
+    /// Apply a staged modification whose maintenance window has arrived: "changes to the
+    /// DB instance are applied during the next maintenance window", so once the clock
+    /// reaches that window the instance runs under the staged settings and has nothing
+    /// pending.
+    ///
+    /// Nothing is applied before the window: a modification staged for a window that has
+    /// not come round stays pending however often the instance is read.
+    fn settle_deferred_modification(&mut self) {
+        let due = self
+            .deferred_modification
+            .as_ref()
+            .is_some_and(|staged| {
+                staged.is_due_in(self.preferred_maintenance_window.as_deref())
+            });
+        if !due {
+            return;
+        }
+        if let Some(staged) = self.deferred_modification.take() {
+            self.engine_log
+                .record("applying pending modified values in the maintenance window");
+            staged.apply(self);
+        }
+    }
+
+    /// Apply whatever is staged NOW, whether or not its window has come round: what
+    /// `ApplyImmediately` asks for ("the modifications in this request and any pending
+    /// modifications are asynchronously applied as soon as possible"), and what the reboot
+    /// a deferred change waits for does ("Some parameter changes ... are applied on the
+    /// next call to RebootDBInstance").
+    ///
+    /// Returns whether anything was applied, so a caller can report the instance
+    /// `modifying` for a change this call really made.
+    pub fn apply_deferred_modification(&mut self) -> bool {
+        match self.deferred_modification.take() {
+            Some(staged) => {
+                staged.apply(self);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Whether a delete has already been accepted for this instance, so it is on its
@@ -300,23 +357,38 @@ impl DbInstanceRecord {
     /// `PendingModifiedValues`: what this service has accepted for the instance and not
     /// finished applying.
     ///
-    /// Every change `ModifyDBInstance` accepts is written to the stored record at once, so
-    /// the only change still in flight is the one the CREATE is still applying: an
-    /// instance being provisioned with a master credential has that credential pending
-    /// until it is up, which is what `PendingModifiedValues$MasterUserPassword` ("the
-    /// master credentials for the DB instance") reports, masked because the member is
-    /// `@sensitive` ([`MASKED_PENDING_MASTER_USER_PASSWORD`]).
+    /// Two things are pending. A modification the caller did not ask to apply immediately
+    /// is staged for the next maintenance window and is pending until that window comes
+    /// round ([`DeferredModification`]) — the structure's own documentation, "changes that
+    /// will be applied during the next maintenance window". And an instance being
+    /// provisioned with a master credential has that credential pending until it is up,
+    /// which is what `PendingModifiedValues$MasterUserPassword` ("the master credentials
+    /// for the DB instance") reports, masked because the member is `@sensitive`
+    /// ([`MASKED_PENDING_MASTER_USER_PASSWORD`]).
     ///
     /// `None` once nothing is pending — the structure "is returned only when there are
     /// pending changes" — so an EMPTY element never claims there are changes whose
     /// subelements this answer does not identify.
     pub fn pending_modified_values(&self) -> Option<PendingModifiedValues> {
+        let staged = self
+            .deferred_modification
+            .as_ref()
+            .filter(|staged| !staged.is_empty())
+            .map(DeferredModification::to_wire);
         let password_pending =
             self.status == DB_INSTANCE_STATUS_CREATING && self.master_user_password.is_some();
-        password_pending.then(|| PendingModifiedValues {
-            master_user_password: Some(MASKED_PENDING_MASTER_USER_PASSWORD.to_string()),
-            ..PendingModifiedValues::default()
-        })
+        match (staged, password_pending) {
+            (Some(staged), false) => Some(staged),
+            (Some(staged), true) => Some(PendingModifiedValues {
+                master_user_password: Some(MASKED_PENDING_MASTER_USER_PASSWORD.to_string()),
+                ..staged
+            }),
+            (None, true) => Some(PendingModifiedValues {
+                master_user_password: Some(MASKED_PENDING_MASTER_USER_PASSWORD.to_string()),
+                ..PendingModifiedValues::default()
+            }),
+            (None, false) => None,
+        }
     }
 
     /// `DbInstancePort`: "The port that the DB instance listens on. If the DB instance
@@ -520,6 +592,12 @@ impl DbInstanceRecord {
             iam_database_authentication_enabled: Some(self.iam_database_authentication_enabled),
             database_insights_mode: Some(self.database_insights_mode.clone()),
             performance_insights_enabled: Some(self.performance_insights_enabled),
+            // The Performance Insights configuration the instance runs under: the
+            // retention period it keeps that data for, and the key it is encrypted under
+            // where the request named one. Reported from the instance's own record, so
+            // what a create or a modification set is what a later read answers.
+            performance_insights_kms_key_id: self.performance_insights_kms_key_id.clone(),
+            performance_insights_retention_period: self.performance_insights_retention_period,
             deletion_protection: Some(self.deletion_protection),
             // "A list of Amazon Web Services Identity and Access Management (IAM) roles
             // associated with the DB instance": the associations this instance carries, in

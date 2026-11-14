@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op RebootDBCluster
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `RebootDBCluster`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! IMPLEMENTED: this operation restarts the database engine of a Multi-AZ DB cluster.
+//! This is the ONLY file to touch for it.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`RebootDBCluster::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Its records and their projection onto the modelled wire shapes live in
+//! [`crate::state`], shared with the other implemented DB-cluster operations.
 //!
 //! ## Shape of an operation
 //!
@@ -156,18 +152,132 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `RebootDBCluster` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(RebootDBClusterErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("RebootDBCluster"))
+        let region = crate::state::request_region(ctx).map_err(RebootDBClusterError::validation)?;
+        // "This parameter is stored as a lowercase string", and every member that names a
+        // DB cluster also accepts its ARN, so the lookup folds the way the stored key does.
+        let identifier = crate::state::db_cluster_identifier_of(&input.db_cluster_identifier)
+            .to_ascii_lowercase();
+
+        // No store means this service was mounted on an engine it has no state in, so it
+        // cannot serve the operation at all. Unreachable with the engine the router builds;
+        // 501 is the honest answer, never a reboot nothing performed.
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(crate::scaffolded::Scaffolded::not_implemented(Self::NAME));
+        };
+        let mut store = state.lock();
+        // The transitions the clock already made due — owed at this instant whether or not
+        // anybody called — so the state this reboot is judged against is the current one.
+        store.settle_due_transitions(&region);
+
+        // The cluster this call ADDRESSES is resolved FIRST: the operation models
+        // `DBClusterNotFoundFault` for exactly this, and a cluster that does not exist has
+        // no engine to restart. RDS is regional, so only the region the request was signed
+        // for is in scope.
+        let key = (region.clone(), identifier.clone());
+        let Some(cluster) = store.db_clusters.get(&key) else {
+            return Err(RebootDBClusterErrorModeled::DBClusterNotFoundFault(
+                DBClusterNotFoundFault {
+                    message: Some(crate::state::db_cluster_not_found_message(
+                        &input.db_cluster_identifier,
+                    )),
+                },
+            )
+            .into());
+        };
+        // "Use this operation only for a non-Aurora Multi-AZ DB cluster": an Aurora DB
+        // cluster is rebooted through its MEMBER instances (`RebootDBInstance`), so a
+        // `DBClusterIdentifier` naming one names a cluster this call does not apply to — a
+        // value the parameter does not accept rather than a state the cluster is in, which
+        // is the `InvalidParameterValue` Query API error
+        // ([`crate::state::cluster_kind_unsupported_message`]).
+        if !crate::state::ClusterKind::MultiAz.holds_for(&cluster.engine) {
+            let engine = cluster.engine.clone();
+            return Err(RebootDBClusterError::invalid_parameter_value(
+                crate::state::reboot_cluster_unsupported_message(&engine),
+            ));
+        }
+        // "Rebooting a DB cluster restarts the database engine service", so there has to be
+        // a running engine to restart: a cluster still coming up, stopped, failing over or
+        // on its way out cannot take a reboot, which is the modelled cluster state fault.
+        // The status the clock has yet to settle is real, so a reboot issued immediately
+        // after the create sees `creating` and is refused.
+        if cluster.status != crate::state::DB_CLUSTER_STATUS_AVAILABLE {
+            let status = cluster.status.clone();
+            return Err(RebootDBClusterErrorModeled::InvalidDBClusterStateFault(
+                InvalidDBClusterStateFault {
+                    message: Some(crate::state::cluster_state_message(
+                        &identifier,
+                        &status,
+                        crate::state::DB_CLUSTER_STATUS_AVAILABLE,
+                    )),
+                },
+            )
+            .into());
+        }
+
+        // The reboot is accepted: "Rebooting a DB cluster results in a momentary outage,
+        // during which the DB cluster status is set to rebooting", and the clock owes the
+        // cluster `available` once that outage is over. A key this handler resolved and a
+        // lookup under it can only disagree if the record is not where the resolve said it
+        // was, which answers the same modelled 404 as a cluster that was never there.
+        let accepted = {
+            let Some(record) = store.db_clusters.get_mut(&key) else {
+                return Err(RebootDBClusterErrorModeled::DBClusterNotFoundFault(
+                    DBClusterNotFoundFault {
+                        message: Some(crate::state::db_cluster_not_found_message(
+                            &input.db_cluster_identifier,
+                        )),
+                    },
+                )
+                .into());
+            };
+            record.status = crate::state::DB_CLUSTER_STATUS_REBOOTING.to_string();
+            record.pending_status = Some(crate::state::PendingStatus::in_a_moment(
+                crate::state::DB_CLUSTER_STATUS_AVAILABLE,
+            ));
+            record.clone()
+        };
+        // The restart goes through the cluster's member instances, which are what run the
+        // engine: a member that IS available reports `rebooting` and comes back
+        // `available`, and one the clock still owes a transition keeps what it owes,
+        // because a reboot must not discard another call's accepted change. Each member's
+        // engine run starts again, which is what decides whether a parameter change that
+        // was waiting for a reboot is in force — "if you change the DB cluster parameter
+        // group associated with the DB cluster, reboot the DB cluster for the changes to
+        // take effect".
+        let members: Vec<(String, String)> = store
+            .instances_in(&region)
+            .into_iter()
+            .filter(|instance| {
+                instance
+                    .db_cluster_identifier
+                    .as_ref()
+                    .is_some_and(|named| named.eq_ignore_ascii_case(&identifier))
+                    && instance.status == crate::state::DB_INSTANCE_STATUS_AVAILABLE
+            })
+            .map(|instance| (instance.region.clone(), instance.identifier.clone()))
+            .collect();
+        for member in &members {
+            if let Some(instance) = store.db_instances.get_mut(member) {
+                instance.status = crate::state::DB_INSTANCE_STATUS_REBOOTING.to_string();
+                instance.pending_status = Some(crate::state::PendingStatus::in_a_moment(
+                    crate::state::DB_INSTANCE_STATUS_AVAILABLE,
+                ));
+                instance.engine_started_at = crate::state::now_as_wire_timestamp();
+            }
+        }
+        // The sessions the engines held do not survive the restart, and whatever they had
+        // not committed is rolled back with them. The endpoints stay bound — a reboot does
+        // not move the address a client reconnects to.
+        for member in &members {
+            store.sever_engine_sessions(member);
+        }
+
+        // The answer is the cluster this call changed, projected the one way every
+        // operation of this service projects one, so the reboot a caller is told about is
+        // the reboot a following describe reports.
+        Ok(RebootDBClusterOutput {
+            db_cluster: Some(store.cluster_to_wire(&accepted)),
+        })
     }
 }

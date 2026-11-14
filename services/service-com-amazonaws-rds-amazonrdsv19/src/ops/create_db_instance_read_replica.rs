@@ -671,12 +671,29 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 Some(named) => {
                     if let Some(group) = store.resolve_visible_option_group(&region, named) {
                         if !group.engine_name.eq_ignore_ascii_case(&source.engine) {
+                            // Amazon RDS words this refusal as the two version FAMILIES it
+                            // cannot reconcile — the group's engine and major version, and
+                            // the instance's — because an option group "is for" one engine
+                            // at one major version, which is what makes it inapplicable to
+                            // a DB instance of another.
+                            let instance_major =
+                                crate::ops::describe_db_engine_versions::resolve_version(
+                                    &source.engine,
+                                    source.engine_version.as_deref(),
+                                )
+                                .ok()
+                                .flatten()
+                                .map(|entry| entry.major_engine_version.to_string())
+                                .or_else(|| source.engine_version.clone())
+                                .unwrap_or_default();
                             return Err(
                                 CreateDBInstanceReadReplicaError::invalid_parameter_combination(
                                     format!(
-                                        "The option group {named} is an option group of engine \
-                                         {}, which is not the source DB instance's engine {}",
-                                        group.engine_name, source.engine
+                                        "The option group {named} is for {} {}, and your DB \
+                                         instance is {} {instance_major}.",
+                                        group.engine_name,
+                                        group.major_engine_version,
+                                        source.engine
                                     ),
                                 ),
                             );
@@ -782,6 +799,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 performance_insights_enabled: input
                     .enable_performance_insights
                     .unwrap_or(source.performance_insights_enabled),
+                // The Performance Insights configuration of the REPLICA: what its own
+                // request named, else what the source collects — a replica is created with
+                // the source's settings where the request names none. A replica that
+                // collects no Performance Insights data retains none.
+                performance_insights_kms_key_id: input
+                    .performance_insights_kms_key_id
+                    .clone()
+                    .or_else(|| source.performance_insights_kms_key_id.clone()),
+                performance_insights_retention_period: input
+                    .enable_performance_insights
+                    .unwrap_or(source.performance_insights_enabled)
+                    .then(|| {
+                        input
+                            .performance_insights_retention_period
+                            .or(source.performance_insights_retention_period)
+                            .unwrap_or(
+                                crate::state::DEFAULT_PERFORMANCE_INSIGHTS_RETENTION_PERIOD,
+                            )
+                    }),
                 iam_database_authentication_enabled: input
                     .enable_iam_database_authentication
                     .unwrap_or(source.iam_database_authentication_enabled),
@@ -808,6 +844,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // operation publishes no `AssociatedRoles` member, and an association is
                 // made by `AddRoleToDBInstance` against the replica itself.
                 associated_roles: Vec::new(),
+                // A modification staged on the SOURCE for its maintenance window is the
+                // source's: the replica is created from the settings the source is running
+                // under, so it has nothing of its own staged.
+                deferred_modification: None,
                 engine_log: crate::state::InstanceLog::default(),
                 // A read replica manages NO Secrets Manager secret of its own: this
                 // operation has no `ManageMasterUserPassword` member, so nothing creates a

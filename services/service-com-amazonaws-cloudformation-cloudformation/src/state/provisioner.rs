@@ -782,6 +782,14 @@ pub(super) enum Provisioner {
     MskServerlessCluster,
     MqBroker,
     RdsDbInstance,
+    /// `AWS::RDS::DBCluster`: a DB cluster of Amazon RDS, which `CreateDBCluster` creates
+    /// under the identifier the stack decided — the identifier this type's `Ref` returns —
+    /// and `DeleteDBCluster` deletes by it. The create answers the cluster `creating`, in
+    /// which it serves no connection, so the resource's creation is held open until Amazon
+    /// RDS reports it `available`; a member `AWS::RDS::DBInstance` of the same stack
+    /// resolves its `DBClusterIdentifier` against that service's own clusters, which is why
+    /// this type has to be created there for real.
+    RdsDbCluster,
     /// `AWS::ElastiCache::CacheCluster`: a cache cluster of Amazon ElastiCache, which
     /// `CreateCacheCluster` creates under the `ClusterName` the declaration states — the name
     /// this type's `Ref` returns — and `DeleteCacheCluster` deletes by it. That create
@@ -1071,6 +1079,7 @@ pub(super) fn provisioner_for(resource_type: &str) -> Option<Provisioner> {
         MSK_SERVERLESS_CLUSTER => Some(Provisioner::MskServerlessCluster),
         MQ_BROKER => Some(Provisioner::MqBroker),
         RDS_DB_INSTANCE => Some(Provisioner::RdsDbInstance),
+        RDS_DB_CLUSTER => Some(Provisioner::RdsDbCluster),
         ELASTICACHE_CACHE_CLUSTER => Some(Provisioner::ElastiCacheCacheCluster),
         RDS_DB_SUBNET_GROUP => Some(Provisioner::RdsDbSubnetGroup),
         RDS_DB_PARAMETER_GROUP => Some(Provisioner::RdsDbParameterGroup),
@@ -1382,6 +1391,14 @@ impl Provisioner {
             Self::MqBroker => create_mq_broker(ctx, region, resource, propagated).await,
             Self::RdsDbInstance => {
                 create_db_instance(ctx, region, resource, propagated).await
+            }
+            // `AWS::RDS::DBCluster` publishes `Tags` as the `{Key, Value}` list
+            // `CreateDBCluster`'s own `Tags` member takes, so a cluster a stack creates
+            // carries the tags CloudFormation gives it beside the declared ones.
+            Self::RdsDbCluster => {
+                // Boxed, like the other arms of this catalogue: the enclosing future holds
+                // one pointer instead of this arm's whole state.
+                Box::pin(create_db_cluster(ctx, region, resource, propagated)).await
             }
             // `AWS::ElastiCache::CacheCluster` publishes `Tags` as the `{Key, Value}` list
             // `CreateCacheCluster`'s own `Tags` member takes, so a cluster a stack creates
@@ -2011,6 +2028,20 @@ impl Provisioner {
             Self::ElastiCacheCacheCluster => {
                 Box::pin(cache_cluster_readiness(ctx, region, physical_resource_id)).await
             }
+            // `CreateDBInstance` answers the instance `creating`, in which it serves no
+            // connection and publishes no endpoint a client can reach, so the resource's
+            // creation is finished once Amazon RDS reports it `available` — which is also
+            // what the rest of a stack needs before it can use the database.
+            Self::RdsDbInstance => {
+                Box::pin(db_instance_readiness(ctx, region, physical_resource_id)).await
+            }
+            // `CreateDBCluster` answers the cluster `creating`, in which it serves no
+            // connection and publishes no endpoint a client can reach, so the resource's
+            // creation is finished once Amazon RDS reports it `available` — which is also
+            // what a member DB instance of the same stack needs before it can join it.
+            Self::RdsDbCluster => {
+                Box::pin(db_cluster_readiness(ctx, region, physical_resource_id)).await
+            }
             // "When you create a new cluster, the Amazon EKS API server endpoint is private
             // to your VPC" only once the control plane is up: a created cluster is reported
             // `CREATING` and "you must wait for the cluster status to become ACTIVE before
@@ -2133,6 +2164,10 @@ impl Provisioner {
                 ))
                 .await
             }
+            // A DB cluster's endpoints are the DNS forms CloudFormation computes for the
+            // resource rather than the listener address this emulator's Amazon RDS
+            // publishes for the data plane, so there is nothing to read back off the
+            // cluster (see the note in `rds_db_clusters`).
             _ => Ok(BTreeMap::new()),
         }
     }
@@ -2194,6 +2229,13 @@ impl Provisioner {
             // cluster still sits in.
             Self::ElastiCacheCacheCluster => {
                 Box::pin(cache_cluster_removal(ctx, region, physical_resource_id)).await
+            }
+            // `DeleteDBCluster` leaves the cluster `deleting` until the deletion completes,
+            // so it is still there when the delete answers and the deletion is finished once
+            // Amazon RDS no longer holds it — which is what keeps a stack from deleting the
+            // DB subnet group the cluster still sits in.
+            Self::RdsDbCluster => {
+                Box::pin(db_cluster_removal(ctx, region, physical_resource_id)).await
             }
             // "Before you can delete a notebook instance, you must call the
             // StopNotebookInstance API", so the delete stopped the instance and the
@@ -2352,6 +2394,18 @@ impl Provisioner {
             Self::RdsDbParameterGroup => {
                 update_parameter_group(ctx, region, resource, declared, DB_PARAMETER_GROUP_CALLS)
                     .await
+            }
+            // Every setting of a DB cluster that Amazon RDS can change on a cluster that
+            // exists is a member of `ModifyDBCluster`, so a changed declaration is applied
+            // to the cluster the stack created rather than dropped
+            // ([`rds_db_clusters::update_db_cluster`]).
+            Self::RdsDbCluster => {
+                Box::pin(update_db_cluster(ctx, region, resource, declared)).await
+            }
+            // The same for a DB instance, through `ModifyDBInstance`
+            // ([`update_db_instance`]).
+            Self::RdsDbInstance => {
+                Box::pin(update_db_instance(ctx, region, resource, declared)).await
             }
             Self::RdsDbClusterParameterGroup => {
                 update_parameter_group(
@@ -2883,6 +2937,17 @@ impl Provisioner {
             }
             // The final snapshot a `Snapshot` deletion policy asks for is a member of the
             // delete itself, so the arm takes it beside the cluster's identifier.
+            Self::RdsDbCluster => {
+                Box::pin(delete_db_cluster(
+                    ctx,
+                    region,
+                    physical_resource_id,
+                    final_snapshot,
+                ))
+                .await
+            }
+            // The final snapshot a `Snapshot` deletion policy asks for is a member of the
+            // delete itself, so the arm takes it beside the cluster's identifier.
             Self::ElastiCacheCacheCluster => {
                 Box::pin(delete_cache_cluster(
                     ctx,
@@ -3381,6 +3446,11 @@ impl Provisioner {
             Self::RdsDbInstance => {
                 describe_db_instance(ctx, region, physical_resource_id).await
             }
+            // The cluster is read back by the identifier it was created under, which is this
+            // resource's physical id.
+            Self::RdsDbCluster => {
+                Box::pin(read_db_cluster(ctx, region, physical_resource_id)).await
+            }
             Self::RdsDbSubnetGroup => {
                 describe_db_subnet_group(ctx, region, physical_resource_id).await
             }
@@ -3755,8 +3825,12 @@ mod s3_table_buckets;
 mod ssm_associations;
 mod resource_groups;
 pub(super) mod elasticache_caches;
+/// The Amazon RDS DB CLUSTER arm: the cluster an `AWS::RDS::DBCluster` declares, created in
+/// the service that owns it so a member DB instance of that cluster resolves it.
+pub(super) mod rds_db_clusters;
 pub(super) mod redshift_parameter_groups;
 use elasticache_caches::*;
+use rds_db_clusters::*;
 use redshift_parameter_groups::*;
 use ssm_associations::*;
 use resource_groups::*;

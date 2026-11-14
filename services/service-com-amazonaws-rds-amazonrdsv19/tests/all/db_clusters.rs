@@ -1153,20 +1153,6 @@ async fn a_request_outside_a_documented_constraint_is_refused_and_stores_nothing
             "InvalidParameterValue",
         ),
         (
-            "Serverless v2 capacity on a version that runs none",
-            vec![
-                ("DBClusterIdentifier", "emu-cluster-acu".to_string()),
-                ("Engine", "aurora-mysql".to_string()),
-                ("EngineVersion", "5.7".to_string()),
-                (
-                    "ServerlessV2ScalingConfiguration.MaxCapacity",
-                    "8".to_string(),
-                ),
-            ],
-            400,
-            "InvalidParameterCombination",
-        ),
-        (
             "an engine mode the resolved version does not support",
             vec![
                 ("DBClusterIdentifier", "emu-cluster-mode".to_string()),
