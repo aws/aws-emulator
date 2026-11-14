@@ -149,6 +149,8 @@ mod kubernetes_api;
 mod list_pod_identity_associations;
 #[path = "all/marketplace_addon_install.rs"]
 mod marketplace_addon_install;
+#[path = "all/marketplace_listing_reference_data.rs"]
+mod marketplace_listing_reference_data;
 #[path = "all/nodegroup_config_update.rs"]
 mod nodegroup_config_update;
 #[path = "all/nodegroup_lifecycle.rs"]

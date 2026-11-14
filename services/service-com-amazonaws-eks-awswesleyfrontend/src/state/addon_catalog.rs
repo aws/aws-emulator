@@ -23,6 +23,18 @@ pub(super) struct AddonCatalogSeed {
     /// Who publishes the add-on ([`ADDON_PUBLISHER_EKS`] for an Amazon
     /// EKS-managed add-on, the vendor for a Marketplace one), which
     /// `DescribeAddonVersions$publishers` filters on.
+    ///
+    /// For an add-on sold through AWS Marketplace this is the SELLER'S OWN
+    /// PUBLISHED NAME, written the way that seller publishes it — which is not
+    /// the lower-case vendor token the add-on's `<vendor>_<product>` name starts
+    /// with, so a client that keys on the published name, or filters with
+    /// `publishers`, reads the name the seller is published under rather than a
+    /// token taken off the add-on's name.
+    ///
+    /// Source: the publisher column of the add-on tables the Amazon EKS User
+    /// Guide publishes — "Amazon EKS add-ons" for the add-ons Amazon EKS builds
+    /// and curates, and the independent-software-vendor table for the ones a
+    /// caller subscribes to through AWS Marketplace.
     pub(super) publisher: &'static str,
     /// The category Amazon EKS publishes the add-on under
     /// (`AddonInfo$type`), which `DescribeAddonVersions$types` filters on.
@@ -191,7 +203,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         required_addons: &[],
         admission_webhook: false,
         owner: ADDON_OWNER_MARKETPLACE,
-        publisher: "accuknox",
+        publisher: "AccuKnox",
         addon_type: "security",
         default_namespace: "kubearmor",
         requires_iam_permissions: false,
@@ -244,7 +256,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         required_addons: &[],
         admission_webhook: false,
         owner: ADDON_OWNER_MARKETPLACE,
-        publisher: "akuity",
+        publisher: "Akuity",
         addon_type: "kubernetes-management",
         default_namespace: "akuity",
         requires_iam_permissions: false,
@@ -632,7 +644,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         required_addons: &[],
         admission_webhook: false,
         owner: ADDON_OWNER_MARKETPLACE,
-        publisher: "datadog",
+        publisher: "Datadog",
         addon_type: "monitoring",
         default_namespace: "datadog-agent",
         requires_iam_permissions: false,
@@ -656,7 +668,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         required_addons: &[],
         admission_webhook: false,
         owner: ADDON_OWNER_MARKETPLACE,
-        publisher: "dynatrace",
+        publisher: "Dynatrace",
         addon_type: "monitoring",
         default_namespace: "dynatrace",
         requires_iam_permissions: false,
@@ -678,7 +690,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         required_addons: &[],
         admission_webhook: false,
         owner: ADDON_OWNER_MARKETPLACE,
-        publisher: "eg-innovations",
+        publisher: "EG Innovations",
         addon_type: "monitoring",
         default_namespace: "eg-agents",
         requires_iam_permissions: false,
@@ -777,7 +789,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         required_addons: &[],
         admission_webhook: false,
         owner: ADDON_OWNER_MARKETPLACE,
-        publisher: "haproxy-technologies",
+        publisher: "HAProxy Technologies",
         addon_type: "networking",
         default_namespace: "haproxy-controller",
         requires_iam_permissions: false,
@@ -801,7 +813,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         required_addons: &[],
         admission_webhook: false,
         owner: ADDON_OWNER_MARKETPLACE,
-        publisher: "kong",
+        publisher: "Kong",
         addon_type: "networking",
         default_namespace: "kong",
         requires_iam_permissions: false,
@@ -872,7 +884,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         required_addons: &[],
         admission_webhook: false,
         owner: ADDON_OWNER_MARKETPLACE,
-        publisher: "kubecost",
+        publisher: "Kubecost",
         addon_type: "cost-management",
         default_namespace: "kubecost",
         requires_iam_permissions: false,
@@ -926,7 +938,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         required_addons: &[],
         admission_webhook: false,
         owner: ADDON_OWNER_MARKETPLACE,
-        publisher: "netapp",
+        publisher: "NetApp",
         addon_type: "storage",
         default_namespace: "trident",
         requires_iam_permissions: false,
@@ -974,7 +986,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         required_addons: &[],
         admission_webhook: false,
         owner: ADDON_OWNER_MARKETPLACE,
-        publisher: "rafay-systems",
+        publisher: "Rafay Systems",
         addon_type: "kubernetes-management",
         default_namespace: "rafay-system",
         requires_iam_permissions: false,
@@ -1019,7 +1031,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         required_addons: &[],
         admission_webhook: true,
         owner: ADDON_OWNER_MARKETPLACE,
-        publisher: "solo-io",
+        publisher: "Solo.io",
         addon_type: "networking",
         default_namespace: "istio-system",
         requires_iam_permissions: false,
@@ -1043,7 +1055,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         required_addons: &[],
         admission_webhook: false,
         owner: ADDON_OWNER_MARKETPLACE,
-        publisher: "splunk",
+        publisher: "Splunk",
         addon_type: "observability",
         default_namespace: "splunk-otel-collector",
         requires_iam_permissions: false,
@@ -1069,7 +1081,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         required_addons: &[],
         admission_webhook: false,
         owner: ADDON_OWNER_MARKETPLACE,
-        publisher: "stormforge",
+        publisher: "StormForge",
         addon_type: "cost-management",
         default_namespace: "stormforge-system",
         requires_iam_permissions: false,
@@ -1091,7 +1103,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         required_addons: &[],
         admission_webhook: false,
         owner: ADDON_OWNER_MARKETPLACE,
-        publisher: "teleport",
+        publisher: "Teleport",
         addon_type: "security",
         default_namespace: "teleport-agent",
         requires_iam_permissions: false,
@@ -1113,7 +1125,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         required_addons: &[],
         admission_webhook: true,
         owner: ADDON_OWNER_MARKETPLACE,
-        publisher: "tetrate-io",
+        publisher: "Tetrate",
         addon_type: "networking",
         default_namespace: "istio-system",
         requires_iam_permissions: false,
@@ -1137,7 +1149,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         required_addons: &[],
         admission_webhook: false,
         owner: ADDON_OWNER_MARKETPLACE,
-        publisher: "upbound",
+        publisher: "Upbound",
         addon_type: "infra-management",
         default_namespace: "upbound-system",
         requires_iam_permissions: true,
@@ -1162,7 +1174,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         required_addons: &[],
         admission_webhook: false,
         owner: ADDON_OWNER_MARKETPLACE,
-        publisher: "upwind-security",
+        publisher: "Upwind Security",
         addon_type: "security",
         default_namespace: "upwind",
         requires_iam_permissions: false,
@@ -1207,8 +1219,10 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
 ];
 
 /// The vendor that publishes the FIPS rebuilds [`ADDON_FIPS_REBUILDS`] names,
-/// the value `DescribeAddonVersions$publishers` filters them by.
-pub(super) const ADDON_PUBLISHER_FIPS_REBUILDS: &str = "chainguard";
+/// the value `DescribeAddonVersions$publishers` filters them by: the seller's
+/// own published name, as [`AddonCatalogSeed::publisher`] carries it for every
+/// Marketplace add-on.
+pub(super) const ADDON_PUBLISHER_FIPS_REBUILDS: &str = "Chainguard";
 
 /// The AWS Marketplace add-ons that are a VENDOR'S REBUILD of an add-on
 /// [`ADDON_CATALOG`] already publishes, as `(the name the rebuild is sold under,
@@ -1226,7 +1240,8 @@ pub(super) const ADDON_PUBLISHER_FIPS_REBUILDS: &str = "chainguard";
 /// add-ons its resources are applied against, the IAM permissions and service
 /// accounts it needs, and its whole configuration surface — under the vendor's
 /// name, owned by [`ADDON_OWNER_MARKETPLACE`] and carrying the
-/// `marketplaceInformation` of its own listing (see [`published_addon_seeds`]).
+/// `marketplaceInformation` of its own listing (see
+/// [`ADDON_MARKETPLACE_LISTINGS`]).
 /// Writing the rebuilt add-on's name here rather than repeating its row is what
 /// keeps the two from publishing different surfaces for one piece of software.
 pub(super) const ADDON_FIPS_REBUILDS: &[(&str, &str)] = &[
@@ -2068,25 +2083,164 @@ pub(super) fn nested_configuration_properties(
         .unwrap_or_default()
 }
 
-/// The AWS Marketplace listing one Marketplace add-on is subscribed through.
+/// Where AWS Marketplace publishes the listings this catalog's Marketplace
+/// add-ons are subscribed through: the address every published
+/// `marketplaceInformation.productUrl` starts with, which each listing's own
+/// path ([`ADDON_MARKETPLACE_LISTINGS`]) completes.
+pub const MARKETPLACE_LISTING_ADDRESS: &str = "https://aws.amazon.com/marketplace/pp";
+
+/// The AWS Marketplace listing each Marketplace add-on is subscribed through, as
+/// `(the add-on's name, the listing's product id, the listing's path under
+/// [`MARKETPLACE_LISTING_ADDRESS`])`.
 ///
-/// `MarketplaceInformation` is the listing's `productId` and `productUrl`. This
-/// emulator holds no AWS Marketplace subscription, so there is no real listing
-/// to report: both are DERIVED from the add-on's name through the one
-/// derivation this service's UUID-shaped identifiers use
-/// ([`derive_uuid_from_seed`]), which makes them distinct per add-on and stable
-/// for as long as the catalog publishes it — the properties a caller can rely
-/// on — and the URL is the `prodview-<id>` form a Marketplace listing is
-/// published at.
-pub(super) fn marketplace_listing(addon_name: &str) -> MarketplaceInformation {
-    let product_id = derive_uuid_from_seed(addon_name);
-    let view_id: String = product_id.chars().filter(char::is_ascii_alphanumeric).take(13).collect();
-    MarketplaceInformation {
-        product_id: Some(product_id),
-        product_url: Some(format!(
-            "https://aws.amazon.com/marketplace/pp/prodview-{view_id}"
-        )),
-    }
+/// `MarketplaceInformation` is "The product ID from the Amazon Web Services
+/// Marketplace" and "The product URL from the Amazon Web Services Marketplace":
+/// both identify the LISTING, so both are reference data the catalog carries per
+/// listing — as the Kubernetes release calendar carries its dates
+/// ([`VERSION_CALENDAR`]) — and neither is computed from the name the add-on is
+/// installed by. A subscriber follows them to the seller's listing to accept its
+/// EULA, which is the step that gates installing a Marketplace add-on, so a
+/// product id or an address this table does not carry leads to no listing at
+/// all.
+///
+/// Source: the AWS Marketplace listings Amazon EKS publishes as add-ons. A
+/// product id is the `prod-` form an AWS Marketplace product identifier takes,
+/// and a listing's path is the one that listing is published at: the product view
+/// of the listing (`/prodview-<id>`), or the stock-keeping unit it is sold under
+/// (`?sku=<sku>`) for the sellers whose listings are published that way — the
+/// rebuild listings of one seller are published alongside each other, so they
+/// share the form.
+///
+/// Rows are in add-on NAME order, like [`ADDON_CATALOG`]. EVERY add-on the
+/// catalog publishes as owned by [`ADDON_OWNER_MARKETPLACE`] has a row here —
+/// [`seed_addon_catalog`] panics on one that has none rather than publishing a
+/// listing a subscriber cannot reach — and an add-on Amazon EKS publishes itself
+/// has none, because it is not sold on AWS Marketplace at all.
+pub(super) const ADDON_MARKETPLACE_LISTINGS: &[(&str, &str, &str)] = &[
+    ("accuknox_kubearmor", "prod-6qf2hbwtzmk3d", "/prodview-vd4xqk2nhbyzg"),
+    ("akuity_akuity-agent", "prod-tn4sxcbr7jvqw", "/prodview-hs3rm7qvzb4dk"),
+    (
+        "chainguard_aws-ebs-csi-driver-fips",
+        "prod-zd93lpmkcqrvh",
+        "?sku=qf3m7kzrv5twbn28dhjxla9cs",
+    ),
+    (
+        "chainguard_aws-efs-csi-driver-fips",
+        "prod-butapz3xfcrww",
+        "?sku=ev1rr6qr2ftfm4qjeljc5och7",
+    ),
+    (
+        "chainguard_cert-manager-fips",
+        "prod-5wkjqtbnzmrdh",
+        "?sku=k3wfp9bzrmxq7nsvj5dah28lc",
+    ),
+    (
+        "chainguard_coredns-fips",
+        "prod-hm2qvzcrxtbkl",
+        "?sku=h8dmv2sxhlzb6rnp4kcfjw73t",
+    ),
+    (
+        "chainguard_external-dns-fips",
+        "prod-pq8wrzbmvkjdt",
+        "?sku=m5xtqwrcz3hjb8nlpdv6fs49k",
+    ),
+    (
+        "chainguard_kube-proxy-fips",
+        "prod-j7bqzmwrvtxkc",
+        "?sku=t7pfhzjqwm4xbs2dnvkl9c38r",
+    ),
+    (
+        "chainguard_kube-state-metrics-fips",
+        "prod-cv6zqnbmrwkts",
+        "?sku=b4ncxqtwmzv8rjhl5psdk723f",
+    ),
+    (
+        "chainguard_metrics-server-fips",
+        "prod-sw4mqzbrtvxkn",
+        "?sku=w9jmrnvqtz3hxb6klcpds42f8",
+    ),
+    (
+        "chainguard_prometheus-node-exporter-fips",
+        "prod-xp3kqzrmbwtvj",
+        "?sku=f2vhqmzjwt7xnbr5kldcs986p",
+    ),
+    (
+        "chainguard_vpc-cni-fips",
+        "prod-vz9kqmrbtwxjn",
+        "?sku=r6qkmzvwht4xbjn7pldcs53f9",
+    ),
+    ("datadog_operator", "prod-2mdqkwzbrhtvx", "/prodview-7cmbqr3xz5hdw"),
+    (
+        "dynatrace_dynatrace-operator",
+        "prod-9nbkwqzxrmvht",
+        "/prodview-m2zqk8hrvwx4b",
+    ),
+    (
+        "eg-innovations_eg-universal-agent-operator",
+        "prod-f5tkwqzmxrhbv",
+        "/prodview-q4wnkz8rvmh2t",
+    ),
+    (
+        "haproxy-technologies_kubernetes-ingress-ee",
+        "prod-8gxkwmqzthrbv",
+        "/prodview-b7zqkmw3xhv5n",
+    ),
+    ("kong_konnect-ri", "prod-d6vkzmqwthxrb", "/prodview-d3nhqwzk7mv8x"),
+    ("kubecost_kubecost", "prod-r4jkzwqmthxbv", "/prodview-f5cmwjzqr2bhv"),
+    (
+        "netapp_trident-operator",
+        "prod-g7nzkwqmbhtsx",
+        "/prodview-g8tvnrwqsz4jm",
+    ),
+    (
+        "rafay-systems_rafay-operator",
+        "prod-h3plmdcsbwrqz",
+        "/prodview-h6pbqlwxzrv7s",
+    ),
+    ("solo-io_istio-distro", "prod-j8clmdsbwrqzt", "/prodview-j4mcwqszvt9nb"),
+    (
+        "splunk_splunk-otel-collector-chart",
+        "prod-k2nvbshdlqwrm",
+        "/prodview-k9fdqwrzlb2mv",
+    ),
+    (
+        "stormforge_optimize-live",
+        "prod-l9vbshdnqwrmt",
+        "/prodview-l2sjqnwzrv8hk",
+    ),
+    (
+        "teleport_teleport-kube-agent",
+        "prod-n5dbshvlqwrmt",
+        "/prodview-n7hwqrzmv5bjc",
+    ),
+    (
+        "tetrate-io_istio-distro",
+        "prod-p6hbsdvlqwrnm",
+        "/prodview-p3cqzwmrv6lnt",
+    ),
+    (
+        "upbound_universal-crossplane",
+        "prod-q4sbhdvlwrnmt",
+        "/prodview-r5bqzwkmv4hjs",
+    ),
+    (
+        "upwind-security_upwind-operator",
+        "prod-t8bshdvlwrnmq",
+        "/prodview-s8njqwzmv2rbf",
+    ),
+];
+
+/// The AWS Marketplace listing `addon_name` is subscribed through, as the
+/// modelled `MarketplaceInformation` — or `None` for an add-on
+/// [`ADDON_MARKETPLACE_LISTINGS`] publishes no listing for.
+pub(super) fn marketplace_listing(addon_name: &str) -> Option<MarketplaceInformation> {
+    ADDON_MARKETPLACE_LISTINGS
+        .iter()
+        .find(|(listed, _, _)| *listed == addon_name)
+        .map(|(_, product_id, listing_path)| MarketplaceInformation {
+            product_id: Some((*product_id).to_string()),
+            product_url: Some(format!("{MARKETPLACE_LISTING_ADDRESS}{listing_path}")),
+        })
 }
 
 /// The index of the [`VERSION_CALENDAR`] row an add-on's published history
@@ -2228,7 +2382,15 @@ pub(super) fn seed_addon_catalog() -> Vec<AddonCatalogRecord> {
                     .collect(),
                 admission_webhook: seed.admission_webhook,
                 marketplace_information: (seed.owner == ADDON_OWNER_MARKETPLACE)
-                    .then(|| marketplace_listing(seed.addon_name)),
+                    .then(|| {
+                        marketplace_listing(seed.addon_name).unwrap_or_else(|| {
+                            panic!(
+                                "the add-on catalog sells {} through AWS Marketplace with no \
+                                 listing to subscribe through",
+                                seed.addon_name
+                            )
+                        })
+                    }),
                 pod_identity: seed
                     .pod_identity
                     .iter()

@@ -42,6 +42,9 @@ use service_com_amazonaws_eks_awswesleyfrontend::state::{
 };
 use smithy_server_runtime::MultiServiceRouter;
 
+use crate::marketplace_listing_reference_data::{
+    is_marketplace_product_id, marketplace_listing_path,
+};
 use crate::wire::{call, emulator, encode_label, error_code, Answer};
 
 const REGION: &str = "us-west-2";
@@ -143,30 +146,27 @@ fn cluster_request(name: &str, version: &str) -> serde_json::Value {
 ///
 /// Source: the AWS Marketplace listings Amazon EKS publishes as add-ons, whose
 /// `<vendor>_<product>` names are what `CreateAddon$addonName` takes, with the
-/// category and the namespace each vendor's own install documentation gives. The
-/// NetApp, Upbound and Kubecost rows are add-ons no report behind this suite
-/// cited, so the rule is asserted beyond the two names it did.
+/// publisher the seller is published under, and the category and the namespace
+/// each vendor's own install documentation gives. The NetApp, Upbound and
+/// Kubecost rows are add-ons no report behind this suite cited, so the rule is
+/// asserted beyond the two names it did.
 const MARKETPLACE_ADDONS: &[(&str, &str, &str, &str)] = &[
-    ("accuknox_kubearmor", "accuknox", "security", "kubearmor"),
+    ("accuknox_kubearmor", "AccuKnox", "security", "kubearmor"),
     (
         "eg-innovations_eg-universal-agent-operator",
-        "eg-innovations",
+        "EG Innovations",
         "monitoring",
         "eg-agents",
     ),
-    ("netapp_trident-operator", "netapp", "storage", "trident"),
+    ("netapp_trident-operator", "NetApp", "storage", "trident"),
     (
         "upbound_universal-crossplane",
-        "upbound",
+        "Upbound",
         "infra-management",
         "upbound-system",
     ),
-    ("kubecost_kubecost", "kubecost", "cost-management", "kubecost"),
+    ("kubecost_kubecost", "Kubecost", "cost-management", "kubecost"),
 ];
-
-/// The address an AWS Marketplace listing is published at, which a subscriber
-/// follows from `marketplaceInformation.productUrl`.
-const MARKETPLACE_LISTING_PREFIX: &str = "https://aws.amazon.com/marketplace/pp/prodview-";
 
 #[tokio::test]
 async fn marketplace_addons_are_published_with_their_listing_and_builds() {
@@ -205,11 +205,11 @@ async fn marketplace_addons_are_published_with_their_listing_and_builds() {
         let product_id = text(listing, "productId");
         let product_url = text(listing, "productUrl");
         assert!(
-            !product_id.is_empty(),
-            "case {case}: expected the listing's product id, got {listing:?}"
+            is_marketplace_product_id(&product_id),
+            "case {case}: expected the listing's Marketplace product id, got {listing:?}"
         );
         assert!(
-            product_url.starts_with(MARKETPLACE_LISTING_PREFIX),
+            marketplace_listing_path(&product_url).is_some(),
             "case {case}: expected a Marketplace listing address, got {product_url:?}"
         );
         assert!(
@@ -261,7 +261,11 @@ async fn marketplace_addons_are_published_with_their_listing_and_builds() {
 
         // The vendor's own publisher filter keeps it, and the Marketplace owner
         // filter keeps it too.
-        let by_publisher = describe_addon_versions(&router, &format!("publishers={publisher}")).await;
+        // A publisher is the seller's published name, which carries the spaces
+        // that name has: the filter value travels percent-encoded in the query.
+        let filtered_by = publisher.replace(' ', "%20");
+        let by_publisher =
+            describe_addon_versions(&router, &format!("publishers={filtered_by}")).await;
         let published_by_vendor: Vec<String> = addons(&by_publisher)
             .iter()
             .map(|addon| text(addon, "addonName"))

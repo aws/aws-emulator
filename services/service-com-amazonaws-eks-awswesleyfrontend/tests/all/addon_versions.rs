@@ -35,6 +35,9 @@ use smithy_server_runtime::MultiServiceRouter;
 
 use crate::addon_catalog_publication::schema_root;
 use crate::cluster_lifecycle::REGION;
+use crate::marketplace_listing_reference_data::{
+    is_marketplace_product_id, marketplace_listing_path,
+};
 use crate::wire::{call, emulator, encode_label, error_code, Answer};
 
 /// `GET /addons/supported-versions`, with an optional query string.
@@ -278,12 +281,11 @@ async fn the_published_catalog_is_reported_from_state() {
                 panic!("case {case:?}: a Marketplace add-on reports its listing, got {addon:?}")
             });
             assert!(
-                !string_member(listing, "productId").is_empty(),
-                "case {case:?}: expected the listing's product id, got {listing:?}"
+                is_marketplace_product_id(&string_member(listing, "productId")),
+                "case {case:?}: expected the listing's Marketplace product id, got {listing:?}"
             );
             assert!(
-                string_member(listing, "productUrl")
-                    .starts_with("https://aws.amazon.com/marketplace/pp/"),
+                marketplace_listing_path(&string_member(listing, "productUrl")).is_some(),
                 "case {case:?}: expected the listing's Marketplace URL, got {listing:?}"
             );
         } else {
@@ -527,7 +529,9 @@ async fn filters_narrow_the_listing() {
         ),
         (
             "publishers naming one Marketplace vendor",
-            format!("publishers={a_vendor}"),
+            // A seller's published name may carry a space, which travels
+            // percent-encoded in the query.
+            format!("publishers={}", a_vendor.replace(' ', "%20")),
             published_by_vendor.clone(),
         ),
         (

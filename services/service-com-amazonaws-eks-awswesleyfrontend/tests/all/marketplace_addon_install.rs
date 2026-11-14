@@ -401,10 +401,20 @@ async fn a_vendor_rebuild_publishes_the_surface_of_the_addon_it_rebuilds() {
             "case {case}: a rebuild is sold through the Marketplace, got {:?}",
             rebuild["owner"]
         );
+        // A rebuild is published under its vendor's OWN published name, which is
+        // the seller's capitalization of the vendor token its `<vendor>_<add-on>`
+        // name starts with rather than that lower-case token itself.
+        let vendor = case.split_once('_').map(|(vendor, _)| vendor).unwrap_or("");
+        let published_name = string_member(rebuild, "publisher");
         assert_eq!(
-            string_member(rebuild, "publisher"),
-            case.split_once('_').map(|(vendor, _)| vendor).unwrap_or(""),
-            "case {case}: a rebuild is published by its vendor, got {:?}",
+            published_name.to_lowercase(),
+            vendor,
+            "case {case}: a rebuild is published under its vendor's published name, got {:?}",
+            rebuild["publisher"]
+        );
+        assert_ne!(
+            published_name, vendor,
+            "case {case}: the seller's published name is not the lower-case name token, got {:?}",
             rebuild["publisher"]
         );
         for member in ["productId", "productUrl"] {
