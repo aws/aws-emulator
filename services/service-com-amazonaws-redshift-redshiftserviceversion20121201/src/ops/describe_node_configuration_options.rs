@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DescribeNodeConfigurationOptions
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DescribeNodeConfigurationOptions`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DescribeNodeConfigurationOptions::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports the node configurations this service offers for the action the request
+//! names, evaluated against the cluster or the snapshot it names: the shapes are
+//! computed from the published orderable catalog and the source's own shape (see
+//! [`crate::state::node_configuration_options`]), and the request's `Filters`
+//! narrow them.
 //!
 //! ## Shape of an operation
 //!
@@ -119,7 +115,14 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-redshift-redshiftservic
 // here — hence the `DescribeNodeConfigurationOptionsError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.redshift#DescribeNodeConfigurationOptions")]
+// `DependentServiceUnavailableFault` is widened in, exactly as `DescribeResize`
+// widens it: the model does not list it for this operation, but the service
+// declares the shape, and it is the only modelled way to say "the control-plane
+// store could not be reached".
+#[smithy_macros::operation_error(
+    "com.amazonaws.redshift#DescribeNodeConfigurationOptions",
+    extra_errors = ["DependentServiceUnavailableFault"]
+)]
 #[derive(Debug)]
 pub enum DescribeNodeConfigurationOptionsErrorModeled {
     AccessToSnapshotDeniedFault(AccessToSnapshotDeniedFault),
@@ -127,6 +130,7 @@ pub enum DescribeNodeConfigurationOptionsErrorModeled {
     ClusterSnapshotNotFoundFault(ClusterSnapshotNotFoundFault),
     InvalidClusterSnapshotStateFault(InvalidClusterSnapshotStateFault),
     UnsupportedOperationFault(UnsupportedOperationFault),
+    DependentServiceUnavailableFault(DependentServiceUnavailableFault),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -175,23 +179,165 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::DESCRIBE_NODE_CONFIGURATION_OPTIONS_OUTPUT_SCHEMA;
     const SUCCESS_STATUS: u16 = 200u16;
 
+    /// Report the node configurations the request asks for.
+    ///
+    /// A READ. The only write it makes is the store's clock-owed settle, which
+    /// materialises the transitions a cluster and a snapshot already owed at this
+    /// instant — due whether or not anybody called.
+    ///
+    /// The SOURCE is resolved first, each name with that resource's own modelled
+    /// fault: a snapshot the request names has to be one this account holds
+    /// (`ClusterSnapshotNotFoundFault`) and available
+    /// (`InvalidClusterSnapshotStateFault`), and a cluster it names has to be one
+    /// this account holds (`ClusterNotFoundFault`). Which source an action needs
+    /// is the `ActionType`'s own documentation: a restore is evaluated "based on
+    /// an existing snapshot", an elastic resize "based on an existing cluster",
+    /// and a recommendation on "an existing cluster or snapshot".
     async fn handle(
         &self,
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DescribeNodeConfigurationOptions` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DescribeNodeConfigurationOptionsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DescribeNodeConfigurationOptions"))
+        use crate::state as st;
+
+        // A read needs nothing from the request beyond its deserialized input.
+        let _ = ctx;
+        let Some(state) = st::service_state(&*self.engine) else {
+            return Err(
+                DescribeNodeConfigurationOptionsErrorModeled::DependentServiceUnavailableFault(
+                    DependentServiceUnavailableFault {
+                        message: Some(st::STORE_UNAVAILABLE.to_string()),
+                    },
+                )
+                .into(),
+            );
+        };
+
+        let mut store = state.lock();
+        store.settle(::std::time::Instant::now());
+
+        // The snapshot arm: either locator names it, and both have to name the
+        // same record (the one rule every snapshot-scoped operation of this
+        // service locates a snapshot by).
+        let names_snapshot =
+            input.snapshot_identifier.is_some() || input.snapshot_arn.is_some();
+        let snapshot_source = if names_snapshot {
+            let Some(snapshot) = store.snapshot_located(
+                input.snapshot_identifier.as_deref(),
+                input.snapshot_arn.as_deref(),
+            ) else {
+                return Err(
+                    DescribeNodeConfigurationOptionsErrorModeled::ClusterSnapshotNotFoundFault(
+                        ClusterSnapshotNotFoundFault {
+                            message: Some(st::cluster_snapshot_not_found_message(
+                                st::ClusterSnapshotNotFoundWording::NotFoundThenIdentifier,
+                                input
+                                    .snapshot_identifier
+                                    .as_deref()
+                                    .or(input.snapshot_arn.as_deref())
+                                    .unwrap_or_default(),
+                            )),
+                        },
+                    )
+                    .into(),
+                );
+            };
+            let status = snapshot.snapshot.status.clone().unwrap_or_default();
+            if status != st::STATUS_AVAILABLE {
+                return Err(
+                    DescribeNodeConfigurationOptionsErrorModeled::InvalidClusterSnapshotStateFault(
+                        InvalidClusterSnapshotStateFault {
+                            message: Some(st::invalid_snapshot_state_message(
+                                snapshot
+                                    .snapshot
+                                    .snapshot_identifier
+                                    .as_deref()
+                                    .unwrap_or_default(),
+                                &status,
+                            )),
+                        },
+                    )
+                    .into(),
+                );
+            }
+            Some(st::NodeConfigurationSource {
+                node_type: snapshot.snapshot.node_type.clone().unwrap_or_default(),
+                number_of_nodes: snapshot.snapshot.number_of_nodes.unwrap_or(1),
+            })
+        } else {
+            None
+        };
+
+        // The cluster arm, resolved the same way every cluster-scoped operation
+        // of this service resolves a `ClusterIdentifier`.
+        let cluster_source = match input.cluster_identifier.as_deref() {
+            None => None,
+            Some(identifier) => {
+                let Some(stored) = store.cluster(identifier) else {
+                    return Err(
+                        DescribeNodeConfigurationOptionsErrorModeled::ClusterNotFoundFault(
+                            ClusterNotFoundFault {
+                                message: Some(st::cluster_not_found_message(
+                                    st::ClusterNotFoundWording::IdentifierThenNotFound,
+                                    identifier,
+                                )),
+                            },
+                        )
+                        .into(),
+                    );
+                };
+                Some(st::NodeConfigurationSource {
+                    node_type: stored.cluster.node_type.clone().unwrap_or_default(),
+                    number_of_nodes: stored.cluster.number_of_nodes.unwrap_or(1),
+                })
+            }
+        };
+
+        // Which source the action is evaluated against: a restore's is the
+        // snapshot, an elastic resize's is the cluster, and a recommendation's is
+        // whichever the request named. An action whose source the request did not
+        // name describes nothing to evaluate.
+        let source = match input.action_type.as_str() {
+            st::ACTION_RESTORE_CLUSTER => snapshot_source,
+            st::ACTION_RESIZE_CLUSTER => cluster_source,
+            // `recommend-node-config`, the one action either source serves.
+            _ => cluster_source.or(snapshot_source),
+        };
+        let Some(source) = source else {
+            return Err(crate::scaffolded::Scaffolded::invalid_parameter_combination(
+                st::node_configuration_source_required_message(&input.action_type),
+            ));
+        };
+
+        let filters = input.filters.clone().unwrap_or_default();
+        let mut matched: Vec<NodeConfigurationOption> = Vec::new();
+        for option in st::node_configuration_options(&input.action_type, &source) {
+            match st::option_matches_filters(&option, &filters) {
+                Ok(true) => matched.push(option),
+                Ok(false) => {}
+                Err(message) => {
+                    return Err(crate::scaffolded::Scaffolded::invalid_parameter_value(message))
+                }
+            }
+        }
+
+        // This operation publishes its OWN `MaxRecords` window, which is not the
+        // one every other paginated read of this service publishes.
+        let (start, end, next_marker) = match st::page_bounds_within(
+            st::NODE_CONFIGURATION_MAX_RECORDS_WINDOW,
+            input.marker.as_deref(),
+            input.max_records,
+            matched.len(),
+        ) {
+            Ok(page) => page,
+            Err(message) => {
+                return Err(crate::scaffolded::Scaffolded::invalid_parameter_value(message))
+            }
+        };
+
+        Ok(DescribeNodeConfigurationOptionsOutput {
+            node_configuration_option_list: Some(matched[start..end].to_vec()),
+            marker: next_marker,
+        })
     }
 }

@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DisableLogging
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DisableLogging`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DisableLogging::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Stops the audit-log delivery of one stored cluster and reports the logging
+//! status it leaves behind — the same record `DescribeLoggingStatus` reports, so
+//! the two can never disagree (see [`crate::state::ClusterLogging`]).
 //!
 //! ## Shape of an operation
 //!
@@ -106,12 +100,20 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-redshift-redshiftservic
 // here — hence the `DisableLoggingError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.redshift#DisableLogging")]
+// `DependentServiceUnavailableFault` is widened in, exactly as `EnableLogging`
+// widens it: the model does not list it for this operation, but the service
+// declares the shape, and it is the only modelled way to say "the control-plane
+// store could not be reached".
+#[smithy_macros::operation_error(
+    "com.amazonaws.redshift#DisableLogging",
+    extra_errors = ["DependentServiceUnavailableFault"]
+)]
 #[derive(Debug)]
 pub enum DisableLoggingErrorModeled {
     ClusterNotFoundFault(ClusterNotFoundFault),
     InvalidClusterStateFault(InvalidClusterStateFault),
     UnsupportedOperationFault(UnsupportedOperationFault),
+    DependentServiceUnavailableFault(DependentServiceUnavailableFault),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -160,23 +162,105 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::DISABLE_LOGGING_OUTPUT_SCHEMA;
     const SUCCESS_STATUS: u16 = 200u16;
 
+    /// Stop the audit-log delivery of the cluster the request names, and report
+    /// the logging status the cluster is left with.
+    ///
+    /// A MUTATION, and the mirror of `EnableLogging`: it writes the same record
+    /// that operation writes and `DescribeLoggingStatus` reports
+    /// ([`crate::state::ClusterLogging`]), so one rule decides what a cluster's
+    /// logging is.
+    ///
+    /// What it stops is what the request named:
+    ///
+    /// * a request naming `LogExports` stops exporting exactly "the collection of
+    ///   log types to stop exporting", and the delivery stays on while any log
+    ///   type is still exported;
+    /// * a request naming none stops the delivery itself — "when omitted, the
+    ///   operation disables audit logging" — so the cluster is left with the
+    ///   record a cluster nobody ever enabled logging on carries.
+    ///
+    /// The precondition is the same one `EnableLogging` enforces: logging is a
+    /// configuration OF a cluster, so the cluster has to be there and has to be
+    /// serving.
     async fn handle(
         &self,
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DisableLogging` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DisableLoggingErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DisableLogging"))
+        use crate::state as st;
+
+        let Some(state) = st::service_state(&*self.engine) else {
+            return Err(DisableLoggingErrorModeled::DependentServiceUnavailableFault(
+                DependentServiceUnavailableFault {
+                    message: Some(st::STORE_UNAVAILABLE.to_string()),
+                },
+            )
+            .into());
+        };
+
+        // The whole write is one lock-held step: unlike `EnableLogging` this
+        // operation names no bucket, so there is no other service to ask and
+        // nothing is awaited while the store is locked.
+        let mut store = state.lock();
+        store.settle(::std::time::Instant::now());
+
+        let Some(position) = store.cluster_position(&input.cluster_identifier) else {
+            return Err(DisableLoggingErrorModeled::ClusterNotFoundFault(
+                ClusterNotFoundFault {
+                    message: Some(st::cluster_not_found_message(
+                        st::ClusterNotFoundWording::IdentifierThenNotFound,
+                        &input.cluster_identifier,
+                    )),
+                },
+            )
+            .into());
+        };
+        let status = store.clusters[position]
+            .cluster
+            .cluster_status
+            .clone()
+            .unwrap_or_default();
+        if status != st::STATUS_AVAILABLE {
+            return Err(DisableLoggingErrorModeled::InvalidClusterStateFault(
+                InvalidClusterStateFault {
+                    message: Some(st::invalid_cluster_state_message(
+                        &input.cluster_identifier,
+                        &status,
+                    )),
+                },
+            )
+            .into());
+        }
+
+        let stopped: Vec<String> = input.log_exports.clone().unwrap_or_default();
+        let logging = &mut store.clusters[position].logging;
+        if stopped.is_empty() {
+            // The delivery itself stops, so the cluster carries the record a
+            // cluster nobody enabled logging on carries.
+            *logging = st::ClusterLogging::default();
+        } else {
+            logging.log_exports.retain(|held| !stopped.contains(held));
+            // A delivery with no log type left to export exports nothing, which
+            // is logging being off: the record then reports exactly what a
+            // cluster with no delivery reports.
+            if logging.log_exports.is_empty() {
+                *logging = st::ClusterLogging::default();
+            }
+        }
+
+        // Turning a cluster's audit logging off is the security-relevant event of
+        // this operation, so it is attributable in the emulator's own log, exactly
+        // as turning it on is: which operation, the access key id the request
+        // presented, which cluster, which log types were stopped and the outcome.
+        ::tracing::info!(
+            operation = Self::NAME,
+            presented_access_key_id = %::engine::extract_akid(&ctx.parts().headers),
+            cluster_identifier = %input.cluster_identifier,
+            stopped_log_exports = stopped.len(),
+            outcome = "disabled",
+            "stopped audit logging for a provisioned cluster"
+        );
+
+        Ok(store.clusters[position].logging.disable_output())
     }
 }

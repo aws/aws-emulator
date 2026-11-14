@@ -852,19 +852,28 @@ async fn a_restore_and_a_restart_raise_their_catalog_events() {
     );
 }
 
-/// A subscription whose topic names no topic this emulator holds is published to
-/// nothing, and the write it was raised by is served all the same: Amazon
-/// Redshift does not refuse a control-plane write because a notification could
-/// not be delivered.
+/// A subscription whose topic has gone from Amazon SNS since the subscription was
+/// created is published to nothing, and the write it was raised by is served all
+/// the same: Amazon Redshift does not refuse a control-plane write because a
+/// notification could not be delivered.
 #[tokio::test]
 async fn a_write_is_served_when_its_notification_cannot_be_delivered() {
     let emulator = Emulator::with_sns();
-    let absent = format!(
-        "arn:aws:sns:{REGION}:{}:no-such-topic",
-        engine::emulator_account_id()
-    );
-    let created = subscribe(&emulator, "relay-absent", &absent, &[]).await;
-    assert_served("a topic SNS does not hold", "CreateEventSubscription", &created);
+    // The subscription is created against a topic Amazon SNS HOLDS — a
+    // `CreateEventSubscription` naming a topic that does not exist is refused with
+    // the modelled `SNSTopicArnNotFoundFault`, which is a different rule, asserted
+    // by [`crate::event_subscriptions`].
+    let topic = given_topic(&emulator).await;
+    let created = subscribe(&emulator, "relay-absent", &topic, &[]).await;
+    assert_served("a topic SNS no longer holds", "CreateEventSubscription", &created);
+    // … and then the topic goes away, which is how a stored subscription comes to
+    // name a topic nothing can be published to.
+    sns(&emulator)
+        .delete_topic()
+        .topic_arn(&topic)
+        .send()
+        .await
+        .unwrap_or_else(|error| panic!("setup: DeleteTopic failed: {error:?}"));
 
     let group = "relay-absent-group";
     let written = emulator
@@ -878,7 +887,7 @@ async fn a_write_is_served_when_its_notification_cannot_be_delivered() {
         )
         .await;
     assert_served(
-        "a topic SNS does not hold",
+        "a topic SNS no longer holds",
         "CreateClusterParameterGroup",
         &written,
     );
@@ -891,20 +900,20 @@ async fn a_write_is_served_when_its_notification_cannot_be_delivered() {
         )
         .await;
     assert_served(
-        "a topic SNS does not hold",
+        "a topic SNS no longer holds",
         "DescribeClusterParameterGroups",
         &read,
     );
     assert_eq!(
         read.text("ParameterGroupName").as_deref(),
         Some(group),
-        "case a topic SNS does not hold: expected the created group read back, got body {}",
+        "case a topic SNS no longer holds: expected the created group read back, got body {}",
         read.body
     );
 
     let found = delivered(&emulator);
     assert!(
         found.is_empty(),
-        "case a topic SNS does not hold: expected nothing delivered, got {found:?}"
+        "case a topic SNS no longer holds: expected nothing delivered, got {found:?}"
     );
 }

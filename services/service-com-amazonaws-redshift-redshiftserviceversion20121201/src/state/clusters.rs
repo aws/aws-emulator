@@ -182,6 +182,17 @@ pub const FAILOVER_NOT_POSSIBLE_NOW: &str =
 /// on, and one whose compute is already suspended.
 pub const PAUSE_REQUIRES_ACTIVE_CLUSTER: &str = "You can only pause an ACTIVE Cluster";
 
+/// Why a `ResumeCluster` cannot be served as the cluster stands.
+///
+/// The mirror of [`PAUSE_REQUIRES_ACTIVE_CLUSTER`], worded the way Amazon
+/// Redshift words that one: fixed text with no variable part, naming the state a
+/// resume is legal FROM rather than the cluster or the state it is in. "Resumes a
+/// paused cluster" (`smithy_query(query="doc", operation="ResumeCluster")`), so
+/// the sentence covers every state the work cannot start from — a cluster still
+/// being provisioned, one the service is already working on, and one that is
+/// already serving.
+pub const RESUME_REQUIRES_PAUSED_CLUSTER: &str = "You can only resume a PAUSED Cluster";
+
 /// Why an operation that needs a RUNNING cluster refuses one that is not
 /// available, naming the cluster and the state it is in.
 ///
@@ -488,9 +499,7 @@ pub fn snapshot_delete_refusal(snapshot: &Snapshot, identifier: &str) -> Option<
     }
     let status = snapshot.status.as_deref().unwrap_or_default();
     if status != STATUS_AVAILABLE {
-        return Some(format!(
-            "Cluster snapshot {identifier} is in the {status} state, not {STATUS_AVAILABLE}."
-        ));
+        return Some(invalid_snapshot_state_message(identifier, status));
     }
     let shared_with = snapshot
         .accounts_with_restore_access

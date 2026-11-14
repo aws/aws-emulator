@@ -358,10 +358,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> CopyClusterSnapsh
             return Err(
                 CopyClusterSnapshotErrorModeled::InvalidClusterSnapshotStateFault(
                     InvalidClusterSnapshotStateFault {
-                        message: Some(format!(
-                            "Cluster snapshot {stored_source_identifier} is in the {} state, not {}.",
+                        message: Some(st::invalid_snapshot_state_message(
+                            &stored_source_identifier,
                             source.snapshot.status.as_deref().unwrap_or_default(),
-                            st::STATUS_AVAILABLE
                         )),
                     },
                 )

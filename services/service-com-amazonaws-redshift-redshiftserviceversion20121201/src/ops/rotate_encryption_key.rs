@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op RotateEncryptionKey
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `RotateEncryptionKey`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`RotateEncryptionKey::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Rotates the encryption keys of one stored cluster: the record leaves this call
+//! in the state the service rotates a cluster's keys in and is serving again at
+//! the due instant this call sets, materialised by the store's clock-owed settle.
+//! Only a cluster that is there, is serving and HAS encryption enabled takes a
+//! rotation.
 //!
 //! ## Shape of an operation
 //!
@@ -86,13 +82,21 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-redshift-redshiftservic
 // here — hence the `RotateEncryptionKeyError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.redshift#RotateEncryptionKey")]
+// `DependentServiceUnavailableFault` is widened in, exactly as `PauseCluster`
+// widens it: the model does not list it for this operation, but the service
+// declares the shape, and it is the only modelled way to say "the control-plane
+// store could not be reached".
+#[smithy_macros::operation_error(
+    "com.amazonaws.redshift#RotateEncryptionKey",
+    extra_errors = ["DependentServiceUnavailableFault"]
+)]
 #[derive(Debug)]
 pub enum RotateEncryptionKeyErrorModeled {
     ClusterNotFoundFault(ClusterNotFoundFault),
     DependentServiceRequestThrottlingFault(DependentServiceRequestThrottlingFault),
     InvalidClusterStateFault(InvalidClusterStateFault),
     UnsupportedOperationFault(UnsupportedOperationFault),
+    DependentServiceUnavailableFault(DependentServiceUnavailableFault),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -141,23 +145,106 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::ROTATE_ENCRYPTION_KEY_OUTPUT_SCHEMA;
     const SUCCESS_STATUS: u16 = 200u16;
 
+    /// Rotate the encryption keys of the cluster the request names.
+    ///
+    /// A MUTATION: "rotates the encryption keys for a cluster", so the stored
+    /// record leaves this call with the rotation in progress and is serving again
+    /// a span later, applied by the store's clock-owed settle rather than by this
+    /// call.
+    ///
+    /// Two preconditions, in the order the service decides them: the cluster has
+    /// to be there, and it has to be one a rotation can be done on — "must be the
+    /// name of valid cluster that has encryption enabled", and a cluster the
+    /// service is already working on takes no further change.
     async fn handle(
         &self,
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `RotateEncryptionKey` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(RotateEncryptionKeyErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("RotateEncryptionKey"))
+        use crate::state as st;
+
+        // The whole write is one lock-held step and nothing is awaited while the
+        // store is locked.
+        let _ = ctx;
+        let Some(state) = st::service_state(&*self.engine) else {
+            return Err(
+                RotateEncryptionKeyErrorModeled::DependentServiceUnavailableFault(
+                    DependentServiceUnavailableFault {
+                        message: Some(st::STORE_UNAVAILABLE.to_string()),
+                    },
+                )
+                .into(),
+            );
+        };
+
+        let started = ::std::time::Instant::now();
+        let mut store = state.lock();
+        store.settle(started);
+
+        let Some(position) = store.cluster_position(&input.cluster_identifier) else {
+            return Err(RotateEncryptionKeyErrorModeled::ClusterNotFoundFault(
+                ClusterNotFoundFault {
+                    // No recorded refusal gives this operation a sentence of its
+                    // own, so it carries the one every other cluster-scoped
+                    // operation does — see [`st::ClusterNotFoundWording`].
+                    message: Some(st::cluster_not_found_message(
+                        st::ClusterNotFoundWording::IdentifierThenNotFound,
+                        &input.cluster_identifier,
+                    )),
+                },
+            )
+            .into());
+        };
+        let status = store.clusters[position]
+            .cluster
+            .cluster_status
+            .clone()
+            .unwrap_or_default();
+        if status != st::STATUS_AVAILABLE {
+            return Err(RotateEncryptionKeyErrorModeled::InvalidClusterStateFault(
+                InvalidClusterStateFault {
+                    message: Some(st::invalid_cluster_state_message(
+                        &input.cluster_identifier,
+                        &status,
+                    )),
+                },
+            )
+            .into());
+        }
+        // "Constraints: Must be the name of valid cluster that has encryption
+        // enabled" — a cluster whose data is not encrypted holds no key to
+        // rotate, so the VALUE the request named cannot be honoured, which is the
+        // refusal Amazon Redshift answers such a request with.
+        if !store.clusters[position].cluster.encrypted.unwrap_or(false) {
+            return Err(crate::scaffolded::Scaffolded::invalid_parameter_value(
+                st::rotation_requires_encrypted_cluster_message(&input.cluster_identifier),
+            ));
+        }
+
+        let stored = &mut store.clusters[position];
+        // The rotation is the work the published `ClusterStatus` vocabulary has
+        // its own value for, so the cluster reports THAT while it is being done
+        // and is serving at the due instant. The instant is stored and nothing
+        // sleeps for it, so a caller acting straight after this call still
+        // observes the transition.
+        stored.cluster.cluster_status = Some(st::STATUS_ROTATING_KEYS.to_string());
+        stored.cluster.cluster_availability_status =
+            Some(st::availability_status(st::STATUS_ROTATING_KEYS).to_string());
+        stored.settles_to = None;
+        stored.available_at = started + st::PROVISIONING_SPAN;
+
+        // Re-derive every member this service computes from the cluster's own
+        // configuration, through the same rule the create and the modify paths
+        // use, so this response reports the member set a later read does.
+        let cluster_type = stored.cluster_type.clone();
+        st::populate_derived_members(
+            &mut stored.cluster,
+            &cluster_type,
+            ::aws_smithy_types::DateTime::from(::std::time::SystemTime::now()),
+        );
+
+        Ok(RotateEncryptionKeyOutput {
+            cluster: Some(stored.cluster.clone()),
+        })
     }
 }

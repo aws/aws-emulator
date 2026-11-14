@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DescribeDataSharesForProducer
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DescribeDataSharesForProducer`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Reports the datashares the namespace a `ProducerArn` names PRODUCES, in the
+//! order the store holds them, narrowed by the `Status` the request asks for.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DescribeDataSharesForProducer::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! The namespace is resolved against the control plane that owns it — this one
+//! for a provisioned cluster's namespace, Amazon Redshift Serverless for one of
+//! its namespaces (see [`crate::state::resolve_namespace`]) — so an ARN that
+//! resolves to nothing is the modelled `InvalidNamespaceFault` rather than an
+//! empty page.
 //!
 //! ## Shape of an operation
 //!
@@ -100,10 +99,18 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-redshift-redshiftservic
 // here — hence the `DescribeDataSharesForProducerError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.redshift#DescribeDataSharesForProducer")]
+// `DependentServiceUnavailableFault` is widened in, exactly as every other
+// operation of this service that reaches the store widens it: the model does not
+// list it here, but the service declares the shape, and it is the only modelled
+// way to say "the control-plane store could not be reached".
+#[smithy_macros::operation_error(
+    "com.amazonaws.redshift#DescribeDataSharesForProducer",
+    extra_errors = ["DependentServiceUnavailableFault"]
+)]
 #[derive(Debug)]
 pub enum DescribeDataSharesForProducerErrorModeled {
     InvalidNamespaceFault(InvalidNamespaceFault),
+    DependentServiceUnavailableFault(DependentServiceUnavailableFault),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -152,23 +159,92 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::DESCRIBE_DATA_SHARES_FOR_PRODUCER_OUTPUT_SCHEMA;
     const SUCCESS_STATUS: u16 = 200u16;
 
+    /// Report the datashares the producer namespace the request names produces.
+    ///
+    /// A READ: nothing is written. The namespace is resolved BEFORE the datashares
+    /// are walked, so a request naming a namespace that does not exist is refused
+    /// rather than served an empty page — and the resolution is the shared rule
+    /// every datashare operation that names a namespace uses, which is why the
+    /// serverless arm is asked with NO store guard held.
     async fn handle(
         &self,
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DescribeDataSharesForProducer` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DescribeDataSharesForProducerErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DescribeDataSharesForProducer"))
+        use crate::state as st;
+
+        let Some(state) = st::service_state(&*self.engine) else {
+            return Err(
+                DescribeDataSharesForProducerErrorModeled::DependentServiceUnavailableFault(
+                    DependentServiceUnavailableFault {
+                        message: Some(st::STORE_UNAVAILABLE.to_string()),
+                    },
+                )
+                .into(),
+            );
+        };
+
+        // "The Amazon Resource Name (ARN) of the producer namespace that returns
+        // in the list of datashares": a request that names one has it resolved
+        // against the control plane that owns it, and one that names none asks for
+        // every datashare of the account.
+        if let Some(producer_arn) = input.producer_arn.as_deref() {
+            // The provisioned arm is answered from THIS store, under its own
+            // guard, which is released before the serverless arm is asked.
+            let held = state
+                .lock()
+                .cluster_with_namespace_arn(producer_arn)
+                .is_some();
+            if st::resolve_namespace(ctx, held, producer_arn).await
+                == st::NamespaceResolution::Absent
+            {
+                return Err(
+                    DescribeDataSharesForProducerErrorModeled::InvalidNamespaceFault(
+                        InvalidNamespaceFault {
+                            message: Some(st::invalid_namespace_message(producer_arn)),
+                        },
+                    )
+                    .into(),
+                );
+            }
+        }
+
+        let store = state.lock();
+        let matched: Vec<st::StoredDataShare> = match input.producer_arn.as_deref() {
+            Some(producer_arn) => store
+                .data_shares_of_producer(producer_arn)
+                .into_iter()
+                .cloned()
+                .collect(),
+            None => store.data_shares.clone(),
+        };
+        // "An identifier giving the status of a datashare in the producer. If this
+        // field is specified, Amazon Redshift returns the list of datashares that
+        // contain only the status you specify."
+        let matched: Vec<st::StoredDataShare> = matched
+            .into_iter()
+            .filter(|held| {
+                input.status.as_deref().is_none_or(|wanted| {
+                    held.data_share_associations
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|association| association.status.as_deref() == Some(wanted))
+                })
+            })
+            .collect();
+
+        let (start, end, next_marker) =
+            match st::page_bounds(input.marker.as_deref(), input.max_records, matched.len()) {
+                Ok(page) => page,
+                Err(message) => {
+                    return Err(crate::scaffolded::Scaffolded::invalid_parameter_value(message))
+                }
+            };
+
+        Ok(DescribeDataSharesForProducerOutput {
+            data_shares: Some(matched[start..end].to_vec()),
+            marker: next_marker,
+        })
     }
 }

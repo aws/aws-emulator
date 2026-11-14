@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CancelResize
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CancelResize`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CancelResize::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Gives up the resize one stored cluster is still running, puts the cluster back
+//! on the shape that resize found it on, and reports the resize's progress as the
+//! cancellation leaves it — the same `ResizeProgressMessage` `DescribeResize`
+//! reports, read off the one resize record (see [`crate::state::StoredResize`]).
 //!
 //! ## Shape of an operation
 //!
@@ -122,13 +117,21 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-redshift-redshiftservic
 // here — hence the `CancelResizeError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.redshift#CancelResize")]
+// `DependentServiceUnavailableFault` is widened in, exactly as `DescribeResize`
+// widens it: the model does not list it for this operation, but the service
+// declares the shape, and it is the only modelled way to say "the control-plane
+// store could not be reached".
+#[smithy_macros::operation_error(
+    "com.amazonaws.redshift#CancelResize",
+    extra_errors = ["DependentServiceUnavailableFault"]
+)]
 #[derive(Debug)]
 pub enum CancelResizeErrorModeled {
     ClusterNotFoundFault(ClusterNotFoundFault),
     InvalidClusterStateFault(InvalidClusterStateFault),
     ResizeNotFoundFault(ResizeNotFoundFault),
     UnsupportedOperationFault(UnsupportedOperationFault),
+    DependentServiceUnavailableFault(DependentServiceUnavailableFault),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -177,23 +180,128 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::CANCEL_RESIZE_OUTPUT_SCHEMA;
     const SUCCESS_STATUS: u16 = 200u16;
 
+    /// Give up the resize the cluster the request names is running.
+    ///
+    /// A MUTATION: "cancels a resize operation for a cluster", so the cluster
+    /// goes back onto the shape the resize found it on and the resize record is
+    /// marked as given up ([`crate::state::StoredResize::cancel`]) — which is
+    /// what makes it report `CANCELLING` while the cancellation is being applied
+    /// and never `SUCCEEDED` afterwards.
+    ///
+    /// Only a resize that is STILL RUNNING can be given up: a cluster that has
+    /// never been resized, and one whose last resize has already finished, have no
+    /// resize operation to cancel, which is what the modelled `ResizeNotFoundFault`
+    /// reports.
     async fn handle(
         &self,
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CancelResize` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CancelResizeErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CancelResize"))
+        use crate::state as st;
+
+        // The whole write is one lock-held step and nothing is awaited while the
+        // store is locked.
+        let _ = ctx;
+        let Some(state) = st::service_state(&*self.engine) else {
+            return Err(CancelResizeErrorModeled::DependentServiceUnavailableFault(
+                DependentServiceUnavailableFault {
+                    message: Some(st::STORE_UNAVAILABLE.to_string()),
+                },
+            )
+            .into());
+        };
+
+        let now = ::std::time::Instant::now();
+        let mut store = state.lock();
+        store.settle(now);
+
+        let Some(position) = store.cluster_position(&input.cluster_identifier) else {
+            return Err(CancelResizeErrorModeled::ClusterNotFoundFault(
+                ClusterNotFoundFault {
+                    // The sentence `DescribeResize` answers for the same name, so
+                    // the read and the cancel of one resize word it alike — see
+                    // [`st::ClusterNotFoundWording`].
+                    message: Some(st::cluster_not_found_message(
+                        st::ClusterNotFoundWording::IdentifierThenNotFound,
+                        &input.cluster_identifier,
+                    )),
+                },
+            )
+            .into());
+        };
+        let running = store.clusters[position]
+            .resize
+            .as_ref()
+            .is_some_and(|resize| resize.is_in_progress(now));
+        if !running {
+            return Err(CancelResizeErrorModeled::ResizeNotFoundFault(
+                ResizeNotFoundFault {
+                    message: Some(st::resize_not_found_message(&input.cluster_identifier)),
+                },
+            )
+            .into());
+        }
+
+        let stored = &mut store.clusters[position];
+        // The shape the resize was moving the cluster off is what the cluster goes
+        // back onto: the record kept it, so the cancel restores it rather than
+        // guessing one.
+        let (source, reverted) = {
+            // `running` was established above out of this same locked store.
+            let Some(resize) = stored.resize.as_mut() else {
+                return Err(CancelResizeErrorModeled::ResizeNotFoundFault(
+                    ResizeNotFoundFault {
+                        message: Some(st::resize_not_found_message(&input.cluster_identifier)),
+                    },
+                )
+                .into());
+            };
+            resize.cancel(now);
+            (resize.source.clone(), resize.clone())
+        };
+        if let Some(node_type) = source.node_type.clone() {
+            stored.cluster.node_type = Some(node_type);
+        }
+        if let Some(cluster_type) = source.cluster_type.clone() {
+            stored.cluster_type = cluster_type;
+        }
+        stored.cluster.number_of_nodes = source.number_of_nodes;
+        // Putting the cluster back on its old shape is applied like any other
+        // change to a provisioned cluster: the cluster reports the applying state
+        // now and is serving at the due instant the cancellation falls due at. The
+        // instant is stored and nothing sleeps for it.
+        stored.cluster.cluster_status = Some(st::STATUS_MODIFYING.to_string());
+        stored.cluster.cluster_availability_status =
+            Some(st::availability_status(st::STATUS_MODIFYING).to_string());
+        stored.settles_to = None;
+        stored.available_at = reverted.completed_at;
+
+        // Re-derive every member this service computes from the cluster's own
+        // configuration — the node list the reverted shape changes among them.
+        let cluster_type = stored.cluster_type.clone();
+        st::populate_derived_members(
+            &mut stored.cluster,
+            &cluster_type,
+            ::aws_smithy_types::DateTime::from(::std::time::SystemTime::now()),
+        );
+
+        Ok(CancelResizeOutput {
+            // The targets a cancelled resize reports are the shape the cluster is
+            // moving to, which the cancellation has made its ORIGINAL shape again.
+            target_node_type: source.node_type,
+            target_number_of_nodes: source.number_of_nodes,
+            target_cluster_type: source.cluster_type,
+            status: Some(reverted.status_at(now).to_string()),
+            elapsed_time_in_seconds: Some(reverted.elapsed_seconds(now)),
+            estimated_time_to_completion_in_seconds: Some(reverted.remaining_seconds(now)),
+            resize_type: Some(reverted.resize_type.clone()),
+            target_encryption_type: Some(reverted.target_encryption_type.clone()),
+            // Every remaining member of `ResizeProgressMessage` is a fact about
+            // DATA the resize moved — the tables it imported, the megabytes it
+            // transferred and the rate it moved them at. This control plane moves
+            // none, so it reports none of them rather than a volume nothing
+            // copied, exactly as `DescribeResize` reports none.
+            ..Default::default()
+        })
     }
 }

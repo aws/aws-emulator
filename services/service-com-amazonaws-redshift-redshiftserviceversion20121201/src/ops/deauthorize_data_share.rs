@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeauthorizeDataShare
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DeauthorizeDataShare`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Removes the authorization one stored datashare carries for the consumer the
+//! request names: the association is recorded as deauthorized, through the one
+//! rule every datashare write of this service applies, and the datashare is
+//! reported as it stands afterwards.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DeauthorizeDataShare::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! A `DataShareArn` this account holds no datashare under is the modelled
+//! `InvalidDataShareFault`, for the reason `AuthorizeDataShare` answers it (see
+//! [`crate::state::StoredDataShare`]).
 //!
 //! ## Shape of an operation
 //!
@@ -92,10 +91,18 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-redshift-redshiftservic
 // here — hence the `DeauthorizeDataShareError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.redshift#DeauthorizeDataShare")]
+// `DependentServiceUnavailableFault` is widened in, exactly as every other
+// operation of this service that reaches the store widens it: the model does not
+// list it here, but the service declares the shape, and it is the only modelled
+// way to say "the control-plane store could not be reached".
+#[smithy_macros::operation_error(
+    "com.amazonaws.redshift#DeauthorizeDataShare",
+    extra_errors = ["DependentServiceUnavailableFault"]
+)]
 #[derive(Debug)]
 pub enum DeauthorizeDataShareErrorModeled {
     InvalidDataShareFault(InvalidDataShareFault),
+    DependentServiceUnavailableFault(DependentServiceUnavailableFault),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -144,23 +151,50 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::DEAUTHORIZE_DATA_SHARE_OUTPUT_SCHEMA;
     const SUCCESS_STATUS: u16 = 200u16;
 
+    /// Remove the authorization the datashare carries for the consumer the
+    /// request names.
+    ///
+    /// A MUTATION: "from a datashare producer account, removes authorization from
+    /// the specified datashare", so the association with that consumer is what
+    /// this call writes — and what the response reports back.
     async fn handle(
         &self,
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DeauthorizeDataShare` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DeauthorizeDataShareErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DeauthorizeDataShare"))
+        use crate::state as st;
+
+        // The whole write is one lock-held step and nothing is awaited while the
+        // store is locked.
+        let _ = ctx;
+        let Some(state) = st::service_state(&*self.engine) else {
+            return Err(
+                DeauthorizeDataShareErrorModeled::DependentServiceUnavailableFault(
+                    DependentServiceUnavailableFault {
+                        message: Some(st::STORE_UNAVAILABLE.to_string()),
+                    },
+                )
+                .into(),
+            );
+        };
+
+        let now = ::aws_smithy_types::DateTime::from(::std::time::SystemTime::now());
+        let mut store = state.lock();
+        let Some(held) = store.change_data_share(
+            &input.data_share_arn,
+            &input.consumer_identifier,
+            None,
+            st::DataShareChange::Deauthorize,
+            now,
+        ) else {
+            return Err(DeauthorizeDataShareErrorModeled::InvalidDataShareFault(
+                InvalidDataShareFault {
+                    message: Some(st::invalid_data_share_message(&input.data_share_arn)),
+                },
+            )
+            .into());
+        };
+
+        Ok(st::deauthorize_view(&held))
     }
 }

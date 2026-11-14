@@ -97,6 +97,80 @@ pub async fn restore_cluster_data<Eng: Send + Sync + 'static>(
     .await
 }
 
+/// Which table of a snapshot's databases a table restore moves, and what to call
+/// the copy: the request `RestoreTableFromClusterSnapshot` carries, as the crate
+/// that owns the engine states it.
+pub type TableRestoreRequest =
+    ::service_com_amazonaws_redshiftdata_redshiftdata::state::TableRestoreRequest;
+
+/// What a table restore did, or which of the names the request carried resolved
+/// to nothing — as the crate that owns the engine answers it.
+pub type TableRestoreOutcome =
+    ::service_com_amazonaws_redshiftdata_redshiftdata::state::TableRestored;
+
+/// How many rows ONE table restore copies before the engine gives it up.
+///
+/// The bound the Data API's engine publishes for a table copy, passed to it by
+/// the call below so the bound a `RestoreTableFromClusterSnapshot` is held to is
+/// stated at the call it governs; a source table past it is refused with nothing
+/// written (see [`crate::state::table_restore_row_limit_message`]).
+pub const MAX_RESTORED_TABLE_ROWS: i64 =
+    ::service_com_amazonaws_redshiftdata_redshiftdata::state::MAX_RESTORED_TABLE_ROWS;
+
+/// Copy ONE table of `data` into the databases of the cluster
+/// `cluster_identifier`.
+///
+/// This is what makes `RestoreTableFromClusterSnapshot` a restore of a TABLE:
+/// "creates a new table from a table in an Amazon Redshift cluster snapshot", so
+/// the new table holds the rows the snapshot's table held and the cluster serves
+/// it from then on.
+///
+/// The three bounds one call is held to, all applied HERE so none of them is a
+/// claim about another crate:
+///
+/// * the copy is blocking engine work, so it runs on the BLOCKING POOL
+///   (`tokio::task::spawn_blocking`) and never on the async worker this request is
+///   served on;
+/// * this request waits at most [`DATA_COPY_BUDGET`] for it and then abandons it,
+///   which is longer than the deadline the copy holds ITSELF to, so what ends a
+///   copy is its own deadline rather than this request's patience;
+/// * the copy writes at most [`MAX_RESTORED_TABLE_ROWS`] rows, which is passed in
+///   as the bound rather than assumed, and a source table past it is reported as
+///   too large with nothing written.
+///
+/// Call it with NO state guard held: it awaits.
+pub async fn restore_cluster_table<Eng: Send + Sync + 'static>(
+    engine: &::std::sync::Arc<Eng>,
+    data: ::std::sync::Arc<ClusterData>,
+    cluster_identifier: String,
+    request: TableRestoreRequest,
+) -> Result<TableRestoreOutcome, DataPlaneFailure> {
+    let engine = ::std::sync::Arc::clone(engine);
+    let target = cluster_target(cluster_identifier);
+    let copied = ::tokio::time::timeout(
+        DATA_COPY_BUDGET,
+        ::tokio::task::spawn_blocking(move || {
+            ::service_com_amazonaws_redshiftdata_redshiftdata::state::restore_table(
+                &*engine,
+                &data,
+                &target,
+                &request,
+                MAX_RESTORED_TABLE_ROWS,
+            )
+        }),
+    )
+    .await;
+    match copied {
+        Ok(Ok(Ok(outcome))) => Ok(outcome),
+        // The copy itself could not be made, the task carrying it did not return,
+        // or this request gave up waiting: the same three outcomes every other
+        // bounded copy of this engine reports (see [`DataPlaneFailure`]).
+        Ok(Ok(Err(unavailable))) => Err(DataPlaneFailure::Unavailable(unavailable)),
+        Ok(Err(_panicked)) => Err(DataPlaneFailure::Lost),
+        Err(_elapsed) => Err(DataPlaneFailure::GaveUp(DATA_COPY_BUDGET)),
+    }
+}
+
 /// The engine pages the stored snapshots' data occupies between them, the
 /// quantity [`MAX_SNAPSHOT_DATA_PAGES`] bounds.
 ///

@@ -254,6 +254,37 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         }
 
+        // Whether that topic EXISTS is Amazon SNS's own state, so it is resolved
+        // by asking the service that owns topics — over the in-process callback,
+        // with no store guard held, and before anything is stored. An ARN that
+        // service holds no topic under is this operation's own modelled fault; a
+        // hop that could not be made at all establishes nothing about the topic,
+        // so it refuses nothing (see [`st::notifications::resolve_topic`]).
+        match st::notifications::resolve_topic(_ctx, &input.sns_topic_arn).await {
+            st::notifications::TopicResolution::Absent => {
+                return Err(
+                    CreateEventSubscriptionErrorModeled::SNSTopicArnNotFoundFault(
+                        SNSTopicArnNotFoundFault {
+                            message: Some(st::notifications::sns_topic_not_found_message(
+                                &input.sns_topic_arn,
+                            )),
+                        },
+                    )
+                    .into(),
+                )
+            }
+            st::notifications::TopicResolution::Undecided(reason) => {
+                // Visible at default verbosity: a subscription admitted because
+                // Amazon SNS could not be asked reads exactly like one admitted
+                // because the topic is really there.
+                ::tracing::warn!(
+                    reason = %reason,
+                    "the Amazon SNS topic a subscription names could not be resolved"
+                );
+            }
+            st::notifications::TopicResolution::Held => {}
+        }
+
         // The request's own tag list is capped BEFORE the store is locked and
         // before any per-element work: a resource can carry only so many tags,
         // so a request carrying more entries than one resource may hold is

@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ResizeCluster
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ResizeCluster`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ResizeCluster::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Changes the SHAPE of one stored cluster — its cluster type, its node type or
+//! its node count — and records the resize a later `DescribeResize` reports: the
+//! cluster leaves this call with the change being applied and is serving again at
+//! the due instant this call sets, materialised by the store's clock-owed settle.
 //!
 //! ## Shape of an operation
 //!
@@ -195,18 +190,311 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ResizeCluster` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ResizeClusterErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ResizeCluster"))
+        // The whole write is one lock-held step and nothing is awaited while the
+        // store is locked.
+        let _ = ctx;
+        self.resize(&input)
+    }
+}
+
+impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> ResizeCluster<Eng> {
+    /// The resize itself: the cluster it leaves behind.
+    ///
+    /// A MUTATION: "changes the size of the cluster. You can change the cluster's
+    /// type, or change the number or type of nodes". The new shape is applied to
+    /// the stored cluster and a resize record is written beside it — the SAME
+    /// record a shape-changing `ModifyCluster` writes and `DescribeResize`
+    /// reports, so the two paths cannot disagree about what a resize is — and the
+    /// cluster is serving again a span later.
+    ///
+    /// The preconditions, in the order the service decides them: the cluster has
+    /// to be there and serving; the elastic resize this operation performs by
+    /// default has the restrictions the operation documents; the shape the request
+    /// asks for has to be one a cluster can have (the node count and the cluster
+    /// type describe one another, under the one shared rule every operation that
+    /// takes a shape uses); and a request that also asks for a reserved-node
+    /// exchange has to name a reservation and an offering this account can
+    /// exchange between.
+    fn resize(&self, input: &ResizeClusterInput) -> Result<ResizeClusterOutput, ResizeClusterError> {
+        use crate::state as st;
+
+        let Some(state) = st::service_state(&*self.engine) else {
+            return Err(ResizeClusterErrorModeled::DependentServiceUnavailableFault(
+                DependentServiceUnavailableFault {
+                    message: Some(st::STORE_UNAVAILABLE.to_string()),
+                },
+            )
+            .into());
+        };
+
+        let started = ::std::time::Instant::now();
+        let mut store = state.lock();
+        store.settle(started);
+
+        let Some(position) = store.cluster_position(&input.cluster_identifier) else {
+            return Err(ResizeClusterErrorModeled::ClusterNotFoundFault(
+                ClusterNotFoundFault {
+                    // No recorded refusal gives this operation a sentence of its
+                    // own, so it carries the one every other cluster-scoped
+                    // operation does — see [`st::ClusterNotFoundWording`].
+                    message: Some(st::cluster_not_found_message(
+                        st::ClusterNotFoundWording::IdentifierThenNotFound,
+                        &input.cluster_identifier,
+                    )),
+                },
+            )
+            .into());
+        };
+        let status = store.clusters[position]
+            .cluster
+            .cluster_status
+            .clone()
+            .unwrap_or_default();
+        if status != st::STATUS_AVAILABLE {
+            return Err(ResizeClusterErrorModeled::InvalidClusterStateFault(
+                InvalidClusterStateFault {
+                    message: Some(st::invalid_cluster_state_message(
+                        &input.cluster_identifier,
+                        &status,
+                    )),
+                },
+            )
+            .into());
+        }
+
+        let stored_node_type = store.clusters[position]
+            .cluster
+            .node_type
+            .clone()
+            .unwrap_or_default();
+        // "If you don't provide this parameter or set the value to false, the
+        // resize type is elastic", and an elastic resize has the two restrictions
+        // the operation documents: only some node types can take one, and "the
+        // type of nodes that you add must match the node type for the cluster".
+        let classic = input.classic.unwrap_or(false);
+        if !classic {
+            if !st::supports_elastic_resize(&stored_node_type) {
+                return Err(ResizeClusterErrorModeled::UnsupportedOperationFault(
+                    UnsupportedOperationFault {
+                        message: Some(st::elastic_resize_node_type_message(&stored_node_type)),
+                    },
+                )
+                .into());
+            }
+            if input
+                .node_type
+                .as_deref()
+                .is_some_and(|wanted| wanted != stored_node_type)
+            {
+                return Err(ResizeClusterErrorModeled::UnsupportedOptionFault(
+                    UnsupportedOptionFault {
+                        message: Some(st::ELASTIC_RESIZE_KEEPS_NODE_TYPE.to_string()),
+                    },
+                )
+                .into());
+            }
+        }
+
+        // Bounded BEFORE the pair is resolved and before anything is derived from
+        // the count, exactly as `CreateCluster` and `ModifyCluster` bound it.
+        if input
+            .number_of_nodes
+            .is_some_and(st::exceeds_nodes_per_cluster_limit)
+        {
+            return Err(
+                ResizeClusterErrorModeled::NumberOfNodesPerClusterLimitExceededFault(
+                    NumberOfNodesPerClusterLimitExceededFault {
+                        message: Some(st::nodes_per_cluster_limit_message(
+                            input.number_of_nodes.unwrap_or_default(),
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+        // The node count and the cluster type describe one another, so both are
+        // resolved against the stored values by the one shared rule in `state.rs`
+        // before either is applied.
+        let stored_type = store.clusters[position].cluster_type.clone();
+        let stored_nodes = store.clusters[position]
+            .cluster
+            .number_of_nodes
+            .unwrap_or(1);
+        let (cluster_type, number_of_nodes) = match st::resolve_cluster_shape(
+            input.cluster_type.as_deref(),
+            input.number_of_nodes,
+            Some((stored_type.as_str(), stored_nodes)),
+        ) {
+            Ok(shape) => shape,
+            Err(message) => {
+                return Err(crate::scaffolded::Scaffolded::invalid_parameter_value(message))
+            }
+        };
+
+        // "The identifier of the reserved node" and "the identifier of the target
+        // reserved node offering": a resize may also move a reservation onto
+        // another offering, which is the SAME exchange
+        // `AcceptReservedNodeExchange` performs — so it is performed through the
+        // store's one exchange rule rather than a second copy of it, and a request
+        // that names one member without the other names no exchange at all.
+        match (
+            input.reserved_node_id.as_deref(),
+            input.target_reserved_node_offering_id.as_deref(),
+        ) {
+            (None, None) => {}
+            (Some(reserved_node_id), Some(offering_id)) => {
+                let source = match store.exchangeable_reserved_node(reserved_node_id) {
+                    Ok(stored) => stored.node.clone(),
+                    Err(refusal) => return Err(refuse(refusal)),
+                };
+                let Some(target) = store
+                    .published_reserved_node_offering(offering_id)
+                    .cloned()
+                else {
+                    return Err(
+                        ResizeClusterErrorModeled::ReservedNodeOfferingNotFoundFault(
+                            ReservedNodeOfferingNotFoundFault {
+                                message: Some(format!(
+                                    "Reserved node offering not found: '{offering_id}'."
+                                )),
+                            },
+                        )
+                        .into(),
+                    );
+                };
+                let eligible = store
+                    .exchange_target_offerings(&source)
+                    .iter()
+                    .any(|offering| {
+                        offering.reserved_node_offering_id == target.reserved_node_offering_id
+                    });
+                if !eligible {
+                    return Err(ResizeClusterErrorModeled::UnsupportedOperationFault(
+                        UnsupportedOperationFault {
+                            message: Some(format!(
+                                "Reserved node offering {offering_id} does not match the payment type, term and usage price of Reserved Node {reserved_node_id}."
+                            )),
+                        },
+                    )
+                    .into());
+                }
+                if let Err(refusal) = store.begin_reserved_node_exchange(
+                    reserved_node_id,
+                    &target,
+                    started,
+                    ::aws_smithy_types::DateTime::from(::std::time::SystemTime::now()),
+                ) {
+                    return Err(refuse(refusal));
+                }
+            }
+            _ => {
+                return Err(crate::scaffolded::Scaffolded::invalid_parameter_combination(
+                    st::RESERVED_NODE_EXCHANGE_PAIR_REQUIRED,
+                ))
+            }
+        }
+
+        let stored = &mut store.clusters[position];
+        // The shape the cluster is moving OFF, read before the new one is applied:
+        // it is what a `CancelResize` of this resize puts back.
+        let source_shape = st::ClusterShape {
+            node_type: stored.cluster.node_type.clone(),
+            cluster_type: Some(stored.cluster_type.clone()),
+            number_of_nodes: stored.cluster.number_of_nodes,
+        };
+        stored.cluster_type = cluster_type;
+        stored.cluster.number_of_nodes = Some(number_of_nodes);
+        if let Some(node_type) = input.node_type.clone() {
+            stored.cluster.node_type = Some(node_type);
+        }
+        let target_shape = st::ClusterShape {
+            node_type: stored.cluster.node_type.clone(),
+            cluster_type: Some(stored.cluster_type.clone()),
+            number_of_nodes: stored.cluster.number_of_nodes,
+        };
+        // The resize record REPLACES whatever resize the cluster last had: a
+        // cluster holds the LAST one and `DescribeResize` reports it.
+        stored.resize = Some(st::StoredResize::started(
+            started,
+            source_shape,
+            target_shape,
+            stored.cluster.encrypted.unwrap_or(false),
+            if classic {
+                st::RESIZE_TYPE_CLASSIC
+            } else {
+                st::RESIZE_TYPE_ELASTIC
+            },
+        ));
+        // The resize is applied like any other change to a provisioned cluster, so
+        // the cluster reports the applying state now and is serving at the due
+        // instant. The instant is stored and nothing sleeps for it.
+        stored.cluster.cluster_status = Some(st::STATUS_MODIFYING.to_string());
+        stored.cluster.cluster_availability_status =
+            Some(st::availability_status(st::STATUS_MODIFYING).to_string());
+        stored.settles_to = None;
+        stored.available_at = started + st::PROVISIONING_SPAN;
+
+        // Re-derive every member this service computes from the cluster's own
+        // configuration — the node list a resize changes among them — through the
+        // same rule the create and the modify paths use.
+        let cluster_type = stored.cluster_type.clone();
+        st::populate_derived_members(
+            &mut stored.cluster,
+            &cluster_type,
+            ::aws_smithy_types::DateTime::from(::std::time::SystemTime::now()),
+        );
+
+        Ok(ResizeClusterOutput {
+            cluster: Some(stored.cluster.clone()),
+        })
+    }
+}
+
+/// The modelled fault this operation answers one class of exchange refusal with,
+/// worded exactly as `AcceptReservedNodeExchange` words it: the refusals come
+/// from the one exchange rule in the store, so the two operations that can start
+/// an exchange report them the same way.
+///
+/// This operation also models `ReservedNodeAlreadyExistsFault`, which no request
+/// can reach, for the reason `AcceptReservedNodeExchange` cannot reach it: the
+/// reservation an exchange mints carries an id the service draws per call.
+fn refuse(refusal: crate::state::ExchangeRefusal) -> ResizeClusterError {
+    use crate::state::ExchangeRefusal as R;
+    match refusal {
+        R::InvalidParameterValue(message) => {
+            crate::scaffolded::Scaffolded::invalid_parameter_value(message)
+        }
+        // The reservation quota is the number of compute NODES the account may
+        // reserve, which is what this operation's `NumberOfNodesQuotaExceeded`
+        // reports: "the operation would exceed the number of nodes allotted to the
+        // account".
+        R::QuotaExceeded(message) => ResizeClusterErrorModeled::NumberOfNodesQuotaExceededFault(
+            NumberOfNodesQuotaExceededFault {
+                message: Some(message),
+            },
+        )
+        .into(),
+        R::ReservedNodeNotFound(message) => ResizeClusterErrorModeled::ReservedNodeNotFoundFault(
+            ReservedNodeNotFoundFault {
+                message: Some(message),
+            },
+        )
+        .into(),
+        R::InvalidReservedNodeState(message) => {
+            ResizeClusterErrorModeled::InvalidReservedNodeStateFault(
+                InvalidReservedNodeStateFault {
+                    message: Some(message),
+                },
+            )
+            .into()
+        }
+        R::ReservedNodeAlreadyMigrated(message) => {
+            ResizeClusterErrorModeled::ReservedNodeAlreadyMigratedFault(
+                ReservedNodeAlreadyMigratedFault {
+                    message: Some(message),
+                },
+            )
+            .into()
+        }
     }
 }

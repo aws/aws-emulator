@@ -426,6 +426,44 @@ pub fn snapshot_schedule_quota_message() -> String {
     )
 }
 
+/// Why a request naming a `ScheduleIdentifier` this account holds no snapshot
+/// schedule under is refused, naming the schedule it asked for.
+///
+/// `smithy_query(query="shape", shape="SnapshotScheduleNotFoundFault")` — "We
+/// could not find the specified snapshot schedule" — which is the fixed text; the
+/// identifier the request named is the variable part, single-quoted the way this
+/// family words an identifier it reports back inside a sentence (see
+/// [`snapshot_schedule_already_exists_message`]).
+pub fn snapshot_schedule_not_found_message(identifier: &str) -> String {
+    format!("We could not find the specified snapshot schedule '{identifier}'.")
+}
+
+/// Why asking for a cluster to be released from a snapshot schedule it is not on
+/// is refused, naming the cluster.
+///
+/// `smithy_query(query="shape", shape="InvalidClusterSnapshotScheduleStateFault")`
+/// — "The cluster snapshot schedule state is not valid" — which is the fixed text,
+/// and the cluster whose association could not take the change is the variable
+/// part.
+pub fn cluster_holds_no_snapshot_schedule_message(cluster_identifier: &str) -> String {
+    format!(
+        "The cluster snapshot schedule state is not valid: cluster {cluster_identifier} is not \
+         associated with a snapshot schedule."
+    )
+}
+
+/// Why a `ModifyClusterSnapshotSchedule` that names neither a schedule to
+/// associate nor the removal of the association is refused.
+///
+/// The two members are the two things the operation can do — "a unique
+/// alphanumeric identifier for the schedule that you want to associate with the
+/// cluster" and "a boolean to indicate whether to remove the assoiciation between
+/// the cluster and the schedule" — so a request carrying neither asks for no
+/// change at all, which is a combination this service cannot honour.
+pub const SNAPSHOT_SCHEDULE_OR_DISASSOCIATE_REQUIRED: &str =
+    "Either ScheduleIdentifier or DisassociateSchedule must be specified to say which \
+     change to the cluster's snapshot schedule is wanted.";
+
 /// Why a request asking for a number of upcoming invocations outside the window
 /// one response reports is refused, naming the number it asked for and the bound.
 ///

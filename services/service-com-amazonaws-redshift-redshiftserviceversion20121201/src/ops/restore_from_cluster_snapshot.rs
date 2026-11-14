@@ -687,11 +687,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> RestoreFromCluste
             return Err(
                 RestoreFromClusterSnapshotErrorModeled::InvalidClusterSnapshotStateFault(
                     InvalidClusterSnapshotStateFault {
-                        message: Some(format!(
-                            "Cluster snapshot {} is in the {} state, not {}.",
+                        message: Some(st::invalid_snapshot_state_message(
                             snapshot.snapshot_identifier.as_deref().unwrap_or_default(),
                             snapshot.status.as_deref().unwrap_or_default(),
-                            st::STATUS_AVAILABLE
                         )),
                     },
                 )

@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op RestoreTableFromClusterSnapshot
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `RestoreTableFromClusterSnapshot`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Creates one new table in a stored cluster from a table the named snapshot
+//! holds, and reports the restore request that tracks it.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`RestoreTableFromClusterSnapshot::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! The TABLE is data, and a cluster's data lives in the SQL engine the Redshift
+//! Data API owns, so the copy is made through that crate's own bounded seam
+//! ([`crate::state::restore_cluster_table`]): the new table holds the rows the
+//! snapshot's table held, and a statement submitted against the cluster
+//! afterwards reads them. The REQUEST is a record of this control plane
+//! ([`crate::state::StoredTableRestore`]), which `DescribeTableRestoreStatus`
+//! reports and which reaches [`crate::state::TABLE_RESTORE_STATUS_SUCCEEDED`] at
+//! the due instant this call sets.
 //!
 //! ## Shape of an operation
 //!
@@ -122,7 +124,15 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-redshift-redshiftservic
 // here — hence the `RestoreTableFromClusterSnapshotError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.redshift#RestoreTableFromClusterSnapshot")]
+// `DependentServiceUnavailableFault` is widened in, exactly as every other
+// operation of this service that reaches the store widens it: the model does not
+// list it here, but the service declares the shape, and it is the only modelled
+// way to say "the control-plane store, or the engine the cluster's data lives in,
+// could not be reached".
+#[smithy_macros::operation_error(
+    "com.amazonaws.redshift#RestoreTableFromClusterSnapshot",
+    extra_errors = ["DependentServiceUnavailableFault"]
+)]
 #[derive(Debug)]
 pub enum RestoreTableFromClusterSnapshotErrorModeled {
     ClusterNotFoundFault(ClusterNotFoundFault),
@@ -132,6 +142,7 @@ pub enum RestoreTableFromClusterSnapshotErrorModeled {
     InvalidClusterStateFault(InvalidClusterStateFault),
     InvalidTableRestoreArgumentFault(InvalidTableRestoreArgumentFault),
     UnsupportedOperationFault(UnsupportedOperationFault),
+    DependentServiceUnavailableFault(DependentServiceUnavailableFault),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -180,23 +191,278 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::RESTORE_TABLE_FROM_CLUSTER_SNAPSHOT_OUTPUT_SCHEMA;
     const SUCCESS_STATUS: u16 = 200u16;
 
+    /// Restore one table of the named snapshot into the named cluster.
+    ///
+    /// A MUTATION of both planes: it writes a TABLE into the cluster's databases
+    /// and records the request that tracks the restore.
+    ///
+    /// The preconditions, in the order the service decides them: the cluster has
+    /// to be there and serving, the snapshot has to be there and available, and
+    /// this emulator has to have room for another restore in flight. Only then is
+    /// the copy made, with NO store guard held — it drives the SQL engine — and
+    /// what the engine answers decides the outcome: a name the snapshot or the
+    /// cluster does not hold, and a new table name the cluster already holds, are
+    /// the modelled `InvalidTableRestoreArgumentFault`, and nothing is recorded
+    /// for them.
     async fn handle(
         &self,
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `RestoreTableFromClusterSnapshot` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(RestoreTableFromClusterSnapshotErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("RestoreTableFromClusterSnapshot"))
+        use crate::state as st;
+
+        let _ = ctx;
+        let Some(state) = st::service_state(&*self.engine) else {
+            return Err(store_unavailable(st::STORE_UNAVAILABLE.to_string()));
+        };
+
+        let requested_at = ::aws_smithy_types::DateTime::from(::std::time::SystemTime::now());
+        // The guard is taken for the preconditions ALONE and released before the
+        // copy, because the copy awaits.
+        let (cluster_identifier, data) = {
+            let mut store = state.lock();
+            store.settle(::std::time::Instant::now());
+
+            let Some(position) = store.cluster_position(&input.cluster_identifier) else {
+                return Err(
+                    RestoreTableFromClusterSnapshotErrorModeled::ClusterNotFoundFault(
+                        ClusterNotFoundFault {
+                            // The recorded refusal of this operation for an
+                            // unknown cluster is the cluster-scoped sentence every
+                            // other read of a cluster answers — see
+                            // [`st::ClusterNotFoundWording`].
+                            message: Some(st::cluster_not_found_message(
+                                st::ClusterNotFoundWording::IdentifierThenNotFound,
+                                &input.cluster_identifier,
+                            )),
+                        },
+                    )
+                    .into(),
+                );
+            };
+            let status = store.clusters[position]
+                .cluster
+                .cluster_status
+                .clone()
+                .unwrap_or_default();
+            if status != st::STATUS_AVAILABLE {
+                return Err(
+                    RestoreTableFromClusterSnapshotErrorModeled::InvalidClusterStateFault(
+                        InvalidClusterStateFault {
+                            message: Some(st::invalid_cluster_state_message(
+                                &input.cluster_identifier,
+                                &status,
+                            )),
+                        },
+                    )
+                    .into(),
+                );
+            }
+
+            let Some(snapshot) = store.snapshot(&input.snapshot_identifier) else {
+                return Err(
+                    RestoreTableFromClusterSnapshotErrorModeled::ClusterSnapshotNotFoundFault(
+                        ClusterSnapshotNotFoundFault {
+                            message: Some(st::cluster_snapshot_not_found_message(
+                                st::ClusterSnapshotNotFoundWording::NotFoundThenIdentifier,
+                                &input.snapshot_identifier,
+                            )),
+                        },
+                    )
+                    .into(),
+                );
+            };
+            let snapshot_status = snapshot.snapshot.status.clone().unwrap_or_default();
+            if snapshot_status != st::STATUS_AVAILABLE {
+                return Err(
+                    RestoreTableFromClusterSnapshotErrorModeled::InvalidClusterSnapshotStateFault(
+                        InvalidClusterSnapshotStateFault {
+                            message: Some(st::invalid_snapshot_state_message(
+                                &input.snapshot_identifier,
+                                &snapshot_status,
+                            )),
+                        },
+                    )
+                    .into(),
+                );
+            }
+            // How many restores this emulator serves at once is its own bound, and
+            // it is asked BEFORE the copy: a request past it copies nothing.
+            if store.table_restores_in_progress(::std::time::Instant::now())
+                >= st::IN_PROGRESS_TABLE_RESTORE_QUOTA
+            {
+                return Err(
+                    RestoreTableFromClusterSnapshotErrorModeled::InProgressTableRestoreQuotaExceededFault(
+                        InProgressTableRestoreQuotaExceededFault {
+                            message: Some(st::in_progress_table_restore_quota_message()),
+                        },
+                    )
+                    .into(),
+                );
+            }
+            (
+                store.clusters[position]
+                    .cluster
+                    .cluster_identifier
+                    .clone()
+                    .unwrap_or_else(|| input.cluster_identifier.clone()),
+                ::std::sync::Arc::clone(&snapshot.data),
+            )
+        };
+
+        // Every name the request carries addresses a DATABASE OBJECT, and the
+        // copy reaches those objects through the SQL engine the cluster's data
+        // lives in — so each is held to the documented syntax of a Redshift
+        // database name BEFORE it is passed on, under the same rule
+        // `GetClusterCredentials` holds its own `DbName` to
+        // ([`st::check_database_name`]). That syntax admits letters, digits and
+        // `_ + . @ -` alone: a validated name carries no quote, no semicolon, no
+        // whitespace and no comment marker, so none of these values can be
+        // anything but one identifier wherever it is used. A value outside it
+        // names no object of any database and is answered as a value this service
+        // cannot honour.
+        for name in [
+            Some(input.source_database_name.as_str()),
+            input.source_schema_name.as_deref(),
+            Some(input.source_table_name.as_str()),
+            input.target_database_name.as_deref(),
+            input.target_schema_name.as_deref(),
+            Some(input.new_table_name.as_str()),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            st::check_database_name(st::DB_NAME_RULE, name)
+                .map_err(crate::scaffolded::Scaffolded::invalid_parameter_value)?;
+        }
+
+        // "Indicates whether name identifiers for database, schema, and table are
+        // case sensitive. If true, the names are case sensitive. If false
+        // (default), the names are not case sensitive": an unquoted identifier of
+        // a Redshift database is folded, so a request that does not ask for case
+        // sensitivity names the folded names.
+        let fold = !input.enable_case_sensitive_identifier.unwrap_or(false);
+        let folded = |name: &str| -> String {
+            if fold {
+                name.to_lowercase()
+            } else {
+                name.to_string()
+            }
+        };
+        let request = st::TableRestoreRequest {
+            source_database: folded(&input.source_database_name),
+            source_schema: input.source_schema_name.as_deref().map(folded),
+            source_table: folded(&input.source_table_name),
+            target_database: input.target_database_name.as_deref().map(folded),
+            target_schema: input.target_schema_name.as_deref().map(folded),
+            new_table: folded(&input.new_table_name),
+        };
+
+        // The copy itself, with no guard held: it drives the SQL engine the
+        // cluster's data lives in, so it runs on the BLOCKING POOL under that
+        // crate's own budget — at most [`st::DATA_COPY_BUDGET`] of this request's
+        // patience, a shorter deadline inside the copy, and at most
+        // [`st::MAX_RESTORED_TABLE_ROWS`] rows copied (see
+        // [`st::restore_cluster_table`], which states all three).
+        let outcome = match st::restore_cluster_table(
+            &self.engine,
+            data,
+            cluster_identifier.clone(),
+            request,
+        )
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(failure) => {
+                // Nothing was restored, so nothing is recorded and no status is
+                // reported: a request this emulator could not serve is answered
+                // with the modelled server fault rather than with a restore that
+                // did not happen.
+                ::tracing::warn!(
+                    operation = Self::NAME,
+                    cluster_identifier = %cluster_identifier,
+                    error = %failure,
+                    "the table a restore asked for could not be copied into the cluster"
+                );
+                return Err(store_unavailable(failure.to_string()));
+            }
+        };
+        let rows = match outcome {
+            st::TableRestoreOutcome::Restored { rows } => rows,
+            st::TableRestoreOutcome::SourceTableTooLarge { limit } => {
+                return Err(crate::scaffolded::Scaffolded::invalid_parameter_value(
+                    st::table_restore_row_limit_message(limit),
+                ))
+            }
+            absent => {
+                return Err(
+                    RestoreTableFromClusterSnapshotErrorModeled::InvalidTableRestoreArgumentFault(
+                        InvalidTableRestoreArgumentFault {
+                            message: Some(st::invalid_table_restore_argument_message(&absent)),
+                        },
+                    )
+                    .into(),
+                )
+            }
+        };
+
+        // The record the restore is tracked by, which `DescribeTableRestoreStatus`
+        // reports verbatim: the request's own members, the identifier this service
+        // minted, and the status the clock moves to `SUCCEEDED` at the due instant.
+        let status = TableRestoreStatus {
+            table_restore_request_id: Some(st::new_table_restore_request_id()),
+            status: Some(st::TABLE_RESTORE_STATUS_IN_PROGRESS.to_string()),
+            request_time: Some(requested_at),
+            cluster_identifier: Some(cluster_identifier.clone()),
+            snapshot_identifier: Some(input.snapshot_identifier.clone()),
+            source_database_name: Some(input.source_database_name.clone()),
+            source_schema_name: input.source_schema_name.clone(),
+            source_table_name: Some(input.source_table_name.clone()),
+            target_database_name: input.target_database_name.clone(),
+            target_schema_name: input.target_schema_name.clone(),
+            new_table_name: Some(input.new_table_name.clone()),
+            // `ProgressInMegaBytes` and `TotalDataInMegaBytes` are facts about the
+            // VOLUME of data restored, which this service does not measure: the
+            // engine reports the rows it wrote, not the megabytes they occupy, so
+            // neither is reported rather than a volume nothing weighed.
+            ..Default::default()
+        };
+        let started = ::std::time::Instant::now();
+        let mut store = state.lock();
+        // A BOUNDED append: the store keeps at most `st::TABLE_RESTORE_QUOTA` of
+        // these records and drops the oldest to stay inside it, so one record per
+        // served request cannot grow the store without end — nothing deletes a
+        // table restore request, because the service publishes no operation that
+        // removes one.
+        store.record_table_restore(
+            st::StoredTableRestore {
+                status: status.clone(),
+                succeeded_at: Some(started + st::PROVISIONING_SPAN),
+            },
+            st::TABLE_RESTORE_QUOTA,
+        );
+
+        ::tracing::info!(
+            operation = Self::NAME,
+            cluster_identifier = %cluster_identifier,
+            snapshot_identifier = %input.snapshot_identifier,
+            restored_rows = rows,
+            outcome = "restored",
+            "restored one table of a cluster snapshot into a provisioned cluster"
+        );
+
+        Ok(RestoreTableFromClusterSnapshotOutput {
+            table_restore_status: Some(status),
+        })
     }
+}
+
+/// The modelled server fault for a restore this emulator could not make.
+fn store_unavailable(message: String) -> RestoreTableFromClusterSnapshotError {
+    RestoreTableFromClusterSnapshotErrorModeled::DependentServiceUnavailableFault(
+        DependentServiceUnavailableFault {
+            message: Some(message),
+        },
+    )
+    .into()
 }

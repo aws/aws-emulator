@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ResumeCluster
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ResumeCluster`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ResumeCluster::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Resumes the compute of one stored cluster: the record leaves this call in the
+//! state the service applies a change to a provisioned cluster in, and is
+//! `available` at the due instant this call sets, materialised by the store's
+//! clock-owed settle. A cluster whose compute is not suspended takes no resume.
 //!
 //! ## Shape of an operation
 //!
@@ -84,13 +79,21 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-redshift-redshiftservic
 // here — hence the `ResumeClusterError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.redshift#ResumeCluster")]
+// `DependentServiceUnavailableFault` is widened in, exactly as `PauseCluster`
+// widens it: the model does not list it for this operation, but the service
+// declares the shape, and it is the only modelled way to say "the control-plane
+// store could not be reached".
+#[smithy_macros::operation_error(
+    "com.amazonaws.redshift#ResumeCluster",
+    extra_errors = ["DependentServiceUnavailableFault"]
+)]
 #[derive(Debug)]
 pub enum ResumeClusterErrorModeled {
     ClusterNotFoundFault(ClusterNotFoundFault),
     InsufficientClusterCapacityFault(InsufficientClusterCapacityFault),
     InvalidClusterStateFault(InvalidClusterStateFault),
     UnsupportedOperationFault(UnsupportedOperationFault),
+    DependentServiceUnavailableFault(DependentServiceUnavailableFault),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -139,23 +142,98 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::RESUME_CLUSTER_OUTPUT_SCHEMA;
     const SUCCESS_STATUS: u16 = 200u16;
 
+    /// Resume the compute of the cluster the request names.
+    ///
+    /// A MUTATION: "resumes a paused cluster", so the stored record leaves this
+    /// call with the change being applied and is serving a span later, applied by
+    /// the store's clock-owed settle rather than by this call.
+    ///
+    /// The precondition is the cluster's STATE, the mirror of the one
+    /// `PauseCluster` enforces: a resume brings back a cluster whose compute is
+    /// SUSPENDED, so one that is already serving, or one the service is still
+    /// working on, takes none and is refused with the operation's modelled
+    /// `InvalidClusterStateFault`.
     async fn handle(
         &self,
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ResumeCluster` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ResumeClusterErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ResumeCluster"))
+        use crate::state as st;
+
+        // The whole write is one lock-held step and nothing is awaited while the
+        // store is locked. No Amazon Redshift event is raised for it, for the
+        // reason `PauseCluster` raises none: the published event catalog this
+        // service answers reads of carries no event for a cluster's compute being
+        // resumed.
+        let _ = ctx;
+        let Some(state) = st::service_state(&*self.engine) else {
+            return Err(ResumeClusterErrorModeled::DependentServiceUnavailableFault(
+                DependentServiceUnavailableFault {
+                    message: Some(st::STORE_UNAVAILABLE.to_string()),
+                },
+            )
+            .into());
+        };
+
+        let started = ::std::time::Instant::now();
+        let mut store = state.lock();
+        store.settle(started);
+
+        let Some(position) = store.cluster_position(&input.cluster_identifier) else {
+            return Err(ResumeClusterErrorModeled::ClusterNotFoundFault(
+                ClusterNotFoundFault {
+                    // No recorded refusal gives this operation a sentence of its
+                    // own, so it carries the one every other cluster-scoped
+                    // operation does — see the per-operation catalog
+                    // [`st::ClusterNotFoundWording`].
+                    message: Some(st::cluster_not_found_message(
+                        st::ClusterNotFoundWording::IdentifierThenNotFound,
+                        &input.cluster_identifier,
+                    )),
+                },
+            )
+            .into());
+        };
+        let cluster_status = store.clusters[position]
+            .cluster
+            .cluster_status
+            .clone()
+            .unwrap_or_default();
+        if cluster_status != st::STATUS_PAUSED {
+            return Err(ResumeClusterErrorModeled::InvalidClusterStateFault(
+                InvalidClusterStateFault {
+                    message: Some(st::RESUME_REQUIRES_PAUSED_CLUSTER.to_string()),
+                },
+            )
+            .into());
+        }
+
+        let stored = &mut store.clusters[position];
+        // The resume is applied like any other change to a provisioned cluster:
+        // the cluster reports the applying state now and is serving at the due
+        // instant, which the settle above materialises for a later caller. The
+        // instant is stored and nothing sleeps for it.
+        stored.cluster.cluster_status = Some(st::STATUS_MODIFYING.to_string());
+        stored.cluster.cluster_availability_status =
+            Some(st::availability_status(st::STATUS_MODIFYING).to_string());
+        // Work after which the cluster is serving again settles to
+        // [`st::STATUS_AVAILABLE`], which is what an unset `settles_to` means —
+        // cleared here so a record that was paused does not settle back to paused.
+        stored.settles_to = None;
+        stored.available_at = started + st::PROVISIONING_SPAN;
+
+        // Re-derive every member this service computes from the cluster's own
+        // configuration, through the same rule the create and the modify paths
+        // use, so this response reports the member set a later read does.
+        let cluster_type = stored.cluster_type.clone();
+        st::populate_derived_members(
+            &mut stored.cluster,
+            &cluster_type,
+            ::aws_smithy_types::DateTime::from(::std::time::SystemTime::now()),
+        );
+
+        Ok(ResumeClusterOutput {
+            cluster: Some(stored.cluster.clone()),
+        })
     }
 }

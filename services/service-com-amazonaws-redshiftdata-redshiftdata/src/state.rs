@@ -83,6 +83,11 @@ pub mod statement_events;
 mod capture;
 pub use capture::*;
 
+/// Restoring ONE table of a captured warehouse into a live one, for the control
+/// plane whose `RestoreTableFromClusterSnapshot` asks for it.
+mod table_restore;
+pub use table_restore::*;
+
 /// The CONNECTION a submission's statements run on: the temporary relations
 /// that belong to it alone, and the locks it holds against the others.
 mod connections;

@@ -1,15 +1,24 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op GetClusterCredentialsWithIAM
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `GetClusterCredentialsWithIAM`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Issues temporary credentials for logging on to the database of the cluster the
+//! request names, for the IAM identity the request was signed with: the database
+//! user name that identity maps to, a temporary password and the instant that
+//! password expires.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`GetClusterCredentialsWithIAM::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! The cluster is resolved against this service's store first — by
+//! `ClusterIdentifier`, or by the `CustomDomainName` one of this account's
+//! clusters serves, the same rule `GetClusterCredentials` resolves one by — so a
+//! request naming no cluster of this account answers `ClusterNotFoundFault` and
+//! issues nothing. The password is minted by the emulator's credential store and
+//! by nothing in this file, and the expiry is this call's instant plus the
+//! lifetime the request asked for, inside the documented window
+//! ([`crate::state::credential_duration`]).
+//!
+//! Unlike `GetClusterCredentials` this operation takes no `DbUser`: "the database
+//! user is mapped 1:1 to the source IAM identity", so the user name is the
+//! CALLER's rather than the request's, and nothing is auto-created in the
+//! cluster's database (the operation models no `AutoCreate`).
 //!
 //! ## Shape of an operation
 //!
@@ -102,11 +111,20 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-redshift-redshiftservic
 // here — hence the `GetClusterCredentialsWithIAMError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.redshift#GetClusterCredentialsWithIAM")]
+// `DependentServiceUnavailableFault` — which this SERVICE models and other
+// operations of it declare — is widened in through `extra_errors`, exactly as
+// `GetClusterCredentials` widens it: an unreachable shared store, and a password
+// the credential store would not mint, have a modelled server failure to answer
+// with instead of a success carrying no credential.
+#[smithy_macros::operation_error(
+    "com.amazonaws.redshift#GetClusterCredentialsWithIAM",
+    extra_errors = ["DependentServiceUnavailableFault"]
+)]
 #[derive(Debug)]
 pub enum GetClusterCredentialsWithIAMErrorModeled {
     ClusterNotFoundFault(ClusterNotFoundFault),
     UnsupportedOperationFault(UnsupportedOperationFault),
+    DependentServiceUnavailableFault(DependentServiceUnavailableFault),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -160,18 +178,191 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `GetClusterCredentialsWithIAM` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(GetClusterCredentialsWithIAMErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("GetClusterCredentialsWithIAM"))
+        use crate::state as st;
+
+        let Some(state) = st::service_state(&*self.engine) else {
+            return Err(store_unavailable(st::STORE_UNAVAILABLE.to_string()));
+        };
+
+        // The instant the credentials are issued at, which is what their expiry
+        // is measured from.
+        let issued_at = ::std::time::SystemTime::now();
+        let mut store = state.lock();
+        store.settle(::std::time::Instant::now());
+
+        // The cluster the request names is resolved BEFORE anything else about
+        // the request is judged — the order every cluster-scoped operation of
+        // this service resolves a name in — so a request naming no cluster of
+        // this account is answered with that resource's own modelled fault.
+        let position = resolve_cluster(&store, &input)?;
+
+        // The lifetime is a documented window the model expresses as a plain
+        // integer ("Range: 900-3600. Default: 900"), so it is checked here, after
+        // the cluster, through the one rule `GetClusterCredentials` checks its own
+        // identical window with.
+        let duration = st::credential_duration(input.duration_seconds)
+            .map_err(crate::scaffolded::Scaffolded::invalid_parameter_value)?;
+        // `DbName` is "the name of the database to which you add permissions",
+        // bounded by length alone in the model and by the documented database-name
+        // syntax in the service, so it is checked under the same rule every other
+        // database name of this service is.
+        if let Some(db_name) = input.db_name.as_deref() {
+            st::check_database_name(st::DB_NAME_RULE, db_name)
+                .map_err(crate::scaffolded::Scaffolded::invalid_parameter_value)?;
+        }
+
+        // "The database user is mapped 1:1 to the source IAM identity": the
+        // identity is the one the request was SIGNED with, so the user name is
+        // derived from the caller's own credential and from nothing in the
+        // request. Nothing is created in the cluster's database — this operation
+        // models no `AutoCreate` — so the call writes nothing.
+        let presented_access_key_id = ::engine::extract_akid(&ctx.parts().headers);
+        let db_user = st::iam_identity_db_user(&presented_access_key_id);
+
+        // The password is minted by the emulator's credential store, the one
+        // component that generates secrets, and is never derived from the request:
+        // a password this handler made up is not a credential. A call the store
+        // minted none for answers the modelled server fault rather than a success
+        // carrying no password.
+        let Some(db_password) = mint_database_password(ctx.credential_store()) else {
+            return Err(store_unavailable(
+                "a temporary database password could not be issued; retry the request".to_string(),
+            ));
+        };
+
+        let expiration = ::aws_smithy_types::DateTime::from(issued_at + duration);
+        // Issuing a database credential is the security-relevant event of this
+        // operation, so it is attributable in the emulator's log, exactly as
+        // `GetClusterCredentials` makes its own issuance attributable: which
+        // operation, the access key id the request presented, which cluster and
+        // database user the credentials are for, when they expire and the
+        // outcome. The password itself is logged nowhere — only the caller gets
+        // it.
+        ::tracing::info!(
+            operation = Self::NAME,
+            presented_access_key_id = %presented_access_key_id,
+            cluster_identifier = %store
+                .clusters
+                .get(position)
+                .and_then(|stored| stored.cluster.cluster_identifier.clone())
+                .unwrap_or_default(),
+            db_user = %db_user,
+            expires_at_unix_seconds = expiration.secs(),
+            outcome = "issued",
+            "issued temporary database credentials for an IAM identity"
+        );
+
+        Ok(GetClusterCredentialsWithIAMOutput {
+            db_user: Some(db_user),
+            db_password: Some(db_password),
+            // "The time (UTC) when the password expires."
+            expiration: Some(expiration),
+            // `NextRefreshTime` is documented "Reserved for future use", so
+            // nothing is reported for it rather than an instant nothing refreshes
+            // at.
+            next_refresh_time: None,
+        })
     }
+}
+
+/// What a request naming NEITHER member the operation needs one of is refused
+/// with: the credentials are issued for the database OF a cluster, so a request
+/// naming no cluster describes no database to log on to.
+const MISSING_CLUSTER_NAME: &str = "Either ClusterIdentifier or CustomDomainName must be \
+     specified to name the cluster whose database the credentials are for.";
+
+/// The position in the store of the cluster this request names, or why the
+/// request names none.
+///
+/// The same rule `GetClusterCredentials` resolves its own two members by: both
+/// name ONE cluster — `ClusterIdentifier` is "the cluster identifier of the
+/// cluster that contains the database you are connecting to" and
+/// `CustomDomainName` is "the custom domain name for the IAM message cluster
+/// credentials", a property of the cluster that serves it
+/// (`Cluster$CustomDomainName`) — so a request carrying both is served only when
+/// the two name the same cluster, and a request carrying neither names nothing at
+/// all.
+fn resolve_cluster(
+    store: &crate::state::ComAmazonawsRedshiftRedshiftserviceversion20121201State,
+    input: &GetClusterCredentialsWithIAMInput,
+) -> Result<usize, GetClusterCredentialsWithIAMError> {
+    use crate::state as st;
+
+    let cluster_not_found = |message: String| -> GetClusterCredentialsWithIAMError {
+        GetClusterCredentialsWithIAMErrorModeled::ClusterNotFoundFault(ClusterNotFoundFault {
+            message: Some(message),
+        })
+        .into()
+    };
+
+    match (
+        input.cluster_identifier.as_deref(),
+        input.custom_domain_name.as_deref(),
+    ) {
+        (None, None) => Err(
+            crate::scaffolded::Scaffolded::invalid_parameter_combination(MISSING_CLUSTER_NAME),
+        ),
+        (named, Some(domain)) => {
+            // A custom domain name resolves to the ONE cluster that serves it, so
+            // a name no cluster of this account serves names no association, and
+            // therefore no cluster.
+            let holder = store
+                .cluster_with_custom_domain(domain)
+                .and_then(|stored| stored.cluster.cluster_identifier.clone())
+                .ok_or_else(|| {
+                    cluster_not_found(st::custom_domain_association_not_found_message(domain))
+                })?;
+            if let Some(named) = named.filter(|named| *named != holder) {
+                return Err(cluster_not_found(
+                    st::cluster_custom_domain_not_found_message(named),
+                ));
+            }
+            store.cluster_position(&holder).ok_or_else(|| {
+                cluster_not_found(st::cluster_not_found_message(
+                    st::ClusterNotFoundWording::IdentifierThenNotFound,
+                    &holder,
+                ))
+            })
+        }
+        (Some(identifier), None) => store.cluster_position(identifier).ok_or_else(|| {
+            cluster_not_found(st::cluster_not_found_message(
+                st::ClusterNotFoundWording::IdentifierThenNotFound,
+                identifier,
+            ))
+        }),
+    }
+}
+
+/// A fresh temporary database password.
+///
+/// Minted and then removed from the emulator's credential store for exactly the
+/// reasons `GetClusterCredentials` mints its own that way: the store is the one
+/// component that generates secrets, and the password authenticates a client to a
+/// Redshift DATABASE rather than a SigV4 request to this emulator, so the
+/// emulator must not go on accepting it as one.
+fn mint_database_password(store: &::emulator_server::CredentialStore) -> Option<String> {
+    let minted = store.create(&::emulator_server::aws_credentials::AWS_SESSION);
+    let password = minted
+        .secret(::emulator_server::aws_credentials::SESSION_TOKEN)
+        .map(str::to_string);
+    if let Err(error) = store.delete(&minted.id) {
+        ::tracing::warn!(
+            operation = "GetClusterCredentialsWithIAM",
+            access_key_id = %minted.id,
+            error = ?error,
+            "a credential minted for a temporary database password could not be deleted"
+        );
+        return None;
+    }
+    password
+}
+
+/// The modelled server fault for credentials this emulator could not issue.
+fn store_unavailable(message: String) -> GetClusterCredentialsWithIAMError {
+    GetClusterCredentialsWithIAMErrorModeled::DependentServiceUnavailableFault(
+        DependentServiceUnavailableFault {
+            message: Some(message),
+        },
+    )
+    .into()
 }

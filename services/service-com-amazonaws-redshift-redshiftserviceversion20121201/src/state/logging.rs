@@ -19,7 +19,7 @@
 //! service that keeps nothing of the resource it asks about — and only S3's own
 //! answer grounds a refusal.
 
-use crate::ops::types::{DescribeLoggingStatusOutput, EnableLoggingOutput};
+use crate::ops::types::{DescribeLoggingStatusOutput, DisableLoggingOutput, EnableLoggingOutput};
 
 /// `LogDestinationType` for delivery to an Amazon S3 bucket, which is the
 /// destination a request that names none asks for: it is the destination
@@ -94,6 +94,22 @@ impl ClusterLogging {
     /// See [`Self::enable_output`].
     pub fn describe_output(&self) -> DescribeLoggingStatusOutput {
         DescribeLoggingStatusOutput {
+            logging_enabled: Some(self.logging_enabled),
+            bucket_name: self.bucket_name.clone(),
+            s3_key_prefix: self.s3_key_prefix.clone(),
+            last_successful_delivery_time: None,
+            last_failure_time: None,
+            last_failure_message: None,
+            log_destination_type: self.log_destination_type.clone(),
+            log_exports: self.reported_log_exports(),
+            s3_tables: None,
+        }
+    }
+
+    /// This record as the `LoggingStatus` `DisableLogging` answers with. See
+    /// [`Self::enable_output`].
+    pub fn disable_output(&self) -> DisableLoggingOutput {
+        DisableLoggingOutput {
             logging_enabled: Some(self.logging_enabled),
             bucket_name: self.bucket_name.clone(),
             s3_key_prefix: self.s3_key_prefix.clone(),

@@ -212,6 +212,31 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     ),
                 ));
             }
+            // And whether that topic EXISTS is Amazon SNS's own state, resolved
+            // the way the create path resolves it: with no store guard held,
+            // before anything is written, and refusing nothing on a hop that
+            // could not be made (see [`st::notifications::resolve_topic`]).
+            match st::notifications::resolve_topic(_ctx, requested).await {
+                st::notifications::TopicResolution::Absent => {
+                    return Err(
+                        ModifyEventSubscriptionErrorModeled::SNSTopicArnNotFoundFault(
+                            SNSTopicArnNotFoundFault {
+                                message: Some(st::notifications::sns_topic_not_found_message(
+                                    requested,
+                                )),
+                            },
+                        )
+                        .into(),
+                    )
+                }
+                st::notifications::TopicResolution::Undecided(reason) => {
+                    ::tracing::warn!(
+                        reason = %reason,
+                        "the Amazon SNS topic a subscription names could not be resolved"
+                    );
+                }
+                st::notifications::TopicResolution::Held => {}
+            }
         }
 
         let mut store = state.lock();

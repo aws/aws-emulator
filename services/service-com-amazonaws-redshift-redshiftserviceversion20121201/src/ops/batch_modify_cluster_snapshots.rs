@@ -254,10 +254,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     snapshot_identifier: Some(identifier.clone()),
                     snapshot_cluster_identifier: cluster_identifier,
                     failure_code: Some(st::SNAPSHOT_FAILURE_INVALID_STATE.to_string()),
-                    failure_reason: Some(format!(
-                        "Cluster snapshot {identifier} is in the {status} state, not {}.",
-                        st::STATUS_AVAILABLE
-                    )),
+                    failure_reason: Some(st::invalid_snapshot_state_message(&identifier, &status)),
                 });
                 continue;
             }

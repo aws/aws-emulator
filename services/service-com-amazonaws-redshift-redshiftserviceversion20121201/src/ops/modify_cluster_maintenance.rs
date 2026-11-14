@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ModifyClusterMaintenance
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ModifyClusterMaintenance`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ModifyClusterMaintenance::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Changes the maintenance settings of one stored cluster: it defers the
+//! cluster's maintenance for the window the request describes, or takes a
+//! deferral off again, and reports the cluster the change left behind.
 //!
 //! ## Shape of an operation
 //!
@@ -92,11 +86,19 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-redshift-redshiftservic
 // here — hence the `ModifyClusterMaintenanceError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.redshift#ModifyClusterMaintenance")]
+// `DependentServiceUnavailableFault` is widened in, exactly as `PauseCluster`
+// widens it: the model does not list it for this operation, but the service
+// declares the shape, and it is the only modelled way to say "the control-plane
+// store could not be reached".
+#[smithy_macros::operation_error(
+    "com.amazonaws.redshift#ModifyClusterMaintenance",
+    extra_errors = ["DependentServiceUnavailableFault"]
+)]
 #[derive(Debug)]
 pub enum ModifyClusterMaintenanceErrorModeled {
     ClusterNotFoundFault(ClusterNotFoundFault),
     InvalidClusterStateFault(InvalidClusterStateFault),
+    DependentServiceUnavailableFault(DependentServiceUnavailableFault),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -145,23 +147,148 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::MODIFY_CLUSTER_MAINTENANCE_OUTPUT_SCHEMA;
     const SUCCESS_STATUS: u16 = 200u16;
 
+    /// Change the maintenance settings of the cluster the request names.
+    ///
+    /// A MUTATION: "modifies the maintenance settings of a cluster". What it
+    /// writes is the cluster's DEFERRED MAINTENANCE WINDOW, which is the setting
+    /// this operation's members describe:
+    ///
+    /// * `DeferMaintenance` true records a window — the identifier the request
+    ///   brought or one minted for it, the start time it named or this instant,
+    ///   and the end time it named or the one its duration in days comes to
+    ///   ([`crate::state::defer_maintenance_end`]);
+    /// * `DeferMaintenance` false takes the deferral off, so the cluster's
+    ///   maintenance happens in its preferred window again;
+    /// * a request that names neither asks for no change, and the cluster is
+    ///   reported exactly as it stands.
+    ///
+    /// The precondition is the cluster's: it has to be there, and a cluster the
+    /// service is already working on takes no configuration change.
     async fn handle(
         &self,
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ModifyClusterMaintenance` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ModifyClusterMaintenanceErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ModifyClusterMaintenance"))
+        use crate::state as st;
+
+        // The request's own values are judged BEFORE the store is read: a
+        // deferral described by both an end time and a duration, or by neither,
+        // is refused whatever cluster it names.
+        let deferring = input.defer_maintenance.unwrap_or(false);
+        if deferring {
+            match (input.defer_maintenance_end_time, input.defer_maintenance_duration) {
+                (Some(_), Some(_)) => {
+                    return Err(crate::scaffolded::Scaffolded::invalid_parameter_combination(
+                        st::DEFER_MAINTENANCE_END_AND_DURATION,
+                    ))
+                }
+                (None, None) => {
+                    return Err(crate::scaffolded::Scaffolded::invalid_parameter_combination(
+                        st::DEFER_MAINTENANCE_END_OR_DURATION,
+                    ))
+                }
+                _ => {}
+            }
+            if let Some(days) = input.defer_maintenance_duration {
+                if !(1..=st::MAX_DEFER_MAINTENANCE_DURATION).contains(&days) {
+                    return Err(crate::scaffolded::Scaffolded::invalid_parameter_value(
+                        st::defer_maintenance_duration_message(days),
+                    ));
+                }
+            }
+        }
+
+        let Some(state) = st::service_state(&*self.engine) else {
+            return Err(
+                ModifyClusterMaintenanceErrorModeled::DependentServiceUnavailableFault(
+                    DependentServiceUnavailableFault {
+                        message: Some(st::STORE_UNAVAILABLE.to_string()),
+                    },
+                )
+                .into(),
+            );
+        };
+
+        // The whole write is one lock-held step and nothing is awaited while the
+        // store is locked.
+        let _ = ctx;
+        let now = ::aws_smithy_types::DateTime::from(::std::time::SystemTime::now());
+        let mut store = state.lock();
+        store.settle(::std::time::Instant::now());
+
+        let Some(position) = store.cluster_position(&input.cluster_identifier) else {
+            return Err(ModifyClusterMaintenanceErrorModeled::ClusterNotFoundFault(
+                ClusterNotFoundFault {
+                    // No recorded refusal gives this operation a sentence of its
+                    // own, so it carries the one every other cluster-scoped
+                    // operation does — see [`st::ClusterNotFoundWording`].
+                    message: Some(st::cluster_not_found_message(
+                        st::ClusterNotFoundWording::IdentifierThenNotFound,
+                        &input.cluster_identifier,
+                    )),
+                },
+            )
+            .into());
+        };
+        let status = store.clusters[position]
+            .cluster
+            .cluster_status
+            .clone()
+            .unwrap_or_default();
+        if status != st::STATUS_AVAILABLE {
+            return Err(
+                ModifyClusterMaintenanceErrorModeled::InvalidClusterStateFault(
+                    InvalidClusterStateFault {
+                        message: Some(st::invalid_cluster_state_message(
+                            &input.cluster_identifier,
+                            &status,
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        let stored = &mut store.clusters[position];
+        if deferring {
+            let start = input.defer_maintenance_start_time.unwrap_or(now);
+            let end = match (
+                input.defer_maintenance_end_time,
+                input.defer_maintenance_duration,
+            ) {
+                (Some(end), _) => end,
+                (None, Some(days)) => st::defer_maintenance_end(start, days),
+                // Refused above, before the store was read at all.
+                (None, None) => start,
+            };
+            // A cluster carries ONE deferral: a second call describes the same
+            // window rather than adding another, so the request's own identifier
+            // — or a minted one — names the window that REPLACES it.
+            stored.cluster.deferred_maintenance_windows = Some(vec![DeferredMaintenanceWindow {
+                defer_maintenance_identifier: Some(
+                    input
+                        .defer_maintenance_identifier
+                        .clone()
+                        .unwrap_or_else(st::new_defer_maintenance_identifier),
+                ),
+                defer_maintenance_start_time: Some(start),
+                defer_maintenance_end_time: Some(end),
+            }]);
+        } else if input.defer_maintenance == Some(false) {
+            // "Describes a group of DeferredMaintenanceWindow objects": a cluster
+            // whose maintenance is deferred no longer reports the EMPTY group,
+            // not none at all.
+            stored.cluster.deferred_maintenance_windows = Some(Vec::new());
+        }
+
+        // Re-derive every member this service computes from the cluster's own
+        // configuration, through the same rule the create and the modify paths
+        // use, so this response reports the member set a later read does.
+        let cluster_type = stored.cluster_type.clone();
+        st::populate_derived_members(&mut stored.cluster, &cluster_type, now);
+
+        Ok(ModifyClusterMaintenanceOutput {
+            cluster: Some(stored.cluster.clone()),
+        })
     }
 }

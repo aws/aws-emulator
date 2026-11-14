@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DescribeDataShares
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DescribeDataShares`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DescribeDataShares::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports the datashares of this account, in the order the store holds them, or
+//! the single one a `DataShareArn` names — and an ARN this account holds no
+//! datashare under is the modelled `InvalidDataShareFault` (see
+//! [`crate::state::StoredDataShare`] for where a datashare comes from).
 //!
 //! ## Shape of an operation
 //!
@@ -93,10 +88,18 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-redshift-redshiftservic
 // here — hence the `DescribeDataSharesError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.redshift#DescribeDataShares")]
+// `DependentServiceUnavailableFault` is widened in, exactly as every other
+// operation of this service that reaches the store widens it: the model does not
+// list it here, but the service declares the shape, and it is the only modelled
+// way to say "the control-plane store could not be reached".
+#[smithy_macros::operation_error(
+    "com.amazonaws.redshift#DescribeDataShares",
+    extra_errors = ["DependentServiceUnavailableFault"]
+)]
 #[derive(Debug)]
 pub enum DescribeDataSharesErrorModeled {
     InvalidDataShareFault(InvalidDataShareFault),
+    DependentServiceUnavailableFault(DependentServiceUnavailableFault),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -145,23 +148,63 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::DESCRIBE_DATA_SHARES_OUTPUT_SCHEMA;
     const SUCCESS_STATUS: u16 = 200u16;
 
+    /// Report the datashares the request asks about.
+    ///
+    /// A READ: it writes nothing at all — a datashare carries no status the clock
+    /// moves, so there is not even a settle to make.
+    ///
+    /// "Shows the status of all datashares of the account" for a request that
+    /// names none, and the one its `DataShareArn` names otherwise — an ARN that
+    /// resolves to nothing being the modelled fault rather than an empty page, so
+    /// a caller can tell "no such datashare" from "this datashare has no
+    /// associations".
     async fn handle(
         &self,
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DescribeDataShares` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DescribeDataSharesErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DescribeDataShares"))
+        use crate::state as st;
+
+        // A read needs nothing from the request beyond its deserialized input.
+        let _ = ctx;
+        let Some(state) = st::service_state(&*self.engine) else {
+            return Err(
+                DescribeDataSharesErrorModeled::DependentServiceUnavailableFault(
+                    DependentServiceUnavailableFault {
+                        message: Some(st::STORE_UNAVAILABLE.to_string()),
+                    },
+                )
+                .into(),
+            );
+        };
+
+        let store = state.lock();
+        let matched: Vec<st::StoredDataShare> = match input.data_share_arn.as_deref() {
+            Some(data_share_arn) => {
+                let Some(held) = store.data_share(data_share_arn) else {
+                    return Err(DescribeDataSharesErrorModeled::InvalidDataShareFault(
+                        InvalidDataShareFault {
+                            message: Some(st::invalid_data_share_message(data_share_arn)),
+                        },
+                    )
+                    .into());
+                };
+                vec![held.clone()]
+            }
+            None => store.data_shares.clone(),
+        };
+
+        let (start, end, next_marker) =
+            match st::page_bounds(input.marker.as_deref(), input.max_records, matched.len()) {
+                Ok(page) => page,
+                Err(message) => {
+                    return Err(crate::scaffolded::Scaffolded::invalid_parameter_value(message))
+                }
+            };
+
+        Ok(DescribeDataSharesOutput {
+            data_shares: Some(matched[start..end].to_vec()),
+            marker: next_marker,
+        })
     }
 }

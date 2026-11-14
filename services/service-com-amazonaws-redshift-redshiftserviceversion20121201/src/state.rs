@@ -125,6 +125,15 @@ mod lakehouse;
 /// A cluster's DATA, which lives in the SQL engine the Redshift Data API runs
 /// statements on: what a snapshot of a cluster copies and a restore writes back.
 mod cluster_data;
+/// The table restores a `RestoreTableFromClusterSnapshot` asked for, and the
+/// status a read reports for each.
+mod table_restores;
+/// The datashares of this account, and the namespaces a datashare operation
+/// names one of.
+mod data_shares;
+/// The node configurations `DescribeNodeConfigurationOptions` offers for an
+/// action, computed from the published orderable catalog.
+mod node_configurations;
 /// The CloudWatch series a cluster publishes about its own health, and the
 /// in-process clock that keeps publishing them. Re-exported below, so a handler
 /// reaches it as `crate::state::…` like every other part of this store.
@@ -134,11 +143,14 @@ pub use cluster_metrics::*;
 
 pub use cluster_data::*;
 pub use clusters::*;
+pub use data_shares::*;
+pub use table_restores::*;
 pub use ec2_subnets::*;
 pub use derived::*;
 pub use events::*;
 pub use logging::*;
 pub use naming::*;
+pub use node_configurations::*;
 pub use parameters::*;
 pub use policy_resources::*;
 pub use lakehouse::*;
@@ -252,6 +264,56 @@ pub const PREVIOUS_GENERATION_NODE_TYPE_PREFIX: &str = "dc2.";
 /// member="NumberOfNodes")`) — and says nothing about which node type pairs with
 /// which cluster type, so the pairing is published catalog data.
 pub const SINGLE_NODE_NODE_TYPES: [&str; 3] = ["rg.large", "ra3.large", "ra3.xlplus"];
+
+/// Every node type an ELASTIC resize can be performed on, which is the first
+/// restriction `ResizeCluster` documents for the resize kind it performs by
+/// default.
+///
+/// Source: `smithy_query(query="doc", operation="ResizeCluster")` — "Elastic
+/// resize operations have the following restrictions: You can only resize
+/// clusters of the following types: dc2.large dc2.8xlarge rg.large rg.xlarge
+/// rg.4xlarge rg.12xlarge ra3.large ra3.xlplus ra3.4xlarge ra3.16xlarge".
+///
+/// That is the SAME list of ten node types [`ORDERABLE_NODE_TYPES`] carries, so
+/// every cluster this service admits can take an elastic resize and the
+/// restriction refuses none of them: the function below is what says so, and what
+/// would start refusing if either published list ever changed.
+pub fn supports_elastic_resize(node_type: &str) -> bool {
+    ORDERABLE_NODE_TYPES.contains(&node_type)
+}
+
+/// Why an elastic resize of a cluster whose node type cannot take one is
+/// refused, naming that node type.
+///
+/// The fixed text is the restriction the operation documents (see
+/// [`supports_elastic_resize`]) and the variable part is the cluster's own node
+/// type, which is what the caller has to decide from whether to ask for the
+/// classic resize instead.
+pub fn elastic_resize_node_type_message(node_type: &str) -> String {
+    format!(
+        "Elastic resize is not supported for clusters of node type {node_type}; retry the \
+         request with Classic set to true."
+    )
+}
+
+/// Why an elastic resize asking for a different node type is refused: "the type
+/// of nodes that you add must match the node type for the cluster"
+/// (`smithy_query(query="doc", operation="ResizeCluster")`), so changing it is an
+/// option that resize kind does not support. Fixed text with no variable part —
+/// the restriction is about the option, not about a value.
+pub const ELASTIC_RESIZE_KEEPS_NODE_TYPE: &str =
+    "An elastic resize cannot change the cluster's node type: the type of nodes that you add \
+     must match the node type for the cluster.";
+
+/// Why a request that names one half of a reserved-node exchange without the
+/// other is refused.
+///
+/// The two members are one exchange — "the identifier of the reserved node" and
+/// "the identifier of the target reserved node offering" — so neither on its own
+/// describes a reservation to move onto an offering.
+pub const RESERVED_NODE_EXCHANGE_PAIR_REQUIRED: &str =
+    "ReservedNodeId and TargetReservedNodeOfferingId must be specified together: an \
+     exchange moves one reservation onto one target offering.";
 
 /// The `ClusterType`s one node type is ORDERABLE as, in the documented
 /// [`ORDERABLE_CLUSTER_TYPES`] order, or an empty list for a node type a new
@@ -636,13 +698,75 @@ pub fn check_maintenance_track(
 /// The most days a cluster's maintenance may be deferred for — the
 /// account-level allowance `DescribeAccountAttributes` publishes under
 /// [`ATTRIBUTE_MAX_DEFER_MAINTENANCE_DURATION`], and the bound a
-/// `ModifyClusterMaintenance` deferral is held to once that operation enforces
-/// one (it is still a scaffold).
+/// `ModifyClusterMaintenance` deferral is held to.
 ///
 /// Source: `smithy_query(query="doc", shape="ModifyClusterMaintenanceMessage",
 /// member="DeferMaintenanceDuration")` — "An integer indicating the duration of
 /// the maintenance window in days. … The duration must be 60 days or less."
 pub const MAX_DEFER_MAINTENANCE_DURATION: i32 = 60;
+
+/// The end instant of a deferral that starts at `start` and lasts `days`.
+///
+/// `DeferMaintenanceDuration` is "the duration of the maintenance window in
+/// days", and `DeferMaintenanceEndTime` is "a timestamp indicating end time for
+/// the deferred maintenance window" — so a request that names a duration
+/// describes the same window as one that names the end time it comes to, and the
+/// stored record carries both however the request spelled it. A day is the same
+/// count of seconds a day of snapshot retention is ([`SECONDS_PER_DAY`]).
+pub fn defer_maintenance_end(
+    start: ::aws_smithy_types::DateTime,
+    days: i32,
+) -> ::aws_smithy_types::DateTime {
+    ::aws_smithy_types::DateTime::from_secs(
+        start
+            .secs()
+            .saturating_add(i64::from(days).saturating_mul(SECONDS_PER_DAY)),
+    )
+}
+
+/// Why a deferral naming BOTH an end time and a duration is refused.
+///
+/// The rule is the two members' own documentation: "if you specify a duration,
+/// you can't specify an end time" and "if you specify an end time, you can't
+/// specify a duration" — each value is acceptable on its own and the pair is not,
+/// which is the refusal class Amazon Redshift answers with.
+pub const DEFER_MAINTENANCE_END_AND_DURATION: &str =
+    "DeferMaintenanceEndTime and DeferMaintenanceDuration cannot both be specified: a \
+     deferred maintenance window is described by one or the other.";
+
+/// Why a deferral naming NEITHER an end time nor a duration is refused: the two
+/// members are the two ways of saying how long the window lasts, so a request
+/// carrying neither describes no window. See [`DEFER_MAINTENANCE_END_AND_DURATION`].
+pub const DEFER_MAINTENANCE_END_OR_DURATION: &str =
+    "Either DeferMaintenanceEndTime or DeferMaintenanceDuration must be specified to \
+     describe how long maintenance is deferred for.";
+
+/// Why a `DeferMaintenanceDuration` past the published allowance is refused,
+/// naming the value the request carried and the bound.
+///
+/// The bound is documented ([`MAX_DEFER_MAINTENANCE_DURATION`]) and published as
+/// an account attribute, so both appear in the sentence the caller has to fix the
+/// request from.
+pub fn defer_maintenance_duration_message(requested: i32) -> String {
+    format!(
+        "Invalid value for DeferMaintenanceDuration: {requested}. The duration must be \
+         {MAX_DEFER_MAINTENANCE_DURATION} days or less."
+    )
+}
+
+/// A fresh `DeferMaintenanceIdentifier` for a deferral whose request named none.
+///
+/// "A unique identifier for the deferred maintenance window"
+/// (`smithy_query(query="doc", shape="ModifyClusterMaintenanceMessage",
+/// member="DeferMaintenanceIdentifier")`): a request may bring its own, and one
+/// that does not gets one minted by the service and STORED, so every later read
+/// of that window reports the same identifier. The model states no form for it,
+/// so the form is this emulator's: the prefix Amazon Redshift's own identifiers
+/// carry, and then the per-call token every other minted identifier of this
+/// service is drawn from ([`new_usage_limit_id`]).
+pub fn new_defer_maintenance_identifier() -> String {
+    format!("dfm-{}", new_usage_limit_id().replace('-', ""))
+}
 
 /// `AccountAttribute$AttributeName` of the deferred-maintenance allowance.
 ///
@@ -904,6 +1028,30 @@ pub const STATUS_MODIFYING: &str = "modifying";
 /// Source: `smithy_query(query="doc", shape="Cluster", member="ClusterStatus")`,
 /// which publishes `rebooting` among the cluster states.
 pub const STATUS_REBOOTING: &str = "rebooting";
+/// `ClusterStatus` while the service is rotating a cluster's encryption keys,
+/// which is what a `RotateEncryptionKey` call starts. Like [`STATUS_REBOOTING`]
+/// it is work the service is doing to an already provisioned cluster, so it ends
+/// at the cluster's own due instant (see
+/// [`ComAmazonawsRedshiftRedshiftserviceversion20121201State::settle`]).
+///
+/// Source: `smithy_query(query="doc", shape="Cluster", member="ClusterStatus")`,
+/// which publishes `rotating-keys` among the cluster states.
+pub const STATUS_ROTATING_KEYS: &str = "rotating-keys";
+
+/// Why a `RotateEncryptionKey` against a cluster whose data is not encrypted is
+/// refused, naming the cluster.
+///
+/// The rule is the operation's own documented constraint on the value it was
+/// given: `smithy_query(query="doc", shape="RotateEncryptionKeyMessage",
+/// member="ClusterIdentifier")` — "Constraints: Must be the name of valid cluster
+/// that has encryption enabled" — so the fixed text states the constraint and the
+/// cluster the request named is the variable part.
+pub fn rotation_requires_encrypted_cluster_message(cluster_identifier: &str) -> String {
+    format!(
+        "Cluster {cluster_identifier} does not have encryption enabled; \
+         ClusterIdentifier must be the name of a valid cluster that has encryption enabled."
+    )
+}
 /// `ClusterStatus` a `DeleteCluster` response reports.
 pub const STATUS_DELETING: &str = "deleting";
 /// `ClusterStatus` of a cluster whose compute has been suspended, which is where
@@ -998,6 +1146,27 @@ pub fn cluster_snapshot_not_found_message(
             format!("Snapshot {snapshot_identifier} not found.")
         }
     }
+}
+
+/// Why an operation that needs an AVAILABLE snapshot refuses one that is not,
+/// naming the snapshot and the state it is in.
+///
+/// `smithy_query(query="shape", shape="InvalidClusterSnapshotStateFault")` — "The
+/// specified cluster snapshot is not in the `available` state" — which is the
+/// fixed part of the sentence; the snapshot the request named and the state it is
+/// actually in are the variable parts a caller needs to decide whether to wait.
+/// ONE function for every operation whose precondition is just that, the way
+/// [`invalid_cluster_state_message`] serves every operation that needs a running
+/// cluster: `DeleteClusterSnapshot` (through [`snapshot_delete_refusal`]),
+/// `ModifyClusterSnapshot`, `BatchModifyClusterSnapshots`,
+/// `CopyClusterSnapshot`, `AuthorizeSnapshotAccess`,
+/// `RestoreFromClusterSnapshot`, `RestoreTableFromClusterSnapshot` and
+/// `DescribeNodeConfigurationOptions` all word it through here, so the wording
+/// cannot drift between them.
+pub fn invalid_snapshot_state_message(snapshot_identifier: &str, status: &str) -> String {
+    format!(
+        "Cluster snapshot {snapshot_identifier} is in the {status} state, not {STATUS_AVAILABLE}."
+    )
 }
 
 /// The `ClusterNotFoundFault` message `wording` words, naming the
@@ -1141,6 +1310,33 @@ pub const CLUSTER_QUOTA: usize = 1_000;
 /// claim about an account's published limit. It is larger than the cluster bound
 /// because a cluster accumulates snapshots over its life.
 pub const SNAPSHOT_QUOTA: usize = 10_000;
+
+/// How many table restore requests the store KEEPS: a request past this count
+/// drops the oldest record rather than growing the log
+/// ([`ComAmazonawsRedshiftRedshiftserviceversion20121201State::record_table_restore`],
+/// which the handler passes this bound to).
+///
+/// The same reasoning as [`SNAPSHOT_QUOTA`]: the emulator's own bound on
+/// [`ComAmazonawsRedshiftRedshiftserviceversion20121201State::table_restores`],
+/// not a claim about an account's published limit. It is a RING rather than a
+/// refusal because nothing deletes a table restore request — `RestoreTableFromClusterSnapshot`
+/// appends one per served call and the service publishes no operation that
+/// removes one — so a bound that refused instead would make the operation stop
+/// working once the log filled.
+pub const TABLE_RESTORE_QUOTA: usize = 10_000;
+
+/// How many table restores this emulator has IN FLIGHT before
+/// `RestoreTableFromClusterSnapshot` refuses another with the modelled
+/// `InProgressTableRestoreQuotaExceededFault`.
+///
+/// The fault is documented "You have exceeded the allowed number of table restore
+/// requests. Wait for your current table restore requests to complete before
+/// making a new request", and neither the model nor the shape docs state the
+/// number — so this is the emulator's OWN bound on how many copies it will have
+/// running at once rather than a claim about an account's published limit. It is
+/// what bounds the engine work one caller can have under way;
+/// [`TABLE_RESTORE_QUOTA`] bounds what the store RETAINS.
+pub const IN_PROGRESS_TABLE_RESTORE_QUOTA: usize = 20;
 
 /// How many accounts one snapshot may be shared with before
 /// `AuthorizeSnapshotAccess` refuses with the modelled
@@ -2743,6 +2939,18 @@ pub struct ComAmazonawsRedshiftRedshiftserviceversion20121201State {
     /// [`ComAmazonawsRedshiftRedshiftserviceversion20121201State::snapshot_copy_grants`],
     /// this collection needs no `Stored*` wrapper.
     pub recommendations: Vec<Recommendation>,
+    /// Every table restore `RestoreTableFromClusterSnapshot` asked for, keyed by
+    /// `TableRestoreRequestId`, in request order (see [`StoredTableRestore`]).
+    pub table_restores: Vec<StoredTableRestore>,
+    /// Every datashare of this account, keyed by `DataShareArn`, in the order the
+    /// store holds them.
+    ///
+    /// Neither seeded nor grown by any operation of this service: a datashare is
+    /// created on the producer's DATABASE and Amazon Redshift publishes no API
+    /// that creates one (see [`StoredDataShare`]), so an account that has created
+    /// none holds none and every operation that acts on one answers
+    /// `InvalidDataShareFault` for an ARN that resolves to nothing.
+    pub data_shares: Vec<StoredDataShare>,
     /// Where the health series of each cluster has got to, and the one in-process
     /// clock that advances them: the schedule the AWS/Redshift `HealthStatus`
     /// metric of every cluster this store holds is published on (see
@@ -2811,6 +3019,8 @@ impl Default for ComAmazonawsRedshiftRedshiftserviceversion20121201State {
             endpoint_accesses: Vec::new(),
             endpoint_authorizations: Vec::new(),
             recommendations: Vec::new(),
+            table_restores: Vec::new(),
+            data_shares: Vec::new(),
             health_metrics: cluster_metrics::HealthStatusPublisher::default(),
         }
     }

@@ -36,6 +36,15 @@ pub const RESIZE_STATUS_IN_PROGRESS: &str = "IN_PROGRESS";
 /// `ResizeProgressMessage$Status` once the resize has finished, which it stays at
 /// "until the next resize". See [`RESIZE_STATUS_IN_PROGRESS`].
 pub const RESIZE_STATUS_SUCCEEDED: &str = "SUCCEEDED";
+/// `ResizeProgressMessage$Status` while the cancellation a `CancelResize` asked
+/// for is being applied. See [`RESIZE_STATUS_IN_PROGRESS`] for the published
+/// vocabulary this is one of.
+pub const RESIZE_STATUS_CANCELLING: &str = "CANCELLING";
+/// `ResizeProgressMessage$Status` of a resize that did NOT complete, which is
+/// what a cancelled one comes to: the published vocabulary
+/// ([`RESIZE_STATUS_IN_PROGRESS`]) carries no terminal value for "cancelled", and
+/// the one terminal value that is not success is this.
+pub const RESIZE_STATUS_FAILED: &str = "FAILED";
 
 /// `ResizeProgressMessage$ResizeType` of a resize that moves the cluster onto new
 /// nodes.
@@ -47,6 +56,32 @@ pub const RESIZE_STATUS_SUCCEEDED: &str = "SUCCEEDED";
 /// cluster type rebuilds the cluster on new nodes, which is the classic resize;
 /// the elastic one is what `ResizeCluster` performs by default.
 pub const RESIZE_TYPE_CLASSIC: &str = "ClassicResize";
+
+/// `ResizeProgressMessage$ResizeType` of a resize that adds or removes nodes on
+/// the cluster as it stands, which is what `ResizeCluster` performs unless its
+/// `Classic` member asks for the other kind: "Classic — … the only type of resize
+/// available to … a request that sets `Classic` to `true`"
+/// (`smithy_query(query="doc", shape="ResizeClusterMessage", member="Classic")`).
+/// See [`RESIZE_TYPE_CLASSIC`] for the vocabulary's source.
+pub const RESIZE_TYPE_ELASTIC: &str = "ElasticResize";
+
+/// The SHAPE of a cluster: the three members a resize changes, and the three a
+/// cancelled resize puts back.
+///
+/// One value rather than three loose members, so the shape a resize is moving a
+/// cluster TO and the shape it moved it FROM are the same kind of thing and a
+/// cancel can restore one from the other.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClusterShape {
+    /// `Cluster$NodeType` — the node type the cluster runs on.
+    pub node_type: Option<String>,
+    /// The cluster's `single-node` / `multi-node` type, which the `Cluster` shape
+    /// models no member for and this service keeps on
+    /// [`StoredCluster::cluster_type`](super::StoredCluster::cluster_type).
+    pub cluster_type: Option<String>,
+    /// `Cluster$NumberOfNodes` — how many nodes the cluster runs on.
+    pub number_of_nodes: Option<i32>,
+}
 
 /// `ResizeProgressMessage$TargetEncryptionType` of a resize whose target cluster
 /// is encrypted, and of one whose target cluster is not.
@@ -83,43 +118,73 @@ pub struct StoredResize {
     /// [`PROVISIONING_SPAN`]: moving a cluster onto new nodes is the same slow
     /// work provisioning one is.
     pub completed_at: Instant,
+    /// The shape the cluster had BEFORE this resize started, which is what a
+    /// `CancelResize` puts back: "cancels a resize operation for a cluster", so
+    /// the cluster the cancel leaves behind is the cluster the resize found.
+    pub source: ClusterShape,
+    /// The instant a `CancelResize` asked for this resize to be given up on, and
+    /// `None` for a resize nobody cancelled.
+    pub cancelled_at: Option<Instant>,
 }
 
 impl StoredResize {
-    /// The resize a shape change to `target_cluster_type` / `target_number_of_nodes`
-    /// / `target_node_type` starts at `started`, on a cluster whose data is
-    /// `encrypted`.
+    /// The resize that moves a cluster from the shape `source` to the shape
+    /// `target` at `started`, on a cluster whose data is `encrypted`, of the kind
+    /// `resize_type` ([`RESIZE_TYPE_CLASSIC`] / [`RESIZE_TYPE_ELASTIC`]).
     pub fn started(
         started: Instant,
-        target_node_type: Option<String>,
-        target_cluster_type: Option<String>,
-        target_number_of_nodes: Option<i32>,
+        source: ClusterShape,
+        target: ClusterShape,
         encrypted: bool,
+        resize_type: &str,
     ) -> Self {
         Self {
-            target_node_type,
-            target_number_of_nodes,
-            target_cluster_type,
+            target_node_type: target.node_type,
+            target_number_of_nodes: target.number_of_nodes,
+            target_cluster_type: target.cluster_type,
             target_encryption_type: if encrypted {
                 TARGET_ENCRYPTION_KMS
             } else {
                 TARGET_ENCRYPTION_NONE
             }
             .to_string(),
-            resize_type: RESIZE_TYPE_CLASSIC.to_string(),
+            resize_type: resize_type.to_string(),
             started_at: started,
             completed_at: started + PROVISIONING_SPAN,
+            source,
+            cancelled_at: None,
         }
+    }
+
+    /// Give this resize up at `now`: it is being cancelled from this instant, and
+    /// the cancellation itself falls due a span later — the same span the resize
+    /// was running under, because putting the cluster back on its old shape is the
+    /// same work as moving it onto the new one.
+    pub fn cancel(&mut self, now: Instant) {
+        self.cancelled_at = Some(now);
+        self.completed_at = now + PROVISIONING_SPAN;
+    }
+
+    /// Whether this resize is still running at `now` — the one state a
+    /// `CancelResize` can give up on.
+    pub fn is_in_progress(&self, now: Instant) -> bool {
+        self.status_at(now) == RESIZE_STATUS_IN_PROGRESS
     }
 
     /// The status this resize is in at `now`: running until its completion falls
     /// due, and `SUCCEEDED` from then on — which it stays at until the next
     /// resize REPLACES this record.
+    /// A resize a `CancelResize` gave up on never reaches
+    /// [`RESIZE_STATUS_SUCCEEDED`]: it is [`RESIZE_STATUS_CANCELLING`] while the
+    /// cancellation is being applied and [`RESIZE_STATUS_FAILED`] from then on,
+    /// because it did not complete.
     pub fn status_at(&self, now: Instant) -> &'static str {
-        if now >= self.completed_at {
-            RESIZE_STATUS_SUCCEEDED
-        } else {
-            RESIZE_STATUS_IN_PROGRESS
+        let done = now >= self.completed_at;
+        match (self.cancelled_at.is_some(), done) {
+            (true, false) => RESIZE_STATUS_CANCELLING,
+            (true, true) => RESIZE_STATUS_FAILED,
+            (false, false) => RESIZE_STATUS_IN_PROGRESS,
+            (false, true) => RESIZE_STATUS_SUCCEEDED,
         }
     }
 

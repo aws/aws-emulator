@@ -590,6 +590,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> ModifyCluster<Eng
                 .node_type
                 .as_deref()
                 .is_some_and(|wanted| Some(wanted) != stored.cluster.node_type.as_deref());
+        // The shape the cluster is moving OFF, read before the new one is applied:
+        // it is what a `CancelResize` of this resize puts back.
+        let source_shape = st::ClusterShape {
+            node_type: stored.cluster.node_type.clone(),
+            cluster_type: Some(stored.cluster_type.clone()),
+            number_of_nodes: stored.cluster.number_of_nodes,
+        };
         stored.cluster_type = cluster_type;
         stored.cluster.number_of_nodes = Some(number_of_nodes);
         if let Some(node_type) = input.node_type.clone() {
@@ -603,10 +610,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> ModifyCluster<Eng
         if resized {
             stored.resize = Some(st::StoredResize::started(
                 ::std::time::Instant::now(),
-                stored.cluster.node_type.clone(),
-                Some(stored.cluster_type.clone()),
-                stored.cluster.number_of_nodes,
+                source_shape,
+                st::ClusterShape {
+                    node_type: stored.cluster.node_type.clone(),
+                    cluster_type: Some(stored.cluster_type.clone()),
+                    number_of_nodes: stored.cluster.number_of_nodes,
+                },
                 stored.cluster.encrypted.unwrap_or(false),
+                // A modify that changes the cluster's node type or cluster type
+                // rebuilds it on new nodes, which is the classic resize.
+                st::RESIZE_TYPE_CLASSIC,
             ));
         }
         if let Some(value) = input.automated_snapshot_retention_period {

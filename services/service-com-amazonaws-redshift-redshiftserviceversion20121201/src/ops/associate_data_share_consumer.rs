@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op AssociateDataShareConsumer
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `AssociateDataShareConsumer`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Associates one stored datashare with the consumer the request names — the
+//! whole account (`AssociateEntireAccount`) or one namespace of it
+//! (`ConsumerArn`) — so the consumer can consume it: the association is recorded
+//! through the one rule every datashare write of this service applies, and the
+//! datashare is reported as it stands afterwards.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`AssociateDataShareConsumer::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Both names are resolved first, each with its own modelled fault: a
+//! `ConsumerArn` that resolves to no namespace of this account is
+//! `InvalidNamespaceFault` ([`crate::state::resolve_namespace`]), and a
+//! `DataShareArn` this account holds no datashare under is
+//! `InvalidDataShareFault` (see [`crate::state::StoredDataShare`]).
 //!
 //! ## Shape of an operation
 //!
@@ -102,11 +104,19 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-redshift-redshiftservic
 // here — hence the `AssociateDataShareConsumerError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.redshift#AssociateDataShareConsumer")]
+// `DependentServiceUnavailableFault` is widened in, exactly as every other
+// operation of this service that reaches the store widens it: the model does not
+// list it here, but the service declares the shape, and it is the only modelled
+// way to say "the control-plane store could not be reached".
+#[smithy_macros::operation_error(
+    "com.amazonaws.redshift#AssociateDataShareConsumer",
+    extra_errors = ["DependentServiceUnavailableFault"]
+)]
 #[derive(Debug)]
 pub enum AssociateDataShareConsumerErrorModeled {
     InvalidDataShareFault(InvalidDataShareFault),
     InvalidNamespaceFault(InvalidNamespaceFault),
+    DependentServiceUnavailableFault(DependentServiceUnavailableFault),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -155,23 +165,85 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::ASSOCIATE_DATA_SHARE_CONSUMER_OUTPUT_SCHEMA;
     const SUCCESS_STATUS: u16 = 200u16;
 
+    /// Associate the datashare the request names with the consumer it names.
+    ///
+    /// A MUTATION: "from a datashare consumer account, associates a datashare with
+    /// the account (AssociateEntireAccount) or the specified namespace
+    /// (ConsumerArn)", so the association with that consumer is what this call
+    /// writes — and what the response reports back.
     async fn handle(
         &self,
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `AssociateDataShareConsumer` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(AssociateDataShareConsumerErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("AssociateDataShareConsumer"))
+        use crate::state as st;
+
+        let Some(state) = st::service_state(&*self.engine) else {
+            return Err(
+                AssociateDataShareConsumerErrorModeled::DependentServiceUnavailableFault(
+                    DependentServiceUnavailableFault {
+                        message: Some(st::STORE_UNAVAILABLE.to_string()),
+                    },
+                )
+                .into(),
+            );
+        };
+
+        // Which consumer the association is with: one namespace of this account,
+        // or the account itself. A request naming neither names no consumer at
+        // all, which is decided on the request alone.
+        let consumer = match (
+            input.consumer_arn.as_deref(),
+            input.associate_entire_account,
+        ) {
+            (Some(consumer_arn), _) => {
+                // The namespace is resolved against the control plane that owns
+                // it, with NO store guard held for the serverless arm.
+                let held = state
+                    .lock()
+                    .cluster_with_namespace_arn(consumer_arn)
+                    .is_some();
+                if st::resolve_namespace(ctx, held, consumer_arn).await
+                    == st::NamespaceResolution::Absent
+                {
+                    return Err(
+                        AssociateDataShareConsumerErrorModeled::InvalidNamespaceFault(
+                            InvalidNamespaceFault {
+                                message: Some(st::invalid_namespace_message(consumer_arn)),
+                            },
+                        )
+                        .into(),
+                    );
+                }
+                consumer_arn.to_string()
+            }
+            (None, Some(true)) => st::entire_account_consumer(),
+            (None, _) => {
+                return Err(crate::scaffolded::Scaffolded::invalid_parameter_combination(
+                    st::DATA_SHARE_CONSUMER_REQUIRED,
+                ))
+            }
+        };
+
+        let now = ::aws_smithy_types::DateTime::from(::std::time::SystemTime::now());
+        let mut store = state.lock();
+        let Some(held) = store.change_data_share(
+            &input.data_share_arn,
+            &consumer,
+            input.consumer_region.as_deref(),
+            st::DataShareChange::Associate {
+                allow_writes: input.allow_writes,
+            },
+            now,
+        ) else {
+            return Err(AssociateDataShareConsumerErrorModeled::InvalidDataShareFault(
+                InvalidDataShareFault {
+                    message: Some(st::invalid_data_share_message(&input.data_share_arn)),
+                },
+            )
+            .into());
+        };
+
+        Ok(held)
     }
 }

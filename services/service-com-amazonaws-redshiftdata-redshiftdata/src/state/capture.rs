@@ -88,6 +88,20 @@ impl WarehouseCapture {
     pub fn is_empty(&self) -> bool {
         self.databases.is_empty()
     }
+
+    /// A handle on the captured copy of the database `name`, or `None` when this
+    /// capture holds none under that name.
+    ///
+    /// `pub(super)` and a HANDLE rather than a borrow, so the one caller that
+    /// reads a single database out of a capture — the table restore beside this
+    /// module ([`super::table_restore`]) — reaches it the way a live database is
+    /// reached, and nothing outside this crate's state can.
+    pub(super) fn database(&self, name: &str) -> Option<DatabaseHandle> {
+        self.databases
+            .iter()
+            .find(|captured| captured.database == name)
+            .map(|captured| std::sync::Arc::clone(&captured.handle))
+    }
 }
 
 /// Why a warehouse could not be captured or restored.
@@ -333,13 +347,13 @@ pub async fn restore_warehouse_bounded<Eng: Send + Sync + 'static>(
 
 /// The outcome of one bounded blocking copy: the copy's own answer, or why there
 /// is none.
-type JoinedCopy<T> = Result<
+pub(super) type JoinedCopy<T> = Result<
     Result<Result<T, WarehouseUnavailable>, tokio::task::JoinError>,
     tokio::time::error::Elapsed,
 >;
 
 /// Read one bounded copy's three failure modes off the join result.
-fn collect<T>(joined: JoinedCopy<T>) -> Result<T, CopyFailure> {
+pub(super) fn collect<T>(joined: JoinedCopy<T>) -> Result<T, CopyFailure> {
     match joined {
         Ok(Ok(Ok(done))) => Ok(done),
         Ok(Ok(Err(unavailable))) => Err(CopyFailure::Unavailable(unavailable)),
@@ -351,9 +365,12 @@ fn collect<T>(joined: JoinedCopy<T>) -> Result<T, CopyFailure> {
 /// Lock a database, giving up at `deadline` rather than waiting for a statement
 /// that may be running on it for as long as [`MAX_ENGINE_DEADLINE`] allows.
 ///
+/// `pub(super)` so the table restore beside this module locks the two databases
+/// it copies between through the same bounded wait.
+///
 /// Polls rather than blocking: a `Mutex` has no timed acquire, and a copy must have
 /// a point at which it gives up. The sleeps run on a blocking-pool thread.
-fn lock_database_until(
+pub(super) fn lock_database_until(
     handle: &DatabaseHandle,
     deadline: Instant,
 ) -> Option<std::sync::MutexGuard<'_, Database>> {

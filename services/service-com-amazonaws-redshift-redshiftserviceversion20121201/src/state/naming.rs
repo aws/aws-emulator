@@ -328,6 +328,26 @@ pub fn credential_db_user(db_user: &str, auto_create: bool) -> String {
     format!("{prefix}{db_user}")
 }
 
+/// The `DbUser` a `GetClusterCredentialsWithIAM` response reports for the IAM
+/// identity the request was signed with.
+///
+/// Source: `smithy_query(query="doc", shape="ClusterExtendedCredentials",
+/// member="DbUser")` — "A database user name that you provide when you connect to
+/// a database. The database user is mapped 1:1 to the SOURCE IAM IDENTITY" —
+/// paired with the prefix `GetClusterCredentials` documents for a user an IAM
+/// identity logs on as ([`credential_db_user`]). So the name is the caller's
+/// identity under that prefix, and nothing in the request decides it: unlike
+/// `GetClusterCredentials`, this operation takes no `DbUser` at all.
+///
+/// The identity the emulator has of a caller is the access key id its request
+/// presented, which is what the credential the request was signed with IS — so
+/// that is the identity the mapping is made from. It is not drawn per call: two
+/// calls signed with the same credential map to the same database user, which is
+/// what makes the mapping 1:1.
+pub fn iam_identity_db_user(presented_access_key_id: &str) -> String {
+    credential_db_user(presented_access_key_id, false)
+}
+
 // The clusters a token request may scope its token to are documented on the
 // `ClusterIds` member itself — "`ClusterIds` must contain at least 1 cluster
 // identifier. `ClusterIds` can hold a maximum of 20 cluster identifiers",

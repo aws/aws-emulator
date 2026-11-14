@@ -23,8 +23,14 @@ mod batch_delete_cluster_snapshots;
 mod batch_modify_cluster_snapshots;
 #[path = "all/cluster_audit_logging.rs"]
 mod cluster_audit_logging;
+#[path = "all/cluster_compute_changes.rs"]
+mod cluster_compute_changes;
+#[path = "all/cluster_configuration_changes.rs"]
+mod cluster_configuration_changes;
 #[path = "all/cluster_credentials.rs"]
 mod cluster_credentials;
+#[path = "all/cluster_credentials_with_iam.rs"]
+mod cluster_credentials_with_iam;
 #[path = "all/cluster_db_revisions.rs"]
 mod cluster_db_revisions;
 #[path = "all/cluster_endpoint_publication.rs"]
@@ -45,6 +51,8 @@ mod cluster_parameters;
 mod cluster_request_validation;
 #[path = "all/cluster_resize_progress.rs"]
 mod cluster_resize_progress;
+#[path = "all/cluster_scoped_not_found.rs"]
+mod cluster_scoped_not_found;
 #[path = "all/cluster_security_groups.rs"]
 mod cluster_security_groups;
 #[path = "all/cluster_structure.rs"]
@@ -65,6 +73,8 @@ mod copy_cluster_snapshot;
 mod custom_domain_and_partners;
 #[path = "all/custom_domain_association_refusal_wording.rs"]
 mod custom_domain_association_refusal_wording;
+#[path = "all/data_shares.rs"]
+mod data_shares;
 #[path = "all/default_cluster_parameters.rs"]
 mod default_cluster_parameters;
 #[path = "all/delete_cluster_snapshot.rs"]
@@ -111,6 +121,8 @@ mod multi_az_secondary;
 mod namespace_registration;
 #[path = "all/namespace_registration_serverless.rs"]
 mod namespace_registration_serverless;
+#[path = "all/node_configuration_options.rs"]
+mod node_configuration_options;
 #[path = "all/orderable_cluster_options.rs"]
 mod orderable_cluster_options;
 #[path = "all/pause_cluster.rs"]
@@ -177,6 +189,8 @@ mod state_roundtrip;
 mod static_catalog;
 #[path = "all/storage_summary.rs"]
 mod storage_summary;
+#[path = "all/table_restore.rs"]
+mod table_restore;
 #[path = "all/usage_limits.rs"]
 mod usage_limits;
 #[path = "all/zero_etl_integration_sources.rs"]

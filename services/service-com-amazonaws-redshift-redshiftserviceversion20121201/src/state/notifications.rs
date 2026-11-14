@@ -408,8 +408,99 @@ pub async fn raise<Eng: Send + Sync + 'static>(
     publish(ctx, &notifications).await;
 }
 
-/// The Amazon SNS client an event notification is published through: the
-/// IN-PROCESS callback into this same emulator.
+/// What asking Amazon SNS about the topic a subscription names found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TopicResolution {
+    /// Amazon SNS holds the topic the ARN names.
+    Held,
+    /// Amazon SNS was asked and holds no such topic, so the subscription names a
+    /// topic nothing could ever be published to.
+    Absent,
+    /// Amazon SNS could not be ASKED at all (it is not mounted in this process, or
+    /// the answer could not be read), so whether the topic exists is UNKNOWN. The
+    /// reason travels for the operator-visible log.
+    Undecided(String),
+}
+
+/// The error codes that say Amazon SNS answered about the VALUE the lookup named:
+/// it holds no such topic (`NotFound`, the fault `GetTopicAttributes` models for an
+/// ARN that resolves to nothing), or the value is not a topic ARN it could hold at
+/// all (`InvalidParameter`), which therefore names no topic either.
+///
+/// Any other code, or none at all — a server fault, a transport failure, or a reply
+/// that is not that service's answer because no Amazon SNS is mounted beside this
+/// one — says nothing about the topic and leaves the question undecided. The codes
+/// are matched by PREFIX of the modelled exception name, so `NotFound` and
+/// `NotFoundException` are the same answer.
+const TOPIC_NEGATIVE_ERROR_CODES: &[&str] = &["NotFound", "InvalidParameter"];
+
+/// Whether Amazon SNS holds the topic `topic_arn`.
+///
+/// `CreateEventSubscription` takes "the Amazon Resource Name (ARN) of the Amazon
+/// SNS topic used to transmit the event notifications" and models
+/// `SNSTopicArnNotFoundFault` for one that does not exist, so the question has to
+/// be put to the service that OWNS topics — over the in-process callback, exactly
+/// as [`publish`] publishes to that same topic ([`sns_client`]).
+///
+/// This service keeps only the topic's ARN, which the caller supplied, so it is a
+/// GATE on existence rather than a reader of the topic's own properties: a hop
+/// that could not be made at all therefore refuses nothing (see
+/// `services/common/src/network.rs` for the contract both readings come from), and
+/// only Amazon SNS's own answer grounds a refusal.
+///
+/// Call it with NO store guard held — it awaits.
+pub async fn resolve_topic(
+    ctx: &::smithy_server_runtime::OperationContext<'_>,
+    topic_arn: &str,
+) -> TopicResolution {
+    // The Region is the label read out of the topic's OWN ARN, so no
+    // caller-supplied text names the host this hop is addressed to; an ARN
+    // carrying none names no topic any Region holds.
+    let Some(region) = topic_region(topic_arn) else {
+        return TopicResolution::Absent;
+    };
+    let client = sns_client(ctx, region);
+    match client
+        .get_topic_attributes()
+        .topic_arn(topic_arn)
+        .send()
+        .await
+    {
+        Ok(_) => TopicResolution::Held,
+        Err(error) => {
+            let reason =
+                ::aws_smithy_types::error::display::DisplayErrorContext(&error).to_string();
+            // The status that service answered with, when it answered at all: a
+            // 5xx is about the service, not about the value, whatever code
+            // travels with it.
+            let client_error = error
+                .raw_response()
+                .is_some_and(|response| response.status().is_client_error());
+            let code = ::aws_sdk_sns::error::ProvideErrorMetadata::code(&error).unwrap_or_default();
+            let about_the_value = TOPIC_NEGATIVE_ERROR_CODES
+                .iter()
+                .any(|known| code.starts_with(known));
+            if client_error && about_the_value {
+                TopicResolution::Absent
+            } else {
+                TopicResolution::Undecided(reason)
+            }
+        }
+    }
+}
+
+/// Why a subscription naming a topic Amazon SNS holds nothing under is refused,
+/// naming the ARN the request carried.
+///
+/// `smithy_query(query="shape", shape="SNSTopicArnNotFoundFault")` — "An Amazon
+/// SNS topic with the specified Amazon Resource Name (ARN) does not exist" — which
+/// is the fixed text; the ARN the request named is the variable part, because that
+/// is what the caller has to fix.
+pub fn sns_topic_not_found_message(topic_arn: &str) -> String {
+    format!("An Amazon SNS topic with the specified Amazon Resource Name (ARN) {topic_arn} does not exist.")
+}
+
+/// The Amazon SNS client an event notification is published through: the IN-PROCESS callback into this same emulator.
 ///
 /// Nothing here opens a socket or leaves the host: `ctx.callback()` is the
 /// framework's seam for calling another emulated service, and the `http_client` it

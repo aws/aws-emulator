@@ -197,10 +197,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(
                 ModifyClusterSnapshotErrorModeled::InvalidClusterSnapshotStateFault(
                     InvalidClusterSnapshotStateFault {
-                        message: Some(format!(
-                            "Cluster snapshot {stored_identifier} is in the {} state, not {}.",
+                        message: Some(st::invalid_snapshot_state_message(
+                            &stored_identifier,
                             snapshot.status.as_deref().unwrap_or_default(),
-                            st::STATUS_AVAILABLE
                         )),
                     },
                 )

@@ -188,8 +188,14 @@ fn error_cases() -> Vec<ErrorCase> {
         },
         ErrorCase {
             case: "a scaffolded operation, which answers the 501 channel",
-            action: "DescribeDataShares",
-            params: Vec::new(),
+            action: "ModifySnapshotSchedule",
+            params: vec![
+                ("ScheduleIdentifier".to_string(), "nightly".to_string()),
+                (
+                    "ScheduleDefinitions.ScheduleDefinition.1".to_string(),
+                    "rate(12 hours)".to_string(),
+                ),
+            ],
             status: 501,
             code: "NotImplemented",
         },

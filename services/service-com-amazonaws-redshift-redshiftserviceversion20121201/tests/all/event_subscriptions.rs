@@ -627,6 +627,136 @@ async fn a_topic_that_is_no_sns_topic_arn_is_refused() {
     );
 }
 
+/// A topic Amazon SNS holds no topic under names no topic to publish to, so the
+/// subscription is refused with the modelled fault and nothing is stored — while
+/// one that service DOES hold is served, and one it could not be asked about is
+/// served too, because silence establishes nothing.
+#[tokio::test]
+async fn a_topic_amazon_sns_does_not_hold_is_refused() {
+    // Amazon SNS mounted beside this emulator, so the question CAN be put to the
+    // service that owns topics.
+    let emulator = Emulator::with_sns();
+    let client = ::aws_sdk_sns::Client::from_conf(
+        ::aws_sdk_sns::Config::builder()
+            .behavior_version(::aws_sdk_sns::config::BehaviorVersion::latest())
+            .region(::aws_sdk_sns::config::Region::new("us-west-2"))
+            .endpoint_url("https://sns.us-west-2.amazonaws.com")
+            .credentials_provider(emulator.callback().aws_credentials_provider())
+            .http_client(emulator.callback().http_client())
+            .retry_config(::aws_sdk_sns::config::retry::RetryConfig::disabled())
+            .timeout_config(::aws_sdk_sns::config::timeout::TimeoutConfig::disabled())
+            .identity_cache(::aws_sdk_sns::config::IdentityCache::no_cache())
+            .stalled_stream_protection(
+                ::aws_sdk_sns::config::StalledStreamProtectionConfig::disabled(),
+            )
+            .build(),
+    );
+    // Two topics that EXIST, so the refusals below cannot be an "every topic is
+    // refused" artefact, and so the rule is shown over more than one name.
+    let mut held: Vec<String> = Vec::new();
+    for name in ["redshift-events", "redshift-events-2"] {
+        let created = client
+            .create_topic()
+            .name(name)
+            .send()
+            .await
+            .unwrap_or_else(|error| panic!("setup: CreateTopic {name} failed: {error:?}"));
+        held.push(created.topic_arn().unwrap_or_default().to_string());
+    }
+
+    // (case, the topic ARN, whether the subscription is admitted)
+    let rows: Vec<(&str, String, bool)> = vec![
+        ("a topic Amazon SNS holds", held[0].clone(), true),
+        ("another topic Amazon SNS holds", held[1].clone(), true),
+        (
+            "a topic name Amazon SNS holds nothing under",
+            topic_arn("no-such-topic"),
+            false,
+        ),
+        (
+            "a topic name one character off a held one",
+            topic_arn("redshift-event"),
+            false,
+        ),
+        (
+            "a held topic name in another case",
+            topic_arn("REDSHIFT-EVENTS"),
+            false,
+        ),
+    ];
+
+    let mut served: Vec<String> = Vec::new();
+    for (position, (case, topic, admitted)) in rows.iter().enumerate() {
+        let name = format!("sub-held-topic-{position}");
+        let row = CreateCase {
+            topic: topic.clone(),
+            ..CreateCase::new("a topic existence row", &name)
+        };
+        let answer = create_subscription(&emulator, &row).await;
+        if *admitted {
+            assert_eq!(
+                answer.status, 200,
+                "case {case}: expected the topic {topic:?} served with 200, got {} with body {}",
+                answer.status, answer.body
+            );
+            served.push(name);
+        } else {
+            assert_refused(case, &answer, 404, "SNSTopicArnNotFound");
+        }
+    }
+
+    // Only the admitted subscriptions are stored: a refused create stores
+    // nothing.
+    let listed = emulator.call("DescribeEventSubscriptions", &[]).await;
+    assert_eq!(
+        listed_names(&listed.body),
+        served,
+        "case the whole account: expected only {served:?}, got {:?}",
+        listed_names(&listed.body)
+    );
+
+    // A MODIFY that moves a subscription onto a topic Amazon SNS holds nothing
+    // under is refused the same way, and the subscription keeps the topic it had.
+    let moved = call_with(
+        &emulator,
+        "ModifyEventSubscription",
+        &[
+            ("SubscriptionName".to_string(), served[0].clone()),
+            ("SnsTopicArn".to_string(), topic_arn("no-such-topic")),
+        ],
+    )
+    .await;
+    assert_refused(
+        "a modify onto a topic Amazon SNS does not hold",
+        &moved,
+        404,
+        "SNSTopicArnNotFound",
+    );
+    let described = describe_one(&emulator, &served[0]).await;
+    assert_eq!(
+        described.text("SnsTopicArn").as_deref(),
+        Some(held[0].as_str()),
+        "case a modify onto a topic Amazon SNS does not hold: expected the topic unchanged, \
+         got {:?}",
+        described.text("SnsTopicArn")
+    );
+
+    // With no Amazon SNS mounted the question cannot be put at all, and a
+    // subscription is admitted rather than refused on the strength of a peer that
+    // never answered.
+    let alone = Emulator::new();
+    let row = CreateCase {
+        topic: topic_arn("no-such-topic"),
+        ..CreateCase::new("no Amazon SNS to ask", "sub-unresolvable-topic")
+    };
+    let answer = create_subscription(&alone, &row).await;
+    assert_eq!(
+        answer.status, 200,
+        "case no Amazon SNS to ask: expected the subscription admitted, got {} with body {}",
+        answer.status, answer.body
+    );
+}
+
 /// A source type, event category or severity outside the published catalogs, a
 /// source id named without a type to read it against, and a source id naming
 /// nothing the account holds are each refused with the fault of their own class

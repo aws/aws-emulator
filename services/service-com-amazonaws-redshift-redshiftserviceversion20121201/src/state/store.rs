@@ -20,8 +20,9 @@ impl ComAmazonawsRedshiftRedshiftserviceversion20121201State {
         let wall = ::aws_smithy_types::DateTime::from(SystemTime::now());
         for stored in &mut self.clusters {
             // A cluster the service is still working on — bringing it up,
-            // applying a change to it, or restarting it — is available again
-            // once that work's span has passed, whether or not anybody called.
+            // applying a change to it, restarting it, or rotating its encryption
+            // keys — is available again once that work's span has passed, whether
+            // or not anybody called.
             let in_progress = stored
                 .cluster
                 .cluster_status
@@ -30,6 +31,7 @@ impl ComAmazonawsRedshiftRedshiftserviceversion20121201State {
                     status == STATUS_CREATING
                         || status == STATUS_MODIFYING
                         || status == STATUS_REBOOTING
+                        || status == STATUS_ROTATING_KEYS
                 });
             if in_progress && now >= stored.available_at {
                 let was_provisioning =
@@ -183,6 +185,21 @@ impl ComAmazonawsRedshiftRedshiftserviceversion20121201State {
         // revoke's span has passed.
         self.endpoint_authorizations
             .retain(|stored| stored.removed_at.is_none_or(|due| now < due));
+        // A table restore whose copy was made is reported as complete once that
+        // call's span has passed: the transition was due at this instant whether
+        // or not anybody called. A restore that FAILED owes none — it carries no
+        // due instant at all.
+        for stored in &mut self.table_restores {
+            let settles = stored
+                .status
+                .status
+                .as_deref()
+                .is_some_and(|status| status == TABLE_RESTORE_STATUS_IN_PROGRESS);
+            if settles && stored.succeeded_at.is_some_and(|due| now >= due) {
+                stored.status.status = Some(TABLE_RESTORE_STATUS_SUCCEEDED.to_string());
+                stored.succeeded_at = None;
+            }
+        }
     }
 
     /// Append one raised event to the log this store keeps for an event read.
