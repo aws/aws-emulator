@@ -9,11 +9,12 @@
 //! report id EC2 could never have ISSUED is refused `InvalidImageUsageReportId.Malformed`
 //! BEFORE anything is looked up, and only a well-formed id the account holds no report for
 //! is `InvalidImageUsageReportId.NotFound` — the split that lets a caller tell a typo from
-//! a report that is gone. `DryRun` is answered between the two, because the flag asks
+//! a report that is gone. `DryRun` is answered BEFORE both, because the flag asks
 //! whether the CALLER MAY make the request — "checks whether you have the required
 //! permissions for the action, without actually making the request" — which is a question
-//! about the caller and not about the resource, while a request that names no id at all is
-//! not a request whose permissions can be checked.
+//! about the caller and not about the value the request carries: the recorded contract
+//! answers `DryRunOperation` for a dry run whose `ReportId` is not a report id at all, which
+//! is the documented idiom for a pure permission probe.
 //!
 //! ## Shape of an operation
 //!
@@ -149,16 +150,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // on the Region the request was signed for.
         let _ = ctx;
 
+        // The permission question, answered before the request's own value is read at all
+        // and before the write (see the module docs).
+        if input.dry_run == Some(true) {
+            return Err(dry_run_operation());
+        }
+
         // Something that is not a report id at all is refused as malformed, before there is
         // anything to look up (see the module docs).
         if !image_usage_report_id_is_well_formed(&input.report_id) {
             return Err(invalid_image_usage_report_id_malformed(&input.report_id));
-        }
-
-        // The permission question, answered before the resource one and before the write
-        // (see the module docs).
-        if input.dry_run == Some(true) {
-            return Err(dry_run_operation());
         }
 
         let state = require_service_state(&*self.engine)?;

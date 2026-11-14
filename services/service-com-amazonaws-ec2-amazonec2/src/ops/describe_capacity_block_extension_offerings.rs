@@ -180,6 +180,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )));
         }
 
+        // DryRun sits AFTER the request's own members have been read and BEFORE anything is
+        // resolved: "Checks whether you have the required permissions for the action, WITHOUT
+        // ACTUALLY MAKING THE REQUEST" (`DryRun`), so the flag is a question about the CALLER
+        // rather than about the reservation named — the recorded contract for this operation
+        // answers `DryRunOperation` for a reservation the account does not hold.
+        if input.dry_run == Some(true) {
+            return Err(Scaffolded::dry_run_operation());
+        }
+
         let state = require_service_state(&*self.engine)?;
         let store = state.lock();
 
@@ -194,13 +203,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let reservation =
             require_capacity_reservation_in_region_by_id_shape(&store, &zones, &input.capacity_reservation_id)?
                 .view_at(now);
-
-        // DryRun sits AFTER every parameter has been validated and the reservation resolved:
-        // the flag asks whether the request WOULD have succeeded, so one that would have been
-        // refused is refused with that reason instead.
-        if input.dry_run == Some(true) {
-            return Err(Scaffolded::dry_run_operation());
-        }
 
         // "The recommended Capacity Block extension offerings for the dates specified"
         // ($CapacityBlockExtensionOfferings): the one extension of the one block the request

@@ -10,16 +10,17 @@
 //! `OperationNotPermitted` naming it ([`crate::state::trunk_interface_not_permitted`]),
 //! before any member of the request is interpreted — the association ids the boundary
 //! validator admitted are neither resolved nor checked for shape, the filters are not
-//! applied, `MaxResults` and `NextToken` page nothing, and `DryRun` is answered with the
-//! same refusal because the request it asks about would not have succeeded. The refusal is
+//! applied, and `MaxResults` and `NextToken` page nothing. The refusal is
 //! NOT an empty page: an account outside the capability is not told that it holds no
 //! associations, it is told it may not ask.
 //!
 //! The pair `DryRun` documents for itself — `DryRunOperation` for a caller that holds the
 //! required permissions and `UnauthorizedOperation` for one that does not — is the answer to
-//! the PERMISSION question, which is asked of a request this account may make at all. This
-//! one may not: the capability gates the operation ahead of any permission on it, so the dry
-//! run reads the gate's refusal, the same answer the request itself would have read.
+//! the PERMISSION question, and it is answered AHEAD of the capability gate
+//! ([`crate::state::dry_run_operation`]): the flag asks what the CALLER may do, which the
+//! account-level capability is not, and the recorded contract for the writer of these
+//! associations answers a dry run `DryRunOperation` — so all three operations of this surface
+//! answer the flag the same way.
 //!
 //! This operation reports, so it writes nothing in any case — and there is nothing to
 //! report, because the writer the associations would come from
@@ -157,11 +158,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // capability interface trunking needs is granted to an ACCOUNT, and the account this
         // emulator serves does not hold it, so every request — whatever association ids,
         // filters or page it names, and whichever Region it was made in — is refused the
-        // operation rather than told anything about what it asked for. `DryRun` is answered
-        // the same way: the request it asks about would not have succeeded. Nothing is
+        // operation rather than told anything about what it asked for. `DryRun` is the one
+        // member read, and ahead of that refusal (see the module docs). Nothing is
         // written: this operation reports, and a refused report leaves the account exactly
         // as it found it.
-        let _ = (&input, ctx, &self.engine);
+        let _ = (ctx, &self.engine);
+        if input.dry_run == Some(true) {
+            return Err(crate::state::dry_run_operation());
+        }
         Err(crate::state::trunk_interface_not_permitted())
     }
 }

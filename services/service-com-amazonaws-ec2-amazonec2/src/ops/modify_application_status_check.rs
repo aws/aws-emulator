@@ -1,15 +1,29 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ModifyApplicationStatusCheck
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ModifyApplicationStatusCheck`'s real behaviour. Implement it here — this is
+//! IMPLEMENTED: replaces, on the application status check the request names, exactly the
+//! members the request carries — "you can update the protocol, port, path, thresholds, and
+//! other configuration settings" — and answers the check as the store then holds it. This is
 //! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ModifyApplicationStatusCheck::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! A modify names a SUBSET: a member the request leaves out keeps the value the check already
+//! carries (the create's documented default among them), so a caller that changes one setting
+//! does not reset the rest. Every value a member may take is held to the same published bound
+//! the create holds it to, from the same place, so one configuration cannot be stored through
+//! the modify that the create would have refused.
+//!
+//! "The application status check must exist and belong to your account": a value that is no
+//! id of this kind is refused `.Malformed`, and an id the account holds no ACTIVE check for —
+//! including one inside its deletion grace period, which is a check the account has deleted
+//! — is `.NotFound` ([`crate::state::require_known_application_status_check`]).
+//!
+//! `DryRun` is answered once the request's own members have been read and BEFORE the check is
+//! resolved: the flag asks what the CALLER may do rather than which check the store holds
+//! ([`crate::state::dry_run_operation`]).
+//!
+//! "Changes take effect on the next health check interval", so a modify changes the check's
+//! configuration and nothing about what it has already REPORTED: the per-instance results in
+//! [`crate::state::ComAmazonawsEc2Amazonec2State::application_status`] are left as they stand.
 //!
 //! ## Shape of an operation
 //!
@@ -176,18 +190,302 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ModifyApplicationStatusCheck` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ModifyApplicationStatusCheckErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ModifyApplicationStatusCheck"))
+        use ::std::time::SystemTime;
+
+        use crate::scaffolded::Scaffolded;
+        use crate::state::{
+            application_status_check_is_active, application_status_check_payload_bytes,
+            dry_run_operation, health_check_paths_from_request, invalid_group_not_found,
+            invalid_application_status_check_id_not_found, invalid_subnet_id_not_found,
+            require_known_application_status_check, require_service_state, status_code_matcher_is_well_formed,
+            system_time_to_date_time, APPLICATION_STATUS_CHECK_INTERVAL_SECONDS,
+            APPLICATION_STATUS_CHECK_TIMEOUT_RANGE, MAX_CLIENT_TOKEN_CHARS,
+            MAX_HEALTH_CHECK_PATH_CHARS, MAX_STATUS_CODE_MATCHER_CHARS, MAX_STORED_BYTES,
+        };
+
+        // `ctx` carries request metadata only; this operation reads none of it — a check's
+        // configuration is a fact of the check rather than of the Region the request was
+        // signed for, exactly as the create that minted it and the describe that reads it
+        // back. The store is reached through the engine held on `self`.
+        let _ = ctx;
+
+        // The request's own members first, each held to the bound the create holds it to, so
+        // the modify cannot store a configuration the create would have refused. Every one of
+        // them is read only when the request CARRIES it: an absent member changes nothing.
+
+        // "A unique, case-sensitive identifier that you provide to ensure that the operation
+        // completes no more than one time" (`$ClientToken`): this operation keeps no record of
+        // the token — a modify is idempotent in itself, the same members leaving the same
+        // configuration — but the value a caller sends is held to the length every token of
+        // this crate is.
+        if input
+            .client_token
+            .as_ref()
+            .is_some_and(|token| token.chars().count() > MAX_CLIENT_TOKEN_CHARS)
+        {
+            return Err(Scaffolded::invalid_parameter_value(format!(
+                "clientToken accepts at most {MAX_CLIENT_TOKEN_CHARS} characters"
+            )));
+        }
+
+        // "You must start the Path with a forward slash (/)" (`$Path`), and the member is a
+        // plain `String` the model bounds nowhere, so the bytes one check can retain are
+        // bounded here too — the create's two readings of the same member.
+        if let Some(path) = input.path.as_deref() {
+            if !path.starts_with('/') {
+                return Err(Scaffolded::invalid_parameter_value(format!(
+                    "Invalid value '{path}' for path. The path must start with a forward slash (/)"
+                )));
+            }
+            if path.chars().count() > MAX_HEALTH_CHECK_PATH_CHARS {
+                return Err(Scaffolded::invalid_parameter_value(format!(
+                    "path accepts at most {MAX_HEALTH_CHECK_PATH_CHARS} characters"
+                )));
+            }
+        }
+
+        // "The interval, in seconds, between health checks. Valid value: 60" (`$Interval`),
+        // which carries no modelled `@range`.
+        if let Some(interval) = input.interval {
+            if interval != APPLICATION_STATUS_CHECK_INTERVAL_SECONDS {
+                return Err(Scaffolded::invalid_parameter_value(format!(
+                    "Invalid value '{interval}' for interval. The only valid value is \
+                     {APPLICATION_STATUS_CHECK_INTERVAL_SECONDS}"
+                )));
+            }
+        }
+
+        // "The amount of time, in seconds, to wait for a health check response before
+        // considering it failed. Valid values: 1 to 30" (`$Timeout`). The operation's other
+        // sentence about it — "the value must be less than Interval" — holds for every pair
+        // those published bounds admit, the one valid interval being 60 and the largest
+        // timeout 30, so there is nothing left for a second comparison to refuse.
+        let (timeout_min, timeout_max) = APPLICATION_STATUS_CHECK_TIMEOUT_RANGE;
+        if let Some(timeout) = input.timeout {
+            if timeout < timeout_min || timeout > timeout_max {
+                return Err(Scaffolded::invalid_parameter_value(format!(
+                    "Invalid value '{timeout}' for timeout. It must be from {timeout_min} to \
+                     {timeout_max}"
+                )));
+            }
+        }
+
+        // "The number of consecutive failed health checks before the application status is
+        // considered impaired. The value must be greater than 0" (`$FailureThreshold`), and
+        // the same sentence for `$SuccessThreshold`.
+        if let Some(failure_threshold) = input.failure_threshold {
+            if failure_threshold <= 0 {
+                return Err(Scaffolded::invalid_parameter_value(format!(
+                    "Invalid value '{failure_threshold}' for failureThreshold. It must be \
+                     greater than 0"
+                )));
+            }
+        }
+        if let Some(success_threshold) = input.success_threshold {
+            if success_threshold <= 0 {
+                return Err(Scaffolded::invalid_parameter_value(format!(
+                    "Invalid value '{success_threshold}' for successThreshold. It must be \
+                     greater than 0"
+                )));
+            }
+        }
+
+        // "The index of the network device to use for the health check. The value must be
+        // greater than or equal to 0" (`$DeviceIndex`), a plain `Integer` with no modelled
+        // `@range`.
+        if let Some(device_index) = input.device_index {
+            if device_index < 0 {
+                return Err(Scaffolded::invalid_parameter_value(format!(
+                    "Invalid value '{device_index}' for deviceIndex. It must be greater than or \
+                     equal to 0"
+                )));
+            }
+        }
+
+        // "Specify a comma-separated list of individual status codes or ranges, for example,
+        // 200,202,300-399. For a range, the first value must be less than the second value.
+        // Maximum length: 64 characters" (`$StatusCodeMatcher`).
+        if let Some(status_code_matcher) = input.status_code_matcher.as_deref() {
+            if status_code_matcher.chars().count() > MAX_STATUS_CODE_MATCHER_CHARS {
+                return Err(Scaffolded::invalid_parameter_value(format!(
+                    "statusCodeMatcher accepts at most {MAX_STATUS_CODE_MATCHER_CHARS} characters"
+                )));
+            }
+            if !status_code_matcher_is_well_formed(status_code_matcher) {
+                return Err(Scaffolded::invalid_parameter_value(format!(
+                    "Invalid value '{status_code_matcher}' for statusCodeMatcher. It must be a \
+                     comma-separated list of HTTP status codes or ranges, and the first value of \
+                     a range must be less than the second"
+                )));
+            }
+        }
+
+        // "The health check paths to use for the application status check": a request that
+        // carries the member REPLACES the paths the check holds, and one that leaves it out
+        // keeps them. The reading and the bounds are the create's own.
+        let replacement_paths = match input.health_check_paths.as_deref() {
+            Some(asked) => Some(health_check_paths_from_request(asked)?),
+            None => None,
+        };
+
+        // "Checks whether you have the required permissions for the operation, WITHOUT
+        // ACTUALLY MAKING THE REQUEST, and provides an error response. If you have the
+        // required permissions, the error response is DryRunOperation" (`$DryRun`): a question
+        // about the CALLER, answered once the request's own members have been read and before
+        // the check is resolved or anything is written.
+        if input.dry_run == Some(true) {
+            return Err(dry_run_operation());
+        }
+
+        let application_status_check_id = input.application_status_check_id.clone();
+        let state = require_service_state(&*self.engine)?;
+        let mut store = state.lock();
+
+        // "The application status check must exist and belong to your account": a value that
+        // is no id of this kind first, then a well-formed id the store holds no check under —
+        // the order the one reader this family shares keeps. A check inside its deletion grace
+        // period is one the account has DELETED, so it is nothing this call can modify either.
+        require_known_application_status_check(&store, &application_status_check_id)?;
+        let Some(stored) = store
+            .application_status_checks
+            .get(&application_status_check_id)
+            .filter(|check| application_status_check_is_active(check))
+        else {
+            return Err(invalid_application_status_check_id_not_found(
+                &application_status_check_id,
+            ));
+        };
+
+        // The check as it will be STORED: the record the account already holds with exactly
+        // the members the request carried replaced, so every other one — the ids, the tags,
+        // the associations, the instants and the defaults the create filled in — keeps the
+        // value a describe already reports for it.
+        let held = stored.clone();
+        let mut modified = held.clone();
+        if let Some(aggregation) = input.aggregation.clone() {
+            modified.aggregation = Some(aggregation);
+        }
+        if let Some(paths) = replacement_paths {
+            modified.health_check_paths = Some(paths);
+        }
+        if let Some(protocol) = input.protocol.clone() {
+            modified.protocol = Some(protocol);
+        }
+        if let Some(port) = input.port {
+            modified.port = Some(port);
+        }
+        if let Some(path) = input.path.clone() {
+            modified.path = Some(path);
+        }
+        if let Some(device_index) = input.device_index {
+            modified.device_index = Some(device_index);
+        }
+        if let Some(ip_version) = input.ip_version.clone() {
+            modified.ip_version = Some(ip_version);
+        }
+        if let Some(ip_scope) = input.ip_scope.clone() {
+            modified.ip_scope = Some(ip_scope);
+        }
+        if let Some(interval) = input.interval {
+            modified.interval = Some(interval);
+        }
+        if let Some(timeout) = input.timeout {
+            modified.timeout = Some(timeout);
+        }
+        if let Some(failure_threshold) = input.failure_threshold {
+            modified.failure_threshold = Some(failure_threshold);
+        }
+        if let Some(success_threshold) = input.success_threshold {
+            modified.success_threshold = Some(success_threshold);
+        }
+        if let Some(status_code_matcher) = input.status_code_matcher.clone() {
+            modified.status_code_matcher = Some(status_code_matcher);
+        }
+        if let Some(grace_period) = input.initialization_grace_period_seconds {
+            modified.initialization_grace_period_seconds = Some(grace_period);
+        }
+
+        // Every subnet and security group a replacement health check path names must be one
+        // the account holds: a path through a subnet that does not exist is not a path, which
+        // is the same answer the create gives for an id it cannot resolve.
+        for path in modified.health_check_paths.as_deref().unwrap_or_default() {
+            let source = path.source.as_ref();
+            let subnet_ids = source
+                .and_then(|source| source.subnet_id.as_deref())
+                .into_iter()
+                .chain(
+                    path.destinations
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(|destination| destination.subnet_id.as_deref()),
+                );
+            for subnet_id in subnet_ids {
+                if !store.subnets.contains_key(subnet_id) {
+                    return Err(invalid_subnet_id_not_found(subnet_id));
+                }
+            }
+            let group_ids = source
+                .and_then(|source| source.security_group_id.as_deref())
+                .into_iter()
+                .chain(
+                    path.destinations
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(|destination| destination.security_group_id.as_deref()),
+                );
+            for group_id in group_ids {
+                if !store.security_groups.contains_key(group_id) {
+                    return Err(invalid_group_not_found(group_id));
+                }
+            }
+        }
+
+        // What the modify would cost the store's budget: the record's caller-chosen bytes as
+        // this call would leave them, against what the create charged for the ones it
+        // replaces, asked through the ONE definition of that charge. Only an increase is asked
+        // about, and only the difference is charged, so repeated modifies cannot inflate the
+        // budget and a modify that shortens a value gives the difference back.
+        let held_bytes = application_status_check_payload_bytes(&held, None);
+        let modified_bytes = application_status_check_payload_bytes(&modified, None);
+        let added_bytes = modified_bytes.saturating_sub(held_bytes);
+        if added_bytes > 0 && store.would_exceed_stored_bytes(added_bytes) {
+            return Err(Scaffolded::request_limit_exceeded(format!(
+                "This emulator holds {} of at most {MAX_STORED_BYTES} bytes of \
+                 caller-supplied data, so it cannot store {added_bytes} more",
+                store.stored_bytes()
+            )));
+        }
+
+        // "The date and time when the application status check was last modified"
+        // (`$ModifyTime`): this call is that event, so the instant is the clock's and is read
+        // once. What the check has already REPORTED about an instance is untouched — "changes
+        // take effect on the next health check interval".
+        modified.modify_time = Some(system_time_to_date_time(SystemTime::now()));
+
+        if added_bytes > 0 {
+            store.add_stored_bytes(added_bytes);
+        } else {
+            store.release_stored_bytes(held_bytes.saturating_sub(modified_bytes));
+        }
+        store
+            .application_status_checks
+            .insert(application_status_check_id.clone(), modified);
+
+        // Read the answer back OUT of the store, so the caller sees what a later
+        // `DescribeApplicationStatusChecks` will see rather than the record built here.
+        store
+            .application_status_checks
+            .get(&application_status_check_id)
+            .map(|stored| ModifyApplicationStatusCheckOutput {
+                application_status_check: Some(stored.clone()),
+            })
+            .ok_or_else(|| {
+                Scaffolded::internal_error(format!(
+                    "the application status check '{application_status_check_id}' just modified \
+                     could not be read back"
+                ))
+            })
     }
 }

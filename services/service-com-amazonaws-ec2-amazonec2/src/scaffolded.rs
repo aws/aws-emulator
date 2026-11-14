@@ -493,11 +493,15 @@ impl<E> Scaffolded<E> {
 
     /// `DryRunOperation` (HTTP 412): `DryRun` was set and the request would
     /// otherwise have succeeded, so nothing was done.
+    ///
+    /// The code, the status and the sentence are [`crate::state`]'s, so a handler that
+    /// answers the flag and the gate that answers it for an operation nobody has written
+    /// ([`crate::service::dry_run`]) word one verdict one way.
     pub fn dry_run_operation() -> Self {
         Self::service_error(
-            "DryRunOperation",
-            412,
-            "Request would have succeeded, but DryRun flag is set.",
+            crate::state::DRY_RUN_OPERATION,
+            crate::state::DRY_RUN_OPERATION_STATUS,
+            crate::state::DRY_RUN_OPERATION_MESSAGE,
         )
     }
 

@@ -6,8 +6,10 @@
 //! to `accepted`, and reports `Return=true`. A value outside the Capacity Reservation id
 //! form EC2 issues is refused malformed before any lookup, an id this account was sent no
 //! request for is reported not found, and a request that is not `pending` is refused for the
-//! state it is in — none of them writing anything. This is the ONLY file to touch for this
-//! operation.
+//! state it is in — none of them writing anything. `DryRun` is answered between those two
+//! readings: after the id's form, before the store is asked anything, the flag being about
+//! the CALLER's permissions rather than about the request the store holds. This is the ONLY
+//! file to touch for this operation.
 //!
 //! ## Shape of an operation
 //!
@@ -153,6 +155,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let reservation_id = input.capacity_reservation_id.as_str();
         state::require_well_formed_capacity_reservation_id(reservation_id)?;
 
+        // DryRun sits AFTER the id's FORM has been read and BEFORE anything is resolved:
+        // "Checks whether you have the required permissions for the action, WITHOUT ACTUALLY
+        // MAKING THE REQUEST" (`DryRun`), so the flag is a question about the CALLER rather
+        // than about which request the store holds — the recorded contract for this operation
+        // answers `DryRunOperation` for an id this account was sent no request for, while a
+        // value EC2 could never have issued is still malformed, there being no action to hold
+        // permissions for.
+        if input.dry_run == Some(true) {
+            return Err(Scaffolded::dry_run_operation());
+        }
+
         // ONE reading of the wall clock for this call, so the instant the answer is judged at
         // is the instant it is recorded as given at.
         let now = ::std::time::SystemTime::now();
@@ -191,15 +204,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 reservation_id,
                 &status,
             ));
-        }
-
-        // DryRun sits AFTER the request has been resolved and its state checked, and BEFORE
-        // the only write: "Checks whether you have the required permissions for the action,
-        // without actually making the request" (`DryRun`), so a request that would have been
-        // refused is refused with that reason instead, and one that would have succeeded
-        // leaves the store untouched.
-        if input.dry_run == Some(true) {
-            return Err(Scaffolded::dry_run_operation());
         }
 
         // The accepted assignment, written through the ONE place this crate answers a stored

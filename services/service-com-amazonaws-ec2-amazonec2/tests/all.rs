@@ -2151,3 +2151,15 @@ mod delete_network_insights_access_scope;
 // the tail of this file, which is where every new ec2 suite lands.
 #[path = "all/flow_log_duplicate_refusal.rs"]
 mod flow_log_duplicate_refusal;
+// WHERE EC2 answers the modelled `DryRun` member: the verdict an operation this emulator has
+// not written answers it with in place of its 501, and the recorded position of the flag among
+// each implemented operation's own checks. Declared at the tail of this file, which is where
+// every new ec2 suite lands.
+#[path = "all/dry_run_verdict_and_ordering.rs"]
+mod dry_run_verdict_and_ordering;
+// What `ModifyApplicationStatusCheck` changes on a stored application status check: exactly the
+// members the request carries, every other one left where the create left it, held to the same
+// published bounds. Declared at the tail of this file, which is where every new ec2 suite
+// lands.
+#[path = "all/modify_application_status_check.rs"]
+mod modify_application_status_check;

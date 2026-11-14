@@ -2054,7 +2054,6 @@ mod lambda_durable_execution_status_events_reach_sqs;
 // compiled neither.)
 // (`zz_probe` is declared once, further up this tail: two branches landing at once appended
 // it here as well, which declared it twice and compiled neither.)
-// (`cloudformation_metric_stream_estate_is_drainable` is declared once, in the head region
 // (`apigateway_cognito_authorizer_app_client_audience` is declared ONCE, in the head region
 // above: two `mod` items for one name is a redefinition that compiles neither.)
 // (`zz_probe` is declared ONCE, further up this tail: two `mod` items for one name is a
@@ -2072,3 +2071,14 @@ mod dynamodb_write_capacity_metrics_drive_the_alarm_chain;
 // (`zz_probe` is declared ONCE, further up this tail: two branches each added it here as well,
 // and a module declared twice compiles neither.)
 // two branches each added it here as well, and a module declared twice compiles neither.)
+// a module may be declared only once, and two branches landing at once appended it here as
+// well.)
+// Declared in this tail: whether a stack-deployed metric-stream estate can be drained spans
+// CloudFormation and the services the pipeline is built out of, so no single service crate's
+// test target can deploy it and then drain it.
+// stays because a fixer's tool set can write a file but not remove one; the next change to
+// touch this directory should delete both it and this declaration. Declared ONCE: two
+// landings each appended their own copy, and a module declared twice loads the same file
+// twice, which compiles neither.
+// (`cloudformation_metric_stream_estate_is_drainable` is declared further up this tail
+// already: a module may be declared only once.)

@@ -10,7 +10,11 @@
 //!    with `DryRunOperation` and performs nothing — "checks whether you have the required
 //!    permissions for the action, WITHOUT ACTUALLY MAKING THE REQUEST … If you have the
 //!    required permissions, the error response is DryRunOperation" — so the answer does not
-//!    depend on whether the resources the request names exist.
+//!    depend on whether the resources the request names exist. WHERE the flag sits among an
+//!    operation's own checks is a fact of that operation, recorded per operation, and one
+//!    operation of this surface is recorded resolving the single resource its call is scoped
+//!    to BEFORE it reads the flag; each row carries the answer its own operation gives, and
+//!    [`super::dry_run_verdict_and_ordering`] is where that ordering itself is read.
 //! 2. A well-formed id the account holds no resource for is refused with THAT resource's
 //!    own `NotFound` code.
 //! 3. A value that is not an id of that kind at all is refused with its `Malformed` code,
@@ -30,6 +34,13 @@ const REGION: &str = "us-east-1";
 /// The HTTP status EC2 answers `DryRunOperation` with: the request was refused because a
 /// precondition the CALLER set holds, not because it was malformed.
 const DRY_RUN_STATUS: u16 = 412;
+
+/// The HTTP status a refused REQUEST carries.
+const REFUSAL_STATUS: u16 = 400;
+
+/// What an authorized dry run is answered with on an operation that answers the flag before
+/// it resolves anything: the flag's own verdict.
+const DRY_RUN_VERDICT: (u16, &str) = (DRY_RUN_STATUS, ec2::state::DRY_RUN_OPERATION);
 
 /// A long-form EC2 id suffix — 17 lowercase hex digits — that nothing in this store mints,
 /// so an id built from it is well formed and names no resource.
@@ -51,6 +62,9 @@ struct Operation {
     malformed: Vec<(String, String)>,
     /// The code the `malformed` call is refused with.
     malformed_code: &'static str,
+    /// The status and code a DRY RUN of the `unknown` request is answered with: the flag's
+    /// own verdict, unless this operation is recorded resolving what it is scoped to first.
+    dry_run_answer: (u16, &'static str),
 }
 
 /// One `(name, value)` request member.
@@ -92,6 +106,7 @@ fn operations() -> Vec<Operation> {
             // A value with the right prefix but a suffix that is not hex is not an id.
             malformed: vec![member("TransitGatewayAttachmentId", "tgw-attach-not-hex")],
             malformed_code: ec2::state::INVALID_TRANSIT_GATEWAY_ATTACHMENT_ID_MALFORMED,
+            dry_run_answer: DRY_RUN_VERDICT,
         })
         .collect();
 
@@ -112,6 +127,7 @@ fn operations() -> Vec<Operation> {
             member("TransitGatewayAttachmentId", &attachment),
         ],
         malformed_code: ec2::state::INVALID_TRANSIT_GATEWAY_MULTICAST_DOMAIN_ID_MALFORMED,
+        dry_run_answer: DRY_RUN_VERDICT,
     });
     operations.push(Operation {
         action: "DeleteTransitGatewayRouteTableAnnouncement",
@@ -126,6 +142,7 @@ fn operations() -> Vec<Operation> {
             &attachment,
         )],
         malformed_code: ec2::state::INVALID_TRANSIT_GATEWAY_ROUTE_TABLE_ANNOUNCEMENT_ID_MALFORMED,
+        dry_run_answer: DRY_RUN_VERDICT,
     });
     operations.push(Operation {
         action: "AcceptVpcEndpointConnections",
@@ -142,6 +159,13 @@ fn operations() -> Vec<Operation> {
             members
         },
         malformed_code: ec2::state::INVALID_VPC_ENDPOINT_SERVICE_ID_MALFORMED,
+        // The one operation of this surface recorded resolving the service its call is scoped
+        // to BEFORE it reads the flag: a dry run naming a service the account does not hold
+        // is told so rather than that the request would have succeeded.
+        dry_run_answer: (
+            REFUSAL_STATUS,
+            ec2::state::INVALID_VPC_ENDPOINT_SERVICE_ID_NOT_FOUND,
+        ),
     });
     operations.push(Operation {
         action: "DescribeVpcEndpoints",
@@ -150,6 +174,7 @@ fn operations() -> Vec<Operation> {
         // A SERVICE id is not an ENDPOINT id, the other way round.
         malformed: indexed("VpcEndpointId", &[service.as_str()]),
         malformed_code: ec2::state::INVALID_VPC_ENDPOINT_ID_MALFORMED,
+        dry_run_answer: DRY_RUN_VERDICT,
     });
     operations.push(Operation {
         action: "AdvertiseByoipCidr",
@@ -161,6 +186,7 @@ fn operations() -> Vec<Operation> {
         // A value that is not an address range at all is not a range that was not found:
         // there is nothing to look up, so the VALUE is what is refused.
         malformed_code: ec2::state::INVALID_PARAMETER_VALUE,
+        dry_run_answer: DRY_RUN_VERDICT,
     });
     operations.push(Operation {
         action: "MoveByoipCidrToIpam",
@@ -176,6 +202,7 @@ fn operations() -> Vec<Operation> {
             member("IpamPoolOwner", &account),
         ],
         malformed_code: ec2::state::INVALID_IPAM_POOL_ID_MALFORMED,
+        dry_run_answer: DRY_RUN_VERDICT,
     });
     operations
 }
@@ -197,22 +224,25 @@ async fn invoke(
 }
 
 /// Rule 1, over every operation of the surface: an authorized dry run is answered with
-/// `DryRunOperation`, whether or not the resources named exist.
+/// `DryRunOperation` whether or not the resources named exist — except on the one operation
+/// recorded resolving what its call is scoped to first, which answers that resource's own
+/// refusal.
 #[tokio::test]
 async fn every_operation_answers_an_authorized_dry_run_with_dry_run_operation() {
     let (router, _engine) = super::ec2_query::emulator();
 
     for operation in operations() {
         let case = operation.action;
+        let (expected_status, expected_code) = operation.dry_run_answer;
         let (status, body) = invoke(&router, case, &with_dry_run(&operation.unknown)).await;
         assert_eq!(
-            status, DRY_RUN_STATUS,
-            "case {case:?}: expected HTTP {DRY_RUN_STATUS}, got {status} with body {body}"
+            status, expected_status,
+            "case {case:?}: expected HTTP {expected_status}, got {status} with body {body}"
         );
         assert_eq!(
             error_code(&body),
-            ec2::state::DRY_RUN_OPERATION,
-            "case {case:?}: expected DryRunOperation, got {body}"
+            expected_code,
+            "case {case:?}: expected {expected_code}, got {body}"
         );
     }
 }

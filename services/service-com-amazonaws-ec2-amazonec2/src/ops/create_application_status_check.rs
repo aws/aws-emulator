@@ -180,7 +180,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         use crate::scaffolded::Scaffolded;
         use crate::state::{
             active_application_status_check_count, application_status_check_limit_exceeded,
-            application_status_check_payload_bytes, idempotent_parameter_mismatch,
+            application_status_check_payload_bytes, health_check_paths_from_request,
+            idempotent_parameter_mismatch,
             invalid_group_not_found, invalid_subnet_id_not_found, require_service_state,
             same_application_status_check_configuration, status_code_matcher_is_well_formed,
             system_time_to_date_time, tags_from_specifications, AGGREGATION_INCLUDED,
@@ -195,8 +196,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             DEFAULT_APPLICATION_STATUS_CHECK_STATUS_CODE_MATCHER,
             DEFAULT_APPLICATION_STATUS_CHECK_SUCCESS_THRESHOLD,
             DEFAULT_APPLICATION_STATUS_CHECK_TIMEOUT, MAX_APPLICATION_STATUS_CHECKS,
-            MAX_CLIENT_TOKEN_CHARS, MAX_HEALTH_CHECK_PATHS, MAX_HEALTH_CHECK_PATH_CHARS,
-            MAX_HEALTH_CHECK_PATH_DESTINATIONS, MAX_STATUS_CODE_MATCHER_CHARS, MAX_STORED_BYTES,
+            MAX_CLIENT_TOKEN_CHARS, MAX_HEALTH_CHECK_PATH_CHARS,
+            MAX_STATUS_CODE_MATCHER_CHARS, MAX_STORED_BYTES,
         };
 
         // `ctx` carries request metadata only; this operation reads none of it — a check's
@@ -359,65 +360,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // "Health check paths define the network path from a source subnet to one or more
         // destination subnets... If omitted, health checks are performed in the same subnet
-        // as the instance" — so a path names a source and at least one destination, and a
-        // request naming no paths at all asks for the in-subnet check, which is no paths.
-        // Neither list carries a modelled `@length`, so both are bounded before any work
-        // proportional to them is done.
-        let asked_paths = input.health_check_paths.as_deref().unwrap_or_default();
-        if asked_paths.len() > MAX_HEALTH_CHECK_PATHS {
-            return Err(Scaffolded::invalid_parameter_value(format!(
-                "The request carries {} health check paths, above the maximum of \
-                 {MAX_HEALTH_CHECK_PATHS}",
-                asked_paths.len()
-            )));
-        }
-        let mut health_check_paths: Vec<HealthCheckPathResponseObject> =
-            Vec::with_capacity(asked_paths.len());
-        for asked in asked_paths {
-            let source = asked.source.as_ref().ok_or_else(|| {
-                Scaffolded::missing_parameter("Each health check path must name a source")
-            })?;
-            let source_subnet_id = source.subnet_id.clone().ok_or_else(|| {
-                Scaffolded::missing_parameter(
-                    "Each health check path source must name a subnet",
-                )
-            })?;
-            let destinations = asked.destinations.as_deref().unwrap_or_default();
-            if destinations.is_empty() {
-                return Err(Scaffolded::missing_parameter(format!(
-                    "The health check path from '{source_subnet_id}' must name at least one \
-                     destination"
-                )));
-            }
-            if destinations.len() > MAX_HEALTH_CHECK_PATH_DESTINATIONS {
-                return Err(Scaffolded::invalid_parameter_value(format!(
-                    "The health check path from '{source_subnet_id}' carries {} destinations, \
-                     above the maximum of {MAX_HEALTH_CHECK_PATH_DESTINATIONS}",
-                    destinations.len()
-                )));
-            }
-            let mut reported: Vec<HealthCheckPathDestinationResponseObject> =
-                Vec::with_capacity(destinations.len());
-            for destination in destinations {
-                let subnet_id = destination.subnet_id.clone().ok_or_else(|| {
-                    Scaffolded::missing_parameter(format!(
-                        "Each destination of the health check path from '{source_subnet_id}' \
-                         must name a subnet"
-                    ))
-                })?;
-                reported.push(HealthCheckPathDestinationResponseObject {
-                    subnet_id: Some(subnet_id),
-                    security_group_id: destination.security_group_id.clone(),
-                });
-            }
-            health_check_paths.push(HealthCheckPathResponseObject {
-                source: Some(HealthCheckPathSourceResponseObject {
-                    subnet_id: Some(source_subnet_id),
-                    security_group_id: source.security_group_id.clone(),
-                }),
-                destinations: Some(reported),
-            });
-        }
+        // as the instance" — so a request naming no paths at all asks for the in-subnet
+        // check, which is no paths. The reading of the member, and the bounds on it, are the
+        // ONE this crate keeps for it ([`crate::state::health_check_paths_from_request`]), so
+        // the modify that replaces a check's paths reads them exactly as this create does.
+        let health_check_paths =
+            health_check_paths_from_request(input.health_check_paths.as_deref().unwrap_or_default())?;
 
         // "The tags to apply to the application status check" (`$TagSpecifications`): the
         // check is the only resource this call creates, so a specification naming any other

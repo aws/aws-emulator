@@ -1255,8 +1255,8 @@ pub fn internal_error<E>(message: impl Into<String>) -> crate::scaffolded::Scaff
 pub fn dry_run_operation<E>() -> crate::scaffolded::Scaffolded<E> {
     crate::scaffolded::Scaffolded::service_error(
         DRY_RUN_OPERATION,
-        412,
-        "Request would have succeeded, but DryRun flag is set.",
+        DRY_RUN_OPERATION_STATUS,
+        DRY_RUN_OPERATION_MESSAGE,
     )
 }
 

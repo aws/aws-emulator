@@ -9,12 +9,16 @@
 //! account that does not hold the capability is refused the operation itself, with HTTP 400
 //! `OperationNotPermitted` naming it ([`crate::state::trunk_interface_not_permitted`]),
 //! before any member of the request is interpreted — the association id the boundary
-//! validator admitted is neither resolved nor checked for shape, a `ClientToken` records
-//! nothing, and `DryRun` is answered with the same refusal because the request it asks
-//! about would not have succeeded. Nothing is stored or removed: there is no association to
+//! validator admitted is neither resolved nor checked for shape, and a `ClientToken` records
+//! nothing. Nothing is stored or removed: there is no association to
 //! remove, because the writer one would come from
 //! (`crate::ops::associate_trunk_interface`) is gated by the same capability and stores
 //! none, and a refused call leaves every interface of the account exactly as it found it.
+//!
+//! `DryRun` is answered AHEAD of that refusal, with the permitted side of the probe
+//! ([`crate::state::dry_run_operation`]): the flag asks about the CALLER's permission to
+//! perform the action, which the account-level capability above is not — the same ordering
+//! `AssociateTrunkInterface` is recorded answering.
 //!
 //! This emulator serves one account ([`::engine::emulator_account_id`]) and no operation of
 //! this API grants the capability to it, so every caller reads that refusal — the same one
@@ -145,9 +149,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // capability interface trunking needs is granted to an ACCOUNT, and the account this
         // emulator serves does not hold it, so every request — whatever association id or
         // client token it carries, and whichever Region it was made in — is refused the
-        // operation rather than told anything about what it named. `DryRun` is answered the
-        // same way: the request it asks about would not have succeeded.
-        let _ = (&input, ctx, &self.engine);
+        // operation rather than told anything about what it named. `DryRun` is the one member
+        // read, and ahead of that refusal (see the module docs).
+        let _ = (ctx, &self.engine);
+        if input.dry_run == Some(true) {
+            return Err(crate::state::dry_run_operation());
+        }
         Err(crate::state::trunk_interface_not_permitted())
     }
 }

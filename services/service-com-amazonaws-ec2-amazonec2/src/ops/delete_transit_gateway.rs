@@ -15,6 +15,11 @@
 //! with it when the removal the delete recorded falls due
 //! ([`crate::state::ComAmazonawsEc2Amazonec2State::begin_transit_gateway_deletion`]).
 //!
+//! `DryRun` is answered BEFORE either question: the flag asks what the CALLER may do, so the
+//! permission answer precedes the existence and dependency ones, and a dry run naming a
+//! gateway the account no longer holds reads the verdict rather than a not-found
+//! ([`crate::state::dry_run_operation`]).
+//!
 //! ## Reaching this service's state
 //!
 //! The engine is held on `self` (constructor-injected), NOT passed per request. The store is
@@ -128,6 +133,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let transit_gateway_id = input.transit_gateway_id.as_str();
 
+        // The flag is the one member read before anything is resolved: "checks whether you
+        // have the required permissions for the action, WITHOUT ACTUALLY MAKING THE REQUEST
+        // … If you have the required permissions, the error response is DryRunOperation"
+        // (`$DryRun`). That is a question about the CALLER, not about the gateway the request
+        // names, so the permission answer precedes the existence one — the recorded contract
+        // for this operation answers `DryRunOperation` for a dry run naming a gateway the
+        // account no longer holds — and nothing is removed either way.
+        if input.dry_run.unwrap_or(false) {
+            return Err(state::dry_run_operation());
+        }
+
         let state_handle = state::require_service_state(&*self.engine)?;
         let mut store = state_handle.lock();
         // The clock first, the way every other state-touching handler in this crate starts: a
@@ -160,14 +176,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 "{transit_gateway_id} has non-deleted Transit Gateway Attachments and cannot \
                  be deleted."
             )));
-        }
-
-        // Every refusal this request could meet has been asked, so it is one that WOULD have
-        // succeeded and a dry run stops here: "If you have the required permissions, the error
-        // response is DryRunOperation" (`$DryRun`). Nothing has been removed yet, and nothing
-        // is.
-        if input.dry_run.unwrap_or(false) {
-            return Err(state::dry_run_operation());
         }
 
         let Some(deleted) = store.begin_transit_gateway_deletion(transit_gateway_id) else {

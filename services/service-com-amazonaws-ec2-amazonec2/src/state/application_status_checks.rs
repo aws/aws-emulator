@@ -42,7 +42,8 @@ use ::std::time::SystemTime;
 
 use crate::ops::types::{
     ApplicationStatusCheckResponseObject, ApplicationStatusDetail, CustomTagKeyValueResponsePair,
-    HealthCheckPathResponseObject,
+    HealthCheckPathDestinationResponseObject, HealthCheckPathRequestObject,
+    HealthCheckPathResponseObject, HealthCheckPathSourceResponseObject,
 };
 use crate::scaffolded::Scaffolded;
 
@@ -495,6 +496,74 @@ pub fn application_status_check_payload_bytes(
             check.target_tag_associations.as_deref().unwrap_or_default(),
         ))
         .saturating_add(client_token.map_or(0, str::len))
+}
+
+/// The health check paths one request named, as the modelled response objects a stored check
+/// holds — the ONE reading of that member, so the create that mints a check and the modify
+/// that replaces its paths cannot disagree about what a path is or about what is refused.
+///
+/// "Health check paths define the network path from a source subnet to one or more
+/// destination subnets" (`$HealthCheckPaths`), so a path names a source subnet and at least
+/// one destination; neither list carries a modelled `@length`, so both are bounded here
+/// ([`MAX_HEALTH_CHECK_PATHS`], [`MAX_HEALTH_CHECK_PATH_DESTINATIONS`]) before any work
+/// proportional to them is done. The subnets and security groups the paths name are resolved
+/// by the CALLER, which holds the store.
+pub fn health_check_paths_from_request<E>(
+    asked_paths: &[HealthCheckPathRequestObject],
+) -> Result<Vec<HealthCheckPathResponseObject>, Scaffolded<E>> {
+    if asked_paths.len() > MAX_HEALTH_CHECK_PATHS {
+        return Err(Scaffolded::invalid_parameter_value(format!(
+            "The request carries {} health check paths, above the maximum of \
+             {MAX_HEALTH_CHECK_PATHS}",
+            asked_paths.len()
+        )));
+    }
+    let mut health_check_paths: Vec<HealthCheckPathResponseObject> =
+        Vec::with_capacity(asked_paths.len());
+    for asked in asked_paths {
+        let source = asked.source.as_ref().ok_or_else(|| {
+            Scaffolded::missing_parameter("Each health check path must name a source")
+        })?;
+        let source_subnet_id = source.subnet_id.clone().ok_or_else(|| {
+            Scaffolded::missing_parameter("Each health check path source must name a subnet")
+        })?;
+        let destinations = asked.destinations.as_deref().unwrap_or_default();
+        if destinations.is_empty() {
+            return Err(Scaffolded::missing_parameter(format!(
+                "The health check path from '{source_subnet_id}' must name at least one \
+                 destination"
+            )));
+        }
+        if destinations.len() > MAX_HEALTH_CHECK_PATH_DESTINATIONS {
+            return Err(Scaffolded::invalid_parameter_value(format!(
+                "The health check path from '{source_subnet_id}' carries {} destinations, \
+                 above the maximum of {MAX_HEALTH_CHECK_PATH_DESTINATIONS}",
+                destinations.len()
+            )));
+        }
+        let mut reported: Vec<HealthCheckPathDestinationResponseObject> =
+            Vec::with_capacity(destinations.len());
+        for destination in destinations {
+            let subnet_id = destination.subnet_id.clone().ok_or_else(|| {
+                Scaffolded::missing_parameter(format!(
+                    "Each destination of the health check path from '{source_subnet_id}' \
+                     must name a subnet"
+                ))
+            })?;
+            reported.push(HealthCheckPathDestinationResponseObject {
+                subnet_id: Some(subnet_id),
+                security_group_id: destination.security_group_id.clone(),
+            });
+        }
+        health_check_paths.push(HealthCheckPathResponseObject {
+            source: Some(HealthCheckPathSourceResponseObject {
+                subnet_id: Some(source_subnet_id),
+                security_group_id: source.security_group_id.clone(),
+            }),
+            destinations: Some(reported),
+        });
+    }
+    Ok(health_check_paths)
 }
 
 /// The caller-chosen bytes a check's TAG ASSOCIATIONS hold: the key and the value of each

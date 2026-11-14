@@ -38,6 +38,11 @@ use std::collections::BTreeSet;
 
 use aws_smithy_runtime_api::http::Request as RtRequest;
 
+// The one reading of a request's own parameter list, and the bound every gate of this front
+// door reads it under: the parse here and the one authorization decision taken per resource
+// found are both capped by it.
+use super::request_parameters::{request_parameters, MAX_PARAMETERS_READ};
+
 /// How many hexadecimal digits the SHORTER id form EC2 issues carries ("Resource IDs",
 /// Amazon EC2 User Guide: the earlier 8-character form).
 const SHORT_ID_HEX_DIGITS: usize = 8;
@@ -46,11 +51,6 @@ const SHORT_ID_HEX_DIGITS: usize = 8;
 /// form every resource type now gets).
 const LONG_ID_HEX_DIGITS: usize = 17;
 
-/// The most form parameters this reading walks in one request: a bound on the work a
-/// request can ask of the gate — both the parse here and the one authorization decision
-/// taken per resource found — well above the longest list an EC2 request carries (a filter
-/// or resource list of a few hundred entries), so no request is read past it.
-const MAX_PARAMETERS_READ: usize = 4_096;
 /// The resource type of each id prefix this reading knows, as the ARN of that resource
 /// spells it ("Resource types defined by Amazon EC2", IAM Service Authorization Reference).
 ///
@@ -91,21 +91,12 @@ pub const RESOURCE_TYPE_BY_ID_PREFIX: &[(&str, &str)] = &[
 /// in — an EC2 endpoint serves one Region.
 #[must_use]
 pub fn addressed_by(request: &RtRequest, region: &str) -> Vec<String> {
-    let body = request.body().bytes().unwrap_or_default();
-    let query = request
-        .uri()
-        .split_once('?')
-        .map(|(_, query)| query)
-        .unwrap_or_default();
     let mut arns = Vec::new();
     let mut seen = BTreeSet::new();
     // Only the VALUES: which member a value was sent under differs per operation, while the
     // id's own prefix says what kind of resource it names, so the reading does not depend on
     // an operation's parameter names.
-    let values = ::form_urlencoded::parse(body)
-        .chain(::form_urlencoded::parse(query.as_bytes()))
-        .take(MAX_PARAMETERS_READ)
-        .map(|(_, value)| value);
+    let values = request_parameters(request, MAX_PARAMETERS_READ).map(|(_, value)| value);
     for value in values {
         let Some(resource_type) = resource_type_of(&value) else {
             continue;

@@ -9,10 +9,15 @@
 //! `OperationNotPermitted` naming it ([`crate::state::trunk_interface_not_permitted`]),
 //! before any member of the request is interpreted — the interface ids the boundary
 //! validator admitted are neither resolved nor checked for shape, the VLAN id and the GRE
-//! key are not read, a `ClientToken` records nothing, and `DryRun` is answered with the same
-//! refusal because the request it asks about would not have succeeded. Nothing is stored:
+//! key are not read, and a `ClientToken` records nothing. Nothing is stored:
 //! there is no association to store, and a refused call leaves every interface of the
 //! account exactly as it found it.
+//!
+//! `DryRun` is answered AHEAD of that refusal, with the permitted side of the probe
+//! ([`crate::state::dry_run_operation`]): "checks whether you have the required permissions
+//! for the action, without actually making the request" (`$DryRun`) asks about the CALLER's
+//! permission to perform the action, which the account-level capability above is not — and
+//! the recorded contract for this operation answers a dry run `DryRunOperation`.
 //!
 //! This emulator serves one account ([`::engine::emulator_account_id`]) and no operation of
 //! this API grants the capability to it, so every caller reads that refusal. The reader
@@ -152,8 +157,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // emulator serves does not hold it, so every request — whatever interfaces, VLAN id,
         // GRE key or client token it carries, and whichever Region it was made in — is
         // refused the operation rather than told anything about what it named. `DryRun` is
-        // answered the same way: the request it asks about would not have succeeded.
-        let _ = (&input, ctx, &self.engine);
+        // the one member read, and ahead of that refusal: the flag asks whether the CALLER
+        // holds the action's permissions (see the module docs).
+        let _ = (ctx, &self.engine);
+        if input.dry_run == Some(true) {
+            return Err(crate::state::dry_run_operation());
+        }
         Err(crate::state::trunk_interface_not_permitted())
     }
 }

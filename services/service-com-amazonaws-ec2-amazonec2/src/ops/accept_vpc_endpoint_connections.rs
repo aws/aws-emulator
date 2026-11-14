@@ -6,6 +6,11 @@
 //! answers with the endpoints it could not accept. This is the ONLY file to touch for this
 //! operation.
 //!
+//! The one service the call is scoped to is RESOLVED before `DryRun` is read: the recorded
+//! contract answers a dry run naming a `ServiceId` the account holds no service for with
+//! `InvalidVpcEndpointServiceId.NotFound`, so a caller probing with the flag is not told that
+//! a request naming a service that does not exist would have succeeded.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -167,16 +172,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             state::INVALID_VPC_ENDPOINT_SERVICE_ID_MALFORMED,
         )?;
 
-        // "Checks whether you have the required permissions for the action, WITHOUT
-        // ACTUALLY MAKING THE REQUEST, and provides an error response. If you have the
-        // required permissions, the error response is DryRunOperation. Otherwise, it is
-        // UnauthorizedOperation" (`DryRun`): the flag asks about PERMISSION, not about the
-        // named resources, so it is answered once the request's own form has been checked
-        // and before anything is resolved; every caller of this emulator is permitted.
-        if input.dry_run.unwrap_or(false) {
-            return Err(state::dry_run_operation());
-        }
-
         let state_handle = state::require_service_state(&*self.engine)?;
         let mut store = state_handle.lock();
         // A connection whose own move has fallen due is already `available`, so whether
@@ -187,9 +182,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "Accepts connection requests to YOUR VPC endpoint service": the service the
         // request names must be one of the account's own, so a `ServiceId` naming none is
         // refused outright — the whole call is about that one service, so this is not a
-        // per-endpoint failure that belongs in `Unsuccessful`.
+        // per-endpoint failure that belongs in `Unsuccessful`. The recorded contract for
+        // this operation answers it AHEAD of the DryRun arm below: the one service the call
+        // is scoped to is resolved before the flag is read, so a dry run naming a service
+        // that does not exist is told so rather than that the request would have succeeded.
         if !store.vpc_endpoint_services.contains_key(service_id) {
             return Err(state::invalid_vpc_endpoint_service_id_not_found(service_id));
+        }
+
+        // "Checks whether you have the required permissions for the action, WITHOUT
+        // ACTUALLY MAKING THE REQUEST, and provides an error response. If you have the
+        // required permissions, the error response is DryRunOperation. Otherwise, it is
+        // UnauthorizedOperation" (`DryRun`): the flag asks about PERMISSION, not about the
+        // endpoints named, so it is answered once the service the call is scoped to has
+        // been resolved and before any connection of it is judged or moved; every caller of
+        // this emulator is permitted.
+        if input.dry_run.unwrap_or(false) {
+            return Err(state::dry_run_operation());
         }
 
         // Each endpoint is judged on its own and reported in `Unsuccessful` when it cannot

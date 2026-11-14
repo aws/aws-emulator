@@ -1054,9 +1054,10 @@ async fn a_report_id_outside_the_id_space_is_refused_malformed_before_any_lookup
 }
 
 /// On the DELETE, `DryRun` — "checks whether you have the required permissions for the
-/// action, without actually making the request" — is answered before the store is touched,
-/// so the call removes nothing whatever id it names, while an id EC2 could never have issued
-/// is still refused before the flag is reached.
+/// action, without actually making the request" — is answered before the request's own value
+/// is read at all, so the call removes nothing and reports the verdict whatever id it names:
+/// the recorded contract answers a dry run `DryRunOperation` even for a `ReportId` EC2 could
+/// never have issued, which is the documented idiom for a pure permission probe.
 ///
 /// Each row differs along what the rule generalises over: whether the named report is held,
 /// and whether the id is one EC2 could have issued at all.
@@ -1088,14 +1089,14 @@ async fn a_dry_run_delete_removes_nothing() {
         (
             "the null id, which EC2 could never have issued",
             "imgusgrpt-00000000000000000",
-            400,
-            "InvalidImageUsageReportId.Malformed",
+            412,
+            "DryRunOperation",
         ),
         (
             "another resource's prefix",
             "vol-0123456789abcdef0",
-            400,
-            "InvalidImageUsageReportId.Malformed",
+            412,
+            "DryRunOperation",
         ),
     ];
 

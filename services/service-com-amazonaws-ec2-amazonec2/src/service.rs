@@ -91,6 +91,17 @@ pub mod recorded_response_members;
 /// supports resource-level permissions.
 pub mod addressed_resources;
 
+/// The `DryRun` flag a request carries, and the verdict EC2 gives it for an operation this
+/// emulator has not written yet: the answer [`FinishedEnvelope::served`] puts in place of the
+/// scaffold's 501, because the flag is a question about the CALLER that EC2 answers ahead of
+/// performing the request rather than one about the work the operation would have done.
+pub mod dry_run;
+
+/// The one reading of an ec2Query request's own parameter list, and the bound the gates of this
+/// front door read it under: shared by [`addressed_resources`], [`dry_run`] and the audit leg,
+/// so the three cannot read a request differently.
+pub mod request_parameters;
+
 /// This front door's AUDIT leg: every call it serves — the ones it REFUSES as much as the
 /// ones it accepts — is a management event of this service, recorded in the account's event
 /// history where CloudTrail's `LookupEvents` reads it. Written by
@@ -743,6 +754,19 @@ fn modeled_operation<'s>(svc: &'s dyn Service, req: &RtRequest) -> Option<&'s dy
     svc.definition().routing_table().get(key)
 }
 
+/// The NAME of the operation the model's routing key names for `req`, and only when the
+/// routing table serves that key — so it is always a modelled operation's own name, never a
+/// value the request's body chose.
+///
+/// What the gates that decide by OPERATION read ([`authorization_refusal`] takes the same
+/// lookup for the action it judges, and [`dry_run`] for the operations whose own handler
+/// answers the scaffold's 501).
+fn modeled_operation_key<'r>(svc: &'r dyn Service, req: &'r RtRequest) -> Option<&'r str> {
+    let key = svc.definition().protocol().routing_key(req).ok()?;
+    svc.definition().routing_table().get(key)?;
+    Some(key)
+}
+
 /// One modelled operation, run as itself and then answered in EC2's response envelope.
 ///
 /// [`Ec2QueryEnvelope`] reaches the responses the dispatch sequence's CODEC renders — a
@@ -853,6 +877,20 @@ impl<Eng: Send + Sync + 'static> FinishedEnvelope<Eng> {
             // names none is, rather than with an invented envelope.
             None => svc.definition().routing_error_response(req),
         };
+        // The `DryRun` gate's own answer, for an operation nobody has written yet: the
+        // scaffold's 501 says no implementation read the request and nothing was performed,
+        // and the flag's verdict is about the CALLER rather than about that work, so the
+        // verdict stands in place of the 501 ([`dry_run`]). An implemented operation answers
+        // the flag itself, at the point its own recorded contract puts it, and is left
+        // exactly as it answered — including the few that answer the same 501 for a member
+        // of the request, which the gate is given the operation's name to recognise.
+        if let Some(verdict) = modeled_operation_key(svc, req)
+            .and_then(|operation| {
+                dry_run::verdict_for_unwritten_operation(req, operation, &response)
+            })
+        {
+            response = verdict;
+        }
         stamp_envelope(&mut response);
         response
     }

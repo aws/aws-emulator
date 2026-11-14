@@ -764,6 +764,18 @@ pub const INVALID_PARAMETER_COMBINATION: &str = "InvalidParameterCombination";
 /// `DryRunOperation`" (the `DryRun` member's own doc).
 pub const DRY_RUN_OPERATION: &str = "DryRunOperation";
 
+/// The HTTP status EC2 answers [`DRY_RUN_OPERATION`] with: a precondition the request itself
+/// set, rather than the 400 this service's other client refusals carry.
+pub const DRY_RUN_OPERATION_STATUS: u16 = 412;
+
+/// The sentence EC2 answers [`DRY_RUN_OPERATION`] with.
+///
+/// FIXED text: it names nothing of the request — not the action, not the resources it named —
+/// so it is the whole message rather than one run's sample of a varying one. Named here so
+/// the handlers that answer the flag ([`dry_run_operation`]) and the gate that answers it for
+/// an operation nobody has written yet ([`crate::service::dry_run`]) cannot drift apart.
+pub const DRY_RUN_OPERATION_MESSAGE: &str = "Request would have succeeded, but DryRun flag is set.";
+
 /// EC2's error code for a caller that may not make the request AT ALL — the other side of
 /// the `DryRun` probe ("If you have the required permissions, the error response is
 /// `DryRunOperation`. Otherwise, it is `UnauthorizedOperation`", the `DryRun` member's own

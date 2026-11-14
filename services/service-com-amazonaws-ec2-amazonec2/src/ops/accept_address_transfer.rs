@@ -17,6 +17,11 @@
 //! ([`crate::state::ADDRESS_TRANSFER_ACCEPTED_VISIBILITY`]) and any tags the call assigns go
 //! onto the address itself, which is the one resource this operation tags.
 //!
+//! `DryRun` is answered once the request's own members have been read and BEFORE the store is
+//! asked anything: the flag is a question about the CALLER's permissions, so the recorded
+//! contract for this operation answers `DryRunOperation` for an address no transfer has on
+//! offer ([`crate::state::dry_run_operation`]).
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -184,6 +189,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .filter_map(|tag| Some((tag.key.clone()?, tag.value.clone().unwrap_or_default())))
             .collect();
 
+        // DryRun sits AFTER the request's own members have been read and BEFORE anything is
+        // resolved: "checks whether you have the required permissions for the action, WITHOUT
+        // ACTUALLY MAKING THE REQUEST" (`DryRun`), so the flag is a question about the CALLER
+        // rather than about what the address has on offer — the recorded contract for this
+        // operation answers `DryRunOperation` for an address no transfer is standing on, and
+        // a value that is not an address at all is still refused as the value it is, there
+        // being no action to hold permissions for.
+        if input.dry_run == Some(true) {
+            return Err(Scaffolded::dry_run_operation());
+        }
+
         let state = require_service_state(&*self.engine)?;
         let mut store = state.lock();
         // The offer this call would take may already have run out, and that expiry was owed
@@ -225,14 +241,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                  caller-supplied data, so it cannot store {added_bytes} more",
                 store.stored_bytes()
             )));
-        }
-
-        // DryRun sits AFTER every parameter has been validated and BEFORE the first write:
-        // the flag asks whether the request WOULD have worked, so one that would have been
-        // refused is refused with that reason instead, and one that would have succeeded
-        // leaves state untouched.
-        if input.dry_run == Some(true) {
-            return Err(Scaffolded::dry_run_operation());
         }
 
         // The instant the offer was taken is the clock's, never the request's. The check

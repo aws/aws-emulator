@@ -22,10 +22,14 @@
 //! created through `CreateNetworkInterface` with the `trunk` and `branch` types this
 //! operation documents as its prerequisite; an id that names no interface; something that is
 //! not an interface id at all; two empty ids), which protocol member carries the association
-//! (`VlanId`, `GreKey`, neither, both, a VLAN id outside any VLAN's range), whether a
-//! `ClientToken` is given and repeated, and whether the request is a `DryRun` — and no row
+//! (`VlanId`, `GreKey`, neither, both, a VLAN id outside any VLAN's range) and whether a
+//! `ClientToken` is given and repeated — and no row
 //! is the specification. One case asserts the same refusal for a request made in another
 //! Region, because the capability is a fact of the account rather than of a Region.
+//!
+//! `DryRun` is the one member read ahead of that refusal, so it has a table of its own: the
+//! flag asks what the CALLER may do rather than what this account's capability admits, and
+//! all three operations answer it 412 `DryRunOperation`.
 //!
 //! The interfaces the rows name ARE created over the wire, through the implemented
 //! `CreateNetworkInterface`, and read back through the implemented
@@ -33,8 +37,8 @@
 //! nothing, so the account's interfaces have to read back exactly as they were created.
 //!
 //! `DescribeTrunkInterfaceAssociations` and `DisassociateTrunkInterface` get a table each,
-//! below, varying what THEY generalise over — the association ids named, the filters, the
-//! page asked for, the idempotency token and the dry run — because the capability gates the
+//! below, varying what THEY generalise over — the association ids named, the filters and the
+//! page asked for — because the capability gates the
 //! operation rather than any one of its members.
 
 use ec2::state::ComAmazonawsEc2Amazonec2State as Ec2State;
@@ -57,6 +61,13 @@ const OPERATION_NOT_PERMITTED: &str = "OperationNotPermitted";
 
 /// The HTTP status that code is answered with.
 const REFUSAL_STATUS: u16 = 400;
+
+/// What a `DryRun` request a caller holds the action's permissions for is answered with, and
+/// the status EC2 carries it on — the permitted side of the probe, answered ahead of the
+/// account-level capability the three operations are gated by.
+const DRY_RUN_CODE: &str = "DryRunOperation";
+const DRY_RUN_STATUS: u16 = 412;
+const DRY_RUN_MESSAGE: &str = "Request would have succeeded, but DryRun flag is set.";
 
 /// The interface types this operation documents as its prerequisite: "use
 /// CreateNetworkInterface command and set the interface type to trunk. You must also create
@@ -227,7 +238,7 @@ async fn every_association_request_is_refused_as_not_permitted() {
     }
 
     // Each row varies one factor of the request: which interfaces it names, which protocol
-    // member carries the association, the idempotency token and the dry run.
+    // member carries the association and the idempotency token.
     let rows: Vec<(&str, Vec<Param>)> = vec![
         (
             "the account's own trunk and branch interfaces, VLAN protocol",
@@ -334,15 +345,6 @@ async fn every_association_request_is_refused_as_not_permitted() {
                 param("ClientToken", "trunk-association-token"),
             ],
         ),
-        (
-            "a dry run of a request that names both interfaces",
-            vec![
-                param("TrunkInterfaceId", &trunk),
-                param("BranchInterfaceId", &branch),
-                param("VlanId", "77"),
-                param("DryRun", "true"),
-            ],
-        ),
     ];
 
     for (case, params) in &rows {
@@ -421,7 +423,7 @@ async fn every_association_report_request_is_refused_as_not_permitted() {
     let before = interface_report(&router, "before any report request").await;
 
     // Each row varies one factor of the request: which associations it selects by id, which
-    // filter selects them, the page asked for, and whether the request is a `DryRun`. The
+    // filter selects them and the page asked for. The
     // two filter names are the ones the operation documents: "gre-key - The ID of a trunk
     // interface association. interface-protocol - The interface protocol. Valid values are
     // VLAN and GRE" (`DescribeTrunkInterfaceAssociationsRequest$Filters`).
@@ -504,15 +506,6 @@ async fn every_association_report_request_is_refused_as_not_permitted() {
                 params
             },
         ),
-        ("a dry run", vec![param("DryRun", "true")]),
-        (
-            "a dry run of a request selecting one association",
-            {
-                let mut params = indexed("AssociationId", &["tia-0123456789abcdef0"]);
-                params.push(param("DryRun", "true"));
-                params
-            },
-        ),
     ];
 
     for (case, params) in &rows {
@@ -569,8 +562,8 @@ async fn every_disassociation_request_is_refused_as_not_permitted() {
     let branch = create_interface(&router, &subnet_id, Some(BRANCH_TYPE)).await;
     let before = interface_report(&router, "before any disassociation request").await;
 
-    // Each row varies one factor of the request: the shape of the association id it names,
-    // whether an idempotency token is given and repeated, and whether it is a `DryRun`. No id
+    // Each row varies one factor of the request: the shape of the association id it names and
+    // whether an idempotency token is given and repeated. No id
     // can name an association the account holds, because the operation that would have made
     // one is refused the same way.
     let rows: Vec<(&str, Vec<Param>)> = vec![
@@ -608,13 +601,6 @@ async fn every_disassociation_request_is_refused_as_not_permitted() {
                 param("ClientToken", "trunk-disassociation-token"),
             ],
         ),
-        (
-            "a dry run",
-            vec![
-                param("AssociationId", "tia-0123456789abcdef0"),
-                param("DryRun", "true"),
-            ],
-        ),
     ];
 
     for (case, params) in &rows {
@@ -646,5 +632,135 @@ async fn every_disassociation_request_is_refused_as_not_permitted() {
             .any(|(reported, interface_type, _)| reported == &branch
                 && interface_type == BRANCH_TYPE),
         "interface {branch} must still read back as a {BRANCH_TYPE} interface, got {after:?}"
+    );
+}
+
+/// `DryRun` is answered AHEAD of the capability refusal, on all three operations: the flag
+/// asks "whether you have the required permissions for the action, without actually making
+/// the request" — a question about the CALLER, which the account-level capability is not — so
+/// a dry run reads 412 `DryRunOperation` and changes nothing.
+#[tokio::test]
+async fn a_dry_run_reads_the_permission_verdict_rather_than_the_capability_refusal() {
+    let (router, engine) = emulator();
+    let subnet_id = default_subnet(&engine);
+    let trunk = create_interface(&router, &subnet_id, Some(TRUNK_TYPE)).await;
+    let branch = create_interface(&router, &subnet_id, Some(BRANCH_TYPE)).await;
+    let before = interface_report(&router, "before any dry run").await;
+
+    // The rows span the three operations and, per operation, the kinds of input the rule
+    // generalises over: a request naming resources the account holds, one naming resources it
+    // does not, one whose ids are not ids of their kind at all, and one naming nothing beside
+    // the flag. The Region is a row too, the capability being a fact of the account.
+    let rows: Vec<(&str, &str, &str, Vec<Param>)> = vec![
+        (
+            "an association of the account's own trunk and branch interfaces",
+            "AssociateTrunkInterface",
+            REGION,
+            vec![
+                param("TrunkInterfaceId", &trunk),
+                param("BranchInterfaceId", &branch),
+                param("VlanId", "77"),
+                param("DryRun", "true"),
+            ],
+        ),
+        (
+            "an association naming ids the account holds no interface for",
+            "AssociateTrunkInterface",
+            REGION,
+            vec![
+                param("TrunkInterfaceId", "eni-0123456789abcdef0"),
+                param("BranchInterfaceId", "eni-00112233445566778"),
+                param("GreKey", "7"),
+                param("DryRun", "true"),
+            ],
+        ),
+        (
+            "an association naming values that are not interface ids at all",
+            "AssociateTrunkInterface",
+            OTHER_REGION,
+            vec![
+                param("TrunkInterfaceId", "not-an-interface-id"),
+                param("BranchInterfaceId", "neither-is-this"),
+                param("DryRun", "true"),
+            ],
+        ),
+        (
+            "a report naming nothing beside the flag",
+            "DescribeTrunkInterfaceAssociations",
+            REGION,
+            vec![param("DryRun", "true")],
+        ),
+        (
+            "a report selecting one association by id, in another Region",
+            "DescribeTrunkInterfaceAssociations",
+            OTHER_REGION,
+            {
+                let mut params = indexed("AssociationId", &["tia-0123456789abcdef0"]);
+                params.push(param("DryRun", "true"));
+                params
+            },
+        ),
+        (
+            "a disassociation of an id in the form the API reports",
+            "DisassociateTrunkInterface",
+            REGION,
+            vec![
+                param("AssociationId", "tia-0123456789abcdef0"),
+                param("DryRun", "true"),
+            ],
+        ),
+        (
+            "a disassociation of a value that is not an association id at all",
+            "DisassociateTrunkInterface",
+            REGION,
+            vec![
+                param("AssociationId", "not-an-association-id"),
+                param("ClientToken", "trunk-dry-run-token"),
+                param("DryRun", "true"),
+            ],
+        ),
+    ];
+
+    for (case, action, region, params) in &rows {
+        let (status, body) = super::ec2_query::call(&router, region, action, params).await;
+        assert_eq!(
+            status, DRY_RUN_STATUS,
+            "case {case:?}: expected HTTP {DRY_RUN_STATUS}, got {status} with body {body}"
+        );
+        assert_eq!(
+            error_code(&body),
+            DRY_RUN_CODE,
+            "case {case:?}: expected {DRY_RUN_CODE}, got {:?} with body {body}",
+            error_code(&body)
+        );
+        assert_eq!(
+            error_message(&body),
+            DRY_RUN_MESSAGE,
+            "case {case:?}: expected EC2's own dry-run wording, got {:?}",
+            error_message(&body)
+        );
+        assert_reports_no_association(case, &body);
+    }
+
+    // `DryRun=false` is not a dry run: the request reads the capability refusal.
+    let (status, body) = associate(
+        &router,
+        REGION,
+        &[
+            param("TrunkInterfaceId", &trunk),
+            param("BranchInterfaceId", &branch),
+            param("VlanId", "77"),
+            param("DryRun", "false"),
+        ],
+    )
+    .await;
+    assert_refused("an association with DryRun=false", status, &body);
+
+    // No dry run wrote anything: every interface reads back exactly as the creates left it.
+    let after = interface_report(&router, "after every dry run").await;
+    assert_eq!(
+        after, before,
+        "a dry run stores nothing, so the account's interfaces must read back unchanged: \
+         expected {before:?}, got {after:?}"
     );
 }

@@ -493,15 +493,10 @@ fn served_api_call<Eng: Send + Sync + 'static>(
 /// withheld wherever in a request it occurs.
 fn recorded_parameters(req: &RtRequest) -> serde_json::Value {
     let mut document = serde_json::Value::Object(serde_json::Map::new());
-    let body = req.body().bytes().unwrap_or_default();
-    let query = req
-        .uri()
-        .split_once('?')
-        .map(|(_, query)| query)
-        .unwrap_or_default();
-    let fields = ::form_urlencoded::parse(body)
-        .chain(::form_urlencoded::parse(query.as_bytes()))
-        .take(MAX_RECORDED_PARAMETERS);
+    // The one walk this front door takes over a request's parameter list
+    // (`super::request_parameters`), under the bound a RECORD takes rather than the one a gate's
+    // decision takes.
+    let fields = super::request_parameters::request_parameters(req, MAX_RECORDED_PARAMETERS);
     for (key, value) in fields {
         if ENVELOPE_PARAMETERS.contains(&key.as_ref()) {
             continue;
