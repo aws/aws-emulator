@@ -3547,19 +3547,21 @@ fn expected_entry_satisfied(
         .attribute_value_list
         .as_deref()
         .filter(|values| !values.is_empty());
-    if (comparison.is_some() || operands.is_some())
-        && (condition.value.is_some() || condition.exists.is_some())
-    {
-        // The two generations of this member are incompatible, and AWS names the pair
-        // the request stated its condition through twice: the EXISTENCE form is
-        // `Exists` beside `ComparisonOperator`, and the VALUE form is `Value` beside
-        // `AttributeValueList`, so the legacy member the request carried decides which
-        // pair the sentence names.
-        let (legacy, newer) = if condition.exists.is_some() {
-            ("Exists", "ComparisonOperator")
-        } else {
-            ("Value", "AttributeValueList")
-        };
+    // "Value and Exists are incompatible with AttributeValueList and ComparisonOperator":
+    // the pairs that cannot be used together are the ones stating the SAME half of the
+    // condition twice — the test itself (`Exists` beside `ComparisonOperator`) and the
+    // value it is made against (`Value` beside `AttributeValueList`) — and AWS names the
+    // pair the entry carried. An entry naming a comparison and ONE value through `Value`
+    // states each half once, so it is a condition this service EVALUATES rather than a
+    // conflict.
+    let conflict = if comparison.is_some() && condition.exists.is_some() {
+        Some(("Exists", "ComparisonOperator"))
+    } else if operands.is_some() && condition.value.is_some() {
+        Some(("Value", "AttributeValueList"))
+    } else {
+        None
+    };
+    if let Some((legacy, newer)) = conflict {
         return Err(refused(format!(
             "One or more parameter values were invalid: {legacy} and {newer} cannot be used \
              together for Attribute: {name}"
@@ -3568,14 +3570,17 @@ fn expected_entry_satisfied(
     if let Some(operator) = comparison {
         // An operator that compares a value needs one to compare, and an `Expected`
         // entry can carry it in either of two members: AWS names both as what the
-        // entry has to state beside the operator it named.
-        if operands.is_none() && condition.value.is_none() && takes_operands(operator) {
+        // entry has to state beside the operator it named. `Value` carries the ONE
+        // operand the comparison is made against where the entry states no list.
+        let single = condition.value.clone().map(|value| vec![value]);
+        let operands: &[AttributeValue] = operands.or(single.as_deref()).unwrap_or(&[]);
+        if operands.is_empty() && takes_operands(operator) {
             return Err(refused(format!(
                 "{INVALID_PARAMETER_CLAUSE}: Value or AttributeValueList must be used with \
                  ComparisonOperator: {operator} for Attribute: {name}"
             )));
         }
-        return legacy_comparison_matches(operator, held, operands.unwrap_or(&[]));
+        return legacy_comparison_matches(operator, held, operands);
     }
     match (condition.value.as_ref(), condition.exists) {
         // "If you supply a Value all by itself, DynamoDB assumes the attribute exists"

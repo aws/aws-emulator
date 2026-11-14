@@ -480,11 +480,20 @@ impl Table {
 
     /// The one walk a `Key`-shaped map is read through, whichever member carried it:
     /// exactly the key attributes the schema declares, with their declared types.
+    ///
+    /// Each value the map carries is held to the documented rules for the SETS it holds
+    /// first ([`check_collection_rules`]): a set that is empty or lists one member twice
+    /// is no value this service accepts WHEREVER a request carries it, so it is refused
+    /// as the invalid collection it is rather than as a key element of another type than
+    /// the schema declares.
     fn key_of_map(&self, key: &Item, source: KeySource) -> Result<ItemKey, KeyRefusal> {
         // A map carrying NOTHING names no key element of this schema to be held to it, so
         // it is not shaped like a key at all rather than a key stated wrongly.
         if key.is_empty() {
             return Err(KeyRefusal::Request(source.mismatch()));
+        }
+        for value in key.values() {
+            check_collection_rules(value).map_err(KeyRefusal::Request)?;
         }
         for name in key.keys() {
             if name != self.partition_key_name() && Some(name.as_str()) != self.sort_key_name() {

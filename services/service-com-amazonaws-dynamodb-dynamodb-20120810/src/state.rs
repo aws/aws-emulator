@@ -4245,6 +4245,65 @@ fn joined(members: impl Iterator<Item = String>, separator: &str) -> String {
     rendered.join(separator)
 }
 
+/// Hold every SET one attribute value carries to the documented set rules — a set may
+/// not be empty, and may not list one member twice — at every depth, stating the clause
+/// it earns ON ITS OWN.
+///
+/// The rules and the clauses are the ones the canonicalizing walk states
+/// ([`canonicalize_attribute_value`]) and the same renderers word them, so the two
+/// cannot drift; what differs is that this only READS the value, and that the clause is
+/// stated outside the `<N> validation error(s) detected: ` envelope
+/// ([`unenveloped`]) — a collection is refused for what it IS, whichever member of
+/// whichever operation carried it. The numeric rules are not restated here: a value's
+/// own numeric domain is stated where that value is read (a key's by its encoder,
+/// [`Table::key_value`]).
+///
+/// The walk is ITERATIVE, over an explicit stack, for the reason
+/// [`canonicalize_attribute_value`]'s is: how deeply a value nests is the caller's
+/// choice, so recursing on it would make stack use a function of the request.
+pub(crate) fn check_collection_rules(value: &AttributeValue) -> Result<(), RequestError> {
+    let mut pending = vec![value];
+    while let Some(value) = pending.pop() {
+        match value {
+            AttributeValue::Ns(members) => {
+                check_set_not_empty(SetType::Number, members.len()).map_err(unenveloped)?;
+                // Distinctness is decided on the NUMBERS and not on their texts, so two
+                // spellings of one number are one member — which is why the comparison
+                // is made over the canonical texts. A text that is no number at all is
+                // not this rule's business, so such a set is left to the numeric rule.
+                let numbers: Vec<String> = members
+                    .iter()
+                    .filter_map(|member| canonical_number_text(member).ok())
+                    .collect();
+                if numbers.len() == members.len() && has_duplicate(&numbers) {
+                    // The number-set wording names no members at all.
+                    return Err(unenveloped(duplicate_set_member(String::new())));
+                }
+            }
+            AttributeValue::Ss(members) => {
+                check_set_not_empty(SetType::String, members.len()).map_err(unenveloped)?;
+                if has_duplicate(members) {
+                    return Err(unenveloped(duplicate_set_member(echoed_strings(members))));
+                }
+            }
+            AttributeValue::Bs(members) => {
+                check_set_not_empty(SetType::Binary, members.len()).map_err(unenveloped)?;
+                if has_duplicate(members) {
+                    return Err(unenveloped(duplicate_set_member(echoed_blobs(members))));
+                }
+            }
+            AttributeValue::L(members) => pending.extend(members.iter()),
+            AttributeValue::M(entries) => pending.extend(entries.values()),
+            AttributeValue::S(_)
+            | AttributeValue::N(_)
+            | AttributeValue::B(_)
+            | AttributeValue::Null(_)
+            | AttributeValue::Bool(_) => {}
+        }
+    }
+    Ok(())
+}
+
 /// Add up sizes without overflowing.
 fn sum_of(sizes: impl Iterator<Item = i64>) -> i64 {
     sizes.fold(0i64, i64::saturating_add)

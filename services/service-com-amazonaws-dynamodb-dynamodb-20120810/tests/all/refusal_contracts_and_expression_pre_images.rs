@@ -952,10 +952,11 @@ async fn a_key_condition_names_the_schema_element_or_the_operator_it_broke() {
             "Invalid KeyConditionExpression: Syntax error; token: \"<EOF>\", near: \"=\"",
         ),
         (
+            // A syntax error names the token the parse STOPPED at, not the one after it.
             "a key condition that stops at a token in the middle",
             json!({"TableName": "Keys", "KeyConditionExpression": "pk = :p AND , sk = :s",
                    "ExpressionAttributeValues": {":p": {"S": "a"}, ":s": {"N": "1"}}}),
-            "Invalid KeyConditionExpression: Syntax error; token: \"sk\", near: \", sk =\"",
+            "Invalid KeyConditionExpression: Syntax error; token: \",\", near: \"AND , sk\"",
         ),
     ];
     for (case, request, expected) in cases {

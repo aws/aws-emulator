@@ -9,8 +9,12 @@
 //! `ExpressionAttributeNames`/`ExpressionAttributeValues`) or from the legacy
 //! `KeyConditions` map: both reduce to equality on the partition key optionally
 //! ANDed with one `=`/`<`/`<=`/`>`/`>=`/`BETWEEN`/`begins_with` comparison on the
-//! sort key. The expression grammar is parsed here — it is DynamoDB's own, so there
-//! is no third-party parser for it — by [`parse_key_condition_expression`].
+//! RANGE key attributes, which a schema declaring several of them constrains from the
+//! first ([`KeyCondition::resolve`]). The expression grammar is parsed here — it is
+//! DynamoDB's own, so there is no third-party parser for it — by
+//! [`parse_key_condition_expression`], which takes a comparison with the operand on
+//! either side of the operator and holds every operand to the types the operator it
+//! was written with compares ([`check_operand_type`]).
 //!
 //! `FilterExpression` is applied AFTER the key conditions have selected the page —
 //! "a filter expression is applied after a Query finishes, but before the results are
@@ -916,12 +920,44 @@ impl Operator {
             1
         }
     }
+
+    /// The same comparison with its two sides swapped, which is what a comparison the
+    /// expression wrote the OPERAND first states about the attribute: `:v >= sk` holds
+    /// exactly where `sk <= :v` does.
+    fn mirrored(self) -> Self {
+        match self {
+            Self::LessThan => Self::GreaterThan,
+            Self::LessOrEqual => Self::GreaterOrEqual,
+            Self::GreaterThan => Self::LessThan,
+            Self::GreaterOrEqual => Self::LessOrEqual,
+            other => other,
+        }
+    }
+
+    /// Whether this comparison can be made against a value of `datatype` at all.
+    ///
+    /// A comparison orders two values, and DynamoDB orders only the three scalar key
+    /// types — "the following types are allowed for the attributes of a key: String,
+    /// Number, Binary" — so an operand of any other `AttributeValue` type is no operand
+    /// for one. `begins_with` is narrower still: a prefix is only meaningful for the two
+    /// types that HAVE one, "String or Binary (not a Number or a set type)"
+    /// (`ComparisonOperator`'s `BEGINS_WITH`).
+    fn compares(self, datatype: &str) -> bool {
+        match self {
+            Self::BeginsWith => matches!(datatype, "S" | "B"),
+            _ => matches!(datatype, "S" | "N" | "B"),
+        }
+    }
 }
 
-/// One resolved key condition: an attribute, a comparison, and its operand values.
+/// One resolved key condition: an attribute, the comparison stated about it, and its
+/// operand values.
 #[derive(Debug, Clone)]
 struct Comparison {
     attribute: String,
+    /// The comparison this states ABOUT the attribute, which is the mirror image of the
+    /// operator the expression wrote where it wrote the operand first
+    /// ([`Operator::mirrored`]).
     operator: Operator,
     operands: Vec<AttributeValue>,
 }
@@ -932,11 +968,17 @@ struct KeyCondition {
     /// The attribute the partition key value below belongs to, which is how a STORED
     /// item's own value for it is found when the query reads an index.
     partition_name: String,
-    /// The sort key that schema declares, when it declares one. Kept whether or not the
-    /// condition constrains it, because it is a key attribute of the schema being read
-    /// either way — which is what a `FilterExpression` may not name ([`Self::is_key`]).
-    sort_name: Option<String>,
+    /// Every key attribute that schema declares, in the order it declares them. Kept
+    /// whether or not the condition constrains each of them, because they are key
+    /// attributes of the schema being read either way — which is what a
+    /// `FilterExpression` may not name ([`Self::is_key`]).
+    key_names: Vec<String>,
     partition: crate::state::AttributeValueKey,
+    /// The equality conditions on the key attributes the comparison below does not
+    /// constrain and the partition value above does not carry: a schema's further
+    /// PARTITION key attributes, and the RANGE key attributes declared before the one
+    /// [`Self::sort`] constrains ([`range_keys_need_equality`]).
+    equalities: Vec<(String, crate::state::AttributeValueKey)>,
     sort: Option<SortCondition>,
 }
 
@@ -947,14 +989,32 @@ struct SortCondition {
     operands: Vec<crate::state::AttributeValueKey>,
 }
 
+/// What a key condition constrains ONE range key attribute with, encoded against the
+/// type the table declared for that attribute.
+struct RangeConstraint {
+    operator: Operator,
+    operands: Vec<crate::state::AttributeValueKey>,
+}
+
+/// What a key condition constrains the RANGE key attributes of one schema with: the
+/// equalities pinning the leading attributes, and the one comparison on the last
+/// attribute it constrains.
+struct RangeConditions {
+    equalities: Vec<(String, crate::state::AttributeValueKey)>,
+    sort: Option<SortCondition>,
+}
+
 impl KeyCondition {
-    /// Bind the comparisons to the key attributes `schema` declares: exactly one
-    /// equality on the partition key, and at most one comparison on the sort key.
+    /// Bind the comparisons to the key attributes `schema` declares: an equality on each
+    /// PARTITION key attribute, and at most one comparison on each RANGE key attribute,
+    /// taken in the order the schema declares them.
     ///
     /// The operands are held to the type the TABLE declared for the attribute they are
     /// compared with ([`crate::state::Table::key_condition_value`]), whichever schema
     /// names it, so a value of another type than the key's declared one is refused before
-    /// anything is read.
+    /// anything is read — after the operand has been held to the types its operator
+    /// compares at all, which is a fact of the EXPRESSION rather than of the schema
+    /// ([`check_operand_type`]).
     fn resolve(
         table: &crate::state::Table,
         schema: &[KeySchemaElement],
@@ -970,26 +1030,42 @@ impl KeyCondition {
         if comparisons.len() > schema.len() {
             return Err(too_many_query_conditions(comparisons.len(), schema.len()));
         }
-        // "HASH - partition key ... RANGE - sort key" (`KeySchemaElement$KeyType`): the
-        // one partition key the condition must cover, and the sort key it may.
-        let partition_name = schema
+        // "HASH - partition key ... RANGE - sort key" (`KeySchemaElement$KeyType`), each
+        // in the order the schema declares them. A table's primary key declares one of
+        // each at most, while a secondary index's schema can declare SEVERAL — "each
+        // global secondary index supports up to 4 partition keys and up to 4 sort keys"
+        // (`CreateTable$GlobalSecondaryIndexes`) — and a condition over such a schema
+        // covers every partition key attribute and constrains the range key attributes
+        // from the first ([`range_keys_need_equality`]).
+        let hash_names: Vec<String> = schema
             .iter()
-            .find(|element| element.key_type == "HASH")
-            .map_or(String::new(), |element| element.attribute_name.clone());
-        let sort_name = schema
+            .filter(|element| element.key_type == "HASH")
+            .map(|element| element.attribute_name.clone())
+            .collect();
+        let range_names: Vec<String> = schema
             .iter()
-            .find(|element| element.key_type != "HASH")
-            .map(|element| element.attribute_name.clone());
-        let mut partition = None;
-        let mut sort = None;
+            .filter(|element| element.key_type != "HASH")
+            .map(|element| element.attribute_name.clone())
+            .collect();
+        let partition_name = hash_names.first().cloned().unwrap_or_default();
+        // What the condition constrains each key attribute with, by the position the
+        // schema declares that attribute in.
+        let mut hashes: Vec<Option<crate::state::AttributeValueKey>> = Vec::new();
+        hashes.resize_with(hash_names.len(), || None);
+        let mut ranges: Vec<Option<RangeConstraint>> = Vec::new();
+        ranges.resize_with(range_names.len(), || None);
         // A comparison on an attribute that is NOT a key attribute is held back: which
         // key schema element the condition missed depends on what the rest of it
         // constrained, so it can only be named once every comparison has been read.
         let mut non_key = false;
         for comparison in comparisons {
-            let is_partition = comparison.attribute == partition_name;
-            let is_sort = Some(comparison.attribute.as_str()) == sort_name.as_deref();
-            if !is_partition && !is_sort {
+            let at_hash = hash_names
+                .iter()
+                .position(|name| *name == comparison.attribute);
+            let at_range = range_names
+                .iter()
+                .position(|name| *name == comparison.attribute);
+            if at_hash.is_none() && at_range.is_none() {
                 non_key = true;
                 continue;
             }
@@ -1007,43 +1083,28 @@ impl KeyCondition {
                 .iter()
                 .map(|value| table.key_condition_value(&comparison.attribute, value))
                 .collect::<Result<Vec<_>, _>>()?;
-            if is_partition {
+            if let Some(at) = at_hash {
                 // "The partition key equality test is required": no other comparison
-                // selects the one partition a query reads.
+                // selects the partition a query reads.
                 if comparison.operator != Operator::Equal {
                     return Err(unsupported_key_condition());
                 }
-                if partition.is_some() {
+                if hashes[at].is_some() {
                     return Err(crate::state::RequestError::Validation(format!(
-                        "Invalid key condition: the partition key {partition_name} is \
-                         constrained more than once"
+                        "Invalid key condition: the partition key {} is constrained \
+                         more than once",
+                        comparison.attribute
                     )));
                 }
-                partition = encoded.into_iter().next();
-            } else {
-                if sort.is_some() {
+                hashes[at] = encoded.into_iter().next();
+            } else if let Some(at) = at_range {
+                if ranges[at].is_some() {
                     return Err(crate::state::RequestError::Validation(format!(
                         "Invalid key condition: the sort key {} is constrained more than once",
                         comparison.attribute
                     )));
                 }
-                // A PREFIX is only meaningful for a string or binary sort key, and
-                // which type the sort key has is a fact of the SCHEMA rather than of
-                // whatever happens to be stored under it — so the operand is refused
-                // here, before any item is read, rather than when one is compared.
-                if comparison.operator == Operator::BeginsWith {
-                    if let Some(operand) = encoded.first() {
-                        if !matches!(
-                            operand,
-                            crate::state::AttributeValueKey::S(_)
-                                | crate::state::AttributeValueKey::B(_)
-                        ) {
-                            return Err(begins_with_operand_type(operand));
-                        }
-                    }
-                }
-                sort = Some(SortCondition {
-                    name: comparison.attribute,
+                ranges[at] = Some(RangeConstraint {
                     operator: comparison.operator,
                     operands: encoded,
                 });
@@ -1051,25 +1112,88 @@ impl KeyCondition {
         }
         if non_key {
             // That comparison stood where a key schema element's comparison belongs, so
-            // the element it stood in for is the one the condition missed: the partition
-            // key when that is unconstrained, else the sort key.
-            let missed = if partition.is_none() {
-                Some(partition_name.clone())
-            } else {
-                sort_name.clone().filter(|_| sort.is_none())
-            };
+            // the element it stood in for is the one the condition missed: the first key
+            // attribute of the schema the condition left unconstrained.
+            let missed = unconstrained(&hash_names, &hashes)
+                .or_else(|| unconstrained(&range_names, &ranges));
             return Err(match missed {
                 Some(element) => missed_key_schema_element(&element),
                 None => unsupported_key_condition(),
             });
         }
+        // Every partition key attribute of the schema carries its equality: the first is
+        // the partition the read walks, and a further one narrows the entries inside it.
+        let mut partition = None;
+        let mut equalities = Vec::new();
+        for (name, value) in hash_names.iter().zip(hashes) {
+            let value = value.ok_or_else(|| missed_key_schema_element(name))?;
+            if partition.is_none() {
+                partition = Some(value);
+            } else {
+                equalities.push((name.clone(), value));
+            }
+        }
         let partition = partition.ok_or_else(|| missed_key_schema_element(&partition_name))?;
+        let range_conditions = Self::range_conditions(&range_names, ranges)?;
+        equalities.extend(range_conditions.equalities);
         Ok(Self {
             partition_name,
-            sort_name,
+            key_names: hash_names.into_iter().chain(range_names).collect(),
             partition,
-            sort,
+            equalities,
+            sort: range_conditions.sort,
         })
+    }
+
+    /// Split what the condition constrains the RANGE key attributes with into the
+    /// equalities on the leading ones and the one comparison on the last.
+    ///
+    /// A composite range key is constrained from the first attribute of it: a condition
+    /// on one range key attribute narrows the order the entries sit in only once every
+    /// range key attribute BEFORE it is pinned to a single value, so AWS names the
+    /// leading attributes that carry no equality beside the one the condition did
+    /// constrain ([`range_keys_need_equality`]).
+    fn range_conditions(
+        range_names: &[String],
+        mut ranges: Vec<Option<RangeConstraint>>,
+    ) -> Result<RangeConditions, crate::state::RequestError> {
+        let Some(last) = ranges.iter().rposition(Option::is_some) else {
+            return Ok(RangeConditions {
+                equalities: Vec::new(),
+                sort: None,
+            });
+        };
+        let missing: Vec<String> = range_names
+            .iter()
+            .zip(ranges.iter())
+            .take(last)
+            .filter(|(_, constrained)| {
+                !constrained
+                    .as_ref()
+                    .is_some_and(|range| range.operator == Operator::Equal)
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        if !missing.is_empty() {
+            return Err(range_keys_need_equality(&missing, &range_names[last]));
+        }
+        let mut equalities = Vec::with_capacity(last);
+        for (name, constrained) in range_names.iter().zip(ranges.iter_mut()).take(last) {
+            // Every leading attribute carries an equality on exactly one operand, which
+            // is what the check above just established.
+            if let Some(value) = constrained
+                .take()
+                .and_then(|range| range.operands.into_iter().next())
+            {
+                equalities.push((name.clone(), value));
+            }
+        }
+        let sort = ranges[last].take().map(|range| SortCondition {
+            name: range_names[last].clone(),
+            operator: range.operator,
+            operands: range.operands,
+        });
+        Ok(RangeConditions { equalities, sort })
     }
 
     /// Whether a sort key value satisfies the sort-key comparison (its partition is
@@ -1119,11 +1243,27 @@ impl KeyCondition {
         if partition != self.partition {
             return Ok(false);
         }
+        if !self.matches_equalities(table, item) {
+            return Ok(false);
+        }
         let actual = self
             .sort
             .as_ref()
             .and_then(|sort| stored_key_value(table, item, &sort.name));
         self.matches_sort(actual.as_ref())
+    }
+
+    /// Whether a stored item carries the value each leading range key attribute is
+    /// pinned to ([`Self::equalities`]). An item carrying no value for one of them is
+    /// not in the schema keyed by it at all, so it satisfies no equality on it.
+    fn matches_equalities(
+        &self,
+        table: &crate::state::Table,
+        item: &crate::state::Item,
+    ) -> bool {
+        self.equalities.iter().all(|(name, expected)| {
+            stored_key_value(table, item, name).as_ref() == Some(expected)
+        })
     }
 
     /// Whether an `ExclusiveStartKey` names a key this condition SELECTS: a page
@@ -1143,6 +1283,9 @@ impl KeyCondition {
         if stored_key_value(table, start, &self.partition_name).as_ref() != Some(&self.partition) {
             return Ok(Some(START_KEY_OUTSIDE_QUERY_BOUNDARIES_MESSAGE));
         }
+        if !self.matches_equalities(table, start) {
+            return Ok(Some(START_KEY_OUTSIDE_RANGE_PREDICATE_MESSAGE));
+        }
         let Some(sort) = self.sort.as_ref() else {
             return Ok(None);
         };
@@ -1157,8 +1300,18 @@ impl KeyCondition {
     /// what a `FilterExpression` may not name — whether or not the condition constrains
     /// it.
     fn is_key(&self, attribute: &str) -> bool {
-        attribute == self.partition_name || Some(attribute) == self.sort_name.as_deref()
+        self.key_names.iter().any(|name| name == attribute)
     }
+}
+
+/// The first attribute of `names` the condition left unconstrained, if any — which is
+/// the key schema element a condition naming a non-key attribute stood in for.
+fn unconstrained<T>(names: &[String], constrained: &[Option<T>]) -> Option<String> {
+    names
+        .iter()
+        .zip(constrained.iter())
+        .find(|(_, constrained)| constrained.is_none())
+        .map(|(name, _)| name.clone())
 }
 
 /// One key attribute of a stored item or of a key map, encoded the way the order
@@ -1198,26 +1351,35 @@ fn begins_with(
     }
 }
 
-/// The refusal for a `begins_with` whose operand is of a type a prefix means nothing
-/// for: AWS names the function and the type of the operand it would not take.
-fn begins_with_operand_type(
-    operand: &crate::state::AttributeValueKey,
-) -> crate::state::RequestError {
+/// The refusal for an operand of a type the operator or function it was written with
+/// does not compare: AWS names the operator AS THE EXPRESSION WROTE IT — so a
+/// comparison the operand came first in reports the operator it reads, not its mirror
+/// image — and the `AttributeValue` type of the operand it would not take.
+fn incorrect_operand_type(written: Operator, datatype: &str) -> crate::state::RequestError {
     crate::state::RequestError::Validation(format!(
         "Invalid KeyConditionExpression: Incorrect operand type for operator or function; \
-         operator or function: begins_with, operand type: {}",
-        key_value_type(operand)
+         operator or function: {}, operand type: {datatype}",
+        written.as_str()
     ))
 }
 
-/// The `AttributeValue` datatype name an encoded key value carries, which is how a
-/// refusal names the type of the operand it refused.
-fn key_value_type(value: &crate::state::AttributeValueKey) -> &'static str {
-    match value {
-        crate::state::AttributeValueKey::S(_) => "S",
-        crate::state::AttributeValueKey::N(_) => "N",
-        crate::state::AttributeValueKey::B(_) => "B",
+/// Hold one operand of a key condition to the types its operator compares
+/// ([`Operator::compares`]).
+///
+/// This is a fact of the EXPRESSION rather than of the table: a value no comparison can
+/// order is no operand for one whatever the key it is compared with was declared as, so
+/// it is refused before the operand is held to that declared type
+/// ([`crate::state::Table::key_condition_value`]) — and, being read where the operand
+/// sits, before any defect the expression states after it.
+fn check_operand_type(
+    written: Operator,
+    operand: &AttributeValue,
+) -> Result<(), crate::state::RequestError> {
+    let datatype = crate::state::attribute_value_type(operand);
+    if written.compares(datatype) {
+        return Ok(());
     }
+    Err(incorrect_operand_type(written, datatype))
 }
 
 /// The key conditions this request states, from `KeyConditionExpression` or from the
@@ -1277,12 +1439,16 @@ fn legacy_comparison(
         "GE" => Operator::GreaterOrEqual,
         "BETWEEN" => Operator::Between,
         "BEGINS_WITH" => Operator::BeginsWith,
-        other => {
-            // AWS's sentence for that defect names the member and the operator the
-            // request sent, and does not enumerate the operators it does support.
-            return Err(crate::state::RequestError::Validation(format!(
-                "Unsupported operator on KeyConditions: {other}"
-            )))
+        _ => {
+            // Only part of the comparison vocabulary can be stated on a KEY — "for
+            // KeyConditions, only the following comparison operators are supported: EQ |
+            // LE | LT | GE | GT | BEGINS_WITH | BETWEEN" (the `Condition` doc) — because
+            // the rest select no contiguous range of an index's order, so no index can
+            // be read through them. AWS states that as the invalid PARAMETER VALUE it is,
+            // the way it states every other rule this member's entries are held to (the
+            // operand count, [`crate::state::check_legacy_comparison`]), in fixed text
+            // naming neither the operator nor the attribute.
+            return Err(not_an_indexable_operation())
         }
     };
     Ok(Comparison {
@@ -1290,6 +1456,32 @@ fn legacy_comparison(
         operator,
         operands,
     })
+}
+
+/// How a legacy `KeyConditions` entry naming a comparison no index can be read through
+/// is refused: the invalid-parameter clause every rule this member's entries are held to
+/// is stated in, over AWS's fixed sentence for a constraint that is not an indexable
+/// operation.
+fn not_an_indexable_operation() -> crate::state::RequestError {
+    crate::state::RequestError::Validation(format!(
+        "{}: Attempted conditional constraint is not an indexable operation",
+        crate::state::INVALID_PARAMETER_CLAUSE
+    ))
+}
+
+/// The refusal for a key condition over a schema declaring SEVERAL range key attributes
+/// that constrains one of them while a range key attribute declared BEFORE it carries no
+/// equality condition.
+///
+/// AWS names the leading attributes that need one, in the order the schema declares
+/// them, and the attribute whose condition requires them; the sentence around them is
+/// fixed.
+fn range_keys_need_equality(missing: &[String], constrained: &str) -> crate::state::RequestError {
+    crate::state::RequestError::Validation(format!(
+        "RANGE key attributes {} must have equality conditions specified in the query because \
+         a condition is present on key attribute {constrained}",
+        missing.join(", ")
+    ))
 }
 
 /// One lexical token of a key condition expression.
@@ -1503,11 +1695,6 @@ fn unsupported_key_condition() -> crate::state::RequestError {
     crate::state::RequestError::Validation("Query key condition not supported".to_string())
 }
 
-/// The refusal for a key condition this parser cannot read, as the parser words it.
-fn invalid_expression(parser: &Parser<'_>) -> crate::state::RequestError {
-    parser.syntax()
-}
-
 /// The refusal for a comparison a key condition does not take.
 ///
 /// AWS's text for this condition is FIXED: it names the member and that the operator is
@@ -1525,10 +1712,15 @@ fn invalid_key_condition_operator() -> crate::state::RequestError {
 ///
 /// The grammar is DynamoDB's own (`Query$KeyConditionExpression`): one or more
 /// comparisons joined by `AND`, each optionally parenthesised, where a comparison is
-/// `name <op> :value`, `name BETWEEN :low AND :high`, or
+/// `name <op> :value`, `:value <op> name`, `name BETWEEN :low AND :high`, or
 /// `begins_with (name, :prefix)`. `#alias` names resolve through
 /// `ExpressionAttributeNames` and `:placeholder` values through
 /// `ExpressionAttributeValues`.
+///
+/// Every defect is reported where the parse READS it, so an expression carrying two of
+/// them earns the one its text states first — the operand of a type the operator does
+/// not compare ([`check_operand_type`]) and the placeholder the request never defined
+/// are each refused at the token they sit at.
 fn parse_key_condition_expression(
     expression: &str,
     names: Option<&std::collections::HashMap<String, String>>,
@@ -1601,20 +1793,23 @@ impl Parser<'_> {
         self.tokens.get(self.at)
     }
 
-    fn take(&mut self) -> Result<Token, crate::state::RequestError> {
-        let token = self
-            .peek()
-            .cloned()
-            .ok_or_else(|| invalid_expression(self))?;
-        self.at += 1;
-        Ok(token)
+    /// Consume the next token when it is `expected`, leaving the position where it is
+    /// otherwise — so a refusal names the token the parse STOPPED at rather than the one
+    /// after it, which is how every other expression member of this service reports a
+    /// syntax error ([`crate::state::expression_syntax_error_at`]).
+    fn eat(&mut self, expected: &Token) -> bool {
+        if self.peek() == Some(expected) {
+            self.at += 1;
+            return true;
+        }
+        false
     }
 
     fn expect(&mut self, expected: &Token) -> Result<(), crate::state::RequestError> {
-        if self.take()? == *expected {
+        if self.eat(expected) {
             Ok(())
         } else {
-            Err(invalid_expression(self))
+            Err(self.syntax())
         }
     }
 
@@ -1652,15 +1847,22 @@ impl Parser<'_> {
         Ok(vec![self.comparison()?])
     }
 
-    /// `comparison := name <op> :value | name BETWEEN :low AND :high
+    /// `comparison := name <op> :value | :value <op> name
+    ///              | name BETWEEN :low AND :high
     ///              | begins_with '(' name ',' :prefix ')'`
+    ///
+    /// Either side of a comparison may carry the operand: a comparison written operand
+    /// first states the MIRROR image of the operator it reads about the attribute
+    /// ([`Operator::mirrored`]), while a refusal about the operand names the operator as
+    /// written.
     fn comparison(&mut self) -> Result<Comparison, crate::state::RequestError> {
-        match self.take()? {
-            Token::BeginsWith => {
+        match self.peek().cloned() {
+            Some(Token::BeginsWith) => {
+                self.at += 1;
                 self.expect(&Token::Open)?;
                 let attribute = self.attribute()?;
                 self.expect(&Token::Comma)?;
-                let prefix = self.value()?;
+                let prefix = self.operand(Operator::BeginsWith)?;
                 self.expect(&Token::Close)?;
                 Ok(Comparison {
                     attribute,
@@ -1668,56 +1870,96 @@ impl Parser<'_> {
                     operands: vec![prefix],
                 })
             }
-            Token::Name(name) => {
+            Some(Token::Value(placeholder)) => {
+                self.at += 1;
+                let Some(Token::Compare(written)) = self.peek().cloned() else {
+                    return Err(self.syntax());
+                };
+                self.at += 1;
+                let operand = self.placeholder_value(&placeholder)?;
+                check_operand_type(written, &operand)?;
+                let attribute = self.attribute()?;
+                Ok(Comparison {
+                    attribute,
+                    operator: written.mirrored(),
+                    operands: vec![operand],
+                })
+            }
+            Some(Token::Name(name)) => {
+                self.at += 1;
                 let attribute = self.resolve_name(&name)?;
-                match self.take()? {
-                    Token::Compare(operator) => {
-                        let operand = self.value()?;
+                match self.peek().cloned() {
+                    Some(Token::Compare(operator)) => {
+                        self.at += 1;
+                        let operand = self.operand(operator)?;
                         Ok(Comparison {
                             attribute,
                             operator,
                             operands: vec![operand],
                         })
                     }
-                    Token::Between => {
-                        let low = self.value()?;
+                    Some(Token::Between) => {
+                        self.at += 1;
+                        let low = self.operand(Operator::Between)?;
                         self.expect(&Token::And)?;
-                        let high = self.value()?;
+                        let high = self.operand(Operator::Between)?;
                         Ok(Comparison {
                             attribute,
                             operator: Operator::Between,
                             operands: vec![low, high],
                         })
                     }
-                    _ => Err(invalid_expression(self)),
+                    _ => Err(self.syntax()),
                 }
             }
-            _ => Err(invalid_expression(self)),
+            _ => Err(self.syntax()),
         }
     }
 
     /// An attribute name token, resolved through `ExpressionAttributeNames`.
     fn attribute(&mut self) -> Result<String, crate::state::RequestError> {
-        match self.take()? {
-            Token::Name(name) => self.resolve_name(&name),
-            _ => Err(invalid_expression(self)),
+        match self.peek().cloned() {
+            Some(Token::Name(name)) => {
+                self.at += 1;
+                self.resolve_name(&name)
+            }
+            _ => Err(self.syntax()),
         }
     }
 
-    /// A `:placeholder` token, resolved through `ExpressionAttributeValues`. A
-    /// placeholder the request never defined is the one undefined-token refusal every
-    /// expression member of this service states (`crate::state::undefined_value`).
+    /// One operand of a comparison: a `:placeholder` token, resolved and then held to the
+    /// types `written` compares ([`check_operand_type`]).
+    fn operand(
+        &mut self,
+        written: Operator,
+    ) -> Result<AttributeValue, crate::state::RequestError> {
+        let value = self.value()?;
+        check_operand_type(written, &value)?;
+        Ok(value)
+    }
+
+    /// A `:placeholder` token, resolved through `ExpressionAttributeValues`.
     fn value(&mut self) -> Result<AttributeValue, crate::state::RequestError> {
-        match self.take()? {
-            Token::Value(placeholder) => self
-                .values
-                .and_then(|values| values.get(&placeholder))
-                .cloned()
-                .ok_or_else(|| {
-                    crate::state::undefined_value(KEY_CONDITION_MEMBER, &placeholder)
-                }),
-            _ => Err(invalid_expression(self)),
+        match self.peek().cloned() {
+            Some(Token::Value(placeholder)) => {
+                self.at += 1;
+                self.placeholder_value(&placeholder)
+            }
+            _ => Err(self.syntax()),
         }
+    }
+
+    /// What a `:placeholder` stands for. One the request never defined is the one
+    /// undefined-token refusal every expression member of this service states
+    /// (`crate::state::undefined_value`).
+    fn placeholder_value(
+        &self,
+        placeholder: &str,
+    ) -> Result<AttributeValue, crate::state::RequestError> {
+        self.values
+            .and_then(|values| values.get(placeholder))
+            .cloned()
+            .ok_or_else(|| crate::state::undefined_value(KEY_CONDITION_MEMBER, placeholder))
     }
 
     /// `#alias` resolves through `ExpressionAttributeNames`; any other name is the
