@@ -17,6 +17,13 @@
 //! modelled `ValidationException` carrying the `ValidationExceptionReason` the model
 //! enumerates for that fault.
 //!
+//! An association this create stores for an `AssociatedValues` entry is in effect over
+//! the billing periods the new item's `BillingPeriodRange` names BOUNDED to the periods
+//! the named resource is there to be associated in (see
+//! [`crate::state::ComAmazonawsBillingconductorAwsbillingconductorState::associable_billing_periods`]),
+//! and an entry naming a resource that applies in none of them is refused with the
+//! modelled `ValidationException`.
+//!
 //! The item is created "for the current or previous billing period", so a
 //! `BillingPeriodRange` whose `InclusiveStartBillingPeriod` names a month outside that
 //! window is refused with the modelled 400 `ValidationException` and nothing is minted
@@ -298,6 +305,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
+        // The billing periods the item this create mints applies in: the range the
+        // create named, bounded below by the period this call was made in, because a
+        // billing period that closed before the item existed never carries it
+        // ([`crate::state::BillingPeriodSpan::started_now`]). It is the item's own
+        // stretch below AND the span the associations this create stores are derived
+        // from, named once so the two cannot disagree.
+        let item_periods = crate::state::BillingPeriodSpan::started_now(
+            period_range
+                .as_ref()
+                .map(|range| range.inclusive_start_billing_period.clone()),
+            period_range
+                .as_ref()
+                .and_then(|range| range.exclusive_end_billing_period.clone()),
+        );
+
         // "A list of resource ARNs to associate to the percentage custom line item."
         // Each one has to name a stored billing group or custom line item IN SCOPE of
         // the billing group this item applies to (see
@@ -341,16 +363,51 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     format!("the resource {arn} is listed more than once"),
                 ));
             }
-            associated_resources.push(crate::state::ResourceAssociationRecord::new(
-                arn,
-                crate::state::BillingPeriodSpan::new(
-                    period_range
-                        .as_ref()
-                        .map(|range| range.inclusive_start_billing_period.clone()),
-                    period_range
-                        .as_ref()
-                        .and_then(|range| range.exclusive_end_billing_period.clone()),
-                ),
+            // The billing periods this association is in effect over: the span the
+            // create derives from the new item's own range, BOUNDED to the periods the
+            // named resource is there to be associated in — an association is in effect
+            // only in those, the rule the writer that narrows an item maintains from the
+            // other end, so no read of a billing period can report an association to an
+            // item it reports no version of. A resource that applies in none of the
+            // periods the item being created applies in cannot be a child of it at all,
+            // which is the fault `ValidationExceptionReason` enumerates by name.
+            let in_effect = state.associable_billing_periods(&arn, &item_periods);
+            if in_effect.is_empty() {
+                return Err(validation(
+                    "ILLEGAL_CHILD_ASSOCIATE_RESOURCE",
+                    "ChargeDetails.Percentage.AssociatedValues",
+                    format!(
+                        "the resource {arn} applies in none of the billing periods the custom \
+                         line item being created applies in"
+                    ),
+                ));
+            }
+            // A stored association is in effect over at most
+            // [`crate::state::MAX_BILLING_PERIOD_SPANS`] separate stretches of billing
+            // periods, whichever call wrote it, so a resource whose own periods would
+            // carve this one into more is refused at that bound rather than stored past
+            // it — the refusal the batch association answers the same bound with. A
+            // create reaches it only for a named item whose generations together apply in
+            // more separate stretches than that, which takes at least that many bounded
+            // writes to the named item first, so no single request can arrive here.
+            if in_effect.len() > crate::state::MAX_BILLING_PERIOD_SPANS {
+                return Err(CreateCustomLineItemErrorModeled::ServiceLimitExceededException(
+                    ServiceLimitExceededException {
+                        message: format!(
+                            "the association of {arn} would be in effect over more than the {} \
+                             separate ranges of billing periods an association may hold",
+                            crate::state::MAX_BILLING_PERIOD_SPANS
+                        ),
+                        resource_id: Some(arn),
+                        resource_type: Some("customlineitem".to_string()),
+                        limit_code: "BillingPeriodRangesPerResourceAssociation".to_string(),
+                        service_code: crate::state::SERVICE_CODE.to_string(),
+                    },
+                )
+                .into());
+            }
+            associated_resources.push(crate::state::ResourceAssociationRecord::over(
+                arn, in_effect,
             ));
         }
 
@@ -400,12 +457,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // this create was made in on, because a billing period that closed before
             // the item existed never carries it
             // ([`crate::state::BillingPeriodSpan::started_now`]).
-            spans: vec![crate::state::BillingPeriodSpan::started_now(
-                period_range
-                    .as_ref()
-                    .map(|range| range.inclusive_start_billing_period.clone()),
-                period_range.and_then(|range| range.exclusive_end_billing_period),
-            )],
+            spans: vec![item_periods],
             tags: input.tags.unwrap_or_default().into_iter().collect(),
             associated_resources,
             creation_time_millis: now,

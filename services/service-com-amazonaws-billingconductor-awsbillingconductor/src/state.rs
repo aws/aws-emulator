@@ -449,6 +449,47 @@ impl BillingPeriodSpan {
         };
         Some(Self::new(inclusive_start, exclusive_end))
     }
+
+    /// The billing periods this span and `other` BOTH cover, as one span; `None` when
+    /// they share no billing period at all.
+    ///
+    /// Two half-open spans share a period exactly when each one begins strictly before
+    /// the other ends ([`billing_period_precedes`] read across the two, as [`Self::minus`]
+    /// reads it), and the periods they share run from
+    /// the LATER of the two inclusive starts to the EARLIER of the two exclusive ends —
+    /// each bound kept as the call that set it spelled it, and an absent bound being open
+    /// and so never the tighter one.
+    ///
+    /// The third of the span operations [`Self::minus`] and [`Self::union`] belong to:
+    /// subtraction is what a call that ends a resource over a range does to its spans,
+    /// union what a call that puts it in effect over one does, and this is what BOUNDING
+    /// a range to the periods another resource is there for does
+    /// ([`intersect_billing_periods`]).
+    pub fn intersection(&self, other: &Self) -> Option<Self> {
+        let (start, end) = (self.start_key(), self.end_key());
+        let (other_start, other_end) = (other.start_key(), other.end_key());
+        if !billing_period_precedes(start, other_end) || !billing_period_precedes(other_start, end)
+        {
+            return None;
+        }
+        let inclusive_start = match (start, other_start) {
+            (Some(start), Some(other_start)) if other_start > start => {
+                other.inclusive_start.clone()
+            }
+            // An absent start is the unbounded past, so the other span's start is the
+            // later one whenever it has one at all.
+            (None, Some(_)) => other.inclusive_start.clone(),
+            _ => self.inclusive_start.clone(),
+        };
+        let exclusive_end = match (end, other_end) {
+            (Some(end), Some(other_end)) if other_end < end => other.exclusive_end.clone(),
+            // An absent end is open, so the other span's end is the earlier one whenever
+            // it has one at all.
+            (None, Some(_)) => other.exclusive_end.clone(),
+            _ => self.exclusive_end.clone(),
+        };
+        Some(Self::new(inclusive_start, exclusive_end))
+    }
 }
 
 /// Is there a billing period between the half-open bound `end` and the inclusive bound
@@ -514,9 +555,31 @@ pub fn add_billing_periods(
     spans: &mut Vec<BillingPeriodSpan>,
     added: &BillingPeriodSpan,
 ) -> PeriodsAddition {
+    let left = joined_billing_periods(spans, added);
+    if left == *spans {
+        return PeriodsAddition::Unchanged;
+    }
+    if left.len() > MAX_BILLING_PERIOD_SPANS {
+        return PeriodsAddition::AtSpanLimit;
+    }
+    *spans = left;
+    PeriodsAddition::Changed
+}
+
+/// `spans` with `added` joined in: the fewest disjoint ascending stretches that cover
+/// every billing period either side covers.
+///
+/// The joining rule [`add_billing_periods`] writes through, without its bound, so a
+/// read that only has to KNOW the periods a resource is in effect over — rather than
+/// store them — answers from the same arithmetic the writer uses
+/// ([`CustomLineItemRecord::applied_periods`]).
+fn joined_billing_periods(
+    spans: &[BillingPeriodSpan],
+    added: &BillingPeriodSpan,
+) -> Vec<BillingPeriodSpan> {
     let mut joined = added.clone();
     let mut left: Vec<BillingPeriodSpan> = Vec::new();
-    for span in spans.iter() {
+    for span in spans {
         match span.union(&joined) {
             Some(union) => joined = union,
             None => left.push(span.clone()),
@@ -527,14 +590,23 @@ pub fn add_billing_periods(
     // anywhere among them; an absent inclusive start is the unbounded past, so it sorts
     // first.
     left.sort_by_key(|span| span.start_key().unwrap_or(i64::MIN));
-    if left == *spans {
-        return PeriodsAddition::Unchanged;
-    }
-    if left.len() > MAX_BILLING_PERIOD_SPANS {
-        return PeriodsAddition::AtSpanLimit;
-    }
-    *spans = left;
-    PeriodsAddition::Changed
+    left
+}
+
+/// The billing periods of `within` that `spans` also cover, as spans in the order
+/// `spans` holds them — `within` BOUNDED to the periods `spans` are in effect over.
+///
+/// One span at a time ([`BillingPeriodSpan::intersection`]), so a `spans` list that is
+/// disjoint and ascending leaves one; empty when `within` shares no billing period with
+/// any of them, which is a range bounded down to no period at all.
+pub fn intersect_billing_periods(
+    spans: &[BillingPeriodSpan],
+    within: &BillingPeriodSpan,
+) -> Vec<BillingPeriodSpan> {
+    spans
+        .iter()
+        .filter_map(|span| span.intersection(within))
+        .collect()
 }
 
 /// The `CurrencyCode` a resource's charges are denominated in, DERIVED from the
@@ -1933,6 +2005,19 @@ impl ResourceAssociationRecord {
         }
     }
 
+    /// An association of `arn` in effect over exactly `spans`.
+    ///
+    /// For the caller that has already worked out the stretches the association is in
+    /// effect over rather than one range to be bounded below — the periods a range and
+    /// the resource it names SHARE ([`intersect_billing_periods`]), which can be several
+    /// stretches when the named resource applies in several. Those stretches come from
+    /// the resource's own spans and a range [`BillingPeriodSpan::started_now`] has
+    /// already bounded, so each one begins in a real billing period, as [`Self::new`]
+    /// makes sure of for the single-range caller.
+    pub fn over(arn: String, spans: Vec<BillingPeriodSpan>) -> Self {
+        Self { arn, spans }
+    }
+
     /// `Relationship`, DERIVED from the resource the ARN names — see
     /// [`association_relationship`].
     pub fn relationship(&self) -> &'static str {
@@ -2244,6 +2329,29 @@ impl CustomLineItemRecord {
                 .superseded_versions
                 .iter()
                 .any(|version| version.covers(billing_period))
+    }
+
+    /// The billing periods this item applies in, in ANY generation of it, as the fewest
+    /// disjoint ascending stretches that cover exactly them.
+    ///
+    /// [`Self::covers`] asked of every period at once: a read reports a version of the
+    /// item in a period one of these stretches covers and in no other, because every
+    /// generation's own stretches are here. It is what another resource's association to
+    /// this item may be in effect over
+    /// ([`ComAmazonawsBillingconductorAwsbillingconductorState::associable_billing_periods`]),
+    /// so the periods an association names the item for are the periods a read reports a
+    /// version of it in.
+    pub fn applied_periods(&self) -> Vec<BillingPeriodSpan> {
+        let mut periods: Vec<BillingPeriodSpan> = Vec::new();
+        for span in self
+            .superseded_versions
+            .iter()
+            .flat_map(|version| &version.spans)
+            .chain(&self.spans)
+        {
+            periods = joined_billing_periods(&periods, span);
+        }
+        periods
     }
 
     /// The generation of this item that applies in `billing_period` — what a read
@@ -3786,6 +3894,38 @@ impl ComAmazonawsBillingconductorAwsbillingconductorState {
                 .then_some(OutOfScopeAssociation::OtherGroupsCustomLineItem),
             None => (resource_arn != billing_group_arn)
                 .then_some(OutOfScopeAssociation::OtherBillingGroup),
+        }
+    }
+
+    /// The billing periods of `requested` an association naming `resource_arn` may be in
+    /// effect over: `requested` BOUNDED to the periods the named resource is there to be
+    /// associated in. Empty when the resource applies in none of them, so there is no
+    /// association to store at all.
+    ///
+    /// A resource association is in effect only in billing periods the resource it names
+    /// is there to be associated in — the rule the narrowing writer maintains from the
+    /// other end ([`Self::remove_custom_line_item_periods`]): a period the named resource
+    /// applies in in no generation of it holds no association of it either, so no read of
+    /// that period can report an association to an item it reports no version of.
+    ///
+    /// A named CUSTOM LINE ITEM applies in the billing periods its generations hold
+    /// ([`CustomLineItemRecord::applied_periods`]), which is exactly where a read reports
+    /// a version of it, so an association naming it is bounded to those. A named BILLING
+    /// GROUP is not bounded that way: it carries the charges of the accounts it bills in
+    /// every period of the bill a write may still land in — which is why a custom line
+    /// item may be created into the previous billing period of a group created in this
+    /// one ([`check_billing_period_range_is_modifiable`]) — so a range is in effect over
+    /// it as it stands. `resource_arn` is a FULL ARN, as
+    /// [`Self::resolve_association_element`] resolved it, so a resource that is not a
+    /// stored custom line item is a billing group.
+    pub fn associable_billing_periods(
+        &self,
+        resource_arn: &str,
+        requested: &BillingPeriodSpan,
+    ) -> Vec<BillingPeriodSpan> {
+        match self.custom_line_items.get(resource_arn) {
+            Some(item) => intersect_billing_periods(&item.applied_periods(), requested),
+            None => vec![requested.clone()],
         }
     }
 

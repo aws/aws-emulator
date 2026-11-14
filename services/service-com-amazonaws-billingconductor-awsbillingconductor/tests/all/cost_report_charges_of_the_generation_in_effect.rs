@@ -374,7 +374,11 @@ fn period(months: i64) -> String {
 
 /// The billing period one month after `billing_period` — the exclusive end of the
 /// half-open range that covers exactly that one period.
-fn month_after(billing_period: &str) -> String {
+///
+/// `pub(crate)` so the sibling suites that name a one-period range step the month
+/// through this one helper (see
+/// `tests/all/create_custom_line_item_association_periods.rs`).
+pub(crate) fn month_after(billing_period: &str) -> String {
     let (year, month) = billing_period
         .split_once('-')
         .expect("a billing period is spelled YYYY-MM");

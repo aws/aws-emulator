@@ -29,7 +29,11 @@ use serde_json::{json, Value};
 /// A `CustomLineItemBillingPeriodRange`, as the model shapes it
 /// (`smithy_query(query="shape",shape="CustomLineItemBillingPeriodRange")`: `@required
 /// InclusiveStartBillingPeriod`, optional `ExclusiveEndBillingPeriod`).
-fn range(inclusive_start: &str, exclusive_end: Option<&str>) -> Value {
+///
+/// `pub(crate)` so the sibling suite about the other half of the same rule reads the
+/// store through these helpers rather than restating them (see
+/// `tests/all/create_custom_line_item_association_periods.rs`).
+pub(crate) fn range(inclusive_start: &str, exclusive_end: Option<&str>) -> Value {
     let mut value = json!({ "InclusiveStartBillingPeriod": inclusive_start });
     if let Some(end) = exclusive_end {
         value["ExclusiveEndBillingPeriod"] = json!(end);
@@ -109,7 +113,12 @@ async fn delete(emulator: &Emulator, arn: &str, billing_period_range: &Value) ->
 
 /// The item as `ListCustomLineItems` reports it for `billing_period`, or `None` when that
 /// period reports no version of it.
-async fn item_in(emulator: &Emulator, case: &str, arn: &str, billing_period: &str) -> Option<Value> {
+pub(crate) async fn item_in(
+    emulator: &Emulator,
+    case: &str,
+    arn: &str,
+    billing_period: &str,
+) -> Option<Value> {
     let (status, body) = emulator
         .send(
             "POST",
@@ -131,7 +140,7 @@ async fn item_in(emulator: &Emulator, case: &str, arn: &str, billing_period: &st
 /// The ARNs `ListResourcesAssociatedToCustomLineItem` reports for `holder` in
 /// `billing_period`, or `None` when the store holds no such item at all — the read's
 /// modelled 404, which is how an item a delete removed outright answers.
-async fn associated_arns(
+pub(crate) async fn associated_arns(
     emulator: &Emulator,
     case: &str,
     holder: &str,
@@ -166,7 +175,7 @@ async fn associated_arns(
 
 /// The `AssociationSize` `ListCustomLineItems` reports for `arn` in `billing_period`, or
 /// `None` when that period reports no version of the item.
-async fn association_size(
+pub(crate) async fn association_size(
     emulator: &Emulator,
     case: &str,
     arn: &str,
