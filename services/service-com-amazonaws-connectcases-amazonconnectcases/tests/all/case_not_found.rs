@@ -4,28 +4,39 @@
 //! addresses a case the domain does not hold, driven through the real
 //! `MultiServiceRouter` so every assertion goes over the wire the SDK speaks.
 //!
-//! The rule under test: a `ResourceNotFoundException` (404) about a CASE carries
-//! the service's sentence for that resource class — `A case with id '<caseId>'
-//! could not be found.` — with the case id taken from the request and
-//! single-quoted, whichever operation addresses the case and whether the case was
-//! deleted or never existed; the kinds of resource the service has no sentence of
-//! its own for keep answering its generic one, so the text is chosen per resource
-//! class rather than from one template for every class.
+//! The rule under test: a `ResourceNotFoundException` (404) about a CASE reports
+//! the class through the lowercase token `case` and carries the sentence the
+//! service words for THAT refusal — a call that addresses the case quotes the
+//! case id the request carried (`A case with id '<caseId>' could not be found.`),
+//! the association of a related item answers its own fixed sentence about the
+//! same class — whether the case was deleted or never existed; the refusals the
+//! service words no sentence of its own for keep answering its generic one, so
+//! the text is chosen per refusal rather than from one template for every class.
 
 use serde_json::{json, Value};
 use service_com_amazonaws_connectcases_amazonconnectcases::state::RESOURCE_NOT_FOUND_MESSAGE;
 
 use crate::harness::{domain, field_of_type, fields_of_every_type, string_at, template, Emulator};
 
-/// The sentence a case-not-found refusal must carry, written out here rather
-/// than taken from the crate so the expectation is independent of the code
-/// under test.
-fn case_not_found_sentence(case_id: &str) -> String {
+/// How a refusal about a case is worded, written out here rather than taken
+/// from the crate so the expectations are independent of the code under test:
+/// a function of the case id, which only one of the two sentences interpolates.
+type Sentence = fn(&str) -> String;
+
+/// The sentence a call that ADDRESSES a case must carry for one the domain does
+/// not hold: it quotes the id the request carried.
+fn addressed_case_sentence(case_id: &str) -> String {
     format!("A case with id '{case_id}' could not be found.")
 }
 
-/// Assert one call is the modelled 404 about the case `case_id` names, with the
-/// service's sentence for that class.
+/// The sentence `CreateRelatedItem` must carry for a case the domain does not
+/// hold: entirely fixed text, quoting no id.
+fn related_item_case_sentence(_case_id: &str) -> String {
+    "A case with the specified ID was not found.".to_string()
+}
+
+/// Assert one call is the modelled 404 about the case `case_id` names, worded
+/// as `sentence` words it.
 async fn refused_as_unknown_case(
     emulator: &Emulator,
     case: &str,
@@ -33,6 +44,7 @@ async fn refused_as_unknown_case(
     path: &str,
     body: Option<Value>,
     case_id: &str,
+    sentence: Sentence,
 ) {
     let (status, response) = emulator.send(method, path, body).await;
     assert_eq!(
@@ -40,7 +52,7 @@ async fn refused_as_unknown_case(
         (404, Some("ResourceNotFoundException")),
         "case {case:?}: expected 404 ResourceNotFoundException, got {status} {response:?}"
     );
-    let expected = case_not_found_sentence(case_id);
+    let expected = sentence(case_id);
     assert_eq!(
         response.get("message").and_then(Value::as_str),
         Some(expected.as_str()),
@@ -48,7 +60,7 @@ async fn refused_as_unknown_case(
     );
     assert_eq!(
         string_at(&response, "resourceType", case),
-        "Case",
+        "case",
         "case {case:?}: resourceType must name the kind of resource, got {response:?}"
     );
     assert_eq!(
@@ -72,8 +84,15 @@ async fn refused_as_unknown_case(
 /// still scaffolded stubs and answer 501, so they carry no refusal to assert.
 /// One row of a refusal table: what it is a case of (an operation name, or the
 /// call in prose), the method, the path or the path suffix after the addressed
-/// case, and the request body.
-type Route = (&'static str, &'static str, String, Option<Value>);
+/// case, the request body, and the sentence that operation words the refusal
+/// with.
+type Route = (
+    &'static str,
+    &'static str,
+    String,
+    Option<Value>,
+    Sentence,
+);
 
 fn case_addressed_operations(field_id: &str) -> Vec<Route> {
     vec![
@@ -82,19 +101,28 @@ fn case_addressed_operations(field_id: &str) -> Vec<Route> {
             "POST",
             String::new(),
             Some(json!({ "fields": [{ "id": field_id }] })),
+            addressed_case_sentence as Sentence,
         ),
         (
             "UpdateCase",
             "PUT",
             String::new(),
             Some(json!({ "fields": [{ "id": field_id, "value": { "stringValue": "x" } }] })),
+            addressed_case_sentence as Sentence,
         ),
-        ("DeleteCase", "DELETE", String::new(), None),
+        (
+            "DeleteCase",
+            "DELETE",
+            String::new(),
+            None,
+            addressed_case_sentence as Sentence,
+        ),
         (
             "GetCaseAuditEvents",
             "POST",
             "/audit-history".to_string(),
             Some(json!({})),
+            addressed_case_sentence as Sentence,
         ),
         (
             "CreateRelatedItem",
@@ -104,6 +132,7 @@ fn case_addressed_operations(field_id: &str) -> Vec<Route> {
                 "type": "Comment",
                 "content": { "comment": { "body": "a note", "contentType": "Text/Plain" } },
             })),
+            related_item_case_sentence as Sentence,
         ),
     ]
 }
@@ -173,10 +202,10 @@ async fn every_operation_that_addresses_a_missing_case_answers_the_case_sentence
     ];
 
     for (id_case, case_id) in &ids {
-        for (operation, method, suffix, body) in case_addressed_operations(&text) {
+        for (operation, method, suffix, body, sentence) in case_addressed_operations(&text) {
             let case = format!("{operation} with {id_case}");
             let path = format!("/domains/{domain_id}/cases/{case_id}{suffix}");
-            refused_as_unknown_case(&emulator, &case, method, &path, body, case_id).await;
+            refused_as_unknown_case(&emulator, &case, method, &path, body, case_id, sentence).await;
         }
     }
 }
@@ -221,7 +250,8 @@ async fn the_case_sentence_is_about_the_case_the_request_names() {
 
     // A reference a BODY carries is the case the sentence is about, not the
     // case the path addresses: `CreateRelatedItem` with `connectCase` content
-    // links one case to another.
+    // links one case to another, and words either refusal the way it words its
+    // missing-case refusal.
     let dangling = "99999999-8888-7777-6666-555555555555";
     refused_as_unknown_case(
         &emulator,
@@ -230,6 +260,7 @@ async fn the_case_sentence_is_about_the_case_the_request_names() {
         &format!("/domains/{domain_id}/cases/{live_case_id}/related-items/"),
         Some(json!({ "type": "ConnectCase", "content": { "connectCase": { "caseId": dangling } } })),
         dangling,
+        related_item_case_sentence as Sentence,
     )
     .await;
 
@@ -253,10 +284,10 @@ async fn the_case_sentence_is_about_the_case_the_request_names() {
         );
     }
 
-    // The per-class choice: a kind the service has no sentence of its own for
-    // still answers its generic one, so this change did not retemplate every
-    // class.
-    let generic: Vec<Route> = vec![
+    // The per-refusal choice: a refusal the service words no sentence of its
+    // own for still answers its generic one, so this change did not retemplate
+    // every refusal.
+    let generic: Vec<(&'static str, &'static str, String, Option<Value>)> = vec![
         (
             "GetDomain on a domain that does not exist",
             "POST",

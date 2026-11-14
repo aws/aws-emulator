@@ -389,6 +389,18 @@ async fn build(emulator: &Emulator, name: &str, content: Content) -> Built {
     built
 }
 
+/// The sentence a call refused for a domain the store does not hold must
+/// carry. The service words this refusal per operation: `CreateCase` sends the
+/// sentence that quotes the domain identifier the request carried, and every
+/// other call here sends the service's generic sentence.
+fn expected_domain_sentence(case: &str, domain_id: &str) -> String {
+    if case.starts_with("CreateCase") {
+        format!("Domain '{domain_id}' does not exist.")
+    } else {
+        RESOURCE_NOT_FOUND_MESSAGE.to_string()
+    }
+}
+
 /// Assert one call is the modelled 404 for a domain the store does not hold.
 async fn refused_as_unknown_domain(
     emulator: &Emulator,
@@ -405,15 +417,15 @@ async fn refused_as_unknown_domain(
         "case {case:?}: a call scoped to a deleted domain must be refused with 404 \
          ResourceNotFoundException, got {status} {response:?}"
     );
+    let expected = expected_domain_sentence(case, domain_id);
     assert_eq!(
         response.get("message").and_then(Value::as_str),
-        Some(RESOURCE_NOT_FOUND_MESSAGE),
-        "case {case:?}: expected the fixed sentence {RESOURCE_NOT_FOUND_MESSAGE:?}, \
-         got {response:?}"
+        Some(expected.as_str()),
+        "case {case:?}: expected the sentence {expected:?}, got {response:?}"
     );
     assert_eq!(
         string_at(&response, "resourceType", case),
-        "Domain",
+        "domain",
         "case {case:?}: the refusal must name the kind of resource that could not be \
          resolved, got {response:?}"
     );

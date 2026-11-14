@@ -237,8 +237,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
+        // A create of a case names the domain it creates in, and this operation
+        // words the refusal for a domain the store does not hold with the
+        // sentence that quotes the identifier the request carried, rather than
+        // the service's generic one.
         let domain = store
-            .domain_mut(&input.domain_id)
+            .domain_mut_worded(&input.domain_id, crate::state::NotFoundWording::NamedDomain)
             .map_err(CreateCaseErrorModeled::ResourceNotFoundException)?;
         let required_field_ids: Vec<String> = domain
             .template(&input.template_id)

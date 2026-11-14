@@ -438,11 +438,11 @@ async fn a_field_id_outside_the_domains_schema_is_refused_in_the_services_words(
 
 /// The sentence the not-found class carries for a resource of `resource_type`
 /// addressed by `resource_id`, written out here rather than taken from the
-/// crate so the expectation is independent of the code under test. A case has
-/// the service's own sentence naming the id; every other kind answers the
-/// generic one.
+/// crate so the expectation is independent of the code under test. A call that
+/// ADDRESSES a case has the service's own sentence naming the id; the kinds the
+/// rows below address answer the generic one.
 fn expected_not_found_message(resource_type: &str, resource_id: &str) -> String {
-    if resource_type == "Case" {
+    if resource_type == "case" {
         format!("A case with id '{resource_id}' could not be found.")
     } else {
         RESOURCE_NOT_FOUND_MESSAGE.to_string()
@@ -490,7 +490,7 @@ async fn a_resource_that_cannot_be_resolved_is_refused_with_its_classs_sentence(
             "POST",
             "/domains/no-such-domain".to_string(),
             Some(json!({})),
-            "Domain",
+            "domain",
             "no-such-domain".to_string(),
         ),
         (
@@ -498,7 +498,7 @@ async fn a_resource_that_cannot_be_resolved_is_refused_with_its_classs_sentence(
             "POST",
             format!("/domains/{domain_id}/cases/no-such-case"),
             Some(json!({ "fields": [{ "id": text }] })),
-            "Case",
+            "case",
             "no-such-case".to_string(),
         ),
         (
@@ -506,7 +506,7 @@ async fn a_resource_that_cannot_be_resolved_is_refused_with_its_classs_sentence(
             "POST",
             format!("/domains/{domain_id}/templates/no-such-template"),
             Some(json!({})),
-            "Template",
+            "template",
             "no-such-template".to_string(),
         ),
         (
@@ -514,7 +514,7 @@ async fn a_resource_that_cannot_be_resolved_is_refused_with_its_classs_sentence(
             "POST",
             format!("/domains/{domain_id}/layouts/no-such-layout"),
             Some(json!({})),
-            "Layout",
+            "layout",
             "no-such-layout".to_string(),
         ),
         (
@@ -522,7 +522,7 @@ async fn a_resource_that_cannot_be_resolved_is_refused_with_its_classs_sentence(
             "PUT",
             format!("/domains/{domain_id}/layouts/{layout_id}"),
             Some(json!({ "name": "renamed-after-the-delete" })),
-            "Layout",
+            "layout",
             layout_id.clone(),
         ),
         (
@@ -530,7 +530,7 @@ async fn a_resource_that_cannot_be_resolved_is_refused_with_its_classs_sentence(
             "PUT",
             format!("/domains/{domain_id}/cases/no-such-case"),
             Some(json!({ "fields": [{ "id": text, "value": { "stringValue": "x" } }] })),
-            "Case",
+            "case",
             "no-such-case".to_string(),
         ),
         (
@@ -538,7 +538,7 @@ async fn a_resource_that_cannot_be_resolved_is_refused_with_its_classs_sentence(
             "DELETE",
             format!("/domains/{domain_id}/cases/no-such-case"),
             None,
-            "Case",
+            "case",
             "no-such-case".to_string(),
         ),
         (
@@ -546,7 +546,7 @@ async fn a_resource_that_cannot_be_resolved_is_refused_with_its_classs_sentence(
             "POST",
             format!("/domains/{domain_id}/cases"),
             Some(json!({ "templateId": "no-such-template", "fields": [] })),
-            "Template",
+            "template",
             "no-such-template".to_string(),
         ),
         (
@@ -554,7 +554,7 @@ async fn a_resource_that_cannot_be_resolved_is_refused_with_its_classs_sentence(
             "POST",
             "/domains/no-such-domain/fields".to_string(),
             Some(json!({ "name": "a-field", "type": "Text" })),
-            "Domain",
+            "domain",
             "no-such-domain".to_string(),
         ),
     ];
@@ -581,7 +581,7 @@ async fn a_resource_that_cannot_be_resolved_is_refused_with_its_classs_sentence(
             "case {case:?}: the sentence must carry no domain id, got {message:?}"
         );
         assert!(
-            resource_type == "Case" || !message.contains(resource_id.as_str()),
+            resource_type == "case" || !message.contains(resource_id.as_str()),
             "case {case:?}: the sentence must carry no part of the request, got {message:?}"
         );
         assert_eq!(

@@ -245,7 +245,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let content_check = content_refusal(domain, &input.content);
         let Some(case) = domain.cases.get_mut(&input.case_id) else {
             return Err(CreateRelatedItemErrorModeled::ResourceNotFoundException(
-                crate::state::not_found(crate::state::ResourceKind::Case, &input.case_id),
+                case_not_found(&input.case_id),
             )
             .into());
         };
@@ -315,6 +315,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     }
 }
 
+/// The modelled 404 this operation answers for a case `case_id` names that the
+/// domain does not hold, whether the request addressed it by its path label or
+/// linked to it from the content it carried.
+///
+/// This operation words the missing-case refusal with the sentence it sends for
+/// it ([`crate::state::NotFoundWording::RelatedItemCase`]), which is not the
+/// sentence a call that READS a case sends: the sentence belongs to the refusal,
+/// not to the resource class alone.
+fn case_not_found(case_id: &str) -> ResourceNotFoundException {
+    crate::state::not_found_worded(
+        crate::state::ResourceKind::Case,
+        case_id,
+        crate::state::NotFoundWording::RelatedItemCase,
+    )
+}
+
 /// Every reference the content of an association makes, resolved against the
 /// domain the association is made in: `Ok(())` when each of them names something
 /// the domain holds, else the modelled refusal for the first that does not.
@@ -337,7 +353,7 @@ fn content_refusal(
         RelatedItemInputContent::connectCase(connect_case) => {
             if !domain.cases.contains_key(&connect_case.case_id) {
                 return Err(CreateRelatedItemErrorModeled::ResourceNotFoundException(
-                    crate::state::not_found(crate::state::ResourceKind::Case, &connect_case.case_id),
+                    case_not_found(&connect_case.case_id),
                 ));
             }
         }

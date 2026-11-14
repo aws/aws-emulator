@@ -202,7 +202,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             domain.mismatched_field_values(input.fields.iter().map(|f| (f.id.as_str(), &f.value)));
         let Some(case) = domain.cases.get_mut(&input.case_id) else {
             return Err(UpdateCaseErrorModeled::ResourceNotFoundException(
-                crate::state::not_found(crate::state::ResourceKind::Case, &input.case_id),
+                crate::state::not_found_worded(
+                    crate::state::ResourceKind::Case,
+                    &input.case_id,
+                    crate::state::NotFoundWording::AddressedCase,
+                ),
             )
             .into());
         };

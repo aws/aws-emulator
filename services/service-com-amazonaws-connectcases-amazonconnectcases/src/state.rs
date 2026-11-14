@@ -526,11 +526,23 @@ impl ComAmazonawsConnectcasesAmazonconnectcasesState {
             .ok_or_else(|| not_found(ResourceKind::Domain, domain_id))
     }
 
-    /// The domain `domain_id` names for writing, or the modelled 404 for it.
+    /// The domain `domain_id` names for writing, or the modelled 404 for it,
+    /// worded with the service's generic sentence.
     pub fn domain_mut(&mut self, domain_id: &str) -> Result<&mut Domain, ResourceNotFoundException> {
+        self.domain_mut_worded(domain_id, NotFoundWording::Generic)
+    }
+
+    /// The domain `domain_id` names for writing, or the modelled 404 for it
+    /// worded as `wording` words it: what an operation that sends a sentence of
+    /// its own for a domain it cannot resolve resolves the domain through.
+    pub fn domain_mut_worded(
+        &mut self,
+        domain_id: &str,
+        wording: NotFoundWording,
+    ) -> Result<&mut Domain, ResourceNotFoundException> {
         self.domains
             .get_mut(domain_id)
-            .ok_or_else(|| not_found(ResourceKind::Domain, domain_id))
+            .ok_or_else(|| not_found_worded(ResourceKind::Domain, domain_id, wording))
     }
 
     /// Refuse a new domain once the store holds [`MAX_DOMAINS`] of them.
@@ -624,11 +636,12 @@ impl ComAmazonawsConnectcasesAmazonconnectcasesState {
 }
 
 impl Domain {
-    /// The case `case_id` names, or the modelled 404 for it.
+    /// The case `case_id` names, or the modelled 404 for it, worded as a call
+    /// that ADDRESSES a case words it ([`NotFoundWording::AddressedCase`]).
     pub fn case(&self, case_id: &str) -> Result<&Case, ResourceNotFoundException> {
-        self.cases
-            .get(case_id)
-            .ok_or_else(|| not_found(ResourceKind::Case, case_id))
+        self.cases.get(case_id).ok_or_else(|| {
+            not_found_worded(ResourceKind::Case, case_id, NotFoundWording::AddressedCase)
+        })
     }
 
     /// The LIVE template `template_id` names, or the modelled 404 for it. A
@@ -1753,8 +1766,10 @@ pub const BATCH_ITEM_NOT_FOUND_CODE: &str = "ResourceNotFound";
 /// The kind of resource a refusal is about: the kinds this service addresses
 /// within a container, plus the container itself. Taking the kind as a value
 /// rather than a string is what makes the rendering of [`name_conflict`] and
-/// [`not_found`] total — there is no unknown kind to fall back on, no runtime
-/// capitalisation, and the text of a refusal class can be chosen per kind.
+/// [`not_found`] total — there is no unknown kind to fall back on, and no
+/// runtime capitalisation: each kind spells itself once, so the `resourceType`
+/// token a refusal reports is the service's own lowercase word for the kind and
+/// the sentence of a refusal is chosen deliberately ([`NotFoundWording`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResourceKind {
     Domain,
@@ -1776,25 +1791,54 @@ impl ResourceKind {
         }
     }
 
-    /// The `resourceType` a refusal about this kind reports.
+    /// The `resourceType` a refusal about this kind reports: the service's
+    /// lowercase token for the kind, which is the wire vocabulary a client
+    /// branches on to tell WHICH identifier of a request could not be resolved
+    /// — the same token the kind reads as inside a sentence, never a
+    /// capitalised type name.
     pub fn resource_type(self) -> &'static str {
-        self.words().0
+        self.words().1
     }
+}
 
-    /// The `message` the not-found class carries for THIS kind of resource.
-    ///
-    /// The service does not use one sentence for every kind: a case that cannot
-    /// be resolved is reported with the sentence that names the case id the
-    /// request carried, single-quoted, while the kinds nothing records a
-    /// per-kind sentence for answer the service's generic one
-    /// ([`RESOURCE_NOT_FOUND_MESSAGE`]) and report the resource through the
+/// Which sentence a [`not_found`] refusal carries.
+///
+/// The service does not word every not-found refusal alike, and the wording is
+/// not a function of the resource class alone: a call that ADDRESSES a case
+/// quotes the case id it was given, while the association of a related item
+/// answers a fixed sentence about the same class, so the sentence belongs to
+/// the refusal — the class, and the operation raising it where that operation
+/// words the class differently. A raising site therefore names its wording, and
+/// [`ResourceKind`] decides the `resourceType` token only. The refusals this
+/// service words no sentence of its own for carry [`Self::Generic`], which the
+/// recorded layout refusal pins as a wording this service really sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotFoundWording {
+    /// The service's generic sentence, with no variable part
+    /// ([`RESOURCE_NOT_FOUND_MESSAGE`]): the resource is reported through the
     /// error's own `resourceId`/`resourceType` members instead.
-    pub fn not_found_message(self, resource_id: &str) -> String {
+    Generic,
+    /// What a call that addresses a case by its `caseId` path label, or by a
+    /// case reference in its body, answers for a case the domain does not hold:
+    /// the sentence quotes that id.
+    AddressedCase,
+    /// What the association of a related item answers for the case it is about:
+    /// entirely fixed text, quoting no id.
+    RelatedItemCase,
+    /// What a create of a case in a domain answers for the domain itself: the
+    /// sentence quotes the domain identifier the request carried.
+    NamedDomain,
+}
+
+impl NotFoundWording {
+    /// This wording's sentence for a refusal about `resource_id`, the only
+    /// value a sentence of this service ever interpolates.
+    pub fn sentence(self, resource_id: &str) -> String {
         match self {
-            Self::Case => format!("A case with id '{resource_id}' could not be found."),
-            Self::Domain | Self::Field | Self::Template | Self::Layout => {
-                RESOURCE_NOT_FOUND_MESSAGE.to_string()
-            }
+            Self::Generic => RESOURCE_NOT_FOUND_MESSAGE.to_string(),
+            Self::AddressedCase => format!("A case with id '{resource_id}' could not be found."),
+            Self::RelatedItemCase => RELATED_ITEM_CASE_NOT_FOUND_MESSAGE.to_string(),
+            Self::NamedDomain => format!("Domain '{resource_id}' does not exist."),
         }
     }
 }
@@ -1828,12 +1872,23 @@ pub fn name_conflict(resource_kind: ResourceKind, name: &str) -> ConflictExcepti
 ///
 /// The `resourceId` and `resourceType` members the model makes required
 /// (`smithy_query(query="shape",shape="ResourceNotFoundException")`) always
-/// report what could not be resolved; the `message` is the sentence this
-/// service sends for that KIND of resource, which
-/// [`ResourceKind::not_found_message`] owns.
+/// report what could not be resolved — the kind through its lowercase wire
+/// token ([`ResourceKind::resource_type`]) — and the `message` is the
+/// [`NotFoundWording::Generic`] sentence: the refusals this service words a
+/// sentence of their own for raise [`not_found_worded`] instead.
 pub fn not_found(resource_kind: ResourceKind, resource_id: &str) -> ResourceNotFoundException {
+    not_found_worded(resource_kind, resource_id, NotFoundWording::Generic)
+}
+
+/// The modelled 404 of [`not_found`], worded as `wording` words it: what a
+/// refusal the service sends a sentence of its own for raises.
+pub fn not_found_worded(
+    resource_kind: ResourceKind,
+    resource_id: &str,
+    wording: NotFoundWording,
+) -> ResourceNotFoundException {
     ResourceNotFoundException {
-        message: resource_kind.not_found_message(resource_id),
+        message: wording.sentence(resource_id),
         resource_id: resource_id.to_string(),
         resource_type: resource_kind.resource_type().to_string(),
     }
@@ -1842,6 +1897,11 @@ pub fn not_found(resource_kind: ResourceKind, resource_id: &str) -> ResourceNotF
 /// The `message` a [`not_found`] carries for a kind of resource the service has
 /// no sentence of its own for: its generic sentence, with no variable part.
 pub const RESOURCE_NOT_FOUND_MESSAGE: &str = "Requested resource not found.";
+
+/// The sentence the association of a related item carries for a case the domain
+/// does not hold: fixed text with no variable part, quoting no id — the case is
+/// reported through the error's `resourceId` instead.
+pub const RELATED_ITEM_CASE_NOT_FOUND_MESSAGE: &str = "A case with the specified ID was not found.";
 
 /// The modelled 500 for a request that reached a handler with no store behind
 /// it. Answered rather than papered over with a private engine: a handler that

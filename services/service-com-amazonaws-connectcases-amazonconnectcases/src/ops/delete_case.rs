@@ -156,7 +156,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .map_err(DeleteCaseErrorModeled::ResourceNotFoundException)?;
         if domain.cases.remove(&input.case_id).is_none() {
             return Err(DeleteCaseErrorModeled::ResourceNotFoundException(
-                crate::state::not_found(crate::state::ResourceKind::Case, &input.case_id),
+                crate::state::not_found_worded(
+                    crate::state::ResourceKind::Case,
+                    &input.case_id,
+                    crate::state::NotFoundWording::AddressedCase,
+                ),
             )
             .into());
         }

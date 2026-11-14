@@ -37,6 +37,8 @@ mod harness;
 mod layout_deletion;
 #[path = "all/layout_lifecycle.rs"]
 mod layout_lifecycle;
+#[path = "all/not_found_refusal_wording.rs"]
+mod not_found_refusal_wording;
 #[path = "all/related_item_search.rs"]
 mod related_item_search;
 #[path = "all/related_items.rs"]

@@ -2387,3 +2387,11 @@ mod lambda_sqs_event_source_failed_batch_keeps_its_message;
 // then read what each target was handed.
 #[path = "all/events_one_envelope_reaches_every_target_kind.rs"]
 mod events_one_envelope_reaches_every_target_kind;
+// `cloudformation_provisions_cloudfront_resources` is declared once, in the sorted span
+// are declared once, further up this tail: a module may be declared only once, so the second
+// copy of the pair this span used to carry is gone.)
+// a module may be declared only once, and two branches landing at once each appended a copy
+// (`cloudformation_metric_stream_estate_is_drainable` is declared once, further up this tail:
+// (`cloudformation_domain_endpoint_is_dialled_by_consumers` is declared once, a few lines
+// above: a module may be declared only once, and two branches landing at once each appended
+// a copy of it here.)
