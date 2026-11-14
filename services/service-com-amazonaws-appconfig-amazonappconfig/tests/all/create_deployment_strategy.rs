@@ -19,8 +19,8 @@ use service_com_amazonaws_appconfig_amazonappconfig::state::{
 };
 
 use super::appconfig_workflow::{
-    create_application, create_environment, create_profile, is_modelled_id, json_call, router,
-    router_on, Answer,
+    create_application, create_environment, create_profile, host_version, is_modelled_id, json_call,
+    router, router_on, Answer,
 };
 use super::resource_tags::{arn, filler as padding, list_tags};
 
@@ -753,6 +753,17 @@ async fn a_created_strategy_paces_a_deployment() {
     let router = router();
     let application = create_application(&router, "paced").await;
     let profile = create_profile(&router, &application, "config").await;
+    // The version each row deploys: a deployment resolves its `ConfigurationVersion`
+    // against the versions the profile holds.
+    host_version(
+        &router,
+        &application,
+        &profile,
+        "paced",
+        br#"{"enabled":true}"#,
+        None,
+    )
+    .await;
 
     // Rows differ along the growth algorithm and the length of the rollout.
     let cases = [

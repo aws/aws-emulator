@@ -1760,6 +1760,124 @@ fn opened(body: &str, at_start: bool, at_end: bool) -> String {
     expression
 }
 
+/// Whether `regex` ANCHORS ITS OWN ENDS: every alternative it offers at its top level —
+/// each read through a group that wraps it, since a model wraps an alternation, or a branch
+/// of one, to keep it together — begins with `^` and ends with an unescaped `$`.
+///
+/// The one fact every rendering above decides an expression's ends on, published here
+/// because a service's own dialect needs it too: an expression that already pins both ends
+/// of each of its branches (`(^a$|^b$)`) describes the whole value on its own, so the
+/// `^`/`$` a model writes AROUND it is that model's wrapping rather than part of what a
+/// refusal advertises. An expression carrying an anchor that pins neither end (`a$b`) is not
+/// one of those, which is why this asks about the ends rather than about the mere presence
+/// of an anchor.
+#[must_use]
+pub fn anchors_its_own_ends(regex: &str) -> bool {
+    top_level_alternatives(inside_a_wrapping_group(regex))
+        .iter()
+        .all(|branch| pins_both_ends(inside_a_wrapping_group(branch)))
+}
+
+/// Whether `branch` opens with a `^` and closes with an unescaped `$`, with something
+/// between them or nothing at all (`^$`, the empty-string branch, pins both ends too).
+fn pins_both_ends(branch: &str) -> bool {
+    branch.starts_with('^')
+        && branch.len() > 1
+        && branch
+            .strip_suffix('$')
+            .is_some_and(|without| !ends_with_escape(without))
+}
+
+/// `regex` read through every group that wraps the WHOLE expression — `(^a$|^b$)` is the
+/// alternation `^a$|^b$`, and a non-capturing group's `?:` is read through with it.
+fn inside_a_wrapping_group(regex: &str) -> &str {
+    let mut inner = regex;
+    while let Some(unwrapped) = inside_one_wrapping_group(inner) {
+        inner = unwrapped;
+    }
+    inner
+}
+
+/// `regex` without the ONE group that wraps the whole expression, or `None` when its first
+/// character is not a group's `(` that closes at its last.
+fn inside_one_wrapping_group(regex: &str) -> Option<&str> {
+    let body = regex.strip_prefix('(')?;
+    let inner = body.strip_suffix(')')?;
+    // A `\)` is a literal parenthesis, and a `)` that closes a group OPENED inside the body
+    // is not this one's: `(a)(b)` is two groups, not one wrapping `a)(b`.
+    if ends_with_escape(inner) || !balanced(inner) {
+        return None;
+    }
+    Some(inner.strip_prefix("?:").unwrap_or(inner))
+}
+
+/// Whether `text`'s own groups are balanced — no `)` without a `(` before it, and none left
+/// open at the end — read the way [`regex_syntax`] reads an expression.
+fn balanced(text: &str) -> bool {
+    let mut depth = 0_i32;
+    let mut escaped = false;
+    let mut in_class: Option<usize> = None;
+    for character in text.chars() {
+        if escaped {
+            escaped = false;
+            in_class = in_class.map(|seen| seen + 1);
+            continue;
+        }
+        match (character, in_class) {
+            ('\\', _) => escaped = true,
+            ('^', Some(0)) => {}
+            (']', Some(0)) => in_class = Some(1),
+            (']', Some(_)) => in_class = None,
+            (_, Some(seen)) => in_class = Some(seen + 1),
+            ('[', None) => in_class = Some(0),
+            ('(', None) => depth += 1,
+            (')', None) => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    depth == 0
+}
+
+/// `text` split at the `|`s that separate the branches of the WHOLE expression: those
+/// neither inside a group nor inside a character class, where a `|` is the literal
+/// character — the same reading [`regex_syntax`] applies.
+fn top_level_alternatives(text: &str) -> Vec<&str> {
+    let mut branches = Vec::new();
+    let mut start = 0_usize;
+    let mut escaped = false;
+    let mut in_class: Option<usize> = None;
+    let mut depth = 0_usize;
+    for (index, character) in text.char_indices() {
+        if escaped {
+            escaped = false;
+            in_class = in_class.map(|seen| seen + 1);
+            continue;
+        }
+        match (character, in_class) {
+            ('\\', _) => escaped = true,
+            ('^', Some(0)) => {}
+            (']', Some(0)) => in_class = Some(1),
+            (']', Some(_)) => in_class = None,
+            (_, Some(seen)) => in_class = Some(seen + 1),
+            ('[', None) => in_class = Some(0),
+            ('(', None) => depth += 1,
+            (')', None) => depth = depth.saturating_sub(1),
+            ('|', None) if depth == 0 => {
+                branches.push(&text[start..index]);
+                start = index + character.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    branches.push(&text[start..]);
+    branches
+}
+
 /// Whether `text` alternates at its TOP level — a `|` that is not inside a group and not
 /// inside a character class, where it is the literal character.
 fn alternates_at_top_level(text: &str) -> bool {
@@ -4547,6 +4665,50 @@ mod tests {
             assert_eq!(
                 actual, stated,
                 "case {case:?}: expected unanchored_at_the_close {stated:?}, got {actual:?}"
+            );
+        }
+    }
+
+    /// RULE: [`super::anchors_its_own_ends`] reports whether EVERY alternative an expression
+    /// offers at its top level — read through a group that wraps the whole expression —
+    /// pins both of its own ends with a `^` and an unescaped `$`.
+    ///
+    /// The rows span the forms such an expression takes (branches anchored inside one
+    /// wrapping group, anchored without one, a single anchored branch, an anchored empty
+    /// branch), the forms that pin only one end or neither, an anchor that pins no end at
+    /// all, and the constructs that can hide a `|` or an anchor: a group, a character class,
+    /// a negated class, a class whose first member is a literal bracket, and an escape.
+    #[test]
+    fn an_expression_that_pins_both_of_its_own_ends_is_reported_as_such() {
+        // (case, the expression, whether it anchors its own ends)
+        let rows: [(&str, &str, bool); 14] = [
+            // The `DeploymentStrategyId` shape: an alternation of whole-value branches,
+            // kept together by one wrapping group.
+            (
+                "branches anchored inside one wrapping group",
+                r"(^[a-z0-9]{4,7}$|^AppConfig\.[A-Za-z0-9]{9,40}$)",
+                true,
+            ),
+            ("branches anchored with no wrapping group", r"^a$|^b$", true),
+            ("branches anchored inside their own groups", r"(^a$)|(^b$)", true),
+            ("one branch, anchored at both ends", r"^[a-z]+$", true),
+            ("an anchored empty branch beside another", r"^$|^arn:aws.*$", true),
+            ("a branch anchored at the start only", r"^a$|^b", false),
+            ("anchored at the start only", r"^arn:aws.*", false),
+            ("anchored at the end only", r"[0-9]{12}$", false),
+            ("an interior dollar that pins neither end", r"a$b", false),
+            ("no anchor at all", r"[a-zA-Z0-9_-]{1,64}", false),
+            ("a wrapping group around an unanchored branch", r"((arn):[a-z]+)", false),
+            ("two groups, neither wrapping the whole", r"(^a$)(^b$)", false),
+            ("a caret that negates a class", r"[^0-9]", false),
+            ("a trailing escaped dollar", r"^cost\$", false),
+        ];
+
+        for (case, expression, anchors) in rows {
+            let actual = super::anchors_its_own_ends(expression);
+            assert_eq!(
+                actual, anchors,
+                "case {case:?}: expected anchors_its_own_ends {anchors}, got {actual}"
             );
         }
     }

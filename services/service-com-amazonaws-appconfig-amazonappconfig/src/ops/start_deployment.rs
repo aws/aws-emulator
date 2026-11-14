@@ -225,6 +225,11 @@ fn extension_failed(message: String) -> StartDeploymentError {
 /// which cannot be made while it is held — so the record is written afterwards, from a
 /// second look at the store.
 struct Prepared {
+    /// The ids the three resources the request named resolved to: what the deployment
+    /// RECORDS and reports, whether the request addressed each of them by id or by name.
+    application_id: String,
+    environment_id: String,
+    configuration_profile_id: String,
     configuration_name: String,
     configuration_location_uri: String,
     version_label: Option<String>,
@@ -317,31 +322,52 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let prepared = {
         let mut store = state.lock();
 
-        // Resolve every resource the deployment names before anything is written.
-        let Some(application) = store.application(&input.application_id) else {
+        // Resolve every resource the deployment names before anything is written. Each of
+        // the three is addressed by a member typed to the LENGTH OF THAT RESOURCE'S NAME —
+        // `ApplicationId` and `EnvironmentId` target `Name` (1..64) and
+        // `ConfigurationProfileId` targets `LongName` (1..128), none of them the `Id` shape
+        // (`^[a-z0-9]{4,7}$`) this operation's own output members carry — so a deployment
+        // addresses a resource by its id or by its name, and each is resolved through the
+        // same lookup every other reader of that resource uses. What is RECORDED is the id
+        // the lookup resolved, since that is what the output's `Id` members report — and a
+        // refusal below names each level the same way: the id where the identifier resolved,
+        // the label the request spelled where it did not.
+        let Some(application_id) = store.resolve_application_id(&input.application_id) else {
             return Err(not_found(
                 crate::state::application_not_found(&input.application_id),
                 input.application_id,
             ));
         };
-        if !application.environments.contains_key(&input.environment_id) {
+        let Some(application) = store.application(&application_id) else {
+            return Err(StartDeploymentErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: Some(
+                        "The application could not be re-read while starting the deployment"
+                            .to_string(),
+                    ),
+                },
+            )
+            .into());
+        };
+        let Some(environment_id) = application
+            .resolve_environment(&input.environment_id)
+            .map(|environment| environment.id.clone())
+        else {
             return Err(not_found(
-                crate::state::environment_not_found(
-                    &input.application_id,
-                    &input.environment_id,
-                ),
+                crate::state::environment_not_found(&application_id, &input.environment_id),
                 input.environment_id,
             ));
-        }
-        let Some(profile) = application.profiles.get(&input.configuration_profile_id) else {
+        };
+        let Some(profile) = application.resolve_profile(&input.configuration_profile_id) else {
             return Err(not_found(
                 crate::state::configuration_profile_not_found(
-                    &input.application_id,
+                    &application_id,
                     &input.configuration_profile_id,
                 ),
                 input.configuration_profile_id,
             ));
         };
+        let configuration_profile_id = profile.id.clone();
         // The deployment records WHAT it deployed, so the configuration's name and
         // location are copied off the profile as it stands now.
         let application_name = application.name.clone();
@@ -351,21 +377,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // by its version label, so the deployment records the label of the version it
         // deployed when that version carries one. Resolved through the profile's own
         // lookup, which the data plane that serves the version's content also uses.
-        let version_label = profile
-            .resolve_hosted_version(&input.configuration_version)
-            .and_then(|version| version.version_label.clone());
+        let hosted_version = profile.resolve_hosted_version(&input.configuration_version);
+        // Whether the version the request named is one this service HOLDS, which is what
+        // the refusal below is decided on once every resource the deployment names has
+        // resolved.
+        let version_is_held = hosted_version.is_some();
+        let version_label = hosted_version.and_then(|version| version.version_label.clone());
         // The candidate configuration an extension action is handed, and the document a
         // validator of this profile checks: the bytes a consumer of this profile would be
         // served for the version being deployed, read through the same projection the data
         // plane serves.
-        let candidate_content = profile
-            .resolve_hosted_version(&input.configuration_version)
-            .map(|version| {
-                (
-                    version.content_type.clone(),
-                    profile.served_content(&version.content),
-                )
-            });
+        let candidate_content = hosted_version.map(|version| {
+            (
+                version.content_type.clone(),
+                profile.served_content(&version.content),
+            )
+        });
         // "A validator provides a syntactic or semantic check to ensure the configuration
         // that you want to deploy functions as intended": the gate the profile carries at
         // the instant the deployment was asked for, so a validator added later does not
@@ -379,19 +406,37 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         };
 
+        // "The configuration version to deploy": the version is resolved inside the
+        // configuration profile the request named, so it is looked up once every RESOURCE
+        // the deployment names has resolved — and before anything is written, so a
+        // deployment never names content that does not exist. A profile whose configuration
+        // lives in the AppConfig hosted configuration store has its versions here, so one
+        // that resolves to none of them is refused; a profile whose bytes live in S3,
+        // Parameter Store or Secrets Manager has no version here to resolve against, and a
+        // refusal for it would report a lookup this service never made.
+        if !version_is_held && configuration_location_uri == crate::state::HOSTED_LOCATION_URI {
+            return Err(not_found(
+                crate::state::configuration_version_not_found(
+                    &configuration_name,
+                    &input.configuration_version,
+                ),
+                input.configuration_version,
+            ));
+        }
+
         // "The extensions that were previously associated to the configuration profile,
         // environment, or the application when StartDeployment was called": read now, so
         // the deployment records what was associated at the instant it was asked for and a
         // later association does not change what this one applied.
         let applied_extensions = store.applied_extensions_for(
-            &input.application_id,
-            &input.environment_id,
-            &input.configuration_profile_id,
+            &application_id,
+            &environment_id,
+            &configuration_profile_id,
         );
 
         let Some(environment) = store
-            .application_mut(&input.application_id)
-            .and_then(|application| application.environments.get_mut(&input.environment_id))
+            .application_mut(&application_id)
+            .and_then(|application| application.environments.get_mut(&environment_id))
         else {
             return Err(StartDeploymentErrorModeled::InternalServerException(
                 InternalServerException {
@@ -437,12 +482,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // candidate configuration it would put in service.
         let next_deployment_number = environment.next_deployment_number;
         let previous_deployment_number = environment.latest_deployment_number();
-        let environment_id = environment.id.clone();
         let environment_name = environment.name.clone();
         let scope = crate::state::extension_actions::Scope {
-            application_id: &input.application_id,
-            environment_id: Some(&input.environment_id),
-            configuration_profile_id: Some(&input.configuration_profile_id),
+            application_id: &application_id,
+            environment_id: Some(&environment_id),
+            configuration_profile_id: Some(&configuration_profile_id),
         };
         let targets = crate::state::extension_actions::targets_at(
             &mut store,
@@ -452,11 +496,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &dynamic_parameters,
         );
         let mut event = crate::state::extension_actions::ActionEvent::new()
-            .resource("Application", &input.application_id, &application_name)
+            .resource("Application", &application_id, &application_name)
             .resource("Environment", &environment_id, &environment_name)
             .resource(
                 "ConfigurationProfile",
-                &input.configuration_profile_id,
+                &configuration_profile_id,
                 &configuration_name,
             )
             .member(
@@ -483,6 +527,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         Prepared {
+            application_id,
+            environment_id,
+            configuration_profile_id,
             configuration_name,
             configuration_location_uri,
             version_label,
@@ -507,8 +554,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // reported for it would be a verdict no validator gave.
         if let Some(content) = &prepared.candidate_content {
             let candidate = crate::state::validators::Candidate {
-                application_id: &input.application_id,
-                configuration_profile_id: &input.configuration_profile_id,
+                application_id: &prepared.application_id,
+                configuration_profile_id: &prepared.configuration_profile_id,
                 configuration_version: &input.configuration_version,
                 location_uri: &prepared.configuration_location_uri,
                 content,
@@ -554,15 +601,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let deployment_number = {
         let mut store = state.lock();
         let Some(environment) = store
-            .application_mut(&input.application_id)
-            .and_then(|application| application.environments.get_mut(&input.environment_id))
+            .application_mut(&prepared.application_id)
+            .and_then(|application| {
+                application.environments.get_mut(&prepared.environment_id)
+            })
         else {
             return Err(not_found(
                 crate::state::environment_not_found(
-                    &input.application_id,
-                    &input.environment_id,
+                    &prepared.application_id,
+                    &prepared.environment_id,
                 ),
-                input.environment_id,
+                prepared.environment_id.clone(),
             ));
         };
         // Re-read after the invocations: the environment is only ready for this
@@ -586,7 +635,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 deployment_number,
                 application_id: environment.application_id.clone(),
                 environment_id: environment.id.clone(),
-                configuration_profile_id: input.configuration_profile_id.clone(),
+                configuration_profile_id: prepared.configuration_profile_id.clone(),
                 configuration_name: prepared.configuration_name,
                 configuration_location_uri: prepared.configuration_location_uri,
                 configuration_version: input.configuration_version,
@@ -626,16 +675,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         crate::state::extension_actions::drive_deployment(
             &*self.engine,
             ctx,
-            &input.application_id,
-            &input.environment_id,
+            &prepared.application_id,
+            &prepared.environment_id,
             deployment_number,
         )
         .await;
 
         let store = state.lock();
         let Some(stored) = store
-            .application(&input.application_id)
-            .and_then(|application| application.environments.get(&input.environment_id))
+            .application(&prepared.application_id)
+            .and_then(|application| application.environments.get(&prepared.environment_id))
             .and_then(|environment| environment.deployments.get(&deployment_number))
         else {
             return Err(StartDeploymentErrorModeled::InternalServerException(

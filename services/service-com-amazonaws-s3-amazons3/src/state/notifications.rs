@@ -1038,6 +1038,11 @@ pub async fn unvalidated_destinations(
         // the called handler's as well, or a put made from a CloudFormation deployment takes
         // the thread past its stack.
         let rejected = match destination {
+            // Each check is awaited through a BOXED future, so the two in-process calls it
+            // makes live on the heap rather than on the caller's stack: this validation runs
+            // inside a `PutBucketNotificationConfiguration` that is itself reached through
+            // an in-process call (CloudFormation provisioning a bucket, for one), and the
+            // nested frames are what a 2 MiB thread runs out of.
             super::NotificationDestination::Queue => {
                 Box::pin(queue_rejection(
                     &mut clients,

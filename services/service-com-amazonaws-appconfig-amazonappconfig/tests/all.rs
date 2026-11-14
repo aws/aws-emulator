@@ -61,6 +61,8 @@ mod deployment_strategy_patch_paces_deployments;
 mod deployment_tick_directive;
 #[path = "all/deployment_wire_fidelity.rs"]
 mod deployment_wire_fidelity;
+#[path = "all/deprecated_get_configuration_refusals.rs"]
+mod deprecated_get_configuration_refusals;
 #[path = "all/environment_state_wire_form.rs"]
 mod environment_state_wire_form;
 #[path = "all/environment_update.rs"]
@@ -127,6 +129,8 @@ mod list_extensions;
 mod list_hosted_configuration_versions;
 #[path = "all/listing_item_instant_wire_form.rs"]
 mod listing_item_instant_wire_form;
+#[path = "all/omitted_required_bindings.rs"]
+mod omitted_required_bindings;
 #[path = "all/pattern_refusal_quoting.rs"]
 mod pattern_refusal_quoting;
 #[path = "all/refusal_class_and_rendering_rules.rs"]
@@ -145,8 +149,12 @@ mod rolled_back_deployment_completion_time;
 mod rollout_advances_over_the_wire;
 #[path = "all/rollout_percentage_gates_serving.rs"]
 mod rollout_percentage_gates_serving;
+#[path = "all/start_deployment_configuration_version.rs"]
+mod start_deployment_configuration_version;
 #[path = "all/start_deployment_latest_deployment_number.rs"]
 mod start_deployment_latest_deployment_number;
+#[path = "all/start_deployment_resource_identifiers.rs"]
+mod start_deployment_resource_identifiers;
 #[path = "all/start_experiment_run.rs"]
 mod start_experiment_run;
 #[path = "all/state_roundtrip.rs"]

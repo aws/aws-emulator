@@ -3425,6 +3425,23 @@ pub fn configuration_version_not_hosted(
     )
 }
 
+/// `Message` for a configuration version a deployment names and the hosted configuration
+/// store of the profile it names never issued.
+///
+/// Its template is its own, not [`not_found_message`]'s: the subject is the CONFIGURATION
+/// rather than a resource kind with labelled identifiers, so it names the profile by the
+/// name it is stored under and the version as the request spelled it, and ends without
+/// punctuation.
+pub fn configuration_version_not_found(
+    configuration_name: &str,
+    configuration_version: &str,
+) -> String {
+    format!(
+        "Could not find configuration {configuration_name} with version number \
+         {configuration_version}"
+    )
+}
+
 /// `Message` for a deployment number the named environment never issued.
 ///
 /// The deployment's template labels its two resource ids as the other refusals of this

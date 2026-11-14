@@ -107,12 +107,38 @@ pub(crate) async fn send(
     body: Vec<u8>,
     headers: &[(&str, String)],
 ) -> Answer {
+    dispatch(router, method, uri, Some(content_type), body, headers).await
+}
+
+/// Dispatch one request carrying NO `content-type` header at all, which is how a caller
+/// omits the `@required` `Content-Type` member an operation binds to it.
+pub(crate) async fn send_without_content_type(
+    router: &MultiServiceRouter,
+    method: &str,
+    uri: &str,
+    body: Vec<u8>,
+) -> Answer {
+    dispatch(router, method, uri, None, body, &[]).await
+}
+
+/// Dispatch one request, with `content_type` as the `content-type` header when the caller
+/// sends one.
+async fn dispatch(
+    router: &MultiServiceRouter,
+    method: &str,
+    uri: &str,
+    content_type: Option<&str>,
+    body: Vec<u8>,
+    headers: &[(&str, String)],
+) -> Answer {
     let mut builder = http::Request::builder()
         .method(method)
         .uri(format!("http://appconfig.us-east-1.amazonaws.com{uri}"))
         .header("host", "appconfig.us-east-1.amazonaws.com")
-        .header("authorization", AUTHORIZATION)
-        .header("content-type", content_type);
+        .header("authorization", AUTHORIZATION);
+    if let Some(content_type) = content_type {
+        builder = builder.header("content-type", content_type);
+    }
     for (name, value) in headers {
         builder = builder.header(*name, value);
     }
@@ -356,6 +382,48 @@ pub(crate) async fn create_profile_from(
         String::from_utf8_lossy(&answer.body)
     );
     answer
+}
+
+/// Write one hosted configuration version of `profile`, answering the version number it was
+/// stored under.
+///
+/// Shared because every suite that DEPLOYS a configuration needs the version it deploys to
+/// exist: `StartDeployment` resolves `ConfigurationVersion` against the versions the named
+/// profile's hosted store holds, so a suite that deploys without hosting is deploying
+/// content AppConfig does not have.
+pub(crate) async fn host_version(
+    router: &MultiServiceRouter,
+    application: &str,
+    profile: &str,
+    case: &str,
+    content: &[u8],
+    version_label: Option<&str>,
+) -> i64 {
+    let headers: Vec<(&str, String)> = version_label
+        .map(|label| vec![("VersionLabel", label.to_string())])
+        .unwrap_or_default();
+    let answer = send(
+        router,
+        "POST",
+        &format!(
+            "/applications/{application}/configurationprofiles/{profile}/hostedconfigurationversions"
+        ),
+        "application/json",
+        content.to_vec(),
+        &headers,
+    )
+    .await;
+    assert_eq!(
+        answer.status,
+        201,
+        "case {case:?}: CreateHostedConfigurationVersion must answer 201, got {} / {}",
+        answer.status,
+        String::from_utf8_lossy(&answer.body)
+    );
+    answer
+        .header("Version-Number")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| panic!("case {case:?}: no Version-Number on the create response"))
 }
 
 /// Whether `id` satisfies the model's `Id` shape, `^[a-z0-9]{4,7}$`.
@@ -1423,6 +1491,17 @@ async fn deployment_numbers_increase_per_environment() {
     let router = router_on(&engine);
     let application = create_application(&router, "numbering").await;
     let profile = create_profile(&router, &application, "config").await;
+    // The version every deployment below names: a deployment resolves its
+    // `ConfigurationVersion` against the versions the profile holds.
+    host_version(
+        &router,
+        &application,
+        &profile,
+        "numbering",
+        br#"{"enabled":true}"#,
+        None,
+    )
+    .await;
 
     // A strategy with no deployment duration and no final bake time, so each of its
     // deployments is finished the moment it is started and this suite can deploy into the

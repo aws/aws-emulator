@@ -51,12 +51,18 @@ type Update<Eng> = crate::ops::update_configuration_profile::UpdateConfiguration
 
 /// File `UpdateConfigurationProfile` in `table` behind this guard, under the operation's
 /// own modelled name — the routing key the protocol resolves, exactly as
-/// [`super::served`] files every other operation.
+/// [`super::served`] files every other operation, recording the same operation's own
+/// `@http` route in `routes` as that function does.
 pub(super) fn served<Eng: Send + Sync + 'static>(
     table: &mut OperationRoutingTable,
+    routes: &mut Vec<super::ModelledRoute>,
     engine: Arc<Eng>,
 ) {
     let operation = Update::new(Arc::clone(&engine));
+    routes.push(super::ModelledRoute {
+        operation: <Update<Eng> as Operation>::NAME,
+        input_schema: <Update<Eng> as Operation>::INPUT_SCHEMA,
+    });
     table.add_operation(
         <Update<Eng> as Operation>::NAME,
         Box::new(ImmutableProfileType {

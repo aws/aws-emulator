@@ -5,10 +5,12 @@
 //! The rule under test, one level more general than any single request: a constraint
 //! violation is the modelled `BadRequestException` (HTTP 400) whose message states the
 //! member and the expression the value had to satisfy — and the expression is the one the
-//! WHOLE value must match: an end the model anchors keeps the model's text there except the
-//! trailing `$`, which goes, and an end the model leaves OPEN is spelled with the
-//! unconstrained run `.*` it admits. Everything else in the expression is quoted as
-//! modelled: a leading `^`, and the anchors a branch of the expression carries of its own.
+//! WHOLE value must match: an expression the model's two anchors enclose which already pins
+//! ITS OWN ENDS is quoted without that pair, an end the model anchors around an expression
+//! that does not keeps the model's text there except the trailing `$`, which goes, and an
+//! end the model leaves OPEN is spelled with the unconstrained run `.*` it admits.
+//! Everything else in the expression is quoted as modelled: a leading `^`, and the anchors a
+//! branch of the expression carries of its own.
 //!
 //! Only the RENDERING drops that anchor. The CHECK still runs the model's pattern as
 //! written, which the table pins with a value that satisfies the QUOTED expression over a
@@ -83,9 +85,10 @@ async fn a_pattern_refusal_quotes_the_whole_value_expression() {
     const FLAG_KEY: &str = r"^[a-z][a-zA-Z0-9_-]{1,64}$";
     const FLAG_KEY_QUOTED: &str = r"^[a-z][a-zA-Z0-9_-]{1,64}";
     // `smithy_query(query="shape", shape="DeploymentStrategyId")` — anchored at both ends
-    // AND inside each of its two branches.
+    // AND inside each of its two branches, so the enclosing pair is the model's wrapping of
+    // an expression that already demands the whole value and is quoted by neither end.
     const STRATEGY_ID: &str = r"^(^[a-z0-9]{4,7}$|^AppConfig\.[A-Za-z0-9]{9,40}$)$";
-    const STRATEGY_ID_QUOTED: &str = r"^(^[a-z0-9]{4,7}$|^AppConfig\.[A-Za-z0-9]{9,40}$)";
+    const STRATEGY_ID_QUOTED: &str = r"(^[a-z0-9]{4,7}$|^AppConfig\.[A-Za-z0-9]{9,40}$)";
     // `smithy_query(query="shape", shape="VersionLabel")` — no anchor at either end, so
     // the expression is a "contains" demand and both ends are spelled with the run they
     // admit.

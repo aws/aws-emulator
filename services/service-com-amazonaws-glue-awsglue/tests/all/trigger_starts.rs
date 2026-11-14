@@ -37,7 +37,9 @@ use service_com_amazonaws_glue_awsglue::state::{
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::error_messages::assert_refusal;
-use crate::job_runs::{already_past, emulator_with_engine, far_future};
+use crate::job_runs::{
+    already_past, emulator_with_engine, far_future, RUN_AT_REST_DEADLINE, RUN_POLL_INTERVAL,
+};
 use crate::wire::{call_in_region, ok, REGION};
 
 /// The job a trigger action names. An action names a job of the Region the create is
@@ -408,14 +410,14 @@ async fn a_start_activates_the_trigger_and_fires_the_on_demand_ones() {
         );
 
         // The run comes to rest once the runs its actions began have, and what each of them
-        // came to is reported by the run's statistics rather than by its status.
-        set_due_instant(&engine, &workflow, already_past());
-        let settled = ok(
-            &router,
-            "GetWorkflowRun",
-            &json!({ "Name": workflow, "RunId": run_id }),
-        )
-        .await;
+        // came to is reported by the run's statistics rather than by its status. A run's
+        // actions run their course in the store, and the job script an action began is
+        // executed off this task, so the run is POLLED for that condition — the owed span
+        // made due through the store on every turn rather than slept out — instead of being
+        // assumed to have reached it by the first read, which is what a client polling the
+        // run does and what keeps the outcome independent of what the host was doing
+        // meanwhile.
+        let settled = settled_run(&router, &engine, case, &workflow, &run_id).await;
         assert_eq!(
             settled["Run"].get("Status").and_then(Value::as_str),
             Some(WORKFLOW_RUN_STATUS_COMPLETED),
@@ -429,6 +431,43 @@ async fn a_start_activates_the_trigger_and_fires_the_on_demand_ones() {
             "case {case:?}: a run that was started and ran its course reports no error, got \
              {settled}"
         );
+    }
+}
+
+/// Read `run_id` of `workflow` back until the run has come to REST, answering it as
+/// `GetWorkflowRun` reports it then.
+///
+/// A workflow run is a composite: it comes to rest only once the job runs its actions began
+/// have, and a job run's script is executed off the task that began it. So the condition is
+/// polled for — the owed instants made due through the store on every turn, which is what
+/// keeps the suite from sleeping for a span — and a run still in flight when the generous
+/// window closes fails the case instead of hanging. The same shape, and the same two
+/// constants, as [`crate::job_runs::run_at_rest`].
+async fn settled_run(
+    router: &MultiServiceRouter,
+    engine: &Arc<engine::InMemoryEngine>,
+    case: &str,
+    workflow: &str,
+    run_id: &str,
+) -> Value {
+    let deadline = SystemTime::now() + RUN_AT_REST_DEADLINE;
+    loop {
+        set_due_instant(engine, workflow, already_past());
+        let read = ok(
+            router,
+            "GetWorkflowRun",
+            &json!({ "Name": workflow, "RunId": run_id }),
+        )
+        .await;
+        if read["Run"].get("Status").and_then(Value::as_str) != Some(WORKFLOW_RUN_STATUS_RUNNING) {
+            return read;
+        }
+        assert!(
+            SystemTime::now() < deadline,
+            "case {case:?}: run {run_id:?} of workflow {workflow:?} must come to rest, and it \
+             reports {read}"
+        );
+        tokio::time::sleep(RUN_POLL_INTERVAL).await;
     }
 }
 

@@ -95,13 +95,18 @@ const ANY_RUN: &str = ".*";
 /// different things, and AppConfig's refusals state the second. The two ends are decided
 /// independently, because a model may anchor one and leave the other open:
 ///
-/// * an end the model ANCHORS keeps the model's own text at that end, except the trailing
-///   `$`, which goes: demanding the expression over the whole value IS what that anchor
-///   said, so it is not part of what the refusal advertises (`FlagKey` is modelled
-///   `^[a-z][a-zA-Z0-9_-]{1,64}$` and quoted `^[a-z][a-zA-Z0-9_-]{1,64}`; an anchor a
-///   BRANCH of the expression carries of its own is quoted as modelled, which is how
-///   `DeploymentStrategyId`'s `^(^[a-z0-9]{4,7}$|^AppConfig\.[A-Za-z0-9]{9,40}$)$` keeps
-///   its interior anchors);
+/// * an expression the model's two anchors ENCLOSE which already anchors ITS OWN ENDS —
+///   every branch of `DeploymentStrategyId`'s
+///   `^(^[a-z0-9]{4,7}$|^AppConfig\.[A-Za-z0-9]{9,40}$)$` pins both of its own ends — demands
+///   the whole value on its own, so that pair is the model's wrapping of it and goes with
+///   both ends: the expression advertised is the enclosed one,
+///   `(^[a-z0-9]{4,7}$|^AppConfig\.[A-Za-z0-9]{9,40}$)`, interior anchors and all;
+/// * an end the model ANCHORS around an expression that does not pin its own ends keeps
+///   the model's own text at that end, except the trailing `$`, which goes: demanding the
+///   expression over the whole value IS what that anchor said, so it is not part of what the
+///   refusal advertises (`FlagKey` is modelled `^[a-z][a-zA-Z0-9_-]{1,64}$` and quoted
+///   `^[a-z][a-zA-Z0-9_-]{1,64}`, and an anchor that pins neither end is quoted where it
+///   stands);
 /// * an end the model leaves OPEN admits any run of characters there, which is spelled as
 ///   [`ANY_RUN`] unless the expression already leaves that end open with one — so
 ///   `VersionLabel`, modelled `[^0-9]` and anchored at neither end, is quoted
@@ -109,17 +114,29 @@ const ANY_RUN: &str = ".*";
 ///   rather than the bare expression, which reads as "must be one non-digit character".
 ///
 /// A trailing `$` preceded by an ODD number of backslashes is an escaped literal dollar
-/// rather than the anchor, so that end is an open one.
+/// rather than the anchor, so that end is an open one; whether the enclosed expression pins
+/// its own ends is read the same way, through
+/// `service_common::validation::anchors_its_own_ends`, which is called rather than restated
+/// here.
 ///
 /// Only the RENDERING decides the ends. The CHECK runs the model's pattern as written, so a
 /// value that satisfies the quoted expression over a PREFIX of itself is still refused.
 ///
 /// This is NOT the fleet rule `service_common::validation::whole_value_expression` states
 /// (which drops the anchor at BOTH ends, the rendering those services' own recordings
-/// show): AppConfig's refusals keep the leading `^`, so quoting a pattern is part of this
-/// service's validation-message dialect and is stated here, for every operation at once.
+/// show): AppConfig's refusals keep the leading `^` of an expression that does not pin its
+/// own ends, so quoting a pattern is part of this service's validation-message dialect and
+/// is stated here, for every operation at once.
 fn quoted_pattern(pattern: &str) -> String {
     let (body, anchored_at_start, anchored_at_end) = split_outer_anchors(pattern);
+    // An enclosed expression that pins its own ends is already the whole-value one, so the
+    // pair around it is the model's wrapping and neither end of it is advertised.
+    if anchored_at_start
+        && anchored_at_end
+        && service_common::validation::anchors_its_own_ends(body)
+    {
+        return body.to_string();
+    }
     let mut quoted = String::with_capacity(pattern.len() + 2 * ANY_RUN.len());
     if anchored_at_start {
         quoted.push('^');
@@ -495,14 +512,30 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     /// the key the generated table uses — and built from the SAME shared engine, so a
     /// wrapped operation reads and writes the one store.
     in_service_dialect: OperationRoutingTable,
+    /// The route each of those operations binds, read off its own input schema as it is
+    /// filed: what [`EmulatedService::addressed_operation`] resolves a request the
+    /// framework's own lookup named no operation for.
+    modelled_routes: Vec<ModelledRoute>,
+}
+
+/// One modelled operation and the `@http` route its input schema binds.
+///
+/// The route is not written here: the method and the URI are the schema's own, so this
+/// carries the schema and reads them through it.
+pub(super) struct ModelledRoute {
+    /// The operation's modelled name — the key it is filed under.
+    pub(super) operation: &'static str,
+    /// Its input schema, which carries the `@http` method and URI pattern.
+    pub(super) input_schema: &'static ::aws_smithy_schema::Schema,
 }
 
 /// Wire one `crate::ops::<module>::<Operation>` per line into `table` through [`served`].
 macro_rules! wrap_operations {
-    ($table:expr, $engine:expr, $($module:ident :: $operation:ident),+ $(,)?) => {
+    ($table:expr, $routes:expr, $engine:expr, $($module:ident :: $operation:ident),+ $(,)?) => {
         $(
             served(
                 &mut $table,
+                &mut $routes,
                 crate::ops::$module::$operation::new(::std::sync::Arc::clone(&$engine)),
             );
         )+
@@ -513,10 +546,19 @@ macro_rules! wrap_operations {
 /// [`Operation::NAME`] — the routing key the protocol resolves and the generated table is
 /// keyed by, so the key cannot be spelled by hand. The same keying
 /// `service_common::front_door::FrontDoorTable::serve` does for the shared wrapper.
+///
+/// The operation's own `@http` route is recorded in `routes` as it is filed, so the
+/// fallback lookup ([`EmulatedService::addressed_operation`]) spans exactly the operations
+/// this service serves.
 fn served<O: Operation + ErasedOperation + 'static>(
     table: &mut OperationRoutingTable,
+    routes: &mut Vec<ModelledRoute>,
     operation: O,
 ) {
+    routes.push(ModelledRoute {
+        operation: O::NAME,
+        input_schema: O::INPUT_SCHEMA,
+    });
     table.add_operation(O::NAME, Box::new(InServiceDialect::new(operation)));
 }
 
@@ -526,6 +568,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
         let mut in_service_dialect = OperationRoutingTable::new();
+        let mut modelled_routes: Vec<ModelledRoute> = Vec::new();
         // EVERY modelled operation, so both rules are applied by ONE code path rather
         // than per operation: an operation whose input declares no constraint simply
         // never has a violation to find, which the wrapper reads off that operation's own
@@ -533,6 +576,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         // pins the list against the model.
         wrap_operations!(
             in_service_dialect,
+            modelled_routes,
             engine,
             create_application::CreateApplication,
             create_configuration_profile::CreateConfigurationProfile,
@@ -595,11 +639,45 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         // asking the profile to become a different `Type` names a member the model does
         // not declare, which is dropped before any handler sees it. See
         // [`immutable_profile_type`].
-        immutable_profile_type::served(&mut in_service_dialect, Arc::clone(&engine));
+        immutable_profile_type::served(
+            &mut in_service_dialect,
+            &mut modelled_routes,
+            Arc::clone(&engine),
+        );
         Self {
             entry: crate::ServiceDefinition::new(engine),
             in_service_dialect,
+            modelled_routes,
         }
+    }
+
+    /// The operation whose modelled route `req` addresses, for a request the framework's
+    /// own lookup named NO operation for.
+    ///
+    /// WHY a second lookup: the framework's route table REJECTS a route whose `@required`
+    /// header or query bindings the request does not carry. That rejection is
+    /// disambiguation for the services where several operations share one method and path
+    /// and only those bindings tell them apart; AppConfig's model overlaps no such route —
+    /// each of its operations owns its (method, URI) — so for this service the rejection
+    /// turns an INCOMPLETE request into a request for an operation that does not exist. The
+    /// operation it addressed is resolved here instead, and refuses the member it left out
+    /// through its own modelled constraints, the way it refuses every other member outside
+    /// them.
+    ///
+    /// Each candidate's method and URI pattern are the ones its own input schema carries,
+    /// matched by `service_common::addresses_modeled_http_route`; a path TWO of them could
+    /// claim resolves to neither, leaving the framework's own answer in place, since picking
+    /// between them is what the bindings the request omitted are for.
+    fn addressed_operation(
+        &self,
+        req: &aws_smithy_runtime_api::http::Request,
+    ) -> Option<&'static str> {
+        let mut matching = self
+            .modelled_routes
+            .iter()
+            .filter(|route| service_common::addresses_modeled_http_route(req, route.input_schema));
+        let addressed = matching.next()?;
+        matching.next().is_none().then_some(addressed.operation)
     }
 }
 
@@ -634,8 +712,17 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // synthetic shapes' own `message`. A key the model does not name resolves to
         // `None` here exactly as it does in the generated table, so the router's
         // routing-error path is unchanged.
-        let key = self.entry.protocol().routing_key(req).ok()?;
-        self.in_service_dialect.get(key)
+        //
+        // A request the protocol names no key for is given one more chance, on the route
+        // its method and path address ([`Self::addressed_operation`]): a `@required`
+        // header or query member a request leaves out is a request this service refuses,
+        // not an operation it does not have.
+        match self.entry.protocol().routing_key(req) {
+            Ok(key) => self.in_service_dialect.get(key),
+            Err(_) => self
+                .in_service_dialect
+                .get(self.addressed_operation(req)?),
+        }
     }
 
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {
@@ -712,9 +799,11 @@ mod tests {
     use std::sync::Arc;
 
     /// RULE: a `@pattern` is quoted as the expression the WHOLE value must satisfy — an
-    /// end the model anchors keeps the model's text there except the trailing `$`, which
-    /// goes, and an end the model leaves open is spelled with the unconstrained run `.*`.
-    /// Nothing else about the expression is touched.
+    /// expression the model's two anchors enclose which already pins ITS OWN ENDS is quoted
+    /// without that pair, an end the model anchors around an expression that does not keeps
+    /// the model's text there except the trailing `$`, which goes, and an end the model
+    /// leaves open is spelled with the unconstrained run `.*`. Nothing else about the
+    /// expression is touched.
     ///
     /// The rows are every distinct SHAPE of `@pattern` this service's model carries
     /// (`smithy_query(query="shape", shape="FlagKey,Id,DeploymentStrategyId,VersionLabel,Arn")`
@@ -731,12 +820,13 @@ mod tests {
                 r"^[a-z][a-zA-Z0-9_-]{1,64}",
             ),
             ("a minted resource id", r"^[a-z0-9]{4,7}$", r"^[a-z0-9]{4,7}"),
-            // Branches that carry anchors of their own: only the one at the very end
-            // goes, so the expression's own interior anchors are quoted as modelled.
+            // Branches that carry anchors of their own already demand the whole value, so
+            // the pair the model wrote around them is its wrapping and goes with both
+            // ends; the expression's own interior anchors are quoted as modelled.
             (
                 "a strategy id, whose branches are anchored individually",
                 r"^(^[a-z0-9]{4,7}$|^AppConfig\.[A-Za-z0-9]{9,40}$)$",
-                r"^(^[a-z0-9]{4,7}$|^AppConfig\.[A-Za-z0-9]{9,40}$)",
+                r"(^[a-z0-9]{4,7}$|^AppConfig\.[A-Za-z0-9]{9,40}$)",
             ),
             ("a version label", r"[^0-9]", r".*[^0-9].*"),
             (
@@ -754,7 +844,9 @@ mod tests {
             ("an escaped trailing dollar", r"^costs\$", r"^costs\$.*"),
             // An escaped backslash before the `$` leaves the `$` an anchor.
             ("an escaped backslash then the anchor", r"^[a-z]\\$", r"^[a-z]\\"),
-            // A dollar that is not at the end is not the end anchor either.
+            // A dollar that is not at the end is not the end anchor either, and it pins
+            // neither end of the expression, so the model's own leading `^` is quoted as
+            // the `FlagKey` row's is.
             ("a dollar inside the expression", r"^a$b$", r"^a$b"),
             // Already open at the end with a run of its own: nothing is added to it.
             ("anchored at the start only", r"^arn:aws.*", r"^arn:aws.*"),
