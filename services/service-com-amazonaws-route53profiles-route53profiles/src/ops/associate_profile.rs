@@ -169,6 +169,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
+        // `Name`'s modelled `@pattern` is applied here, before any lookup: the
+        // centralized walk cannot compile its look-around, so without this an
+        // association could be named something the model forbids.
+        if let Some(message) = crate::state::name_pattern_violation(&input.name) {
+            return Err(AssociateProfileError::validation(message));
+        }
+
         let region = crate::state::request_region(ctx.parts());
         let mut store = state.lock();
 

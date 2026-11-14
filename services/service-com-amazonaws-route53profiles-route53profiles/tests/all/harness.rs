@@ -27,6 +27,9 @@ pub(crate) struct Reply {
     /// The wire error code (`x-amzn-errortype`, else the body's `__type`), with any
     /// `namespace#` prefix stripped. `None` on success.
     pub(crate) error: Option<String>,
+    /// The `x-amzn-errortype` header exactly as it arrived, for a suite that asserts
+    /// on the HEADER rather than on whichever of the two carriers answered.
+    pub(crate) error_type_header: Option<String>,
     pub(crate) body: Value,
 }
 
@@ -70,6 +73,15 @@ impl Reply {
         self.body["Message"]
             .as_str()
             .unwrap_or_else(|| panic!("no Message in {}", self.body))
+            .to_string()
+    }
+
+    /// The error body's lowercase `message`, which is the member the front door's
+    /// own constraint refusal carries (as against the modelled errors' `Message`).
+    pub(crate) fn lower_message(&self) -> String {
+        self.body["message"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no message in {}", self.body))
             .to_string()
     }
 }
@@ -128,6 +140,7 @@ impl Emulator {
             .get("x-amzn-errortype")
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
+        let header_error_header = header_error.clone();
         let bytes = response.into_body();
         let body: Value = if bytes.is_empty() {
             Value::Null
@@ -152,6 +165,7 @@ impl Emulator {
         Reply {
             status,
             error,
+            error_type_header: header_error_header,
             body,
         }
     }

@@ -189,6 +189,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // resurrected by a replay of the create that minted it.
         store.forget_client_tokens_for(&input.profile_id);
         removed.status = crate::state::STATUS_DELETING.to_string();
+        // The status the response reports carries its own sentence, from the same
+        // place every other Profile status reads one.
+        removed.status_message = crate::state::profile_status_message(&removed.status);
         removed.modification_time = ::std::time::SystemTime::now();
         Ok(DeleteProfileOutput {
             profile: Some(crate::state::profile_shape(&removed)),

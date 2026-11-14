@@ -145,6 +145,22 @@ impl ProfileResourceAssociation {
     }
 }
 
+/// The `StatusMessage` reported beside a Profile's `Status`: every status this
+/// emulator reports for a Profile carries the sentence AWS attaches to it, so no
+/// read path has to word one of its own.
+///
+/// The two statuses a Profile of this emulator is ever reported in are the terminal
+/// [`STATUS_COMPLETE`] a created Profile is handed back in and the
+/// [`STATUS_DELETING`] the delete response reports; a status nothing reports has no
+/// sentence here.
+pub fn profile_status_message(status: &str) -> Option<String> {
+    match status {
+        STATUS_COMPLETE => Some("Created Profile".to_string()),
+        STATUS_DELETING => Some("Deleting Profile".to_string()),
+        _ => None,
+    }
+}
+
 /// The `StatusMessage` reported beside a resource association's `Status`: every
 /// status this emulator reports carries the sentence AWS attaches to it.
 pub fn resource_association_status_message(status: &str) -> Option<String> {
@@ -535,6 +551,86 @@ pub fn profile_resource_association_shape(
         creation_time: Some(timestamp(association.creation_time)),
         modification_time: Some(timestamp(association.modification_time)),
     }
+}
+
+/// The `@pattern` the model declares on `Name`, verbatim — the shape every `Name`
+/// member of this service targets (`smithy_query(query="shape",shape="Name")`:
+/// `length 0..64`, this pattern).
+///
+/// Stated here because this constraint has to be applied HERE rather than left to
+/// the centralized constraint walk: that walk compiles a `@pattern` with the `regex`
+/// crate, which has no look-around, and treats a pattern it cannot compile as
+/// matching every value (`vendor/smithy-schema-server/src/constraints.rs`) — so the
+/// leading negative lookahead, the half that forbids an all-digits name, would admit
+/// everything. How it is applied is [`name_matches_pattern`]; the text is kept
+/// verbatim so the expression a refusal advertises is the model's own.
+pub const NAME_PATTERN: &str = r"^(?!^[0-9]+$)([a-zA-Z0-9\-_' ']+)$";
+
+/// The characters [`NAME_PATTERN`]'s class admits, beside the ASCII letters and
+/// digits its ranges list: a hyphen (written `\-`, which inside a character class is
+/// the literal rather than a range operator), an underscore, an apostrophe and a
+/// space.
+const NAME_LITERAL_CHARS: [char; 4] = ['-', '_', '\'', ' '];
+
+/// Whether `character` is one [`NAME_PATTERN`]'s class admits. The class lists ASCII
+/// ranges, so a letter or digit of another script is not one of them.
+fn is_name_char(character: char) -> bool {
+    character.is_ascii_alphanumeric() || NAME_LITERAL_CHARS.contains(&character)
+}
+
+/// The member path a refusal of a `Name` blames: the modelled member name as the
+/// validating walk spells a path segment, which is the Smithy member name with its
+/// first character lowercased (`vendor/smithy-schema-server/src/constraints.rs`).
+const NAME_MEMBER_PATH: &str = "name";
+
+/// Whether `name` satisfies the modelled [`NAME_PATTERN`].
+///
+/// Applied as the pattern's independent parts rather than by bringing a look-around
+/// regex engine onto a path that matches request text: the pattern's ONLY look-around
+/// is the leading negative lookahead, which states exactly "the whole value is not a
+/// run of digits", and what it guards is a single character class repeated between
+/// the whole-value anchors. So the expression is three independent facts about the
+/// value — at least one character, every character one the class admits, and not
+/// every character a digit — each of them one pass over it, so the work this does is
+/// linear in the length of the value whatever a caller sends.
+///
+/// WHICH of the parts a name broke is deliberately not reported: the model declares
+/// ONE expression for the member, so a name outside it is refused with that
+/// expression — see [`name_pattern_violation`] — exactly as a `@pattern` the walk
+/// could apply is.
+pub(crate) fn name_matches_pattern(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().all(is_name_char)
+        && !name.chars().all(|character| character.is_ascii_digit())
+}
+
+/// The message refusing a `Name` outside [`NAME_PATTERN`], or `None` when the value
+/// satisfies it — the ONE refusal path for this constraint, so every operation that
+/// takes a `Name` refuses one in the same words.
+///
+/// Nothing about the sentence is written here: the clause, the expression it
+/// advertises and the envelope around it are the framework's and the cross-service
+/// validation-message renderings', so a `@pattern` this service has to apply itself
+/// is refused in exactly the words a `@pattern` the walk could apply is.
+pub fn name_pattern_violation(name: &str) -> Option<String> {
+    if name_matches_pattern(name) {
+        return None;
+    }
+    let clause = ::aws_smithy_schema_server::Violation {
+        path: NAME_MEMBER_PATH.to_string(),
+        kind: ::aws_smithy_schema_server::ViolationKind::Pattern(
+            ::service_common::validation::unanchored(NAME_PATTERN),
+        ),
+        // The clause quotes the value the request carried; `Name` carries no
+        // `@sensitive`, so there is nothing to withhold.
+        value: Some(name.to_string()),
+        sensitive: false,
+    }
+    .message();
+    Some(
+        ::service_common::validation_message::envelope_over(std::slice::from_ref(&clause))
+            .unwrap_or(clause),
+    )
 }
 
 /// The `ResourceType` a Profile error reports.

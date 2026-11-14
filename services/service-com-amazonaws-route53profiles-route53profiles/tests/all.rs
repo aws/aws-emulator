@@ -15,8 +15,12 @@
 mod error_reporting;
 #[path = "all/harness.rs"]
 mod harness;
+#[path = "all/name_pattern.rs"]
+mod name_pattern;
 #[path = "all/profile_lifecycle.rs"]
 mod profile_lifecycle;
+#[path = "all/profile_status_messages.rs"]
+mod profile_status_messages;
 #[path = "all/resource_association_lifecycle.rs"]
 mod resource_association_lifecycle;
 #[path = "all/resource_association_listing.rs"]

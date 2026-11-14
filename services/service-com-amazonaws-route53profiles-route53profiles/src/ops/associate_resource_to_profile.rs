@@ -171,6 +171,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into(),
             );
         };
+        // `Name`'s modelled `@pattern` is applied here, before any lookup: the
+        // centralized walk cannot compile its look-around, so without this a resource
+        // association could be named something the model forbids.
+        if let Some(message) = crate::state::name_pattern_violation(&input.name) {
+            return Err(AssociateResourceToProfileError::validation(message));
+        }
+
         let mut store = state.lock();
 
         // The Profile named has to exist: a resource association can only name a

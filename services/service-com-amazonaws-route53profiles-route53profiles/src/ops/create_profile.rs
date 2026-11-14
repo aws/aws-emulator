@@ -164,6 +164,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
+        // `Name`'s modelled `@pattern` is applied here, before anything is minted:
+        // the centralized walk cannot compile its look-around, so without this the
+        // store would take a name the model forbids.
+        if let Some(message) = crate::state::name_pattern_violation(&input.name) {
+            return Err(CreateProfileError::validation(message));
+        }
+
         let region = crate::state::request_region(ctx.parts());
         let mut store = state.lock();
 
@@ -205,7 +212,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // AWS hands it back in the terminal `COMPLETE` status, with no pending
             // transition owed.
             status: crate::state::STATUS_COMPLETE.to_string(),
-            status_message: None,
+            // Every status this service reports carries the sentence AWS attaches to
+            // it, and a Profile that finished being created reports the creation one.
+            status_message: crate::state::profile_status_message(crate::state::STATUS_COMPLETE),
             // A freshly created Profile is owned by this account and shared with nobody.
             share_status: crate::state::SHARE_STATUS_NOT_SHARED.to_string(),
             creation_time: now,

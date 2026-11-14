@@ -24,6 +24,10 @@ tracing = { workspace = true }
 # Opaque pagination tokens: hex-encodes the continuation key so the token stays
 # printable whatever a resource id contains.
 hex = { workspace = true }
+# The cross-service validation-message renderings this service's own constraint
+# refusals delegate to: the per-member clause envelope and the unanchored `@pattern`
+# expression a clause advertises.
+service-common = { path = "../common" }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
