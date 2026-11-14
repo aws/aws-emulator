@@ -2637,3 +2637,10 @@ mod iam_session_tag_authorization;
 // `lambda_signed_write_to_an_aoss_collection_endpoint` and
 // `cloudformation_domain_endpoint_is_dialled_by_consumers` are declared ONCE each, further up
 // this tail, for the reasons recorded there.
+// above: a module may be declared only once, and two branches landing at once appended a
+// second declaration of it here.)
+// (`zz_probe` is declared ONCE, further up this tail: a module may be declared only once,
+// and two branches landing at once appended a second declaration of it here.)
+// landings each appended their own copy here, and a module declared twice loads the same file
+// twice, which compiles neither.)
+// (`cloudformation_metric_stream_estate_is_drainable` is declared ONCE, in the sorted span

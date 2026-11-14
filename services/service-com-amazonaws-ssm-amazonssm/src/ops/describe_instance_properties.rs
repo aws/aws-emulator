@@ -35,7 +35,12 @@
 //! `InvalidInstancePropertyFilterValue`, naming the key and the values it accepts
 //! ([`crate::state::node_filter_value_set_rejection`]) whichever operator the filter
 //! names — the published set is the DOMAIN of the property the key selects on, so a value
-//! outside it is one no node can hold. A node id that is not shaped like one is the
+//! outside it is one no node can hold. An activation id that is not shaped like one
+//! ([`crate::state::ACTIVATION_IDS_FILTER_KEY`]) is the modelled `InvalidActivationId`,
+//! naming the values it rejected
+//! ([`crate::state::invalid_activation_ids_message`]) — a well-formed id no node
+//! registered with is a filter that matches nothing, not a refusal. A node id that is
+//! not shaped like one is the
 //! modelled `InvalidInstanceId`, carrying the constraint it violated
 //! ([`crate::state::MANAGED_NODE_ID_PATTERN`]). [`crate::state`] holds the key set, the
 //! value sets, the combination rule and the operator comparison, so the describes over
@@ -281,40 +286,62 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 values,
                 operator: _,
             } = filter;
-            // Whichever operator the filter names: the published set is the DOMAIN of the
-            // node property the key selects on, so a value outside it is not a value that
-            // property can ever hold — nothing a prefix or a bound could match either.
-            if let Some(allowed) = crate::state::node_filter_key_value_set(key) {
-                if values
-                    .iter()
-                    .any(|value| !allowed.contains(&value.as_str()))
-                {
+            // The activation-id filter selects on a member the model constrains by
+            // pattern (`ActivationId`), so a value outside it names no activation that
+            // could exist — which this operation's own modelled activation-id error
+            // reports, naming the values it rejected, before any node is looked at. A
+            // well-formed id no node registered with is not this case: it is a filter
+            // that matches nothing.
+            if *key == crate::state::ACTIVATION_IDS_FILTER_KEY {
+                let rejected = crate::state::malformed_activation_ids(values);
+                if !rejected.is_empty() {
                     return Err(
-                        DescribeInstancePropertiesErrorModeled::InvalidInstancePropertyFilterValue(
-                            InvalidInstancePropertyFilterValue {
-                                message: Some(crate::state::node_filter_value_set_rejection(
-                                    key, allowed,
+                        DescribeInstancePropertiesErrorModeled::InvalidActivationId(
+                            InvalidActivationId {
+                                message: Some(crate::state::invalid_activation_ids_message(
+                                    &rejected,
                                 )),
                             },
                         )
                         .into(),
                     );
                 }
+                continue;
             }
-            if *key == "InstanceIds"
-                && values
+            if *key == "InstanceIds" {
+                if values
                     .iter()
                     .any(|value| !crate::state::managed_node_id_is_well_formed(value))
-            {
-                // The refusal reports the constraint the value violated — the member a
-                // node id fills and its modelled pattern — rather than describing the
-                // id's shape in prose.
-                return Err(DescribeInstancePropertiesErrorModeled::InvalidInstanceId(
-                    InvalidInstanceId {
-                        message: Some(crate::state::managed_node_id_constraint_violation()),
-                    },
-                )
-                .into());
+                {
+                    // The refusal reports the constraint the value violated — the member
+                    // a node id fills and its modelled pattern — rather than describing
+                    // the id's shape in prose.
+                    return Err(DescribeInstancePropertiesErrorModeled::InvalidInstanceId(
+                        InvalidInstanceId {
+                            message: Some(crate::state::managed_node_id_constraint_violation()),
+                        },
+                    )
+                    .into());
+                }
+                continue;
+            }
+            // Whichever operator the filter names: a value has to be one the node
+            // property the key selects on can hold — one of the values the property's
+            // own enum publishes, or a string matching the pattern its member carries —
+            // so a value outside that domain is nothing a prefix or a bound could match
+            // either. One reading answers it for every managed-node describe
+            // ([`crate::state::node_filter_value_rejection`]).
+            for value in values.iter() {
+                if let Some(why) = crate::state::node_filter_value_rejection(key, value) {
+                    return Err(
+                        DescribeInstancePropertiesErrorModeled::InvalidInstancePropertyFilterValue(
+                            InvalidInstancePropertyFilterValue {
+                                message: Some(why),
+                            },
+                        )
+                        .into(),
+                    );
+                }
             }
         }
 

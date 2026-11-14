@@ -156,6 +156,10 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime};
 
+/// Whether the IAM role a hybrid activation is handed is one this service can act as,
+/// which is what a create of an activation resolves before it mints one.
+pub mod activation_role;
+
 /// The cloud connectors this service holds, and how a create, an update and a read of
 /// one reach the single store below.
 pub mod cloud_connectors;
@@ -2118,6 +2122,34 @@ pub fn is_activation_id(id: &str) -> bool {
     groups.next().is_none()
 }
 
+/// The filter key a managed-node describe selects on the activation a node registered
+/// with — one of the modelled `InstancePropertyFilterKey` values, and one of the keys
+/// `InstanceInformationStringFilter$Key` publishes.
+pub const ACTIVATION_IDS_FILTER_KEY: &str = "ActivationIds";
+
+/// Which values of an [`ACTIVATION_IDS_FILTER_KEY`] filter are not activation ids, in the
+/// order the request listed them ([`is_activation_id`] is this crate's one reading of
+/// that shape).
+///
+/// A value a filter may be served with has to be a value the member it filters can hold,
+/// and an activation id is a member the model constrains by pattern — so a value outside
+/// it names no activation that could ever exist, which is a different answer from a
+/// well-formed id no node has registered with.
+pub fn malformed_activation_ids(values: &[String]) -> Vec<&str> {
+    values
+        .iter()
+        .map(String::as_str)
+        .filter(|value| !is_activation_id(value))
+        .collect()
+}
+
+/// How a describe refuses the activation-id filter values that are not activation ids:
+/// the fixed text plus the rejected values themselves, taken from the request in the
+/// order it listed them.
+pub fn invalid_activation_ids_message(rejected: &[&str]) -> String {
+    format!("Invalid Activation Ids {}", rejected.join(", "))
+}
+
 /// Whether `version` is an SSM Agent version — the modelled `Version` pattern
 /// `^[0-9]{1,6}(\.[0-9]{1,6}){2,3}$`: three or four dot-separated runs of 1..6 digits.
 pub fn is_agent_version(version: &str) -> bool {
@@ -2137,6 +2169,11 @@ pub fn is_agent_version(version: &str) -> bool {
 /// the model leaves unconstrained (`IamRole`, `SourceIds`, a tag) constrains nothing
 /// here, and a node id is checked by its caller, which answers it with the operation's
 /// own `InvalidInstanceId` rather than with a filter-value error.
+///
+/// An [`ACTIVATION_IDS_FILTER_KEY`] value is worded the way the service words that
+/// refusal ([`invalid_activation_ids_message`]); an operation whose model declares the
+/// activation-id error answers THAT with the same sentence rather than the filter-value
+/// error, which is why the wording is held in one place.
 pub fn node_filter_value_rejection(key: &str, value: &str) -> Option<String> {
     if let Some(catalog) = node_filter_key_value_set(key) {
         if !catalog.contains(&value) {
@@ -2145,9 +2182,9 @@ pub fn node_filter_value_rejection(key: &str, value: &str) -> Option<String> {
         return None;
     }
     match key {
-        "ActivationIds" if !is_activation_id(value) => Some(format!(
-            "Value '{value}' for filter key '{key}' is not an activation id"
-        )),
+        ACTIVATION_IDS_FILTER_KEY if !is_activation_id(value) => {
+            Some(invalid_activation_ids_message(&[value]))
+        }
         "AgentVersion" if !is_agent_version(value) => Some(format!(
             "Value '{value}' for filter key '{key}' is not an SSM Agent version"
         )),

@@ -11,6 +11,8 @@
 // `tests/all.rs` is a test-target CRATE ROOT, so a bare `mod` resolves to a SIBLING
 // (`tests/parameter_store.rs`) — which the layout check refuses. The `#[path]` is what
 // points it into `tests/all/`.
+#[path = "all/activation_id_filter_values.rs"]
+mod activation_id_filter_values;
 #[path = "all/association_dispatch_options.rs"]
 mod association_dispatch_options;
 #[path = "all/association_listing.rs"]
@@ -49,6 +51,8 @@ mod documents;
 mod ecs_optimized_image_manifests;
 #[path = "all/execution_previews.rs"]
 mod execution_previews;
+#[path = "all/hybrid_activation_role.rs"]
+mod hybrid_activation_role;
 #[path = "all/hybrid_activations.rs"]
 mod hybrid_activations;
 #[path = "all/instance_properties.rs"]

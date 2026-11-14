@@ -12,6 +12,12 @@
 //! password to validate the activation ID"), so it is returned to this caller once and
 //! reported by no read.
 //!
+//! The `IamRole` a request names is the role the machines registering with this
+//! activation are managed under, so it is resolved against the account's IAM records
+//! before anything is minted: a role IAM holds nothing under, or one whose trust policy
+//! withholds the assume from this service, is refused and no activation is created
+//! ([`crate::state::activation_role`]).
+//!
 //! The `ExpirationDate` a request names is stored as it was asked for, including one
 //! already past (the activation then reports `Expired`) and one beyond the documented
 //! "up to 30 days in advance": this operation models no error for either bound, so there
@@ -205,6 +211,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
+        let region = crate::state::request_region(ctx.parts());
+        // A node that registers with this activation is managed UNDER the role it names,
+        // so the role has to exist and admit this service the assume before anything is
+        // minted ("This IAM role must provide AssumeRole permissions for the … Systems
+        // Manager service principal ssm.amazonaws.com"). The refusal is grounded in what
+        // IAM answered about the role ([`crate::state::activation_role`]), and nothing is
+        // written when it is refused.
+        if let Some(why) =
+            crate::state::activation_role::refusal(ctx, &region, &input.iam_role).await
+        {
+            return Err(crate::scaffolded::Scaffolded::validation(why));
+        }
+
         let now = ::std::time::SystemTime::now();
         // "The date by which this activation request should expire … If you don't
         // provide an expiration date, the activation code expires in 24 hours."
@@ -220,7 +239,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let record = crate::state::ActivationRecord {
             id: crate::state::new_activation_id(),
-            region: crate::state::request_region(ctx.parts()),
+            region,
             code: crate::state::new_activation_code(),
             description: input.description,
             default_instance_name: input.default_instance_name,
