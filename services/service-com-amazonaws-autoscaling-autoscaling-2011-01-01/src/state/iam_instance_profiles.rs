@@ -29,35 +29,6 @@ use ::service_com_amazonaws_iam_awsidentitymanagementv20100508::state as iam;
 
 use crate::ops::types::{LaunchTemplateSpecification, MixedInstancesPolicy};
 
-/// Every launch template a launch source names, in the order the request names them: the
-/// group's own `LaunchTemplate` first, then the launch template of its mixed instances
-/// policy and the template each of that policy's overrides names.
-///
-/// A mixed instances policy carries a launch template of its own, and "some instance types
-/// might require a launch template with a different AMI", so an override may name a further
-/// one (`LaunchTemplateOverrides$LaunchTemplateSpecification`) — each of them is a template
-/// instances of the group are launched from, so each is resolved.
-fn specifications<'a>(
-    launch_template: Option<&'a LaunchTemplateSpecification>,
-    mixed_instances_policy: Option<&'a MixedInstancesPolicy>,
-) -> Vec<&'a LaunchTemplateSpecification> {
-    let policy_template = mixed_instances_policy.and_then(|policy| policy.launch_template.as_ref());
-    launch_template
-        .into_iter()
-        .chain(
-            policy_template
-                .and_then(|template| template.launch_template_specification.as_ref()),
-        )
-        .chain(
-            policy_template
-                .and_then(|template| template.overrides.as_ref())
-                .into_iter()
-                .flatten()
-                .filter_map(|entry| entry.launch_template_specification.as_ref()),
-        )
-        .collect()
-}
-
 /// The parameter a refusal names when the template supplied the profile's ARN, and the
 /// sentence that refusal ends with. Both are Amazon EC2's own wording for a launch
 /// parameter naming an instance profile that does not resolve, which is the reference being
@@ -143,7 +114,7 @@ pub fn unresolvable_profile_error<Eng: Send + Sync + 'static, E>(
     mixed_instances_policy: Option<&MixedInstancesPolicy>,
 ) -> Option<crate::scaffolded::Scaffolded<E>> {
     let references: Vec<ProfileReference> =
-        specifications(launch_template, mixed_instances_policy)
+        super::ec2_instances::specifications(launch_template, mixed_instances_policy)
             .into_iter()
             .filter_map(|specification| {
                 super::ec2_instances::launch_template_data(engine, specification)

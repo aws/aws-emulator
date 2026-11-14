@@ -374,11 +374,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         if let Some(health_check_type) = input.health_check_type.as_deref() {
             if !crate::state::is_valid_health_check_type(health_check_type) {
-                return Err(crate::scaffolded::Scaffolded::validation_error(format!(
-                    "The HealthCheckType value {health_check_type} is not valid: it must be a \
-                     comma-separated list of {:?}",
-                    crate::state::HEALTH_CHECK_TYPES
-                )));
+                return Err(crate::scaffolded::Scaffolded::validation_error(
+                    crate::state::invalid_health_check_type_message(),
+                ));
             }
         }
         if let Some(policy) = input
@@ -459,11 +457,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         if let Some(desired_capacity) = input.desired_capacity {
             if desired_capacity < min_size || desired_capacity > max_size {
-                return Err(crate::scaffolded::Scaffolded::validation_error(format!(
-                    "The DesiredCapacity must be between the MinSize and the MaxSize, but \
-                     DesiredCapacity is {desired_capacity} and the range is [{min_size}, \
-                     {max_size}]"
-                )));
+                return Err(crate::scaffolded::Scaffolded::validation_error(
+                    crate::state::desired_capacity_out_of_bounds_message(
+                        desired_capacity,
+                        min_size,
+                        max_size,
+                    ),
+                ));
             }
         }
         // Those checks are all RELATIVE, so none of them bounds the absolute size:
@@ -486,6 +486,30 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                      not found"
                 )));
             }
+        }
+        // The group's subnets and the security groups its launch template names must sit in
+        // ONE VPC, exactly as they must when the group is created: an instance of the group
+        // is placed in one of those subnets, so a group of another VPC could never be
+        // applied to it. Asked of the configuration the update LEAVES the group with — a
+        // member the request omits keeps the value the group already has — so neither a new
+        // launch template nor new subnets can introduce a pairing whose instances could not
+        // exist, and the group is left exactly as it was when they would.
+        if let Some(refusal) = crate::state::ec2_security_groups::cross_vpc_security_group_error(
+            &*self.engine,
+            input
+                .vpc_zone_identifier
+                .as_deref()
+                .or(group.vpc_zone_identifier.as_deref()),
+            input
+                .launch_template
+                .as_ref()
+                .or(group.launch_template.as_ref()),
+            input
+                .mixed_instances_policy
+                .as_ref()
+                .or(group.mixed_instances_policy.as_ref()),
+        ) {
+            return Err(refusal);
         }
 
         // The capacity the group holds after the update: what the request asked

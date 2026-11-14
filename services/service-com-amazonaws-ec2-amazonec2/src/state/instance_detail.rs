@@ -35,8 +35,8 @@ use crate::ops::types::{
     InstanceBlockDeviceMapping, InstanceMaintenanceOptions, InstanceMaintenanceOptionsRequest,
     InstanceMetadataOptionsRequest, InstanceMetadataOptionsResponse,
     InstanceNetworkPerformanceOptions, InstanceNetworkPerformanceOptionsRequest, Placement,
-    PrivateDnsNameOptionsRequest, PrivateDnsNameOptionsResponse, SHUTDOWN_BEHAVIOR_VALUES,
-    TENANCY_VALUES,
+    PrivateDnsNameOptionsRequest, PrivateDnsNameOptionsResponse, RequestLaunchTemplateData,
+    SHUTDOWN_BEHAVIOR_VALUES, TENANCY_VALUES,
 };
 use crate::scaffolded::Scaffolded;
 
@@ -505,6 +505,109 @@ pub fn requested_word<E>(
 }
 
 impl ComAmazonawsEc2Amazonec2State {
+    /// The detail an instance launched FROM a launch template version carries: every option
+    /// set that version's launch data declares, resolved exactly as a launch naming the
+    /// member itself resolves it.
+    ///
+    /// "The launch template contains the parameters to launch an instance"
+    /// (`LaunchTemplateVersion$LaunchTemplateData`), so an instance launched from a version
+    /// reports the option sets that version declares — its metadata options, enclave, stop
+    /// protection, shutdown behaviour, Capacity Reservation preference, maintenance and
+    /// network performance options, instance hostname options, tenancy and placement group.
+    /// The version's own values stand where a launch would carry its own, and the account's
+    /// IMDS defaults and the documented per-member defaults stand in for what the version
+    /// leaves out ([`InstanceDetail::launched`]), which is the SAME resolution a launch that
+    /// names a template gets — so an instance a consumer of the template mints (an Auto
+    /// Scaling group's capacity change) and one `RunInstances` mints from the same version
+    /// cannot report different options.
+    ///
+    /// `image_id` is the AMI the launch SETTLED on, which decides the `HttpTokens` default
+    /// where neither the version nor the account states one: a consumer may launch the
+    /// version with another image (a mixed instances policy's override names one), so the
+    /// image is passed in rather than read off the version.
+    ///
+    /// A placement group the account holds none of is NOT carried: the instance would
+    /// otherwise report a group no describe can report. Every word is resolved to a member of
+    /// its own modelled catalog, and a version carrying one outside it — which the modelled
+    /// enums keep out of the store — contributes none of them, the instance then reporting
+    /// the documented defaults rather than the request's text.
+    pub fn launch_template_instance_detail(
+        &self,
+        data: &RequestLaunchTemplateData,
+        image_id: Option<&str>,
+    ) -> InstanceDetail {
+        // The template spells each option set in its own `LaunchTemplate*Request` shape;
+        // the member a launch carries is the shape the resolution below reads, so each one
+        // is read across member by member, exactly as `RunInstances` overlays a template
+        // onto the launch it serves.
+        let metadata_options =
+            data.metadata_options
+                .as_ref()
+                .map(|options| InstanceMetadataOptionsRequest {
+                    http_tokens: options.http_tokens.clone(),
+                    http_put_response_hop_limit: options.http_put_response_hop_limit,
+                    http_endpoint: options.http_endpoint.clone(),
+                    http_protocol_ipv6: options.http_protocol_ipv6.clone(),
+                    instance_metadata_tags: options.instance_metadata_tags.clone(),
+                });
+        let enclave_options = data
+            .enclave_options
+            .as_ref()
+            .map(|options| EnclaveOptionsRequest {
+                enabled: options.enabled,
+            });
+        let maintenance_options =
+            data.maintenance_options
+                .as_ref()
+                .map(|options| InstanceMaintenanceOptionsRequest {
+                    auto_recovery: options.auto_recovery.clone(),
+                });
+        let network_performance_options = data.network_performance_options.as_ref().map(|options| {
+            InstanceNetworkPerformanceOptionsRequest {
+                bandwidth_weighting: options.bandwidth_weighting.clone(),
+            }
+        });
+        let private_dns_name_options =
+            data.private_dns_name_options
+                .as_ref()
+                .map(|options| PrivateDnsNameOptionsRequest {
+                    hostname_type: options.hostname_type.clone(),
+                    enable_resource_name_dns_a_record: options.enable_resource_name_dns_a_record,
+                    enable_resource_name_dns_aaaa_record: options
+                        .enable_resource_name_dns_aaaa_record,
+                });
+        let image_imds_support = self.image_imds_support(image_id);
+        let placement_group_name = data
+            .placement
+            .as_ref()
+            .and_then(|placement| placement.group_name.as_deref())
+            .filter(|group_name| !group_name.is_empty())
+            .filter(|group_name| self.placement_group_id_for_name(group_name).is_some());
+        InstanceDetail::launched::<()>(InstanceDetailSpec {
+            metadata_options: metadata_options.as_ref(),
+            enclave_options: enclave_options.as_ref(),
+            disable_api_stop: data.disable_api_stop,
+            instance_initiated_shutdown_behavior: data
+                .instance_initiated_shutdown_behavior
+                .as_deref(),
+            capacity_reservation_preference: data
+                .capacity_reservation_specification
+                .as_ref()
+                .and_then(|specification| specification.capacity_reservation_preference.as_deref()),
+            maintenance_options: maintenance_options.as_ref(),
+            network_performance_options: network_performance_options.as_ref(),
+            private_dns_name_options: private_dns_name_options.as_ref(),
+            tenancy: data
+                .placement
+                .as_ref()
+                .and_then(|placement| placement.tenancy.as_deref()),
+            placement_group_name,
+            account_metadata_defaults: self.instance_metadata_defaults(),
+            image_imds_support: image_imds_support.as_deref(),
+        })
+        .unwrap_or_default()
+    }
+
     /// The block device mappings the instance `instance_id` holds: one entry per EBS volume
     /// of this account attached to it, at the device it is attached at, in device order.
     ///

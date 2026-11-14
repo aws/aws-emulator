@@ -79,6 +79,11 @@ pub mod elbv2_targets;
 /// the consumer of the template, is what resolves.
 pub mod iam_instance_profiles;
 
+/// The security groups the launch templates of a group name, read against the VPC of the
+/// subnets the group places its instances in: a group and a subnet of two VPCs could never
+/// meet on one instance, so the request that names them is refused.
+pub mod ec2_security_groups;
+
 /// The instance lifecycle events this service publishes onto the account's default
 /// EventBridge bus as a group launches and terminates its instances, and the clock pump
 /// that puts them on the bus as they fall due.
@@ -2078,7 +2083,26 @@ impl LaunchDestination {
 /// for `CreateAutoScalingGroup$HealthCheckType`: "A comma-separated value string
 /// of one or more health check types. The valid values are EC2, EBS, ELB, and
 /// VPC_LATTICE."
-pub const HEALTH_CHECK_TYPES: &[&str] = &["EC2", "EBS", "ELB", "VPC_LATTICE"];
+///
+/// Held in the order the service's own refusal lists them
+/// ([`invalid_health_check_type_message`]), the set being what decides a value and the
+/// order mattering only to that sentence.
+pub const HEALTH_CHECK_TYPES: &[&str] = &["EC2", "ELB", "EBS", "VPC_LATTICE"];
+
+/// The message the service refuses a `HealthCheckType` outside [`HEALTH_CHECK_TYPES`] with,
+/// shared by every operation that sets one.
+///
+/// The member is a free string the service validates itself
+/// (`smithy_query(query="shape",shape="XmlStringMaxLen32")` carries no value list), and the
+/// refusal is the one machine-readable statement of the set it accepts: the FIXED sentence
+/// `Valid health check types are: [` … `].`, naming the valid types and nothing from the
+/// request.
+pub fn invalid_health_check_type_message() -> String {
+    format!(
+        "Valid health check types are: [{}].",
+        HEALTH_CHECK_TYPES.join(", ")
+    )
+}
 
 /// Whether `health_check_type` is a comma-separated list of [`HEALTH_CHECK_TYPES`].
 pub fn is_valid_health_check_type(health_check_type: &str) -> bool {
@@ -2318,6 +2342,30 @@ pub fn is_valid_max_instance_lifetime(seconds: i32) -> bool {
 /// in the order it reports them, and nothing else from the request.
 pub fn max_below_min_message(max_size: i32, min_size: i32) -> String {
     format!("Max bound, {max_size}, must be greater than or equal to min bound, {min_size}")
+}
+
+/// The message the service refuses a request whose desired capacity falls outside the
+/// bounds that request leaves the group with, shared by every operation that sets those
+/// three sizes together.
+///
+/// "Usually, you set these sizes based on a specific number of instances"
+/// (`CreateAutoScalingGroup`): the three sizes describe one group, so the service states the
+/// capacity it was given and the two bounds it has to sit between, and nothing else from the
+/// request. The sentence is FIXED — `Desired capacity:`, ` must be between the specified min
+/// size:` and ` and max size:` — with the three values the only variable parts.
+///
+/// An operation that sets the capacity ALONE words its own refusal around its own name
+/// (`SetDesiredCapacity`), the bound it missed being a bound of the stored group rather than
+/// one the same request carried.
+pub fn desired_capacity_out_of_bounds_message(
+    desired_capacity: i32,
+    min_size: i32,
+    max_size: i32,
+) -> String {
+    format!(
+        "Desired capacity:{desired_capacity} must be between the specified min \
+         size:{min_size} and max size:{max_size}"
+    )
 }
 
 /// The first of `sizes` past [`MAX_GROUP_CAPACITY`], if any.

@@ -1988,3 +1988,8 @@ mod iam_secretsmanager_denial_envelope_by_protocol;
 // (`apigateway_cognito_authorizer_app_client_audience` is declared in the head region above:
 // a module may be declared only once.)
 // (`zz_probe` is declared further up this tail already: a module may be declared only once.)
+// (`apigateway_cognito_authorizer_app_client_audience` is declared in the head region
+// above: a module may be declared only once.)
+// (`zz_probe` is declared once, further up this tail: a module may be declared only once.)
+// (`cloudformation_metric_stream_estate_is_drainable` is declared once, further up this
+// file: a module may be declared only once.)

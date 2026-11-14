@@ -35,6 +35,8 @@ mod describe_tags;
 mod error_envelope;
 #[path = "all/group_tag_propagate_at_launch.rs"]
 mod group_tag_propagate_at_launch;
+#[path = "all/group_size_and_health_check_refusal_wording.rs"]
+mod group_size_and_health_check_refusal_wording;
 #[path = "all/instance_lifecycle_events.rs"]
 mod instance_lifecycle_events;
 #[path = "all/instance_refresh_lifecycle.rs"]
@@ -47,6 +49,10 @@ mod instance_scale_in_protection;
 mod launch_configurations_are_unavailable;
 #[path = "all/launch_template_instance_profiles.rs"]
 mod launch_template_instance_profiles;
+#[path = "all/launch_template_option_sets.rs"]
+mod launch_template_option_sets;
+#[path = "all/launch_template_security_group_vpc.rs"]
+mod launch_template_security_group_vpc;
 #[path = "all/launch_template_specifications.rs"]
 mod launch_template_specifications;
 #[path = "all/legacy_target_group_detach.rs"]

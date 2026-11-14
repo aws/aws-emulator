@@ -97,6 +97,19 @@ struct LaunchParameters {
     user_data: Option<String>,
     ebs_optimized: bool,
     monitoring_enabled: bool,
+    /// The option sets the launch source declares for every instance it launches — its
+    /// metadata options, enclave, stop protection, shutdown behaviour, Capacity Reservation
+    /// preference, maintenance and network performance options, instance hostname options,
+    /// tenancy and placement group — resolved by Amazon EC2 itself from the launch-template
+    /// version ([`ec2::ComAmazonawsEc2Amazonec2State::launch_template_instance_detail`]), so
+    /// an instance this group launches reports what a launch naming that version reports.
+    detail: ec2::InstanceDetail,
+    /// `LaunchTemplateData$DisableApiTermination`, which the instance reports under
+    /// `DescribeInstanceAttribute$DisableApiTermination`.
+    disable_api_termination: bool,
+    /// `LaunchTemplateHibernationOptionsRequest$Configured`, which the instance reports
+    /// under `Instance$HibernationOptions`.
+    hibernation_configured: bool,
 }
 
 /// Launch `request.count` instances for the group and answer the ones Amazon EC2
@@ -211,17 +224,18 @@ pub fn launch<Eng: Send + Sync + 'static>(
             // The launch template says whether detailed monitoring is on from the start, so
             // there is no move for Amazon EC2's clock to make.
             monitoring_transition: None,
-            // A launch template here configures none of the option sets an instance
-            // reports (its metadata options, enclave, tenancy and the rest), so every one
-            // of them is at its documented default.
-            detail: ec2::InstanceDetail::default(),
+            // The option sets the group's launch source declares, resolved by Amazon EC2
+            // from the launch-template version this launch reads
+            // ([`launch_parameters`]); a source that declares none leaves every one of them
+            // at its documented default.
+            detail: parameters.detail.clone(),
             architecture: ec2::architecture_for(&instance_type),
             kernel_id,
             ramdisk_id,
             source_dest_check: ec2::DEFAULT_SOURCE_DEST_CHECK,
             ebs_optimized: parameters.ebs_optimized,
-            hibernation_configured: false,
-            disable_api_termination: false,
+            hibernation_configured: parameters.hibernation_configured,
+            disable_api_termination: parameters.disable_api_termination,
             tags: tags.clone(),
             // No client token: this launch is not a caller's request to replay.
             client_token: None,
@@ -454,6 +468,14 @@ fn launch_parameters(
             user_data: configuration.user_data.clone(),
             ebs_optimized: configuration.ebs_optimized,
             monitoring_enabled: configuration.instance_monitoring_enabled,
+            // A launch configuration carries option sets of its own, and this store holds
+            // none to read them off: `CreateLaunchConfiguration` is refused
+            // `UnsupportedOperation`, so no group launches from one
+            // ([`StoredLaunchConfiguration`]). An instance of such a group would report
+            // every option set at its documented default, which is what this leaves them at.
+            detail: ec2::InstanceDetail::default(),
+            disable_api_termination: false,
+            hibernation_configured: false,
         };
     }
 
@@ -471,10 +493,30 @@ fn launch_parameters(
         .and_then(|overrides| overrides.first());
     let data = specification.and_then(|specification| template_data(store, specification));
 
+    let image_id = override_entry
+        .and_then(|entry| entry.image_id.clone())
+        .or_else(|| data.as_ref().and_then(|data| data.image_id.clone()));
     LaunchParameters {
-        image_id: override_entry
-            .and_then(|entry| entry.image_id.clone())
-            .or_else(|| data.as_ref().and_then(|data| data.image_id.clone())),
+        // The option sets the launch-template version declares, resolved by Amazon EC2
+        // itself against the account's own IMDS defaults and the AMI this launch settled
+        // on: "the launch template contains the parameters to launch an instance", so an
+        // instance a capacity change launches from a version reports what a launch naming
+        // that version reports. A group whose source names no template the account holds
+        // reads no version, and its instances carry the documented defaults.
+        detail: data
+            .as_ref()
+            .map(|data| store.launch_template_instance_detail(data, image_id.as_deref()))
+            .unwrap_or_default(),
+        disable_api_termination: data
+            .as_ref()
+            .and_then(|data| data.disable_api_termination)
+            .unwrap_or(false),
+        hibernation_configured: data
+            .as_ref()
+            .and_then(|data| data.hibernation_options.as_ref())
+            .and_then(|options| options.configured)
+            .unwrap_or(false),
+        image_id,
         instance_type: override_entry
             .and_then(|entry| entry.instance_type.clone())
             .or_else(|| data.as_ref().and_then(|data| data.instance_type.clone())),
@@ -508,6 +550,36 @@ fn launch_parameters(
     }
 }
 
+/// Every launch template a group's launch source names, in the order the request names
+/// them: the group's own `LaunchTemplate` first, then the launch template of its mixed
+/// instances policy and the template each of that policy's overrides names.
+///
+/// A mixed instances policy carries a launch template of its own, and "some instance types
+/// might require a launch template with a different AMI", so an override may name a further
+/// one (`LaunchTemplateOverrides$LaunchTemplateSpecification`) — each of them is a template
+/// instances of the group are launched from, so every consumer of a group's templates reads
+/// the same set from here: the IAM instance profile they name
+/// ([`super::iam_instance_profiles`]), the security groups they name
+/// ([`super::ec2_security_groups`]) and the halves this module completes
+/// ([`complete_launch_template_specifications`], which walks the same set to WRITE them).
+pub(super) fn specifications<'a>(
+    launch_template: Option<&'a LaunchTemplateSpecification>,
+    mixed_instances_policy: Option<&'a MixedInstancesPolicy>,
+) -> Vec<&'a LaunchTemplateSpecification> {
+    let policy_template = mixed_instances_policy.and_then(|policy| policy.launch_template.as_ref());
+    launch_template
+        .into_iter()
+        .chain(policy_template.and_then(|template| template.launch_template_specification.as_ref()))
+        .chain(
+            policy_template
+                .and_then(|template| template.overrides.as_ref())
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| entry.launch_template_specification.as_ref()),
+        )
+        .collect()
+}
+
 /// Complete every launch-template specification a group carries with the half the request did
 /// not state: the `LaunchTemplateName` of a template named by id, and the
 /// `LaunchTemplateId` of one named by name.
@@ -535,9 +607,9 @@ pub fn complete_launch_template_specifications<Eng: Send + Sync + 'static>(
     };
     let store = state.lock();
     // Every specification a group carries: its own, the one its mixed instances policy
-    // names, and the one each of that policy's overrides may name instead — the same set the
-    // IAM instance profile of a group is resolved over
-    // ([`super::iam_instance_profiles::specifications`]).
+    // names, and the one each of that policy's overrides may name instead — the same set
+    // every reader of a group's templates resolves over ([`specifications`]), walked here
+    // by mutable reference because this pass WRITES the halves back.
     let mut specifications: Vec<&mut LaunchTemplateSpecification> = Vec::new();
     if let Some(specification) = launch_template {
         specifications.push(specification);

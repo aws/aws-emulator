@@ -401,11 +401,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         if let Some(health_check_type) = input.health_check_type.as_deref() {
             if !crate::state::is_valid_health_check_type(health_check_type) {
-                return Err(crate::scaffolded::Scaffolded::validation_error(format!(
-                    "The HealthCheckType value {health_check_type} is not valid: it must be a \
-                     comma-separated list of {:?}",
-                    crate::state::HEALTH_CHECK_TYPES
-                )));
+                return Err(crate::scaffolded::Scaffolded::validation_error(
+                    crate::state::invalid_health_check_type_message(),
+                ));
             }
         }
         if let Some(policy) = input
@@ -445,11 +443,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         let desired_capacity = input.desired_capacity.unwrap_or(input.min_size);
         if desired_capacity < input.min_size || desired_capacity > input.max_size {
-            return Err(crate::scaffolded::Scaffolded::validation_error(format!(
-                "The DesiredCapacity must be between the MinSize and the MaxSize, but \
-                 DesiredCapacity is {desired_capacity} and the range is [{}, {}]",
-                input.min_size, input.max_size
-            )));
+            return Err(crate::scaffolded::Scaffolded::validation_error(
+                crate::state::desired_capacity_out_of_bounds_message(
+                    desired_capacity,
+                    input.min_size,
+                    input.max_size,
+                ),
+            ));
         }
         if input.launch_configuration_name.is_none()
             && input.launch_template.is_none()
@@ -572,6 +572,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // store is ever held at a time.
         if let Some(refusal) = crate::state::iam_instance_profiles::unresolvable_profile_error(
             &*self.engine,
+            input.launch_template.as_ref(),
+            input.mixed_instances_policy.as_ref(),
+        ) {
+            return Err(refusal);
+        }
+
+        // The group's subnets and the security groups its launch template names must sit in
+        // ONE VPC: an instance of this group is placed in one of those subnets, so a group
+        // of another VPC could never be applied to it. Asked here, against the account's own
+        // Amazon EC2 state and before this service's store is locked, so a configuration
+        // whose instances could not exist is refused instead of stored.
+        if let Some(refusal) = crate::state::ec2_security_groups::cross_vpc_security_group_error(
+            &*self.engine,
+            input.vpc_zone_identifier.as_deref(),
             input.launch_template.as_ref(),
             input.mixed_instances_policy.as_ref(),
         ) {
