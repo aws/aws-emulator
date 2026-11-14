@@ -268,10 +268,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if input.secret_string.is_some() && input.secret_binary.is_some() {
             return Err(UpdateSecretErrorModeled::InvalidParameterException(
                 InvalidParameterException {
-                    message: Some(
-                        "You can't specify both SecretString and SecretBinary in the same request."
-                            .to_string(),
-                    ),
+                    message: Some(crate::state::BOTH_SECRET_VALUES_MESSAGE.to_string()),
                 },
             )
             .into());

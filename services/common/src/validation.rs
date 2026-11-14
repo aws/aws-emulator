@@ -958,6 +958,32 @@ pub fn quoted_echo_up_to(value: &str, max_echo: usize) -> ::std::borrow::Cow<'_,
     ))
 }
 
+/// One clause's ECHO, elided at `max_echo` bytes with `marker` standing for the rest —
+/// `<prefix><marker>` — for a service whose recorded clauses mark an elision WITHOUT naming
+/// the submitted byte count.
+///
+/// [`echo_held_to`] is the rendering to reach for first, and the one most services are
+/// recorded stating: it keeps the `... [<n> bytes]` marker the framework's own walk writes,
+/// so a caller still reads how much it sent. A service whose recordings show a different
+/// marker states it HERE rather than open-coding the prefix walk, so there is one
+/// character-boundary-safe elision in the tree ([`char_prefix`]) however a service marks it.
+///
+/// The prefix is `max_echo` bytes of the ECHO as handed in, on a character boundary. An echo
+/// the framework already elided therefore keeps that elision's own marker inside the prefix
+/// when it falls there, which is the honest reading: the bytes past `max_echo` are gone
+/// either way, and only the marker a service states is this function's business.
+#[must_use]
+pub fn echo_elided_with<'e>(
+    echo: &'e str,
+    max_echo: usize,
+    marker: &str,
+) -> ::std::borrow::Cow<'e, str> {
+    if echo.len() <= max_echo {
+        return ::std::borrow::Cow::Borrowed(echo);
+    }
+    ::std::borrow::Cow::Owned(format!("{}{marker}", char_prefix(echo, max_echo)))
+}
+
 /// One clause's ECHO — the value itself, or an elision of it ([`quoted_echo_up_to`], or the
 /// framework's own rendering, which has the same shape) — stated in at most `max_echo`
 /// bytes.
@@ -3380,6 +3406,50 @@ mod tests {
             "case \"a doubly held echo\": the walk must still recognise it as this value's \
              elision"
         );
+    }
+
+    /// RULE: an echo elided with a marker of the service's own keeps at most the bound in
+    /// bytes, ends on a character boundary, and ends with that marker — and a value inside
+    /// the bound is borrowed back unchanged, whatever the marker.
+    #[test]
+    fn an_echo_elided_with_a_marker_is_bounded_and_character_safe() {
+        const MARKER: &str = " ...";
+        // Rows differ along the value's length relative to the bound, its encoding, and the
+        // bound itself.
+        let rows: [(&str, String, usize); 5] = [
+            ("a value well inside the bound", "bob".to_string(), 64),
+            ("a value exactly at the bound", "v".repeat(64), 64),
+            ("a value one byte past the bound", "v".repeat(65), 64),
+            ("a value many times the bound", "v".repeat(5000), 64),
+            (
+                "a multibyte value whose boundary is inside the bound",
+                "€".repeat(100),
+                64,
+            ),
+        ];
+        for (case, value, bound) in rows {
+            let shown = super::echo_elided_with(&value, bound, MARKER);
+            if value.len() <= bound {
+                assert_eq!(
+                    shown, value,
+                    "case {case:?}: expected the value unchanged, got {shown:?}"
+                );
+                continue;
+            }
+            let prefix = shown
+                .strip_suffix(MARKER)
+                .unwrap_or_else(|| panic!("case {case:?}: expected the marker, got {shown:?}"));
+            assert!(
+                prefix.len() <= bound && value.starts_with(prefix),
+                "case {case:?}: expected a bounded prefix of the value, got {prefix:?}"
+            );
+            assert!(
+                value.is_char_boundary(prefix.len()),
+                "case {case:?}: expected the prefix to end on a character boundary, got {} \
+                 bytes",
+                prefix.len()
+            );
+        }
     }
 
     /// RULE: a stored echo is the submitted value's elision when it is that value, or a

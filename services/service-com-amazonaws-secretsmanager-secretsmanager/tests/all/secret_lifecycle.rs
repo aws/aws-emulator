@@ -401,8 +401,8 @@ async fn a_secret_value_is_either_a_string_or_a_blob_and_never_both() {
     )
     .await;
     assert_eq!(
-        neither, "InvalidParameterException",
-        "expected InvalidParameterException for a put carrying no value, got {neither}"
+        neither, "InvalidRequestException",
+        "expected InvalidRequestException for a put carrying no value, got {neither}"
     );
 
     let put = ok(
@@ -1516,8 +1516,8 @@ async fn a_secret_name_is_accepted_only_over_the_documented_charset() {
         } else {
             let code = err(&router, "CreateSecret", body, case).await;
             assert_eq!(
-                code, "InvalidParameterException",
-                "case {case:?}: expected InvalidParameterException for name {name:?}, got {code}"
+                code, "ValidationException",
+                "case {case:?}: expected ValidationException for name {name:?}, got {code}"
             );
             let missing = err(
                 &router,

@@ -190,13 +190,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // length, and a secret carries at most `TAGS_PER_SECRET` tags, so no
         // request needs to name more keys than that.
         if input.tag_keys.len() > crate::state::TAGS_PER_SECRET {
-            return Err(UntagResourceErrorModeled::InvalidParameterException(
-                InvalidParameterException {
-                    message: Some(format!(
-                        "Invalid TagKeys. A secret carries at most {} tags, so at most that many \
-                         keys can be removed.",
-                        crate::state::TAGS_PER_SECRET
-                    )),
+            return Err(UntagResourceErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    message: Some(crate::state::TOO_MANY_TAGS_MESSAGE.to_string()),
                 },
             )
             .into());
@@ -210,11 +206,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         {
             return Err(UntagResourceErrorModeled::InvalidParameterException(
                 InvalidParameterException {
-                    message: Some(format!(
-                        "Invalid TagKeys. The prefix {} is reserved for Amazon Web Services \
-                         tags; got key {reserved:?}.",
-                        crate::state::RESERVED_TAG_PREFIX
-                    )),
+                    message: Some(crate::state::system_tag_message(reserved)),
                 },
             )
             .into());

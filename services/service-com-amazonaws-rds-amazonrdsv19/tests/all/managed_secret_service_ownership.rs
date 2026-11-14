@@ -27,8 +27,10 @@
 //! ([`crate::managed_master_user_password::emulator`]), because the secret read back here
 //! is a real secret of this emulator.
 
+use aws_sdk_secretsmanager::error::ProvideErrorMetadata;
 use aws_sdk_secretsmanager::operation::create_secret::CreateSecretError;
 use service_com_amazonaws_rds_amazonrdsv19::state as st;
+use service_com_amazonaws_secretsmanager_secretsmanager::state as sm;
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::db_instances::{call, expect_ok, text, wait_for_settle, REGION};
@@ -398,7 +400,12 @@ async fn a_callers_own_secret_is_unowned_and_cannot_claim_a_reserved_name() {
     );
 
     // The reserved form is refused for every caller, for the prefix of the service that
-    // owns such secrets and for any other service's prefix.
+    // owns such secrets and for any other service's prefix. A name no caller may use is a
+    // value that failed the rules for that member, which Secrets Manager answers with its
+    // constraint refusal and the one sentence it states a name's character set in
+    // (`INVALID_SECRET_NAME_MESSAGE`) — `ValidationException` is not in `CreateSecret`'s
+    // modelled errors, so the SDK surfaces it through the error metadata rather than as a
+    // typed variant.
     for (case, name) in [
         ("the RDS prefix", "rds!db-db-ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
         ("another service's prefix", "events!connection/a/b"),
@@ -415,13 +422,16 @@ async fn a_callers_own_secret_is_unowned_and_cannot_claim_a_reserved_name() {
                 panic!("case {case:?}: expected the create of {name:?} to be refused")
             });
         let service_error = refused.into_service_error();
-        assert!(
-            matches!(
-                service_error,
-                CreateSecretError::InvalidParameterException(_)
-            ),
-            "case {case:?}: expected InvalidParameterException for the name {name:?}, got \
+        assert_eq!(
+            ProvideErrorMetadata::code(&service_error),
+            Some("ValidationException"),
+            "case {case:?}: expected the constraint refusal for the name {name:?}, got \
              {service_error:?}"
+        );
+        assert_eq!(
+            ProvideErrorMetadata::message(&service_error),
+            Some(sm::INVALID_SECRET_NAME_MESSAGE),
+            "case {case:?}: expected the name sentence for {name:?}, got {service_error:?}"
         );
     }
 

@@ -280,12 +280,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `TagListType` declares no maximum length, and no secret carries more
         // than `TAGS_PER_SECRET` tags anyway.
         if tags.len() > crate::state::TAGS_PER_SECRET {
-            return Err(CreateSecretErrorModeled::InvalidParameterException(
-                InvalidParameterException {
-                    message: Some(format!(
-                        "Invalid Tags. A secret carries at most {} tags.",
-                        crate::state::TAGS_PER_SECRET
-                    )),
+            return Err(CreateSecretErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    message: Some(crate::state::TOO_MANY_TAGS_MESSAGE.to_string()),
                 },
             )
             .into());
@@ -311,22 +308,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         {
             return Err(CreateSecretErrorModeled::InvalidParameterException(
                 InvalidParameterException {
-                    message: Some(format!(
-                        "Invalid Tags. The prefix {} is reserved for Amazon Web Services tags; \
-                         got key {reserved:?}.",
-                        crate::state::RESERVED_TAG_PREFIX
-                    )),
+                    message: Some(crate::state::system_tag_message(reserved)),
+                },
+            )
+            .into());
+        }
+        // A key identifies one tag, so a list that repeats one asks for two values for
+        // the same tag and states no single tag set to attach.
+        if crate::state::repeats_a_tag_key(tags) {
+            return Err(CreateSecretErrorModeled::InvalidParameterException(
+                InvalidParameterException {
+                    message: Some(crate::state::DUPLICATE_TAG_KEYS_MESSAGE.to_string()),
                 },
             )
             .into());
         }
         if crate::state::tag_count_after_attaching(&[], tags) > crate::state::TAGS_PER_SECRET {
-            return Err(CreateSecretErrorModeled::InvalidParameterException(
-                InvalidParameterException {
-                    message: Some(format!(
-                        "Invalid Tags. A secret carries at most {} tags.",
-                        crate::state::TAGS_PER_SECRET
-                    )),
+            return Err(CreateSecretErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    message: Some(crate::state::TOO_MANY_TAGS_MESSAGE.to_string()),
                 },
             )
             .into());
@@ -358,22 +358,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A name in the reserved `<service>!…` form is one only that service's own create
         // may carry; for every other caller it is a name outside the documented charset,
         // and is refused as one.
+        //
+        // A name the service cannot use is a value that failed the rules for that member,
+        // which is the constraint refusal (`ValidationException`) the boundary validator
+        // answers a name outside `NameType`'s own bounds with — the same code and the same
+        // fixed sentence for every unusable name, whichever half of the rule it broke (see
+        // `crate::state::INVALID_SECRET_NAME_MESSAGE` and this service's
+        // `override_refusal`).
         let named_well = match &owner {
             Some(owner) => owner.may_name(&input.name),
             None => crate::state::is_valid_secret_name(&input.name),
         };
         if !named_well {
-            return Err(CreateSecretErrorModeled::InvalidParameterException(
-                InvalidParameterException {
-                    message: Some(format!(
-                        "Invalid name. Name must be a string of ASCII letters, numbers and the \
-                         characters {}; got {:?}.",
-                        crate::state::SECRET_NAME_EXTRA_CHARS,
-                        input.name
-                    )),
-                },
-            )
-            .into());
+            return Err(crate::scaffolded::Scaffolded::validation(
+                crate::state::INVALID_SECRET_NAME_MESSAGE,
+            ));
         }
 
         // The Region the caller signed for, and the ARN this create allocates for the
@@ -424,10 +423,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if input.secret_string.is_some() && input.secret_binary.is_some() {
             return Err(CreateSecretErrorModeled::InvalidParameterException(
                 InvalidParameterException {
-                    message: Some(
-                        "You can't specify both SecretString and SecretBinary in the same request."
-                            .to_string(),
-                    ),
+                    message: Some(crate::state::BOTH_SECRET_VALUES_MESSAGE.to_string()),
                 },
             )
             .into());
@@ -664,11 +660,7 @@ fn answer_existing(
     if existing.scheduled_for_deletion() {
         return Err(CreateSecretErrorModeled::InvalidRequestException(
             InvalidRequestException {
-                message: Some(format!(
-                    "You can't create this secret because a secret with the name {} is \
-                     already scheduled for deletion.",
-                    existing.name
-                )),
+                message: Some(crate::state::NAME_SCHEDULED_FOR_DELETION_MESSAGE.to_string()),
             },
         )
         .into());

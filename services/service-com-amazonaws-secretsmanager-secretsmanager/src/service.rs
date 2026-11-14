@@ -40,10 +40,10 @@
 //! and is reached, not edited, through the one `definition` method below. You
 //! do not write it; editing the entry would let this file drift from the model.
 
-use smithy_server_runtime::{
-    http, ErasedOperation, Refusal, Refused, Service, ViolationKind,
-};
+use smithy_server_runtime::{http, ErasedOperation, Refusal, Refused, Service};
 use std::sync::Arc;
+
+mod validation;
 
 /// The `com-amazonaws-secretsmanager-secretsmanager` emulated service: the generated [`ServiceDefinition`] plus
 /// the behavioral seams this file owns.
@@ -102,24 +102,10 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // wording; a case reworded here replaces BOTH the code and the message,
         // because a client branches on the code.
         //
-        // The one case this service words itself: a `SecretIdList` longer than
-        // one batch. Secrets Manager answers that with
-        // `InvalidParameterException` — "the parameter name or value is invalid"
-        // — and a sentence stating the bound, not with the boundary validator's
-        // generic refusal, and a client reading the batched API branches on that
-        // modelled code. `SecretIdList` is the only member of this service's
-        // model under that path, so the rewording reaches nothing else.
-        let Refusal::Invalid(violations) = refusal else {
-            return None;
-        };
-        let over_long_batch = violations.iter().any(|violation| {
-            violation.path == "secretIdList"
-                && matches!(violation.kind, ViolationKind::MaxLength(_))
-        });
-        over_long_batch.then(|| Refused {
-            code: "InvalidParameterException".to_string(),
-            message: crate::ops::batch_get_secret_value::too_many_ids_message(),
-        })
+        // Which refusals this service words itself, and how, lives in
+        // [`validation`] — one table for the whole service, so two operations
+        // cannot word one refusal two ways.
+        validation::reword(refusal)
     }
 
     fn override_routing_error(

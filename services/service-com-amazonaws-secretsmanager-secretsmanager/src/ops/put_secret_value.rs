@@ -257,16 +257,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "Either SecretString or SecretBinary must have a value, but not both."
         if input.secret_string.is_some() && input.secret_binary.is_some() {
             return Err(invalid_parameter(
-                "You can't specify both SecretString and SecretBinary in the same request.",
+                crate::state::BOTH_SECRET_VALUES_MESSAGE,
             ));
         }
         let Some(value) = crate::state::envelope::SecretValue::from_request(
             input.secret_string.as_ref(),
             input.secret_binary.as_ref(),
         ) else {
-            return Err(invalid_parameter(
-                "You must provide either SecretString or SecretBinary in the request.",
-            ));
+            // This operation exists to store a value, so a call carrying neither value
+            // member asks it to create a version with nothing in it: the request cannot
+            // be served in the state the secret is in, which is the modelled
+            // `InvalidRequestException` — "A parameter value is not valid for the current
+            // state of the resource." (this service's Smithy model) — rather than a
+            // single parameter the caller can correct.
+            return Err(invalid_request(crate::state::NO_SECRET_VALUE_MESSAGE));
         };
 
         // This operation "creates a new version of your secret", so it always
@@ -529,9 +533,18 @@ fn missing_client_request_token() -> PutSecretValueError {
 }
 
 /// `InvalidParameterException` — "the parameter name or value is invalid" — for a
-/// request that does not state one value to store.
+/// request whose two value members cannot hold together.
 fn invalid_parameter(message: &str) -> PutSecretValueError {
     PutSecretValueErrorModeled::InvalidParameterException(InvalidParameterException {
+        message: Some(message.to_string()),
+    })
+    .into()
+}
+
+/// `InvalidRequestException` — "A parameter value is not valid for the current state of
+/// the resource." — for a write this secret cannot take in the form it was asked for.
+fn invalid_request(message: &str) -> PutSecretValueError {
+    PutSecretValueErrorModeled::InvalidRequestException(InvalidRequestException {
         message: Some(message.to_string()),
     })
     .into()

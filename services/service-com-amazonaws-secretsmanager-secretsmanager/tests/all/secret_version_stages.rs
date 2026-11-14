@@ -1096,7 +1096,8 @@ async fn update_secret_refuses_both_value_members_in_one_call() {
     // run over the size of each value, since the refusal is of the two members
     // APPEARING together.
     const EXPECTED: &str =
-        "You can't specify both SecretString and SecretBinary in the same request.";
+        "You can't specify both a binary secret value and a string secret value in the same \
+         secret.";
     let pairs: [(&str, Value); 3] = [
         ("short values", json!({"SecretString": "a", "SecretBinary": "AAECAwQ="})),
         (

@@ -194,12 +194,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // length, and no secret carries more than `TAGS_PER_SECRET` tags anyway,
         // so a longer list cannot be served at all.
         if input.tags.len() > crate::state::TAGS_PER_SECRET {
-            return Err(TagResourceErrorModeled::InvalidParameterException(
-                InvalidParameterException {
-                    message: Some(format!(
-                        "Invalid Tags. A secret carries at most {} tags.",
-                        crate::state::TAGS_PER_SECRET
-                    )),
+            return Err(TagResourceErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    message: Some(crate::state::TOO_MANY_TAGS_MESSAGE.to_string()),
                 },
             )
             .into());
@@ -225,11 +222,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         {
             return Err(TagResourceErrorModeled::InvalidParameterException(
                 InvalidParameterException {
-                    message: Some(format!(
-                        "Invalid Tags. The prefix {} is reserved for Amazon Web Services tags; \
-                         got key {reserved:?}.",
-                        crate::state::RESERVED_TAG_PREFIX
-                    )),
+                    message: Some(crate::state::system_tag_message(reserved)),
+                },
+            )
+            .into());
+        }
+        // A key identifies one tag, so a list that repeats one asks for two values for
+        // the same tag and states no single tag set to attach.
+        if crate::state::repeats_a_tag_key(&input.tags) {
+            return Err(TagResourceErrorModeled::InvalidParameterException(
+                InvalidParameterException {
+                    message: Some(crate::state::DUPLICATE_TAG_KEYS_MESSAGE.to_string()),
                 },
             )
             .into());
@@ -276,12 +279,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // quota (see `state::TAGS_PER_SECRET`). A key already attached is
         // replaced rather than added, so re-tagging it never trips this.
         if secret.tag_count_after(&input.tags) > crate::state::TAGS_PER_SECRET {
-            return Err(TagResourceErrorModeled::InvalidParameterException(
-                InvalidParameterException {
-                    message: Some(format!(
-                        "Invalid Tags. A secret carries at most {} tags.",
-                        crate::state::TAGS_PER_SECRET
-                    )),
+            return Err(TagResourceErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    message: Some(crate::state::TOO_MANY_TAGS_MESSAGE.to_string()),
                 },
             )
             .into());

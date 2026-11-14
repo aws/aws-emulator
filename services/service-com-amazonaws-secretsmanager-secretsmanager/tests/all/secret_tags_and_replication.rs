@@ -905,29 +905,9 @@ async fn a_bad_tag_or_replication_request_is_refused_with_the_modelled_error() {
             json!({"SecretId": "refusals", "AddReplicaRegions": [{"Region": REGION}]}),
         ),
         (
-            "more tags than a secret may carry",
-            "TagResource",
-            json!({
-                "SecretId": "refusals",
-                "Tags": (0..=TAGS_PER_SECRET)
-                    .map(|index| json!({"Key": format!("k{index}"), "Value": "v"}))
-                    .collect::<Vec<Value>>(),
-            }),
-        ),
-        (
             "creating a secret with a replica in its own Region",
             "CreateSecret",
             json!({"Name": "self-replicated", "AddReplicaRegions": [{"Region": REGION}]}),
-        ),
-        (
-            "more tag keys than a secret can carry",
-            "UntagResource",
-            json!({
-                "SecretId": "refusals",
-                "TagKeys": (0..=TAGS_PER_SECRET)
-                    .map(|index| json!(format!("k{index}")))
-                    .collect::<Vec<Value>>(),
-            }),
         ),
         (
             "more replica Regions than a secret may hold",
@@ -965,6 +945,50 @@ async fn a_bad_tag_or_replication_request_is_refused_with_the_modelled_error() {
         assert_eq!(
             code, "InvalidParameterException",
             "case {case:?}: expected InvalidParameterException from {operation}, got {code}"
+        );
+    }
+
+    // A write that would leave the secret carrying more tags than the tagging quota
+    // allows is refused for the state of the resource, not for one bad parameter:
+    // "A parameter value is not valid for the current state of the resource."
+    // (`InvalidRequestException`, this service's Smithy model.)
+    let over_quota: &[(&str, &str, Value)] = &[
+        (
+            "more tags than a secret may carry",
+            "TagResource",
+            json!({
+                "SecretId": "refusals",
+                "Tags": (0..=TAGS_PER_SECRET)
+                    .map(|index| json!({"Key": format!("k{index}"), "Value": "v"}))
+                    .collect::<Vec<Value>>(),
+            }),
+        ),
+        (
+            "more tag keys than a secret can carry",
+            "UntagResource",
+            json!({
+                "SecretId": "refusals",
+                "TagKeys": (0..=TAGS_PER_SECRET)
+                    .map(|index| json!(format!("k{index}")))
+                    .collect::<Vec<Value>>(),
+            }),
+        ),
+        (
+            "creating a secret with more tags than it may carry",
+            "CreateSecret",
+            json!({
+                "Name": "over-tagged",
+                "Tags": (0..=TAGS_PER_SECRET)
+                    .map(|index| json!({"Key": format!("k{index}"), "Value": "v"}))
+                    .collect::<Vec<Value>>(),
+            }),
+        ),
+    ];
+    for (case, operation, body) in over_quota {
+        let code = err(&router, operation, body.clone(), case).await;
+        assert_eq!(
+            code, "InvalidRequestException",
+            "case {case:?}: expected InvalidRequestException from {operation}, got {code}"
         );
     }
 

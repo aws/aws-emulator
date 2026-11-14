@@ -260,10 +260,35 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // identity (see `crate::state::replication`).
             let version = match input.version_id.as_deref() {
                 // A `VersionId` names the version outright; a `VersionStage` given
-                // alongside it has to agree with the labels that version carries.
-                Some(version_id) => content
-                    .version(version_id)
-                    .filter(|version| stage.is_none_or(|stage| version.has_stage(stage))),
+                // alongside it has to agree with the labels that version carries:
+                // "If you include both this parameter and VersionId, the two
+                // parameters must refer to the same secret version."
+                // (`GetSecretValueRequest$VersionStage`, this service's Smithy
+                // model.) When each half resolves to a version and the two are
+                // DIFFERENT versions, nothing the request named is missing: the
+                // request contradicts itself, and it is refused for the state of the
+                // secret (`InvalidRequestException`) rather than answered as a
+                // version that is gone — a caller told the version does not exist
+                // concludes the secret lost it and recreates it. A half that
+                // resolves to NOTHING is still a miss, and is answered below.
+                Some(version_id) => {
+                    let named = content.version(version_id);
+                    let labelled = stage.and_then(|stage| content.version_with_stage(stage));
+                    if let (Some(named), Some(labelled)) = (named, labelled) {
+                        if named.version_id != labelled.version_id {
+                            return Err(GetSecretValueErrorModeled::InvalidRequestException(
+                                InvalidRequestException {
+                                    message: Some(
+                                        crate::state::VERSION_ID_AND_STAGE_DISAGREE_MESSAGE
+                                            .to_string(),
+                                    ),
+                                },
+                            )
+                            .into());
+                        }
+                    }
+                    named.filter(|version| stage.is_none_or(|stage| version.has_stage(stage)))
+                }
                 // "If you don't specify either a VersionStage or VersionId, Secrets
                 // Manager returns the AWSCURRENT version."
                 None => content.version_with_stage(stage.unwrap_or(crate::state::STAGE_CURRENT)),

@@ -182,6 +182,150 @@ pub const MISSING_CLIENT_REQUEST_TOKEN_MESSAGE: &str =
 pub const MARKED_FOR_DELETION_MESSAGE: &str =
     "You can't perform this operation on the secret because it was marked for deletion.";
 
+/// The message `InvalidRequestException` carries for a `CreateSecret` whose
+/// `Name` is held by a secret inside its recovery window.
+///
+/// The name is still taken — "you cannot access the encrypted secret
+/// information" of a secret scheduled for deletion, and the name cannot be
+/// reused until the deletion completes or is cancelled — so the create is
+/// refused by that secret's state. The sentence is FIXED: it states that a
+/// secret with this name is already scheduled for deletion and interpolates
+/// nothing, so the caller's own identifier is never reflected back into the
+/// error body.
+pub const NAME_SCHEDULED_FOR_DELETION_MESSAGE: &str = "You can't create this secret because a \
+     secret with this name is already scheduled for deletion.";
+
+/// The message a write that carries BOTH secret values is refused with.
+///
+/// "Either `SecretString` or `SecretBinary` must have a value, but not both."
+/// (`CreateSecretRequest$SecretString`, and the same text on
+/// `PutSecretValueRequest$SecretString` and `UpdateSecretRequest$SecretString`,
+/// this service's Smithy model.) One fixed sentence, naming the two KINDS of
+/// value rather than the members that carried them and interpolating neither
+/// value: both are `@sensitive`. Every operation that can be handed both answers
+/// with THIS constant.
+pub const BOTH_SECRET_VALUES_MESSAGE: &str =
+    "You can't specify both a binary secret value and a string secret value in the same secret.";
+
+/// The message a request naming a `Name` this service cannot use is refused
+/// with.
+///
+/// A name is the identity a secret is created under and the literal its ARN
+/// carries, so a name outside what the service accepts — a character the
+/// documented set does not list ("The secret name can contain ASCII letters,
+/// numbers, and the following characters: /_+=.@-", `CreateSecretRequest$Name`,
+/// this service's Smithy model), or a length outside `NameType`'s bounds —
+/// names nothing this service can create. ONE fixed sentence states the rule for
+/// every such name: it lists the character set and interpolates no part of the
+/// request, so a rejected name is never echoed back. The set it states includes
+/// the `!` that separates the reserved `<service>!…` form another AWS service's
+/// own create may carry ([`service_owned`]).
+pub const INVALID_SECRET_NAME_MESSAGE: &str = "Invalid name. Must be a valid name containing \
+     alphanumeric characters, or any of the following: -/_+=.@!";
+
+/// The message `GetSecretValue` refuses a request whose `VersionId` and
+/// `VersionStage` name different versions with.
+///
+/// "If you include both this parameter and `VersionId`, the two parameters must
+/// refer to the same secret version." (`GetSecretValueRequest$VersionStage`,
+/// this service's Smithy model.) Both halves resolve — the version exists and
+/// the label is attached to another version — so the request is not a miss but a
+/// contradiction, and it is refused for the state of the secret rather than
+/// reported as a version that is gone. The sentence is fixed and carries neither
+/// identifier.
+pub const VERSION_ID_AND_STAGE_DISAGREE_MESSAGE: &str =
+    "You provided a VersionStage that is not associated to the provided VersionId.";
+
+/// The message a request that writes a tag in the namespace AWS reserves for its
+/// own is refused with.
+///
+/// A tag whose key starts with [`RESERVED_TAG_PREFIX`] is AWS's own ("Service
+/// quotas for Tagging", Amazon Web Services General Reference, referenced from
+/// `TagResource`'s documentation in this service's Smithy model): a caller may
+/// neither create nor remove one. The sentence is fixed apart from the tag key
+/// the request named, which is what tells a caller which of the keys it sent is
+/// the reserved one.
+pub fn system_tag_message(key: &str) -> String {
+    format!("You can't modify system tags. Tag key: '{key}'.")
+}
+
+/// The order this service states `FilterNameStringType`'s admitted values in when it
+/// refuses a value outside them.
+///
+/// The VALUES are the model's own, generated from it
+/// ([`crate::ops::types::FILTER_NAME_STRING_TYPE_VALUES`]), so nothing here restates the
+/// catalogue; the ORDER is the one Secrets Manager's own refusal of an unknown filter key
+/// states them in, which is neither the order the model declares them in nor the sorted one
+/// (recorded in
+/// `issues/things-that-do-not-work/20261103T043509Z-secretsmanager-secrets-manager-version-selector-pending-deletion-and-rotation.md`,
+/// whose cause 6 pins this ordering against a recorded response). A value set is a SET, so
+/// the order a message states it in belongs to the service rather than to the model, and it
+/// is fixed text — no member of the request and nothing in the store varies it — which is
+/// why it lives here beside this service's other refusal wording, as the one copy every
+/// refusal states the set from.
+pub const STATED_FILTER_NAME_VALUE_SET: [&str; 7] = [
+    "all",
+    "owning-service",
+    "name",
+    "tag-key",
+    "description",
+    "tag-value",
+    "primary-region",
+];
+
+/// Every enum value set this service states an order of its own for: one row per
+/// enumerated type, the MODEL's values (the generated catalogue, matched as a set) beside
+/// the service's ordering of them. A type absent from this table is stated as the violation
+/// presents it, because this service has shown no other order for it. The lookup and the
+/// restating are [`service_common::validation_message`]'s.
+pub const STATED_VALUE_SETS: &service_common::validation_message::StatedEnumValueSets<'static> =
+    &[(
+        crate::ops::types::FILTER_NAME_STRING_TYPE_VALUES,
+        &STATED_FILTER_NAME_VALUE_SET,
+    )];
+
+/// The message a tag list that names one key twice is refused with.
+///
+/// "Each tag is a key and value pair" and "Secrets Manager tag key names are case
+/// sensitive. A tag with the key \"ABC\" is a different tag from one with key \"abc\"."
+/// (`CreateSecretRequest$Tags`, this service's Smithy model): a key identifies one tag, so
+/// a list repeating a key asks for two values for one tag and names no single tag set to
+/// attach. Keys are compared exactly, as that documentation requires. ONE fixed sentence,
+/// which names neither the repeated key nor anything else from the request — the wording is
+/// the one a recorded refusal of a duplicate tag key carries, which is why it reads as a
+/// bare clause with no closing period.
+pub const DUPLICATE_TAG_KEYS_MESSAGE: &str = "Duplicate tag keys in request";
+
+/// Whether `tags` names any key more than once.
+///
+/// A tag with no key names nothing to attach and is refused on its own, so a keyless tag is
+/// not compared here.
+pub fn repeats_a_tag_key(tags: &[Tag]) -> bool {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    tags.iter()
+        .filter_map(|tag| tag.key.as_deref())
+        .any(|key| !seen.insert(key))
+}
+
+/// The message a write that would leave a secret carrying more tags than the
+/// tagging quota allows is refused with (see [`TAGS_PER_SECRET`]).
+///
+/// One fixed sentence: it states that the request carried more tags than the
+/// service accepts, and interpolates neither the quota nor any tag the request
+/// named. Every operation that attaches or removes tags answers with THIS
+/// constant, so one quota refusal reads the same whichever raised it.
+pub const TOO_MANY_TAGS_MESSAGE: &str = "The request included too many tags.";
+
+/// The message a write that does not state the one value to store is refused
+/// with.
+///
+/// "Either `SecretString` or `SecretBinary` must have a value"
+/// (`PutSecretValueRequest$SecretString`, this service's Smithy model), so a
+/// write that creates a version carrying neither names nothing to store. One
+/// fixed sentence, naming the two members a caller may choose between.
+pub const NO_SECRET_VALUE_MESSAGE: &str =
+    "You must provide either SecretString or SecretBinary.";
+
 /// The `InvalidRequestException` message `RotateSecret` refuses a call with when the secret
 /// has no Lambda rotation function to invoke: the documented cause "You tried to enable
 /// rotation on a secret that doesn't already have a Lambda function ARN configured and you
@@ -350,12 +494,28 @@ const CRON_FIELDS: usize = 6;
 pub const SCHEDULE_EXPRESSION_SYNTAX: &str = "ScheduleExpression must be a rate() or cron() \
      expression, for example rate(10 days) or cron(0 8 1 * ? *).";
 
+/// What a rotation `Duration` with no schedule to start it from is refused with.
+///
+/// "The window starts according to the `ScheduleExpression`."
+/// (`RotationRulesType$Duration`, this service's Smithy model.) A duration is the
+/// LENGTH of the window a scheduled rotation may happen in, so rules that name a
+/// duration and no schedule — neither a `ScheduleExpression` nor the
+/// `AutomaticallyAfterDays` that stands for one — describe a window with no
+/// start, and the parameter is refused rather than stored.
+///
+/// The CLASS and the status of this refusal are AWS's (`InvalidParameterException`, HTTP
+/// 400, as a recorded refusal of these rules shows); the SENTENCE states the documented
+/// rule above and is this emulator's own wording of it, since no recording of this service
+/// discloses the text — it interpolates nothing from the request either way.
+pub const DURATION_WITHOUT_SCHEDULE: &str =
+    "You can't specify a rotation Duration without a rotation schedule.";
+
 /// The interval the schedule in `rules` rotates the secret on, or the
 /// `InvalidParameterException` message for rules that cannot hold together.
 ///
 /// `Ok(None)` is rules this emulator computes no next due instant from: rules
-/// that name no schedule at all (a bare `Duration`, or an empty structure), and
-/// a `cron()` expression — see [`parse_schedule_expression`].
+/// that name no schedule at all (an empty structure), and a `cron()` expression —
+/// see [`parse_schedule_expression`].
 pub fn parse_rotation_rules(rules: &RotationRulesType) -> Result<Option<Duration>, String> {
     // "In RotateSecret, you can set the rotation schedule in RotationRules with
     // AutomaticallyAfterDays or ScheduleExpression, but not both."
@@ -363,6 +523,13 @@ pub fn parse_rotation_rules(rules: &RotationRulesType) -> Result<Option<Duration
         return Err("You can specify either AutomaticallyAfterDays or ScheduleExpression in \
                     RotationRules, but not both."
             .to_string());
+    }
+    // A window needs a start, and the schedule is what states one.
+    if rules.duration.is_some()
+        && rules.automatically_after_days.is_none()
+        && rules.schedule_expression.is_none()
+    {
+        return Err(DURATION_WITHOUT_SCHEDULE.to_string());
     }
     if let Some(days) = rules.automatically_after_days {
         return Ok(Some(interval_of(
