@@ -235,6 +235,10 @@ pub fn launch<Eng: Send + Sync + 'static>(
             source_dest_check: ec2::DEFAULT_SOURCE_DEST_CHECK,
             ebs_optimized: parameters.ebs_optimized,
             hibernation_configured: parameters.hibernation_configured,
+            // This launch names no block device mapping of its own, so the instance's root
+            // device is the one its AMI carries (Amazon EC2 applies the Region's EBS
+            // encryption default to it where that is on).
+            root_block_device: None,
             disable_api_termination: parameters.disable_api_termination,
             tags: tags.clone(),
             // No client token: this launch is not a caller's request to replay.

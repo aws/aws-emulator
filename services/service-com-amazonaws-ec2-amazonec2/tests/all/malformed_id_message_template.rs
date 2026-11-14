@@ -15,12 +15,13 @@
 //!
 //! The id kinds AWS words with a sentence of their OWN are outside this template and so
 //! outside this suite — an Amazon FPGA Image id (`Image ID '<id>' is invalid.`, pinned by
-//! [`super::fpga_image_id_form`]) and an AMI usage report id — each pinned by the suite
-//! that owns its resource.
+//! [`super::fpga_image_id_form`]), an AMI usage report id, and an EBS VOLUME id (`The volume
+//! ID '<id>' is malformed`, pinned by [`super::volume_id_issued_form`] and
+//! [`super::delete_volume`]) — each pinned by the suite that owns its resource.
 //!
 //! Each row is a distinct input along what the rule generalises over:
 //!
-//! * the ID KIND and the operation that resolves it — an instance, a volume, an AMI, a
+//! * the ID KIND and the operation that resolves it — an instance, an AMI, a
 //!   security group, a Spot Instance request, a Dedicated Host, an event window, a VPC
 //!   endpoint and an Elastic IP allocation, each named through a different operation,
 //!   so no row is the specification and no operation's own wording is;
@@ -39,8 +40,8 @@
 use ec2::state::{
     INVALID_ALLOCATION_ID_MALFORMED, INVALID_AMI_ID_MALFORMED, INVALID_GROUP_ID_MALFORMED,
     INVALID_HOST_ID_MALFORMED, INVALID_INSTANCE_EVENT_WINDOW_ID_MALFORMED,
-    INVALID_SPOT_INSTANCE_REQUEST_ID_MALFORMED, INVALID_VOLUME_ID_MALFORMED,
-    INVALID_VPC_ENDPOINT_ID_MALFORMED, MAX_ECHOED_RESOURCE_ID_CHARS,
+    INVALID_SPOT_INSTANCE_REQUEST_ID_MALFORMED, INVALID_VPC_ENDPOINT_ID_MALFORMED,
+    MAX_ECHOED_RESOURCE_ID_CHARS,
 };
 use service_com_amazonaws_ec2_amazonec2 as ec2;
 
@@ -91,11 +92,11 @@ fn rows() -> Vec<Row> {
             code: INVALID_INSTANCE_ID_MALFORMED,
         },
         Row {
-            case: "the prefix alone, as a volume id",
-            action: "DeleteVolume",
-            field: "VolumeId",
-            id: "vol-".to_string(),
-            code: INVALID_VOLUME_ID_MALFORMED,
+            case: "the prefix alone, as a VPC endpoint id",
+            action: "DescribeVpcEndpoints",
+            field: "VpcEndpointId.1",
+            id: "vpce-".to_string(),
+            code: INVALID_VPC_ENDPOINT_ID_MALFORMED,
         },
         Row {
             case: "a suffix of neither published length, as an AMI id",
@@ -126,11 +127,11 @@ fn rows() -> Vec<Row> {
             code: INVALID_HOST_ID_MALFORMED,
         },
         Row {
-            case: "the prefix without its separator, as a volume id",
-            action: "DeleteVolume",
-            field: "VolumeId",
-            id: "vol0a1b2c3d".to_string(),
-            code: INVALID_VOLUME_ID_MALFORMED,
+            case: "the prefix without its separator, as an allocation id",
+            action: "DescribeAddressTransfers",
+            field: "AllocationId.1",
+            id: "eipalloc0a1b2c3d".to_string(),
+            code: INVALID_ALLOCATION_ID_MALFORMED,
         },
         Row {
             case: "a suffix one digit too long, as an event window id",

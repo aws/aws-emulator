@@ -482,6 +482,22 @@ impl<E> Scaffolded<E> {
         )
     }
 
+    /// `UnsupportedHibernationConfiguration` (HTTP 400): a launch asked to enable hibernation
+    /// over a root device volume that would not be encrypted.
+    ///
+    /// "The root volume must be an encrypted Amazon EBS volume" is a prerequisite of
+    /// hibernation (the EC2 User Guide's "Hibernate your Amazon EC2 instance"), so a launch
+    /// that asks for it over an unencrypted root device is refused before anything is
+    /// created. AWS's sentence for the class is fixed text that interpolates nothing from the
+    /// request: a launch names no one volume for it to name.
+    pub fn hibernation_requires_encrypted_root_volume() -> Self {
+        Self::service_error(
+            "UnsupportedHibernationConfiguration",
+            400,
+            "For hibernation, the root device volume must be encrypted.",
+        )
+    }
+
     /// `AuthFailure` (HTTP 400): the caller is not authorized for the resource the
     /// request names — an action the real service permits only to the OWNER of that
     /// resource, asked by an account that does not own it. Distinct from

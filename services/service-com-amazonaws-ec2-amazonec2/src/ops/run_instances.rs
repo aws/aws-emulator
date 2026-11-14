@@ -24,6 +24,18 @@
 //! ([`crate::state::ComAmazonawsEc2Amazonec2State::insert_launched_instance`]), so
 //! `DescribeInstances` and `DescribeNetworkInterfaces` report one record per interface.
 //!
+//! A launch that names its `BlockDeviceMappings` creates its root volume from the entry it
+//! carries for the AMI's own root device: that entry's size, type, IOPS, throughput,
+//! encryption and delete-on-termination define the volume, and the AMI's own mapping answers
+//! the members the launch left out ([`crate::state::ComAmazonawsEc2Amazonec2State::launch_root_block_device`]
+//! is where the two are read into one device, the Region's EBS encryption default included).
+//! Hibernation is admitted against THAT volume: "set to true to enable your instance for
+//! hibernation" is valid "only if the instance meets the hibernation prerequisites", of which
+//! an encrypted root volume is one, so a launch asking for it over a root device that would
+//! not be encrypted is refused `UnsupportedHibernationConfiguration` before anything is
+//! created. An entry for any OTHER device neither moves the root device nor creates a volume
+//! of its own here.
+//!
 //! An `ImageId` may name a Systems Manager parameter instead of an AMI — "alternatively, you
 //! can specify a Systems Manager parameter […] The Systems Manager parameter will resolve to
 //! an AMI ID on launch", written `resolve:ssm:<parameter>` — so such a value is resolved
@@ -783,6 +795,37 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // launch that names more than its type can hold is refused before anything is
         // stored.
         refuse_too_many_interfaces(&planned_interfaces, &instance_type)?;
+        // "The block device mapping, which defines the EBS volumes and instance store
+        // volumes to attach to the instance at launch"
+        // (`RunInstancesRequest$BlockDeviceMappings`): the root device every instance of this
+        // launch is created with is the AMI's own with the launch's entry for that device
+        // overlaid, read through the ONE resolution of it — so the volume stored below and
+        // the prerequisite asked of it here are the same device.
+        let root_block_device = store
+            .launch_root_block_device(
+                Some(&image_id),
+                input.block_device_mappings.as_deref().unwrap_or_default(),
+                &region,
+            )
+            .map(|(_, ebs)| ebs);
+        // "Set to true to enable your instance for hibernation"
+        // (`HibernationOptionsRequest$Configured`) — and hibernation has prerequisites: the
+        // instance writes its memory to its root volume, so "the root volume must be an
+        // encrypted Amazon EBS volume" (the EC2 User Guide's "Hibernate your Amazon EC2
+        // instance"). A launch that asks for hibernation over a root device that would not be
+        // encrypted is refused HERE, before the first write, so it creates neither an
+        // instance nor a volume.
+        if input
+            .hibernation_options
+            .as_ref()
+            .and_then(|options| options.configured)
+            .unwrap_or(false)
+            && root_block_device
+                .as_ref()
+                .is_none_or(|ebs| ebs.encrypted != Some(true))
+        {
+            return Err(Scaffolded::hibernation_requires_encrypted_root_volume());
+        }
         let monitoring_state = if input
             .monitoring
             .as_ref()
@@ -917,6 +960,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     .saturating_add(STORED_RECORD_OVERHEAD_BYTES)
             })
             + crate::state::tag_bytes(&tags)
+            // The root block device this launch resolved is kept on every instance it mints,
+            // charged by the one definition of that charge.
+            + crate::state::root_block_device_bytes(root_block_device.as_ref())
             + security_groups
                 .iter()
                 .map(|(group_id, group_name)| {
@@ -1237,6 +1283,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     .as_ref()
                     .and_then(|options| options.configured)
                     .unwrap_or(false),
+                // The root device every instance of this launch is created with, resolved
+                // once above against the AMI's own mapping and this Region's encryption
+                // default.
+                root_block_device: root_block_device.clone(),
                 disable_api_termination: input.disable_api_termination.unwrap_or(false),
                 tags: tags.clone(),
                 client_token: input.client_token.clone(),
@@ -1303,12 +1353,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// member by member ([`template_placement`] and the rest below), so nothing a template holds is
 /// dropped on the way into the launch.
 ///
-/// Two members are NOT overlaid, because the launch path reads neither from a request either,
-/// so taking them from a template would claim something the launch does not do: the block
-/// device mappings (this slice stores no volume for a launch) and the retired elastic
-/// graphics and inference accelerators ("Amazon Elastic Graphics reached end of life on
-/// January 8, 2024", "Amazon Elastic Inference is no longer available"). A template whose
-/// version names the network interfaces of its instance is read through
+/// One member is NOT overlaid, because the launch path reads it from a request either, so
+/// taking it from a template would claim something the launch does not do: the retired
+/// elastic graphics and inference accelerators ("Amazon Elastic Graphics reached end of life
+/// on January 8, 2024", "Amazon Elastic Inference is no longer available"). A template whose
+/// version names the block device mappings of its instance is read through
+/// [`template_block_device_mapping`] and one that names its network interfaces through
 /// [`template_primary_interface`].
 fn launch_overlaid_with_template(
     request: RunInstancesInput,
@@ -1391,6 +1441,22 @@ fn launch_overlaid_with_template(
                 configured: options.configured,
             })
     });
+    // "The block device mapping" (`RequestLaunchTemplateData$BlockDeviceMappings`) a template
+    // holds applies to every launch made from it, and the launch's own entries replace it the
+    // way its other list members do — so a template-driven launch and the equivalent
+    // spelled-out one create the same root volume.
+    if merged
+        .block_device_mappings
+        .as_ref()
+        .is_none_or(Vec::is_empty)
+    {
+        merged.block_device_mappings = data.block_device_mappings.as_ref().map(|mappings| {
+            mappings
+                .iter()
+                .map(template_block_device_mapping)
+                .collect::<Vec<BlockDeviceMapping>>()
+        });
+    }
     merged.metadata_options = merged.metadata_options.or_else(|| {
         data.metadata_options
             .as_ref()
@@ -1606,6 +1672,40 @@ fn template_placement(placement: &LaunchTemplatePlacementRequest) -> Placement {
         tenancy: placement.tenancy.clone(),
         spread_domain: placement.spread_domain.clone(),
         host_resource_group_arn: placement.host_resource_group_arn.clone(),
+    }
+}
+
+/// The `BlockDeviceMapping` a launch template version's block device mapping describes.
+///
+/// Member by member rather than a conversion written once, for the reason
+/// [`template_placement`] is: the two shapes differ only in the name of the shape, so nothing
+/// a template says about a device is dropped on the way into the launch, and a member added
+/// to either shape later shows up here as a compile error rather than as a silently dropped
+/// setting. The two members an `EbsBlockDevice` carries that a template's own request shape
+/// does not — the Outpost and the Availability Zone a device is restored in — are left unset
+/// for the same reason: a template says nothing about them.
+fn template_block_device_mapping(
+    mapping: &LaunchTemplateBlockDeviceMappingRequest,
+) -> BlockDeviceMapping {
+    BlockDeviceMapping {
+        device_name: mapping.device_name.clone(),
+        virtual_name: mapping.virtual_name.clone(),
+        no_device: mapping.no_device.clone(),
+        ebs: mapping.ebs.as_ref().map(|ebs| EbsBlockDevice {
+            delete_on_termination: ebs.delete_on_termination,
+            iops: ebs.iops,
+            snapshot_id: ebs.snapshot_id.clone(),
+            volume_size: ebs.volume_size,
+            volume_type: ebs.volume_type.clone(),
+            kms_key_id: ebs.kms_key_id.clone(),
+            throughput: ebs.throughput,
+            outpost_arn: None,
+            availability_zone: None,
+            encrypted: ebs.encrypted,
+            volume_initialization_rate: ebs.volume_initialization_rate,
+            availability_zone_id: None,
+            ebs_card_index: ebs.ebs_card_index,
+        }),
     }
 }
 

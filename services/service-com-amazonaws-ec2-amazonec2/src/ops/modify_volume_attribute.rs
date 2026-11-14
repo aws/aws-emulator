@@ -174,8 +174,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )));
         };
 
-        // Something that is not a volume id at all is refused before anything else looks
-        // at it, the way `EnableVolumeIO` orders the same rule.
+        // A value outside the form EC2 ISSUES volume ids in is not a volume id at all, and is
+        // refused before anything else looks at it — the way `EnableVolumeIO` orders the same
+        // rule, through the one reading of a volume id this crate has.
         if !state::volume_id_is_well_formed(&input.volume_id) {
             return Err(state::invalid_volume_id_malformed(&input.volume_id));
         }

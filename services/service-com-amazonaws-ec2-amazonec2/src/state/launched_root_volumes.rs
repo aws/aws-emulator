@@ -21,7 +21,7 @@
 
 use std::time::{Instant, SystemTime};
 
-use crate::ops::types::{AttachVolumeOutput, EbsBlockDevice};
+use crate::ops::types::{AttachVolumeOutput, BlockDeviceMapping, EbsBlockDevice};
 
 use super::{
     ComAmazonawsEc2Amazonec2State, DEFAULT_GP3_IOPS, DEFAULT_GP3_THROUGHPUT, DEFAULT_VOLUME_TYPE,
@@ -74,16 +74,126 @@ impl ComAmazonawsEc2Amazonec2State {
         Some((device_name, ebs))
     }
 
+    /// The root block device the launch of an instance from `image_id` creates its root
+    /// volume from, with `mappings` — the launch's own `BlockDeviceMappings` — applied: the
+    /// AMI's root device facts ([`Self::launched_root_device`]) overlaid, member by member,
+    /// with the entry `mappings` carries for that same device, and encrypted whenever
+    /// `region` has EBS encryption on by default.
+    ///
+    /// "The block device mapping, which defines the EBS volumes and instance store volumes
+    /// to attach to the instance at launch" (`RunInstancesRequest$BlockDeviceMappings`), and
+    /// a launch may override the AMI's own mapping settings (the EC2 User Guide's "Block
+    /// device mappings"): what the launch names for the root device therefore DEFINES that
+    /// volume — its size, type, IOPS, throughput, encryption, key and whether it goes with
+    /// the instance — and the AMI's own mapping answers only the members the launch left out.
+    /// The device NAME is the image's own (`Image$RootDeviceName`): a launch does not move an
+    /// AMI's root device, so an entry for any other device names no root volume here.
+    ///
+    /// "When encryption by default is enabled, […] all new EBS volumes are encrypted"
+    /// (`GetEbsEncryptionByDefault`), which is the same Region-scoped setting
+    /// `CreateVolume` reads over its own request, so the two cannot disagree about whether a
+    /// volume this account creates is encrypted.
+    ///
+    /// The ONE answer to "which volume does this launch create for the root device", so the
+    /// prerequisite a launch is admitted against (a hibernating instance's root volume must
+    /// be encrypted) and the volume it then stores
+    /// ([`Self::mint_launched_root_volume`]) can never disagree. `None` for a launch that
+    /// creates no root volume at all, for the reasons [`Self::launched_root_device`] gives.
+    pub fn launch_root_block_device(
+        &self,
+        image_id: Option<&str>,
+        mappings: &[BlockDeviceMapping],
+        region: &str,
+    ) -> Option<(String, EbsBlockDevice)> {
+        let (device_name, image_device) = self.launched_root_device(image_id)?;
+        let ebs = match mappings
+            .iter()
+            .find(|mapping| mapping.device_name.as_deref() == Some(device_name.as_str()))
+            .and_then(|mapping| mapping.ebs.as_ref())
+        {
+            None => image_device,
+            Some(named) => EbsBlockDevice {
+                delete_on_termination: named
+                    .delete_on_termination
+                    .or(image_device.delete_on_termination),
+                iops: named.iops.or(image_device.iops),
+                snapshot_id: named
+                    .snapshot_id
+                    .clone()
+                    .or_else(|| image_device.snapshot_id.clone()),
+                volume_size: named.volume_size.or(image_device.volume_size),
+                volume_type: named
+                    .volume_type
+                    .clone()
+                    .or_else(|| image_device.volume_type.clone()),
+                kms_key_id: named
+                    .kms_key_id
+                    .clone()
+                    .or_else(|| image_device.kms_key_id.clone()),
+                throughput: named.throughput.or(image_device.throughput),
+                outpost_arn: named
+                    .outpost_arn
+                    .clone()
+                    .or_else(|| image_device.outpost_arn.clone()),
+                availability_zone: named
+                    .availability_zone
+                    .clone()
+                    .or_else(|| image_device.availability_zone.clone()),
+                encrypted: Some(
+                    // "In no case can you remove encryption from an encrypted volume"
+                    // (`EbsBlockDevice$Encrypted`): what the launch says can only ADD
+                    // encryption to what the AMI's own device already carries.
+                    named.encrypted == Some(true) || image_device.encrypted == Some(true),
+                ),
+                volume_initialization_rate: named
+                    .volume_initialization_rate
+                    .or(image_device.volume_initialization_rate),
+                availability_zone_id: named
+                    .availability_zone_id
+                    .clone()
+                    .or_else(|| image_device.availability_zone_id.clone()),
+                ebs_card_index: named.ebs_card_index.or(image_device.ebs_card_index),
+            },
+        };
+        Some((device_name, self.encrypted_by_default_in(ebs, region)))
+    }
+
+    /// `ebs` as the Region's own EBS encryption setting leaves it: encrypted whenever `region`
+    /// has encryption on by default, and otherwise exactly as it came.
+    ///
+    /// "When encryption by default is enabled, […] all new EBS volumes are encrypted"
+    /// (`GetEbsEncryptionByDefault`) — a Region-scoped fact about every volume the account
+    /// creates there, so it holds whatever launch form created this one. The ONE place that
+    /// setting reaches a launch's root device, asked both where a launch is ADMITTED against
+    /// the device it would create ([`Self::launch_root_block_device`]) and where the device is
+    /// actually stored ([`Self::mint_launched_root_volume`], which the launch paths that
+    /// resolve no device of their own reach directly) — so the two cannot disagree, and the
+    /// same setting `CreateVolume` reads over its own request cannot mean one thing for a
+    /// volume a caller creates and another for one a launch creates.
+    pub(super) fn encrypted_by_default_in(
+        &self,
+        mut ebs: EbsBlockDevice,
+        region: &str,
+    ) -> EbsBlockDevice {
+        if self.ebs_encryption_by_default(region) {
+            ebs.encrypted = Some(true);
+        }
+        ebs
+    }
+
     /// Give the instance `instance_id` the EBS root volume its launch creates, restored from
-    /// the root block device [`Self::launched_root_device`] resolves for it — see the module
-    /// docs for why it is minted here.
+    /// the root block device its launch resolved for it — see the module docs for why it is
+    /// minted here.
     ///
     /// Everything about the volume comes off that block device — the size, the type, the
     /// encryption state and key, the snapshot it is restored from and whether it is deleted
-    /// with the instance — and its zone is the instance's own. Nothing comes from the
-    /// request, which is why no byte charge is made for it: the record holds no
-    /// caller-chosen string (a launch's own `TagSpecifications` are charged by
-    /// `RunInstances` for the resources it tags).
+    /// with the instance — which is [`super::InstanceRecord::root_block_device`] for a launch
+    /// path that resolved the device itself ([`Self::launch_root_block_device`], where the
+    /// AMI's mapping and the launch's own entry for that device are read into one) and the
+    /// AMI's own mapping for a launch path that resolved none. Either way the Region's EBS
+    /// encryption default is applied here too ([`Self::encrypted_by_default_in`]), so no
+    /// launch form can store an unencrypted root volume in a Region whose every new volume is
+    /// encrypted. Its zone is the instance's own.
     ///
     /// Nothing is minted when the launch named no AMI at all, when the AMI the account can
     /// see is not EBS-backed or publishes no root device mapping (so there is no volume to
@@ -94,10 +204,14 @@ impl ComAmazonawsEc2Amazonec2State {
             return;
         };
         let zone_name = instance.placement_az.clone();
+        // The root device this launch resolved, for a launch path that resolves one: the facts
+        // the volume is created from, already read against the AMI's own mapping by the one
+        // resolution of them.
+        let requested_root = instance.root_block_device.clone();
         let Some(image_id) = instance.image_id.clone() else {
             return;
         };
-        let Some((device_name, ebs)) = self.launched_root_device(Some(&image_id)) else {
+        let Some((device_name, image_device)) = self.launched_root_device(Some(&image_id)) else {
             return;
         };
         if self.volumes.len() >= MAX_STORED_VOLUMES {
@@ -109,6 +223,10 @@ impl ComAmazonawsEc2Amazonec2State {
         // read off the zone name through the ONE reading of that ([`region_of_zone_name`]),
         // so the volume and the instance that holds it can never be placed in two Regions.
         let region = region_of_zone_name(&zone_name).to_string();
+        // The device the volume is created from, as this Region's EBS encryption default
+        // leaves it: the launch path that resolved one has already been through the same
+        // reading, so applying it again changes nothing there.
+        let ebs = self.encrypted_by_default_in(requested_root.unwrap_or(image_device), &region);
         let volume_type = ebs
             .volume_type
             .clone()
@@ -224,4 +342,27 @@ fn default_root_device() -> (String, EbsBlockDevice) {
             ebs_card_index: None,
         },
     )
+}
+
+/// The bytes one launch's resolved root block device holds: the strings on it.
+///
+/// Every other member of an [`EbsBlockDevice`] is a number or a flag, so it is fixed-size.
+/// Some of those strings come from the request (the volume type or the key a launch named)
+/// and some from the AMI's own mapping, and the record keeps whichever it resolved, so the
+/// charge is over the device as stored rather than over the request alone. The ONE definition
+/// of it: `RunInstances` asks it before the write, for every instance the launch would mint,
+/// and [`super::instance_payload_bytes`] charges exactly it — so the bytes a launch retains
+/// on its instances are the bytes its ceiling saw.
+pub fn root_block_device_bytes(root_block_device: Option<&EbsBlockDevice>) -> usize {
+    let Some(ebs) = root_block_device else {
+        return 0;
+    };
+    ebs.volume_type
+        .as_ref()
+        .map_or(0, String::len)
+        .saturating_add(ebs.kms_key_id.as_ref().map_or(0, String::len))
+        .saturating_add(ebs.snapshot_id.as_ref().map_or(0, String::len))
+        .saturating_add(ebs.outpost_arn.as_ref().map_or(0, String::len))
+        .saturating_add(ebs.availability_zone.as_ref().map_or(0, String::len))
+        .saturating_add(ebs.availability_zone_id.as_ref().map_or(0, String::len))
 }

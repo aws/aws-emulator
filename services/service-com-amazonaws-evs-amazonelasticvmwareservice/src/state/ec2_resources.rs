@@ -632,6 +632,9 @@ pub fn launch_host_instance<Eng: Send + Sync + 'static>(
         source_dest_check: ec2::DEFAULT_SOURCE_DEST_CHECK,
         ebs_optimized: false,
         hibernation_configured: false,
+        // The launch names no block device mapping, so the host's root device is the one
+        // its image carries: there is nothing of a launch's own to override it with.
+        root_block_device: None,
         disable_api_termination: false,
         // The environment's tags tag the ENVIRONMENT; nothing tags the instance.
         tags: ::std::collections::BTreeMap::new(),

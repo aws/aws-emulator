@@ -2684,7 +2684,9 @@ pub fn instance_region(instance: &InstanceRecord) -> &str {
 /// the image id, the instance type, the subnet, the key pair name, the zone and the
 /// kernel and RAM disk ids are
 /// cloned onto every instance a launch mints just as its user data is, so leaving them
-/// out would let one request retain bytes the store's ceiling never saw.
+/// out would let one request retain bytes the store's ceiling never saw. The root block
+/// device the launch resolved counts the same way, through the one definition of its charge
+/// ([`root_block_device_bytes`]).
 pub fn instance_payload_bytes(record: &InstanceRecord) -> usize {
     record.user_data.as_ref().map_or(0, String::len)
         + record.client_token.as_ref().map_or(0, String::len)
@@ -2703,6 +2705,7 @@ pub fn instance_payload_bytes(record: &InstanceRecord) -> usize {
             .as_ref()
             .map_or(0, String::len)
         + tag_bytes(&record.tags)
+        + root_block_device_bytes(record.root_block_device.as_ref())
         + record
             .security_groups
             .iter()

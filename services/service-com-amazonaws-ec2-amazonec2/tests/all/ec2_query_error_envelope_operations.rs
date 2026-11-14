@@ -70,6 +70,17 @@ fn unknown_id(prefix: &str) -> String {
     format!("{prefix}-{UNKNOWN_SUFFIX}")
 }
 
+/// A VOLUME id inside the form EC2 ISSUES that no volume of this store has.
+///
+/// A volume id is read against the issued form rather than the printed one
+/// (`ec2::state::volume_id_is_well_formed`): the long form carries 68 digits' worth of a
+/// 64-bit identifier, so an issued id reads `vol-0…` and is never the all-zero placeholder
+/// [`UNKNOWN_SUFFIX`] is. So this names a volume the account does not hold, where that
+/// placeholder would be a value EC2 cannot read at all.
+fn unknown_volume_id() -> String {
+    format!("{}-00000000000000999", ec2::state::VOLUME_ID_PREFIX)
+}
+
 /// The Elastic IP allocation id prefix. Spelled out rather than taken from `ec2::state`,
 /// which publishes the id's FORM (`allocation_id_is_well_formed`) and not its prefix.
 const ALLOCATION_ID_PREFIX: &str = "eipalloc";
@@ -102,7 +113,7 @@ struct Row {
 fn refusal_rows() -> Vec<Row> {
     let allocation = unknown_id(ALLOCATION_ID_PREFIX);
     let instance = unknown_id(INSTANCE_ID_PREFIX);
-    let volume = unknown_id(ec2::state::VOLUME_ID_PREFIX);
+    let volume = unknown_volume_id();
     let route_table = unknown_id(ec2::state::TRANSIT_GATEWAY_ROUTE_TABLE_ID_PREFIX);
     let attachment = unknown_id(ec2::state::TRANSIT_GATEWAY_ATTACHMENT_ID_PREFIX);
 

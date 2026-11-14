@@ -491,6 +491,10 @@ impl ComAmazonawsEc2Amazonec2State {
             // Hibernation is `InstanceInterruptionBehavior`'s business for a Spot Instance,
             // and a launch specification carries no hibernation member.
             hibernation_configured: false,
+            // A launch specification's block device mappings are refused by the paths that
+            // read one ("`RequestSpotInstances` with a block device mapping"), so no launch
+            // reaching here overrides its AMI's root device.
+            root_block_device: None,
             disable_api_termination: false,
             tags: spec.tags,
             client_token: None,

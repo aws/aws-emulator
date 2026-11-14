@@ -551,7 +551,9 @@ async fn an_id_that_names_no_volume_is_refused_and_removes_nothing() {
 
     for (case, volume_id, expected_code) in rows {
         let expected_message = if expected_code == INVALID_VOLUME_ID_MALFORMED {
-            format!("Invalid id: \"{volume_id}\"")
+            // The sentence AWS words an unreadable VOLUME id with — the kind has one of its
+            // own rather than the quoted template other id kinds take.
+            format!("The volume ID '{volume_id}' is malformed")
         } else {
             format!("The volume '{volume_id}' does not exist.")
         };

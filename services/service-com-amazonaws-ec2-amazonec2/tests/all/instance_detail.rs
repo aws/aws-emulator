@@ -379,6 +379,14 @@ async fn describe_instances_reports_the_fixed_detail_derived_from_state() {
             extra: vec![
                 p("EnclaveOptions.Enabled", "true"),
                 p("HibernationOptions.Configured", "true"),
+                // Hibernation requires an encrypted root device volume, so the launch that
+                // asks for it overrides the AMI's root mapping to encrypt it
+                // (`UnsupportedHibernationConfiguration` is the refusal otherwise).
+                p(
+                    "BlockDeviceMapping.1.DeviceName",
+                    catalog.root_device_name.clone().unwrap_or_default().as_str(),
+                ),
+                p("BlockDeviceMapping.1.Ebs.Encrypted", "true"),
                 p("Placement.Tenancy", "dedicated"),
                 p("MaintenanceOptions.AutoRecovery", "disabled"),
                 p("NetworkPerformanceOptions.BandwidthWeighting", "vpc-1"),

@@ -569,6 +569,19 @@ pub struct InstanceRecord {
     pub source_dest_check: bool,
     pub ebs_optimized: bool,
     pub hibernation_configured: bool,
+    /// The root block device this instance's LAUNCH resolved for it, where its launch path
+    /// resolves one: the AMI's own root device mapping with the launch's
+    /// `BlockDeviceMappings` entry for that device overlaid, read by
+    /// [`ComAmazonawsEc2Amazonec2State::launch_root_block_device`]. `None` where the launch
+    /// path resolves none at all (a Spot or fleet launch specification, whose block device
+    /// mappings its own reader refuses), whose root volume is created from the AMI's mapping
+    /// alone — not a statement that the launch overrode nothing, since the resolution answers
+    /// for a launch that named no mapping too.
+    ///
+    /// Held on the record because the root volume is minted by the store's one writer of a
+    /// launched instance ([`ComAmazonawsEc2Amazonec2State::mint_launched_root_volume`]), so
+    /// this is what carries the launch's own answer to it.
+    pub root_block_device: Option<EbsBlockDevice>,
     pub disable_api_termination: bool,
     pub tags: BTreeMap<String, String>,
     pub client_token: Option<String>,

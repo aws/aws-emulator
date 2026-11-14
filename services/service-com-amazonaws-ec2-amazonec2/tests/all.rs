@@ -1315,11 +1315,6 @@ mod verified_access_trust_providers;
 // The volume attribute slice: modify one attribute of a volume, then describe it back.
 #[path = "all/volume_attributes.rs"]
 mod volume_attributes;
-// The encrypted-volume slice: whether the KMS key a volume names will produce its data key,
-// asked of the service that owns keys, and what becomes of a volume under a key that will
-// not.
-#[path = "all/volume_encryption_key.rs"]
-mod volume_encryption_key;
 #[path = "all/volume_lifecycle.rs"]
 mod volume_lifecycle;
 #[path = "all/volume_modifications.rs"]
@@ -2151,6 +2146,23 @@ mod delete_network_insights_access_scope;
 // to the same destination — is refused `FlowLogAlreadyExists` and stores nothing. Declared at
 #[path = "all/flow_log_duplicate_refusal.rs"]
 mod flow_log_duplicate_refusal;
+// How every operation that acts on ONE named volume reads its `VolumeId`: a value outside the
+// form EC2 ISSUES is the id-level malformed class before any lookup, and only a value inside
+// that form naming no volume is the not-found class. Declared at the tail of this file, which
+// is where every new ec2 suite lands.
+#[path = "all/volume_id_issued_form.rs"]
+mod volume_id_issued_form;
+// The root volume a LAUNCH creates — the AMI's root device with the launch's own
+// `BlockDeviceMappings` entry for it overlaid, encrypted where the request, the template or
+// the Region's default says so — and the hibernation prerequisite asked of it before anything
+// is created. Declared at the tail of this file, which is where every new ec2 suite lands.
+#[path = "all/launch_root_block_device.rs"]
+mod launch_root_block_device;
+// The encrypted-volume slice: whether the KMS key a volume names will produce its data key,
+// asked of the service that owns keys, and what becomes of a volume under a key that will
+// not.
+#[path = "all/volume_encryption_key.rs"]
+mod volume_encryption_key;
 // WHERE EC2 answers the modelled `DryRun` member: the verdict an operation this emulator has
 // not written answers it with in place of its 501, and the recorded position of the flag among
 // each implemented operation's own checks. Declared at the tail of this file, which is where

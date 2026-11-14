@@ -610,29 +610,26 @@ pub const VOLUME_ID_PREFIX: &str = "vol";
 /// calls the parameter those values make up.
 pub const VOLUME_IDS_PARAMETER: &str = "volumes";
 
-/// Whether `id` is a well-formed EBS volume id.
+/// Whether `id` is a volume id EC2 could have ISSUED.
 ///
 /// A volume id is `vol-` followed by 8 or 17 lowercase hexadecimal digits — the short and
 /// the long id form, as the model's own `^vol-([0-9a-f]{8}|[0-9a-f]{17})$` style id patterns
-/// read. EC2 answers anything else as a bad id BEFORE it looks the id up, which is a
-/// different answer from `InvalidVolume.NotFound` for a well-formed id the account holds no
-/// volume for: a client that cannot tell a typo from a missing volume goes on polling for a
+/// read — and the LONG form carries 68 digits' worth of a 64-bit identifier, so an issued
+/// long id always reads `vol-0…` and is never the all-zero placeholder. EC2 answers a value
+/// outside that form as a bad id BEFORE it looks the id up, which is a different answer from
+/// `InvalidVolume.NotFound` for an id inside it the account holds no volume for: a client
+/// that cannot tell a value EC2 cannot read from a missing volume goes on polling for a
 /// volume that can never appear.
 ///
 /// WHICH bad-id code that is belongs to the OPERATION, not to this reader: see
 /// [`invalid_id_parameter_value`].
 ///
-/// The rule itself is [`prefixed_id_is_well_formed`], which every resource of this module
-/// asks, so the EC2 id form is defined in exactly one place; only the prefix is this
-/// function's own. The recorded traffic behind
-/// `issues/.../20261023T102725Z-ec2-picks-the-wrong-resource-specific-error-code.md` has AWS
-/// answering two ids OF THIS FORM (`vol-0123456789abcdef0`, `vol-1234567890abcdef0`) as bad
-/// ids rather than as volumes that were not found, while a third recorded id of the same
-/// form is resolved: the corpus therefore does not reveal the rule EC2 holds a volume id to
-/// beyond this form, and no clause is invented here to separate those ids — that half of the
-/// issue is declined in the issue report.
+/// The rule itself is [`issued_id_is_well_formed`] — the reading `DescribeVolumes` already
+/// holds its `VolumeIds` entries to, and the one every resource kind recorded refusing a
+/// long-form id outside the issued form shares — so the form is defined in exactly one
+/// place; only the prefix is this function's own.
 pub fn volume_id_is_well_formed(id: &str) -> bool {
-    prefixed_id_is_well_formed(VOLUME_ID_PREFIX, id)
+    issued_id_is_well_formed(VOLUME_ID_PREFIX, id)
 }
 
 /// The sentence EC2 words for a request that asks for Multi-Attach on a volume type that
@@ -721,7 +718,29 @@ pub fn invalid_volume_id_malformed<E>(volume_id: &str) -> crate::scaffolded::Sca
     crate::scaffolded::Scaffolded::service_error(
         INVALID_VOLUME_ID_MALFORMED,
         400,
-        invalid_id_message(volume_id),
+        malformed_volume_id_message(volume_id),
+    )
+}
+
+/// The sentence EC2 refuses an unreadable VOLUME id with: the fixed text `The volume ID '`
+/// and `' is malformed`, with the id as the request sent it (cut to the bound every echoed
+/// id of this crate is held to, [`echoed_resource_id`]).
+///
+/// The volume is one of the id kinds AWS words with a sentence of its OWN rather than with
+/// the quoted template the other kinds of this crate take ([`invalid_id_message`], whose
+/// recorded refusals are of instance, AMI, security group, interface attachment and Spot
+/// Fleet request ids): both recorded refusals of a volume id read this way — the one
+/// `RestoreVolumeFromRecycleBin` answers (the traffic behind
+/// `issues/things-that-now-work/20261022T235108Z-ec2-restorevolumefromrecyclebin-stub.md`)
+/// and the one `ModifyVolumeAttribute` answers, whose recorded refusal of a fabricated
+/// documentation-shaped id is this code with the message `The volume ID '<the id sent>' is
+/// malformed` and NOT the quoted template (the id-form issue this reading comes from asserts
+/// that message on the replayed call). One definition for the kind, so no operation that
+/// resolves a volume id can word it a second way.
+pub fn malformed_volume_id_message(volume_id: &str) -> String {
+    format!(
+        "The volume ID '{}' is malformed",
+        echoed_resource_id(volume_id)
     )
 }
 
@@ -731,18 +750,14 @@ pub fn invalid_volume_id_malformed<E>(volume_id: &str) -> crate::scaffolded::Sca
 /// one, a well-formed id the bin never held, one whose retention period has run out, and one
 /// the account still has a live volume for.
 ///
-/// The CODE is [`INVALID_VOLUME_ID_MALFORMED`], the same code
-/// [`invalid_volume_id_malformed`] answers, but the WORDING is this operation's: the
-/// recorded traffic behind
-/// `issues/things-that-now-work/20261022T235108Z-ec2-restorevolumefromrecyclebin-stub.md`
-/// has the service answering "The volume ID 'vol-…' is malformed" for the restore, where a
-/// describe of the account's volumes answers [`invalid_id_message`]. The message is built
-/// from the request — the id the caller sent is the only part of it that varies.
+/// The code and the sentence are the kind's own ([`malformed_volume_id_message`]); what is
+/// this operation's is WHICH ids it answers them for, the bin holding entries the account's
+/// live volume store does not.
 pub fn volume_id_not_in_recycle_bin<E>(volume_id: &str) -> crate::scaffolded::Scaffolded<E> {
     crate::scaffolded::Scaffolded::service_error(
         INVALID_VOLUME_ID_MALFORMED,
         400,
-        format!("The volume ID '{volume_id}' is malformed"),
+        malformed_volume_id_message(volume_id),
     )
 }
 
