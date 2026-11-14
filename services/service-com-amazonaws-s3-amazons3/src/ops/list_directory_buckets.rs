@@ -150,8 +150,29 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        _ctx: &smithy_server_runtime::OperationContext<'_>,
+        ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // WHO is asking, resolved BEFORE the store is locked, so the STS and IAM stores this
+        // service reads the calling principal and its policies from are never reached while
+        // this service's own guard is held.
+        let caller = crate::service::request_authorization::request_caller(&*self.engine, ctx);
+
+        // The `s3express:ListAllMyDirectoryBuckets` permission this listing needs, judged
+        // against the documents in force on the calling identity and the scope its credential
+        // was minted with ([`crate::service::request_authorization`] carries IAM's order),
+        // before anything about the account's buckets is reported. The listing addresses no
+        // bucket, so no bucket policy is in force on it.
+        if let Some(message) = crate::service::request_authorization::account_wide_denial(
+            &caller,
+            crate::service::request_authorization::LIST_ALL_MY_DIRECTORY_BUCKETS_ACTION,
+        ) {
+            return Err(crate::scaffolded::Scaffolded::unmodeled(
+                crate::state::ACCESS_DENIED_CODE,
+                crate::state::ACCESS_DENIED_STATUS,
+                message,
+            ));
+        }
+
         // How many buckets this page may carry. `MaxDirectoryBuckets` is modelled
         // `range {min 0, max 1000}`, so the boundary validator has already refused anything
         // outside it and the clamp is what keeps this handler total rather than a second

@@ -145,6 +145,8 @@ mod iam_authorization;
 mod identity_provider_lifecycle;
 #[path = "all/identity_provider_type_defaults.rs"]
 mod identity_provider_type_defaults;
+#[path = "all/id_token_user_attribute_claims.rs"]
+mod id_token_user_attribute_claims;
 #[path = "all/initiate_auth.rs"]
 mod initiate_auth;
 #[path = "all/input_validation_refusal_wording.rs"]

@@ -490,6 +490,17 @@ pub fn authorization_denial(principal: &str, action: &str, resource: &str, reaso
     )
 }
 
+/// [`authorization_denial`] for an action that addresses NO resource of its own: who was
+/// refused, which IAM `action`, and the `reason` clause saying what refused it.
+///
+/// Such an action is published with no resource types at all — `s3:ListAllMyBuckets` is the
+/// account's own listing rather than a call on one bucket — so the refusal names no resource:
+/// there is nothing for the `on resource:` clause to carry, and quoting one would name a
+/// resource the request never addressed. Every other word is the sentence above.
+pub fn account_wide_authorization_denial(principal: &str, action: &str, reason: &str) -> String {
+    format!("User: {principal} is not authorized to perform: {action} {reason}")
+}
+
 /// The Object Lock state a read of one stored object version REPORTS: the three
 /// `x-amz-object-lock-*` headers `GetObject` and `HeadObject` both declare, as
 /// [`Object::reported_object_lock`] renders them.

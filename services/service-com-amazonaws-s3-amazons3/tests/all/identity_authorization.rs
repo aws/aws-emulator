@@ -137,7 +137,11 @@ pub(crate) fn form_encode(value: &str) -> String {
 }
 
 /// The text of the single `<tag>` element of an XML body.
-fn element(body: &str, tag: &str) -> String {
+///
+/// `pub(crate)`, as [`form_encode`] above and for the same reason: the suite that pins what
+/// authorizes the account's own listings ([`super::account_wide_listing_authorization`]) reads
+/// a refusal's `<Code>` and `<Message>` through this one reader rather than copying it.
+pub(crate) fn element(body: &str, tag: &str) -> String {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
     let (_, rest) = body
@@ -194,6 +198,31 @@ fn identity_policy(actions: &[&str], resources: &[String]) -> String {
         json_strings(actions),
         json_strings(&resources.iter().map(String::as_str).collect::<Vec<&str>>())
     )
+}
+
+/// Store one more inline policy `document` on the user `name`, as `iam:PutUserPolicy` does,
+/// answering whether IAM stored it.
+///
+/// `pub(crate)`: a sibling suite that needs a SECOND document in force on one principal — a
+/// `Deny` beside a grant ([`super::account_wide_listing_authorization`]) — writes it through
+/// this one harness rather than standing up a second IAM caller.
+pub(crate) async fn put_user_policy(
+    router: &MultiServiceRouter,
+    name: &str,
+    policy_name: &str,
+    document: &str,
+) -> bool {
+    let (status, _) = iam(
+        router,
+        "PutUserPolicy",
+        &[
+            ("UserName", name),
+            ("PolicyName", policy_name),
+            ("PolicyDocument", document),
+        ],
+    )
+    .await;
+    status == 200
 }
 
 /// `values` as a JSON array of strings.

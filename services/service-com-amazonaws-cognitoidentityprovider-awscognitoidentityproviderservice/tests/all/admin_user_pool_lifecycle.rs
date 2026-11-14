@@ -25,10 +25,14 @@ const AUTHORIZATION: &str = "AWS4-HMAC-SHA256 \
 const REGION: &str = "us-east-1";
 
 /// A password satisfying a default pool's password policy.
-const GOOD_PASSWORD: &str = "Passw0rd!2024";
+///
+/// `pub(crate)`, with the three helpers below it: the suite that reads an issued identity
+/// token's claims ([`super::id_token_user_attribute_claims`]) drives its sign-in through this
+/// harness rather than standing up a second one.
+pub(crate) const GOOD_PASSWORD: &str = "Passw0rd!2024";
 
 /// One emulator with just this service mounted.
-fn router() -> MultiServiceRouter {
+pub(crate) fn router() -> MultiServiceRouter {
     router_on(Arc::new(engine::InMemoryEngine::new()))
 }
 
@@ -73,7 +77,7 @@ async fn call(router: &MultiServiceRouter, operation: &str, body: &Value) -> (u1
 }
 
 /// Call `operation`, requiring success, and return its response body.
-async fn ok(router: &MultiServiceRouter, operation: &str, body: &Value) -> Value {
+pub(crate) async fn ok(router: &MultiServiceRouter, operation: &str, body: &Value) -> Value {
     let (status, payload) = call(router, operation, body).await;
     assert_eq!(
         status, 200,
@@ -117,7 +121,7 @@ fn matches_client_id_pattern(value: &str) -> bool {
 /// NON-EMPTY base64url segments, as RFC 7515 §3.1 defines for a signed JWS —
 /// the third being the signature a pool's key set verifies (see
 /// `tests/all/token_signing.rs`, which checks that signature).
-fn jwt_claims(token: &str) -> Value {
+pub(crate) fn jwt_claims(token: &str) -> Value {
     let segments: Vec<&str> = token.split('.').collect();
     assert_eq!(
         segments.len(),

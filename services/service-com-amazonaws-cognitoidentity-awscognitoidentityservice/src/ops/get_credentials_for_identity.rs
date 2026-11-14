@@ -452,6 +452,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> GetCredentialsFor
             // provider name are told apart by the policy that conditions on them.
             let methods = store.exchange_authentication_methods(&logins, now);
 
+            // The session tags this exchange asks its assume to attach: the principal tags
+            // the pool maps for the providers the presented logins were made under, taken
+            // from those tokens' own claims
+            // ([`crate::state::ComAmazonawsCognitoidentityAwscognitoidentityserviceState::requested_session_tags`]).
+            // They are what the assumed role's trust policy decides with
+            // `aws:RequestTag/<key>`, and what the minted session then carries.
+            let requested_tags = store.requested_session_tags(&identity_pool_id, &logins);
+
             // Which role this vend assumes: the `CustomRoleArn` the request names, which
             // can only be honoured against the roles this exchange could itself have
             // resolved — the roles the pool has stored, and the roles the presented token
@@ -547,6 +555,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> GetCredentialsFor
                 role_arn,
                 expired,
                 held: store.credentials.get(&input.identity_id).cloned(),
+                requested_tags,
             }
         };
 
@@ -577,7 +586,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> GetCredentialsFor
             &input.identity_id,
             &resolved.methods,
         );
-        if !crate::state::role_admits_web_identity(&role, &context) {
+        // The assume this vend makes is a TAGGED one where the pool maps principal tags for
+        // the exchange's provider, so the trust-policy decision is taken over the keys the
+        // tag request publishes beside the exchange's own
+        // ([`crate::state::session_tags`]): a trust policy gated on
+        // `aws:RequestTag/<key>` admits the identities whose mapped value satisfies it and
+        // refuses the others, which is the pool-configuration refusal below.
+        let mut assume_context = context.clone();
+        assume_context.extend(crate::state::session_tags::requested_session_tag_conditions(
+            &resolved.requested_tags,
+        ));
+        if !crate::state::role_admits_web_identity(&role, &assume_context) {
             return Err(refused());
         }
 
@@ -596,6 +615,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> GetCredentialsFor
                     now,
                     CREDENTIAL_VALIDITY,
                     &context,
+                    &resolved.requested_tags,
                 );
                 // A vend that could not be recorded is refused rather than answered with a
                 // credential no later call can resolve.
@@ -668,4 +688,7 @@ struct ResolvedVend {
     expired: Vec<String>,
     /// The session this identity already holds, if any.
     held: Option<crate::state::IssuedCredentials>,
+    /// The session tags the assume asks to attach, in tag-key order: the principal tags the
+    /// pool maps for the providers the presented logins were made under.
+    requested_tags: Vec<(String, String)>,
 }

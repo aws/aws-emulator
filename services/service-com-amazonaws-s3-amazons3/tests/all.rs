@@ -15,6 +15,8 @@
 mod access_point_data_plane;
 #[path = "all/account_public_access_block.rs"]
 mod account_public_access_block;
+#[path = "all/account_wide_listing_authorization.rs"]
+mod account_wide_listing_authorization;
 #[path = "all/anonymous_object_reads.rs"]
 mod anonymous_object_reads;
 #[path = "all/announced_response_urls.rs"]

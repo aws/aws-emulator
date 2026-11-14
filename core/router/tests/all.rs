@@ -1885,7 +1885,6 @@ mod elbv2_lambda_target_published_address;
 #[path = "all/redshift_health_alarms_evaluate.rs"]
 mod redshift_health_alarms_evaluate;
 // are declared in the head region above: a module may be declared only once.)
-// are declared further up this tail already: a module may be declared only once.)
 // Declared in the appended tail, which is where every new suite inserts its lines: a vector
 // knowledge base built on an index created through the collection's OWN published endpoint
 // spans OpenSearch Serverless (which serves that endpoint's OpenSearch REST data plane), the
@@ -1906,3 +1905,8 @@ mod cloudformation_dynamodb_table_in_place_update;
 // which only this target links.
 #[path = "all/https_front_door_concurrent_pooled_producer.rs"]
 mod https_front_door_concurrent_pooled_producer;
+// session an identity pool vends may DO is decided by IAM's record of the mapped role and
+// answered by Amazon S3 and the Cognito Identity control plane, so no single service crate's
+// test target can vend the session and then be refused by what it reaches.
+#[path = "all/cognito_vended_session_is_bounded_by_its_role_policy.rs"]
+mod cognito_vended_session_is_bounded_by_its_role_policy;

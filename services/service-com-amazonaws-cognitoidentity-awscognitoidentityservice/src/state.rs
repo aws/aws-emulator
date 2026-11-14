@@ -22,6 +22,10 @@ pub mod data_events;
 /// configuration this service will not store is refused.
 pub mod pool_configuration;
 
+/// The session tags a vend asks its web-identity assume to attach, and the condition keys
+/// that request publishes to the assumed role's trust policy.
+pub mod session_tags;
+
 use crate::ops::types::{CognitoIdentityProvider, MappingRule, RoleMapping};
 use emulator_server::CredentialStore;
 /// What an integrated Amazon Cognito user pool says about a token presented as the login of
@@ -3201,10 +3205,17 @@ pub const AUTHENTICATION_METHODS_CONDITION_KEY: &str = "cognito-identity.amazona
 /// The condition keys a vend publishes about the assume it makes, so a trust-policy clause
 /// over one of them is read as "the request carried no value" rather than as a key this
 /// emulator does not model; every other key stays undecided and withholds the grant.
+///
+/// The exchange's own keys, and the keys the TAGS it asks to attach publish
+/// ([`session_tags::SESSION_TAG_PUBLISHED_CONDITION_KEYS`]) — a vend that asks for none
+/// declares them absent, which is what lets a trust policy gated on a requested tag refuse
+/// it.
 pub const WEB_IDENTITY_PUBLISHED_CONDITION_KEYS: &[&str] = &[
     AUDIENCE_CONDITION_KEY,
     SUBJECT_CONDITION_KEY,
     AUTHENTICATION_METHODS_CONDITION_KEY,
+    session_tags::REQUEST_TAG_CONDITION_KEY_FAMILY,
+    session_tags::TAG_KEYS_CONDITION_KEY,
 ];
 
 /// How AWS words the refusal of a vend the pool's role configuration cannot serve: the
@@ -3384,6 +3395,11 @@ pub struct VendedSession {
 /// session, so a request the vended credential signs is decided against the same keys the
 /// assume was.
 ///
+/// `tags` are the session tags the assume ASKED to attach
+/// ([`ComAmazonawsCognitoidentityAwscognitoidentityserviceState::requested_session_tags`]):
+/// they travel with the session as the tags it carries, which is what
+/// `aws:PrincipalTag/<key>` holds for a request the vended credential signs.
+///
 /// `Err` says why no session could be minted — this engine carries no STS registry, or the
 /// registry is full of sessions that have not expired — so the caller refuses the request
 /// rather than answering with a credential that stands for nothing.
@@ -3394,6 +3410,7 @@ pub fn mint_vended_role_session<Eng: Send + Sync + 'static>(
     now: SystemTime,
     validity: Duration,
     federated_claims: &[(String, String)],
+    tags: &[(String, String)],
 ) -> Result<VendedSession, String> {
     use ::service_com_amazonaws_sts_awssecuritytokenservicev20110615::state as sts;
 
@@ -3431,6 +3448,10 @@ pub fn mint_vended_role_session<Eng: Send + Sync + 'static>(
             // policy in force on the role can scope what the session may do to its own
             // federated subject.
             federated_claims: federated_claims.to_vec(),
+            // The tags the assume asked for are the tags the session carries: the pool
+            // performs its exchange WITH them, so a policy conditioned on
+            // `aws:PrincipalTag/<key>` reads them for every request this credential signs.
+            tags: tags.to_vec(),
             ..sts::NewSession::new(identity, sts::SessionKind::AssumedRole, duration_seconds)
         },
     )

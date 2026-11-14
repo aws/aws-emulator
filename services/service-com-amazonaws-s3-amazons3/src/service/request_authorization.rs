@@ -156,6 +156,27 @@ pub const GET_ENCRYPTION_CONFIGURATION_ACTION: &str = "s3:GetEncryptionConfigura
 /// permission is required in a policy" (`PutBucketPolicy`'s own documentation).
 pub const PUT_BUCKET_POLICY_ACTION: &str = "s3:PutBucketPolicy";
 
+/// The IAM action a listing of the ACCOUNT's buckets is authorized under: "to grant IAM
+/// permission to use this operation, you must add the `s3:ListAllMyBuckets` policy action"
+/// (`ListBuckets`'s own documentation). It is not covered by the permission to list ONE
+/// bucket's objects ([`LIST_BUCKET_ACTION`]), which is a different action on a different
+/// resource.
+pub const LIST_ALL_MY_BUCKETS_ACTION: &str = "s3:ListAllMyBuckets";
+
+/// The IAM action a listing of the account's DIRECTORY buckets is authorized under: "you
+/// must have the `s3express:ListAllMyDirectoryBuckets` permission in an IAM identity-based
+/// policy instead of a bucket policy" (`ListDirectoryBuckets`'s own documentation). It
+/// addresses no resource of its own either, and it belongs to the directory-bucket action
+/// namespace rather than to `s3`, so a grant of the general purpose listing does not cover
+/// it.
+pub const LIST_ALL_MY_DIRECTORY_BUCKETS_ACTION: &str = "s3express:ListAllMyDirectoryBuckets";
+
+/// The resource an action that addresses no resource of its own is decided over: IAM's own
+/// wildcard, which is the only `Resource` element a statement granting such an action can
+/// carry — the account's bucket listing names no bucket, so a grant scoped to one bucket's
+/// ARN does not reach it, while `"Resource": "*"` does.
+const ACCOUNT_WIDE_RESOURCE: &str = "*";
+
 /// What a refusal names as the principal of a request whose session credential has already
 /// expired: that credential speaks for nobody, and the key it presented is not quoted back.
 const EXPIRED_CREDENTIAL_PRINCIPAL: &str = "an expired session credential";
@@ -530,22 +551,7 @@ pub fn denial(
     // standing undecided. A request that came through an access point also answers the two
     // keys naming it, which is what a bucket policy that delegates to its access points is
     // written over.
-    let mut context = conditions.to_vec();
-    context.extend(authorization::global_conditions(&caller.identity_arn));
-    context.extend(authorization::multi_factor_auth_conditions(
-        caller.multi_factor_auth_present,
-    ));
-    // The session tags the principal carries, which is what an ABAC policy conditioned on
-    // `aws:PrincipalTag/<key>` is decided against. The family is DECLARED only for a
-    // session whose tags are known in full, so a clause over a tag the principal does not
-    // carry is decided as absent there and stays undecided for a credential whose tags this
-    // gate cannot read.
-    for (key, value) in &caller.tags {
-        context.push((
-            format!("{PRINCIPAL_TAG_CONDITION_KEY_FAMILY}{key}"),
-            value.clone(),
-        ));
-    }
+    let mut context = caller_conditions(caller, conditions);
     if let Some(route) = &through {
         context.extend(authorization::access_point_conditions(route));
     }
@@ -554,22 +560,14 @@ pub fn denial(
     // other request is judged against the list as it stands — borrowed rather than copied,
     // since that is the common case.
     let published: ::std::borrow::Cow<'_, [&str]> = match &caller.service_principal {
-        None if !caller.tags_known => ::std::borrow::Cow::Borrowed(PUBLISHED_CONDITION_KEYS),
-        None => {
-            let mut published = PUBLISHED_CONDITION_KEYS.to_vec();
-            published.push(PRINCIPAL_TAG_CONDITION_KEY_FAMILY);
-            ::std::borrow::Cow::Owned(published)
-        }
+        None => published_keys(caller),
         Some(call) => {
             context.extend(authorization::service_principal_conditions(
                 &call.source_arn,
                 &call.source_account,
             ));
-            let mut published = PUBLISHED_CONDITION_KEYS.to_vec();
+            let mut published = published_keys(caller).to_vec();
             published.extend(authorization::SERVICE_PRINCIPAL_CONDITION_KEYS);
-            if caller.tags_known {
-                published.push(PRINCIPAL_TAG_CONDITION_KEY_FAMILY);
-            }
             ::std::borrow::Cow::Owned(published)
         }
     };
@@ -678,6 +676,63 @@ pub fn denial(
     ))
 }
 
+/// Why the policies in force refuse `caller` an IAM `action` that addresses NO resource of
+/// its own — the sentence S3 words that refusal in — or `None` when they permit it.
+///
+/// The account's own bucket listing is such an action: it names no bucket, so no bucket
+/// policy is in force on it and nothing but the documents in force on the calling identity —
+/// and the scope its credential was minted with — can allow it. The decision is therefore the
+/// identity half of [`denial`]'s rule, unchanged and over the one resource such a statement
+/// can name ([`ACCOUNT_WIDE_RESOURCE`]): an explicit `Deny` refuses whatever a grant says, an
+/// `Allow` among the caller's documents permits it, a grant the scope does not also allow is
+/// refused naming the scope, and with no grant at all the request falls to IAM's implicit
+/// deny. The callers [`denial`] does not bound are not bounded here either (see the module
+/// docs).
+#[must_use]
+pub fn account_wide_denial(caller: &Caller, action: &str) -> Option<String> {
+    // A call another service made as its own service principal is refused in S3's own
+    // published wording, exactly as in [`denial`]: the sentence IAM words names a USER, and
+    // no IAM identity made that call.
+    let refusal = |reason: &str| {
+        Some(if caller.service_principal.is_some() {
+            state::ACCESS_DENIED_MESSAGE.to_string()
+        } else {
+            state::account_wide_authorization_denial(&caller.arn, action, reason)
+        })
+    };
+    let context = caller_conditions(caller, &[]);
+    let published = published_keys(caller);
+    let request = request_over(
+        action,
+        ACCOUNT_WIDE_RESOURCE,
+        &caller.principals,
+        &context,
+        &published,
+    );
+    let documents = iam::prepare_documents(&caller.documents);
+    let said = iam::identity_outcome_prepared(&documents, &request);
+    if authorization::deny_is_decided(&said, &published) {
+        return refusal(IDENTITY_POLICY_DENY_REASON);
+    }
+    // What the SCOPE the credential was minted with says about this request, read by the
+    // tree's one reading of a resolved scope: a session policy caps what the documents in
+    // force grant and grants nothing of its own, so a request it explicitly denies is refused
+    // whatever any grant says, and a request it does not allow is refused once a grant is
+    // found, naming THEM as the document that withheld it.
+    let scoped = caller.scope.decision(&request);
+    if scoped == Decision::Denied {
+        return refusal(iam::SESSION_POLICY_EXPLICIT_DENY);
+    }
+    if said.decision == Decision::Allowed || caller.identity_is_unbounded() {
+        return if scoped == Decision::Allowed {
+            None
+        } else {
+            refusal(&iam::no_session_policy_allows(action))
+        };
+    }
+    refusal(&iam::no_identity_policy_allows(action))
+}
+
 /// The reason clause IAM publishes for a request an identity-based document explicitly
 /// denies — the identity half of [`state::RESOURCE_POLICY_DENY_REASON`].
 const IDENTITY_POLICY_DENY_REASON: &str = "with an explicit deny in an identity-based policy";
@@ -686,6 +741,48 @@ const IDENTITY_POLICY_DENY_REASON: &str = "with an explicit deny in an identity-
 /// after the tag key it carries: `aws:PrincipalTag/tenant` holds the value of the session
 /// tag `tenant`.
 const PRINCIPAL_TAG_CONDITION_KEY_FAMILY: &str = "aws:PrincipalTag/";
+
+/// The condition context every decision of this gate is taken over: the keys the REQUEST
+/// itself carried (`conditions`), plus the keys this gate holds for EVERY request — who the
+/// caller is and which account it belongs to, whether the credential that signed was
+/// MFA-backed, and the session tags the principal carries — so a statement written over one
+/// of those is decided rather than left undecided.
+///
+/// One place, so a decision taken over a resource ([`denial`]) and one taken over an
+/// account-wide action ([`account_wide_denial`]) answer the same keys.
+fn caller_conditions(caller: &Caller, conditions: &[(String, String)]) -> Vec<(String, String)> {
+    let mut context = conditions.to_vec();
+    context.extend(authorization::global_conditions(&caller.identity_arn));
+    context.extend(authorization::multi_factor_auth_conditions(
+        caller.multi_factor_auth_present,
+    ));
+    // The session tags the principal carries, which is what an ABAC policy conditioned on
+    // `aws:PrincipalTag/<key>` is decided against.
+    for (key, value) in &caller.tags {
+        context.push((
+            format!("{PRINCIPAL_TAG_CONDITION_KEY_FAMILY}{key}"),
+            value.clone(),
+        ));
+    }
+    context
+}
+
+/// The condition keys a decision about `caller` DECLARES it answers: the list this service
+/// publishes for every request, plus the session-tag FAMILY for a caller whose tags are known
+/// in full.
+///
+/// The family is declared only for such a caller, so a clause over a tag the principal does
+/// not carry is decided as absent there and stays undecided for a credential whose tags this
+/// gate cannot read. Borrowed rather than copied where nothing is added, since that is the
+/// common case.
+fn published_keys(caller: &Caller) -> ::std::borrow::Cow<'static, [&'static str]> {
+    if !caller.tags_known {
+        return ::std::borrow::Cow::Borrowed(PUBLISHED_CONDITION_KEYS);
+    }
+    let mut published = PUBLISHED_CONDITION_KEYS.to_vec();
+    published.push(PRINCIPAL_TAG_CONDITION_KEY_FAMILY);
+    ::std::borrow::Cow::Owned(published)
+}
 
 /// One decision's request: `action` on `resource`, asked for the principal spellings
 /// `principals`, in the condition context `conditions`, declaring the keys `published`.

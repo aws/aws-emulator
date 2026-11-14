@@ -224,6 +224,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `CreationDate` each entry reports ([`crate::state::Bucket::creation_date_reported_in`]).
         let endpoint_region = crate::state::request_region(ctx.parts());
 
+        // WHO is asking is resolved BEFORE the store is locked, so the STS and IAM stores
+        // this service reads the calling principal and its policies from are never reached
+        // while this service's own guard is held.
+        let caller = crate::service::request_authorization::request_caller(&*self.engine, ctx);
+
+        // The `s3:ListAllMyBuckets` permission the account's own listing needs, judged
+        // against the documents in force on the calling identity and the scope its
+        // credential was minted with ([`crate::service::request_authorization`] carries
+        // IAM's order), before anything about the account's buckets is reported. The
+        // listing addresses no bucket, so no bucket policy is in force on it: a caller the
+        // identity-based half does not allow is refused 403 `AccessDenied`.
+        if let Some(message) = crate::service::request_authorization::account_wide_denial(
+            &caller,
+            crate::service::request_authorization::LIST_ALL_MY_BUCKETS_ACTION,
+        ) {
+            return Err(crate::scaffolded::Scaffolded::unmodeled(
+                crate::state::ACCESS_DENIED_CODE,
+                crate::state::ACCESS_DENIED_STATUS,
+                message,
+            ));
+        }
+
         // The page bound this request asks for has to be one a page can be bounded by. The
         // value is judged HERE rather than at the boundary because the refusal carries
         // members of its own — the `<ArgumentName>` / `<ArgumentValue>` pair naming the
