@@ -134,6 +134,19 @@ serde_json_path = "0.7"
 # Not a pure-Rust elliptic-curve stack, whose `crypto-bigint` this repository's dependency
 # audit blocks (RUSTSEC-2026-0387).
 ring = "0.17"
+# `jws_signing`: the SIGNING half of the JOSE primitives above — the RSA and P-384 key
+# pairs an emulated OIDC issuer signs its tokens with, and those signatures. `ring` cannot
+# GENERATE an RSA key pair, so the generation and the signature come from the other
+# cryptography library this workspace already builds (the user-pool, KMS and private-CA
+# services among its users), which is why no capability class arrives with this
+# declaration. Not the pure-Rust `rsa` crate, whose two timing advisories this
+# repository's dependency audit blocks.
+aws-lc-rs = "1"
+# ... and the PKCS#8 / PKCS#1 structures that library encodes a generated RSA key pair as,
+# which the PUBLIC modulus and exponent a JWK publishes are read out of (RFC 5958 §2),
+# rather than keeping a second copy of them beside the key.
+pkcs8 = { version = "0.10", features = ["std"] }
+pkcs1 = { version = "0.7", features = ["pkcs8"] }
 # `in_process_sigv4`: the SigV4 signer a service signs an in-process call to another
 # emulated service with — the SDK's own signer, which is what the emulator's verifier
 # re-signs with, rather than a second implementation of the signature.

@@ -12,13 +12,16 @@ use super::*;
 
 /// The path under a pool's issuer its JSON Web Key Set is published at: the
 /// location the `iss` claim of a token leads a verifier to (Amazon Cognito
-/// Developer Guide, "Verifying a JSON web token").
-pub const JWKS_DOCUMENT_PATH: &str = ".well-known/jwks.json";
+/// Developer Guide, "Verifying a JSON web token") — the one path every OIDC issuer this
+/// emulator serves publishes it at ([`::service_common::openid_discovery`]).
+pub const JWKS_DOCUMENT_PATH: &str = ::service_common::openid_discovery::JWKS_DOCUMENT_PATH;
 
 /// The path under a pool's issuer its OpenID Connect discovery document is
 /// published at: the well-known location RFC 8414 §3 defines, which every OIDC
-/// client and relying party reads a provider's endpoints from.
-pub const OPENID_CONFIGURATION_DOCUMENT_PATH: &str = ".well-known/openid-configuration";
+/// client and relying party reads a provider's endpoints from — from the same
+/// module, for the same reason.
+pub const OPENID_CONFIGURATION_DOCUMENT_PATH: &str =
+    ::service_common::openid_discovery::OPENID_CONFIGURATION_DOCUMENT_PATH;
 
 /// The `response_type` values a user pool's authorization endpoint accepts.
 const RESPONSE_TYPES_SUPPORTED: [&str; 2] = ["code", "token"];

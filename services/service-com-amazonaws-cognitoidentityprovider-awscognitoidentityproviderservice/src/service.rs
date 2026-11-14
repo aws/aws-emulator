@@ -89,6 +89,9 @@
 use aws_smithy_runtime_api::http::{Request as RtRequest, Response as RtResponse};
 use aws_smithy_schema_server::constraints::{self, Violation, ViolationKind};
 use aws_smithy_schema_server::ProtocolError;
+// The shared naming of the two documents every OIDC issuer this emulator serves publishes,
+// which this service's own well-known routes answer with.
+use service_common::openid_discovery::WellKnownDocument;
 use service_common::query_error_envelope::{
     RequestIdEnvelopeDefinition, RequestIdReportingOperation,
 };
@@ -1127,17 +1130,13 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
 /// A JSON document answered on one of this endpoint's non-modelled routes:
 /// `status` with `body` and the media type the body is in.
 ///
+/// The shared rendering ([`::service_common::openid_discovery::json_response`]), which every
+/// endpoint of this emulator that publishes such a document answers through.
+///
 /// `None` only for a status that is not a valid HTTP status code, which the two
 /// callers' literals are not.
 fn json_response(status: u16, body: &str) -> Option<aws_smithy_runtime_api::http::Response> {
-    let mut response = aws_smithy_runtime_api::http::Response::new(
-        aws_smithy_runtime_api::http::StatusCode::try_from(status).ok()?,
-        ::aws_smithy_types::body::SdkBody::from(body.to_string()),
-    );
-    response
-        .headers_mut()
-        .insert("content-type", "application/json");
-    Some(response)
+    ::service_common::openid_discovery::json_response(status, body)
 }
 
 /// The `UserPoolId` and the document a request path of the form
@@ -1146,43 +1145,16 @@ fn json_response(status: u16, body: &str) -> Option<aws_smithy_runtime_api::http
 ///
 /// These are the well-known documents a user-pool endpoint publishes under a
 /// pool's token issuer, which is `<endpoint>/<UserPoolId>` — exactly as the `iss`
-/// claim of a token this service issued states it. The paths come from
-/// [`crate::state`], the same constants the pool's own published locators are
-/// built from, so a document this service announces and the route that serves it
-/// cannot drift. The pool id has to have the FORM this service mints one in, so a
-/// path of the same shape addressed to another mounted service is not claimed
-/// here.
+/// claim of a token this service issued states it. The reading is the shared one
+/// ([`::service_common::openid_discovery::well_known_route`]), over the same paths the
+/// pool's own published locators are built from, so a document this service announces and
+/// the route that serves it cannot drift. The pool id has to have the FORM this service
+/// mints one in, which is what this service answers for, so a path of the same shape
+/// addressed to another mounted service is not claimed here.
 fn well_known_route(uri: &str) -> Option<(&str, WellKnownDocument)> {
-    let path = uri.split(['?', '#']).next().unwrap_or(uri);
-    let (user_pool_id, tail) = path.strip_prefix('/')?.split_once('/')?;
-    if !is_user_pool_id_shaped(user_pool_id) {
-        return None;
-    }
-    let document = WellKnownDocument::at_path(tail)?;
-    Some((user_pool_id, document))
-}
-
-/// Which well-known document of a pool a request addresses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WellKnownDocument {
-    /// The pool's JSON Web Key Set, which every verifier of a token this pool
-    /// minted fetches to check the token's signature.
-    KeySet,
-    /// The pool's OpenID Connect discovery document, which every relying party
-    /// reads the pool's endpoints and signing algorithm from.
-    OpenIdConfiguration,
-}
-
-impl WellKnownDocument {
-    /// The document published at `tail` — the path under a pool's issuer — or
-    /// `None` when the pool publishes none there.
-    fn at_path(tail: &str) -> Option<Self> {
-        match tail {
-            crate::state::JWKS_DOCUMENT_PATH => Some(Self::KeySet),
-            crate::state::OPENID_CONFIGURATION_DOCUMENT_PATH => Some(Self::OpenIdConfiguration),
-            _ => None,
-        }
-    }
+    ::service_common::openid_discovery::well_known_route(uri, &|user_pool_id| {
+        is_user_pool_id_shaped(user_pool_id)
+    })
 }
 
 /// The pool and the level whose hosted UI logo image `uri` addresses, for a

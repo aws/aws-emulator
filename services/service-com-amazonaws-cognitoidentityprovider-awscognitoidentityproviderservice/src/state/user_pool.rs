@@ -370,9 +370,10 @@ impl UserPool {
     /// Where this pool publishes the key set its tokens are verified against:
     /// `<issuer>/.well-known/jwks.json`, the location the token's `iss` claim
     /// leads a verifier to (Amazon Cognito Developer Guide, "Verifying a JSON
-    /// web token").
+    /// web token") — built by the shared locator every OIDC issuer this emulator serves
+    /// publishes its key set at ([`::service_common::openid_discovery::jwks_uri`]).
     pub fn jwks_uri(&self, endpoint: &str) -> String {
-        format!("{}/{JWKS_DOCUMENT_PATH}", self.issuer(endpoint))
+        ::service_common::openid_discovery::jwks_uri(&self.issuer(endpoint))
     }
 
     /// Whether `issuer` is a token issuer OF THIS POOL — the question a verifier
@@ -416,7 +417,7 @@ impl UserPool {
     ///
     /// A pure read: it renders the stored keys and changes nothing.
     pub fn jwks(&self) -> serde_json::Value {
-        serde_json::json!({ "keys": self.signing_keys.to_jwks_entries() })
+        self.signing_keys.to_key_set()
     }
 
     /// This pool with a freshly minted id, and the ARN that id implies. Used

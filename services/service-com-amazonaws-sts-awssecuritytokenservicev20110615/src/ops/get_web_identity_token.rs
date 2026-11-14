@@ -1,22 +1,21 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op GetWebIdentityToken
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `GetWebIdentityToken`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`GetWebIdentityToken::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Vends a signed JSON Web Token for the identity that called it, against the OUTBOUND web
+//! identity issuer the account was given when it enabled the feature.
 //!
-//! ## Shape of an operation
+//! The issuer, the flag and the key material are the ACCOUNT's, held by IAM in the same
+//! shared engine (`iam:EnableOutboundWebIdentityFederation` mints all three) and published
+//! at that issuer's own key set endpoint — so the token this operation signs is one any
+//! relying party can verify against the key set it fetches from the issuer named in the
+//! token's own `iss` claim. What the token CLAIMS, how long it lasts and how it is signed
+//! live in [`crate::state::outbound_web_identity`]; this file decides only which of the
+//! three modelled refusals a request gets and what the response reports.
 //!
-//! Each operation is a struct that owns the shared engine and implements
-//! [`smithy_server_runtime::Operation`]. The framework constructs one per service via
-//! `GetWebIdentityToken::new(engine)` and drives it through the centralized request walk:
-//! deserialize → validate → `handle` → serialize. You write ONLY the `handle` body.
+//! Nothing is written: the token carries its own claims and its own signature, so a later
+//! verification reads the token and the published key set rather than a record of this
+//! call.
 //!
 //! ## Reaching this service's state
 //!
@@ -112,12 +111,18 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-sts-awssecuritytokenser
 
 // The operation's MODELED errors. `#[operation_error]` accepts only variants the
 // model declares for this operation, so the scaffold's `NotImplemented` cannot live
-// here — hence the `GetWebIdentityTokenError` alias below. An operation that models no errors
-// generates an UNINHABITED enum here, which is correct and expected: there is nothing
-// to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.sts#GetWebIdentityToken")]
+// here — hence the `GetWebIdentityTokenError` alias below.
+// The operation lists the three conditions it refuses, so `ExpiredTokenException` — a
+// shape this SERVICE models, with its own status and awsQuery code — is widened in: a
+// request that presents an expired session credential is refused with the service's own
+// expired-token error, the same way every other operation here refuses one.
+#[smithy_macros::operation_error(
+    "com.amazonaws.sts#GetWebIdentityToken",
+    extra_errors = ["ExpiredTokenException"]
+)]
 #[derive(Debug)]
 pub enum GetWebIdentityTokenErrorModeled {
+    ExpiredTokenException(ExpiredTokenException),
     JWTPayloadSizeExceededException(JWTPayloadSizeExceededException),
     OutboundWebIdentityFederationDisabledException(OutboundWebIdentityFederationDisabledException),
     SessionDurationEscalationException(SessionDurationEscalationException),
@@ -174,18 +179,169 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `GetWebIdentityToken` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(GetWebIdentityTokenErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("GetWebIdentityToken"))
+        use crate::state::outbound_web_identity as token;
+        use crate::state::{caller_may_call, long_term_identity, resolve_request_caller};
+
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            // This service has no store on the engine it was mounted on, so it cannot
+            // serve anything. The router builds the one engine that does, so this is
+            // unreachable there.
+            return Err(crate::scaffolded::Scaffolded::not_implemented(
+                "GetWebIdentityToken",
+            ));
+        };
+        let store = ctx.credential_store();
+        let now = ::std::time::SystemTime::now();
+        let access_key_id = ::service_common::request_access_key_id(ctx.parts());
+
+        // The ACCOUNT's issuer: the URL `iam:EnableOutboundWebIdentityFederation` minted,
+        // and the key the token is signed under. Read — with the identity a long-term key
+        // speaks for — before this service's own lock is taken, so the two stores are
+        // never locked at once, and read as an OWNED key
+        // (`OutboundWebIdentityFederation::signing_key`) so the IAM store's guard is given
+        // up here rather than held across the signature this request computes: a token mint
+        // must not serialise every other request against that store. The feature must be
+        // ON: a token is vended only while the account has the vending enabled, which is the
+        // flag that reader applies.
+        let (long_term, issuer) = {
+            let iam = crate::state::iam_state(&*self.engine);
+            match iam.as_ref() {
+                Some(iam) => {
+                    let iam = iam.lock();
+                    let issuer = iam.served_outbound_web_identity_federation().map(|held| {
+                        (
+                            held.issuer_identifier.clone(),
+                            held.signing_key(&input.signing_algorithm),
+                        )
+                    });
+                    (long_term_identity(Some(&iam), &access_key_id), issuer)
+                }
+                None => (long_term_identity(None, &access_key_id), None),
+            }
+        };
+
+        let mut registry = state.lock();
+        // Who the token would represent: the identity the presented credential speaks for,
+        // so a token cannot claim an identity its caller does not hold. An expired session
+        // credential speaks for nobody and is refused rather than answered as some other
+        // identity.
+        let caller = resolve_request_caller(&mut registry, &access_key_id, now, store, long_term)
+            .map_err(|expired| {
+                GetWebIdentityTokenErrorModeled::ExpiredTokenException(ExpiredTokenException {
+                    message: Some(expired.message()),
+                })
+            })?;
+        // Which STS operations a temporary credential of each class may call is documented
+        // per class; see `caller_may_call`.
+        if !caller_may_call(caller.kind, Self::NAME) {
+            return Err(crate::scaffolded::Scaffolded::access_denied(
+                crate::state::session_credentials_message(Self::NAME),
+            ));
+        }
+        // The instant the CREDENTIAL ends, which a token minted under it may not outlast.
+        let session_ends = registry
+            .session(&access_key_id)
+            .map(|session| session.expires_at);
+        drop(registry);
+
+        // "The outbound web identity federation feature is not enabled for this account.
+        // To use this feature, you must first enable it" — so with the feature off there is
+        // no issuer to vend against and nothing is signed.
+        let Some((issuer_identifier, signing_key)) = issuer else {
+            return Err(
+                GetWebIdentityTokenErrorModeled::OutboundWebIdentityFederationDisabledException(
+                    OutboundWebIdentityFederationDisabledException {
+                        message: Some(token::outbound_web_identity_federation_disabled_message()),
+                    },
+                )
+                .into(),
+            );
+        };
+
+        // "The cryptographic algorithm to use for signing the JSON Web Token (JWT). Valid
+        // values are RS256 … and ES384" (`GetWebIdentityTokenRequest$SigningAlgorithm`):
+        // the model constrains the member's LENGTH and not its value set, so the set is
+        // enforced here — and the key it names is the one the account's issuer publishes
+        // for it, so a token is signed only under an algorithm a verifier can check it
+        // under.
+        let Some(key) = signing_key else {
+            return Err(crate::scaffolded::Scaffolded::invalid_parameter_value(
+                unsupported_signing_algorithm_message(&input.signing_algorithm),
+            ));
+        };
+
+        // "The value can range from 60 seconds (1 minute) to 3600 seconds (1 hour). If not
+        // specified, the default duration is 300 seconds (5 minutes)" — the range is the
+        // member's own `@range`, which the walk already refused outside of, so what is left
+        // here is the default.
+        let duration_seconds = input
+            .duration_seconds
+            .unwrap_or(token::WEB_IDENTITY_TOKEN_DEFAULT_DURATION_SECONDS);
+        let lasts = ::std::time::Duration::from_secs(u64::try_from(duration_seconds).unwrap_or(0));
+        let expires_at = now + lasts;
+        // A token must not outlast the credential that asked for it; see
+        // `outlasts_the_calling_session`.
+        if token::outlasts_the_calling_session(session_ends, expires_at) {
+            return Err(
+                GetWebIdentityTokenErrorModeled::SessionDurationEscalationException(
+                    SessionDurationEscalationException {
+                        message: Some(token::session_duration_escalation_message()),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        let claims = token::web_identity_token_claims(
+            &issuer_identifier,
+            &caller.identity.arn,
+            &input.audience,
+            input.tags.as_deref().unwrap_or(&[]),
+            crate::state::unix_seconds(now),
+            crate::state::unix_seconds(expires_at),
+        );
+        // The request's own tags are the only part of the claim set a caller sizes, which
+        // is why the refusal names them.
+        if token::web_identity_token_payload_too_large(&claims) {
+            return Err(
+                GetWebIdentityTokenErrorModeled::JWTPayloadSizeExceededException(
+                    JWTPayloadSizeExceededException {
+                        message: Some(token::jwt_payload_size_exceeded_message()),
+                    },
+                )
+                .into(),
+            );
+        }
+        let Some(web_identity_token) = key.signed_compact_jws(&claims) else {
+            // The issuer's key could not sign, so there is no token to report: a value
+            // whose third segment is not a signature is not a token this issuer vended.
+            return Err(crate::scaffolded::Scaffolded::validation_error(
+                "the account's web identity issuer could not sign a token; none was issued",
+            ));
+        };
+
+        Ok(GetWebIdentityTokenOutput {
+            web_identity_token: Some(web_identity_token),
+            expiration: Some(::aws_smithy_types::DateTime::from_secs(
+                crate::state::unix_seconds(expires_at),
+            )),
+        })
     }
+}
+
+/// How AWS refuses a `SigningAlgorithm` outside the set this operation documents: the
+/// validation clause naming the member, the value as submitted and the values it admits.
+///
+/// The set is the issuer's own published algorithms
+/// (`::service_com_amazonaws_iam_awsidentitymanagementv20100508::state::JWT_SIGNING_ALGORITHMS`),
+/// so the refusal lists exactly the algorithms a token of this account can be signed —
+/// and verified — under.
+fn unsupported_signing_algorithm_message(submitted: &str) -> String {
+    let admitted =
+        ::service_com_amazonaws_iam_awsidentitymanagementv20100508::state::JWT_SIGNING_ALGORITHMS
+            .join(", ");
+    format!(
+        "1 validation error detected: Value '{submitted}' at 'signingAlgorithm' failed to \
+         satisfy constraint: Member must satisfy enum value set: [{admitted}]"
+    )
 }

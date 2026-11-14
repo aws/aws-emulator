@@ -1899,6 +1899,9 @@ mod apigateway_sns_service_integration;
 // crate's test target can drive it.
 #[path = "all/lambda_signed_write_to_an_aoss_collection_endpoint.rs"]
 mod lambda_signed_write_to_an_aoss_collection_endpoint;
+// (`apigateway_cognito_authorizer_app_client_audience` is declared once, in the sorted head
+// region above: a module may be declared only once, and two branches landing at once
+// appended it here as well.)
 // (The suite over which app client's token a COGNITO_USER_POOLS authorizer admits is declared
 // ONCE, in the head region above: a module may be declared only once.)
 // (`apigateway_cognito_authorizer_app_client_audience` is declared at line 30, in the sorted
@@ -1932,6 +1935,8 @@ mod redshift_health_alarms_evaluate;
 // crate's test target can deploy the pipeline and then read the objects it delivered.
 #[path = "all/cloudformation_metric_stream_filter_update.rs"]
 mod cloudformation_metric_stream_filter_update;
+// (`zz_probe` is declared once, further up this tail: a module may be declared only once,
+// and two branches landing at once appended it here as well.)
 // (`zz_probe` is declared ONCE, further up this tail: a module may be declared only once.)
 // (`zz_probe` is declared in the head region above: a module may be declared only once, and
 // two branches landing at once appended it twice.)
@@ -1967,6 +1972,9 @@ mod cloudformation_domain_endpoint_is_dialled_by_consumers;
 // which only this target links.
 #[path = "all/https_front_door_concurrent_pooled_producer.rs"]
 mod https_front_door_concurrent_pooled_producer;
+// (`cloudformation_metric_stream_estate_is_drainable` is declared once, in the head region
+// above: a module may be declared only once, and two branches landing at once appended it
+// here as well.)
 // (The suite over whether a stack-deployed metric-stream estate is drainable is declared
 // ONCE, in the sorted span above: a module may be declared only once.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared in the head region above:

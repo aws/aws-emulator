@@ -102,6 +102,9 @@ use aws_smithy_schema_server::{ProtocolError, Violation, ViolationKind};
 use service_common::authentication_refusal::{
     AuthenticationRefusalDefinition, StatedAuthenticationRefusal,
 };
+// The shared naming of the two documents every OIDC issuer this emulator serves publishes,
+// which the route reading below answers with.
+use service_common::openid_discovery::WellKnownDocument;
 use service_common::query_error_envelope::{
     RequestIdEnvelopeDefinition, RequestIdEnvelopeOperation,
 };
@@ -338,6 +341,21 @@ fn presented_access_key_id(req: &RtRequest) -> Option<String> {
     Some(::engine::extract_akid(&headers))
 }
 
+/// The issuer segment and the document `uri` addresses, and `None` for every other path.
+///
+/// The shared reading of such a path ([`::service_common::openid_discovery::well_known_route`]),
+/// asked with this service's own answer for whether a segment has the FORM it mints an
+/// issuer in — so a path of the same shape addressed to another mounted service is not
+/// claimed here. WHICH account holds that issuer is decided by the store when the document
+/// is served, so a request addressed to an issuer form this emulator mints is answered by
+/// this service rather than falling through to the router's "no service claimed this"
+/// refusal.
+fn issuer_document_route(uri: &str) -> Option<(&str, WellKnownDocument)> {
+    ::service_common::openid_discovery::well_known_route(uri, &|segment| {
+        crate::state::is_issuer_identifier_segment(segment)
+    })
+}
+
 /// The `com-amazonaws-iam-awsidentitymanagementv20100508` emulated service: the generated [`ServiceDefinition`] plus
 /// the behavioral seams this file owns.
 ///
@@ -446,7 +464,17 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
             Some(key) if key == self.entry.identity().signing_name() => {
                 claims_modeled_path(parts, WIRE_PATH_SEGMENTS)
             }
-            _ => false,
+            // The two documents an account's outbound web identity ISSUER publishes are
+            // fetched by whatever relying party holds a token vended against that issuer,
+            // or bootstraps from its discovery document: anonymously, with no credential
+            // scope and no `Action` to name this service by, and at the endpoint the issuer
+            // itself announces. A GET of exactly those paths is therefore claimed here, so
+            // each document resolves where this account announced it instead of reaching no
+            // service at all.
+            _ => {
+                parts.method == http::Method::GET
+                    && issuer_document_route(&parts.uri.to_string()).is_some()
+            }
         }
     }
 
@@ -513,8 +541,49 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // default for this service's envelope (query -> 400 InvalidAction text/xml,
         // awsJson -> 404, rpcv2Cbor -> 404, rest -> 501). Return `Some(resp)` to
         // word that routing failure in your own envelope instead.
-        let _ = req;
-        None
+        //
+        // An account's outbound web identity ISSUER publishes two documents this service's
+        // model does not describe: its JSON Web Key Set, which every verifier of a token
+        // vended against the issuer fetches to check that token's signature under the key
+        // its `kid` names, and its OpenID Connect discovery document, which a relying party
+        // reads the issuer and the location of that key set from. Both carry only PUBLIC
+        // values and are served unauthenticated, which is what this seam gives: the router
+        // consults it before it authenticates anything, so an anonymous GET reaches each
+        // document the way it does at a real issuer.
+        //
+        // The documents are served whatever the feature FLAG stands at, because a disable
+        // "does not affect tokens that were issued before the feature was disabled": a
+        // verifier of such a token still has to find the key that signed it. An account
+        // that never enabled the feature holds no issuer at all, so a request addressed to
+        // one is answered as the issuer that does not exist rather than left to the
+        // router's "no service claimed this request" refusal.
+        if req.method() != "GET" {
+            return None;
+        }
+        let (segment, document) = issuer_document_route(req.uri())?;
+        let state = crate::state::service_state(&*self.engine)?;
+        let rendered = {
+            // A pure READ: no key is generated here and nothing is written.
+            let store = state.lock();
+            let held = store
+                .outbound_web_identity_federation
+                .as_ref()
+                .filter(|held| held.issuer_identifier.ends_with(segment));
+            let Some(held) = held else {
+                let refusal = ::serde_json::json!({
+                    "message": crate::state::outbound_federation_disabled_message(),
+                });
+                return ::service_common::openid_discovery::json_response(
+                    404,
+                    &refusal.to_string(),
+                );
+            };
+            match document {
+                WellKnownDocument::KeySet => held.jwks(),
+                WellKnownDocument::OpenIdConfiguration => held.openid_configuration(),
+            }
+        };
+        ::service_common::openid_discovery::json_response(200, &rendered.to_string())
     }
 
     fn override_framework_error(

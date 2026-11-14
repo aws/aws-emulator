@@ -490,6 +490,15 @@ pub mod json_reference_path;
 /// caller-supplied string, for every service that has to decide whether a value is a token
 /// at all before it reads a claim out of it.
 pub mod jwt;
+/// The SIGNING half of that reading, for every emulated service that IS an OIDC issuer:
+/// the key pair it signs with, the public JWK its key set publishes, and the compact
+/// serialization a signed token travels in — held once so that what one issuer signs and
+/// what [`jwt::verify`] checks cannot diverge.
+pub mod jws_signing;
+/// The two documents such an issuer publishes about itself, where they are published and
+/// how a request for one is recognised — so every issuer this emulator serves is
+/// bootstrapped from the same paths.
+pub mod openid_discovery;
 /// The ONE bounded evaluation of a caller-written JSONata expression, for every service
 /// whose API carries one — so the ceilings that confine an engine evaluating a caller's
 /// text are stated, and met, in one place rather than per service.

@@ -89,11 +89,19 @@ use super::types::*;
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-iam-awsidentitymanagementv20100508.json");
 
 // The operation's MODELED errors. `#[operation_error]` accepts only variants the
-// model declares for this operation.
-#[smithy_macros::operation_error("com.amazonaws.iam#EnableOutboundWebIdentityFederation")]
+// model declares for this operation. `ServiceFailureException` is widened in through
+// `extra_errors`: this SERVICE models it ("the request processing has failed because of an
+// unknown error, exception or failure", HTTP 500), which is the class a failure of this
+// process rather than of the request belongs to — the key generation the enable needs not
+// completing at all.
+#[smithy_macros::operation_error(
+    "com.amazonaws.iam#EnableOutboundWebIdentityFederation",
+    extra_errors = ["ServiceFailureException"]
+)]
 #[derive(Debug)]
 pub enum EnableOutboundWebIdentityFederationErrorModeled {
     FeatureEnabledException(FeatureEnabledException),
+    ServiceFailureException(ServiceFailureException),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -160,28 +168,91 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         };
 
-        // A MUTATION: the lock is held for write across the decision and the write, so two
-        // calls cannot both enable the feature for one account.
-        let mut store = state.lock();
-
-        // IAM authorizes its own API: the signing principal's identity-based policies are
-        // evaluated before anything is written. The feature is the ACCOUNT's, not one
-        // entity's, and the Service Authorization Reference lists no resource type for the
-        // action, so the decision is made against the account-wide resource — exactly as
-        // the other account-wide operations of this service decide.
-        crate::state::authorization::authorize(
-            &store,
-            ctx,
-            crate::state::authorization::ENABLE_OUTBOUND_WEB_IDENTITY_FEDERATION,
-            crate::state::authorization::ACCOUNT_WIDE_RESOURCE,
-        )?;
-
+        // A MUTATION, taken in three steps so that the key generation it needs runs neither
+        // on this async worker nor under the store's lock (see below).
+        //
+        // First, under a short-lived guard: whether the caller may enable at all, and
+        // whether the feature is already on. IAM authorizes its own API: the signing
+        // principal's identity-based policies are evaluated before anything is written. The
+        // feature is the ACCOUNT's, not one entity's, and the Service Authorization
+        // Reference lists no resource type for the action, so the decision is made against
+        // the account-wide resource — exactly as the other account-wide operations of this
+        // service decide.
         let caller_akid = ::engine::extract_akid(&ctx.parts().headers);
+        {
+            let store = state.lock();
+            crate::state::authorization::authorize(
+                &store,
+                ctx,
+                crate::state::authorization::ENABLE_OUTBOUND_WEB_IDENTITY_FEDERATION,
+                crate::state::authorization::ACCOUNT_WIDE_RESOURCE,
+            )?;
 
-        // The feature already on is the one refusal this operation models, and it is
-        // answered before anything is written: the account keeps the issuer and the flag it
-        // already had.
-        if store.served_outbound_web_identity_federation().is_some() {
+            // The feature already on is the one refusal this operation models, and it is
+            // answered before anything is written and before a key is generated: the account
+            // keeps the issuer and the flag it already had. The same state is read again
+            // under the guard that writes, which is what DECIDES it.
+            if store.served_outbound_web_identity_federation().is_some() {
+                ::tracing::info!(
+                    audit = true,
+                    operation = "EnableOutboundWebIdentityFederation",
+                    outcome = "refused_feature_enabled",
+                    caller_akid = %caller_akid,
+                    "outbound identity federation was already enabled"
+                );
+                return Err(
+                    EnableOutboundWebIdentityFederationErrorModeled::FeatureEnabledException(
+                        FeatureEnabledException {
+                            message: Some(
+                                crate::state::outbound_federation_already_enabled_message(),
+                            ),
+                        },
+                    )
+                    .into(),
+                );
+            }
+        }
+
+        // Then the key material the issuer publishes, which is CPU-bound work: it runs on
+        // the blocking pool with no state guard held, the construct every key-minting
+        // operation of this workspace mints through
+        // ([`crate::state::IssuerSigningKeys::generate`]). A generation that does not
+        // complete — the task not joining, or a key the cryptography library would not
+        // produce — is a failure of this process rather than of the request, and enables
+        // nothing: an issuer that cannot sign the algorithms its model documents is not one
+        // this account is given.
+        let keys = ::tokio::task::spawn_blocking(crate::state::IssuerSigningKeys::generate)
+            .await
+            .ok()
+            .flatten();
+        let Some(keys) = keys else {
+            ::tracing::warn!(
+                operation = "EnableOutboundWebIdentityFederation",
+                outcome = "refused_keys_not_generated",
+                "the issuer's signing keys could not be generated; the feature was not enabled"
+            );
+            return Err(
+                EnableOutboundWebIdentityFederationErrorModeled::ServiceFailureException(
+                    ServiceFailureException {
+                        message: Some(
+                            "the account's web identity issuer keys could not be generated"
+                                .to_string(),
+                        ),
+                    },
+                )
+                .into(),
+            );
+        };
+
+        // Finally the write, under its own guard: the feature is turned on and the issuer
+        // the account is served under is answered — minted here the first time and reported
+        // unchanged after a disable and a second enable. A call that lost the race to
+        // another enable while its keys were being generated is told the feature was
+        // already on, and the keys it generated are dropped unused.
+        let mut store = state.lock();
+        let Some(issuer_identifier) =
+            store.enable_outbound_web_identity_federation(ctx.endpoint().as_str(), keys)
+        else {
             ::tracing::info!(
                 audit = true,
                 operation = "EnableOutboundWebIdentityFederation",
@@ -192,19 +263,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(
                 EnableOutboundWebIdentityFederationErrorModeled::FeatureEnabledException(
                     FeatureEnabledException {
-                        message: Some(
-                            crate::state::outbound_federation_already_enabled_message(),
-                        ),
+                        message: Some(crate::state::outbound_federation_already_enabled_message()),
                     },
                 )
                 .into(),
             );
-        }
-
-        // Turned on, and the issuer the account is served under answered: minted here the
-        // first time and reported unchanged after a disable and a second enable.
-        let issuer_identifier =
-            store.enable_outbound_web_identity_federation(ctx.endpoint().as_str());
+        };
 
         ::tracing::info!(
             audit = true,

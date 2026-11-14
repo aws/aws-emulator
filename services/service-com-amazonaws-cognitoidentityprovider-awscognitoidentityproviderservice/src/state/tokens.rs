@@ -194,32 +194,18 @@ pub(super) fn attribute_claims(
 // different `kid`s of the same published key set, so a verifier can pin one
 // token type's key without accepting the other's.
 //
-// The key generation and the signature come from `aws-lc-rs`, the cryptography
-// library several services of this workspace already generate RSA keys with,
-// rather than from the pure-Rust `rsa` crate, whose two timing advisories
-// (RUSTSEC-2023-0071 / CVE-2023-49092 and GHSA-4grx-2x9w-596c, both "no fixed
-// version") this repository's dependency audit blocks.
+// What a signing key IS — the key pair, the `kid` that names it, the public JWK
+// the key set publishes and the compact serialization a signed token travels in
+// — is the workspace's one JOSE signing seam
+// (`::service_common::jws_signing`), beside the reading that verifies such a
+// token, so nothing of it is laid out here. What this pool decides is only that
+// it holds one key per token type.
 // ---------------------------------------------------------------------------
 
 /// The `alg` of every token this service signs, and of the JWK it publishes for
-/// the key that signed it: RSASSA-PKCS1-v1_5 using SHA-256 (RFC 7518 §3.1/§3.3).
-pub(super) const TOKEN_SIGNING_ALGORITHM: &str = "RS256";
-
-/// The `kty` of the keys a pool signs with, as the published JWK names it
-/// (RFC 7518 §6.3).
-pub(super) const TOKEN_SIGNING_KEY_TYPE: &str = "RSA";
-
-/// The modulus size a pool's key pairs are generated at: 2048 bits, the width
-/// RSASSA-PKCS1-v1_5 with SHA-256 is used at and the smallest a JOSE verifier
-/// accepts.
-///
-/// The per-request cost this fixes is TWO generations of this size — one key pair
-/// per token type — for one `CreateUserPool`, and none for any other request: a
-/// pool's keys are minted with the pool and never regenerated. That work is
-/// milliseconds of CPU per key, so the create runs it on the blocking pool and
-/// only after the store's own bound has admitted the pool
-/// (`crate::ops::create_user_pool`).
-const SIGNING_KEY_SIZE: ::aws_lc_rs::rsa::KeySize = ::aws_lc_rs::rsa::KeySize::Rsa2048;
+/// the key that signed it: RSASSA-PKCS1-v1_5 using SHA-256 (RFC 7518 §3.1/§3.3),
+/// named by the seam that signs under it.
+pub(super) const TOKEN_SIGNING_ALGORITHM: &str = ::service_common::jws_signing::RS256;
 
 /// Which of a pool's two token-signing keys a token is signed with.
 ///
@@ -242,29 +228,38 @@ pub enum SigningKeyUse {
 #[derive(Debug, Clone)]
 pub struct PoolSigningKeys {
     /// The key pair the pool's access tokens are signed with.
-    access_token: PoolSigningKey,
+    access_token: ::service_common::jws_signing::SigningKey,
     /// The key pair the pool's identity tokens are signed with.
-    id_token: PoolSigningKey,
+    id_token: ::service_common::jws_signing::SigningKey,
 }
 
 impl PoolSigningKeys {
     /// A pool's freshly generated keys: one key pair per token type, so the two
     /// token types of one sign-in are signed by DIFFERENT keys.
     ///
-    /// Two key generations of [`SIGNING_KEY_SIZE`], which is CPU-bound work: the
-    /// caller runs this on the blocking pool rather than on the worker serving
-    /// the request.
+    /// Two key generations of the signing seam's own modulus size, which is
+    /// CPU-bound work: the caller runs this on the blocking pool rather than on
+    /// the worker serving the request. INFALLIBLE — the only failure the seam
+    /// reports is the cryptography library failing to produce or encode a key,
+    /// which a pool cannot be created without.
     #[must_use]
     pub fn generate() -> Self {
+        let generate = || {
+            ::service_common::jws_signing::SigningKey::generate(TOKEN_SIGNING_ALGORITHM)
+                .expect("the library yields an RSA key pair")
+        };
         Self {
-            access_token: PoolSigningKey::generate(),
-            id_token: PoolSigningKey::generate(),
+            access_token: generate(),
+            id_token: generate(),
         }
     }
 
     /// The key the token `key_use` names is signed with.
     #[must_use]
-    pub fn for_use(&self, key_use: SigningKeyUse) -> &PoolSigningKey {
+    pub fn for_use(
+        &self,
+        key_use: SigningKeyUse,
+    ) -> &::service_common::jws_signing::SigningKey {
         match key_use {
             SigningKeyUse::AccessToken => &self.access_token,
             SigningKeyUse::IdToken => &self.id_token,
@@ -277,174 +272,28 @@ impl PoolSigningKeys {
     pub fn to_jwks_entries(&self) -> Vec<serde_json::Value> {
         vec![self.access_token.to_jwk(), self.id_token.to_jwk()]
     }
-}
 
-/// One user pool's token-signing key pair: the private key tokens of its own
-/// kind are signed with, named by the `kid` its published JWK carries.
-#[derive(Clone)]
-pub struct PoolSigningKey {
-    /// The `kid` the token header carries and the published JWK is found by:
-    /// this key's RFC 7638 JWK thumbprint, so it is derived from the key itself
-    /// rather than minted beside it.
-    pub(super) kid: String,
-    /// The public modulus `n` the published JWK carries (RFC 7518 §6.3.1.1),
-    /// unsigned big-endian.
-    modulus: Vec<u8>,
-    /// The public exponent `e` the published JWK carries (RFC 7518 §6.3.1.2),
-    /// unsigned big-endian.
-    exponent: Vec<u8>,
-    /// The pool's private key, parsed once. Behind an [`::std::sync::Arc`]
-    /// because the key pair itself is not clonable and a pool's key is READ from
-    /// many places — sharing the one key is also what makes every token signed
-    /// under it verify against the one published JWK.
-    private: ::std::sync::Arc<::aws_lc_rs::signature::RsaKeyPair>,
-}
-
-/// Renders the key's PUBLIC identity only. Private key material is never
-/// logged, traced or put in a response, so it is not in this rendering either.
-impl ::std::fmt::Debug for PoolSigningKey {
-    fn fmt(&self, formatter: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-        formatter
-            .debug_struct("PoolSigningKey")
-            .field("kid", &self.kid)
-            .field("alg", &TOKEN_SIGNING_ALGORITHM)
-            .finish_non_exhaustive()
-    }
-}
-
-impl PoolSigningKey {
-    /// A freshly generated key pair, drawn from `aws-lc-rs`'s own generator.
-    ///
-    /// A pool mints its keys when the pool is created and no request path ever
-    /// generates one. INFALLIBLE: the only failures the generator and the
-    /// encoders report are the library failing to produce or encode a key,
-    /// neither of which a pool can be created without.
+    /// Those entries as the key set document itself, through the shared rendering of it
+    /// ([`::service_common::jws_signing::key_set`]), so the envelope is not laid out here.
     #[must_use]
-    pub fn generate() -> Self {
-        use ::aws_lc_rs::encoding::AsDer as _;
-
-        let generated = ::aws_lc_rs::rsa::PrivateDecryptingKey::generate(SIGNING_KEY_SIZE)
-            .expect("the library yields an RSA key pair");
-        let private_key_pkcs8 = generated
-            .as_der()
-            .expect("a freshly generated RSA key pair encodes as PKCS#8")
-            .as_ref()
-            .to_vec();
-        // RFC 5958 §2: the `privateKey` octet string of an RSA PKCS#8 key IS
-        // the PKCS#1 `RSAPrivateKey`, which carries the public modulus and
-        // exponent beside the private ones — so the published parameters are
-        // read out of the key the pool holds rather than kept separately.
-        let (modulus, exponent) = public_components(&private_key_pkcs8)
-            .expect("a freshly generated RSA key pair carries its public components");
-        let private = ::aws_lc_rs::signature::RsaKeyPair::from_pkcs8(&private_key_pkcs8)
-            .expect("a freshly generated RSA key pair parses");
-        // RFC 7638: the `kid` is the thumbprint of the key's canonical public
-        // JWK, computed by the one implementation of that rule this workspace
-        // holds, so a key is named the same way wherever it is published.
-        let kid = ::service_common::jwt::jwk_thumbprint(&public_jwk(&modulus, &exponent))
-            .expect("RFC 7638 registers the required members of an RSA key");
-        Self {
-            kid,
-            modulus,
-            exponent,
-            private: ::std::sync::Arc::new(private),
-        }
+    pub fn to_key_set(&self) -> serde_json::Value {
+        ::service_common::jws_signing::key_set([&self.access_token, &self.id_token])
     }
-
-    /// The `kid` naming this key in the pool's JWKS.
-    #[must_use]
-    pub fn kid(&self) -> &str {
-        &self.kid
-    }
-
-    /// This key's PUBLIC half as a JWK (RFC 7517), the entry a verifier finds
-    /// by `kid` in the pool's key set: `kty` and the `n`/`e` components
-    /// RFC 7518 §6.3.1 defines, with the `use` and `alg` the signature is
-    /// checked under. No private parameter is in it.
-    #[must_use]
-    pub fn to_jwk(&self) -> serde_json::Value {
-        let mut jwk = public_jwk(&self.modulus, &self.exponent);
-        if let Some(members) = jwk.as_object_mut() {
-            members.insert(
-                "alg".to_string(),
-                serde_json::Value::String(TOKEN_SIGNING_ALGORITHM.to_string()),
-            );
-            members.insert(
-                "kid".to_string(),
-                serde_json::Value::String(self.kid.clone()),
-            );
-            members.insert("use".to_string(), serde_json::Value::String("sig".to_string()));
-        }
-        jwk
-    }
-
-    /// The RS256 signature over `signing_input` — RSASSA-PKCS1-v1_5 with
-    /// SHA-256, which RFC 7518 §3.3 puts in the third segment as the modulus's
-    /// own width — or `None` when signing failed, in which case the caller
-    /// issues no token rather than one carrying bytes that are not a signature.
-    #[must_use]
-    pub fn sign(&self, signing_input: &[u8]) -> Option<Vec<u8>> {
-        // A PKCS #1 signature is exactly as long as the key's modulus.
-        let mut signature = vec![0_u8; self.private.public_modulus_len()];
-        self.private
-            .sign(
-                &::aws_lc_rs::signature::RSA_PKCS1_SHA256,
-                &::aws_lc_rs::rand::SystemRandom::new(),
-                signing_input,
-                &mut signature,
-            )
-            .ok()?;
-        Some(signature)
-    }
-}
-
-/// The public RSA key `(modulus, exponent)` as the JWK members RFC 7518 §6.3.1
-/// defines and RFC 7638 §3.2 requires of an RSA key: `e`, `kty` and `n`, and
-/// nothing else. The published entry adds the `alg`/`kid`/`use` a verifier reads
-/// beside them ([`PoolSigningKey::to_jwk`]), and the `kid` is the thumbprint OF
-/// this object, so the two cannot describe different keys.
-fn public_jwk(modulus: &[u8], exponent: &[u8]) -> serde_json::Value {
-    serde_json::json!({
-        "e": base64_url(exponent),
-        "kty": TOKEN_SIGNING_KEY_TYPE,
-        "n": base64_url(modulus),
-    })
-}
-
-/// The public modulus and exponent of the RSA key `private_key_pkcs8` holds,
-/// unsigned big-endian as RFC 7518 §6.3.1 publishes them, or `None` when the
-/// encoding is not an RSA PKCS#8 key.
-fn public_components(private_key_pkcs8: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
-    let pkcs8 = ::pkcs8::PrivateKeyInfo::try_from(private_key_pkcs8).ok()?;
-    let key = <::pkcs1::RsaPrivateKey as ::pkcs1::der::Decode>::from_der(pkcs8.private_key).ok()?;
-    Some((
-        key.modulus.as_bytes().to_vec(),
-        key.public_exponent.as_bytes().to_vec(),
-    ))
 }
 
 /// `claims` as a JWS in compact serialization (RFC 7515 §3.1) signed with the
-/// pool key `key`: `base64url(header) '.' base64url(claims) '.'
-/// base64url(signature)`, where the header names the algorithm and the key
-/// (`kid`) a verifier checks the signature with.
+/// pool key `key`, through the one assembly of such a token this workspace holds
+/// ([`::service_common::jws_signing::SigningKey::signed_compact_jws`]): the
+/// header names the algorithm and the key (`kid`) a verifier checks the
+/// signature with.
 ///
 /// `None` when the signature could not be computed, so a token is either
 /// signed or not issued.
-pub(super) fn signed_jws(claims: &serde_json::Value, key: &PoolSigningKey) -> Option<String> {
-    let header = serde_json::json!({
-        "alg": TOKEN_SIGNING_ALGORITHM,
-        "kid": key.kid(),
-        "typ": "JWT",
-    });
-    // RFC 7515 §5.1: the signature is computed over the ENCODED header and
-    // payload, joined by '.', so those exact bytes are what the token carries.
-    let signing_input = format!(
-        "{}.{}",
-        base64_url(header.to_string().as_bytes()),
-        base64_url(claims.to_string().as_bytes())
-    );
-    let signature = key.sign(signing_input.as_bytes())?;
-    Some(format!("{signing_input}.{}", base64_url(&signature)))
+pub(super) fn signed_jws(
+    claims: &serde_json::Value,
+    key: &::service_common::jws_signing::SigningKey,
+) -> Option<String> {
+    key.signed_compact_jws(claims)
 }
 
 #[cfg(test)]

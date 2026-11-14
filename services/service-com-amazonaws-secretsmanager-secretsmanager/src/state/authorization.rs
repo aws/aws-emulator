@@ -29,7 +29,14 @@
 //!    service's OWN accessors (`principal_policies`, `permissions_boundary_document`),
 //!    where the collection rule itself lives — so a policy `iam:PutUserPolicy` wrote takes
 //!    effect on the next request, deleting it lifts it again, and this service reads an
-//!    identity's permissions exactly as IAM's own authorizer does;
+//!    identity's permissions exactly as IAM's own authorizer does — and the SESSION POLICIES
+//!    the mint of this very credential scoped it with
+//!    (`sts_store::session_scoping_documents`), which cap those documents the same way:
+//!    "the resulting session's permissions are the intersection of the role's
+//!    identity-based policy and the session policies" (`AssumeRoleRequest$PolicyArns`, the
+//!    STS model), so a session policy takes permissions away and grants none of its own —
+//!    read exactly as the boundary is (`sts_store::ScopingPolicies::decision`), which is the
+//!    tree's one reading of a resolved scope;
 //! 3. **the decision** — [`::service_common::iam_authorization`], the ONE shared
 //!    evaluation of those documents against `(action, resource)`, so this service and
 //!    every other one handed the same documents answer alike: an explicit `Deny` wins,
@@ -255,6 +262,10 @@ fn decide<Eng: Send + Sync + 'static>(
     }) {
         return Err(refusal("with an explicit deny in a resource-based policy"));
     }
+    // What the SCOPE this credential was minted with says, through the tree's one reading of
+    // a resolved scope ([`sts_store::ScopingPolicies::decision`]): a credential no mint
+    // scoped is capped by nothing, which that reading answers as allowed.
+    let scoped = caller.scope.decision(&granting);
     let identity_said = iam::identity_decision(&caller.documents, &granting);
     // Taken before any grant is read, so an explicit `Deny` in a document that CAN be read
     // refuses the request whatever else the principal carries — including a grant this
@@ -262,6 +273,19 @@ fn decide<Eng: Send + Sync + 'static>(
     // statement allows (see the module docs).
     if identity_said == Decision::Denied {
         return Err(refusal("with an explicit deny in an identity-based policy"));
+    }
+    // An explicit `Deny` in a session policy refuses the same way, and before any grant is
+    // read: "the resulting session's permissions are the intersection of the role's
+    // identity-based policy and the session policies" (`AssumeRoleRequest$PolicyArns`, the
+    // STS model), so a deny there is a deny whatever grants the call.
+    if scoped == Decision::Denied {
+        return Err(refusal(iam::SESSION_POLICY_EXPLICIT_DENY));
+    }
+    // ... and a call the scope does not ALLOW is refused even where something grants it: a
+    // session policy takes permissions away and grants none of its own, which caps a grant
+    // in the secret's own policy as well as one in the identity's documents.
+    if scoped != Decision::Allowed {
+        return Err(refusal(&iam::no_session_policy_allows(&action)));
     }
     // A grant in the secret's own policy names this principal directly, and "a permissions
     // boundary does not limit the permissions granted to the entity by a resource-based
@@ -529,6 +553,12 @@ struct Caller {
     /// The permissions boundary in force on the principal, when it carries one whose
     /// document this emulator holds.
     boundary: Option<String>,
+    /// The session policy documents the mint of this request's credential scoped it with, as
+    /// they read at the instant of this request, and whether a managed one among them names a
+    /// document this emulator does not hold. Empty for a credential no mint scoped — every
+    /// long-term access key, and every session minted without session policies — which is a
+    /// credential capped by nothing.
+    scope: sts_store::ScopingPolicies,
     /// Set when this request presents the account's own published credential, which holds
     /// no IAM policies (see the module docs).
     account_credential: bool,
@@ -582,12 +612,17 @@ fn caller<Eng: Send + Sync + 'static>(
             ctx.credential_store(),
             sts_store::ambient_identity(),
         )
-        .map(|caller| (caller.identity, caller.role_arn)),
+        .map(|caller| (caller.identity, caller.role_arn, caller.session_policies)),
         // No STS store on this engine: the only identity a request can present is the
-        // account's own published credential, which is a session of no role.
-        None => Ok((sts_store::ambient_identity(), None)),
+        // account's own published credential, which is a session of no role and which no
+        // mint scoped.
+        None => Ok((
+            sts_store::ambient_identity(),
+            None,
+            sts_store::SessionPolicies::default(),
+        )),
     };
-    let (identity, session_role_arn) = match resolved {
+    let (identity, session_role_arn, session_policies) = match resolved {
         Ok(resolved) => resolved,
         // The session credential has expired, so it speaks for nobody: no documents, no
         // principal spelling, and every action it asks for falls to the default deny. The
@@ -602,6 +637,7 @@ fn caller<Eng: Send + Sync + 'static>(
                 identity_arn: String::new(),
                 documents: Vec::new(),
                 boundary: None,
+                scope: sts_store::ScopingPolicies::default(),
                 account_credential: false,
                 unreadable_attachment: false,
             };
@@ -615,12 +651,20 @@ fn caller<Eng: Send + Sync + 'static>(
         arn: identity.arn,
         documents: Vec::new(),
         boundary: None,
+        // The inline document the mint passed scopes the credential whether or not an IAM
+        // store is there; where there is one, the scope is re-read below so a managed session
+        // policy counts at the version in force NOW.
+        scope: sts_store::session_scoping_documents(None, &session_policies),
         unreadable_attachment: false,
     };
     let Some(iam) = iam_store::service_state(engine) else {
         return caller;
     };
     let store = iam.lock();
+    // What the mint scoped this credential to, as the documents read at the instant of this
+    // request: a managed session policy stands for its DEFAULT version, so one edited since
+    // the mint scopes by what it says now.
+    caller.scope = sts_store::session_scoping_documents(Some(&store), &session_policies);
     // A LONG-TERM access key: STS's store holds SESSIONS, so its answer for a key it never
     // minted is the account's ambient identity — but IAM's store maps an access key id to
     // the user that owns it (`access_keys`, the map IAM's own `GetUser` resolves a caller

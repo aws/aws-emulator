@@ -103,5 +103,7 @@ mod secret_version_stage_stale_remove_from;
 mod secret_version_stages;
 #[path = "all/secret_write_targets.rs"]
 mod secret_write_targets;
+#[path = "all/session_scoped_authorization.rs"]
+mod session_scoped_authorization;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;

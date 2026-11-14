@@ -66,12 +66,6 @@ tracing = { workspace = true }
 # `rsa` crate, whose timing advisories (RUSTSEC-2023-0071, GHSA-4grx-2x9w-596c)
 # this repository's dependency audit blocks.
 aws-lc-rs = "1"
-# Reads the PKCS#8 structure `aws-lc-rs` encodes a private key as, to take the
-# PKCS#1 `RSAPrivateKey` out of it (`src/state/tokens.rs`).
-pkcs8 = "0.10"
-# The PKCS#1 `RSAPrivateKey`, which carries the modulus and public exponent a
-# pool's published JWK renders (RFC 7518 §6.3.1).
-pkcs1 = "0.7"
 # HMAC-SHA256 for the app client `SecretHash` verification
 # (`src/state/pool_resources.rs`).
 ring = "0.17"

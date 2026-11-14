@@ -41,6 +41,11 @@ pub mod web_identity;
 /// only thing in this service that reads an XML signature.
 pub mod saml;
 
+/// The JWT this service vends against the account's own outbound web identity issuer:
+/// `GetWebIdentityToken`'s claim set, its window and its signature. One concern, one file —
+/// it is the only thing in this service that SIGNS a token rather than reading one.
+pub mod outbound_web_identity;
+
 /// `AssumeRole`'s default session length: "By default, the value is set to `3600`
 /// seconds." (`AssumeRoleRequest$DurationSeconds`, this service's model).
 pub const ASSUME_ROLE_DEFAULT_DURATION_SECONDS: i32 = 3600;

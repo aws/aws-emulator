@@ -29,6 +29,9 @@ mod malformed_session_policy;
 #[path = "all/mfa_challenged_mints.rs"]
 mod mfa_challenged_mints;
 
+#[path = "all/outbound_web_identity_token.rs"]
+mod outbound_web_identity_token;
+
 #[path = "all/packed_policy_budget.rs"]
 mod packed_policy_budget;
 
