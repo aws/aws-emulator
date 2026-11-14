@@ -2094,3 +2094,9 @@ mod dynamodb_write_capacity_metrics_drive_the_alarm_chain;
 // suites exist under tests/all/ and had lost their declaration when two branches removed
 // the same duplicated pair, which compiles them nowhere.
 // (`cloudformation_monitored_alb_search_estate` and `cloudformation_domain_endpoint_outputs`
+// (The suite that drives the Amazon Cognito user-pool authorizer is declared ONCE, in the
+// head region above: a module may be declared only once, so the duplicate declaration that
+// was appended here is gone.)
+// Declared here, in this appended tail: whether a stack-deployed metric-stream estate can be
+// drained spans CloudFormation and the services the estate is built from, so no single
+// service crate's test target can deploy it and then drain it.

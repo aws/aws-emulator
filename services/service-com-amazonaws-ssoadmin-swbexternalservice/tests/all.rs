@@ -155,6 +155,8 @@ mod listed_instance_state_across_read_edge_cases;
 mod listed_instance_state_after_instance_writes;
 #[path = "all/listed_instance_state_by_enablement_path.rs"]
 mod listed_instance_state_by_enablement_path;
+#[path = "all/listed_instance_state_by_region_count.rs"]
+mod listed_instance_state_by_region_count;
 #[path = "all/listed_instance_state_every_entry.rs"]
 mod listed_instance_state_every_entry;
 #[path = "all/listed_instance_state_generated_accounts.rs"]
