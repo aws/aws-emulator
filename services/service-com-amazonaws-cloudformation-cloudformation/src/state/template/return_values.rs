@@ -3225,6 +3225,17 @@ pub const COGNITO_IDENTITY_POOL: &str = "AWS::Cognito::IdentityPool";
 pub const COGNITO_IDENTITY_POOL_ROLE_ATTACHMENT: &str =
     "AWS::Cognito::IdentityPoolRoleAttachment";
 
+/// The type of the principal-tag attribute map of ONE identity provider of ONE identity
+/// pool — the `SetPrincipalTagAttributeMap` call in template form.
+///
+/// It declares no entity of its own: the mapping belongs to the
+/// `(IdentityPoolId, IdentityProviderName)` pair that call is addressed by, and that pair is
+/// the type's primary identifier — so its physical resource id, which is what `Ref` returns,
+/// is the two values joined ([`composite_identity_properties`]) rather than a name
+/// CloudFormation generated, which carries neither half and no call of the owning service
+/// takes.
+pub const COGNITO_IDENTITY_POOL_PRINCIPAL_TAG: &str = "AWS::Cognito::IdentityPoolPrincipalTag";
+
 /// The type of an Amazon Cognito user-pool group: the cognito-idp model carries
 /// `awsService.cloudFormationName: Cognito`.
 ///
@@ -3463,7 +3474,10 @@ pub(super) const COMPOSITE_IDENTITY_SEPARATOR: &str = "|";
 /// * `AWS::WAFv2::WebACLAssociation` is `<ResourceArn>|<WebACLArn>`, the pair
 ///   `AssociateWebACL` takes and `DisassociateWebACL` removes;
 /// * `AWS::EKS::AccessEntry` is `<ClusterName>|<PrincipalArn>`, the pair every Amazon EKS
-///   operation on an access entry addresses one by.
+///   operation on an access entry addresses one by;
+/// * `AWS::Cognito::IdentityPoolPrincipalTag` is `<IdentityPoolId>|<IdentityProviderName>`,
+///   the pair `SetPrincipalTagAttributeMap` and `GetPrincipalTagAttributeMap` address one
+///   provider's attribute map by.
 ///
 /// Because the identity IS the pair, a declaration that re-points either side of it names a
 /// DIFFERENT resource: the deployment replaces the one the stack has
@@ -3483,6 +3497,7 @@ pub fn composite_identity_properties(resource_type: &str) -> &'static [&'static 
     match resource_type {
         WAFV2_WEB_ACL_ASSOCIATION => &["ResourceArn", "WebACLArn"],
         EKS_ACCESS_ENTRY => &["ClusterName", "PrincipalArn"],
+        COGNITO_IDENTITY_POOL_PRINCIPAL_TAG => &["IdentityPoolId", "IdentityProviderName"],
         AMPLIFYUIBUILDER_COMPONENT | AMPLIFYUIBUILDER_FORM | AMPLIFYUIBUILDER_THEME => {
             AMPLIFYUIBUILDER_ATTRIBUTES
         }

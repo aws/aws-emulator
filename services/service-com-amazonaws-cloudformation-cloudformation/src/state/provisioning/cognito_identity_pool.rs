@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! `AWS::Cognito::IdentityPool` and `AWS::Cognito::IdentityPoolRoleAttachment`: the identity
-//! pool a stack declares and the IAM roles bound to it, created in Amazon Cognito Identity
-//! itself.
+//! `AWS::Cognito::IdentityPool`, `AWS::Cognito::IdentityPoolRoleAttachment` and
+//! `AWS::Cognito::IdentityPoolPrincipalTag`: the identity pool a stack declares, the IAM
+//! roles bound to it and the principal-tag attribute map of one of its providers, created in
+//! Amazon Cognito Identity itself.
 //!
-//! This is the per-type half of provisioning for two resource types, the half
+//! This is the per-type half of provisioning for three resource types, the half
 //! [`super::super::provisioner`] holds for every other type this emulator creates; it lives
 //! in its own module beside [`super::lambda_function`] for the reason that module records —
 //! that file is far past the length a change to this repository may touch — and is reached
@@ -46,6 +47,21 @@
 //! pool has at most one role configuration, which each call REPLACES — so its physical id
 //! stays CloudFormation's own, its update is the same call again, and its deletion is the
 //! call that leaves the pool with no roles at all.
+//!
+//! ## The principal-tag attribute map
+//!
+//! `AWS::Cognito::IdentityPoolPrincipalTag` is `SetPrincipalTagAttributeMap` in template
+//! form: all four of its properties are that call's own members under the same names, and the
+//! mapping it declares belongs to the `(IdentityPoolId, IdentityProviderName)` pair the call
+//! is addressed by. That pair is the type's primary identifier, so it is also the resource's
+//! physical id — the two values joined, which
+//! [`super::super::template::composite_identity`] is the one place that computes — and the
+//! pool id half is the `REGION:GUID` the pool's own create answered, which is what makes a
+//! `Ref` of one a value `GetPrincipalTagAttributeMap` can be called with. The map is no
+//! resource of its own in the owning API either: every call REPLACES one provider's mapping,
+//! so an update is the same call again and a deletion is the call that puts the provider back
+//! on the default (username and clientID) mappings it has when no mapping was ever declared
+//! for it, that service publishing no call that removes one.
 
 use std::collections::BTreeMap;
 
@@ -59,6 +75,8 @@ use crate::state::StoredResource;
 pub(super) const COGNITO_IDENTITY_POOL: &str = "AWS::Cognito::IdentityPool";
 pub(super) const COGNITO_IDENTITY_POOL_ROLE_ATTACHMENT: &str =
     "AWS::Cognito::IdentityPoolRoleAttachment";
+pub(super) const COGNITO_IDENTITY_POOL_PRINCIPAL_TAG: &str =
+    "AWS::Cognito::IdentityPoolPrincipalTag";
 
 /// Amazon Cognito Identity's signing name, which is what routes the in-process call to its
 /// own handlers, and the service shape an awsJson `X-Amz-Target` names an operation under
@@ -90,6 +108,8 @@ pub(in crate::state) enum Kind {
     IdentityPool,
     /// `AWS::Cognito::IdentityPoolRoleAttachment`.
     RoleAttachment,
+    /// `AWS::Cognito::IdentityPoolPrincipalTag`.
+    PrincipalTag,
 }
 
 /// The kind `resource_type` names, or `None` for a type this module does not own.
@@ -97,6 +117,7 @@ pub(super) fn kind_of(resource_type: &str) -> Option<Kind> {
     match resource_type {
         COGNITO_IDENTITY_POOL => Some(Kind::IdentityPool),
         COGNITO_IDENTITY_POOL_ROLE_ATTACHMENT => Some(Kind::RoleAttachment),
+        COGNITO_IDENTITY_POOL_PRINCIPAL_TAG => Some(Kind::PrincipalTag),
         _ => None,
     }
 }
@@ -155,6 +176,33 @@ const POOL_PROPERTIES: &[&str] = &[
 /// `SetIdentityPoolRoles`' own members under the same name (`Roles`, which that model makes
 /// required, and `RoleMappings`); the third names the pool the call is addressed to.
 const ROLE_ATTACHMENT_PROPERTIES: &[&str] = &["IdentityPoolId", "RoleMappings", "Roles"];
+
+/// Every property `AWS::Cognito::IdentityPoolPrincipalTag` publishes, each one a member of
+/// `SetPrincipalTagAttributeMap` under the same name
+/// (`smithy_query(query="operation",operation="SetPrincipalTagAttributeMap")`): the pair the
+/// call is addressed by, both of which that model makes required, and the two members that
+/// state the mapping itself.
+const PRINCIPAL_TAG_PROPERTIES: &[&str] = &[
+    "IdentityPoolId",
+    "IdentityProviderName",
+    "PrincipalTags",
+    "UseDefaults",
+];
+
+/// The property naming the identity provider a principal-tag attribute map is for, and the
+/// member every call on one is addressed by beside the pool.
+const IDENTITY_PROVIDER_NAME: &str = "IdentityProviderName";
+
+/// The member stating that the provider is mapped by the DEFAULT (username and clientID)
+/// attribute mappings rather than by a map of its own — a boolean on both sides.
+const USE_DEFAULTS: &str = "UseDefaults";
+
+/// The member carrying the custom map from principal tag to user attribute.
+const PRINCIPAL_TAGS: &str = "PrincipalTags";
+
+/// The one call that states a provider's principal-tag attribute map, which is this type's
+/// create, its update and — asking for the default mappings — its delete.
+const SET_PRINCIPAL_TAG_ATTRIBUTE_MAP: &str = "SetPrincipalTagAttributeMap";
 
 /// The member of a template's `RoleMapping` that names the identity provider the mapping is
 /// for — "identifier for the identity provider for which the role is mapped", which the
@@ -217,7 +265,8 @@ fn declared_flag(value: &Value) -> Option<bool> {
 
 /// Create the resource one of these types declares, in Amazon Cognito Identity itself — so a
 /// client that deployed the stack can pass `!Ref <pool>` straight to `GetId` or
-/// `DescribeIdentityPool`, and an identity of the pool assumes the role the stack attached.
+/// `DescribeIdentityPool`, an identity of the pool assumes the role the stack attached, and
+/// the principal-tag attribute map the stack declared is the one that service reports.
 pub(super) async fn create(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
@@ -230,7 +279,75 @@ pub(super) async fn create(
         // A role attachment is a configuration of a pool rather than a resource of its own,
         // so CloudFormation propagates no tag to it: there is no call that could carry one.
         Kind::RoleAttachment => set_roles(ctx, region, &attachment_request(resource)?).await,
+        // Nor is a principal-tag attribute map: it is one provider's mapping inside a pool,
+        // and that service publishes no call that could carry a tag to one. BOXED, as the
+        // arms of a deployment's own deep call chain are elsewhere: this one is reached
+        // through the whole provisioning walk, so its future is held behind a pointer rather
+        // than inlined into every create this module answers.
+        Kind::PrincipalTag => Box::pin(create_mapping(ctx, region, resource)).await,
     }
+}
+
+/// Set the principal-tag attribute map an `AWS::Cognito::IdentityPoolPrincipalTag` declares,
+/// and report the pair it is addressed by as the resource's physical id.
+///
+/// That pair IS the resource's primary identifier, so what a `Ref` of one resolves to is the
+/// pool id and the provider name joined — a value a client can split back into the two
+/// arguments `GetPrincipalTagAttributeMap` takes. The pool id half is the one the pool's own
+/// create answered with, which is in the declaration by the time this runs: a property naming
+/// a pool created earlier in the same deployment is re-pointed at the minted id before
+/// anything is asked about this resource.
+async fn create_mapping(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    resource: &StoredResource,
+) -> Result<Created, Refusal> {
+    refuse_unapplied_properties(
+        &resource.properties,
+        &resource.resource_type,
+        PRINCIPAL_TAG_PROPERTIES,
+    )?;
+    let request = mapping_request(&resource.properties, &resource.resource_type)?;
+    call_cognito_identity(ctx, region, SET_PRINCIPAL_TAG_ATTRIBUTE_MAP, &request).await?;
+    Ok(Created {
+        physical_resource_id: mapping_identity(&resource.resource_type, &request),
+        attributes: BTreeMap::new(),
+    })
+}
+
+/// The `SetPrincipalTagAttributeMap` request one declaration states: the pair the call is
+/// addressed by, and the two members that state the mapping.
+///
+/// Both halves of the pair are required properties of the type and required members of the
+/// call, so a declaration stating neither describes no mapping that could be set: it is
+/// refused here, naming the property, rather than sent as a request the owning service would
+/// reject. `UseDefaults` is read through [`declared_flag`], the module's one spelling rule for
+/// a property carrying a flag, and the custom map travels as the template wrote it.
+fn mapping_request(properties: &Value, resource_type: &str) -> Result<Value, Refusal> {
+    let mut request = Map::new();
+    for property in [IDENTITY_POOL_ID, IDENTITY_PROVIDER_NAME] {
+        request.insert(
+            property.to_string(),
+            Value::String(declared_text(properties, property, resource_type)?),
+        );
+    }
+    if let Some(value) = properties.get(USE_DEFAULTS).filter(|value| !value.is_null()) {
+        request.insert(
+            USE_DEFAULTS.to_string(),
+            declared_flag(value).map_or_else(|| value.clone(), Value::Bool),
+        );
+    }
+    if let Some(tags) = properties.get(PRINCIPAL_TAGS).filter(|tags| !tags.is_null()) {
+        request.insert(PRINCIPAL_TAGS.to_string(), tags.clone());
+    }
+    Ok(Value::Object(request))
+}
+
+/// The physical id of a principal-tag attribute map, read off the request the call was made
+/// with: its type's COMPOSITE primary identifier, joined by the one function that computes
+/// one ([`crate::state::template::composite_identity`]).
+fn mapping_identity(resource_type: &str, request: &Value) -> Option<String> {
+    crate::state::template::composite_identity(resource_type, request)
 }
 
 /// Create the pool an `AWS::Cognito::IdentityPool` declares.
@@ -299,9 +416,10 @@ async fn create_pool(
 /// Whether the owning service reports the resource ready.
 ///
 /// Nothing is asked, and nothing waits: a pool EXISTS from the moment `CreateIdentityPool`
-/// answers — `DescribeIdentityPool` resolves it and `GetId` mints identities in it — and a
-/// role configuration is in force from the moment `SetIdentityPoolRoles` answers. Neither
-/// call reports a non-terminal state for the resource to settle out of.
+/// answers — `DescribeIdentityPool` resolves it and `GetId` mints identities in it — a
+/// role configuration is in force from the moment `SetIdentityPoolRoles` answers, and a
+/// provider's principal-tag attribute map from the moment `SetPrincipalTagAttributeMap` does.
+/// None of those calls reports a non-terminal state for the resource to settle out of.
 pub(super) fn ready() -> super::Readiness {
     super::Readiness::Ready
 }
@@ -312,7 +430,8 @@ pub(super) fn ready() -> super::Readiness {
 /// For a pool that is `UpdateIdentityPool`, which "updates the configuration of an identity
 /// pool" — the call takes the pool's id, so the pool keeps its identity and nothing is
 /// replaced. For a role attachment it is `SetIdentityPoolRoles` again, the one call that
-/// states a pool's roles, which replaces the configuration in force.
+/// states a pool's roles, which replaces the configuration in force, and for a principal-tag
+/// attribute map `SetPrincipalTagAttributeMap` again, which replaces one provider's mapping.
 ///
 /// `Ok(None)` is a change neither call can make: a role attachment moved to a DIFFERENT pool
 /// is a different attachment, and the pool it was on would keep the roles this resource put
@@ -383,7 +502,48 @@ pub(super) async fn update(
                 .await
                 .map(Some)
         }
+        Kind::PrincipalTag => {
+            // BOXED for the reason [`create`]'s own arm records.
+            Box::pin(update_mapping(ctx, region, resource, declared)).await
+        }
     }
+}
+
+/// Apply a changed principal-tag declaration: `SetPrincipalTagAttributeMap` again, which
+/// REPLACES one provider's mapping.
+///
+/// The pair the mapping is addressed by is this resource's own identity, so a declaration
+/// restating either half asks for a DIFFERENT resource and never reaches here
+/// ([`super::super::template::composite_identity_properties`]): what an update applies is the
+/// mapping itself, set on the pair the record carries. The call replaces the mapping, so a
+/// member the new declaration leaves out is left out of the request too rather than carried
+/// over from the old one.
+async fn update_mapping(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    resource: &StoredResource,
+    declared: &Value,
+) -> Result<Option<Created>, Refusal> {
+    refuse_unapplied_properties(declared, &resource.resource_type, PRINCIPAL_TAG_PROPERTIES)?;
+    let mut properties = Map::new();
+    for property in [IDENTITY_POOL_ID, IDENTITY_PROVIDER_NAME] {
+        properties.insert(
+            property.to_string(),
+            Value::String(declared_text(
+                &resource.properties,
+                property,
+                &resource.resource_type,
+            )?),
+        );
+    }
+    for member in [USE_DEFAULTS, PRINCIPAL_TAGS] {
+        if let Some(value) = declared.get(member) {
+            properties.insert(member.to_string(), value.clone());
+        }
+    }
+    let request = mapping_request(&Value::Object(properties), &resource.resource_type)?;
+    call_cognito_identity(ctx, region, SET_PRINCIPAL_TAG_ATTRIBUTE_MAP, &request).await?;
+    Ok(Some(Created::attributes(BTreeMap::new())))
 }
 
 /// Delete the resource a stack created.
@@ -391,9 +551,12 @@ pub(super) async fn update(
 /// A pool is deleted by `DeleteIdentityPool`, addressed by the id its create answered — this
 /// resource's physical id. A role attachment has no delete of its own: what it created is the
 /// pool's role configuration, so its deletion is the call that leaves the pool with none
-/// ("Sets the roles for an identity pool", `Roles` being the whole configuration in force).
-/// Either way a pool the owning service no longer holds is already in the state the delete
-/// asks for, judged on the CODE and never on a message.
+/// ("Sets the roles for an identity pool", `Roles` being the whole configuration in force). A
+/// principal-tag attribute map has none either, and the state a provider is in when no
+/// mapping was ever declared for it is the DEFAULT (username and clientID) one, so its
+/// deletion is the call that puts the provider back on those mappings. Either way a pool the
+/// owning service no longer holds is already in the state the delete asks for, judged on the
+/// CODE and never on a message.
 pub(super) async fn delete(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
@@ -412,6 +575,22 @@ pub(super) async fn delete(
                 "Roles": Map::new(),
             }),
         ),
+        Kind::PrincipalTag => (
+            SET_PRINCIPAL_TAG_ATTRIBUTE_MAP,
+            serde_json::json!({
+                IDENTITY_POOL_ID: declared_text(
+                    &resource.properties,
+                    IDENTITY_POOL_ID,
+                    &resource.resource_type,
+                )?,
+                IDENTITY_PROVIDER_NAME: declared_text(
+                    &resource.properties,
+                    IDENTITY_PROVIDER_NAME,
+                    &resource.resource_type,
+                )?,
+                USE_DEFAULTS: true,
+            }),
+        ),
     };
     match call_cognito_identity(ctx, region, operation, &request).await {
         Ok(_) => Ok(()),
@@ -425,8 +604,10 @@ pub(super) async fn delete(
 /// A pool is read back with `DescribeIdentityPool`, whose answer carries the very members the
 /// type declares its properties with, so the answer maps onto the property vocabulary one for
 /// one; a role attachment is read with `GetIdentityPoolRoles`, the one call that reports a
-/// pool's role configuration. A pool the owning service no longer holds was deleted
-/// ([`POOL_NOT_FOUND`]).
+/// pool's role configuration. A principal-tag attribute map is read with
+/// `GetPrincipalTagAttributeMap`, the one call that reports one provider's mapping, whose
+/// answer carries the type's own property names too. A pool the owning service no longer
+/// holds — or a provider it reports no mapping for — was deleted ([`POOL_NOT_FOUND`]).
 pub(super) async fn actual_configuration(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
@@ -443,6 +624,22 @@ pub(super) async fn actual_configuration(
             "GetIdentityPoolRoles",
             serde_json::json!({IDENTITY_POOL_ID: attachment_pool(resource)?}),
             ROLE_ATTACHMENT_PROPERTIES,
+        ),
+        Kind::PrincipalTag => (
+            "GetPrincipalTagAttributeMap",
+            serde_json::json!({
+                IDENTITY_POOL_ID: declared_text(
+                    &resource.properties,
+                    IDENTITY_POOL_ID,
+                    &resource.resource_type,
+                )?,
+                IDENTITY_PROVIDER_NAME: declared_text(
+                    &resource.properties,
+                    IDENTITY_PROVIDER_NAME,
+                    &resource.resource_type,
+                )?,
+            }),
+            PRINCIPAL_TAG_PROPERTIES,
         ),
     };
     match call_cognito_identity(ctx, region, operation, &request).await {
@@ -512,18 +709,33 @@ async fn set_roles(
 /// describes no attachment that could be made: it is refused here, naming that property,
 /// rather than sent as a request the owning service would reject.
 fn attachment_pool(resource: &StoredResource) -> Result<String, Refusal> {
-    resource
-        .properties
-        .get(IDENTITY_POOL_ID)
+    declared_text(
+        &resource.properties,
+        IDENTITY_POOL_ID,
+        &resource.resource_type,
+    )
+}
+
+/// The text one REQUIRED property of a type states, or the refusal for a declaration that
+/// states none of it.
+///
+/// A property a call of the owning service requires is a property no resource of the type can
+/// be created without, so a declaration carrying none describes nothing that could be made:
+/// it is refused here, naming that property, rather than sent as a request that service would
+/// reject.
+fn declared_text(
+    properties: &Value,
+    property: &str,
+    resource_type: &str,
+) -> Result<String, Refusal> {
+    properties
+        .get(property)
         .and_then(Value::as_str)
-        .filter(|pool| !pool.is_empty())
+        .filter(|text| !text.is_empty())
         .map(ToString::to_string)
         .ok_or_else(|| Refusal {
             code: MISSING_PROPERTY.to_string(),
-            message: format!(
-                "{} declares no {IDENTITY_POOL_ID}",
-                resource.resource_type
-            ),
+            message: format!("{resource_type} declares no {property}"),
         })
 }
 
@@ -881,5 +1093,126 @@ mod tests {
             refused.is_err(),
             "case \"no IdentityPoolId\": expected a refusal naming the property, got {refused:?}"
         );
+    }
+
+    /// One row of [`a_principal_tag_request_carries_the_published_properties`]: a declaration
+    /// and the members the request it makes must carry.
+    struct Mapping {
+        case: &'static str,
+        properties: Value,
+        carried: Vec<(&'static str, Value)>,
+    }
+
+    /// Every member the principal-tag arm sends is a published property of that type, the
+    /// pair it is addressed by travels as the declaration states it, and `UseDefaults` is
+    /// read in either spelling a template gives a flag.
+    #[test]
+    fn a_principal_tag_request_carries_the_published_properties() {
+        let cases = vec![
+            Mapping {
+                case: "a custom map",
+                properties: serde_json::json!({
+                    "IdentityPoolId": "us-east-1:0000aaaa-0000-0000-0000-00000000bbbb",
+                    "IdentityProviderName": "accounts.google.com",
+                    "UseDefaults": false,
+                    "PrincipalTags": {"tenant": "custom:tenant"},
+                }),
+                carried: vec![
+                    (USE_DEFAULTS, serde_json::json!(false)),
+                    (
+                        PRINCIPAL_TAGS,
+                        serde_json::json!({"tenant": "custom:tenant"}),
+                    ),
+                ],
+            },
+            Mapping {
+                case: "the default mappings, asked for as a quoted scalar",
+                properties: serde_json::json!({
+                    "IdentityPoolId": "us-east-1:0000aaaa-0000-0000-0000-00000000bbbb",
+                    "IdentityProviderName": "accounts.google.com",
+                    "UseDefaults": "true",
+                }),
+                carried: vec![(USE_DEFAULTS, serde_json::json!(true))],
+            },
+            Mapping {
+                case: "neither member of the mapping",
+                properties: serde_json::json!({
+                    "IdentityPoolId": "us-east-1:0000aaaa-0000-0000-0000-00000000bbbb",
+                    "IdentityProviderName": "accounts.google.com",
+                }),
+                carried: Vec::new(),
+            },
+        ];
+        for Mapping {
+            case,
+            properties,
+            carried,
+        } in &cases
+        {
+            let request = mapping_request(properties, COGNITO_IDENTITY_POOL_PRINCIPAL_TAG)
+                .unwrap_or_else(|refusal| {
+                    panic!("case {case:?}: expected a request, got {refusal:?}")
+                });
+            for member in request
+                .as_object()
+                .unwrap_or_else(|| panic!("case {case:?}: the request is an object"))
+                .keys()
+            {
+                assert!(
+                    PRINCIPAL_TAG_PROPERTIES.contains(&member.as_str()),
+                    "case {case:?}: expected the sent member {member:?} to be a published \
+                     property of {COGNITO_IDENTITY_POOL_PRINCIPAL_TAG}, got none"
+                );
+            }
+            for (member, expected) in carried {
+                assert_eq!(
+                    request.get(*member),
+                    Some(expected),
+                    "case {case:?}: expected {member:?} to travel as {expected}, got {:?}",
+                    request.get(*member)
+                );
+            }
+            // The pair the call is addressed by always travels, and it is the resource's
+            // physical id too.
+            let identity = mapping_identity(COGNITO_IDENTITY_POOL_PRINCIPAL_TAG, &request);
+            assert_eq!(
+                identity.as_deref(),
+                Some("us-east-1:0000aaaa-0000-0000-0000-00000000bbbb|accounts.google.com"),
+                "case {case:?}: expected the pair to be the physical id, got {identity:?}"
+            );
+        }
+    }
+
+    /// A mapping that declares neither half of the pair is refused naming the property it
+    /// states none of.
+    #[test]
+    fn a_principal_tag_missing_half_the_pair_is_refused() {
+        let cases: &[(&str, Value, &str)] = &[
+            (
+                "no provider",
+                serde_json::json!({"IdentityPoolId": "us-east-1:a"}),
+                IDENTITY_PROVIDER_NAME,
+            ),
+            (
+                "no pool",
+                serde_json::json!({"IdentityProviderName": "accounts.google.com"}),
+                IDENTITY_POOL_ID,
+            ),
+            (
+                "an empty provider",
+                serde_json::json!({"IdentityPoolId": "us-east-1:a", "IdentityProviderName": ""}),
+                IDENTITY_PROVIDER_NAME,
+            ),
+        ];
+        for (case, properties, named) in cases {
+            let refused = mapping_request(properties, COGNITO_IDENTITY_POOL_PRINCIPAL_TAG);
+            let refusal = refused
+                .err()
+                .unwrap_or_else(|| panic!("case {case:?}: expected a refusal, got a request"));
+            assert!(
+                refusal.message.contains(named),
+                "case {case:?}: expected the refusal to name {named:?}, got {refusal:?}"
+            );
+        }
     }
 }

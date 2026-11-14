@@ -931,9 +931,10 @@ pub(super) enum Owner {
     /// launches for the resource, which is a resource of that service's own rather than part
     /// of the VPC network above.
     Ec2Instance,
-    /// One of the two Amazon Cognito Identity types [`cognito_identity_pool`] creates: the
-    /// identity pool, and the role attachment that binds the pool's IAM roles to it. Which
-    /// of them it is travels with the owner, as for the Amazon EC2 types above.
+    /// One of the three Amazon Cognito Identity types [`cognito_identity_pool`] creates: the
+    /// identity pool, the role attachment that binds the pool's IAM roles to it, and the
+    /// principal-tag attribute map of one of its providers. Which of them it is travels with
+    /// the owner, as for the Amazon EC2 types above.
     CognitoIdentityPool(cognito_identity_pool::Kind),
     /// One of the three Amazon Cognito user-pool types [`cognito_user_pool`] creates: the
     /// pool, the app client that signs in against it, and the third-party identity provider

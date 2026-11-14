@@ -235,8 +235,9 @@ impl Owner {
             Self::Ec2Instance => {
                 ec2_instance::readiness(ctx, region, physical_resource_id).await
             }
-            // A pool exists, and its role configuration is in force, from the moment the
-            // owning service's own call answers.
+            // A pool exists, its role configuration is in force, and a provider's
+            // principal-tag attribute map is set, from the moment the owning service's own
+            // call answers.
             Self::CognitoIdentityPool(_) => Ok(cognito_identity_pool::ready()),
             // A user pool, an app client and an identity provider each exist from the moment
             // their own create answers.
@@ -343,9 +344,9 @@ impl Owner {
             Self::Ec2Instance => {
                 ec2_instance::ready_attributes(ctx, region, physical_resource_id).await
             }
-            // A pool's `Name` is the one its own create answered with, and a role attachment
-            // publishes no attribute this emulator computes, so there is nothing left to
-            // read once either resource is up.
+            // A pool's `Name` is the one its own create answered with, and neither a role
+            // attachment nor a principal-tag attribute map publishes an attribute this
+            // emulator computes, so there is nothing left to read once the resource is up.
             Self::CognitoIdentityPool(_) => Ok(BTreeMap::new()),
             // A pool's ARN and issuer are read off the id its own create answered, a client's
             // name and secret are what that create answered, and an identity provider
@@ -470,8 +471,9 @@ impl Owner {
             Self::Ec2Instance => {
                 ec2_instance::removal(ctx, region, physical_resource_id).await
             }
-            // `DeleteIdentityPool` takes the pool away as it answers, and the call that
-            // clears a pool's roles leaves nothing behind either.
+            // `DeleteIdentityPool` takes the pool away as it answers, and the calls that
+            // clear a pool's roles and put a provider back on the default principal-tag
+            // mappings leave nothing behind either.
             Self::CognitoIdentityPool(_) => Ok(Removal::Gone),
             // `DeleteUserPool`, `DeleteUserPoolClient` and `DeleteIdentityProvider` each take
             // the resource away as they answer.
@@ -824,8 +826,8 @@ impl Owner {
             // terminates the instance with no image or snapshot invented for it.
             Self::Ec2Instance => ec2_instance::delete(ctx, region, resource).await,
             // Amazon Cognito Identity takes no snapshot of a pool on the way out: there is no
-            // such call, so a `Snapshot` deletion policy on either type deletes the resource
-            // with no snapshot invented for it.
+            // such call, so a `Snapshot` deletion policy on any of these types deletes the
+            // resource with no snapshot invented for it.
             Self::CognitoIdentityPool(kind) => {
                 cognito_identity_pool::delete(ctx, region, kind, resource).await
             }

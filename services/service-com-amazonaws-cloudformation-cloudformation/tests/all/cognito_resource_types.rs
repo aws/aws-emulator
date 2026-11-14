@@ -30,11 +30,12 @@
 //! Most of these types have no provisioner, so each is declared-only
 //! (`unprovisioned_resources.rs` pins that: nothing is called in the owning service and the
 //! stack completes). The ones that DO are created through the owning service's own API, which
-//! this crate's harness mounts beside CloudFormation. Four of them cannot be created from a
+//! this crate's harness mounts beside CloudFormation. Six of them cannot be created from a
 //! declaration that states none of their properties, because the pool the resource belongs to
 //! is one of them — `AWS::Cognito::UserPoolGroup`, `AWS::Cognito::UserPoolClient`,
 //! `AWS::Cognito::UserPoolIdentityProvider` and `AWS::Cognito::UserPoolResourceServer`, whose
-//! rows' stacks FAIL naming the property the type requires — while `AWS::Cognito::IdentityPool` and `AWS::Cognito::UserPool` need no
+//! rows' stacks FAIL naming the property the type requires, and the two types that configure
+//! an identity pool rather than being one — while `AWS::Cognito::IdentityPool` and `AWS::Cognito::UserPool` need no
 //! property of the declaration and have their identity ASSIGNED by that service, so their rows
 //! carry the `REGION:GUID` identity pool id and the `<region>_<id>` user pool id rather than a
 //! name CloudFormation computed. What this suite asserts either way is
@@ -112,7 +113,9 @@ const PUBLISHED: &[&str] = &[
 /// client, an identity provider and a resource server are in the same position — each belongs
 /// to ONE user pool, which `CreateUserPoolClient`, `CreateIdentityProvider` and
 /// `CreateResourceServer` all require — and a role attachment too: it configures ONE identity
-/// pool, which its `IdentityPoolId` names.
+/// pool, which its `IdentityPoolId` names. A principal-tag attribute map is the same case
+/// twice over: it is the mapping of ONE provider of ONE pool, and
+/// `SetPrincipalTagAttributeMap` requires both.
 const REQUIRES_A_PROPERTY: &[(&str, &str)] = &[
     ("AWS::Cognito::UserPoolGroup", "UserPoolId"),
     ("AWS::Cognito::UserPoolClient", "UserPoolId"),
@@ -120,6 +123,10 @@ const REQUIRES_A_PROPERTY: &[(&str, &str)] = &[
     ("AWS::Cognito::UserPoolResourceServer", "UserPoolId"),
     (
         "AWS::Cognito::IdentityPoolRoleAttachment",
+        "IdentityPoolId",
+    ),
+    (
+        "AWS::Cognito::IdentityPoolPrincipalTag",
         "IdentityPoolId",
     ),
 ];
@@ -439,7 +446,14 @@ async fn the_reported_principal_tag_template_deploys() {
                 "Type": "AWS::Cognito::IdentityPool",
                 "Properties": {
                     "IdentityPoolName": "principal-tag-pool",
-                    "AllowUnauthenticatedIdentities": false
+                    "AllowUnauthenticatedIdentities": false,
+                    "CognitoIdentityProviders": [{
+                        "ProviderName": "cognito-idp.us-east-1.amazonaws.com/us-east-1_example",
+                        "ClientId": "examplecl1ent1d"
+                    }],
+                    "SupportedLoginProviders": {
+                        "accounts.google.com": "123.apps.googleusercontent.com"
+                    }
                 }
             },
             "PrincipalTags": {
@@ -497,9 +511,14 @@ async fn the_reported_principal_tag_template_deploys() {
     // Each one resolves to the referenced resource's physical id: the pool's is the
     // `REGION:GUID` id the owning service MINTED for it ("Ref returns the Amazon Cognito
     // identity pool ID", which is the handle every cognito-identity operation takes), and
-    // the mapping, which the template leaves unnamed, carries the generated
-    // `<stack name>-<logical id>-<unique id>`.
+    // the mapping's is the PAIR it is addressed by, the pool id and the provider name joined
+    // — which is what `cognito_principal_tag_identity.rs` is the suite of.
     let resolved: Vec<(String, String)> = keys.iter().cloned().zip(values.iter().cloned()).collect();
+    let pool_id = resolved
+        .iter()
+        .find(|(key, _)| key == "PoolId")
+        .map(|(_, value)| value.clone())
+        .unwrap_or_default();
     for (key, value) in &resolved {
         match key.as_str() {
             "PoolId" => assert!(
@@ -513,10 +532,13 @@ async fn the_reported_principal_tag_template_deploys() {
                 "case {case:?}: expected output {key:?} to resolve to the REGION:GUID pool id \
                  the owning service minted, got {value:?}"
             ),
-            "Mapping" => assert!(
-                value.starts_with(&format!("{stack_name}-PrincipalTags-")),
-                "case {case:?}: expected output {key:?} to resolve to the generated physical \
-                 id of the mapping, got {value:?}"
+            "Mapping" => assert_eq!(
+                *value,
+                format!(
+                    "{pool_id}|cognito-idp.us-east-1.amazonaws.com/us-east-1_example"
+                ),
+                "case {case:?}: expected output {key:?} to resolve to the pair the mapping is \
+                 addressed by, got {value:?}"
             ),
             other => panic!("case {case:?}: unexpected output {other:?} in {resolved:?}"),
         }
@@ -569,7 +591,14 @@ async fn the_reported_principal_tag_template_deploys() {
                 "Type": "AWS::Cognito::IdentityPool",
                 "Properties": {
                     "IdentityPoolName": "principal-tag-pool",
-                    "AllowUnauthenticatedIdentities": false
+                    "AllowUnauthenticatedIdentities": false,
+                    "CognitoIdentityProviders": [{
+                        "ProviderName": "cognito-idp.us-east-1.amazonaws.com/us-east-1_example",
+                        "ClientId": "examplecl1ent1d"
+                    }],
+                    "SupportedLoginProviders": {
+                        "accounts.google.com": "123.apps.googleusercontent.com"
+                    }
                 }
             },
             "PrincipalTags": {
