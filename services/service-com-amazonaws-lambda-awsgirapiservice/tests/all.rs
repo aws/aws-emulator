@@ -411,6 +411,8 @@ mod package_unzipped_ceiling;
 mod permission_and_policy_refusals;
 #[path = "all/permission_principal_and_qualifier_rules.rs"]
 mod permission_principal_and_qualifier_rules;
+#[path = "all/policy_size_accounting.rs"]
+mod policy_size_accounting;
 #[path = "all/policy_versions_and_resources.rs"]
 mod policy_versions_and_resources;
 #[path = "all/pre_lookup_request_validation.rs"]

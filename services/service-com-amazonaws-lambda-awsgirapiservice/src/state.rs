@@ -959,6 +959,31 @@ pub const STATEMENT_EFFECT_ALLOW: &str = "Allow";
 /// is too large") for a call that would push the policy past it. Not adjustable.
 pub const MAX_POLICY_SIZE_BYTES: usize = 20_480;
 
+/// What the policy-size accounting counts for each statement a policy holds, on top of
+/// that statement's own serialized JSON.
+///
+/// The size a grant is refused over is NOT the length of the document a read gives back:
+/// the quota accounting counts a cost beyond each statement's compact JSON, so the figure
+/// the refusal states — and the figure the quota is applied to — grows with how many
+/// statements the policy holds as well as with how long they are. The corpus unit
+/// `lam-err-policy-length-exceeded` is what pins the cost: it builds a five-statement
+/// document whose compact bytes this service renders exactly as the recorded `GetPolicy`
+/// answer and the recorded `AddPermission` statements do, and the recorded refusal states a
+/// final size 25 bytes above those bytes — five per statement.
+///
+/// That one five-statement sample is the whole of the evidence, so reading the 25 bytes as
+/// a PER-STATEMENT cost is a hypothesis: the same sample is equally consistent with a flat
+/// 25 bytes per document. It is read per statement because the quantity the accounting
+/// measures is built out of statements, so a cost that scales with them tracks the quota
+/// boundary for a policy of any shape rather than only for one of five. Applying the quota
+/// to this measure — rather than only STATING it, which is all the recorded refusal shows,
+/// since that call was refused on its document's bytes alone either way — is part of the
+/// same hypothesis: it is what makes the figure the refusal names the figure the refusal is
+/// decided by, and it moves the boundary in by this cost per statement. A second recorded
+/// refusal over a policy of a different statement count would settle both halves, and this
+/// is the constant to revisit when one turns up.
+pub const POLICY_SIZE_STATEMENT_OVERHEAD_BYTES: usize = 5;
+
 /// The refusal a grant that would push a resource policy past [`MAX_POLICY_SIZE_BYTES`]
 /// gets: the fixed sentence `PolicyLengthExceededException` carries, whose variables are
 /// the size the policy WOULD have reached and the quota it may not pass.
@@ -1448,6 +1473,29 @@ impl PolicyRecord {
         }
     }
 
+    /// Hand `read` the statements the STORED DOCUMENT carries, in the order it carries them,
+    /// and answer what it made of them — `None` for a policy that holds no document to read
+    /// them out of (one made of the statements this record holds structured, or one whose
+    /// document is somehow not the JSON object it was accepted as).
+    ///
+    /// The policy language admits a single statement as well as a list of them, so a
+    /// document carrying one object reads as one statement here: that is the one place
+    /// this rule is stated, and every reader of a stored document's statements goes
+    /// through it. They are LENT rather than handed over, so a reader that only counts or
+    /// searches them copies none of them.
+    fn with_document_statements<T>(
+        &self,
+        read: impl FnOnce(&[::serde_json::Value]) -> T,
+    ) -> Option<T> {
+        let document = self.document.as_ref()?;
+        let parsed = ::serde_json::from_str::<::serde_json::Value>(document).ok()?;
+        Some(match parsed.get(POLICY_STATEMENT_MEMBER) {
+            Some(::serde_json::Value::Array(statements)) => read(statements),
+            Some(single) => read(::std::slice::from_ref(single)),
+            None => read(&[]),
+        })
+    }
+
     /// Whether this policy already holds a statement with `sid` — among the statements
     /// `AddPermission` added, or among those the stored document carries.
     #[must_use]
@@ -1455,19 +1503,12 @@ impl PolicyRecord {
         if self.statements.iter().any(|statement| statement.sid == sid) {
             return true;
         }
-        let Some(document) = &self.document else {
-            return false;
-        };
-        let Ok(parsed) = ::serde_json::from_str::<::serde_json::Value>(document) else {
-            return false;
-        };
-        match parsed.get(POLICY_STATEMENT_MEMBER) {
-            Some(::serde_json::Value::Array(statements)) => statements
+        self.with_document_statements(|statements| {
+            statements
                 .iter()
-                .any(|statement| statement_id_of(statement) == Some(sid)),
-            Some(single) => statement_id_of(single) == Some(sid),
-            None => false,
-        }
+                .any(|statement| statement_id_of(statement) == Some(sid))
+        })
+        .unwrap_or(false)
     }
 
     /// Add `statement` to this policy, which is what `AddPermission` appends to it.
@@ -1516,6 +1557,37 @@ impl PolicyRecord {
                 format!("[{}]", statements.join(",")),
             ),
         ])
+    }
+
+    /// How many statements this policy holds — those a grant added STRUCTURED and those the
+    /// stored document carries, summed.
+    ///
+    /// The two are mutually exclusive as this record is written today
+    /// ([`PolicyRecord::add_statement`] merges a grant into a stored document, and keeps
+    /// statements structured only for a policy that holds no document), so the sum is one of
+    /// the two in practice — and it stays right for a record that somehow holds both rather
+    /// than silently dropping one side. A stored document that does not parse at all carries
+    /// no statement this can count, which is the same position
+    /// [`PolicyRecord::holds`] is in about it.
+    #[must_use]
+    pub fn statement_count(&self) -> usize {
+        self.statements.len()
+            + self
+                .with_document_statements(<[::serde_json::Value]>::len)
+                .unwrap_or(0)
+    }
+
+    /// The size of this policy as the quota accounting measures it, which is what a
+    /// refusal over [`MAX_POLICY_SIZE_BYTES`] states and what that quota is applied to.
+    ///
+    /// It is the document's own bytes plus
+    /// [`POLICY_SIZE_STATEMENT_OVERHEAD_BYTES`] for every statement in it, so a policy
+    /// made of many small statements measures further past the document a read returns
+    /// than one made of a few large ones — and the grant that crosses the quota is refused
+    /// on that measure rather than on the document's length.
+    #[must_use]
+    pub fn measured_size(&self) -> usize {
+        self.to_json().len() + POLICY_SIZE_STATEMENT_OVERHEAD_BYTES * self.statement_count()
     }
 }
 

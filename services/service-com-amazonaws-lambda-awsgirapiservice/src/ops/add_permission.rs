@@ -384,7 +384,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let added = statement.to_json();
         policy.add_statement(statement);
 
-        let size = policy.to_json().len();
+        // The quota is applied to the size the policy-size ACCOUNTING measures, which is
+        // the figure the refusal states — not the length of the document a read gives
+        // back (`crate::state::PolicyRecord::measured_size`).
+        let size = policy.measured_size();
         if size > crate::state::MAX_POLICY_SIZE_BYTES {
             return Err(AddPermissionErrorModeled::PolicyLengthExceededException(
                 PolicyLengthExceededException {

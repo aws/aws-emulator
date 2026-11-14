@@ -320,7 +320,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let added = statement.to_json();
         policy.statements.push(statement);
 
-        let size = policy.to_json().len();
+        // The same accounting a function's policy is measured by: the document's bytes
+        // plus the per-statement cost the quota counts
+        // (`crate::state::PolicyRecord::measured_size`).
+        let size = policy.measured_size();
         if size > crate::state::MAX_POLICY_SIZE_BYTES {
             return Err(
                 AddLayerVersionPermissionErrorModeled::PolicyLengthExceededException(
