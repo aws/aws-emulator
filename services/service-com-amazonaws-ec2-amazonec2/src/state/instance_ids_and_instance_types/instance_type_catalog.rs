@@ -22,8 +22,8 @@
 
 use super::*;
 use crate::ops::types::{
-    FpgaDeviceInfo, FpgaDeviceMemoryInfo, FpgaInfo, InferenceAcceleratorInfo, InferenceDeviceInfo,
-    InferenceDeviceMemoryInfo,
+    FpgaDeviceInfo, FpgaDeviceMemoryInfo, FpgaInfo, GpuDeviceInfo, GpuDeviceMemoryInfo, GpuInfo,
+    InferenceAcceleratorInfo, InferenceDeviceInfo, InferenceDeviceMemoryInfo,
 };
 
 /// The EBS-optimized performance AWS publishes for one instance type: the two bandwidth and
@@ -132,6 +132,58 @@ impl PublishedInferenceDevices {
     }
 }
 
+/// The GPU accelerators of one instance type — "the GPU accelerator settings for the
+/// instance type" (`InstanceTypeInfo$GpuInfo`).
+///
+/// The accelerators of one instance are identical, so the whole inventory is one device
+/// description and a count, and the total memory is that device's memory times the count.
+/// `partition_size` is "the size of each GPU as a fraction of a full GPU"
+/// (`GpuDeviceInfo$GpuPartitionSize`), which is [`WHOLE_GPU_PARTITION`] where the instance
+/// holds whole devices, and `logical_count` is "the total number of GPU devices of this
+/// type" (`$LogicalGpuCount`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PublishedGpuDevices {
+    /// How many accelerators the instance carries (`GpuDeviceInfo$Count`).
+    pub count: i32,
+    /// How many devices of this type the instance holds (`$LogicalGpuCount`).
+    pub logical_count: i32,
+    /// The accelerator's name, as `GpuDeviceInfo$Name` publishes it.
+    pub name: &'static str,
+    /// Who makes it (`$Manufacturer`).
+    pub manufacturer: &'static str,
+    /// The memory of ONE accelerator, in MiB.
+    pub memory_mib_each: i32,
+    /// The fraction of a full GPU each one is (`$GpuPartitionSize`).
+    pub partition_size: f64,
+    /// "A list of workload types this GPU supports" (`$Workloads`).
+    pub workloads: &'static [&'static str],
+}
+
+impl PublishedGpuDevices {
+    /// This inventory as the modelled `GpuInfo`.
+    pub fn to_gpu_info(self) -> GpuInfo {
+        GpuInfo {
+            gpus: Some(vec![GpuDeviceInfo {
+                name: Some(self.name.to_string()),
+                manufacturer: Some(self.manufacturer.to_string()),
+                count: Some(self.count),
+                logical_gpu_count: Some(self.logical_count),
+                gpu_partition_size: Some(self.partition_size),
+                workloads: Some(
+                    self.workloads
+                        .iter()
+                        .map(|workload| (*workload).to_string())
+                        .collect(),
+                ),
+                memory_info: Some(GpuDeviceMemoryInfo {
+                    size_in_mi_b: Some(self.memory_mib_each),
+                }),
+            }]),
+            total_gpu_memory_in_mi_b: Some(self.memory_mib_each.saturating_mul(self.count)),
+        }
+    }
+}
+
 /// The published facts of ONE instance type.
 ///
 /// Every column is optional: `None` means AWS's figure for this type is the one the
@@ -208,8 +260,21 @@ pub struct PublishedInstanceTypeFacts {
     pub reboot_migration_supported: Option<bool>,
     /// Is a local Precision Time Protocol hardware clock supported?
     pub phc_supported: Option<bool>,
+    /// Does the type support Traffic Mirroring — whether the packets of a session can be
+    /// copied under its guest?
+    pub traffic_mirroring_supported: Option<bool>,
+    /// Does it take interface attachments from a secondary network?
+    pub secondary_network_supported: Option<bool>,
+    /// Is Nitro Enclaves supported?
+    pub nitro_enclaves_supported: Option<bool>,
+    /// The idle timeout, in seconds, its connection tracking applies to an established TCP
+    /// connection by default (`DefaultConnectionTrackingConfiguration$DefaultTcpEstablishedTimeout`),
+    /// where the type's own default is not the one every earlier type reports.
+    pub default_tcp_established_timeout: Option<i32>,
     /// Its FPGA accelerators.
     pub fpga_devices: Option<PublishedFpgaDevices>,
+    /// Its GPU accelerators.
+    pub gpu_devices: Option<PublishedGpuDevices>,
     /// Its Inference accelerators.
     pub inference_devices: Option<PublishedInferenceDevices>,
 }
@@ -244,7 +309,12 @@ impl PublishedInstanceTypeFacts {
             encryption_in_transit_supported: None,
             reboot_migration_supported: None,
             phc_supported: None,
+            traffic_mirroring_supported: None,
+            secondary_network_supported: None,
+            nitro_enclaves_supported: None,
+            default_tcp_established_timeout: None,
             fpga_devices: None,
+            gpu_devices: None,
             inference_devices: None,
         }
     }
@@ -442,6 +512,56 @@ impl PublishedInstanceTypeFacts {
         self
     }
 
+    /// Whether Nitro Enclaves is supported, where the published answer for the type is not
+    /// the one its hypervisor and size give.
+    const fn nitro_enclaves(mut self, supported: bool) -> Self {
+        self.nitro_enclaves_supported = Some(supported);
+        self
+    }
+
+    /// The idle timeout, in seconds, the type's connection tracking applies to an established
+    /// TCP connection by default.
+    const fn tcp_established_timeout(mut self, seconds: i32) -> Self {
+        self.default_tcp_established_timeout = Some(seconds);
+        self
+    }
+
+    /// Whether interface attachments from a secondary network are supported, where the
+    /// published answer for the type is not the one its hardware generation gives.
+    const fn secondary_network(mut self, supported: bool) -> Self {
+        self.secondary_network_supported = Some(supported);
+        self
+    }
+
+    /// Whether Traffic Mirroring is supported, where the published answer for the type is not
+    /// the one its hypervisor gives.
+    const fn traffic_mirroring(mut self, supported: bool) -> Self {
+        self.traffic_mirroring_supported = Some(supported);
+        self
+    }
+
+    /// The type's GPU accelerators: `count` whole devices of `memory_mib_each` MiB, offered for
+    /// the `workloads` the published inventory names.
+    const fn gpus(
+        mut self,
+        count: i32,
+        name: &'static str,
+        manufacturer: &'static str,
+        memory_mib_each: i32,
+        workloads: &'static [&'static str],
+    ) -> Self {
+        self.gpu_devices = Some(PublishedGpuDevices {
+            count,
+            logical_count: count,
+            name,
+            manufacturer,
+            memory_mib_each,
+            partition_size: WHOLE_GPU_PARTITION,
+            workloads,
+        });
+        self
+    }
+
     /// The type's FPGA accelerators.
     const fn fpgas(
         mut self,
@@ -486,6 +606,19 @@ const SHARED_ATTACHMENT_LIMIT: &str = "shared";
 
 /// The `EnaSupport` of a type that predates the Elastic Network Adapter.
 const ENA_UNSUPPORTED: &str = "unsupported";
+
+/// The `GpuDeviceInfo$GpuPartitionSize` of an instance that holds WHOLE GPUs: each one is a
+/// full device, which is the whole of the fraction that member reports.
+const WHOLE_GPU_PARTITION: f64 = 1.0;
+
+/// The `GpuDeviceInfo$Workloads` entry of an accelerator built for machine learning, which is
+/// what the published inventory of the accelerated families names.
+const ML_AI_WORKLOAD: &[&str] = &["ml-ai"];
+
+/// The established-TCP idle timeout, in seconds, the newest instance types' connection
+/// tracking applies by default: a figure of the type's own hardware, well below the one the
+/// earlier types report ([`CONNECTION_TRACKING_TIMEOUTS`]).
+const SHORT_TCP_ESTABLISHED_TIMEOUT: i32 = 350;
 
 /// The `BandwidthWeightingType` values a type whose network and EBS bandwidth can be weighted
 /// towards one or the other publishes: the default split, and one weighting for each side the
@@ -646,6 +779,69 @@ static PUBLISHED_INSTANCE_TYPE_FACTS: &[PublishedInstanceTypeFacts] = &[
         .auto_recovery(true)
         .host_features(true, false)
         .boot_modes(&["legacy-bios"]),
+    // C5a — compute optimized on the AMD EPYC 7R32 at a sustained 3.3 GHz, with no local
+    // instance store. The family's EBS bandwidth doubles up the ladder and is DEDICATED from
+    // the 8xlarge up, the four sizes below that one bursting to the 8xlarge's figure. Its EBS
+    // volumes come out of the shared Nitro attachment pool, which the derivation above already
+    // counts, so these rows leave that limit unset. The family is offered on NO Dedicated Host
+    // and supports no On-Demand hibernation. Two cells are the family's own RATIO rather than a
+    // figure read off the published table — the 4xlarge's IOPS, which is four times its
+    // bandwidth as the three smaller sizes' published pairs are, and the core counts going up
+    // in twos from the 4xlarge, where the published list is shorter than every count up to the
+    // default — so a published figure for either replaces it.
+    PublishedInstanceTypeFacts::of("c5a.large")
+        .ebs(200, 800, 3_170, 13_300)
+        .network("Up to 10 Gigabit")
+        .processor("AMD", 3.3)
+        .dedicated_hosts(false)
+        .hibernation(false),
+    PublishedInstanceTypeFacts::of("c5a.xlarge")
+        .ebs(400, 1_600, 3_170, 13_300)
+        .network("Up to 10 Gigabit")
+        .processor("AMD", 3.3)
+        .dedicated_hosts(false)
+        .hibernation(false),
+    PublishedInstanceTypeFacts::of("c5a.2xlarge")
+        .ebs(800, 3_200, 3_170, 13_300)
+        .network("Up to 10 Gigabit")
+        .processor("AMD", 3.3)
+        .dedicated_hosts(false)
+        .hibernation(false),
+    PublishedInstanceTypeFacts::of("c5a.4xlarge")
+        .cores_in_steps_of(2)
+        .ebs(1_580, 6_320, 3_170, 13_300)
+        .network("Up to 10 Gigabit")
+        .processor("AMD", 3.3)
+        .dedicated_hosts(false)
+        .hibernation(false),
+    PublishedInstanceTypeFacts::of("c5a.8xlarge")
+        .cores_in_steps_of(2)
+        .ebs(3_170, 13_300, 3_170, 13_300)
+        .network("10 Gigabit")
+        .processor("AMD", 3.3)
+        .dedicated_hosts(false)
+        .hibernation(false),
+    PublishedInstanceTypeFacts::of("c5a.12xlarge")
+        .cores_in_steps_of(2)
+        .ebs(4_750, 20_000, 4_750, 20_000)
+        .network("12 Gigabit")
+        .processor("AMD", 3.3)
+        .dedicated_hosts(false)
+        .hibernation(false),
+    PublishedInstanceTypeFacts::of("c5a.16xlarge")
+        .cores_in_steps_of(2)
+        .ebs(6_300, 26_700, 6_300, 26_700)
+        .network("20 Gigabit")
+        .processor("AMD", 3.3)
+        .dedicated_hosts(false)
+        .hibernation(false),
+    PublishedInstanceTypeFacts::of("c5a.24xlarge")
+        .cores_in_steps_of(2)
+        .ebs(9_500, 40_000, 9_500, 40_000)
+        .network("20 Gigabit")
+        .processor("AMD", 3.3)
+        .dedicated_hosts(false)
+        .hibernation(false),
     // C9gd — compute optimized with local NVMe on the newest AWS Graviton hardware. The
     // family's network and EBS bandwidth is CONFIGURABLE: it publishes the bandwidth
     // weightings a launch may ask for, which the families whose split is fixed publish none
@@ -1003,6 +1199,35 @@ static PUBLISHED_INSTANCE_TYPE_FACTS: &[PublishedInstanceTypeFacts] = &[
         .ipv4_per_interface(50)
         .efa(1)
         .host_features(false, false),
+    // P6-B200 — accelerated compute carrying EIGHT NVIDIA B200 accelerators of 183,359 MiB
+    // each, 2 TiB of system memory, eight 3,800 GB local NVMe devices and the family's 100 Gbps
+    // of EBS bandwidth on EBS hardware of its own (so its 64 volume attachments are the EBS
+    // devices' own limit rather than a share of the Nitro pool). Its Elastic Fabric Adapters
+    // are one per network card, its connection tracking applies the shorter established-TCP
+    // idle timeout the newest hardware publishes, Nitro Enclaves is not offered on it, and its
+    // cores are configured two at a time.
+    PublishedInstanceTypeFacts::of("p6-b200.48xlarge")
+        .memory_gib(2_048)
+        .cores_in_steps_of(2)
+        .ebs(100_000, 400_000, 100_000, 400_000)
+        .dedicated_ebs_attachments(64)
+        .instance_store(8, 3_800)
+        .efa(8)
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .nitro_enclaves(false)
+        .gpus(8, "B200", "NVIDIA", 183_359, ML_AI_WORKLOAD),
+    // P6-B300 — the same shape of accelerated instance as P6-B200 above, with EIGHT NVIDIA
+    // B300 accelerators of 275,040 MiB each and 4 TiB of system memory.
+    PublishedInstanceTypeFacts::of("p6-b300.48xlarge")
+        .memory_gib(4_096)
+        .cores_in_steps_of(2)
+        .ebs(100_000, 400_000, 100_000, 400_000)
+        .dedicated_ebs_attachments(64)
+        .instance_store(8, 3_800)
+        .efa(8)
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .nitro_enclaves(false)
+        .gpus(8, "B300", "NVIDIA", 275_040, ML_AI_WORKLOAD),
     // R5b — memory optimized with the family's EBS-optimized hardware, 2nd generation Intel
     // Xeon Scalable (Cascade Lake) at a sustained 3.1 GHz: up to 60 Gbps of EBS bandwidth and
     // 260,000 IOPS, the highest of the R5 ladder, and 31 EBS volumes whatever the size — more
@@ -1100,6 +1325,139 @@ static PUBLISHED_INSTANCE_TYPE_FACTS: &[PublishedInstanceTypeFacts] = &[
         .auto_recovery(true)
         .hibernation(false)
         .host_features(false, false),
+    // R8ib — memory optimized on the EBS-optimized hardware the family's `b` names, 8th
+    // generation Intel at a sustained 3.9 GHz: 3,125 Mbps and 15,000 IOPS of EBS performance
+    // per `xlarge` of the ladder, dedicated from the 8xlarge up with the sizes below it
+    // bursting to that 8xlarge figure, and up to 300 Gbps of bandwidth with the family's
+    // published ceiling of 1,200,000 IOPS on its largest size. Those volumes attach to EBS
+    // hardware of their own, so the family's 32 attachments are the EBS devices' own limit
+    // rather than a share of the Nitro pool. ENA Express is not offered on the family, its
+    // connection tracking applies the shorter established-TCP idle timeout the newest hardware
+    // publishes, the Elastic Fabric Adapter is offered on the two largest sizes and the bare
+    // metal ones alone, and from the 24xlarge up its cores are configured two at a time. ENA
+    // Express is not offered below the 8xlarge, the sizes under it carrying less than the
+    // family's full network share, and the family's hardware carries no local PTP clock and
+    // copies no session's packets for Traffic Mirroring, while reboot migration is offered on
+    // it. It takes no interface attachment from a secondary network, so it reports no
+    // secondary interface limit either.
+    PublishedInstanceTypeFacts::of("r8ib.large")
+        .ebs(1_563, 7_500, 25_000, 120_000)
+        .dedicated_ebs_attachments(32)
+        .processor("Intel", 3.9)
+        .ena_srd(false)
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .host_features(true, false)
+        .traffic_mirroring(false)
+        .secondary_network(false),
+    PublishedInstanceTypeFacts::of("r8ib.xlarge")
+        .ebs(3_125, 15_000, 25_000, 120_000)
+        .dedicated_ebs_attachments(32)
+        .processor("Intel", 3.9)
+        .ena_srd(false)
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .host_features(true, false)
+        .traffic_mirroring(false)
+        .secondary_network(false),
+    PublishedInstanceTypeFacts::of("r8ib.2xlarge")
+        .ebs(6_250, 30_000, 25_000, 120_000)
+        .dedicated_ebs_attachments(32)
+        .processor("Intel", 3.9)
+        .ena_srd(false)
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .host_features(true, false)
+        .traffic_mirroring(false)
+        .secondary_network(false),
+    PublishedInstanceTypeFacts::of("r8ib.4xlarge")
+        .ebs(12_500, 60_000, 25_000, 120_000)
+        .dedicated_ebs_attachments(32)
+        .processor("Intel", 3.9)
+        .ena_srd(false)
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .host_features(true, false)
+        .traffic_mirroring(false)
+        .secondary_network(false),
+    PublishedInstanceTypeFacts::of("r8ib.8xlarge")
+        .ebs(25_000, 120_000, 25_000, 120_000)
+        .dedicated_ebs_attachments(32)
+        .processor("Intel", 3.9)
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .host_features(true, false)
+        .traffic_mirroring(false)
+        .secondary_network(false),
+    PublishedInstanceTypeFacts::of("r8ib.12xlarge")
+        .ebs(37_500, 180_000, 37_500, 180_000)
+        .dedicated_ebs_attachments(32)
+        .processor("Intel", 3.9)
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .host_features(true, false)
+        .traffic_mirroring(false)
+        .secondary_network(false),
+    PublishedInstanceTypeFacts::of("r8ib.16xlarge")
+        .ebs(50_000, 240_000, 50_000, 240_000)
+        .dedicated_ebs_attachments(32)
+        .processor("Intel", 3.9)
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .host_features(true, false)
+        .traffic_mirroring(false)
+        .secondary_network(false),
+    PublishedInstanceTypeFacts::of("r8ib.24xlarge")
+        .cores_in_steps_of(2)
+        .ebs(75_000, 360_000, 75_000, 360_000)
+        .dedicated_ebs_attachments(32)
+        .processor("Intel", 3.9)
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .host_features(true, false)
+        .traffic_mirroring(false)
+        .secondary_network(false),
+    PublishedInstanceTypeFacts::of("r8ib.32xlarge")
+        .cores_in_steps_of(2)
+        .ebs(100_000, 480_000, 100_000, 480_000)
+        .dedicated_ebs_attachments(32)
+        .processor("Intel", 3.9)
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .host_features(true, false)
+        .traffic_mirroring(false)
+        .secondary_network(false),
+    PublishedInstanceTypeFacts::of("r8ib.48xlarge")
+        .cores_in_steps_of(2)
+        .ebs(150_000, 720_000, 150_000, 720_000)
+        .dedicated_ebs_attachments(32)
+        .efa(1)
+        .processor("Intel", 3.9)
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .host_features(true, false)
+        .traffic_mirroring(false)
+        .secondary_network(false),
+    PublishedInstanceTypeFacts::of("r8ib.96xlarge")
+        .cores_in_steps_of(2)
+        .ebs(300_000, 1_200_000, 300_000, 1_200_000)
+        .dedicated_ebs_attachments(32)
+        .efa(1)
+        .processor("Intel", 3.9)
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .host_features(true, false)
+        .traffic_mirroring(false)
+        .secondary_network(false),
+    PublishedInstanceTypeFacts::of("r8ib.metal-48xl")
+        .cores_in_steps_of(2)
+        .ebs(150_000, 720_000, 150_000, 720_000)
+        .dedicated_ebs_attachments(32)
+        .efa(1)
+        .processor("Intel", 3.9)
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .host_features(true, false)
+        .traffic_mirroring(false)
+        .secondary_network(false),
+    PublishedInstanceTypeFacts::of("r8ib.metal-96xl")
+        .cores_in_steps_of(2)
+        .ebs(300_000, 1_200_000, 300_000, 1_200_000)
+        .dedicated_ebs_attachments(32)
+        .efa(1)
+        .processor("Intel", 3.9)
+        .tcp_established_timeout(SHORT_TCP_ESTABLISHED_TIMEOUT)
+        .host_features(true, false)
+        .traffic_mirroring(false)
+        .secondary_network(false),
     // R7gd — memory optimized with local NVMe on AWS Graviton3, at a sustained 2.6 GHz. The
     // family is not the latest generation of its family. Its EBS figures are its own rows of
     // "Amazon EBS optimized instance types": the sizes below the `8xlarge` publish a baseline

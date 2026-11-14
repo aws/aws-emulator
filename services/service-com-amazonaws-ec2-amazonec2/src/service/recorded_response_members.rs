@@ -261,8 +261,9 @@ impl SerializableStruct for RecordedMembersUnder<'_> {
 /// from the volume the attachment was reported under, whose own `AvailabilityZone` and
 /// `AvailabilityZoneId` members are written before its `attachmentSet`; an instance type's
 /// network settings render whether the type supports Traffic Mirroring and the `NetworkInfo`
-/// structure has no member saying whether the type is bare metal, so that too is taken from
-/// the instance type the settings were reported under. Empty for a
+/// structure has no member saying which type it belongs to or whether that type is bare
+/// metal, so those too are taken from the instance type the settings were reported under.
+/// Empty for a
 /// structure written under one that reported neither, in which case nothing is rendered.
 #[derive(Debug, Default, Clone)]
 struct EnclosingRecord {
@@ -272,6 +273,9 @@ struct EnclosingRecord {
     availability_zone_id: Option<String>,
     /// `InstanceTypeInfo$BareMetal` as the enclosing structure wrote it.
     bare_metal: Option<bool>,
+    /// `InstanceTypeInfo$InstanceType` as the enclosing structure wrote it, which is what
+    /// says WHICH type's settings a nested `NetworkInfo` belongs to.
+    instance_type: Option<String>,
 }
 
 impl EnclosingRecord {
@@ -289,6 +293,10 @@ impl EnclosingRecord {
                 .clone()
                 .or_else(|| outer.availability_zone_id.clone()),
             bare_metal: self.bare_metal.or(outer.bare_metal),
+            instance_type: self
+                .instance_type
+                .clone()
+                .or_else(|| outer.instance_type.clone()),
         }
     }
 }
@@ -478,11 +486,14 @@ fn write_instance_type_recorded_members(
 /// A reported instance type's network settings' recorded elements: whether the type supports
 /// Traffic Mirroring.
 ///
-/// Copying the packets of a session is done UNDER the guest rather than by it, so a bare
-/// metal type — which runs the caller's software on the host with no hypervisor under it,
-/// and reports no hypervisor at all — does not support it while every other type does. The
-/// flag is read off the instance type these settings were reported under
-/// ([`EnclosingRecord`]), the `NetworkInfo` structure having no member of its own for it.
+/// Whether a type's packets can be copied is a fact the catalog publishes per type
+/// ([`crate::state::published_instance_type_facts`]), read off the instance type these
+/// settings were reported under ([`EnclosingRecord`]), the `NetworkInfo` structure having no
+/// member of its own for it. For a type the catalog holds no row for, the answer follows from
+/// the hypervisor: copying the packets of a session is done UNDER the guest rather than by it,
+/// so a bare metal type — which runs the caller's software on the host with no hypervisor
+/// under it, and reports no hypervisor at all — does not support it while every other type
+/// does.
 ///
 /// Written only for a structure that reported an adapter support of its own, which is what
 /// makes it a reported `networkInfo`.
@@ -494,10 +505,16 @@ fn write_network_info_recorded_members(
     if written.ena_support.is_none() {
         return Ok(());
     }
-    let mirroring = if zone.bare_metal == Some(true) {
-        TRAFFIC_MIRRORING_UNSUPPORTED
-    } else {
+    let published = zone
+        .instance_type
+        .as_deref()
+        .and_then(crate::state::published_instance_type_facts)
+        .and_then(|facts| facts.traffic_mirroring_supported);
+    let supported = published.unwrap_or(zone.bare_metal != Some(true));
+    let mirroring = if supported {
         TRAFFIC_MIRRORING_SUPPORTED
+    } else {
+        TRAFFIC_MIRRORING_UNSUPPORTED
     };
     s.write_string(&NETWORK_INFO_TRAFFIC_MIRRORING_SUPPORT, mirroring)
 }
@@ -722,7 +739,10 @@ impl ShapeSerializer for RecordedMemberSerializer<'_> {
                     AVAILABILITY_ZONE_ID_MEMBER => {
                         written.zone.availability_zone_id = Some(value.to_string());
                     }
-                    INSTANCE_TYPE_MEMBER => written.instance_type = true,
+                    INSTANCE_TYPE_MEMBER => {
+                        written.instance_type = true;
+                        written.zone.instance_type = Some(value.to_string());
+                    }
                     ENA_SUPPORT_MEMBER => written.ena_support = Some(value.to_string()),
                     _ => {}
                 }

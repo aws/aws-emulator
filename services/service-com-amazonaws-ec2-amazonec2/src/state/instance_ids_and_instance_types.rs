@@ -2166,15 +2166,18 @@ pub(super) fn processor_features(name: &InstanceTypeName<'_>) -> Vec<String> {
 ///
 /// An EC2 Mac runs only on a Dedicated Host, which is never a Spot allocation, so
 /// On-Demand is the only class it is offered in; Capacity Blocks reserve the
-/// accelerated P and Trn families.
+/// accelerated P and Trn families, and a type offered one reports that class FIRST, the
+/// classes being reported in the order AWS lists them.
 pub(super) fn supported_usage_classes(name: &InstanceTypeName<'_>) -> Vec<String> {
     if name.root == MAC_INSTANCE_FAMILY_PREFIX {
         return vec!["on-demand".to_string()];
     }
-    let mut classes = vec!["on-demand".to_string(), "spot".to_string()];
+    let mut classes = Vec::new();
     if matches!(name.root, "p" | "trn") {
         classes.push("capacity-block".to_string());
     }
+    classes.push("on-demand".to_string());
+    classes.push("spot".to_string());
     classes
 }
 
@@ -2360,7 +2363,7 @@ pub(super) fn supported_boot_modes(architecture: &str, nitro: bool) -> Vec<Strin
 /// The count is a property of the whole instance rather than of its family's ladder — only
 /// the size that has the whole host's cards carries more than one — so the entries name full
 /// instance types, not families.
-pub(super) const MULTI_NETWORK_CARD_TYPES: [(&str, i32); 14] = [
+pub(super) const MULTI_NETWORK_CARD_TYPES: [(&str, i32); 16] = [
     ("c6in.32xlarge", 2),
     ("c6in.metal", 2),
     ("dl1.24xlarge", 4),
@@ -2371,6 +2374,8 @@ pub(super) const MULTI_NETWORK_CARD_TYPES: [(&str, i32); 14] = [
     ("p5.48xlarge", 32),
     ("p5e.48xlarge", 32),
     ("p5en.48xlarge", 16),
+    ("p6-b200.48xlarge", 8),
+    ("p6-b300.48xlarge", 8),
     ("r6idn.32xlarge", 2),
     ("r6in.32xlarge", 2),
     ("trn1.32xlarge", 8),
@@ -2615,7 +2620,7 @@ pub(super) fn maximum_ebs_attachments(nitro: bool, instance_store_disks: i32) ->
 /// host features it is offered with. Those are facts AWS publishes per instance type, held
 /// row by row in [`published_instance_type_facts`], and this reports what the type's row
 /// carries wherever it carries it. A member neither the row nor the derivation answers (the
-/// GPU, inference, media and Neuron device inventories) is reported absent rather than
+/// media and Neuron device inventories) is reported absent rather than
 /// invented, and a filter naming one therefore selects nothing.
 pub fn instance_type_info(instance_type: &str) -> Option<InstanceTypeInfo> {
     let name = InstanceTypeName::parse(instance_type)?;
@@ -2653,6 +2658,13 @@ pub fn instance_type_info(instance_type: &str) -> Option<InstanceTypeInfo> {
     // The features the Nitro hypervisor provides, each from the generation that introduced
     // it, reported as the enum member or flag its own member takes.
     let nitro_clock = has_nitro_feature(&name, FIRST_NITRO_CLOCK_GENERATION);
+    // "Indicates whether secondary interface attachments from secondary network are
+    // supported" (`NetworkInfo$SecondaryNetworkSupported`): the published answer where the
+    // catalog holds the type's row, else the feature of the Nitro hardware generation named by
+    // [`FIRST_NITRO_CLOCK_GENERATION`].
+    let secondary_network = facts
+        .and_then(|facts| facts.secondary_network_supported)
+        .unwrap_or(nitro_clock);
     let supported_or_not = |supported: bool| {
         if supported { "supported" } else { "unsupported" }.to_string()
     };
@@ -2823,7 +2835,11 @@ pub fn instance_type_info(instance_type: &str) -> Option<InstanceTypeInfo> {
             // group's connection tracking applies by default, which are the same for every
             // instance type and are reported for every one.
             connection_tracking_configuration: Some(DefaultConnectionTrackingConfiguration {
-                default_tcp_established_timeout: Some(tcp_established),
+                default_tcp_established_timeout: Some(
+                    facts
+                        .and_then(|facts| facts.default_tcp_established_timeout)
+                        .unwrap_or(tcp_established),
+                ),
                 default_udp_timeout: Some(udp),
                 default_udp_stream_timeout: Some(udp_stream),
             }),
@@ -2831,13 +2847,15 @@ pub fn instance_type_info(instance_type: &str) -> Option<InstanceTypeInfo> {
             // are supported" (`$SecondaryNetworkSupported`). A type that supports them
             // takes them on the same adapter as its primary interfaces, so the secondary
             // limits are the primary ones; a type that does not reports neither.
-            secondary_network_supported: Some(nitro_clock),
-            maximum_secondary_network_interfaces: nitro_clock
+            secondary_network_supported: Some(secondary_network),
+            maximum_secondary_network_interfaces: secondary_network
                 .then_some(record.maximum_network_interfaces),
-            ipv4_addresses_per_secondary_interface: nitro_clock
+            ipv4_addresses_per_secondary_interface: secondary_network
                 .then_some(record.ipv4_addresses_per_interface),
         }),
-        gpu_info: None,
+        gpu_info: facts
+            .and_then(|facts| facts.gpu_devices)
+            .map(PublishedGpuDevices::to_gpu_info),
         fpga_info: facts
             .and_then(|facts| facts.fpga_devices)
             .map(PublishedFpgaDevices::to_fpga_info),
@@ -2873,18 +2891,16 @@ pub fn instance_type_info(instance_type: &str) -> Option<InstanceTypeInfo> {
                     |modes| modes.iter().map(|mode| (*mode).to_string()).collect(),
                 ),
         ),
-        nitro_enclaves_support: Some(
-            if nitro
-                && !record.bare_metal
-                && !record.burstable
-                && record.default_vcpus >= MIN_ENCLAVE_VCPUS
-            {
-                "supported"
-            } else {
-                "unsupported"
-            }
-            .to_string(),
-        ),
+        nitro_enclaves_support: Some(supported_or_not(
+            facts
+                .and_then(|facts| facts.nitro_enclaves_supported)
+                .unwrap_or(
+                    nitro
+                        && !record.bare_metal
+                        && !record.burstable
+                        && record.default_vcpus >= MIN_ENCLAVE_VCPUS,
+                ),
+        )),
         // NitroTPM is a virtual device the Nitro hypervisor presents to the guest, so a
         // bare metal instance — which has no hypervisor under it, and reports none
         // ([`InstanceTypeInfo$Hypervisor`] above) — does not have one.
