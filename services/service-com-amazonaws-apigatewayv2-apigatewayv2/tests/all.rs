@@ -175,6 +175,8 @@ mod portal_identity_authorization;
 mod portal_lifecycle;
 #[path = "all/portal_pagination.rs"]
 mod portal_pagination;
+#[path = "all/portal_product_deletion.rs"]
+mod portal_product_deletion;
 #[path = "all/portal_product_lifecycle.rs"]
 mod portal_product_lifecycle;
 #[path = "all/portal_product_listing_order.rs"]
