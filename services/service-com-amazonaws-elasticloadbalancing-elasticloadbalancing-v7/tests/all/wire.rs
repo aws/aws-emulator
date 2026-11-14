@@ -118,17 +118,30 @@ pub(crate) async fn launch_instance(
     region: &str,
     label: &str,
 ) -> String {
-    let launched = ec2_call(
-        router,
-        region,
-        "RunInstances",
-        &[
-            param("ImageId", AMI),
-            param("MinCount", "1"),
-            param("MaxCount", "1"),
-        ],
-    )
-    .await;
+    launch_instance_in_zone(router, region, None, label).await
+}
+
+/// [`launch_instance`], into the Availability Zone `zone` names — the placement a launch
+/// asks for through `Placement.AvailabilityZone`.
+///
+/// Which zone an instance is in is EC2's to say, and it is what decides whether a load
+/// balancer node may send it a request while cross-zone load balancing is off, so a suite
+/// that drives that attribute launches its backends into zones of its own choosing.
+pub(crate) async fn launch_instance_in_zone(
+    router: &MultiServiceRouter,
+    region: &str,
+    zone: Option<&str>,
+    label: &str,
+) -> String {
+    let mut params = vec![
+        param("ImageId", AMI),
+        param("MinCount", "1"),
+        param("MaxCount", "1"),
+    ];
+    if let Some(zone) = zone {
+        params.push(param("Placement.AvailabilityZone", zone));
+    }
+    let launched = ec2_call(router, region, "RunInstances", &params).await;
     assert_eq!(
         launched.status, 200,
         "case {label:?}: RunInstances must answer 200, got {}",

@@ -201,6 +201,16 @@ pub use instance_health::*;
 mod vpc_placement;
 pub use vpc_placement::*;
 
+/// The ADDRESS one load balancer publishes as its `DNSName`, and the socket of this
+/// emulator's own that answers there.
+mod load_balancer_endpoint;
+pub use load_balancer_endpoint::*;
+
+/// Which Availability Zone EC2 reports each registered instance in, which is what decides
+/// who a load balancer node may send a request to while cross-zone load balancing is off.
+mod instance_zones;
+pub use instance_zones::*;
+
 /// The health of one instance with respect to one load balancer, as the three members of
 /// `InstanceState` report it together.
 ///
@@ -931,6 +941,14 @@ pub struct ComAmazonawsElasticloadbalancingElasticloadbalancingV7State {
     /// Region -> (`LoadBalancerName` -> record). `BTreeMap`s throughout, so
     /// `DescribeLoadBalancers` paginates one stable order.
     pub regions: BTreeMap<String, BTreeMap<String, LoadBalancer>>,
+    /// The socket each load balancer's own address is served on, keyed by the region and
+    /// the name of the load balancer it belongs to ([`LoadBalancerEndpoint`]).
+    ///
+    /// Held here rather than on [`LoadBalancer`] because it is a LIVE socket: the record is
+    /// cloned by every read, and a socket is not a value that may be copied — dropping a
+    /// handle closes the port. The record keeps the ADDRESS the socket answers on, as its
+    /// `dns_name`, which is what every reader reports.
+    pub endpoints: BTreeMap<(String, String), LoadBalancerEndpoint>,
 }
 
 impl ComAmazonawsElasticloadbalancingElasticloadbalancingV7State {
@@ -964,6 +982,33 @@ impl ComAmazonawsElasticloadbalancingElasticloadbalancingV7State {
             return None;
         }
         Some(self.regions.entry(region.to_string()).or_default())
+    }
+
+    /// Remember the socket one load balancer's own address is served on, answering the
+    /// `host:port` the load balancer then publishes as its `DNSName`.
+    ///
+    /// A load balancer that already holds an address keeps it: the socket already open is
+    /// the one every published name points at, and the one handed here is dropped with its
+    /// port.
+    pub fn remember_endpoint(
+        &mut self,
+        region: &str,
+        load_balancer_name: &str,
+        endpoint: LoadBalancerEndpoint,
+    ) -> String {
+        self.endpoints
+            .entry((region.to_string(), load_balancer_name.to_string()))
+            .or_insert(endpoint)
+            .authority()
+            .to_string()
+    }
+
+    /// Close the socket one load balancer's address was served on, if it had one: dropping
+    /// the handle closes the port and severs every connection in flight on it, which is
+    /// what a deleted load balancer's address does.
+    pub fn forget_endpoint(&mut self, region: &str, load_balancer_name: &str) {
+        self.endpoints
+            .remove(&(region.to_string(), load_balancer_name.to_string()));
     }
 }
 
@@ -1213,8 +1258,17 @@ fn dns_suffix(region: &str, name: &str) -> u64 {
     1_000_000_000 + value
 }
 
-/// The DNS name of a load balancer: `<name>-<id>.<region>.elb.amazonaws.com`, prefixed
-/// `internal-` for the `internal` scheme (whose name resolves to private addresses).
+/// The name Elastic Load Balancing's OWN zone would give a load balancer:
+/// `<name>-<id>.<region>.elb.amazonaws.com`, prefixed `internal-` for the `internal`
+/// scheme (whose name resolves to private addresses).
+///
+/// NOT what a load balancer publishes as its `DNSName`: that name is the address a client
+/// DIALS, and a host in AWS's own zone resolves to nothing on the machine this emulator
+/// runs on, so what is published is the `host:port` of the socket this emulator answers
+/// the load balancer's traffic on ([`LoadBalancerEndpoint`]). This is the fallback behind
+/// it, for an engine that vends no listener at all — and it is what
+/// `CanonicalHostedZoneName` reports, the name under which the load balancer's record
+/// lives in the Route 53 hosted zone a client points an alias at.
 pub fn dns_name(region: &str, name: &str, scheme: &str) -> String {
     let suffix = dns_suffix(region, name);
     if scheme == SCHEME_INTERNAL {

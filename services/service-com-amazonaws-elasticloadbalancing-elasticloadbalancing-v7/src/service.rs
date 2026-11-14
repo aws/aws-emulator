@@ -53,6 +53,13 @@
 //! wrappers and the refusals [`api_version`] renders itself pass through the same writer.
 
 pub mod api_version;
+/// The plane that SERVES a load balancer's own traffic: how a request addressed to the name
+/// a load balancer published is recognised, and which registered instance it is sent to.
+pub mod data_plane;
+/// The SOCKET that address is answered on — the transport under [`data_plane`].
+pub mod listener_socket;
+/// The session stickiness a listener's policies give a client: the `AWSELB` cookie.
+pub mod stickiness;
 
 use api_version::{ServingModel, UnsupportedApiVersionOperation, V2FrontDoor};
 use service_common::query_error_envelope::{
@@ -83,6 +90,17 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     /// The envelope wrapper a request this model serves is served through. Held in a
     /// field for the same reason.
     envelope: RequestIdEnvelopeOperation,
+    /// The SAME shared engine the generated entry threads into every operation.
+    ///
+    /// Held here because a LOAD BALANCER's own traffic ([`data_plane`]) is claimed by
+    /// `can_handle`, which is not an operation with a `self.engine` of its own: it must read
+    /// the one store the control-plane operations write, not a second copy.
+    engine: Arc<Eng>,
+    /// The plane that SERVES a load balancer's own traffic, over that same shared engine.
+    ///
+    /// Held in a field, built once, because `override_operation` hands back a reference
+    /// borrowed from `&self`.
+    data_plane: data_plane::DataPlane<Eng>,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -94,9 +112,11 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             entry: RequestIdEnvelopeDefinition::new(crate::ServiceDefinition::new(Arc::clone(
                 &engine,
             ))),
-            elbv2: V2FrontDoor::new(engine),
+            elbv2: V2FrontDoor::new(Arc::clone(&engine)),
             unsupported_api_version: UnsupportedApiVersionOperation,
             envelope: RequestIdEnvelopeOperation,
+            data_plane: data_plane::DataPlane::new(Arc::clone(&engine)),
+            engine,
         }
     }
 }
@@ -136,8 +156,19 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // carries, in a JSON body an awsQuery client cannot parse. The claim table is
         // `core/router/tests/all/elb_classic_and_v2_signing_name_routing.rs`.
         match smithy_server_runtime::resolve_route_key(parts) {
-            Some(key) => key == self.entry.identity().signing_name(),
-            None => false,
+            Some(key) if key == self.entry.identity().signing_name() => true,
+            // And a LOAD BALANCER's own traffic: a request addressed to the name a load
+            // balancer of this service published ([`data_plane::claims_parts`]). Such a
+            // request names no modelled operation and carries no credential scope naming
+            // this service — its host is the address the load balancer published, whose
+            // first label names no service — so the front door could resolve no target
+            // service for it and answered `404 UnknownService`, for the one address this
+            // service told the caller to send traffic to.
+            //
+            // The claim is narrowed to a load balancer this service HOLDS, read from the one
+            // shared store, rather than to a host or a path shape alone, so one request keeps
+            // one claimant.
+            _ => data_plane::claims_parts(&*self.engine, parts),
         }
     }
 
@@ -152,6 +183,14 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // and outputs. The version therefore chooses the MODEL that serves the request:
         // this one, the ELBv2 one through its own front door, or neither. The whole rule
         // is in [`api_version`].
+        // A LOAD BALANCER's own traffic is served by the data plane, which is the one
+        // request this service answers that names no modelled operation by construction (no
+        // modelled operation is bound at a load balancer's request path, and such a request
+        // carries no awsQuery envelope to name an API version with). It gets first refusal,
+        // so the claim `can_handle` made and the serving are decided by the one rule.
+        if self.data_plane.claims(req) {
+            return Some(&self.data_plane as _);
+        }
         match api_version::serving_model(req) {
             // This model's own API version (or no `Version` field at all): the generated
             // routing table resolves it, through the envelope wrapper that adds the

@@ -194,7 +194,12 @@ fn classic_elb_and_elbv2_route_apart_under_one_signing_name() {
                     ],
                     expected_status: 200,
                     expected_code: None,
-                    expected_body_contains: &["<DNSName>router-classic-elb-"],
+                    // The Classic model's own `CreateAccessPointOutput`: the result element
+                    // and the one member it carries. The VALUE of that member is the
+                    // address this emulator answers the load balancer's traffic on, which
+                    // is the Classic crate's own suite to pin (`classic_data_plane.rs`);
+                    // what this suite is about is WHICH model answered.
+                    expected_body_contains: &["<CreateLoadBalancerResult>", "<DNSName>"],
                 },
                 Call {
                     // …and the read back, which reports the record the create persisted.

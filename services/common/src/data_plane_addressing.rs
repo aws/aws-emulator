@@ -323,9 +323,52 @@ pub fn addresses_an_aws_endpoint(host: &str) -> bool {
         .any(|suffix| host.ends_with(suffix))
 }
 
+/// Whether a request target carries a DOT SEGMENT — `.` or `..`, in the clear or
+/// percent-encoded, read through the one decoding of a request path
+/// ([`::smithy_server_runtime::percent_decode`]) so an encoded separator cannot hide one.
+///
+/// The guard a plane served on a RESERVED PATH needs: such a target resolves, for anything
+/// that resolves it, to a path that need not stay under the prefix naming the resource whose
+/// plane must answer — and that prefix is the only thing that says whose configuration the
+/// request is served from. A socket that forwards a client's path under such a prefix
+/// therefore refuses the request itself rather than forwarding it.
+///
+/// Services still carrying their own copy of this reading, to be MIGRATED onto this function
+/// (they predate it): the ELBv2 and API Gateway custom-domain sockets, and the CloudFront
+/// edge endpoint. Nothing new inlines it again — call this module.
+#[must_use]
+pub fn carries_a_dot_segment(request_path: &str) -> bool {
+    ::smithy_server_runtime::percent_decode(request_path)
+        .split('/')
+        .any(|segment| segment == "." || segment == "..")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_request_target_carries_a_dot_segment_however_it_is_spelled() {
+        // The rows span what the reading generalises over: ordinary paths, a dot and a
+        // double-dot segment in the clear, their percent-encoded spellings in either case,
+        // and a segment that merely contains a dot.
+        let cases: &[(&str, bool)] = &[
+            ("/", false),
+            ("/a/b", false),
+            ("/index.html", false),
+            ("/a/./b", true),
+            ("/../b", true),
+            ("/a/%2e%2e/b", true),
+            ("/a/%2E/b", true),
+        ];
+        for (path, expected) in cases {
+            let read = carries_a_dot_segment(path);
+            assert_eq!(
+                read, *expected,
+                "case {path:?}: expected {expected}, got {read}"
+            );
+        }
+    }
 
     #[test]
     fn a_path_splits_into_its_first_segment_and_the_rest() {

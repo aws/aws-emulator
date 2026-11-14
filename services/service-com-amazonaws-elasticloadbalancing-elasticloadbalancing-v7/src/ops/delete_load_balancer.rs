@@ -135,9 +135,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // that the load balancer is gone, and it models no not-found error. A region
         // that holds nothing is left as it was found.
         let region = crate::state::region_from_request(ctx.parts());
-        if let Some(records) = state.lock().load_balancers_in_mut(&region) {
+        let mut guard = state.lock();
+        if let Some(records) = guard.load_balancers_in_mut(&region) {
             records.remove(&input.load_balancer_name);
         }
+        // "The DNS name associated with a deleted load balancer is no longer usable": the
+        // address the load balancer answered on is the socket this closes, which severs
+        // every connection in flight on it.
+        guard.forget_endpoint(&region, &input.load_balancer_name);
 
         Ok(DeleteLoadBalancerOutput::default())
     }

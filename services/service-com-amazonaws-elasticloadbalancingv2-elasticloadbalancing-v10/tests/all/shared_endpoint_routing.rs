@@ -273,7 +273,6 @@ async fn the_envelope_version_decides_which_elb_api_serves_a_request() {
                 "<CreateLoadBalancerResponse".to_string(),
                 envelope_namespace(CLASSIC_VERSION),
                 "<DNSName>".to_string(),
-                "classic-lb-".to_string(),
             ],
             // The Classic model has no ARN member at all: an answer carrying one would be
             // this model's `CreateLoadBalancer` serving the Classic request.

@@ -309,6 +309,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         let tags = collect_tags(input.tags.as_deref())?;
 
+        // The ADDRESS this load balancer answers on, opened BEFORE the store is locked
+        // because opening a socket is asynchronous. `DNSName` is the address a CLIENT
+        // dials, so what is published is the `host:port` of this socket rather than a host
+        // in Elastic Load Balancing's own zone, which resolves to nothing on the machine
+        // this emulator runs on ([`crate::state::LoadBalancerEndpoint`]). A create this
+        // request goes on to refuse drops the handle, which closes the port again.
+        let endpoint = crate::state::open_load_balancer_endpoint(
+            &*self.engine,
+            &region,
+            &input.load_balancer_name,
+            ctx.callback().clone(),
+        )
+        .await;
+
         let mut guard = state.lock();
         // A load balancer is a regional resource: the name must be unique, and the
         // quota is counted, within THIS request's region. The checks READ the region's
@@ -341,7 +355,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        let dns_name = crate::state::dns_name(&region, &input.load_balancer_name, &scheme);
+        // The name Elastic Load Balancing's own zone would give this load balancer, which
+        // is what `CanonicalHostedZoneName` reports — "the DNS name of the load balancer"
+        // as the Route 53 hosted zone a client points an alias at carries it.
+        let zone_name = crate::state::dns_name(&region, &input.load_balancer_name, &scheme);
+        // And what it PUBLISHES as its `DNSName`: the address of the socket this create
+        // opened, so a client that dials what this load balancer published reaches this
+        // load balancer. What is published is the authority the store KEPT — the socket
+        // already open under this (region, name) is the one every published name points at
+        // — so a caller is never told a port that was closed again. An engine that vends no
+        // listener at all publishes the zone name behind it, which is the only address such
+        // an emulator has to give.
+        let dns_name = match endpoint {
+            Some(endpoint) => {
+                guard.remember_endpoint(&region, &input.load_balancer_name, endpoint)
+            }
+            None => zone_name.clone(),
+        };
         // The default health check targets the instance port of the first listener.
         let health_check = crate::state::HealthCheckConfig::default_for_instance_port(
             listeners
@@ -351,8 +381,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let record = crate::state::LoadBalancer {
             name: input.load_balancer_name.clone(),
             // `CanonicalHostedZoneName` is documented as "The DNS name of the load
-            // balancer", so it is that same name rather than a second one.
-            canonical_hosted_zone_name: dns_name.clone(),
+            // balancer", which is the name its record carries in that hosted zone.
+            canonical_hosted_zone_name: zone_name,
             canonical_hosted_zone_name_id: crate::state::hosted_zone_id(&region),
             dns_name: dns_name.clone(),
             scheme,
@@ -385,6 +415,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The region's map is created only now, on the success path, and only while the
         // store holds fewer regions than it will keep records for.
         let Some(records) = guard.region_entry(&region) else {
+            // Nothing is left behind by a create this refuses, the socket included:
+            // dropping the handle closes the port again.
+            guard.forget_endpoint(&region, &input.load_balancer_name);
             return Err(crate::scaffolded::Scaffolded::validation(format!(
                 "this emulator holds load balancers for at most {} regions",
                 crate::state::MAX_REGIONS

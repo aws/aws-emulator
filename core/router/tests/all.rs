@@ -30,11 +30,6 @@ mod apigateway_cognito_authorizer_app_client_audience;
 #[path = "all/cloudwatch_alarm_ssm_ops_item_action.rs"]
 mod cloudwatch_alarm_ssm_ops_item_action;
 // Declared here, in this same head region, for the reason the entry above records: what a
-// stack-deployed metric-stream pipeline exports before and after an update rewrites its filter
-// spans CloudFormation, IAM, CloudWatch, Firehose and Amazon S3 at once, so no single service
-// crate's test target can deploy the pipeline and then read the objects it delivered.
-#[path = "all/cloudformation_metric_stream_filter_update.rs"]
-mod cloudformation_metric_stream_filter_update;
 // Lambda handler run as the work of a Step Functions task writes with the SDK the managed
 // runtime supplies it spans Step Functions, IAM, Lambda, Amazon S3 and DynamoDB at once, so no
 // single service crate's test target can run the chain and then read each write back.
@@ -109,8 +104,6 @@ mod cloudformation_sfn_lambda_published_handles;
 // metric-stream export pipeline a stack deploys, which only moves data if CloudFormation,
 // IAM, CloudWatch, Firehose and Amazon S3 all agree, so no single crate's test target can
 // follow a published datapoint to the object it lands in.
-#[path = "all/cloudformation_metric_stream_estate_is_drainable.rs"]
-mod cloudformation_metric_stream_estate_is_drainable;
 #[path = "all/cloudformation_metric_stream_exports_to_s3.rs"]
 mod cloudformation_metric_stream_exports_to_s3;
 // Declared here, in this same head region, for the reason the entry above records: what
@@ -588,6 +581,8 @@ mod cloudformation_provisions_eks_clusters;
 #[path = "all/cloudformation_provisions_cognito_user_pool_groups.rs"]
 mod cloudformation_provisions_cognito_user_pool_groups;
 // the tail of this file is where every concurrently landing router suite appends.
+#[path = "all/cloudformation_provisions_cloudfront_resources.rs"]
+mod cloudformation_provisions_cloudfront_resources;
 #[path = "all/cloudformation_provisions_cloudwatch_dashboards.rs"]
 mod cloudformation_provisions_cloudwatch_dashboards;
 #[path = "all/cloudformation_provisions_sagemaker_model_package_group.rs"]
@@ -1733,13 +1728,6 @@ mod emr_cluster_state_change_events;
 // the sibling suite that drives a whole-router probe the same way.
 #[path = "all/zz_batch_job_probe.rs"]
 mod zz_batch_job_probe;
-// EMPTY, and declared only because the build script requires every file under `tests/all/`
-// to be declared: `zz_probe.rs` held a throwaway probe for the pre-existing stack overflow
-// in `all/s3_notification_invokes_its_lambda_target.rs` and carries no test now. The file
-// stays because this fixer's tool set can write a file but not remove one; the next change
-// to touch this directory should delete both it and this declaration.
-#[path = "all/zz_probe.rs"]
-mod zz_probe;
 // partitions of a table a running function may address under a conditioned execution-role
 // grant spans IAM (the clause), STS (the session the function's call is signed with), Lambda
 // (the handler and the SDK it is given) and DynamoDB (the decision) at once, so no single
@@ -1897,6 +1885,17 @@ mod cloudformation_stack_clock;
 // can ask whether the address the assembled emulator publishes answers at all.
 #[path = "all/elbv2_lambda_target_published_address.rs"]
 mod elbv2_lambda_target_published_address;
+// are declared ONCE each, in the head region above: a module declared twice in this file
+// compiles the suite twice, which the workspace's lints refuse.
+// are declared once, in the span above: two branches each re-added the pair here after both
+// had removed it, which declares each of them twice and compiles nowhere.
+// Declared in the appended tail, which is where every new suite inserts its lines. Both
+// suites exist under tests/all/ and had lost their declaration when two branches removed
+// the same duplicated pair, which compiles them nowhere.
+#[path = "all/cloudformation_monitored_alb_search_estate.rs"]
+mod cloudformation_monitored_alb_search_estate;
+#[path = "all/cloudformation_domain_endpoint_outputs.rs"]
+mod cloudformation_domain_endpoint_outputs;
 // (`cloudformation_monitored_alb_search_estate` and `cloudformation_domain_endpoint_outputs`
 // are declared further up this tail already: a module may be declared only once.)
 // Declared at the end of the appended tail, which is where every new suite inserts its lines:
@@ -1906,6 +1905,30 @@ mod elbv2_lambda_target_published_address;
 #[path = "all/redshift_health_alarms_evaluate.rs"]
 mod redshift_health_alarms_evaluate;
 // are declared in the head region above: a module may be declared only once.)
+// Declared here, in this same head region, for the reason the entry above records: the work
+// item an alarm's Systems Manager OpsItem action opens has to be read where a client reads it
+// — through OpsCenter's own query — so neither CloudWatch's nor Systems Manager's own test
+// target can drive the transition and then read what it opened.
+#[path = "all/cloudwatch_alarm_ssm_ops_item_action.rs"]
+mod cloudwatch_alarm_ssm_ops_item_action;
+// stack-deployed metric-stream pipeline exports before and after an update rewrites its filter
+// spans CloudFormation, IAM, CloudWatch, Firehose and Amazon S3 at once, so no single service
+// crate's test target can deploy the pipeline and then read the objects it delivered.
+#[path = "all/cloudformation_metric_stream_filter_update.rs"]
+mod cloudformation_metric_stream_filter_update;
+// EMPTY, and declared only because the build script requires every file under `tests/all/`
+// to be declared: `zz_probe.rs` held a throwaway probe for the pre-existing stack overflow
+// in `all/s3_notification_invokes_its_lambda_target.rs` and carries no test now. The file
+// stays because this fixer's tool set can write a file but not remove one; the next change
+// to touch this directory should delete both it and this declaration.
+#[path = "all/zz_probe.rs"]
+mod zz_probe;
+// Both suites below are declared ONCE, in the sorted span above beside the other
+// CloudFormation suites: the pair was appended here as well while two branches were landing
+// at once, which declared each of them a second time and compiled neither.
+// are declared ONCE, in the head region above beside the other `cloudformation_…` suites.
+// Two branches each re-declared the pair in this tail, which compiles neither: a suite is
+// declared in exactly one place.
 // Declared in the appended tail, which is where every new suite inserts its lines: a vector
 // knowledge base built on an index created through the collection's OWN published endpoint
 // spans OpenSearch Serverless (which serves that endpoint's OpenSearch REST data plane), the
@@ -1926,6 +1949,8 @@ mod cloudformation_dynamodb_table_in_place_update;
 // which only this target links.
 #[path = "all/https_front_door_concurrent_pooled_producer.rs"]
 mod https_front_door_concurrent_pooled_producer;
+#[path = "all/cloudformation_metric_stream_estate_is_drainable.rs"]
+mod cloudformation_metric_stream_estate_is_drainable;
 // session an identity pool vends may DO is decided by IAM's record of the mapped role and
 // answered by Amazon S3 and the Cognito Identity control plane, so no single service crate's
 // test target can vend the session and then be refused by what it reaches.

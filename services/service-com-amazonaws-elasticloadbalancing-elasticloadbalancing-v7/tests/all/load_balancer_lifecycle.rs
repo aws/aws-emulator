@@ -10,8 +10,11 @@
 //! request:
 //!
 //! * `CreateLoadBalancer` persists a record keyed by `LoadBalancerName` and answers a
-//!   generated `DNSName` (`<name>-<id>.<region>.elb.amazonaws.com`, `internal-`-prefixed
-//!   for the `internal` scheme) that the record keeps for its lifetime.
+//!   `DNSName` — the address this emulator answers that load balancer's traffic on — that
+//!   the record keeps for its lifetime, while `CanonicalHostedZoneName` carries the name
+//!   Elastic Load Balancing's own zone gives it
+//!   (`<name>-<id>.<region>.elb.amazonaws.com`, `internal-`-prefixed for the `internal`
+//!   scheme).
 //! * every later operation computes its answer from that stored record: the describes
 //!   project it, register/deregister mutate it and answer the resulting set, and delete
 //!   removes it.
@@ -151,7 +154,30 @@ const PUBLISHED_HOSTED_ZONE_IDS: &[(&str, &str)] = &[
     ("ap-southeast-2", "Z1GM3OXH4ZPM65"),
 ];
 
+/// The published `DNSName` is the address a CLIENT dials, and the name Elastic Load
+/// Balancing's own zone would give a load balancer resolves to nothing on the machine this
+/// emulator runs on — so what is published is the `host:port` of the socket this emulator
+/// answers that load balancer's traffic on. The zone name is what
+/// `CanonicalHostedZoneName` carries ([`assert_hosted_zone_name`]), and the whole published
+/// form is pinned in `classic_data_plane.rs`.
 fn assert_dns_name(case: &Case, dns_name: &str) {
+    assert!(
+        dns_name.parse::<std::net::SocketAddr>().is_ok(),
+        "case {:?}: expected an address a client can dial, got {dns_name:?}",
+        case.name
+    );
+    assert!(
+        !dns_name.contains("elb.amazonaws.com"),
+        "case {:?}: the published address must not be a host in AWS's own zone, got \
+         {dns_name:?}",
+        case.name
+    );
+}
+
+/// `CanonicalHostedZoneName` is "the DNS name of the load balancer" as the Route 53 hosted
+/// zone a client points an alias at holds it: `<name>-<id>.<region>.elb.amazonaws.com`,
+/// prefixed `internal-` for the `internal` scheme.
+fn assert_hosted_zone_name(case: &Case, hosted_zone_name: &str) {
     let prefix = if case.scheme == Some("internal") {
         format!("internal-{}-", case.name)
     } else {
@@ -159,14 +185,15 @@ fn assert_dns_name(case: &Case, dns_name: &str) {
     };
     let suffix = format!(".{}.elb.amazonaws.com", case.region);
     assert!(
-        dns_name.starts_with(&prefix) && dns_name.ends_with(&suffix),
-        "case {:?}: expected a DNS name '{prefix}<id>{suffix}', got {dns_name:?}",
+        hosted_zone_name.starts_with(&prefix) && hosted_zone_name.ends_with(&suffix),
+        "case {:?}: expected a hosted zone name '{prefix}<id>{suffix}', got \
+         {hosted_zone_name:?}",
         case.name
     );
-    let id = &dns_name[prefix.len()..dns_name.len() - suffix.len()];
+    let id = &hosted_zone_name[prefix.len()..hosted_zone_name.len() - suffix.len()];
     assert!(
         id.len() == 10 && id.bytes().all(|byte| byte.is_ascii_digit()),
-        "case {:?}: expected a 10-digit id in the DNS name, got {id:?}",
+        "case {:?}: expected a 10-digit id in the hosted zone name, got {id:?}",
         case.name
     );
 }
@@ -372,13 +399,9 @@ async fn a_load_balancer_is_created_used_read_back_and_deleted() {
             case.name,
             described.body
         );
-        assert_eq!(
-            kid_text(description, "CanonicalHostedZoneName").as_deref(),
-            Some(dns_name.as_str()),
-            "case {:?}: CanonicalHostedZoneName is documented as the load balancer's DNS \
-             name, got {}",
-            case.name,
-            described.body
+        assert_hosted_zone_name(
+            &case,
+            &kid_text(description, "CanonicalHostedZoneName").unwrap_or_default(),
         );
         assert_hosted_zone_id(
             &case,
@@ -1189,18 +1212,32 @@ async fn a_scope_region_that_names_no_region_is_attributed_to_the_default_region
         let doc = parse(&created.body);
         let dns_name = kid_text(created.result(&doc), "DNSName").unwrap_or_default();
         assert!(
-            dns_name.ends_with(".us-east-1.elb.amazonaws.com"),
-            "case {bogus:?}: expected the default region in the DNS name, got {dns_name:?}"
+            dns_name.parse::<std::net::SocketAddr>().is_ok(),
+            "case {bogus:?}: the published DNSName is the address the emulator answers this \
+             load balancer on, got {dns_name:?}"
         );
 
         // It landed in the default region's partition, and nowhere else.
         let described = call(&router, "us-east-1", "DescribeLoadBalancers", &[]).await;
         let described_doc = parse(&described.body);
+        let descriptions = members(described.result(&described_doc), "LoadBalancerDescriptions");
         assert_eq!(
-            members(described.result(&described_doc), "LoadBalancerDescriptions").len(),
+            descriptions.len(),
             1,
             "case {bogus:?}: the record must be in the default region, got {}",
             described.body
+        );
+        // And the region it was attributed to is the one its hosted-zone name carries —
+        // "the DNS name of the load balancer" as Route 53's hosted zone holds it, which is
+        // where the region names a load balancer's own record.
+        let hosted_zone_name = descriptions
+            .first()
+            .and_then(|description| kid_text(description, "CanonicalHostedZoneName"))
+            .unwrap_or_default();
+        assert!(
+            hosted_zone_name.ends_with(".us-east-1.elb.amazonaws.com"),
+            "case {bogus:?}: expected the default region in the hosted zone name, got \
+             {hosted_zone_name:?}"
         );
 
         let deleted = call(

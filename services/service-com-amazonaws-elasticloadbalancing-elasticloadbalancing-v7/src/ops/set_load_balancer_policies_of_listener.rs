@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op SetLoadBalancerPoliciesOfListener
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `SetLoadBalancerPoliciesOfListener`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! IMPLEMENTED: replaces the set of policies enabled on one listener of a load balancer,
+//! which is what attaches a stickiness policy to the port a client sends traffic to. This
+//! is the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`SetLoadBalancerPoliciesOfListener::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! What the stored set then DOES is the data plane's: a listener carrying a duration-based
+//! stickiness policy pins a client to the registered instance that answered it
+//! ([`crate::service::stickiness`]), and `DescribeLoadBalancers` reports the set under the
+//! listener's `PolicyNames`.
 //!
 //! ## Shape of an operation
 //!
@@ -148,18 +147,197 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `SetLoadBalancerPoliciesOfListener` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(SetLoadBalancerPoliciesOfListenerErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("SetLoadBalancerPoliciesOfListener"))
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            // This operation's model declares no server-fault error, and a 501 would
+            // claim "not implemented", so an unreachable store is refused instead.
+            return Err(crate::scaffolded::Scaffolded::validation(
+                "the Elastic Load Balancing store is unavailable",
+            ));
+        };
+        let region = crate::state::region_from_request(ctx.parts());
+
+        // "This list must include all policies to be enabled": the set REPLACES whatever
+        // the listener carried, so a list that repeats a name enables it once — which is why
+        // the quota below is applied to the DISTINCT names rather than to the list, a
+        // request naming one policy many times being a request AWS accepts.
+
+        let mut guard = state.lock();
+        // A load balancer is a regional resource, so the name is resolved in the region
+        // this request is signed for; a name no record holds there is not found.
+        let Some(record) = guard
+            .load_balancers_in_mut(&region)
+            .and_then(|records| records.get_mut(&input.load_balancer_name))
+        else {
+            return Err(
+                SetLoadBalancerPoliciesOfListenerErrorModeled::AccessPointNotFoundException(
+                    AccessPointNotFoundException {
+                        message: Some(format!(
+                            "There is no ACTIVE Load Balancer named '{}'",
+                            input.load_balancer_name
+                        )),
+                    },
+                )
+                .into(),
+            );
+        };
+
+        // Every policy the request names has to be one this load balancer holds: "one or
+        // more of the specified policies do not exist" is the refusal, stated over the
+        // first name the load balancer's own policy set does not carry. Resolved BEFORE
+        // the listener is written, so a request naming one unknown policy changes nothing.
+        let enabled: Vec<String> = {
+            let mut seen: ::std::collections::BTreeSet<&str> = ::std::collections::BTreeSet::new();
+            let mut enabled: Vec<String> = Vec::with_capacity(input.policy_names.len());
+            for policy_name in &input.policy_names {
+                if !record.policies.contains_key(policy_name) {
+                    return Err(
+                        SetLoadBalancerPoliciesOfListenerErrorModeled::PolicyNotFoundException(
+                            PolicyNotFoundException {
+                                message: Some(crate::state::policy_not_found_message(
+                                    policy_name,
+                                    Some(&input.load_balancer_name),
+                                )),
+                            },
+                        )
+                        .into(),
+                    );
+                }
+                if seen.insert(policy_name.as_str()) {
+                    enabled.push(policy_name.clone());
+                }
+            }
+            enabled
+        };
+        // A listener's set holds policies OF this load balancer, which holds at most the
+        // quota, and every name above is known to be one of them — so a request whose
+        // distinct names outnumber the quota names a policy twice over and cannot be
+        // satisfied. The backstop that keeps the stored set bounded by the store rather
+        // than by the caller.
+        if enabled.len() > crate::state::MAX_POLICIES_PER_LOAD_BALANCER {
+            return Err(crate::scaffolded::Scaffolded::validation_error(format!(
+                "PolicyNames must name at most {} distinct policies; got {}",
+                crate::state::MAX_POLICIES_PER_LOAD_BALANCER,
+                enabled.len()
+            )));
+        }
+
+        // "The external port of the load balancer": a load balancer that has no listener
+        // configured at that port has no policy set to replace.
+        let protocol = match record
+            .listeners
+            .iter()
+            .find(|listener| listener.load_balancer_port == input.load_balancer_port)
+        {
+            Some(listener) => listener.protocol.clone(),
+            None => {
+                return Err(
+                    SetLoadBalancerPoliciesOfListenerErrorModeled::ListenerNotFoundException(
+                        ListenerNotFoundException {
+                            message: Some(format!(
+                                "There is no listener for LoadBalancer '{}' on port {}",
+                                input.load_balancer_name, input.load_balancer_port
+                            )),
+                        },
+                    )
+                    .into(),
+                );
+            }
+        };
+
+        // The configurations this port cannot be given, each one a rule of the policy's own
+        // kind: a session is something an HTTP request carries a cookie for, and one
+        // session cannot follow two policies at once.
+        if let Err(why) = enabling_rejection(record, &enabled, &protocol, input.load_balancer_port)
+        {
+            return Err(
+                SetLoadBalancerPoliciesOfListenerErrorModeled::InvalidConfigurationRequestException(
+                    InvalidConfigurationRequestException {
+                        message: Some(invalid_configuration_message(
+                            &input.load_balancer_name,
+                            &why,
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // "Replaces the current set of policies for the specified load balancer port with
+        // the specified set of policies ... If the list is empty, all current policies are
+        // disabled."
+        if let Some(listener) = record
+            .listeners
+            .iter_mut()
+            .find(|listener| listener.load_balancer_port == input.load_balancer_port)
+        {
+            listener.policy_names = enabled;
+        }
+
+        // The modelled output carries no members: what this call persisted is read back
+        // through `DescribeLoadBalancers`, which reports the enabled set under the
+        // listener's `PolicyNames` — and observed on the data plane, which serves the
+        // listener's traffic under those policies.
+        Ok(SetLoadBalancerPoliciesOfListenerOutput {})
     }
+}
+
+/// Why this set of policies cannot be enabled on a listener carrying `protocol`, or
+/// `Ok(())` when it can be.
+///
+/// Both rules are the POLICY KIND's, not the listener's: duration-based and
+/// application-controlled session stickiness follow a cookie the client carries, which
+/// only an HTTP or HTTPS listener reads ("You can't enable duration-based session
+/// stickiness for TCP/SSL listeners" — the Classic Load Balancers Guide's own sentence on
+/// the feature this operation enables), and one session cannot follow two stickiness
+/// policies at once. A policy of any other kind is enabled as given: it configures the
+/// listener's transport rather than its sessions.
+fn enabling_rejection(
+    record: &crate::state::LoadBalancer,
+    enabled: &[String],
+    protocol: &str,
+    load_balancer_port: i32,
+) -> Result<(), String> {
+    let stickiness: Vec<&String> = enabled
+        .iter()
+        .filter(|policy_name| {
+            record.policies.get(*policy_name).is_some_and(|policy| {
+                matches!(
+                    policy.kind,
+                    crate::state::PolicyKind::LbCookieStickiness { .. }
+                        | crate::state::PolicyKind::AppCookieStickiness { .. }
+                )
+            })
+        })
+        .collect();
+    if stickiness.len() > 1 {
+        return Err(format!(
+            "LoadBalancerPort {load_balancer_port} cannot have more than one session \
+             stickiness policy enabled at a time"
+        ));
+    }
+    if let Some(policy_name) = stickiness.first() {
+        if !SESSION_STICKINESS_PROTOCOLS.contains(&protocol) {
+            return Err(format!(
+                "a session stickiness policy such as {policy_name} can only be enabled for \
+                 an HTTP or HTTPS listener, and LoadBalancerPort {load_balancer_port} \
+                 carries the {protocol} protocol"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The listener protocols a session stickiness policy may be enabled for: the two that
+/// carry the request a session's cookie travels on.
+const SESSION_STICKINESS_PROTOCOLS: &[&str] = &["HTTP", "HTTPS"];
+
+/// How this service states `InvalidConfigurationRequestException` — "the requested
+/// configuration change is not valid" — naming the load balancer the request asked about
+/// and the rule the change would have broken, which is the shape every configuration
+/// refusal of this service carries (`crate::state::detached_every_subnet_message`).
+fn invalid_configuration_message(load_balancer_name: &str, why: &str) -> String {
+    format!(
+        "Requested configuration change for LoadBalancer \"{load_balancer_name}\" is \
+         invalid because {why}."
+    )
 }

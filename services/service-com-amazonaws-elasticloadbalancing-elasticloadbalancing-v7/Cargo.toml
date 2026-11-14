@@ -16,13 +16,28 @@ emulator-server = { workspace = true }
 emulator-telemetry = { workspace = true }
 aws-smithy-runtime-api = { workspace = true }
 aws-smithy-types = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "net", "time"] }
 bytes = { workspace = true }
 http = { workspace = true }
+# Speaks HTTP/1.1 on the raw connection the core hands a load balancer's own socket, which
+# is what makes the published `DNSName` an address a client dials with its own client
+# (`src/service/listener_socket.rs`). `hyper-util` carries the tokio IO and timer adapters
+# for it, `http-body-util` the bounded body reader and the one-shot body.
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+# The DRAW that spreads one cookie-less client's requests across the registered instances a
+# load balancer may send them to: which instance a single request reaches is a sample rather
+# than a position in a rotation nothing may store (`src/service/data_plane.rs`).
+rand = "0.9"
 serde_json = { workspace = true }
 tracing = { workspace = true }
-# SHA-256, for the stable per-record id in a load balancer's generated DNS name.
+# SHA-256, for the stable per-record id in a load balancer's generated DNS name, and for
+# the token the `AWSELB` stickiness cookie carries instead of the chosen instance's id
+# (`src/service/stickiness.rs`).
 sha2 = { workspace = true }
+# The rendering of that token as the opaque value the cookie carries.
+hex = { workspace = true }
 # The ELBv2 model, whose operations this crate serves on the endpoint the two models
 # SHARE: an awsQuery envelope names the API version it is for, and `Version=2015-12-01`
 # is answered out of that model's own service over the one shared engine (see
@@ -41,10 +56,6 @@ service-common = { path = "../common" }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
-
-[dev-dependencies]
-sha2 = { workspace = true }
-hex = { workspace = true }
 
 [lints]
 workspace = true
