@@ -2590,3 +2590,18 @@ mod cloudformation_provisions_cloudfront_resources;
 // appended here as well while two branches were landing at once, and a module may be declared
 // (`https_front_door_concurrent_pooled_producer` is declared once, further up this tail: it
 // was appended here as well while two branches were landing at once, and a module may be
+// `cloudformation_provisions_cloudfront_resources` is declared ONCE, in the sorted span above
+// beside the other `cloudformation_…` suites: two `mod` items for one name is a redefinition
+// that compiles neither.
+// (`cloudformation_metric_stream_filter_update` and `zz_probe` are declared once each — the
+// first in the head region above, the second further up this tail: a module may be declared
+// (`cloudformation_metric_stream_estate_is_drainable` is declared once, in the span above: a
+// (`sdb_legacy_query_api_on_the_assembled_router`,
+// `lambda_sqs_event_source_visibility_hold`, `codebuild_s3_build_output` and
+// `cloudformation_scripted_queue_deploy` are each declared ONCE, in the sorted spans above: a
+// module may be declared only once, and this tail carried a second declaration of each.)
+// (`codebuild_s3_build_output`, `lambda_signed_write_to_an_aoss_collection_endpoint` and
+// `cloudformation_domain_endpoint_is_dialled_by_consumers` are each declared once, in the
+// spans above: a module may be declared only once.)
+// (`apigatewaymanagementapi_manage_connections_authorization` is declared once, further up
+// this tail: a module may be declared only once.)

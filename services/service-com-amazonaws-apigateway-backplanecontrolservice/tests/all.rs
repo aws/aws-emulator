@@ -636,6 +636,16 @@ mod rest_validation_refusals;
 // backend's own `aws:SourceVpce` invoke gate.
 #[path = "all/private_proxy_backend_answer.rs"]
 mod private_proxy_backend_answer;
+// Appended for the reason the note above gives: which INVOKE ROLE lets a simulated authorizer
+// execution ask its function at all — the role's trust relationship and the action and resource
+// its permissions allow, each varied on its own, against the resource-policy control.
+#[path = "all/test_invoke_authorizer_invoke_role.rs"]
+mod test_invoke_authorizer_invoke_role;
+// Appended for the reason the note above gives: which pools of a MULTI-POOL
+// `COGNITO_USER_POOLS` authorizer's `providerARNs` a simulation accepts a token from, and which
+// app-client audience its `identityValidationExpression` admits.
+#[path = "all/test_invoke_authorizer_user_pool_audience.rs"]
+mod test_invoke_authorizer_user_pool_audience;
 // Appended for the reason the note above gives: the member a `position`/`limit` collection
 // reports its page under once the collection has been emptied.
 #[path = "all/emptied_collection_page_member.rs"]
