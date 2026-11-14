@@ -9,7 +9,10 @@
 //! Reporting only: the one write it makes is to materialise the transition out
 //! of `InProgress` that the clock had already made due
 //! ([`crate::state::ASYNC_INVOKE_SETTLE_MILLIS`]), which was owed at this
-//! instant whether or not anybody called.
+//! instant whether or not anybody called — and, with it, to deliver the output
+//! that transition owes the caller's configured Amazon S3 location
+//! ([`crate::state::async_invoke_output`]), so an invocation this read reports
+//! as `Completed` is one whose output is already there to read.
 //!
 //! ## Shape of an operation
 //!
@@ -193,8 +196,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
-        let mut guard = state.lock();
-        guard.settle_async_invokes(crate::state::now_millis());
+        // Every transition the clock owes is materialised before this read
+        // answers — which includes DELIVERING the output of an invocation that
+        // has finished, so an invocation this read reports as `Completed` is one
+        // whose output is already in the caller's bucket (see
+        // `crate::state::async_invoke_output`). It runs with no guard of this
+        // store held, because the object store's own guard is taken inside it.
+        crate::state::async_invoke_output::settle_due_invocations(
+            &*self.engine,
+            crate::state::now_millis(),
+        );
+        let guard = state.lock();
 
         let Some(record) = guard.async_invokes.get(&input.invocation_arn) else {
             // This operation models no `ResourceNotFoundException`

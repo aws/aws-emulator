@@ -17,10 +17,11 @@
 //! minted, and the same token with a different payload is a `ConflictException`.
 //!
 //! The submitted record starts in `InProgress` and leaves it only when the clock
-//! makes that transition due; since no model runs in this emulator and nothing is
-//! written to the caller's S3 location, it settles into the modelled `Failed`
-//! state carrying the reason — see `settle_async_invokes` on the state struct
-//! and [`crate::state::ASYNC_INVOKE_FAILURE_MESSAGE`].
+//! makes that transition due; the invocation then writes its output to the
+//! location the request configured and reaches the modelled `Completed` status,
+//! or ends in `Failed` carrying the reason when that location could not be
+//! written — see `due_async_invokes` and `settle_async_invoke` on the state
+//! struct and [`crate::state::async_invoke_output`].
 //!
 //! ## Shape of an operation
 //!

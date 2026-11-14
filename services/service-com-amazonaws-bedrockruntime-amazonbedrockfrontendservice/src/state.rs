@@ -32,9 +32,9 @@
 //! output and presents it as inference: a synchronous completion carries, in the
 //! model family's own response envelope, text that says plainly that no model
 //! ran ([`generation`]), together with the token accounting computed from the
-//! real request; an asynchronous invocation ends in the service's own `Failed`
-//! state with a failure message that says the same (see
-//! [`ASYNC_INVOKE_FAILURE_MESSAGE`]); and the arguments a forced tool call
+//! real request; an asynchronous invocation writes the MANIFEST of the job it
+//! ran to the caller's own output location and no media bytes it did not
+//! generate ([`async_invoke_output`]); and the arguments a forced tool call
 //! carries are the instantiation of the schema that tool was DECLARED with
 //! ([`tool_input_arguments`]), not values a model inferred from the conversation.
 //! Everything around that — resolution, validation, status, timestamps, ARNs,
@@ -85,6 +85,13 @@ pub mod stream_framing;
 /// Here rather than in this file so one file holds one concern; the inventory the state
 /// struct seeds itself with is this module's.
 pub mod model_catalog;
+
+/// The model's context window, and the refusal an input past it earns.
+pub mod context_window;
+
+/// What a finished asynchronous invocation writes to the caller's Amazon S3 location, and
+/// the settle that delivers it.
+pub mod async_invoke_output;
 
 /// The OpenAI-compatible chat-completions `InvokeModel` envelope, which is the request and
 /// response shape of the providers Amazon Bedrock serves on that schema.
@@ -409,21 +416,46 @@ impl ComAmazonawsBedrockruntimeAmazonbedrockfrontendserviceState {
         }))
     }
 
-    /// Materialise every async-invoke transition the clock has already made due
-    /// at `now_millis`.
+    /// Every invocation whose transition out of `InProgress` the clock has
+    /// already made due at `now_millis`, as what delivering its output needs.
     ///
-    /// A reporting operation calls this before it answers: the change was owed
-    /// at this instant whether or not anybody called, so applying it is not a
-    /// read with a side effect.
-    pub fn settle_async_invokes(&mut self, now_millis: i64) {
-        for record in self.async_invokes.values_mut() {
-            if record.status == AsyncInvokeStatus::InProgress && now_millis >= record.settles_at {
-                record.status = AsyncInvokeStatus::Failed;
-                record.failure_message = Some(ASYNC_INVOKE_FAILURE_MESSAGE.to_string());
-                record.end_time = Some(record.settles_at);
-                record.last_modified_time = Some(record.settles_at);
-            }
+    /// Reading them is what lets the delivery run with no guard of this store
+    /// held ([`async_invoke_output::settle_due_invocations`]): the transition was
+    /// owed at this instant whether or not anybody called, and the output the
+    /// invocation writes has to be in the caller's bucket before any read reports
+    /// it finished.
+    pub fn due_async_invokes(&self, now_millis: i64) -> Vec<async_invoke_output::DueInvocation> {
+        self.async_invokes
+            .values()
+            .filter(|record| {
+                record.status == AsyncInvokeStatus::InProgress && now_millis >= record.settles_at
+            })
+            .filter_map(async_invoke_output::DueInvocation::of)
+            .collect()
+    }
+
+    /// Apply the terminal transition the delivery of one due invocation settled
+    /// on: `Completed` when its output was written, and the modelled `Failed`
+    /// with `failure` when it could not be.
+    ///
+    /// The instant stamped on the record is the one the transition was DUE at,
+    /// not the instant the read that materialised it ran, so what a caller reads
+    /// does not depend on when it asked. An invocation that has already left
+    /// `InProgress` is terminal and is left exactly as it is.
+    pub fn settle_async_invoke(&mut self, invocation_arn: &str, failure: Option<String>) {
+        let Some(record) = self.async_invokes.get_mut(invocation_arn) else {
+            return;
+        };
+        if record.status != AsyncInvokeStatus::InProgress {
+            return;
         }
+        record.status = match failure {
+            None => AsyncInvokeStatus::Completed,
+            Some(_) => AsyncInvokeStatus::Failed,
+        };
+        record.failure_message = failure;
+        record.end_time = Some(record.settles_at);
+        record.last_modified_time = Some(record.settles_at);
     }
 
     /// Persist a submitted invocation, index it under its idempotency token, and
@@ -713,6 +745,13 @@ pub struct ModelEntry {
     /// The model's own ceiling on generated tokens, which caps
     /// `inferenceConfig.maxTokens`. Zero for a model that generates no text.
     pub max_output_tokens: u32,
+    /// The model's own CONTEXT WINDOW: the most input tokens one request may send
+    /// it (see [`model_catalog`]). It is a per-model property rather than a
+    /// modelled constraint, and it is what an inference request's counted input is
+    /// measured against ([`context_window`]) — an input past it is refused, never
+    /// shortened. Zero for a model that takes no text prompt, which measures
+    /// nothing.
+    pub context_window: u32,
 }
 
 /// The service's fixed message for a `modelId` it cannot interpret as naming a
@@ -899,13 +938,15 @@ pub const ASYNC_INVOKE_SETTLE_MILLIS: i64 = 500;
 
 /// Why a submitted async invocation ends in `Failed`.
 ///
-/// No model runs inside this emulator, and an asynchronous invocation's only
-/// result is the artifact the service writes to the caller's S3 location, so
-/// there is nothing honest to report as `Completed`: the invocation ends in the
-/// service's own modelled failure state with a reason that says why.
+/// An asynchronous invocation's result is the artifact it writes to the caller's
+/// own Amazon S3 location, so an invocation that could not write there carried
+/// out none of the work it was accepted for: it ends in the modelled failure
+/// state with the reason, rather than reporting a `Completed` whose output no
+/// read of the object store would find
+/// ([`async_invoke_output::settle_due_invocations`]).
 pub const ASYNC_INVOKE_FAILURE_MESSAGE: &str =
-    "This Amazon Bedrock Runtime emulator does not run model inference for asynchronous \
-     invocations, so no output was written to the configured S3 location.";
+    "The invocation's output could not be written to the Amazon S3 location the request \
+     configured.";
 
 /// The service's message for a `modelId` that names a model this service
 /// recognises but which is not invocable asynchronously
@@ -2230,17 +2271,46 @@ pub fn content_block_tokens(block: &ContentBlock) -> u32 {
 /// operation's own modelled `ValidationException` (400). `Converse` and
 /// `ConverseStream` share this, so the same conversation is accepted or refused
 /// identically by both.
+///
+/// The second rule it states is each turn's own: a `Message` whose `content`
+/// list is empty carries nothing for the model to read, and is refused naming
+/// that message's index ([`empty_message_content_message`]).
 pub fn validate_conversation(messages: Option<&Vec<Message>>) -> Result<&Vec<Message>, String> {
-    match messages {
+    let messages = match messages {
         Some(messages)
             if messages
                 .first()
                 .is_some_and(|first| first.role == CONVERSATION_ROLE_USER) =>
         {
-            Ok(messages)
+            messages
         }
-        _ => Err(NO_OPENING_USER_TURN.to_string()),
+        _ => return Err(NO_OPENING_USER_TURN.to_string()),
+    };
+    // A turn is its content: `Message.content` is `@required`, so a request that
+    // binds it to an EMPTY list carries no content block for that turn and there
+    // is nothing for the model to read in it. The refusal names the offending
+    // message by its own position in the submitted list, so a conversation
+    // assembled in a loop says which iteration dropped its content.
+    if let Some(index) = messages
+        .iter()
+        .position(|message| message.content.is_empty())
+    {
+        return Err(empty_message_content_message(index));
     }
+    Ok(messages)
+}
+
+/// What both Converse surfaces answer a `Message` whose `content` list is empty
+/// with.
+///
+/// Fixed text for this refusal class, with ONE variable part: the zero-based
+/// index of the offending message in the request's own `messages` list, which is
+/// how a caller finds the turn it has to add a `ContentBlock` to.
+pub fn empty_message_content_message(index: usize) -> String {
+    format!(
+        "The content field in the Message object at messages.{index} is empty. Add a \
+         ContentBlock object to the content field and try again."
+    )
 }
 
 /// The `ConversationRole` value a conversation has to open on

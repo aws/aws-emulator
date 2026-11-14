@@ -41,6 +41,13 @@ hex = { workspace = true }
 # engine and needs the owning service's state TYPE.
 service-com-amazonaws-cloudwatch-graniteserviceversion20100801 = { workspace = true }
 
+# The Amazon S3 object store a finished asynchronous invocation writes its output into
+# (`state::async_invoke_output`): the object goes into the store `PutObject` writes and
+# `GetObject` / `ListObjectsV2` read, so a client reads an invocation's output through
+# Amazon S3's own operations. Reached through the shared engine, which needs the owning
+# service's state TYPE.
+service-com-amazonaws-s3-amazons3 = { workspace = true }
+
 # The PII recognizer behind the sensitive-information guardrail check
 # (`state::guardrail_checks`): this emulator already has ONE rule set placing every
 # PII entity type, the one Comprehend's `DetectPiiEntities` answers from

@@ -5,10 +5,11 @@
 //! inventory in [`crate::state`], applies the request rules the model documents
 //! (`application/json` bodies, and the three guardrail combinations that are an
 //! error), checks the body against the invoked family's own request schema and
-//! the inference-parameter ranges that family's provider documents, counts the
-//! prompt tokens the body carries, honours the generation cap the body carries
-//! for the model's family, and answers in the response envelope of that family so
-//! a client can parse it.
+//! the inference-parameter ranges that family's provider documents, measures the
+//! prompt tokens the body carries against the model's own context window
+//! ([`crate::state::context_window`]) and refuses an input past it, honours the
+//! generation cap the body carries for the model's family, and answers in the
+//! response envelope of that family so a client can parse it.
 //!
 //! No language model runs in this emulator, so the text inside that envelope
 //! says so (see [`crate::state::emulated_completion_text`]); the envelope, the
@@ -299,6 +300,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             input.guardrail_version.as_deref(),
         )
         .map_err(validation)?;
+
+        // The input-size stage: a model reads a bounded prompt, so a body whose
+        // counted prompt tokens are past the resolved model's context window is
+        // refused rather than served against a shortened prompt (see
+        // `crate::state::context_window`). A truncate-and-serve path does not
+        // exist: a response served on part of a prompt is indistinguishable from
+        // one served on all of it.
+        if crate::state::context_window::exceeds_context_window(
+            &model,
+            crate::state::body_input_tokens(body),
+        ) {
+            return Err(validation(
+                crate::state::context_window::INPUT_TOKENS_EXCEEDED_MESSAGE.to_string(),
+            ));
+        }
 
         // The inference itself: the same turn the streaming surface serves, so
         // the payload the two answer for identical input agrees by construction.

@@ -180,6 +180,20 @@ impl<Eng: Send + Sync + 'static> ConverseStream<Eng> {
         // rule `Converse` applies too.
         crate::state::validate_tool_results(messages).map_err(validation)?;
 
+        // The input-size stage `Converse` runs, for the same reason: a model
+        // reads a bounded prompt, so an input past the resolved model's context
+        // window is refused rather than streamed against a shortened prompt.
+        let submitted_tokens = crate::state::converse_input_tokens(
+            input.system.as_ref(),
+            input.messages.as_ref(),
+            input.tool_config.as_ref(),
+        );
+        if crate::state::context_window::exceeds_context_window(&model, submitted_tokens) {
+            return Err(validation(crate::state::context_window::model_errors_message(
+                crate::state::context_window::INPUT_TOKENS_EXCEEDED_MESSAGE,
+            )));
+        }
+
         // The tool stage: a mandatory `toolChoice` obliges the turn to request a
         // tool, and a choice left to the model is decided from the conversation
         // (`crate::state::tool_use_turn`) — under an id minted here.

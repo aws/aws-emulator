@@ -2251,3 +2251,12 @@ mod route53_health_check_string_match;
 // and a module declared twice loads the same file twice, which compiles neither.)
 // (`https_front_door_concurrent_pooled_producer` is declared ONCE, further up this tail: it
 // was appended here as well while two branches were landing at once, and a module declared
+// Declared ONCE, in the head region above beside the other API Gateway suite: the pair of
+// declarations this tail carried was appended while two branches were landing at once, which
+// declared the module a second time and compiled it nowhere.
+// (`cloudformation_metric_stream_filter_update` is declared ONCE, in the head region above:
+// Both the probe module above and the metric-stream estate suite are declared ONCE, further
+// up: the second declaration of each was appended here while two branches were landing at
+// once, which compiled neither.
+// (`https_front_door_concurrent_pooled_producer` is declared ONCE, in the span above: a
+// module may be declared only once, and two branches landing at once appended it here as

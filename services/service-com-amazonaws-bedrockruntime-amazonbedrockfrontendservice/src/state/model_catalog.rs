@@ -97,6 +97,66 @@ const MIXTRAL_MAX_TOKENS: u32 = 4096;
 const COHERE_MAX_TOKENS: u32 = 4096;
 const OPENAI_CHAT_MAX_TOKENS: u32 = 4096;
 
+/// The CONTEXT WINDOW each family's provider publishes for the line this catalogue
+/// carries: the most input tokens one request may send the model ("Supported foundation
+/// models in Amazon Bedrock", the per-model context-window column). It bounds the INPUT a
+/// request carries, where [`ANTHROPIC_MAX_TOKENS`] and the constants beside it bound the
+/// OUTPUT one generation may produce, so an input past it is refused rather than served or
+/// shortened.
+const ANTHROPIC_CONTEXT_WINDOW: u32 = 200_000;
+const NOVA_CONTEXT_WINDOW: u32 = 300_000;
+const NOVA_MICRO_CONTEXT_WINDOW: u32 = 128_000;
+const NOVA_PREMIER_CONTEXT_WINDOW: u32 = 1_000_000;
+const TITAN_TEXT_PREMIER_CONTEXT_WINDOW: u32 = 32_000;
+const TITAN_TEXT_LITE_CONTEXT_WINDOW: u32 = 4_000;
+const LLAMA_CONTEXT_WINDOW: u32 = 128_000;
+const LLAMA_3_CONTEXT_WINDOW: u32 = 8_000;
+const MISTRAL_CONTEXT_WINDOW: u32 = 128_000;
+const MISTRAL_7B_CONTEXT_WINDOW: u32 = 32_000;
+const COHERE_COMMAND_R_CONTEXT_WINDOW: u32 = 128_000;
+const COHERE_COMMAND_TEXT_CONTEXT_WINDOW: u32 = 4_000;
+const OPENAI_CHAT_CONTEXT_WINDOW: u32 = 128_000;
+
+/// The lines whose published context window is NOT their family's current one, by the
+/// prefix of the model ids that line is published under — the earlier generation of a
+/// family whose newer models read a longer prompt, and the small member of a family whose
+/// larger models read a longer one. The longest window of a family is its default
+/// ([`family_context_window`]), so a row this table does not name reads what its family
+/// publishes.
+const CONTEXT_WINDOW_OVERRIDES: &[(&str, u32)] = &[
+    ("amazon.nova-micro", NOVA_MICRO_CONTEXT_WINDOW),
+    ("amazon.nova-premier", NOVA_PREMIER_CONTEXT_WINDOW),
+    ("amazon.titan-text-lite", TITAN_TEXT_LITE_CONTEXT_WINDOW),
+    ("meta.llama3-8b", LLAMA_3_CONTEXT_WINDOW),
+    ("meta.llama3-70b", LLAMA_3_CONTEXT_WINDOW),
+    ("mistral.mistral-7b", MISTRAL_7B_CONTEXT_WINDOW),
+    ("mistral.mixtral-8x7b", MISTRAL_7B_CONTEXT_WINDOW),
+    ("cohere.command-text", COHERE_COMMAND_TEXT_CONTEXT_WINDOW),
+    ("cohere.command-light-text", COHERE_COMMAND_TEXT_CONTEXT_WINDOW),
+];
+
+/// The context window of the line a family's current models belong to.
+const fn family_context_window(family: ModelFamily) -> u32 {
+    match family {
+        AnthropicMessages => ANTHROPIC_CONTEXT_WINDOW,
+        Nova => NOVA_CONTEXT_WINDOW,
+        TitanText => TITAN_TEXT_PREMIER_CONTEXT_WINDOW,
+        Llama => LLAMA_CONTEXT_WINDOW,
+        Mistral => MISTRAL_CONTEXT_WINDOW,
+        CohereCommand => COHERE_COMMAND_R_CONTEXT_WINDOW,
+        OpenAiChat => OPENAI_CHAT_CONTEXT_WINDOW,
+    }
+}
+
+/// The context window of one catalogued model: the window published for its own line where
+/// [`CONTEXT_WINDOW_OVERRIDES`] names it, and its family's otherwise.
+fn context_window(model_id: &str, family: ModelFamily) -> u32 {
+    CONTEXT_WINDOW_OVERRIDES
+        .iter()
+        .find(|(prefix, _)| model_id.starts_with(prefix))
+        .map_or_else(|| family_context_window(family), |(_, window)| *window)
+}
+
 /// Every base model id this data plane recognises, with how each one is served.
 ///
 /// Grouped by provider, as the published model tables group them. A provider whose own
@@ -309,6 +369,7 @@ fn entry(model_id: &str, served: Served) -> ModelEntry {
             max_output_tokens,
             converse,
         } => ModelEntry {
+            context_window: context_window(&model_id, family),
             model_id,
             family: Some(family),
             modality: Text,
@@ -333,6 +394,7 @@ fn entry(model_id: &str, served: Served) -> ModelEntry {
             supports_count_tokens: false,
             supports_async_invoke: false,
             max_output_tokens: 0,
+            context_window: 0,
         },
         Served::AsyncVideo => ModelEntry {
             model_id,
@@ -343,6 +405,7 @@ fn entry(model_id: &str, served: Served) -> ModelEntry {
             supports_count_tokens: false,
             supports_async_invoke: true,
             max_output_tokens: 0,
+            context_window: 0,
         },
         Served::Retired(modality) => ModelEntry {
             model_id,
@@ -353,6 +416,7 @@ fn entry(model_id: &str, served: Served) -> ModelEntry {
             supports_count_tokens: false,
             supports_async_invoke: false,
             max_output_tokens: 0,
+            context_window: 0,
         },
     }
 }

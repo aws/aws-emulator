@@ -190,6 +190,19 @@ impl<Eng: Send + Sync + 'static> InvokeModelWithResponseStream<Eng> {
         )
         .map_err(validation)?;
 
+        // The input-size stage `InvokeModel` runs, for the same reason: a model
+        // reads a bounded prompt, so a body whose counted prompt tokens are past
+        // the resolved model's context window is refused rather than streamed
+        // against a shortened prompt.
+        if crate::state::context_window::exceeds_context_window(
+            &model,
+            crate::state::body_input_tokens(body),
+        ) {
+            return Err(validation(
+                crate::state::context_window::INPUT_TOKENS_EXCEEDED_MESSAGE.to_string(),
+            ));
+        }
+
         // The same inference `InvokeModel` serves, so the two surfaces cannot
         // drift; here the turn is delivered as the model family's own streaming
         // events rather than as the unary response body.

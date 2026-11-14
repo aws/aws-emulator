@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op Converse
-//! Serves one conversational turn: it validates the turn sequence, counts the
-//! input tokens with the tokenizer in [`crate::state`] (the same one
-//! `CountTokens` uses), answers with an assistant message derived from the
-//! supplied conversation, and records the call in the inference log.
+//! Serves one conversational turn: it validates the turn sequence and each
+//! turn's own content, counts the input tokens with the tokenizer in
+//! [`crate::state`] (the same one `CountTokens` uses) and refuses an input past
+//! the model's context window ([`crate::state::context_window`]), answers with
+//! an assistant message derived from the supplied conversation, and records the
+//! call in the inference log.
 //!
 //! No language model runs in this emulator, so the assistant message says so
 //! (see [`crate::state::emulated_completion_text`]); the turn semantics, the
@@ -331,6 +333,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Every tool result in that conversation has to address a tool request
         // the conversation carries, by the id that request was issued under.
         crate::state::validate_tool_results(messages).map_err(validation)?;
+
+        // The input-size stage: a model reads a bounded prompt, so a request
+        // whose counted input tokens are past the resolved model's context
+        // window is refused rather than served against a shortened prompt (see
+        // `crate::state::context_window`). The Converse API reports it as the
+        // model-side error it is.
+        let submitted_tokens = crate::state::converse_input_tokens(
+            input.system.as_ref(),
+            input.messages.as_ref(),
+            input.tool_config.as_ref(),
+        );
+        if crate::state::context_window::exceeds_context_window(&model, submitted_tokens) {
+            return Err(validation(crate::state::context_window::model_errors_message(
+                crate::state::context_window::INPUT_TOKENS_EXCEEDED_MESSAGE,
+            )));
+        }
 
         // The tool stage: a mandatory `toolChoice` obliges the turn to request a
         // tool, and a choice left to the model is decided from the conversation

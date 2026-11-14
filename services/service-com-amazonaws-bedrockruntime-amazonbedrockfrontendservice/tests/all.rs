@@ -53,6 +53,8 @@ mod guardrail_checks_phone_numbers;
 mod guardrail_checks_scores;
 #[path = "all/inference_generation_and_refusal_wording.rs"]
 mod inference_generation_and_refusal_wording;
+#[path = "all/inference_input_limits.rs"]
+mod inference_input_limits;
 #[path = "all/inference_stop_sequences.rs"]
 mod inference_stop_sequences;
 #[path = "all/inline_guardrail_error_taxonomy.rs"]

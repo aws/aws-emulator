@@ -179,8 +179,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
-        let mut guard = state.lock();
-        guard.settle_async_invokes(crate::state::now_millis());
+        // Every transition the clock owes is materialised before this read
+        // answers, the output of a finished invocation delivered with it, so a
+        // status filter partitions the records on the statuses they really hold
+        // now (see `crate::state::async_invoke_output`). It runs with no guard of
+        // this store held, because the object store's own guard is taken inside
+        // it.
+        crate::state::async_invoke_output::settle_due_invocations(
+            &*self.engine,
+            crate::state::now_millis(),
+        );
+        let guard = state.lock();
 
         let submitted_after = input
             .submit_time_after

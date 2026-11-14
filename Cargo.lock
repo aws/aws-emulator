@@ -10374,6 +10374,7 @@ dependencies = [
  "serde_json",
  "service-com-amazonaws-cloudwatch-graniteserviceversion20100801",
  "service-com-amazonaws-comprehend-comprehend-20171127",
+ "service-com-amazonaws-s3-amazons3",
  "service-common",
  "sha2 0.10.9",
  "tokio",
