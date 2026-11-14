@@ -156,7 +156,12 @@ impl ConnectorCase {
     }
 }
 
-async fn create_connector(router: &MultiServiceRouter, body: &Value) -> String {
+/// `CreateConnector` for `body`, answering the ARN it minted.
+///
+/// `pub(crate)` because the sibling suites that need a connector to hang a child
+/// resource off need the same prerequisite chain, and a second copy of it is how two
+/// suites come to set up two different things.
+pub(crate) async fn create_connector(router: &MultiServiceRouter, body: &Value) -> String {
     // A connector's directory must already be registered with this service: the
     // create resolves its `DirectoryId` against the directory-registration store,
     // so the prerequisite is established before every case below.

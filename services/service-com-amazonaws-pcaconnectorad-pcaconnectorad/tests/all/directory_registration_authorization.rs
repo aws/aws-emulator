@@ -86,7 +86,11 @@ const CLOCK_MARGIN: Duration = Duration::from_millis(750);
 /// This service and the owner of directories over ONE shared engine — the same
 /// engine the production router builds — plus that engine, for a case that needs a
 /// clock-owed instant in a known position instead of racing it.
-fn fleet() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
+///
+/// `pub(crate)` because the service-principal-name suite needs the same two services
+/// for the same reason: whether a name can be written into a directory at all depends
+/// on a directory THAT service creates and deletes.
+pub(crate) fn fleet() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     // Signature verification is the emulator's own concern and is exercised
@@ -133,7 +137,7 @@ async fn ds_call(router: &MultiServiceRouter, operation: &str, body: &Value) -> 
 }
 
 /// Create a directory through Directory Service itself and answer the id it minted.
-async fn create_directory(router: &MultiServiceRouter, name: &str) -> String {
+pub(crate) async fn create_directory(router: &MultiServiceRouter, name: &str) -> String {
     let body = json!({ "Name": name, "Password": DIRECTORY_PASSWORD, "Size": "Small" });
     let (status, parsed) = ds_call(router, "CreateDirectory", &body).await;
     assert_eq!(
@@ -147,7 +151,7 @@ async fn create_directory(router: &MultiServiceRouter, name: &str) -> String {
 }
 
 /// Delete a directory through Directory Service itself.
-async fn delete_directory(router: &MultiServiceRouter, directory_id: &str) {
+pub(crate) async fn delete_directory(router: &MultiServiceRouter, directory_id: &str) {
     let (status, parsed) =
         ds_call(router, "DeleteDirectory", &json!({ "DirectoryId": directory_id })).await;
     assert_eq!(

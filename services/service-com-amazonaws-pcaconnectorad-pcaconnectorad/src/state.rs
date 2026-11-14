@@ -56,6 +56,24 @@ pub const DIRECTORY_REGISTRATION_STATUS_REASON_DIRECTORY_RESOURCE_NOT_FOUND: &st
 /// The enum has only `ACTIVE` and `DELETING`, so a created template is `ACTIVE`.
 pub const TEMPLATE_STATUS_ACTIVE: &str = "ACTIVE";
 
+/// `ServicePrincipalNameStatus` values, spelled as
+/// `types::SERVICE_PRINCIPAL_NAME_STATUS_VALUES` holds them.
+pub const SERVICE_PRINCIPAL_NAME_STATUS_CREATING: &str = "CREATING";
+/// See [`SERVICE_PRINCIPAL_NAME_STATUS_CREATING`].
+pub const SERVICE_PRINCIPAL_NAME_STATUS_ACTIVE: &str = "ACTIVE";
+/// See [`SERVICE_PRINCIPAL_NAME_STATUS_CREATING`]: the terminal status of a name
+/// that could not be written into the directory at all.
+pub const SERVICE_PRINCIPAL_NAME_STATUS_FAILED: &str = "FAILED";
+
+/// The `ServicePrincipalNameStatusReason` a failed service principal name reports
+/// when the directory its registration authorizes is not one the account holds,
+/// spelled as `types::SERVICE_PRINCIPAL_NAME_STATUS_REASON_VALUES` holds it.
+/// `StatusReason` is "additional information for the status of a service principal
+/// name if the status is failed", so it is set only beside
+/// [`SERVICE_PRINCIPAL_NAME_STATUS_FAILED`].
+pub const SERVICE_PRINCIPAL_NAME_STATUS_REASON_DIRECTORY_RESOURCE_NOT_FOUND: &str =
+    "DIRECTORY_RESOURCE_NOT_FOUND";
+
 /// How long after `CreateConnector` the connector settles from `CREATING` to
 /// `ACTIVE`.
 ///
@@ -84,6 +102,16 @@ pub const DIRECTORY_REGISTRATION_ACTIVATION_DELAY: Duration = Duration::from_sec
 /// reads the registration straight after deleting it observes the `DELETING` the
 /// 202 accepted before the resource is gone.
 pub const DIRECTORY_REGISTRATION_DELETION_DELAY: Duration = Duration::from_secs(3);
+
+/// How long after `CreateServicePrincipalName` the name settles out of `CREATING`
+/// into the terminal status writing it into the directory reaches
+/// ([`service_principal_name_outcome`]).
+///
+/// A CHOSEN span, not a documented one: AWS publishes no duration for creating a
+/// service principal name. It matches
+/// [`DIRECTORY_REGISTRATION_ACTIVATION_DELAY`] and is never zero, so a caller (or a
+/// test) that reads the name straight after the 202 reliably observes `CREATING`.
+pub const SERVICE_PRINCIPAL_NAME_ACTIVATION_DELAY: Duration = Duration::from_secs(3);
 
 /// `MaxResults` for a list call that supplies none: the modelled maximum of the
 /// `MaxResults` member (`range 1..1000`), so an un-paged call returns everything.
@@ -166,6 +194,92 @@ pub const RESOURCE_TYPE_CONNECTOR: &str = "Connector";
 pub const RESOURCE_TYPE_TEMPLATE: &str = "Template";
 /// See [`RESOURCE_TYPE_CONNECTOR`].
 pub const RESOURCE_TYPE_DIRECTORY_REGISTRATION: &str = "DirectoryRegistration";
+/// See [`RESOURCE_TYPE_CONNECTOR`].
+pub const RESOURCE_TYPE_SERVICE_PRINCIPAL_NAME: &str = "ServicePrincipalName";
+
+/// The expression `TemplateName` declares, as the model writes it
+/// (`smithy_query(query="shape",shape="TemplateName")`): every member of this
+/// service targeting that shape — a template's own `Name` and each entry of a
+/// definition's `SupersededTemplates` — has to satisfy it.
+///
+/// It is quoted here because the boundary validator never applies it: that walk
+/// compiles a `@pattern` with the `regex` crate and treats one it cannot compile as
+/// satisfied, and this expression is written with negative look-ahead, which that
+/// crate has no syntax for. [`template_name_report`] is that gap closed.
+pub const TEMPLATE_NAME_PATTERN: &str = r"^(?!^\s+$)((?![\x5c'\x2b,;<=>#\x22])([\x20-\x7E]))+$";
+
+/// The characters the expression's inner negative look-ahead excludes, spelled as
+/// the model spells them (`[\x5c'\x2b,;<=>#\x22]`): backslash, apostrophe, plus,
+/// comma, semicolon, less-than, equals, greater-than, hash and double quote.
+const TEMPLATE_NAME_EXCLUDED: &[char] = &['\\', '\'', '+', ',', ';', '<', '=', '>', '#', '"'];
+
+/// Whether `value` satisfies [`TEMPLATE_NAME_PATTERN`].
+///
+/// The expression is anchored at both ends, so a Smithy find of it is a whole-value
+/// match, and what it admits is a sequence of ONE OR MORE characters, each inside
+/// `[\x20-\x7E]` and none of them one the inner look-ahead excludes
+/// ([`TEMPLATE_NAME_EXCLUDED`]), that is not whitespace from end to end — what the
+/// look-ahead the expression opens with (`(?!^\s+$)`) says, and inside that printable
+/// range the only whitespace character is the space.
+///
+/// Those classes are SCANNED rather than handed to a regex engine: a left-to-right
+/// pass whose cost is linear in the value's length whatever the value holds, which is
+/// the property the framework's own matching of every expression it CAN compile has,
+/// and which a backtracking engine (the only kind that compiles a look-ahead) would
+/// give up on an untrusted-input path.
+#[must_use]
+pub fn is_template_name(value: &str) -> bool {
+    if value.is_empty() {
+        return false;
+    }
+    if value.chars().all(|character| character == ' ') {
+        return false;
+    }
+    value.chars().all(|character| {
+        matches!(character, '\x20'..='\x7E') && !TEMPLATE_NAME_EXCLUDED.contains(&character)
+    })
+}
+
+/// The message this service refuses a request whose `TemplateName` values are
+/// outside [`TEMPLATE_NAME_PATTERN`] with, or `None` when every one of them is
+/// inside it.
+///
+/// The wording is the one the validating layer in front of this service states for a
+/// value its schema's regular expression does not admit: a bracketed list holding one
+/// finding per offending value, each naming the expression the model declares and the
+/// string the request submitted, and nothing else — no member path and no error count.
+/// Both sentences are the shared ones
+/// (`::service_common::validation_message`), so they cannot drift from the other
+/// services that state the same findings.
+///
+/// `values` are the request's `TemplateName` values in the order the input declares
+/// them, so the findings are listed in that order.
+#[must_use]
+pub fn template_name_report<'a>(values: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    let findings: Vec<String> = values
+        .into_iter()
+        .filter(|value| !is_template_name(value))
+        .map(|value| {
+            ::service_common::validation_message::pattern_mismatch(TEMPLATE_NAME_PATTERN, value)
+        })
+        .collect();
+    (!findings.is_empty())
+        .then(|| ::service_common::validation_message::bracketed_findings(&findings))
+}
+
+/// The `SupersededTemplates` entries a template definition carries, whichever
+/// version of the definition union it is — each one a `TemplateName` and so subject
+/// to [`TEMPLATE_NAME_PATTERN`]. An empty slice for a definition that supersedes
+/// nothing.
+#[must_use]
+pub fn superseded_templates(definition: &TemplateDefinition) -> &[String] {
+    match definition {
+        TemplateDefinition::TemplateV2(template) => template.superseded_templates.as_deref(),
+        TemplateDefinition::TemplateV3(template) => template.superseded_templates.as_deref(),
+        TemplateDefinition::TemplateV4(template) => template.superseded_templates.as_deref(),
+    }
+    .unwrap_or_default()
+}
 
 
 /// One persisted connector. Mirrors the modelled `Connector`/`ConnectorSummary`
@@ -239,6 +353,34 @@ pub struct TemplateRecord {
     pub seq: u64,
 }
 
+/// One persisted service principal name: the name the connector authenticates to
+/// Active Directory with, created under exactly one directory registration for
+/// exactly one connector. Mirrors the modelled
+/// `ServicePrincipalName`/`ServicePrincipalNameSummary` members, plus the
+/// bookkeeping the wire shapes do not carry (the clock-due settle of its transient
+/// status, `seq` for stable list ordering).
+#[derive(Debug, Clone)]
+pub struct ServicePrincipalNameRecord {
+    pub directory_registration_arn: String,
+    pub connector_arn: String,
+    pub status: String,
+    pub status_reason: Option<String>,
+    pub created_at: SystemTime,
+    pub updated_at: SystemTime,
+    /// The instant the clock owes this name the move out of `CREATING` into
+    /// [`Self::terminal_status`].
+    pub settles_at: SystemTime,
+    /// What writing this name into the directory reaches: `ACTIVE` when the
+    /// registration's own authorization succeeded, `FAILED` when there was no
+    /// directory to write it into ([`service_principal_name_outcome`] decides it,
+    /// once, on the create path).
+    pub terminal_status: String,
+    /// The `StatusReason` that terminal status carries, set only for a failure.
+    pub terminal_status_reason: Option<String>,
+    /// Monotonic creation sequence: the stable list order and paging cursor.
+    pub seq: u64,
+}
+
 /// Per-service state for com-amazonaws-pcaconnectorad-pcaconnectorad. A handler reaches it through [`service_state`].
 #[derive(Debug, Default)]
 pub struct ComAmazonawsPcaconnectoradPcaconnectoradState {
@@ -249,6 +391,16 @@ pub struct ComAmazonawsPcaconnectoradPcaconnectoradState {
     /// Directory registrations by their own ARN. A directory is registered at most
     /// once (see [`Self::registration_by_directory_id`]).
     pub directory_registrations: HashMap<String, DirectoryRegistrationRecord>,
+    /// Service principal names by the pair that identifies one: the directory
+    /// registration it was created under and the connector it names. A name has no
+    /// ARN of its own — the modelled operations address it by that pair — so the
+    /// pair IS the key.
+    ///
+    /// Bounded by the two stores it is a product of: a name is only recorded for a
+    /// registration and a connector this store already holds, which are capped at
+    /// [`MAX_DIRECTORY_REGISTRATIONS`] and [`MAX_CONNECTORS`], so no number of
+    /// requests can grow this map past their product.
+    pub service_principal_names: HashMap<(String, String), ServicePrincipalNameRecord>,
     /// `<operation>:<ClientToken>` -> the ARN the first call with that token minted,
     /// so a retried create returns the original resource instead of a second one.
     /// Bounded at [`MAX_IDEMPOTENCY_RECORDS`]; write it through
@@ -270,15 +422,15 @@ impl ComAmazonawsPcaconnectoradPcaconnectoradState {
     }
 
     /// Materialise every move of this service's resources the clock already owes at
-    /// `now`: a connector's and a registration's move out of `CREATING`, and the
-    /// REMOVAL of a registration whose delete has come due.
+    /// `now`: a connector's, a registration's and a service principal name's move out
+    /// of `CREATING`, and the REMOVAL of a registration whose delete has come due.
     ///
     /// A reporting operation calls this before it reads: each move was due at its
     /// own recorded instant whether or not anybody called, so applying it is not a
     /// mutation caused by the read. Nothing here decides an OUTCOME — a
-    /// registration's terminal status was decided on its create path and is only
-    /// applied here — so two reads a moment apart cannot settle one resource two
-    /// ways.
+    /// registration's and a name's terminal status were decided on their create path
+    /// and are only applied here — so two reads a moment apart cannot settle one
+    /// resource two ways.
     pub fn settle(&mut self, now: SystemTime) {
         for connector in self.connectors.values_mut() {
             if connector.status == CONNECTOR_STATUS_CREATING && now >= connector.active_at {
@@ -309,6 +461,14 @@ impl ComAmazonawsPcaconnectoradPcaconnectoradState {
                 registration.status_reason = registration.terminal_status_reason.clone();
                 // The resource changed when the move was DUE, not when it was read.
                 registration.updated_at = registration.settles_at;
+            }
+        }
+        for name in self.service_principal_names.values_mut() {
+            if name.status == SERVICE_PRINCIPAL_NAME_STATUS_CREATING && now >= name.settles_at {
+                name.status = name.terminal_status.clone();
+                name.status_reason = name.terminal_status_reason.clone();
+                // The resource changed when the move was DUE, not when it was read.
+                name.updated_at = name.settles_at;
             }
         }
     }
@@ -349,6 +509,18 @@ impl ComAmazonawsPcaconnectoradPcaconnectoradState {
         self.directory_registrations
             .values()
             .find(|registration| registration.directory_id == directory_id)
+    }
+
+    /// The service principal name created under `registration_arn` for
+    /// `connector_arn`, if there is one. The pair identifies at most one name, and is
+    /// the map's own key, so this is the lookup that key exists for.
+    pub fn service_principal_name(
+        &self,
+        registration_arn: &str,
+        connector_arn: &str,
+    ) -> Option<&ServicePrincipalNameRecord> {
+        self.service_principal_names
+            .get(&(registration_arn.to_string(), connector_arn.to_string()))
     }
 
     /// The template called `name` on `connector_arn`, if there is one. Template
@@ -401,6 +573,11 @@ impl ComAmazonawsPcaconnectoradPcaconnectoradState {
     /// reporting operation refuses the ARN afterwards.
     pub fn remove_directory_registration(&mut self, arn: &str) -> bool {
         let removed = self.directory_registrations.remove(arn).is_some();
+        // A service principal name exists under its registration: once the
+        // registration stops existing there is nothing left holding the name, so
+        // nothing reports it any more either.
+        self.service_principal_names
+            .retain(|_, name| name.directory_registration_arn != arn);
         let idempotency = &mut self.idempotency;
         idempotency.retain(|_, recorded| recorded != arn);
         self.idempotency_order
@@ -415,6 +592,10 @@ impl ComAmazonawsPcaconnectoradPcaconnectoradState {
     /// Returns whether a connector was actually present.
     pub fn remove_connector(&mut self, connector_arn: &str) -> bool {
         let removed = self.connectors.remove(connector_arn).is_some();
+        // A service principal name names its connector: a connector that stops
+        // existing leaves no name of itself behind.
+        self.service_principal_names
+            .retain(|_, name| name.connector_arn != connector_arn);
         let orphaned: HashSet<String> = self
             .templates
             .values()
@@ -504,6 +685,33 @@ pub fn directory_registration_outcome<Eng: Send + Sync + 'static>(
         (
             DIRECTORY_REGISTRATION_STATUS_FAILED.to_string(),
             Some(DIRECTORY_REGISTRATION_STATUS_REASON_DIRECTORY_RESOURCE_NOT_FOUND.to_string()),
+        )
+    }
+}
+
+/// The terminal state a service principal name settles on — the status and the
+/// `StatusReason` the clock applies at [`ServicePrincipalNameRecord::settles_at`].
+///
+/// A service principal name is WRITTEN INTO the Active Directory its registration
+/// authorizes, so it can only reach `ACTIVE` where that authorization itself
+/// reaches `ACTIVE`: a registration whose directory the account does not hold has
+/// no directory for the name to be created in, and the name terminates in `FAILED`
+/// carrying [`SERVICE_PRINCIPAL_NAME_STATUS_REASON_DIRECTORY_RESOURCE_NOT_FOUND`] —
+/// the same cause the registration itself reports.
+///
+/// `registration` is the record the create resolved, so the outcome is a function of
+/// what the account held when the registration was created and of nothing read
+/// later.
+#[must_use]
+pub fn service_principal_name_outcome(
+    registration: &DirectoryRegistrationRecord,
+) -> (String, Option<String>) {
+    if registration.terminal_status == DIRECTORY_REGISTRATION_STATUS_ACTIVE {
+        (SERVICE_PRINCIPAL_NAME_STATUS_ACTIVE.to_string(), None)
+    } else {
+        (
+            SERVICE_PRINCIPAL_NAME_STATUS_FAILED.to_string(),
+            Some(SERVICE_PRINCIPAL_NAME_STATUS_REASON_DIRECTORY_RESOURCE_NOT_FOUND.to_string()),
         )
     }
 }

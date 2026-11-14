@@ -9,6 +9,12 @@
 //! refused with the modelled `ServiceQuotaExceededException` rather than growing
 //! the store.
 //!
+//! Modelled input validation precedes every lookup this operation makes: the
+//! `TemplateName` values the request carries are checked against the expression the
+//! model declares for them ([`crate::state::template_name_report`]) before the
+//! parent connector is resolved, so a request that is invalid in itself is refused
+//! for that rather than for a resource it also happens to name.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -175,6 +181,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let _ = ctx;
+        // Modelled input validation runs BEFORE any resource is resolved, so a
+        // request whose own values are outside what the model admits is refused for
+        // that whatever it names: `Name` and every `SupersededTemplates` entry of
+        // the definition target `TemplateName`, whose expression the boundary
+        // validator skips (see `crate::state::TEMPLATE_NAME_PATTERN`), so this is
+        // the first thing the operation does.
+        let submitted_names = ::std::iter::once(input.name.as_str())
+            .chain(
+                crate::state::superseded_templates(&input.definition)
+                    .iter()
+                    .map(String::as_str),
+            );
+        if let Some(report) = crate::state::template_name_report(submitted_names) {
+            return Err(crate::scaffolded::Scaffolded::validation(report));
+        }
+
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(CreateTemplateErrorModeled::InternalServerException(
                 InternalServerException {
@@ -187,8 +209,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let now = ::std::time::SystemTime::now();
         let mut store = state.lock();
 
-        // The parent is resolved FIRST, so a request naming a connector this
-        // service does not hold is a 404 whatever else it carries.
+        // The parent is resolved once the request itself is known to be valid, so a
+        // request naming a connector this service does not hold is a 404 whatever
+        // else it carries.
         if !store.connectors.contains_key(&input.connector_arn) {
             return Err(CreateTemplateErrorModeled::ResourceNotFoundException(
                 ResourceNotFoundException {

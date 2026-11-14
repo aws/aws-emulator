@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateServicePrincipalName
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateServicePrincipalName`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateServicePrincipalName::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Records the service principal name (SPN) a connector authenticates to Active
+//! Directory with, under the directory registration that authorizes that directory.
+//! A name has no ARN of its own: the pair of ARNs the request addresses it by IS its
+//! identity, so the store is keyed on that pair and the operation answers the
+//! modelled 202 with an empty body.
+//!
+//! Both parents are resolved before anything is recorded — the registration named by
+//! the path's first label, then the connector named by its second — so a request
+//! naming a resource this service does not hold is the modelled
+//! `ResourceNotFoundException` rather than a name recorded against nothing.
 //!
 //! ## Shape of an operation
 //!
@@ -187,18 +189,104 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateServicePrincipalName` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateServicePrincipalNameErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateServicePrincipalName"))
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(
+                CreateServicePrincipalNameErrorModeled::InternalServerException(
+                    InternalServerException {
+                        message: "the pca-connector-ad state store is unavailable".to_string(),
+                    },
+                )
+                .into(),
+            );
+        };
+
+        let now = ::std::time::SystemTime::now();
+        let mut store = state.lock();
+        // Every move the clock already owes is materialised before this create
+        // decides anything, so a registration whose deletion has come due is gone
+        // and the name it held with it.
+        store.settle(now);
+
+        // The registration is this name's parent — the first label of the path — so
+        // it is resolved first: a request naming one this service does not hold is
+        // refused for that, whatever else it carries. What writing this name into the
+        // directory that registration authorizes reaches is read off it here, on the
+        // create path, so the outcome is a function of the request and of what the
+        // account held when the registration was created.
+        let Some(outcome) = store
+            .directory_registrations
+            .get(&input.directory_registration_arn)
+            .map(crate::state::service_principal_name_outcome)
+        else {
+            return Err(
+                CreateServicePrincipalNameErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: crate::state::not_found_message(
+                            crate::state::RESOURCE_TYPE_DIRECTORY_REGISTRATION,
+                            &input.directory_registration_arn,
+                        ),
+                        resource_id: input.directory_registration_arn.clone(),
+                        resource_type: crate::state::RESOURCE_TYPE_DIRECTORY_REGISTRATION
+                            .to_string(),
+                    },
+                )
+                .into(),
+            );
+        };
+
+        // The name is the CONNECTOR's name in that directory, so the connector has
+        // to exist too.
+        if !store.connectors.contains_key(&input.connector_arn) {
+            return Err(
+                CreateServicePrincipalNameErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: crate::state::not_found_message(
+                            crate::state::RESOURCE_TYPE_CONNECTOR,
+                            &input.connector_arn,
+                        ),
+                        resource_id: input.connector_arn.clone(),
+                        resource_type: crate::state::RESOURCE_TYPE_CONNECTOR.to_string(),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // `@idempotent`: the pair identifies at most one name, so asking for a name
+        // that is already recorded for this registration and connector changes
+        // nothing and is answered with the same 202. That is what makes the
+        // `@idempotencyToken` nothing this operation has to remember: a retry is
+        // answered by the record itself rather than by the token that minted it,
+        // whichever token the retry carries.
+        if store
+            .service_principal_name(&input.directory_registration_arn, &input.connector_arn)
+            .is_some()
+        {
+            return Ok(CreateServicePrincipalNameOutput);
+        }
+
+        let seq = store.next_seq();
+        let (terminal_status, terminal_status_reason) = outcome;
+        let record = crate::state::ServicePrincipalNameRecord {
+            directory_registration_arn: input.directory_registration_arn.clone(),
+            connector_arn: input.connector_arn.clone(),
+            // A name AWS answers 202 for is not in the directory yet; the clock owes
+            // it the move to its terminal status at `settles_at`.
+            status: crate::state::SERVICE_PRINCIPAL_NAME_STATUS_CREATING.to_string(),
+            status_reason: None,
+            created_at: now,
+            updated_at: now,
+            settles_at: now + crate::state::SERVICE_PRINCIPAL_NAME_ACTIVATION_DELAY,
+            terminal_status,
+            terminal_status_reason,
+            seq,
+        };
+        store.service_principal_names.insert(
+            (input.directory_registration_arn, input.connector_arn),
+            record,
+        );
+
+        Ok(CreateServicePrincipalNameOutput)
     }
 }

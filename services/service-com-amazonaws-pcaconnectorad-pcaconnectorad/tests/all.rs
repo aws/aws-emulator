@@ -31,5 +31,9 @@ mod pagination_token_refusals;
 mod pattern_refusal_messages;
 #[path = "all/resource_not_found_messages.rs"]
 mod resource_not_found_messages;
+#[path = "all/service_principal_name_lifecycle.rs"]
+mod service_principal_name_lifecycle;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
+#[path = "all/template_name_grammar.rs"]
+mod template_name_grammar;
