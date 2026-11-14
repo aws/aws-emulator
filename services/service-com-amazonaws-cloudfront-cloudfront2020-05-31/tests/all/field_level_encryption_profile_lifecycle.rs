@@ -63,6 +63,10 @@ const CALLER_REFERENCE_ALREADY_EXISTS_MESSAGE: &str =
     "The caller reference that you are using to create a field level encryption profile is \
      associated with another field level encryption profile in your account.";
 
+/// The sentence CloudFront sends for a path identifier outside the shape its resource kind's
+/// ids take — spelled out here for the reason [`NAME_ALREADY_EXISTS_MESSAGE`] is.
+const ID_FORMAT_INVALID_MESSAGE: &str = "Id format is invalid";
+
 // ---------------------------------------------------------------------------
 // Calling the profile surface
 // ---------------------------------------------------------------------------
@@ -937,8 +941,9 @@ async fn a_comment_past_the_published_bound_is_refused() {
 }
 
 /// An id no stored profile carries names no profile, whatever shape it has: both readers
-/// answer `NoSuchFieldLevelEncryptionProfile` (404) with the modelled sentence, and a stored
-/// profile is still read at its own id.
+/// answer `NoSuchFieldLevelEncryptionProfile` (404), with the sentence the id's SHAPE earns —
+/// the unreadable identifier for a value outside the shape a profile id takes, the absent
+/// profile for a well-formed one — and a stored profile is still read at its own id.
 #[tokio::test]
 async fn an_id_no_profile_holds_is_refused_by_both_readers() {
     let router = emulator();
@@ -960,8 +965,15 @@ async fn an_id_no_profile_holds_is_refused_by_both_readers() {
 
     // The rows span the ways an id can name no profile: a well-shaped profile id that was
     // never minted, an id of another CloudFront namespace, and a value of no CloudFront id
-    // shape at all.
-    for case in ["P280MFCLSYOCVU", "EDFDVBD6EXAMPLE", "not-a-profile-id"] {
+    // shape at all — each with the sentence its shape earns.
+    for (case, expected) in [
+        (
+            "P280MFCLSYOCVU",
+            NO_SUCH_FIELD_LEVEL_ENCRYPTION_PROFILE_MESSAGE,
+        ),
+        ("EDFDVBD6EXAMPLE", ID_FORMAT_INVALID_MESSAGE),
+        ("not-a-profile-id", ID_FORMAT_INVALID_MESSAGE),
+    ] {
         for (reader, answer) in [
             ("GetFieldLevelEncryptionProfile", get_profile(&router, case).await),
             (
@@ -982,8 +994,8 @@ async fn an_id_no_profile_holds_is_refused_by_both_readers() {
             );
             assert_eq!(
                 answer.root().find_text("Message"),
-                Some(NO_SUCH_FIELD_LEVEL_ENCRYPTION_PROFILE_MESSAGE),
-                "case {case:?} ({reader}): expected the modelled message, got {:?}",
+                Some(expected),
+                "case {case:?} ({reader}): expected {expected:?}, got {:?}",
                 answer.root().find_text("Message")
             );
         }

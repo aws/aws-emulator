@@ -175,9 +175,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // configuration is decided against the distributions as they stand at this instant.
         store.settle(::std::time::SystemTime::now());
 
-        // "The ID of the configuration you want to delete from CloudFront": an id no stored
-        // configuration carries names no configuration to remove, whatever shape it has, so
-        // nothing is removed and the delete says so rather than reporting a removal it never
+        // "The ID of the configuration you want to delete from CloudFront": the identifier's
+        // SHAPE is judged before the store is consulted, so a value no configuration id could
+        // ever have been is reported as the identifier CloudFront cannot read, while a
+        // well-formed id no stored configuration carries is the absent configuration
+        // ([`crate::state::unresolved_field_level_encryption_config_id`]). Either way nothing
+        // is removed and the delete says so rather than reporting a removal it never
         // performed.
         let Some(current_etag) = store
             .field_level_encryption_config(&input.id)
@@ -185,7 +188,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         else {
             return Err(
                 DeleteFieldLevelEncryptionConfigErrorModeled::NoSuchFieldLevelEncryptionConfig(
-                    crate::state::no_such_field_level_encryption_config(),
+                    crate::state::unresolved_field_level_encryption_config_id(&input.id),
                 )
                 .into(),
             );

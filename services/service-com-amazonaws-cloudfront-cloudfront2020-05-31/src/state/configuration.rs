@@ -3285,29 +3285,34 @@ pub fn no_such_field_level_encryption_profile() -> crate::ops::types::NoSuchFiel
 pub const NO_SUCH_FIELD_LEVEL_ENCRYPTION_PROFILE_MESSAGE: &str =
     "The specified field level encryption profile does not exist.";
 
-/// The modelled `NoSuchFieldLevelEncryptionProfile` (HTTP 404) a READ of a profile answers
-/// an `Id` it cannot resolve.
+/// The modelled `NoSuchFieldLevelEncryptionProfile` (HTTP 404) an operation ADDRESSED by a
+/// profile `Id` in its path answers an `Id` it cannot resolve.
 ///
 /// `GetFieldLevelEncryptionProfile` models this one not-found code, so one code and one
 /// status cover two conditions and the MESSAGE is what tells them apart — the same split
-/// [`unresolved_key_group_id`] makes for a key group. An `Id` that is a minted id of ANOTHER
-/// resource kind of this service ([`is_minted_entity_id_of_another_kind`]) was never a
-/// profile id: the namespaces are told apart by the letter or the form they are minted
-/// under, which is a property of the value alone, so CloudFront reports it as the identifier
-/// it cannot read ([`id_format_invalid_message`]). Every other `Id` the store holds no
-/// profile for is the absent-profile sentence
-/// ([`NO_SUCH_FIELD_LEVEL_ENCRYPTION_PROFILE_MESSAGE`]) — a name, a caller reference or a
-/// profile id that was simply never minted is a profile that is not there. Both are fixed
-/// text.
+/// [`unresolved_key_group_id`] makes for a key group, decided the same way: the SHAPE of the
+/// identifier, a property of the value alone, judged before the store is consulted. An `Id`
+/// outside the shape a profile id takes ([`is_field_level_encryption_profile_id`]) — an id of
+/// another namespace of this service, a value of no minted id's width or alphabet, a name or a
+/// caller reference — is an identifier CloudFront cannot read
+/// ([`id_format_invalid_message`]), while a well-formed profile id the store holds no profile
+/// for is the absent-profile sentence
+/// ([`NO_SUCH_FIELD_LEVEL_ENCRYPTION_PROFILE_MESSAGE`]). Both are fixed text and neither
+/// echoes the value submitted.
+///
+/// Only an identifier that ADDRESSES the operation is judged this way: a profile id borne by a
+/// submitted DOCUMENT (a mapping's `ProfileId` on a configuration create or update) addresses
+/// nothing, so it is resolved against the store alone and reports the absent profile whatever
+/// its shape.
 pub fn unresolved_field_level_encryption_profile_id(
     id: &str,
 ) -> crate::ops::types::NoSuchFieldLevelEncryptionProfile {
-    if is_minted_entity_id_of_another_kind(id, is_field_level_encryption_profile_id) {
+    if is_field_level_encryption_profile_id(id) {
+        no_such_field_level_encryption_profile()
+    } else {
         crate::ops::types::NoSuchFieldLevelEncryptionProfile {
             message: Some(id_format_invalid_message("Id")),
         }
-    } else {
-        no_such_field_level_encryption_profile()
     }
 }
 
@@ -3434,6 +3439,29 @@ pub fn no_such_field_level_encryption_config() -> crate::ops::types::NoSuchField
 /// wire wording is what a client reads.
 pub const NO_SUCH_FIELD_LEVEL_ENCRYPTION_CONFIG_MESSAGE: &str =
     "The specified field level encryption config does not exist.";
+
+/// The modelled `NoSuchFieldLevelEncryptionConfig` (HTTP 404) an operation ADDRESSED by a
+/// configuration `Id` in its path answers an `Id` it cannot resolve.
+///
+/// The SAME split [`unresolved_field_level_encryption_profile_id`] makes for the other
+/// field-level encryption resource, decided by the same property: an `Id` outside the shape a
+/// configuration id takes ([`is_field_level_encryption_config_id`]) could never have named a
+/// configuration, so the identifier itself is what CloudFront reports it cannot read
+/// ([`id_format_invalid_message`]), while a well-formed configuration id the store holds
+/// nothing for is the absent-configuration sentence
+/// ([`NO_SUCH_FIELD_LEVEL_ENCRYPTION_CONFIG_MESSAGE`]). Both are fixed text and neither
+/// echoes the value submitted.
+pub fn unresolved_field_level_encryption_config_id(
+    id: &str,
+) -> crate::ops::types::NoSuchFieldLevelEncryptionConfig {
+    if is_field_level_encryption_config_id(id) {
+        no_such_field_level_encryption_config()
+    } else {
+        crate::ops::types::NoSuchFieldLevelEncryptionConfig {
+            message: Some(id_format_invalid_message("Id")),
+        }
+    }
+}
 
 /// The modelled `FieldLevelEncryptionConfigInUse` (HTTP 409) for a delete of a configuration
 /// a cache behaviour still names.

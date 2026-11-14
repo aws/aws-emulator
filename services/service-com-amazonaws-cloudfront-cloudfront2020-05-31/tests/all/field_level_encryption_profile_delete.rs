@@ -48,6 +48,7 @@ use crate::field_level_encryption_profile_lifecycle::{
 /// The sentences CloudFront sends for these refusals, spelled out here rather than taken from
 /// the crate, so a reworded refusal fails this suite.
 const NO_SUCH_PROFILE_MESSAGE: &str = "The specified field level encryption profile does not exist.";
+const ID_FORMAT_INVALID_MESSAGE: &str = "Id format is invalid";
 const PROFILE_IN_USE_MESSAGE: &str =
     "The field level encryption profile is currently associated with a field level encryption \
      config. Please disassociate the profile before deleting.";
@@ -604,7 +605,10 @@ async fn a_profile_a_configuration_names_cannot_be_deleted() {
 
 /// An id the store holds no field-level encryption profile for is
 /// `NoSuchFieldLevelEncryptionProfile`, whatever shape the id takes — never a 204, which would
-/// claim something was removed.
+/// claim something was removed. The MESSAGE says which condition the delete found: the
+/// identifier's shape is judged before the store is consulted, so a value outside the shape a
+/// profile id takes is the identifier CloudFront cannot read, while a well-formed profile id
+/// the store holds nothing for is the absent profile.
 #[tokio::test]
 async fn an_id_no_profile_holds_is_refused() {
     let router = emulator();
@@ -620,24 +624,35 @@ async fn an_id_no_profile_holds_is_refused() {
     let mut flipped: Vec<char> = known.chars().collect();
     let last = flipped.len() - 1;
     flipped[last] = if flipped[last] == 'A' { 'B' } else { 'A' };
-    let absent: [(&str, String); 5] = [
-        ("a profile id never minted", "P0000000000000".to_string()),
+    let absent: [(&str, String, &str); 5] = [
+        (
+            "a profile id never minted",
+            "P0000000000000".to_string(),
+            NO_SUCH_PROFILE_MESSAGE,
+        ),
         (
             "a known id with one character changed",
             flipped.into_iter().collect(),
+            NO_SUCH_PROFILE_MESSAGE,
         ),
-        ("a known id in lower case", known.to_lowercase()),
+        (
+            "a known id in lower case",
+            known.to_lowercase(),
+            ID_FORMAT_INVALID_MESSAGE,
+        ),
         (
             "a token that is no profile id",
             "not-a-profile-id".to_string(),
+            ID_FORMAT_INVALID_MESSAGE,
         ),
         (
             "the caller reference rather than the id",
             "fle-profile-the-only-one".to_string(),
+            ID_FORMAT_INVALID_MESSAGE,
         ),
     ];
 
-    for (case, candidate) in absent {
+    for (case, candidate, expected) in absent {
         let answer = delete_profile(&router, &candidate, Some(&etag)).await;
         assert_eq!(
             answer.status, 404,
@@ -652,8 +667,8 @@ async fn an_id_no_profile_holds_is_refused() {
         );
         let message = answer.root().find_text("Message").unwrap_or_default();
         assert_eq!(
-            message, NO_SUCH_PROFILE_MESSAGE,
-            "case {case:?}: expected the modelled message, got {message:?}"
+            message, expected,
+            "case {case:?}: expected {expected:?}, got {message:?}"
         );
     }
 

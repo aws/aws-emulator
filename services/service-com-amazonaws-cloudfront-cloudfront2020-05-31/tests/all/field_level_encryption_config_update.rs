@@ -66,6 +66,10 @@ use crate::public_key_lifecycle::is_wire_timestamp;
 /// rather than taken from the crate, so a reworded refusal fails this suite.
 const NO_SUCH_PROFILE_MESSAGE: &str = "The specified field level encryption profile does not exist.";
 
+/// The sentence CloudFront sends for a path identifier outside the shape its resource kind's
+/// ids take, spelled out here for the same reason.
+const ID_FORMAT_INVALID_MESSAGE: &str = "Id format is invalid";
+
 // ---------------------------------------------------------------------------
 // Calling the update
 // ---------------------------------------------------------------------------
@@ -971,7 +975,9 @@ async fn an_update_whose_mapping_list_passes_its_bound_is_refused() {
 
 /// An id no stored configuration holds is `NoSuchFieldLevelEncryptionConfig` (HTTP 404) whatever
 /// shape the id takes and whatever the `If-Match` header carries, and the refused update creates
-/// nothing under it.
+/// nothing under it. The MESSAGE follows the id's SHAPE, judged before the store is consulted:
+/// an id outside the shape a configuration id takes is the identifier the service cannot read,
+/// a well-formed one the store holds nothing for is the absent configuration.
 #[tokio::test]
 async fn an_id_no_configuration_holds_is_refused() {
     let router = emulator();
@@ -991,24 +997,35 @@ async fn an_id_no_configuration_holds_is_refused() {
     let mut flipped: Vec<char> = id.chars().collect();
     let last = flipped.len() - 1;
     flipped[last] = if flipped[last] == 'A' { 'B' } else { 'A' };
-    let candidates: [(&str, String); 5] = [
-        ("an id never minted", "C3V3PVOY5NSBVE".to_string()),
+    let candidates: [(&str, String, &str); 5] = [
+        (
+            "an id never minted",
+            "C3V3PVOY5NSBVE".to_string(),
+            NO_SUCH_FIELD_LEVEL_ENCRYPTION_CONFIG_MESSAGE,
+        ),
         (
             "the existing id with one character changed",
             flipped.into_iter().collect(),
+            NO_SUCH_FIELD_LEVEL_ENCRYPTION_CONFIG_MESSAGE,
         ),
-        ("the existing id in lower case", id.to_lowercase()),
+        (
+            "the existing id in lower case",
+            id.to_lowercase(),
+            ID_FORMAT_INVALID_MESSAGE,
+        ),
         (
             "a profile id where a configuration id belongs",
             profile.clone(),
+            ID_FORMAT_INVALID_MESSAGE,
         ),
         (
             "a token of no configuration id's shape",
             "not-a-configuration".to_string(),
+            ID_FORMAT_INVALID_MESSAGE,
         ),
     ];
 
-    for (case, candidate) in &candidates {
+    for (case, candidate, expected) in &candidates {
         for if_match in [None, Some(etag.clone()), Some("not-a-version".to_string())] {
             let answer = update_config(&router, candidate, &body, if_match.as_deref()).await;
             assert_eq!(
@@ -1026,8 +1043,8 @@ async fn an_id_no_configuration_holds_is_refused() {
             );
             assert_eq!(
                 answer.root().find_text("Message").unwrap_or_default(),
-                NO_SUCH_FIELD_LEVEL_ENCRYPTION_CONFIG_MESSAGE,
-                "case {case} with If-Match {if_match:?}: expected the modelled message, got {}",
+                *expected,
+                "case {case} with If-Match {if_match:?}: expected {expected:?}, got {}",
                 answer.raw
             );
         }

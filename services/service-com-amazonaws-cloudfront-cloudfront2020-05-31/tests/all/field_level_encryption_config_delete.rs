@@ -47,6 +47,7 @@ use crate::field_level_encryption_profile_lifecycle::store_profile;
 /// The sentences CloudFront sends on the wire for these refusals, spelled out here rather
 /// than taken from the crate, so a reworded refusal fails this suite.
 const NO_SUCH_CONFIG_MESSAGE: &str = "The specified field level encryption config does not exist.";
+const ID_FORMAT_INVALID_MESSAGE: &str = "Id format is invalid";
 const CONFIG_IN_USE_MESSAGE: &str =
     "The field level encryption config is currently associated with a cache behavior. Please \
      disassociate the config before deleting.";
@@ -514,7 +515,10 @@ async fn a_configuration_a_cache_behaviour_names_cannot_be_deleted() {
 
 /// An id the store holds no field-level encryption configuration for is
 /// `NoSuchFieldLevelEncryptionConfig`, whatever shape the id takes — never a 204, which would
-/// claim something was removed.
+/// claim something was removed. The MESSAGE says which condition the delete found: the
+/// identifier's shape is judged before the store is consulted, so a value outside the shape a
+/// configuration id takes is the identifier CloudFront cannot read, while a well-formed
+/// configuration id the store holds nothing for is the absent configuration.
 #[tokio::test]
 async fn an_id_no_configuration_holds_is_refused() {
     let router = emulator();
@@ -529,24 +533,35 @@ async fn an_id_no_configuration_holds_is_refused() {
     let mut flipped: Vec<char> = known.chars().collect();
     let last = flipped.len() - 1;
     flipped[last] = if flipped[last] == 'A' { 'B' } else { 'A' };
-    let absent: [(&str, String); 5] = [
+    let absent: [(&str, String, &str); 5] = [
         (
             "a configuration id never minted",
             "C0000000000000".to_string(),
+            NO_SUCH_CONFIG_MESSAGE,
         ),
         (
             "a known id with one character changed",
             flipped.into_iter().collect(),
+            NO_SUCH_CONFIG_MESSAGE,
         ),
-        ("a known id in lower case", known.to_lowercase()),
-        ("a token that is no configuration id", "not-a-config-id".to_string()),
+        (
+            "a known id in lower case",
+            known.to_lowercase(),
+            ID_FORMAT_INVALID_MESSAGE,
+        ),
+        (
+            "a token that is no configuration id",
+            "not-a-config-id".to_string(),
+            ID_FORMAT_INVALID_MESSAGE,
+        ),
         (
             "the caller reference rather than the id",
             "fle-config-the-only-one".to_string(),
+            ID_FORMAT_INVALID_MESSAGE,
         ),
     ];
 
-    for (case, candidate) in absent {
+    for (case, candidate, expected) in absent {
         let answer = delete_config(&router, &candidate, Some(&etag)).await;
         assert_eq!(
             answer.status, 404,
@@ -561,8 +576,8 @@ async fn an_id_no_configuration_holds_is_refused() {
         );
         let message = answer.root().find_text("Message").unwrap_or_default();
         assert_eq!(
-            message, NO_SUCH_CONFIG_MESSAGE,
-            "case {case:?}: expected the modelled message, got {message:?}"
+            message, expected,
+            "case {case:?}: expected {expected:?}, got {message:?}"
         );
     }
 

@@ -56,6 +56,11 @@ use crate::field_level_encryption_profile_lifecycle::{
     upload_key, upload_keys, Entity, Profile,
 };
 
+/// The sentence CloudFront sends for a path identifier outside the shape its resource kind's
+/// ids take, spelled out here rather than taken from the crate, so a reworded refusal fails
+/// this suite.
+const ID_FORMAT_INVALID_MESSAGE: &str = "Id format is invalid";
+
 // ---------------------------------------------------------------------------
 // Calling the update
 // ---------------------------------------------------------------------------
@@ -692,7 +697,9 @@ async fn an_update_whose_configuration_the_create_would_refuse_is_refused() {
 
 /// An id no stored profile holds is `NoSuchFieldLevelEncryptionProfile` (HTTP 404) whatever
 /// shape the id takes and whatever the `If-Match` header carries, and the refused update
-/// creates nothing under it.
+/// creates nothing under it. The MESSAGE follows the id's SHAPE, judged before the store is
+/// consulted: an id outside the shape a profile id takes is the identifier the service cannot
+/// read, a well-formed one the store holds nothing for is the absent profile.
 #[tokio::test]
 async fn an_id_no_profile_holds_is_refused() {
     let router = emulator();
@@ -713,20 +720,30 @@ async fn an_id_no_profile_holds_is_refused() {
     let mut flipped: Vec<char> = id.chars().collect();
     let last = flipped.len() - 1;
     flipped[last] = if flipped[last] == 'A' { 'B' } else { 'A' };
-    let candidates: [(&str, String); 4] = [
-        ("an id never minted", "P2NEVERMINTED1".to_string()),
+    let candidates: [(&str, String, &str); 4] = [
+        (
+            "an id never minted",
+            "P2NEVERMINTED1".to_string(),
+            NO_SUCH_FIELD_LEVEL_ENCRYPTION_PROFILE_MESSAGE,
+        ),
         (
             "the existing id with one character changed",
             flipped.into_iter().collect(),
+            NO_SUCH_FIELD_LEVEL_ENCRYPTION_PROFILE_MESSAGE,
         ),
-        ("the existing id in lower case", id.to_lowercase()),
+        (
+            "the existing id in lower case",
+            id.to_lowercase(),
+            ID_FORMAT_INVALID_MESSAGE,
+        ),
         (
             "a token of no profile id's shape",
             "not-a-profile".to_string(),
+            ID_FORMAT_INVALID_MESSAGE,
         ),
     ];
 
-    for (case, candidate) in &candidates {
+    for (case, candidate, expected) in &candidates {
         for if_match in [None, Some(etag.clone()), Some("not-a-version".to_string())] {
             let answer = update_profile(&router, candidate, &body, if_match.as_deref()).await;
             assert_eq!(
@@ -744,8 +761,8 @@ async fn an_id_no_profile_holds_is_refused() {
             );
             assert_eq!(
                 answer.root().find_text("Message").unwrap_or_default(),
-                NO_SUCH_FIELD_LEVEL_ENCRYPTION_PROFILE_MESSAGE,
-                "case {case} with If-Match {if_match:?}: expected the modelled message, got {}",
+                *expected,
+                "case {case} with If-Match {if_match:?}: expected {expected:?}, got {}",
                 answer.raw
             );
         }

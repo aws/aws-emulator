@@ -67,6 +67,7 @@ const URL_ENCODED: &str = "URLEncoded";
 /// than taken from the crate, so a reworded refusal fails this suite.
 const NO_SUCH_CONFIG_MESSAGE: &str = "The specified field level encryption config does not exist.";
 const NO_SUCH_PROFILE_MESSAGE: &str = "The specified field level encryption profile does not exist.";
+const ID_FORMAT_INVALID_MESSAGE: &str = "Id format is invalid";
 const QUERY_ARG_PROFILE_EMPTY: &str =
     "The query arg profile in field level encryption config cannot be empty when content \
      type profile is empty or when no default profile id is given in any content type \
@@ -1267,9 +1268,11 @@ async fn a_mapping_list_past_its_bound_is_refused() {
     }
 }
 
-/// An id no stored configuration carries names no configuration, whatever shape it has: the
-/// reader answers `NoSuchFieldLevelEncryptionConfig` (404) with the modelled sentence, and a
-/// stored configuration is still read at its own id.
+/// An id no stored configuration carries names no configuration: the reader answers
+/// `NoSuchFieldLevelEncryptionConfig` (404) whatever shape the id has, and the MESSAGE says
+/// which condition it was — a value outside the shape a configuration id takes is the
+/// identifier the service cannot read, a well-formed configuration id the store holds nothing
+/// for is the absent configuration — and a stored configuration is still read at its own id.
 #[tokio::test]
 async fn an_id_no_configuration_holds_is_refused_by_the_reader() {
     let router = emulator();
@@ -1291,12 +1294,12 @@ async fn an_id_no_configuration_holds_is_refused_by_the_reader() {
     // The rows span the ways an id can name no configuration: a well-shaped configuration id
     // that was never minted, an id of another CloudFront namespace (including the profile's,
     // which is a different resource under the same surface), and a value of no CloudFront id
-    // shape at all.
-    for case in [
-        "C3V3PVOY5NSBVE",
-        "EDFDVBD6EXAMPLE",
-        profile.as_str(),
-        "not-a-configuration-id",
+    // shape at all — each with the sentence its shape earns.
+    for (case, expected) in [
+        ("C3V3PVOY5NSBVE", NO_SUCH_CONFIG_MESSAGE),
+        ("EDFDVBD6EXAMPLE", ID_FORMAT_INVALID_MESSAGE),
+        (profile.as_str(), ID_FORMAT_INVALID_MESSAGE),
+        ("not-a-configuration-id", ID_FORMAT_INVALID_MESSAGE),
     ] {
         let answer = get_config(&router, case).await;
         assert_eq!(
@@ -1312,8 +1315,8 @@ async fn an_id_no_configuration_holds_is_refused_by_the_reader() {
         );
         assert_eq!(
             answer.root().find_text("Message"),
-            Some(NO_SUCH_CONFIG_MESSAGE),
-            "case {case:?}: expected the modelled message, got {:?}",
+            Some(expected),
+            "case {case:?}: expected {expected:?}, got {:?}",
             answer.root().find_text("Message")
         );
     }
@@ -1425,9 +1428,10 @@ async fn the_configuration_reader_reports_the_stored_configuration_document() {
 }
 
 /// An id no stored configuration carries names no configuration for the CONFIGURATION reader
-/// either: it answers `NoSuchFieldLevelEncryptionConfig` (404) with the modelled sentence,
-/// whatever shape the id has, and the one stored configuration's document is still read at its
-/// own id afterwards.
+/// either: it answers `NoSuchFieldLevelEncryptionConfig` (404) whatever shape the id has, with
+/// the sentence that shape earns — the unreadable identifier for a value outside the shape a
+/// configuration id takes, the absent configuration for a well-formed one — and the one stored
+/// configuration's document is still read at its own id afterwards.
 #[tokio::test]
 async fn an_id_no_configuration_holds_is_refused_by_the_configuration_reader() {
     let router = emulator();
@@ -1455,13 +1459,13 @@ async fn an_id_no_configuration_holds_is_refused_by_the_configuration_reader() {
         *last = if *last == 'A' { 'B' } else { 'A' };
     }
     let mangled: String = mangled.into_iter().collect();
-    for case in [
-        "C3V3PVOY5NSBVE",
-        "EDFDVBD6EXAMPLE",
-        profile.as_str(),
-        mangled.as_str(),
-        "not-a-configuration-id",
-        "0",
+    for (case, expected) in [
+        ("C3V3PVOY5NSBVE", NO_SUCH_CONFIG_MESSAGE),
+        ("EDFDVBD6EXAMPLE", ID_FORMAT_INVALID_MESSAGE),
+        (profile.as_str(), ID_FORMAT_INVALID_MESSAGE),
+        (mangled.as_str(), NO_SUCH_CONFIG_MESSAGE),
+        ("not-a-configuration-id", ID_FORMAT_INVALID_MESSAGE),
+        ("0", ID_FORMAT_INVALID_MESSAGE),
     ] {
         let answer = get_config_document(&router, case).await;
         assert_eq!(
@@ -1477,8 +1481,8 @@ async fn an_id_no_configuration_holds_is_refused_by_the_configuration_reader() {
         );
         assert_eq!(
             answer.root().find_text("Message"),
-            Some(NO_SUCH_CONFIG_MESSAGE),
-            "case {case:?}: expected the modelled message, got {:?}",
+            Some(expected),
+            "case {case:?}: expected {expected:?}, got {:?}",
             answer.root().find_text("Message")
         );
     }

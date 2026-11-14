@@ -150,12 +150,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // no status and no propagation deadline, so the clock owes one nothing and this read
         // reports the stored record as it stands.
         //
-        // "Request the ID for the field-level encryption configuration information": an id no
-        // stored configuration carries names no configuration, whatever shape it has.
+        // "Request the ID for the field-level encryption configuration information": the
+        // identifier's SHAPE is judged before the store is consulted, so a value no
+        // configuration id could ever have been is reported as the identifier CloudFront
+        // cannot read, while a well-formed id no stored configuration carries is the absent
+        // configuration ([`crate::state::unresolved_field_level_encryption_config_id`]).
         let Some(stored) = store.field_level_encryption_config(&input.id) else {
             return Err(
                 GetFieldLevelEncryptionErrorModeled::NoSuchFieldLevelEncryptionConfig(
-                    crate::state::no_such_field_level_encryption_config(),
+                    crate::state::unresolved_field_level_encryption_config_id(&input.id),
                 )
                 .into(),
             );
