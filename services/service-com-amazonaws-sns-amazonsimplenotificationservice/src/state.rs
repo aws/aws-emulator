@@ -50,6 +50,10 @@ pub mod feedback_role;
 /// Whether this account holds an origination entity SNS could send an SMS message from,
 /// which every operation whose own work is to send one asks before it accepts.
 pub mod sms_origination;
+/// The `AWS/SNS` counters a topic publishes about its own fan-out: the publishes it
+/// accepted, the messages its subscriptions' filter policies withheld, and the
+/// notifications the subscribed endpoints took or refused.
+pub mod topic_metrics;
 mod message_structure;
 /// The rules a topic's TAG set is held to, shared by the operations that write one.
 mod tags;

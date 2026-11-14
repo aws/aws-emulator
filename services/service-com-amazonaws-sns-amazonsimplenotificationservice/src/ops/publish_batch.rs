@@ -124,7 +124,8 @@ use super::types::*;
 // The subscriber fan-out of a publish is defined ONCE, by `Publish`: a batched publish
 // delivers the same envelope to the same subscriptions.
 use super::publish::{
-    deliver_to_endpoints, subscription_deliveries, Deliveries, DeliveryBudget,
+    admitted_subscriptions, deliver_to_endpoints, subscription_deliveries, Deliveries,
+    DeliveryBudget,
 };
 use crate::state::{self, MessageRequest, PublishedMessage};
 
@@ -547,6 +548,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     .as_deref()
                     .and_then(|key| store.deduplicated_publish(key))
                 {
+                    // The duplicate entry was accepted — it is answered with a message
+                    // id — so it is counted as a message published to the topic, and
+                    // nothing is counted for a fan-out it does not have.
+                    deliveries.count(
+                        &topic.arn,
+                        state::topic_metrics::TopicActivity::MessagePublished,
+                        1,
+                    );
                     successful.push(PublishBatchResultEntry {
                         id: Some(entry.id),
                         message_id: Some(accepted.message_id),
@@ -582,11 +591,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // built through `Publish`'s one definition of the envelope, within the
                 // batch's shared budget, and performed below with the lock released. A
                 // subscription whose filter policy withholds this entry is not among them.
-                let accepted: Vec<state::SubscriptionRecord> = recipients
-                    .iter()
-                    .filter(|sub| state::filter_policy::admits(sub, &published, &mut matching))
-                    .cloned()
-                    .collect();
+                let (accepted, withheld) =
+                    admitted_subscriptions(recipients.iter(), &published, &mut matching);
                 deliveries.absorb(subscription_deliveries(
                     ctx,
                     &accepted,
@@ -594,6 +600,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     Some(&topic),
                     &mut budget,
                 ));
+                // What this entry contributed to the topic's own counters: the publish
+                // itself, and the one notification each subscription the filter policy
+                // withheld it from did not get ([`state::topic_metrics`]). The outcome of
+                // each delivery is counted where that delivery resolves.
+                deliveries.count(
+                    &topic.arn,
+                    state::topic_metrics::TopicActivity::MessagePublished,
+                    1,
+                );
+                deliveries.count(
+                    &topic.arn,
+                    state::topic_metrics::TopicActivity::NotificationFilteredOut,
+                    withheld,
+                );
                 for recipient in &accepted {
                     store.record_delivery(&recipient.arn, ::std::sync::Arc::clone(&published));
                 }

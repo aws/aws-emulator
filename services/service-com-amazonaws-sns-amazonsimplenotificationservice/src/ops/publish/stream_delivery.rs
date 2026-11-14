@@ -162,6 +162,12 @@ impl StreamDelivery {
         self.data.len()
     }
 
+    /// The topic the message was published to: the topic whose own counters this delivery's
+    /// outcome is counted into ([`crate::state::topic_metrics`]).
+    pub(super) fn topic_arn(&self) -> &str {
+        &self.topic_arn
+    }
+
     /// Write the delivery-status record of this put, where the topic asked for one.
     ///
     /// The record reports a delivery that has already been attempted, so it is written after

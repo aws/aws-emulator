@@ -167,6 +167,12 @@ impl FunctionDelivery {
         self.payload.len()
     }
 
+    /// The topic the message was published to: the topic whose own counters this delivery's
+    /// outcome is counted into ([`crate::state::topic_metrics`]).
+    pub(super) fn topic_arn(&self) -> &str {
+        &self.topic_arn
+    }
+
     /// The copy of the undeliverable MESSAGE that is held in the subscription's dead-letter
     /// queue when the function could not be invoked, or `None` when the subscription asks for
     /// no redrive.

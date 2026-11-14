@@ -238,6 +238,9 @@ mod topic_encryption_key_state;
 #[path = "all/topic_key_policy_authorization.rs"]
 mod topic_key_policy_authorization;
 
+#[path = "all/topic_notification_metrics.rs"]
+mod topic_notification_metrics;
+
 #[path = "all/topic_policy_authorization.rs"]
 mod topic_policy_authorization;
 

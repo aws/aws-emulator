@@ -513,12 +513,21 @@ fn publish_into_store(
         .as_deref()
         .and_then(|key| store.deduplicated_publish(key))
     {
+        // The duplicate was "accepted successfully" — it is answered with a message id —
+        // so it is counted as a message published to the topic, and nothing is counted
+        // for a fan-out it does not have.
+        let mut deliveries = Deliveries::default();
+        deliveries.count(
+            &topic.arn,
+            state::topic_metrics::TopicActivity::MessagePublished,
+            1,
+        );
         return Ok((
             PublishOutput {
                 message_id: Some(accepted.message_id),
                 sequence_number: accepted.sequence_number,
             },
-            Deliveries::default(),
+            deliveries,
         ));
     }
     // Only a FIFO topic is sequenced: "This response element applies only to FIFO
@@ -550,19 +559,33 @@ fn publish_into_store(
     // message receives nothing either. ONE matching budget for the request, so the
     // (subscriptions x conditions x values) product the matching costs is capped.
     let mut matching = state::filter_policy::MatchBudget::new();
-    let subscriptions: Vec<state::SubscriptionRecord> = store
+    let offered: Vec<&state::SubscriptionRecord> = store
         .subscriptions_of(&topic.arn)
         .into_iter()
         .filter(|sub| !sub.pending_confirmation)
-        .filter(|sub| state::filter_policy::admits(sub, &published, &mut matching))
-        .cloned()
         .collect();
-    let deliveries = subscription_deliveries(
+    let (subscriptions, withheld) =
+        admitted_subscriptions(offered.into_iter(), &published, &mut matching);
+    let mut deliveries = subscription_deliveries(
         ctx,
         &subscriptions,
         &published,
         Some(&topic),
         &mut DeliveryBudget::new(),
+    );
+    // What this publish contributed to the topic's own counters: the publish itself, and
+    // the one notification each subscription the filter policy withheld it from did not
+    // get ([`state::topic_metrics`]). The outcome of each delivery the fan-out owes is
+    // counted where that delivery resolves ([`deliver_to_endpoints`]).
+    deliveries.count(
+        &topic.arn,
+        state::topic_metrics::TopicActivity::MessagePublished,
+        1,
+    );
+    deliveries.count(
+        &topic.arn,
+        state::topic_metrics::TopicActivity::NotificationFilteredOut,
+        withheld,
     );
     for subscription in &subscriptions {
         store.record_delivery(&subscription.arn, ::std::sync::Arc::clone(&published));
@@ -613,6 +636,16 @@ pub struct Deliveries {
     functions: Vec<function_delivery::FunctionDelivery>,
     /// The records owed to the delivery streams subscribed over the `firehose` protocol.
     streams: Vec<stream_delivery::StreamDelivery>,
+    /// What the request has counted into the topic's own `AWS/SNS` counters so far
+    /// ([`state::topic_metrics`]): the publishes it accepted and the messages its
+    /// subscriptions' filter policies withheld.
+    ///
+    /// It travels WITH the deliveries because the same two seams produce both — the
+    /// store-touching half decides who receives the message, and
+    /// [`deliver_to_endpoints`] resolves what each delivery came to — so one request's
+    /// whole contribution is published once, from the one place that has the engine to
+    /// publish it to.
+    counted: state::topic_metrics::TopicCounters,
 }
 
 impl Deliveries {
@@ -625,7 +658,52 @@ impl Deliveries {
         self.queues.extend(other.queues);
         self.functions.extend(other.functions);
         self.streams.extend(other.streams);
+        self.counted.absorb(&other.counted);
     }
+
+    /// Count `times` events of `activity` on the topic `topic_arn` names into what this
+    /// request owes that topic's own counters.
+    ///
+    /// `pub(crate)`: every operation that publishes to a topic counts what it accepted and
+    /// what the filters withheld through this one accumulator, so one request's counts
+    /// reach the metric store together.
+    pub(crate) fn count(
+        &mut self,
+        topic_arn: &str,
+        activity: state::topic_metrics::TopicActivity,
+        times: usize,
+    ) {
+        self.counted.count(topic_arn, activity, times);
+    }
+}
+
+/// The subscriptions of `offered` that RECEIVE `published`, beside how many of them its
+/// filter policy withheld it from.
+///
+/// "A subscription's filter policy" decides per subscription whether the message is
+/// delivered to it at all ([`state::filter_policy`]), so the two answers come from the one
+/// pass over the candidates: the recipients, and the count of notifications that were NOT
+/// sent because the policy did not admit the message — which is what the topic's
+/// filtered-out counter counts.
+///
+/// `pub(crate)` because every operation that fans a message out to the subscribers of a
+/// topic decides its recipients here — `Publish` and `PublishBatch` — so neither can
+/// withhold a message without counting it.
+pub(crate) fn admitted_subscriptions<'a>(
+    offered: impl Iterator<Item = &'a state::SubscriptionRecord>,
+    published: &PublishedMessage,
+    matching: &mut state::filter_policy::MatchBudget,
+) -> (Vec<state::SubscriptionRecord>, usize) {
+    let mut recipients: Vec<state::SubscriptionRecord> = Vec::new();
+    let mut withheld = 0usize;
+    for subscription in offered {
+        if state::filter_policy::admits(subscription, published, matching) {
+            recipients.push(subscription.clone());
+        } else {
+            withheld += 1;
+        }
+    }
+    (recipients, withheld)
 }
 
 /// One message this publish owes to one SQS queue subscribed to the topic.
@@ -1013,6 +1091,14 @@ pub(crate) fn replay_deliveries(
     let recipients = [subscription.clone()];
     for message in archived {
         if !state::filter_policy::admits(&subscription, &message, &mut matching) {
+            // A replay offers the archived message to the subscription the way a publish
+            // offers a new one, so a filter policy that does not admit it withholds one
+            // notification here too, and that is counted as such.
+            deliveries.count(
+                &subscription.topic_arn,
+                state::topic_metrics::TopicActivity::NotificationFilteredOut,
+                1,
+            );
             continue;
         }
         deliveries.absorb(subscription_deliveries(
@@ -1173,7 +1259,11 @@ impl QueueTarget {
 /// `engine` is the shared engine this service is mounted on, which is where the KMS store
 /// holding an encrypted queue's key lives ([`queue_encryption`]): a subscribed queue
 /// encrypted with a customer managed key takes a notification only where that key admits
-/// this service's principal.
+/// this service's principal. It is also where the CloudWatch metric store the topic's own
+/// counters live in is: whatever each delivery came to is counted as it resolves, and the
+/// whole request's contribution — these outcomes beside the publishes and the withheld
+/// messages the store-touching half counted — is published once the fan-out is over
+/// ([`crate::state::topic_metrics`]).
 pub(crate) async fn deliver_to_endpoints<Eng: Send + Sync + 'static>(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     engine: &Eng,
@@ -1182,6 +1272,9 @@ pub(crate) async fn deliver_to_endpoints<Eng: Send + Sync + 'static>(
     // ONE waiting budget for the whole request, for the reason [`RetryBudget`] gives: the
     // per-delivery schedule is bounded, their PRODUCT with the fan-out is not.
     let mut waiting = RetryBudget::new();
+    // What this request owes the topic's counters: what it has counted already, plus the
+    // outcome of every delivery below.
+    let mut counted = deliveries.counted.clone();
     let mut queues = Queues::new(ctx, queue_encryption::kms_state(engine));
     if !deliveries.queues.is_empty() {
         // BOXED, for the reason the legs below are.
@@ -1190,6 +1283,7 @@ pub(crate) async fn deliver_to_endpoints<Eng: Send + Sync + 'static>(
             &deliveries.queues,
             &mut queues,
             &mut waiting,
+            &mut counted,
         ))
         .await;
     }
@@ -1200,24 +1294,46 @@ pub(crate) async fn deliver_to_endpoints<Eng: Send + Sync + 'static>(
             &deliveries.functions,
             &mut queues,
             &mut waiting,
+            &mut counted,
         ))
         .await;
     }
-    if deliveries.streams.is_empty() {
-        return;
+    if !deliveries.streams.is_empty() {
+        // BOXED: each endpoint kind's leg composes the SDK futures of another service's
+        // client, and this operation's own future is nested once per in-process hop a
+        // request makes through the emulator, so the legs are kept OFF this future and on
+        // the heap. Without it, one future carrying every leg's SDK machinery at once grows
+        // the frame of every nested dispatch.
+        Box::pin(deliver_to_streams(
+            ctx,
+            &deliveries.streams,
+            &mut queues,
+            &mut waiting,
+            &mut counted,
+        ))
+        .await;
     }
-    // BOXED: each endpoint kind's leg composes the SDK futures of another service's client,
-    // and this operation's own future is nested once per in-process hop a request makes
-    // through the emulator, so the legs are kept OFF this future and on the heap. Without
-    // it, one future carrying every leg's SDK machinery at once grows the frame of every
-    // nested dispatch.
-    Box::pin(deliver_to_streams(
-        ctx,
-        &deliveries.streams,
-        &mut queues,
-        &mut waiting,
-    ))
-    .await;
+    // The fan-out is over, so what it came to is published — off the answer, with no store
+    // lock held.
+    counted.publish(engine);
+}
+
+/// Count what ONE attempt at a delivery to the topic `topic_arn` names came to: the
+/// notification the endpoint took, or the one it did not.
+///
+/// Every endpoint kind resolves its attempt the same way ([`Attempted::taken`]), so each
+/// leg's outcome reaches the topic's counters through this one reading of it.
+fn count_attempt(
+    counted: &mut state::topic_metrics::TopicCounters,
+    topic_arn: &str,
+    attempted: &Attempted,
+) {
+    let activity = if attempted.taken() {
+        state::topic_metrics::TopicActivity::NotificationDelivered
+    } else {
+        state::topic_metrics::TopicActivity::NotificationFailed
+    };
+    counted.count(topic_arn, activity, 1);
 }
 
 /// Hand each message this publish owes to the queue its subscription names, and park the
@@ -1229,6 +1345,7 @@ async fn deliver_to_queues(
     messages: &[QueueDelivery],
     queues: &mut Queues<'_, '_>,
     waiting: &mut RetryBudget,
+    counted: &mut state::topic_metrics::TopicCounters,
 ) {
     for delivery in messages {
         let attempted = queues
@@ -1237,12 +1354,15 @@ async fn deliver_to_queues(
         delivery
             .record_status(ctx, attempted.taken(), &attempted.answered)
             .await;
+        count_attempt(counted, &delivery.topic_arn, &attempted);
         if attempted.taken() {
             continue;
         }
         let Some(dead_letter) = delivery.dead_letter.as_ref() else {
             continue;
         };
+        // Holding the message in the dead-letter queue is where the undelivered
+        // notification ENDS, not a second notification: the failure above is what counts.
         park_in_dead_letter(queues, dead_letter, delivery, waiting).await;
     }
 }
@@ -1256,6 +1376,7 @@ async fn deliver_to_functions(
     invocations: &[function_delivery::FunctionDelivery],
     queues: &mut Queues<'_, '_>,
     waiting: &mut RetryBudget,
+    counted: &mut state::topic_metrics::TopicCounters,
 ) {
     let mut functions = function_delivery::Functions::new(ctx);
     for delivery in invocations {
@@ -1263,6 +1384,7 @@ async fn deliver_to_functions(
         delivery
             .record_status(ctx, attempted.taken(), &attempted.answered)
             .await;
+        count_attempt(counted, delivery.topic_arn(), &attempted);
         if attempted.taken() {
             continue;
         }
@@ -1282,6 +1404,7 @@ async fn deliver_to_streams(
     streams: &[stream_delivery::StreamDelivery],
     queues: &mut Queues<'_, '_>,
     waiting: &mut RetryBudget,
+    counted: &mut state::topic_metrics::TopicCounters,
 ) {
     let mut puts = stream_delivery::Streams::new(ctx);
     for delivery in streams {
@@ -1289,6 +1412,7 @@ async fn deliver_to_streams(
         delivery
             .record_status(ctx, attempted.taken(), &attempted.answered)
             .await;
+        count_attempt(counted, delivery.topic_arn(), &attempted);
         if attempted.taken() {
             continue;
         }

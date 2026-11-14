@@ -43,6 +43,12 @@ service-common = { path = "../common" }
 # IAM's own accessors: that service owns the collection rule, so this one sees exactly what
 # IAM's own authorizer sees (`state::authorization`).
 service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
+# The CloudWatch metric store is where a topic's `AWS/SNS` counters live: the publishes,
+# withheld messages and resolved notifications this service counts are appended to that
+# service's OWN series — the ones `GetMetricStatistics`, `GetMetricData`, `ListMetrics` and
+# the alarm evaluation read — rather than to a second copy of them
+# (`state::topic_metrics`).
+service-com-amazonaws-cloudwatch-graniteserviceversion20100801 = { workspace = true }
 # The KMS store the key a SUBSCRIBED QUEUE is encrypted with lives in, reached through KMS's
 # own authorization module: a delivery to such a queue has a data key generated under that
 # key for this service, so the key's own policy decides it
