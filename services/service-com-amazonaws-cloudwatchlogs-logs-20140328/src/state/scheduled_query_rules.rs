@@ -314,12 +314,20 @@ impl Schedule {
         }
     }
 
-    /// How long after `instant_ms` the next instant this schedule names falls — the PERIOD of
-    /// a schedule that names instants at regular intervals, which is what a query stating no
-    /// lookback of its own reads back over.
+    /// The PERIOD of this schedule around `instant_ms`: the gap between the first instant it
+    /// names after that one and the instant it names after THAT — which for a schedule naming
+    /// instants at regular intervals is the interval itself, whatever instant it is asked
+    /// about. `None` when the schedule names no two further instants.
+    ///
+    /// It is the lookback a query stating none of its own reads back over, so it has to be the
+    /// schedule's period rather than the time still to run until the next instant: a run
+    /// triggered at an instant the schedule does NOT name — the first run of a query, which
+    /// falls a short span after the create — would otherwise read back only as far as the next
+    /// named instant is away, a window the time of day decides rather than the schedule.
     pub fn interval_after(&self, instant_ms: i64, timezone: Option<&str>) -> Option<i64> {
-        self.next_after(instant_ms, timezone)
-            .map(|next| next.saturating_sub(instant_ms))
+        let next = self.next_after(instant_ms, timezone)?;
+        self.next_after(next, timezone)
+            .map(|following| following.saturating_sub(next))
     }
 }
 

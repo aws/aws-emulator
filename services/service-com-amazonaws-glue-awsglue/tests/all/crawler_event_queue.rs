@@ -12,6 +12,11 @@
 //! create with `InvalidInputException` (HTTP 400) — storing no crawler — when the
 //! policies in force on that role do not admit the queue operations the crawl makes on
 //! that queue, and creates the identically-shaped crawler whose role does hold them.
+//!
+//! A refusal that rests on those policies NAMES what they withhold: the queue action the
+//! role is missing, the queue it is missing it on and the identity the crawl would run as,
+//! in the sentence an unauthorized call is refused with. It asserts nothing about the
+//! queue existing, which this check never establishes.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -89,6 +94,25 @@ fn allow(actions: &[&str], resource: &str) -> Value {
     })
 }
 
+/// The sentence an unauthorized call is refused with, as the rejection of an event-mode
+/// create has to word it: the identity the crawl would run as, the queue action the
+/// role's policies withhold, the queue it would be made on, and which of IAM's rules
+/// withheld the grant — an explicit `Deny`, or no grant at all.
+///
+/// Spelled out here rather than built from the service's own constructor, so the wording
+/// this suite pins is the test's and not the code's.
+fn expected_refusal(role_arn: &str, action: &str, queue_arn: &str, explicit_deny: bool) -> String {
+    let clause = if explicit_deny {
+        "with an explicit deny in an identity-based policy".to_string()
+    } else {
+        format!("because no identity-based policy allows the {action} action")
+    };
+    format!(
+        "User: {role_arn} is not authorized to perform: {action} on resource: \
+         {queue_arn} {clause}"
+    )
+}
+
 /// A `CreateCrawler` body whose single S3 target is crawled from `queue`, in event mode.
 fn event_mode_crawler(name: &str, role: &str, queue: &str) -> Value {
     json!({
@@ -101,6 +125,15 @@ fn event_mode_crawler(name: &str, role: &str, queue: &str) -> Value {
     })
 }
 
+/// The refusal one row of the table below earns: the queue action the rejection must
+/// name, and whether an explicit `Deny` withheld it rather than an absent grant. `None`
+/// where the row's role holds the whole grant and the create must be admitted.
+type ExpectedRefusal = Option<(String, bool)>;
+
+/// One row of the table below: what the case is, the identity policy documents the
+/// crawler's role carries, and the refusal they earn.
+type Row = (String, Vec<Value>, ExpectedRefusal);
+
 /// A role whose policies do not admit the crawl's queue operations cannot back an
 /// event-mode crawler, and the identically-shaped request whose role does admit them is
 /// created.
@@ -109,35 +142,56 @@ fn event_mode_crawler(name: &str, role: &str, queue: &str) -> Value {
 /// operations on another queue, a subset of them (one row per action the crawl makes,
 /// each missing in turn), a `Deny` of one of them beside an `Allow` of all, and the full
 /// grant — written as the exact ARN, through a wildcard, and spread over two documents.
+///
+/// Each refused row also pins WHICH action the refusal names: the one the role's own
+/// documents withhold for that row, so a client reading the rejection is told the grant to
+/// add instead of being sent looking for a queue that is there.
 #[tokio::test]
 async fn an_event_mode_crawler_needs_its_role_to_consume_the_event_queue() {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let router = emulator_on(engine.clone());
     let queue = queue_arn("glue-crawler-events");
     let every_action: Vec<&str> = EVENT_QUEUE_ACTIONS.to_vec();
+    // The queue call the crawl makes first, which is the one a role granted nothing is
+    // refused at.
+    let first_action = EVENT_QUEUE_ACTIONS[0];
+    let last_action = EVENT_QUEUE_ACTIONS[EVENT_QUEUE_ACTIONS.len() - 1];
+    // A document DENYING `action` on the queue, whatever else is granted.
+    let deny = |action: &str| {
+        json!({
+            "Version": "2012-10-17",
+            "Statement": [{ "Effect": "Deny", "Action": action, "Resource": queue }],
+        })
+    };
 
-    // (case, the documents the role carries, whether the create must be admitted)
-    let mut rows: Vec<(String, Vec<Value>, bool)> = vec![
-        ("no policy at all".to_string(), Vec::new(), false),
+    // (case, the documents the role carries, the refusal it earns: the action the
+    // rejection must name and whether an explicit `Deny` withheld it, or `None` where
+    // the create must be admitted)
+    let mut rows: Vec<Row> = vec![
+        (
+            "no policy at all".to_string(),
+            Vec::new(),
+            Some((first_action.to_string(), false)),
+        ),
         (
             "the queue operations on another queue".to_string(),
             vec![allow(&every_action, &queue_arn("some-other-queue"))],
-            false,
+            Some((first_action.to_string(), false)),
         ),
         (
             "an unrelated grant on the queue".to_string(),
             vec![allow(&["sqs:SendMessage"], &queue)],
-            false,
+            Some((first_action.to_string(), false)),
         ),
         (
             "every queue operation, named exactly".to_string(),
             vec![allow(&every_action, &queue)],
-            true,
+            None,
         ),
         (
             "every queue operation, through a wildcard".to_string(),
             vec![allow(&["sqs:*"], &format!("{}*", queue_arn("")))],
-            true,
+            None,
         ),
         (
             "every queue operation, spread over two documents".to_string(),
@@ -145,26 +199,22 @@ async fn an_event_mode_crawler_needs_its_role_to_consume_the_event_queue() {
                 allow(&every_action[..1], &queue),
                 allow(&every_action[1..], &queue),
             ],
-            true,
+            None,
         ),
         (
-            "an explicit deny of one operation beside the grant".to_string(),
-            vec![
-                allow(&every_action, &queue),
-                json!({
-                    "Version": "2012-10-17",
-                    "Statement": [{
-                        "Effect": "Deny",
-                        "Action": EVENT_QUEUE_ACTIONS[0],
-                        "Resource": queue,
-                    }],
-                }),
-            ],
-            false,
+            "an explicit deny of the first operation beside the grant".to_string(),
+            vec![allow(&every_action, &queue), deny(first_action)],
+            Some((first_action.to_string(), true)),
+        ),
+        (
+            "an explicit deny of the last operation beside the grant".to_string(),
+            vec![allow(&every_action, &queue), deny(last_action)],
+            Some((last_action.to_string(), true)),
         ),
     ];
     // One row per action the crawl makes, each one missing from an otherwise complete
-    // grant: every action is required, so each omission refuses on its own.
+    // grant: every action is required, so each omission refuses on its own — and the
+    // refusal names the action that omission withheld.
     for missing in EVENT_QUEUE_ACTIONS {
         let granted: Vec<&str> = every_action
             .iter()
@@ -174,18 +224,18 @@ async fn an_event_mode_crawler_needs_its_role_to_consume_the_event_queue() {
         rows.push((
             format!("every queue operation except {missing}"),
             vec![allow(&granted, &queue)],
-            false,
+            Some((missing.to_string(), false)),
         ));
     }
 
-    for (index, (case, documents, admitted)) in rows.iter().enumerate() {
+    for (index, (case, documents, refusal)) in rows.iter().enumerate() {
         let role_name = format!("crawler-role-{index}");
         let role = seed_role(&engine, &role_name, documents);
         let crawler = format!("event-crawler-{index}");
         let request = event_mode_crawler(&crawler, &role, &queue);
 
         let (status, body) = call(&router, "CreateCrawler", &request).await;
-        if *admitted {
+        let Some((action, explicit_deny)) = refusal else {
             assert_eq!(
                 status, 200,
                 "case {case:?}: the role holds the grant, so the create must be admitted, \
@@ -198,7 +248,7 @@ async fn an_event_mode_crawler_needs_its_role_to_consume_the_event_queue() {
                 "case {case:?}: the created crawler must be readable, got {read}"
             );
             continue;
-        }
+        };
 
         assert_eq!(
             status, 400,
@@ -212,12 +262,9 @@ async fn an_event_mode_crawler_needs_its_role_to_consume_the_event_queue() {
         let message = error_message(&body);
         assert_eq!(
             message,
-            format!(
-                "SQS queue {queue} does not exist or the role provided does not have \
-                 access to it."
-            ),
-            "case {case:?}: expected the service's wording for a queue it cannot reach, \
-             got {message:?}"
+            expected_refusal(&role, action, &queue, *explicit_deny),
+            "case {case:?}: the refusal must name the withheld action {action} on {queue} \
+             for {role}, got {message:?}"
         );
         // No crawler was stored: the refused create left nothing behind.
         let (status, body) = call(&router, "GetCrawler", &json!({ "Name": crawler })).await;
@@ -229,6 +276,60 @@ async fn an_event_mode_crawler_needs_its_role_to_consume_the_event_queue() {
             error_code(&body).contains("EntityNotFoundException"),
             "case {case:?}: expected EntityNotFoundException, got {}",
             error_code(&body)
+        );
+    }
+}
+
+/// The refusal is worded from the REQUEST: whichever way the request names the role —
+/// its bare name or its ARN — the identity the rejection names is that role's ARN, the
+/// resource it names is the queue the target carried, and nothing in it claims the queue
+/// is absent.
+#[tokio::test]
+async fn the_refusal_is_worded_from_the_request() {
+    let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
+    let router = emulator_on(engine.clone());
+    let first_action = EVENT_QUEUE_ACTIONS[0];
+    // A role granted nothing at all, so every row below is refused at the crawl's first
+    // queue call.
+    let role_arn = seed_role(&engine, "worded-role", &[]);
+
+    // (case, the `Role` the request carries, the queue the target names)
+    let rows = [
+        (
+            "the role's ARN and a plainly named queue",
+            role_arn.clone(),
+            queue_arn("worded-events"),
+        ),
+        (
+            "the role's bare NAME and another queue",
+            "worded-role".to_string(),
+            queue_arn("worded-events-2.fifo"),
+        ),
+    ];
+
+    for (index, (case, role, queue)) in rows.iter().enumerate() {
+        let crawler = format!("worded-crawler-{index}");
+        let (status, body) = call(
+            &router,
+            "CreateCrawler",
+            &event_mode_crawler(&crawler, role, queue),
+        )
+        .await;
+        assert_eq!(
+            status, 400,
+            "case {case:?}: expected 400, got {status} with {body}"
+        );
+        let message = error_message(&body);
+        assert_eq!(
+            message,
+            expected_refusal(&role_arn, first_action, queue, false),
+            "case {case:?}: the refusal must name the role's ARN, the withheld action and \
+             the queue the request carried, got {message:?}"
+        );
+        // The check reads policies, not the queue's existence, so it asserts none.
+        assert!(
+            !message.contains("does not exist"),
+            "case {case:?}: the refusal must not claim the queue is absent, got {message:?}"
         );
     }
 }

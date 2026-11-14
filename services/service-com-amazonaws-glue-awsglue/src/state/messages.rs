@@ -400,14 +400,28 @@ pub const MAX_CAPACITY_EXCLUDES_WORKERS: &str =
 pub const JOB_ALREADY_EXISTS: &str = "Job already exists.";
 
 /// `CreateCrawler` for an S3 target whose `EventQueueArn` (or `DlqEventQueueArn`)
-/// names a queue the crawler's `Role` cannot consume ([`super::event_queue_refusal`]).
-/// Recorded template: the refusal names the queue the create could not reach and
-/// states the two things that account for it — no such queue, or no access to it —
-/// without disclosing which, and names neither the role nor the action.
-pub fn event_queue_inaccessible(queue_arn: &str) -> String {
-    format!(
-        "SQS queue {queue_arn} does not exist or the role provided does not have \
-             access to it."
+/// names a queue the crawler's `Role` may not consume ([`super::event_queue_refusal`]):
+/// the queue call of the crawl that the policies in force on that role withhold.
+///
+/// Recorded template: the refusal NAMES the queue action the role is missing, because
+/// what this create-time check tells the deployer is WHICH grant to add — a sentence
+/// that only said the queue might not exist would send them looking for a queue that is
+/// there, and would state an absence this service never established. It is the sentence
+/// AWS refuses an unauthorized call with, built by the tree's one statement of it
+/// ([`::service_common::iam_authorization::not_authorized_by_identity_policy`]): the
+/// identity the crawl would run as, the action it would make, the queue it would make it
+/// on, and `reason` — which of IAM's rules withheld the grant, named in that module's
+/// own words. Every part is read off the request and the account's own IAM records;
+/// `action` is qualified as the queue's own service qualifies its actions
+/// ([`super::EVENT_QUEUE_ACTIONS`]).
+pub fn event_queue_action_withheld(
+    role_arn: &str,
+    action: &str,
+    queue_arn: &str,
+    reason: &str,
+) -> String {
+    ::service_common::iam_authorization::not_authorized_by_identity_policy(
+        role_arn, action, queue_arn, reason,
     )
 }
 

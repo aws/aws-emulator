@@ -16,7 +16,8 @@
 //! crawled FROM that queue, and the crawl runs as the crawler's `Role`, so the create is
 //! refused with `InvalidInputException` when the policies in force on that role do not
 //! admit the queue operations the crawl makes on that queue — the account's own IAM
-//! records are the authority, and a role nothing can be shown about is not refused (see
+//! records are the authority, the refusal NAMES the action those policies withhold, and a
+//! role nothing can be shown about is not refused (see
 //! [`crate::state::event_queue_refusal`]).
 //!
 //! ## Shape of an operation
@@ -301,9 +302,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             });
             if let Some(documents) = documents {
                 let prepared = ::service_common::iam_authorization::prepare_documents(&documents);
-                let refusal = event_queues
-                    .iter()
-                    .find_map(|queue| crate::state::event_queue_refusal(&prepared, queue));
+                let role_arn = crate::state::glue_role_reference(&input.role).arn;
+                let refusal = event_queues.iter().find_map(|queue| {
+                    crate::state::event_queue_refusal(&prepared, &role_arn, queue)
+                });
                 if let Some(message) = refusal {
                     return Err(CreateCrawlerErrorModeled::InvalidInputException(
                         InvalidInputException {

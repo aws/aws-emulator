@@ -166,11 +166,20 @@ pub async fn glue_role_is_unassumable(
 
 /// The Amazon SQS actions a crawler performs against the event queue of an S3 target it
 /// crawls in event mode: it RECEIVES the change messages, reads the queue's attributes to
-/// learn what is pending, and DELETES each message it has processed.
+/// learn what is pending, and DELETES each message it has processed. Listed in the order
+/// the crawl makes them, which is the order a refusal reports the first one withheld in
+/// ([`event_queue_refusal`]).
+///
+/// Each is qualified the way the queue's OWN service qualifies its actions — `SQS:` before
+/// the API name, the spelling its policies and its authorization refusals carry (see that
+/// service's `state::permissions::POLICY_ACTION_PREFIX`) — so the action a refusal names is
+/// spelled as the service that owns it spells it. IAM compares an action name without
+/// regard to case, so a role whose document grants `sqs:ReceiveMessage` grants exactly
+/// this.
 pub const EVENT_QUEUE_ACTIONS: [&str; 3] = [
-    "sqs:ReceiveMessage",
-    "sqs:GetQueueAttributes",
-    "sqs:DeleteMessage",
+    "SQS:ReceiveMessage",
+    "SQS:GetQueueAttributes",
+    "SQS:DeleteMessage",
 ];
 
 /// The most policy documents this check reads for ONE role.
@@ -249,23 +258,40 @@ pub fn role_policy_documents(role: &str, iam: &IamState) -> Option<Vec<String>> 
 /// by [`role_policy_documents`] — through the shared evaluator every service that decides
 /// authorization uses, so no two services answer differently.
 ///
+/// The refusal NAMES the withheld action and `role_arn`, the identity the crawl would run
+/// as ([`glue_role_reference`] reads it off the request's `Role`): the answer rests on
+/// what those documents do not grant, so that is what it states, rather than an absence of
+/// the queue which nothing here establishes. The FIRST action the documents do not admit
+/// is the one named, in the order the crawl makes them, because that is the call the crawl
+/// is refused at; which of IAM's rules withheld it — an explicit `Deny`, or no grant at
+/// all — is read off the evaluator's own answer and named in its words.
+///
 /// The documents are PREPARED once per request and passed in, so a request naming several
 /// queues parses them once rather than once per queue, and the caller holds no IAM guard
 /// while this runs.
 pub fn event_queue_refusal(
     prepared: &[::service_common::iam_authorization::PreparedDocument],
+    role_arn: &str,
     queue_arn: &str,
 ) -> Option<String> {
-    let withheld = EVENT_QUEUE_ACTIONS.iter().any(|action| {
-        let request = ::service_common::iam_authorization::Request::new(action, queue_arn, &[]);
-        let stated =
-            ::service_common::iam_authorization::identity_decision_prepared(prepared, &request);
-        // Nothing stated is an implicit deny in IAM, and the documents in force on the
-        // role ARE the authority on what it may do: a role whose policies say nothing
-        // about the call may not make it.
-        stated != ::service_common::iam_authorization::Decision::Allowed
-    });
-    withheld.then(|| messages::event_queue_inaccessible(queue_arn))
+    use ::service_common::iam_authorization as authorization;
+
+    EVENT_QUEUE_ACTIONS.iter().find_map(|action| {
+        let request = authorization::Request::new(action, queue_arn, &[]);
+        let reason = match authorization::identity_decision_prepared(prepared, &request) {
+            authorization::Decision::Allowed => return None,
+            authorization::Decision::Denied => {
+                authorization::IDENTITY_POLICY_EXPLICIT_DENY.to_string()
+            }
+            // Nothing stated is an implicit deny in IAM, and the documents in force on the
+            // role ARE the authority on what it may do: a role whose policies say nothing
+            // about the call may not make it.
+            authorization::Decision::NotStated => authorization::no_identity_policy_allows(action),
+        };
+        Some(messages::event_queue_action_withheld(
+            role_arn, action, queue_arn, &reason,
+        ))
+    })
 }
 
 /// The default version's document of the managed policy `arn` names, or `None` when the
