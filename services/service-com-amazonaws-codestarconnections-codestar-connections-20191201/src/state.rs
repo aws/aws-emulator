@@ -965,6 +965,24 @@ pub const CREATE_CONNECTION_PROVIDER_REQUIRED_MESSAGE: &str =
 /// connection word the refusal the same way.
 pub const NO_SUCH_CONNECTION_MESSAGE: &str = "No connection exists with the ARN";
 
+/// How the repository-link surface reports a `ConnectionArn` the request asks it to
+/// ASSOCIATE a link with that resolves to no connection this account holds.
+///
+/// A different refusal from the connection readers' own ([`NO_SUCH_CONNECTION_MESSAGE`]):
+/// here the dangling reference is a value of the request being validated, so it is
+/// refused as invalid input, with this FIXED template — `Connection `, the ARN the
+/// request supplied, then ` does not exist`. It carries neither the
+/// `InvalidInputException` documentation sentence as a preamble, nor the name of the
+/// member it was read from, nor anything about the account (corpus
+/// `simparity-wire-aws-v1`, fixture
+/// `codestar-connections-repository-link-id-and-connection-validation`, the
+/// `CreateRepositoryLink` and `UpdateRepositoryLink` expectations). One function, so
+/// registering a link against a connection that is not there and re-pointing a link at
+/// one word the refusal the same way.
+pub fn connection_does_not_exist_message(connection_arn: &str) -> String {
+    format!("Connection {connection_arn} does not exist")
+}
+
 /// How this service reports a repository-link ARN that resolves to no link it holds.
 ///
 /// The link readers address a link by its `RepositoryLinkId` and word their refusal from

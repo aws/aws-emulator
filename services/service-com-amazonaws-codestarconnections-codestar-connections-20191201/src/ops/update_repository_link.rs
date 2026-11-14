@@ -202,8 +202,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // must never name a connection that is not there. This operation models no
         // `ResourceNotFoundException` for the CONNECTION (its `ResourceNotFoundException`
         // answers the link the request addresses), so an unresolvable `ConnectionArn` is
-        // the modeled `InvalidInputException`, naming the member whose value could not be
-        // resolved.
+        // the modeled `InvalidInputException`, worded by the ONE template this surface
+        // refuses a dangling connection reference with
+        // (`crate::state::connection_does_not_exist_message`): the fixed sentence naming
+        // the ARN the request supplied, with no documentation preamble and no member
+        // name, so `CreateRepositoryLink` and this operation cannot word it differently.
         //
         // The doc states the one condition on a new association: "The updated connection
         // ARN must have the same providerType (such as GitHub) as the original connection
@@ -217,8 +220,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 let Some(connection) = store.connections.get(&connection_arn) else {
                     return Err(UpdateRepositoryLinkErrorModeled::InvalidInputException(
                         InvalidInputException {
-                            message: Some(format!(
-                                "The input is not valid. ConnectionArn names no connection in this account: {connection_arn}"
+                            message: Some(crate::state::connection_does_not_exist_message(
+                                &connection_arn,
                             )),
                         },
                     )

@@ -177,8 +177,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the `ConnectionArn` is RESOLVED against the connection store rather than
         // judged by its syntax: a link must never name a connection that is not there.
         // This operation models no `ResourceNotFoundException`, so the refusal is the
-        // modeled `InvalidInputException` (400), naming the member whose value could not
-        // be resolved.
+        // modeled `InvalidInputException` (400), worded by the ONE template this surface
+        // refuses a dangling connection reference with
+        // (`crate::state::connection_does_not_exist_message`): the fixed sentence naming
+        // the ARN the request supplied, with no documentation preamble and no member
+        // name, so `UpdateRepositoryLink` and this operation cannot word it differently.
         //
         // The connection's STATUS is deliberately not a condition: a connection minted
         // through the API stays `PENDING` until a console handshake this emulator cannot
@@ -188,9 +191,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             None => {
                 return Err(CreateRepositoryLinkErrorModeled::InvalidInputException(
                     InvalidInputException {
-                        message: Some(format!(
-                            "The input is not valid. ConnectionArn names no connection in this account: {}",
-                            input.connection_arn
+                        message: Some(crate::state::connection_does_not_exist_message(
+                            &input.connection_arn,
                         )),
                     },
                 )
