@@ -87,15 +87,16 @@ const WAITS: &str = r#"{"StartAt":"Hold","States":{"Hold":{"Type":"Wait","Second
 const TOKEN_SOURCE: &str = "com.example.tokens";
 const REPLY_OUTPUT: &str = r#"{"approved":true}"#;
 
-/// One emulator: Step Functions, EventBridge and SQS mounted on ONE shared engine, with
-/// the router that dispatches to all three.
+/// One emulator: Step Functions, EventBridge, SQS and Lambda mounted on ONE shared engine,
+/// with the router that dispatches to all four.
 ///
 /// EventBridge and SQS are mounted BESIDE Step Functions because an execution's status
 /// changes are published onto the default event bus through the in-process callback and a
 /// rule on that bus delivers them to its SQS queue target: with neither mounted there is
-/// nowhere to publish, so the path under test would not be exercised at all. Each service
-/// claims only the requests scoped to its own signing name, so no Step Functions request
-/// below is routed any differently for their presence.
+/// nowhere to publish, so the path under test would not be exercised at all. Lambda is
+/// mounted for the sibling suite that drives a rule's FUNCTION target
+/// ([`Self::lambda`]). Each service claims only the requests scoped to its own signing
+/// name, so no Step Functions request below is routed any differently for their presence.
 pub(crate) struct Emulator {
     router: MultiServiceRouter,
 }
@@ -112,6 +113,9 @@ impl Emulator {
         router.register_service(service_com_amazonaws_sqs_amazonsqs::EmulatedService::new(
             Arc::clone(&engine),
         ));
+        router.register_service(
+            service_com_amazonaws_lambda_awsgirapiservice::EmulatedService::new(Arc::clone(&engine)),
+        );
         Self { router }
     }
 
@@ -172,7 +176,7 @@ impl Emulator {
     }
 
     /// Call one EventBridge operation, requiring a 200.
-    async fn events(&self, operation: &str, body: &Value) -> Value {
+    pub(crate) async fn events(&self, operation: &str, body: &Value) -> Value {
         let (status, parsed) = self.rpc("events", "AWSEvents", "1.1", operation, body).await;
         assert_eq!(
             status, 200,
@@ -182,7 +186,7 @@ impl Emulator {
     }
 
     /// Call one SQS operation, requiring a 200.
-    async fn sqs(&self, operation: &str, body: &Value) -> Value {
+    pub(crate) async fn sqs(&self, operation: &str, body: &Value) -> Value {
         let (status, parsed) = self.rpc("sqs", "AmazonSQS", "1.0", operation, body).await;
         assert_eq!(
             status, 200,
@@ -190,13 +194,46 @@ impl Emulator {
         );
         parsed
     }
+
+    /// One Lambda call, whose protocol is `restJson1` rather than an AWS JSON RPC, as its
+    /// status and parsed body: how the sibling suite creates the function an EventBridge
+    /// rule's target invokes and grants that service the invocation.
+    pub(crate) async fn lambda(&self, method: &str, uri: &str, body: &Value) -> (u16, Value) {
+        let host = format!("lambda.{REGION}.amazonaws.com");
+        let payload = if body.is_null() {
+            Vec::new()
+        } else {
+            body.to_string().into_bytes()
+        };
+        let authorization = format!(
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260101/{REGION}/lambda/aws4_request, \
+             SignedHeaders=host, Signature=0123456789abcdef"
+        );
+        let request = http::Request::builder()
+            .method(method)
+            .uri(format!("https://{host}{uri}"))
+            .header("host", &host)
+            .header("content-type", "application/json")
+            .header("authorization", authorization)
+            .body(Bytes::from(payload))
+            .expect("a well-formed request");
+        let response = self.router.dispatch(request).await;
+        let status = response.status().as_u16();
+        let bytes = response.into_body();
+        let parsed = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+        };
+        (status, parsed)
+    }
 }
 
 /// An SQS queue called `name`, carrying the grant a rule's target needs — EventBridge
 /// makes the target's `sqs:SendMessage` as its own service principal and "relies on
 /// resource-based policies" for a queue (`PutTargets`), so a queue that has granted it
 /// nothing receives nothing. Answers its url and the ARN a rule names it by.
-async fn given_queue(emulator: &Emulator, name: &str) -> (String, String) {
+pub(crate) async fn given_queue(emulator: &Emulator, name: &str) -> (String, String) {
     let created = emulator
         .sqs("CreateQueue", &json!({ "QueueName": name }))
         .await;
