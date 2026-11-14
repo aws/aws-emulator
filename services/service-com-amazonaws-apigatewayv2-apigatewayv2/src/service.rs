@@ -146,6 +146,10 @@ pub mod authorization;
 // operation that mints a WebSocket api, which is what opens that api's socket and gives its
 // `ApiEndpoint` the address to announce.
 pub mod websocket;
+// `pub` for the same reason: `domain_name_socket::open_for_domain_name` is called by the
+// operation that mints a custom domain name, which is what opens that domain name's socket
+// and gives its `ApiGatewayDomainName` the address to publish.
+pub mod domain_name_socket;
 
 use aws_smithy_runtime_api::http::{Request as RtRequest, Response as RtResponse};
 use aws_smithy_schema::Schema;

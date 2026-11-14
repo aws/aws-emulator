@@ -360,12 +360,14 @@ async fn a_created_domain_name_is_reported_back_by_get_domain_name() {
 }
 
 #[tokio::test]
-async fn the_minted_host_names_the_region_the_request_was_signed_for() {
+async fn each_domain_name_publishes_an_address_of_its_own_a_client_can_dial() {
     let emulator = emulator();
-    // The host is `d-{id}.execute-api.{region}.amazonaws.com`: a minted id and the
-    // region of the request's credential scope. Two domain names created in the same
-    // account get DIFFERENT hosts, and neither carries a region the caller did not sign
-    // for.
+    // `apiGatewayDomainName` is "the domain name associated with the regional endpoint for
+    // this custom domain name" — the value a caller points its own DNS record at and a client
+    // then DIALS — so what is published is the address this emulator serves that domain name
+    // at (`crate::service::domain_name_socket`), not a name under API Gateway's own zone that
+    // resolves nowhere on this machine. Two domain names of one account are served on
+    // DIFFERENT addresses, so a request reaches the one it was addressed to.
     let mut hosts = Vec::new();
     for domain in ["host-a.example.com", "host-b.example.com"] {
         let body = created(&emulator, domain, &json!({
@@ -375,8 +377,8 @@ async fn the_minted_host_names_the_region_the_request_was_signed_for() {
         .await;
         let host = configuration_member(&body, 0, "apiGatewayDomainName");
         assert!(
-            host.starts_with("d-") && host.ends_with(&format!(".execute-api.{REGION}.amazonaws.com")),
-            "case {domain:?}: expected a d-<id>.execute-api.{REGION}.amazonaws.com host, got {host:?}"
+            host.parse::<std::net::SocketAddr>().is_ok(),
+            "case {domain:?}: expected an address a client can dial, got {host:?}"
         );
         hosts.push(host);
     }

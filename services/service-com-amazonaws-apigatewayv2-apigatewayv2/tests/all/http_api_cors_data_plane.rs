@@ -7,17 +7,18 @@
 //! `HttpApi` whose `corsPreflight` allows one origin and the `GET` method, fronting a
 //! `$default` route):
 //!
-//! > A request to a route of a deployed HTTP api stage is answered with the decoration the
-//! > API'S OWN stored `CorsConfiguration` states for THAT request, whatever produced the
-//! > answer: an `Origin` the configuration's `AllowOrigins` admits is echoed back in
-//! > `access-control-allow-origin` (the wildcard when that is what admitted it), a PREFLIGHT
-//! > — the `OPTIONS` request carrying `Access-Control-Request-Method` — additionally carries
-//! > the configured `AllowMethods`, `AllowHeaders` and `MaxAge` when the method it asks about
-//! > is admitted, an actual request additionally carries `ExposeHeaders`, either carries
-//! > `access-control-allow-credentials: true` when `AllowCredentials` is set, and a request
-//! > whose origin (or whose asked-about method) the configuration does not admit — matching,
-//! > in either collection, exactly or through the wildcard entry — carries NO
-//! > `Access-Control-*` header at all.
+//! > An api that carries a `CorsConfiguration` at all OWNS the `Access-Control-*` headers of
+//! > every answer it gives, whatever produced that answer: an `Origin` the configuration's
+//! > `AllowOrigins` admits is echoed back in `access-control-allow-origin` (the wildcard when
+//! > that is what admitted it), an actual request additionally carries `ExposeHeaders`, either
+//! > carries `access-control-allow-credentials: true` when `AllowCredentials` is set, and a
+//! > request whose origin the configuration does not admit — matching exactly or through the
+//! > wildcard entry — carries NO `Access-Control-*` header at all. A PREFLIGHT — the `OPTIONS`
+//! > request carrying `Access-Control-Request-Method` — is answered by the GATEWAY itself with
+//! > `204` and the configured `AllowMethods`, `AllowHeaders` and `MaxAge` when the method it
+//! > asks about is admitted (and with no CORS header when the origin or that method is not),
+//! > reaching no route and no integration of the api. An api carrying no configuration
+//! > decorates nothing and answers an `OPTIONS` request from its routes like any other.
 //!
 //! `smithy_query(query="shape", shape="Cors")` is where each member's meaning comes from —
 //! `AllowOrigins` "a collection of allowed origins", `AllowMethods` "a collection of allowed
@@ -66,6 +67,10 @@ const REDIRECT: u16 = 307;
 
 /// The status a matched route whose integration produced no response is answered with.
 const INTEGRATION_FAULT: u16 = 500;
+
+/// The status the GATEWAY answers a preflight of a CORS-configured api with: it answers the
+/// preflight itself, so no route of the api is matched and no integration is reached.
+const PREFLIGHT: u16 = 204;
 
 /// The modelled bounds of `IntegerWithLengthBetweenMinus1And86400`, the shape `Cors$MaxAge`
 /// targets (`range` min -1 max 86400). NEITHER is a bound the service enforces, so a value
@@ -247,6 +252,30 @@ struct Row {
     request_headers: &'static [(&'static str, &'static str)],
     /// Every `Access-Control-*` header the answer must carry, and nothing else.
     expected: &'static [(&'static str, &'static str)],
+}
+
+impl Row {
+    /// Whether the GATEWAY answers this request itself: a PREFLIGHT — the `OPTIONS` request
+    /// carrying `Access-Control-Request-Method` — of an api that carries a configuration at
+    /// all, whether or not that configuration admits the origin or the method it asks about.
+    fn answered_by_the_gateway(&self) -> bool {
+        self.cors.is_some()
+            && self.method == "OPTIONS"
+            && self
+                .request_headers
+                .iter()
+                .any(|(name, _)| *name == "access-control-request-method")
+    }
+
+    /// The status this row's answer must carry: [`PREFLIGHT`] for a preflight the gateway
+    /// answered itself, and the backend's own class for every request a route served.
+    fn status(&self, backend: Backend) -> u16 {
+        if self.answered_by_the_gateway() {
+            PREFLIGHT
+        } else {
+            backend.status()
+        }
+    }
 }
 
 /// The configuration the recorded case carries: one allow-listed origin and the `GET` method.
@@ -487,9 +516,11 @@ fn rows() -> &'static [Row] {
     ]
 }
 
-/// Assert the answer carries EXACTLY `expected` as its `Access-Control-*` headers.
-fn decorated(case: &str, backend: Backend, answer: &Answer, expected: &[(&str, &str)]) {
-    let wanted: BTreeMap<String, String> = expected
+/// Assert the answer carries EXACTLY `expected` as its `Access-Control-*` headers, and the
+/// status this row's answer owes.
+fn decorated(case: &str, backend: Backend, row: &Row, answer: &Answer) {
+    let wanted: BTreeMap<String, String> = row
+        .expected
         .iter()
         .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
         .collect();
@@ -499,19 +530,29 @@ fn decorated(case: &str, backend: Backend, answer: &Answer, expected: &[(&str, &
         "case {case:?} behind {backend:?}: expected the CORS headers {wanted:?}, got {}",
         answer.summary()
     );
-    // The decoration is added to the answer the data plane already computed: the status the
-    // backend's class maps to is untouched, and so is the redirect it carries.
+    // Either the gateway answered the preflight itself — which reaches no backend at all, so
+    // the status is its own and no `Location` of an upstream is carried — or the answer is the
+    // one the data plane already computed, whose status the decoration leaves untouched.
     assert_eq!(
         answer.status,
-        backend.status(),
-        "case {case:?} behind {backend:?}: the decoration must not change the status, got {}",
+        row.status(backend),
+        "case {case:?} behind {backend:?}: expected status {}, got {}",
+        row.status(backend),
         answer.summary()
     );
-    if backend == Backend::HttpProxy {
+    if backend == Backend::HttpProxy && !row.answered_by_the_gateway() {
         assert_eq!(
             answer.location.as_deref(),
             Some("https://upstream.example.test/forward"),
             "case {case:?}: the redirect must still name the upstream, got {:?}",
+            answer.location
+        );
+    }
+    if row.answered_by_the_gateway() {
+        assert_eq!(
+            answer.location, None,
+            "case {case:?} behind {backend:?}: a preflight the gateway answered reaches no \
+             integration, so it carries no upstream, got {:?}",
             answer.location
         );
     }
@@ -535,7 +576,7 @@ async fn an_apis_cors_configuration_decorates_what_its_stage_answers() {
                 row.request_headers,
             )
             .await;
-            decorated(case, backend, &answer, row.expected);
+            decorated(case, backend, row, &answer);
 
             // The same request at the emulator's own endpoint, with the api id carried in
             // the path: the same records decide it, so the same decoration is answered.
@@ -547,7 +588,7 @@ async fn an_apis_cors_configuration_decorates_what_its_stage_answers() {
                 row.request_headers,
             )
             .await;
-            decorated(case, backend, &answer, row.expected);
+            decorated(case, backend, row, &answer);
         }
     }
 }

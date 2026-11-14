@@ -45,6 +45,11 @@
 //! credentials the in-process callback hands this handler, and neither they nor any
 //! `Authorization` header the client presented are reported or logged.
 //!
+//! WHO the invocation is made as is therefore not the caller either: an api invokes a route's
+//! function as API Gateway's own service principal, so what admits the invocation is the
+//! FUNCTION's resource-based policy ([`invocation_admitted`]) — read from Lambda itself, so a
+//! permission added or removed there takes effect on the next request.
+//!
 //! The hop is made over the CALLBACK HANDLE rather than over the whole request context
 //! (`OperationContext::callback`), because the two data planes reach a function from
 //! different places: an HTTP invoke is an operation of this service and holds a context,
@@ -66,6 +71,23 @@ const LAMBDA_ARN_VENDOR: &str = "lambda";
 /// EMBEDDED in that path, so the ARN is read out of the value wherever in it it sits.
 /// A function ARN carries no `/`, so the wrapper's own path segments end it.
 const ARN_PATH_SEPARATOR: char = '/';
+
+/// The service principal an API Gateway api invokes a route's function as, as a resource
+/// policy names one: "for Amazon Web Services services, the principal is a domain-style
+/// identifier that the service defines" (`AddPermission$Principal`). It is API Gateway's own
+/// service identifier, the one a grant for an api's integration names.
+const GATEWAY_SERVICE_PRINCIPAL: &str = "apigateway.amazonaws.com";
+
+/// The IAM action an invocation of a function performs, which is not the operation's own
+/// name: `Invoke` "requires permission for the `lambda:InvokeFunction` action".
+const INVOKE_FUNCTION_ACTION: &str = "lambda:InvokeFunction";
+
+/// The condition key a grant narrowed to ONE invoking resource names the source by, which for
+/// an api's integration is the ROUTE the request was served by.
+const SOURCE_ARN_KEY: &str = "aws:SourceArn";
+
+/// The condition key a grant narrowed to the account that owns the invoking api names it by.
+const SOURCE_ACCOUNT_KEY: &str = "aws:SourceAccount";
 
 /// The function one hop addresses: the ARN to invoke, and the Region whose Lambda endpoint
 /// the call is made to.
@@ -209,6 +231,107 @@ pub async fn invoke_function(
             .unwrap_or_default(),
         function_error: output.function_error,
     })
+}
+
+/// Whether the resource policy of `target`'s function admits the invocation THE GATEWAY makes
+/// for the route whose `execute-api` ARN is `source_arn`.
+///
+/// A gateway invokes a route's function as its own service principal
+/// ([`GATEWAY_SERVICE_PRINCIPAL`]) rather than as the client that called the route, so the
+/// grant that admits the invocation is the FUNCTION's resource-based policy — the document
+/// `AddPermission` writes and `GetPolicy` reports. It is read from Lambda itself rather than
+/// held a second time here, and the decision is
+/// [`::service_common::iam_authorization`], the tree's one evaluation of policy documents,
+/// taken on [`INVOKE_FUNCTION_ACTION`] over that function with the ROUTE's own ARN as the
+/// `aws:SourceArn` such a grant is narrowed by — which is how a permission added for one api
+/// (or one route of it) admits the invocation for that one and for no other.
+///
+/// `true` also when nothing about the function could be SHOWN, which refuses nothing: a
+/// function Lambda does not answer about at all, and an emulator with no Lambda mounted, are
+/// not evidence of a missing grant — the invocation below is then what decides the request. A
+/// function whose policy Lambda REPORTS as absent is an answer rather than a silence
+/// ([`reports_no_policy`]): it grants nothing, so the invocation is not made.
+pub async fn invocation_admitted(
+    callback: &EmbeddedEmulator,
+    target: &FunctionTarget,
+    source_arn: &str,
+) -> bool {
+    let client = client(callback, &target.region);
+    // The RESOURCE a grant is taken on is the function's own ARN as Lambda reports it, so it
+    // is resolved there rather than assumed to be what the integration carried (a version or
+    // alias qualifier included). A function Lambda answers nothing about is one this judges
+    // nothing about.
+    let resolved = match client
+        .get_function_configuration()
+        .function_name(&target.arn)
+        .send()
+        .await
+    {
+        Ok(reported) => reported.function_arn.unwrap_or_else(|| target.arn.clone()),
+        Err(error) => {
+            tracing::warn!(
+                function = %target.arn,
+                error = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
+                "this route's function was not judged: nothing answered for its configuration"
+            );
+            return true;
+        }
+    };
+    let document = match client.get_policy().function_name(&resolved).send().await {
+        Ok(reported) => reported.policy.unwrap_or_default(),
+        Err(error) => {
+            if !reports_no_policy(&error) {
+                tracing::warn!(
+                    function = %resolved,
+                    error = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
+                    "this route's function was not judged: nothing answered for its resource \
+                     policy"
+                );
+                return true;
+            }
+            // A function Lambda reports no resource policy for carries none, which grants
+            // nothing.
+            String::new()
+        }
+    };
+    let principals = [GATEWAY_SERVICE_PRINCIPAL.to_string()];
+    let context = [
+        (SOURCE_ARN_KEY.to_string(), source_arn.to_string()),
+        (
+            SOURCE_ACCOUNT_KEY.to_string(),
+            ::engine::emulator_account_id().to_string(),
+        ),
+    ];
+    let request =
+        ::service_common::iam_authorization::Request::new(
+            INVOKE_FUNCTION_ACTION,
+            &resolved,
+            &principals,
+        )
+        .with_context(&context)
+        .with_published_keys(&[SOURCE_ARN_KEY, SOURCE_ACCOUNT_KEY]);
+    ::service_common::iam_authorization::resource_decision(&document, &request)
+        == ::service_common::iam_authorization::Decision::Allowed
+}
+
+/// Whether `error` is LAMBDA REPORTING THAT THE FUNCTION HAS NO RESOURCE POLICY, which is an
+/// answer about the function — `GetPolicy` models `ResourceNotFoundException` for "the
+/// resource specified in the request does not exist", and a function carrying no policy grants
+/// nothing.
+///
+/// Every other failure is not that answer and grounds no refusal: a failure the emulator
+/// itself produced (no service of it serves the endpoint, or more than one claims it), and any
+/// other error Lambda answered, leave the function unjudged and the invocation to decide.
+fn reports_no_policy(
+    error: &::aws_smithy_runtime_api::client::result::SdkError<
+        ::aws_sdk_lambda::operation::get_policy::GetPolicyError,
+        ::aws_smithy_runtime_api::client::orchestrator::HttpResponse,
+    >,
+) -> bool {
+    let ::aws_smithy_runtime_api::client::result::SdkError::ServiceError(service) = error else {
+        return false;
+    };
+    service.err().is_resource_not_found_exception()
 }
 
 /// The Lambda client one hop is made with.

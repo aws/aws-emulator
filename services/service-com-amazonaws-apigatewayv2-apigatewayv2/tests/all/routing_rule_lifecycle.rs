@@ -50,7 +50,7 @@ use service_com_amazonaws_apigatewayv2_apigatewayv2::state::{
     ROUTING_RULE_CONDITION_ALTERNATIVES, ROUTING_RULE_CONDITION_LIMITS,
 };
 
-use crate::api_lifecycle::{as_str, assert_minted_id, call_in_region, emulator, error_code};
+use crate::api_lifecycle::{as_str, assert_minted_id, call_in_region, error_code};
 
 /// The region every request in this suite is signed for. Deliberately NOT the emulator's
 /// `us-east-1` default, so nothing region-derived (the rule's ARN) can be hardcoded.
@@ -174,11 +174,20 @@ async fn seed_api(emulator: &MultiServiceRouter, name: &str, stage_names: &[&str
 /// A fresh emulator holding [`DOMAIN`], [`NEIGHBOUR_DOMAIN`] and one api with the stages
 /// [`STAGE`] and [`OTHER_STAGE`]. Answers `(emulator, api_id)`.
 async fn seeded() -> (MultiServiceRouter, String) {
-    let emulator = emulator();
+    let (emulator, api_id, _engine) = seeded_with_engine().await;
+    (emulator, api_id)
+}
+
+/// [`seeded`], and the engine it was built from — for the rows that address a domain name by
+/// its own `DomainNameId`, a value this model reports through no operation at all
+/// ([`minted_domain_name_id`]).
+async fn seeded_with_engine(
+) -> (MultiServiceRouter, String, ::std::sync::Arc<engine::InMemoryEngine>) {
+    let (emulator, engine) = crate::api_lifecycle::emulator_with_engine();
     seed_domain_name(&emulator, DOMAIN).await;
     seed_domain_name(&emulator, NEIGHBOUR_DOMAIN).await;
     let api_id = seed_api(&emulator, "ruled-api", &[STAGE, OTHER_STAGE]).await;
-    (emulator, api_id)
+    (emulator, api_id, engine)
 }
 
 /// The simplest rule body an action table row can vary: one `invokeApi` action on
@@ -730,28 +739,28 @@ async fn list_routing_rules_pages_the_rules_of_the_named_domain_name() {
     }
 }
 
-/// The `DomainNameId` this store minted for `domain`, read off the regional host the
-/// domain name is served on (`d-{id}.execute-api.{region}.amazonaws.com`) — the one value
-/// a client can derive it from, since no operation of this model reports the id itself.
-async fn minted_domain_name_id(emulator: &MultiServiceRouter, domain: &str) -> String {
-    let (status, body) = call(emulator, "GET", &format!("/v2/domainnames/{domain}"), None).await;
-    assert_eq!(
-        status, 200,
-        "expected 200 from GetDomainName, got {status} {body}"
-    );
-    let host = body["domainNameConfigurations"][0]["apiGatewayDomainName"]
-        .as_str()
+/// The `DomainNameId` this store minted for `domain`, read out of the store itself: no
+/// operation of this model reports the id, and the address a domain name publishes is the one
+/// its own socket answers on rather than a name that spells the id
+/// (`crate::service::domain_name_socket`).
+fn minted_domain_name_id(
+    engine: &::std::sync::Arc<engine::InMemoryEngine>,
+    domain: &str,
+) -> String {
+    let state = engine.state::<
+        service_com_amazonaws_apigatewayv2_apigatewayv2::ComAmazonawsApigatewayv2Apigatewayv2State,
+    >();
+    let store = state.lock();
+    store
+        .domain_names
+        .get(domain)
+        .map(|record| record.domain_name_id.clone())
         .unwrap_or_default()
-        .to_string();
-    host.strip_prefix("d-")
-        .and_then(|rest| rest.split('.').next())
-        .unwrap_or_default()
-        .to_string()
 }
 
 #[tokio::test]
 async fn an_operation_naming_a_domain_name_the_account_does_not_hold_is_refused() {
-    let (emulator, api_id) = seeded().await;
+    let (emulator, api_id, engine) = seeded_with_engine().await;
     let (status, created) =
         create_routing_rule(&emulator, DOMAIN, &simple_rule(&api_id, STAGE, 1)).await;
     assert_eq!(
@@ -781,7 +790,7 @@ async fn an_operation_naming_a_domain_name_the_account_does_not_hold_is_refused(
     // A `DomainNameId` beside the name addresses the domain name that CARRIES it, so an
     // id no domain name carries and another domain name's own id both name a resource
     // this account does not hold under this name.
-    let foreign = minted_domain_name_id(&emulator, NEIGHBOUR_DOMAIN).await;
+    let foreign = minted_domain_name_id(&engine, NEIGHBOUR_DOMAIN);
     let wrong_ids = [
         ("a DomainNameId no domain name carries", "0000000000"),
         ("the DomainNameId of ANOTHER domain name", foreign.as_str()),
@@ -802,7 +811,7 @@ async fn an_operation_naming_a_domain_name_the_account_does_not_hold_is_refused(
 
     // The positive control: the domain name's OWN id addresses it, and the rule stored
     // under it is reported.
-    let own = minted_domain_name_id(&emulator, DOMAIN).await;
+    let own = minted_domain_name_id(&engine, DOMAIN);
     assert!(!own.is_empty(), "expected a minted DomainNameId for {DOMAIN}");
     let (status, body) =
         list_routing_rules(&emulator, DOMAIN, &format!("?domainNameId={own}")).await;

@@ -3,10 +3,11 @@
 //! What a client of a CloudFormation-deployed HTTP API's `$default` stage is served when the
 //! `$default` route fronts an `AWS::Lambda::Function` through an `AWS_PROXY` integration.
 //!
-//! The rule under test: **an HTTP api's `CorsConfiguration` decides only the CORS HEADERS on
-//! the answer; the status and the body are the ones the route's integration produced, so the
-//! same request answered with and without an `Origin` header is answered by the same run of
-//! the same function.** CloudFormation provisions the function and the api, API Gateway v2
+//! The rule under test: **an HTTP api's `CorsConfiguration` decides the CORS HEADERS on the
+//! answer and nothing else about a request the route serves, so the same request answered
+//! with and without an `Origin` header is answered by the same run of the same function —
+//! while the PREFLIGHT a user agent sends instead of the request is answered by the GATEWAY
+//! itself, from that configuration, with no run of the function at all.** CloudFormation provisions the function and the api, API Gateway v2
 //! resolves the stage and the route and performs the proxy integration, and AWS Lambda runs
 //! the deployment package — four crates, so the suite lives here rather than in any one of
 //! them.
@@ -50,6 +51,10 @@ const OTHER_METHOD: &str = "DELETE";
 /// The three response headers a CORS answer carries, as Fetch names them.
 const ALLOW_ORIGIN_HEADER: &str = "access-control-allow-origin";
 const ALLOW_METHODS_HEADER: &str = "access-control-allow-methods";
+
+/// The status the GATEWAY answers a preflight of a CORS-configured api with: it answers the
+/// preflight itself, so the route's integration is not reached and there is no body.
+const PREFLIGHT_STATUS: u16 = 204;
 
 /// How long one invocation of this handler is given, as the function's own `Timeout`.
 const FUNCTION_TIMEOUT: u64 = 30;
@@ -336,8 +341,21 @@ struct Row {
     /// `access-control-allow-methods` the answer must carry, likewise.
     allow_methods: Option<&'static str>,
     /// Whether the answer is the INTEGRATION's — the handler's own 200 and body — rather than
-    /// the gateway's own answer to a preflight it handled itself.
+    /// the gateway's own answer to a preflight it handled itself, which carries the
+    /// configuration's headers on [`PREFLIGHT_STATUS`] and no body at all.
     served_by_the_function: bool,
+}
+
+impl Row {
+    /// The status this row's answer must carry: the handler's own `200` for a request it
+    /// served, and the gateway's own [`PREFLIGHT_STATUS`] for a preflight it answered itself.
+    fn status(&self) -> u16 {
+        if self.served_by_the_function {
+            200
+        } else {
+            PREFLIGHT_STATUS
+        }
+    }
 }
 
 const ROWS: &[Row] = &[
@@ -529,9 +547,11 @@ async fn a_deployed_http_api_serves_its_default_lambda_route_with_the_apis_cors_
         )
         .await;
         assert_eq!(
-            served.status, 200,
-            "case {case:?}: expected HTTP 200 from {} {host}/?marker={marker}, got {} with \
+            served.status,
+            row.status(),
+            "case {case:?}: expected HTTP {} from {} {host}/?marker={marker}, got {} with \
              {:?}",
+            row.status(),
             row.method,
             served.status,
             served.text()

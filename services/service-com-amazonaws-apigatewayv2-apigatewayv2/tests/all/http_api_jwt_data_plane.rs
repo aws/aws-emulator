@@ -1097,8 +1097,8 @@ async fn what_the_invoke_endpoint_answers_before_any_route_is_reached() {
         (
             "a stage of the api that does not exist",
             invoke(&emulator, &deployment, "GET", "/nosuchstage/hello", with_token).await,
-            FORBIDDEN,
-            FORBIDDEN_MESSAGE,
+            NOT_FOUND,
+            NOT_FOUND_MESSAGE,
         ),
         (
             "the deployed stage, with a path no route of the api matches",

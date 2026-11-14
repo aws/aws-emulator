@@ -192,6 +192,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
+        // And nothing answers at the ADDRESS it published: dropping the socket's handle
+        // closes the port and severs every connection in flight on it, so a client that kept
+        // dialling the address of a deleted domain name reaches nothing rather than being
+        // served an api it no longer maps.
+        store
+            .domain_name_transport
+            .forget(&input.domain_name);
+
         Ok(DeleteDomainNameOutput)
     }
 }

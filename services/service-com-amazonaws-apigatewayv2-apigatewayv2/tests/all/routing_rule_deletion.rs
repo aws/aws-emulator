@@ -194,11 +194,20 @@ async fn seed_api(emulator: &MultiServiceRouter, name: &str) -> String {
 
 /// A fresh emulator holding [`DOMAIN`], [`OTHER_DOMAIN`] and one api with [`STAGE`].
 async fn seeded() -> (MultiServiceRouter, String) {
-    let emulator = crate::api_lifecycle::emulator();
+    let (emulator, api_id, _engine) = seeded_with_engine().await;
+    (emulator, api_id)
+}
+
+/// [`seeded`], and the engine it was built from — for the rows that address a domain name by
+/// its own `DomainNameId`, a value this model reports through no operation at all
+/// ([`minted_domain_name_id`]).
+async fn seeded_with_engine() -> (MultiServiceRouter, String, ::std::sync::Arc<engine::InMemoryEngine>)
+{
+    let (emulator, engine) = crate::api_lifecycle::emulator_with_engine();
     seed_domain_name(&emulator, DOMAIN).await;
     seed_domain_name(&emulator, OTHER_DOMAIN).await;
     let api_id = seed_api(&emulator, "deleted-rules-api").await;
-    (emulator, api_id)
+    (emulator, api_id, engine)
 }
 
 /// The simplest rule body: one `invokeApi` action on [`STAGE`], one base-path condition
@@ -234,23 +243,23 @@ async fn seed_rules(
     ids
 }
 
-/// The `DomainNameId` this store minted for `domain`, read off the regional host the
-/// domain name is served on (`d-{id}.execute-api.{region}.amazonaws.com`) — the one value
-/// a client can derive it from, since no operation of this model reports the id itself.
-async fn minted_domain_name_id(emulator: &MultiServiceRouter, domain: &str) -> String {
-    let (status, body) = call(emulator, "GET", &format!("/v2/domainnames/{domain}"), None).await;
-    assert_eq!(
-        status, 200,
-        "expected 200 from GetDomainName of {domain:?}, got {status} {body}"
-    );
-    let host = body["domainNameConfigurations"][0]["apiGatewayDomainName"]
-        .as_str()
+/// The `DomainNameId` this store minted for `domain`, read out of the store itself: no
+/// operation of this model reports the id, and the address a domain name publishes is the one
+/// its own socket answers on rather than a name that spells the id
+/// (`crate::service::domain_name_socket`).
+fn minted_domain_name_id(
+    engine: &::std::sync::Arc<engine::InMemoryEngine>,
+    domain: &str,
+) -> String {
+    let state = engine.state::<
+        service_com_amazonaws_apigatewayv2_apigatewayv2::ComAmazonawsApigatewayv2Apigatewayv2State,
+    >();
+    let store = state.lock();
+    store
+        .domain_names
+        .get(domain)
+        .map(|record| record.domain_name_id.clone())
         .unwrap_or_default()
-        .to_string();
-    host.strip_prefix("d-")
-        .and_then(|rest| rest.split('.').next())
-        .unwrap_or_default()
-        .to_string()
 }
 
 /// Assert one response is the modelled refusal of a request naming a resource the account
@@ -473,7 +482,7 @@ fn missing_cases() -> Vec<MissingCase> {
 
 #[tokio::test]
 async fn delete_routing_rule_on_a_resource_the_account_does_not_hold_removes_nothing() {
-    let (emulator, api_id) = seeded().await;
+    let (emulator, api_id, engine) = seeded_with_engine().await;
     let own = seed_rules(&emulator, DOMAIN, &api_id, 2).await;
     // The rules that exist under the OTHER domain name. Each collection mints its ids of
     // its own, so only the neighbour's LAST id — one past the count `DOMAIN` holds — is an
@@ -489,7 +498,7 @@ async fn delete_routing_rule_on_a_resource_the_account_does_not_hold_removes_not
     );
     let foreign_query = format!(
         "?domainNameId={}",
-        minted_domain_name_id(&emulator, OTHER_DOMAIN).await
+        minted_domain_name_id(&engine, OTHER_DOMAIN)
     );
 
     for case in missing_cases() {
@@ -518,9 +527,9 @@ async fn delete_routing_rule_on_a_resource_the_account_does_not_hold_removes_not
 
 #[tokio::test]
 async fn delete_routing_rule_under_the_domain_names_own_id_removes_the_rule() {
-    let (emulator, api_id) = seeded().await;
+    let (emulator, api_id, engine) = seeded_with_engine().await;
     let ids = seed_rules(&emulator, DOMAIN, &api_id, 2).await;
-    let own_id = minted_domain_name_id(&emulator, DOMAIN).await;
+    let own_id = minted_domain_name_id(&engine, DOMAIN);
     assert!(
         !own_id.is_empty(),
         "expected a minted DomainNameId for {DOMAIN:?}, got {own_id:?}"

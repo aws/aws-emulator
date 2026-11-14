@@ -67,6 +67,8 @@ mod control_plane_request_validation;
 mod create_api_modelled_outcomes;
 #[path = "all/custom_domain_hosted_zone.rs"]
 mod custom_domain_hosted_zone;
+#[path = "all/custom_domain_mapping_invoke.rs"]
+mod custom_domain_mapping_invoke;
 #[path = "all/date_time_schema_coverage.rs"]
 mod date_time_schema_coverage;
 #[path = "all/deployment_deletion.rs"]
@@ -111,6 +113,8 @@ mod http_api_jwt_data_plane;
 mod http_api_jwt_refusal_is_per_request;
 #[path = "all/http_api_jwt_scope_gate.rs"]
 mod http_api_jwt_scope_gate;
+#[path = "all/http_api_lambda_invoke_permission.rs"]
+mod http_api_lambda_invoke_permission;
 #[path = "all/http_api_payload_quota.rs"]
 mod http_api_payload_quota;
 #[path = "all/http_api_published_endpoint_reporters.rs"]

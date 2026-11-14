@@ -1041,11 +1041,12 @@ async fn carry_frames<S>(
                     // Ping, Pong and Frame are the protocol's own: the implementation answers
                     // a ping itself and nothing of the api serves them.
                     Some(Ok(_)) => continue,
-                    // A message the reader itself stops at carries the SAME refusal the
-                    // ceiling below carries, and for the same reason the gateway states it:
-                    // one frame past [`MAX_FRAME_BYTES`], or fragments past the backstop
-                    // [`READ_CEILING_BYTES`]. The client reads why its message was refused
-                    // instead of losing the connection with nothing said.
+                    // A message the reader itself stops at is one FRAME past the gateway's
+                    // inbound frame quota ([`MAX_FRAME_BYTES`]), or fragments past the
+                    // backstop the reader is given ([`READ_CEILING_BYTES`]): either way the
+                    // bound that stopped it is the frame quota, which is what its close names
+                    // ([`size_bound_exceeded_reason`]). The client reads why its message was
+                    // refused instead of losing the connection with nothing said.
                     Some(Err(SocketError::Capacity(exceeded))) => {
                         tracing::info!(
                             %api_id,
@@ -1053,7 +1054,12 @@ async fn carry_frames<S>(
                             %exceeded,
                             "refusing a client message past the bounds this socket is read under"
                         );
-                        refused(&mut outgoing, CloseCode::Size, MESSAGE_TOO_BIG_REASON).await;
+                        refused(
+                            &mut outgoing,
+                            CloseCode::Size,
+                            &size_bound_exceeded_reason(MAX_FRAME_BYTES),
+                        )
+                        .await;
                         break;
                     }
                     Some(Err(error)) => {
@@ -1070,7 +1076,9 @@ async fn carry_frames<S>(
                 // The per-message ceiling, which the GATEWAY enforces: a message whose
                 // ASSEMBLED payload passes [`MAX_MESSAGE_BYTES`] reaches no route and ends
                 // the connection with the close RFC 6455 §7.4.1 states for a message "too
-                // big to process" (1009).
+                // big to process" (1009), worded as the gateway words THAT class
+                // ([`MESSAGE_TOO_BIG_REASON`]) rather than as a frame past the quota: every
+                // frame of such a message was inside the quota.
                 if body.len() > MAX_MESSAGE_BYTES {
                     tracing::info!(
                         %api_id,
@@ -1255,11 +1263,22 @@ where
     let _ = outgoing.close().await;
 }
 
-/// The sentences API Gateway words a refused message's close with, carried in the CLOSE
-/// frame's payload after the status code (RFC 6455 §5.5.1, "the body MAY contain … a reason"):
-/// one for a client data frame that is not text, one for a message past the per-message
-/// ceiling.
+/// The sentence API Gateway words a refused client DATA FRAME's close with, carried in the
+/// CLOSE frame's payload after the status code (RFC 6455 §5.5.1, "the body MAY contain … a
+/// reason"): a frame whose opcode is not text carries no payload this plane serves.
 const BINARY_UNSUPPORTED_REASON: &str = "Binary is not supported";
+
+/// The sentence a single FRAME past the gateway's inbound frame quota is closed with, naming
+/// the quota it went past: API Gateway words such a close `Max frame length of {bytes} has
+/// been exceeded.`, where the number is [`MAX_FRAME_BYTES`] — the bound this socket applied,
+/// never a number carried in the message.
+fn size_bound_exceeded_reason(bound_bytes: usize) -> String {
+    format!("Max frame length of {bound_bytes} has been exceeded.")
+}
+
+/// The sentence a MESSAGE whose assembled payload passes the per-message ceiling is closed
+/// with: the fixed text API Gateway words that close with, which names no bound — every frame
+/// of such a message was inside the frame quota and what was too big is the message.
 const MESSAGE_TOO_BIG_REASON: &str = "Message too big";
 
 /// What one frame is answered with, and what the stage LOGS about serving it.

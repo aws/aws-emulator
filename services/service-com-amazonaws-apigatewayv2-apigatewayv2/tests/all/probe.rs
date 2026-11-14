@@ -369,8 +369,8 @@ async fn an_announced_endpoint_is_claimed_in_every_state_of_the_api() {
         answer.summary()
     );
     assert_eq!(
-        answer.status, FORBIDDEN,
-        "an api with no stage serves nothing, got {}",
+        answer.status, NOT_FOUND,
+        "an api with no stage holds no stage the path could name, got {}",
         answer.summary()
     );
 

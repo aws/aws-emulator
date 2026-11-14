@@ -9,13 +9,13 @@
 //!
 //! > Every status an `execute-api` invoke is answered with is computed from the api's own
 //! > stored records and names the fault class it met, never the emulator's scaffold channel
-//! > and never a success no backend produced: an endpoint that serves nothing — a stage with
-//! > no deployment released to it, or a path naming no stage of the api — is `403`
-//! > `{"message":"Forbidden"}`; a method and path no route key of the api matches is `404`
-//! > `{"message":"Not Found"}`; and a matched route whose integration produced no response is
-//! > `500` `{"message":"Internal Server Error"}`, the status an HTTP api maps an integration
-//! > fault to, whatever that integration's `TimeoutInMillis`, `PayloadFormatVersion` or
-//! > target is.
+//! > and never a success no backend produced: a stage with no deployment released to it
+//! > serves nothing and is `403` `{"message":"Forbidden"}`; a path naming no stage of the api,
+//! > and a method and path no route key of the api matches, name nothing the endpoint has and
+//! > are `404` `{"message":"Not Found"}`; and a matched route whose integration produced no
+//! > response is `500` `{"message":"Internal Server Error"}`, the status an HTTP api maps an
+//! > integration fault to, whatever that integration's `TimeoutInMillis`,
+//! > `PayloadFormatVersion` or target is.
 //!
 //! The `500` is the HTTP api's own mapping, and the two statuses it is NOT are pinned here
 //! because a client branches on them: it is not the `502` a REST api answers for a malformed
@@ -392,8 +392,8 @@ fn class_rows() -> &'static [ClassRow] {
             route_keys: &["GET /x"],
             method: "GET",
             request_path: "/x",
-            status: FORBIDDEN,
-            message: FORBIDDEN_MESSAGE,
+            status: NOT_FOUND,
+            message: NOT_FOUND_MESSAGE,
         },
         ClassRow {
             case: "a path no route key of the api matches",

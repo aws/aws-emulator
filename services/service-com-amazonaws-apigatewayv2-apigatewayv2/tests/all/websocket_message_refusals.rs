@@ -11,8 +11,10 @@
 //! > the ceiling — selects no route and reaches no integration: the gateway answers it with an
 //! > RFC 6455 CLOSE frame carrying the status code of that refusal (`1003` for data the
 //! > endpoint does not accept, `1009` for a message too big to process) and the sentence the
-//! > gateway words that refusal with, and the connection then ends. A message inside it is
-//! > dispatched and answered as ever.
+//! > gateway words THAT refusal with — for a frame past the frame quota, one that NAMES the
+//! > quota; for a message whose assembled payload passes the ceiling, the fixed text of that
+//! > class — and the connection then ends. A message inside it is dispatched and answered as
+//! > ever.
 //!
 //! Every api below carries a TWO-WAY `$default` route, so a message that IS served is read
 //! back as that route's reply: for a refused message the client reads the CLOSE and then the
@@ -62,6 +64,19 @@ const FRAGMENT_BYTES: usize = 32 * 1024;
 /// process" — each with the sentence API Gateway words that refusal with, which the CLOSE
 /// frame carries after the status code.
 const CLOSE_UNSUPPORTED_DATA: (u16, &str) = (1003, "Binary is not supported");
+
+/// The 1009 close of one FRAME past the frame quota, which NAMES the quota it went past: API
+/// Gateway words it `Max frame length of {bytes} has been exceeded.`
+fn close_past_frame_quota(bound_bytes: usize) -> Answer {
+    Answer::Close(
+        Some(1009),
+        format!("Max frame length of {bound_bytes} has been exceeded."),
+    )
+}
+
+/// The 1009 close of a MESSAGE whose assembled payload passes the per-message ceiling: the
+/// fixed text API Gateway words that class with, which names no bound — every frame of such a
+/// message was inside the frame quota.
 const CLOSE_MESSAGE_TOO_BIG: (u16, &str) = (1009, "Message too big");
 
 /// What the `$default` route's MOCK integration renders for a message it serves, so a served
@@ -312,7 +327,7 @@ async fn a_client_message_past_a_published_size_bound_is_refused_with_close_1009
         Row {
             case: "one frame carrying one byte past the frame quota",
             frames: vec![Message::Text(text_of(FRAGMENT_BYTES + 1).into())],
-            expected: closed(CLOSE_MESSAGE_TOO_BIG),
+            expected: close_past_frame_quota(FRAGMENT_BYTES),
         },
         Row {
             case: "fragments assembling to one byte past the ceiling, each frame itself at the \

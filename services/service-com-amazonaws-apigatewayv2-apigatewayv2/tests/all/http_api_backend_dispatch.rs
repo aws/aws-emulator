@@ -173,9 +173,29 @@ fn package(source: &str) -> Vec<u8> {
     buffer.into_inner()
 }
 
-/// Create a function whose code is `source` and bring the activation the clock owes forward,
-/// so no case here waits for the provisioning window. Answers its ARN.
+/// Create a function whose code is `source`, bring the activation the clock owes forward, and
+/// give it the resource-based permission an API GATEWAY integration needs to invoke it
+/// ([`gateway_may_invoke`]) — the `AddPermission` a client makes beside creating the function
+/// it fronts a route with, without which the gateway's invocation is not made at all. Answers
+/// its ARN.
+///
+/// The suite that varies that grant — and that drives a function WITHOUT one — is
+/// `http_api_lambda_invoke_permission.rs`.
 pub(crate) async fn given_function(
+    emulator: &MultiServiceRouter,
+    engine: &Arc<engine::InMemoryEngine>,
+    case: &str,
+    name: &str,
+    source: &str,
+) -> String {
+    let arn = given_ungranted_function(emulator, engine, case, name, source).await;
+    gateway_may_invoke(emulator, case, name, None).await;
+    arn
+}
+
+/// [`given_function`] WITHOUT the grant: the function exists and is active, and its resource
+/// policy is whatever the caller adds (or nothing at all).
+pub(crate) async fn given_ungranted_function(
     emulator: &MultiServiceRouter,
     engine: &Arc<engine::InMemoryEngine>,
     case: &str,
@@ -208,6 +228,98 @@ pub(crate) async fn given_function(
         .and_then(Value::as_str)
         .unwrap_or_else(|| panic!("case {case:?}: CreateFunction answered no FunctionArn"))
         .to_string()
+}
+
+/// Grant API Gateway the `lambda:InvokeFunction` permission on `function`, optionally
+/// narrowed to `source_arn` — the `AddPermission` whose `Principal` is the gateway's service
+/// principal, which is what admits an api's invocation of a route's function.
+pub(crate) async fn gateway_may_invoke(
+    emulator: &MultiServiceRouter,
+    case: &str,
+    function: &str,
+    source_arn: Option<&str>,
+) {
+    granted(
+        emulator,
+        case,
+        function,
+        "lambda:InvokeFunction",
+        "apigateway.amazonaws.com",
+        source_arn,
+    )
+    .await;
+}
+
+/// One `AddPermission` on `function`: the statement id is derived from what the grant says, so
+/// a case may add several and remove one by name ([`statement_id`]).
+pub(crate) async fn granted(
+    emulator: &MultiServiceRouter,
+    case: &str,
+    function: &str,
+    action: &str,
+    principal: &str,
+    source_arn: Option<&str>,
+) {
+    let mut request = json!({
+        "StatementId": statement_id(action, principal, source_arn),
+        "Action": action,
+        "Principal": principal,
+    });
+    if let Some(source_arn) = source_arn {
+        request["SourceArn"] = json!(source_arn);
+    }
+    let (status, granted) = lambda(
+        emulator,
+        "POST",
+        &format!("/2015-03-31/functions/{function}/policy"),
+        Some(request),
+    )
+    .await;
+    assert_eq!(
+        status, 201,
+        "case {case:?}: AddPermission answered {status} {granted}"
+    );
+}
+
+/// Take one statement back off `function`'s resource policy — the `RemovePermission` a client
+/// makes when it revokes a grant.
+pub(crate) async fn revoked(
+    emulator: &MultiServiceRouter,
+    case: &str,
+    function: &str,
+    action: &str,
+    principal: &str,
+    source_arn: Option<&str>,
+) {
+    let statement = statement_id(action, principal, source_arn);
+    let (status, removed) = lambda(
+        emulator,
+        "DELETE",
+        &format!("/2015-03-31/functions/{function}/policy/{statement}"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status, 204,
+        "case {case:?}: RemovePermission answered {status} {removed}"
+    );
+}
+
+/// The `StatementId` one grant is stored under: derived from the grant itself, so the same
+/// grant is added and removed by one name and two different grants never collide. Kept inside
+/// the length the member admits (`AddPermission$StatementId`, at most 100 characters) by
+/// taking the END of the derived name, which is where a source ARN differs.
+fn statement_id(action: &str, principal: &str, source_arn: Option<&str>) -> String {
+    let scope = source_arn.unwrap_or("any");
+    let name: String = format!("{action}-{principal}-{scope}")
+        .chars()
+        .map(|character| if character.is_ascii_alphanumeric() { character } else { '-' })
+        .collect();
+    let keep = 100;
+    match name.char_indices().nth(name.chars().count().saturating_sub(keep)) {
+        Some((at, _)) => name[at..].to_string(),
+        None => name,
+    }
 }
 
 /// Replace one function's code, so a later invocation runs the new handler.

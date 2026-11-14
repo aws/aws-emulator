@@ -23,7 +23,6 @@
 //!   registry, so a connection this data plane carries and a connection that API reports are
 //!   the same connection.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use ::emulator_server::ResourceListener;
@@ -34,39 +33,21 @@ use ::emulator_server::ResourceListener;
 /// A field of [`crate::state::ComAmazonawsApigatewayv2Apigatewayv2State`] rather than a
 /// store of its own, so the records that say which apis exist and the sockets those apis are
 /// reached at are read under ONE lock and cannot drift apart.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct WebSocketTransport {
-    /// The core-owned listener each WebSocket api is reached at, keyed by `ApiId`. Holding
-    /// the handle is what keeps the port open; removing the entry closes it.
-    listeners: BTreeMap<String, Arc<ResourceListener>>,
+    /// The core-owned listener each WebSocket api is reached at, keyed by `ApiId` — the one
+    /// registry both kinds of core-owned socket of this service are kept in
+    /// ([`super::listener_registry`]). Holding the handle is what keeps the port open;
+    /// removing the entry closes it.
+    listeners: super::listener_registry::ListenerRegistry,
     /// Drives [`Self::mint_connection_id`]: how many connections this transport has
     /// accepted, which is what makes each minted id a new one.
     connection_seed: u64,
 }
 
-// By hand, because a `ResourceListener` is a live socket and carries no `Debug` of its own:
-// what is diagnosable about the transport is which apis hold a socket and where each landed,
-// not the handle's internals.
-impl std::fmt::Debug for WebSocketTransport {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let listeners: BTreeMap<&String, String> = self
-            .listeners
-            .iter()
-            .map(|(api_id, listener)| (api_id, authority_of(listener)))
-            .collect();
-        formatter
-            .debug_struct("WebSocketTransport")
-            .field("listeners", &listeners)
-            .field("connection_seed", &self.connection_seed)
-            .finish()
-    }
-}
-
 /// The `host:port` a core listener is addressed by, written as a URL parses it — the ONE
 /// reading of a listener's address (`service_common::data_plane_addressing`).
-pub fn authority_of(listener: &ResourceListener) -> String {
-    ::service_common::data_plane_addressing::listener_authority(listener)
-}
+pub use super::listener_registry::authority_of;
 
 /// The `ApiEndpoint` a WebSocket api announces for the socket it is served on: the WebSocket
 /// scheme its `ProtocolType` gives it ([`crate::state::execute_api_scheme`]) over the address
@@ -90,15 +71,13 @@ impl WebSocketTransport {
     /// Replaces any listener the api already held, so re-opening one closes the old port
     /// rather than leaving two sockets answering for one api.
     pub fn remember_listener(&mut self, api_id: &str, listener: Arc<ResourceListener>) -> String {
-        let authority = authority_of(&listener);
-        self.listeners.insert(api_id.to_string(), listener);
-        authority
+        self.listeners.remember(api_id, listener)
     }
 
     /// The `host:port` `api_id`'s WebSocket data plane is reached at, or `None` when this
     /// api holds no listener.
     pub fn authority(&self, api_id: &str) -> Option<String> {
-        self.listeners.get(api_id).map(|l| authority_of(l))
+        self.listeners.authority(api_id)
     }
 
     /// The api whose data plane is reached at `authority`, or `None` when that address is no
@@ -110,17 +89,14 @@ impl WebSocketTransport {
     /// address a request reached names the api it addressed, which no `execute-api` host and
     /// no path segment of a locally reached endpoint does.
     pub fn api_at(&self, authority: &str) -> Option<&str> {
-        self.listeners
-            .iter()
-            .find(|(_api_id, listener)| authority_of(listener) == authority)
-            .map(|(api_id, _listener)| api_id.as_str())
+        self.listeners.key_at(authority)
     }
 
     /// Close `api_id`'s socket — what an api being deleted does to its data plane. Dropping
     /// the handle severs every connection that was open on it, and the task serving each one
     /// then forgets it in the connection registry.
     pub fn forget_api(&mut self, api_id: &str) {
-        self.listeners.remove(api_id);
+        self.listeners.forget(api_id);
     }
 
     /// Mint the next `ConnectionId`, in the shape API Gateway mints one: 16 characters of

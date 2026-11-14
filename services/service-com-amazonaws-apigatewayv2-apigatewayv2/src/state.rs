@@ -29,10 +29,12 @@ pub mod authorizer_cache;
 pub mod cors;
 pub mod cors_origin;
 pub mod duplicate_identity;
+pub mod domain_name_transport;
 pub mod ec2_subnets;
 pub mod integration_response_key;
 pub mod invoke_transport;
 pub mod jwt_issuer;
+pub mod listener_registry;
 pub mod model_template;
 mod network;
 pub mod paging;
@@ -1102,6 +1104,11 @@ pub struct ComAmazonawsApigatewayv2Apigatewayv2State {
     /// Data-plane state, like [`Self::authorizer_cache`], and held beside the apis under the
     /// same lock so an api's records and the socket it announces cannot drift apart.
     pub websocket_transport: websocket_transport::WebSocketTransport,
+    /// The SOCKET each custom domain name is reached at: the address its record publishes as
+    /// its `ApiGatewayDomainName` ([`domain_name_transport::DomainNameTransport`]).
+    /// Data-plane state, like [`Self::websocket_transport`], and held beside the domain names
+    /// under the same lock so a record and the address it publishes cannot drift apart.
+    pub domain_name_transport: domain_name_transport::DomainNameTransport,
     /// The in-process transport this service performs an HTTP api's integrations over when
     /// the request being served carries none of its own
     /// ([`invoke_transport::InvokeTransport`]). Held beside the apis under the same lock, for

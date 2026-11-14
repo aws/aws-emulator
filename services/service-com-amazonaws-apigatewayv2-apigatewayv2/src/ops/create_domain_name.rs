@@ -220,22 +220,79 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 "CreateDomainName",
             ));
         };
-        let mut store = state.lock();
+        let domain_id = {
+            let mut store = state.lock();
 
-        // The name identifies the resource, so a second create under a name the account
-        // already holds would have to replace a domain name a caller can still reach.
-        // The refusal is this write's own (`BadRequestException`, 400) and its sentence
-        // is API Gateway's for this kind of resource — see
-        // `crate::state::duplicate_identity`.
+            // The name identifies the resource, so a second create under a name the account
+            // already holds would have to replace a domain name a caller can still reach.
+            // The refusal is this write's own (`BadRequestException`, 400) and its sentence
+            // is API Gateway's for this kind of resource — see
+            // `crate::state::duplicate_identity`.
+            if store.domain_names.contains_key(&input.domain_name) {
+                return Err(bad_request(
+                    crate::state::duplicate_identity::DOMAIN_NAME_ALREADY_EXISTS_MESSAGE,
+                ));
+            }
+
+            // Bound the growth a caller drives: AWS's published quota is 120 custom domain
+            // names per account per Region, and `TooManyRequestsException` is the modelled
+            // error for "a limit has been exceeded" (it carries the limit's name).
+            if store.domain_names.len() >= crate::state::MAX_DOMAIN_NAMES {
+                return Err(CreateDomainNameErrorModeled::TooManyRequestsException(
+                    TooManyRequestsException {
+                        limit_type: Some("DomainName".to_string()),
+                        message: Some(format!(
+                            "The maximum number of custom domain names ({}) for this account \
+                             has been reached.",
+                            crate::state::MAX_DOMAIN_NAMES
+                        )),
+                    },
+                )
+                .into());
+            }
+
+            store.mint_domain_name_id()
+        };
+        // The address this record PUBLISHES has to be one a client can dial: the socket this
+        // domain name is reached on is opened with the store's guard released, and the record
+        // is written once it has landed — so the value `ApiGatewayDomainName` reports is the
+        // address that socket answers on.
+        let opened = crate::service::domain_name_socket::open_for_domain_name(
+            &*self.engine,
+            ctx.callback().clone(),
+            &input.domain_name,
+        )
+        .await;
+        let (api_gateway_domain_name, socket) = match opened {
+            Ok(opened) => (opened.authority, Some(opened.listener)),
+            Err(reason) => {
+                // An emulator that could not open a socket for this domain name publishes the
+                // name API Gateway's own zone would carry: the record is still created — its
+                // whole control plane is unaffected — and only the address nothing serves is
+                // what a client cannot reach.
+                ::tracing::warn!(
+                    domain_name = %input.domain_name,
+                    %reason,
+                    "this custom domain name is published under the name API Gateway's own \
+                     zone would carry: no socket of this emulator could be opened for it"
+                );
+                (
+                    crate::state::api_gateway_domain_host(&domain_id, &region),
+                    ::std::option::Option::None,
+                )
+            }
+        };
+        let mut store = state.lock();
+        // The identity and the quota are weighed AGAIN under this lock, because the one above
+        // was released while the socket was opened: two creates in flight at once must not
+        // both pass a check made before either inserted. The socket this request opened is
+        // remembered only once those checks pass, so a refusal DROPS it — which closes the
+        // port — and displaces no socket the domain name this request lost to is served on.
         if store.domain_names.contains_key(&input.domain_name) {
             return Err(bad_request(
                 crate::state::duplicate_identity::DOMAIN_NAME_ALREADY_EXISTS_MESSAGE,
             ));
         }
-
-        // Bound the growth a caller drives: AWS's published quota is 120 custom domain
-        // names per account per Region, and `TooManyRequestsException` is the modelled
-        // error for "a limit has been exceeded" (it carries the limit's name).
         if store.domain_names.len() >= crate::state::MAX_DOMAIN_NAMES {
             return Err(CreateDomainNameErrorModeled::TooManyRequestsException(
                 TooManyRequestsException {
@@ -249,11 +306,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         }
-
-        let domain_id = store.mint_domain_name_id();
+        if let Some(socket) = socket {
+            // The socket's life is this record's from here on: the handle is held on the store
+            // under the record's own key, and the delete drops it.
+            store
+                .domain_name_transport
+                .remember(&input.domain_name, socket);
+        }
         let record = crate::state::DomainName {
             domain_name_arn: crate::state::domain_name_arn(&input.domain_name, &region),
-            api_gateway_domain_name: crate::state::api_gateway_domain_host(&domain_id, &region),
+            api_gateway_domain_name,
             // The Region the resource lives in, carried on the record so every later read
             // reports the endpoints' hosted zones for the Region the domain name was
             // created in, whatever Region a later request is signed for.

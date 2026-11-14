@@ -39,9 +39,10 @@
 //! * the backend's own, for a backend that answered;
 //! * `500` `{"message":"Internal Server Error"}` for the whole class "the integration
 //!   produced no response" — a function that raised, a function the gateway could not
-//!   invoke, an answer the payload format cannot be read as, a route with nothing behind it,
-//!   or an integration this emulator cannot perform. The reason is logged, never told to the
-//!   caller, which is what API Gateway does;
+//!   invoke, a function whose own resource policy admits the gateway no invocation, an answer
+//!   the payload format cannot be read as, a route with nothing behind it, or an integration
+//!   this emulator cannot perform. The reason is logged, never told to the caller, which is
+//!   what API Gateway does;
 //! * `503` `{"message":"Service Unavailable"}` for an integration that RAN and had not
 //!   answered within its own `TimeoutInMillis` — "custom timeout … between 50 and 30,000
 //!   milliseconds for HTTP APIs" — which is a different class from one that answered badly
@@ -339,6 +340,23 @@ async fn lambda_proxy(
     } else {
         proxy_event::event_1_0(&dispatch.request, &dispatch.invocation)
     };
+    // The gateway invokes the function as ITS OWN service principal, so the grant that
+    // admits the invocation is the function's resource-based policy, narrowed to the route
+    // this request was served by. An invocation it does not admit is never made, and the
+    // route falls into the "produced no response" class — which is what makes a stripped
+    // `lambda:InvokeFunction` permission fail the route closed instead of serving it.
+    let source_arn = request_authorizer::route_arn(&dispatch.request, &dispatch.request.method);
+    if !lambda::invocation_admitted(ctx.callback(), &target, &source_arn).await {
+        ::tracing::info!(
+            api_id = %dispatch.request.api_id,
+            stage = %dispatch.request.stage_name,
+            route_key = %dispatch.route_key,
+            function = %target.arn,
+            "refusing an invoke: this route's function allows the gateway no invocation for \
+             it, so none was made"
+        );
+        return json_response(UNPLACEABLE_STATUS, INTERNAL_MESSAGE, None);
+    }
     let payload = match serde_json::to_vec(&event) {
         Ok(payload) => payload,
         Err(error) => {

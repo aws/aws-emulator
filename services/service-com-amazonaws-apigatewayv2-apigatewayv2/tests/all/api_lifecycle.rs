@@ -38,13 +38,19 @@ const ROUTE_ID_LEN: usize = 7;
 
 /// A fresh emulator holding only this service, with request authentication off.
 pub(crate) fn emulator() -> MultiServiceRouter {
+    emulator_with_engine().0
+}
+
+/// [`emulator`] and the engine it was built from, for a suite that has to read a value this
+/// model reports through NO operation — the `DomainNameId` a routing rule's path carries.
+pub(crate) fn emulator_with_engine() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     router.set_request_authentication(false);
     router.register_service(
-        service_com_amazonaws_apigatewayv2_apigatewayv2::EmulatedService::new(engine),
+        service_com_amazonaws_apigatewayv2_apigatewayv2::EmulatedService::new(Arc::clone(&engine)),
     );
-    router
+    (router, engine)
 }
 
 /// A fresh emulator holding this service AND the API Gateway (v1) service that owns REST
