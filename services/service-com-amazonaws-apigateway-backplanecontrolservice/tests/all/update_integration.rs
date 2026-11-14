@@ -709,11 +709,12 @@ async fn a_mock_integration_takes_the_removals_its_type_allows() {
 }
 
 #[tokio::test]
-async fn a_lambda_proxy_integration_keeps_the_integration_method_it_documents() {
+async fn a_lambda_proxy_integration_takes_any_verb_of_the_catalog_as_its_method() {
     // "For Lambda integrations, you must set the integration method to POST"
-    // (`Integration$httpMethod`): the rule holds of the patched record, so a patch that
-    // moves an AWS_PROXY integration off POST is refused while one that re-sets POST is
-    // accepted.
+    // (`Integration$httpMethod`) is what the BACKEND requires of an invocation, not a
+    // rule this patch holds the record to: an `AWS_PROXY` integration's own method is
+    // stored as any verb of the catalog, normalised, and only a value that is no verb at
+    // all is refused.
     let gateway = Gateway::new();
     let (api, root) = create_api(&gateway, "integration-patch-lambda").await;
     let lambda_uri = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/\
@@ -728,50 +729,53 @@ async fn a_lambda_proxy_integration_keeps_the_integration_method_it_documents() 
     )
     .await;
 
+    // Rows differ in the verb the patch names and in its letter case; the expected stored
+    // verb is the catalog's spelling of it.
+    for (sent, expected) in [("GET", "GET"), ("get", "GET"), ("post", "POST")] {
+        let case = format!("replace a lambda integration's method with {sent:?}");
+        let accepted =
+            update_integration(&gateway, &api, &resource, "ANY", vec![replace("/httpMethod", sent)])
+                .await;
+        assert_eq!(
+            accepted.status, 200,
+            "case {case}: expected 200, got {} with {:?}",
+            accepted.status, accepted.body
+        );
+        assert_eq!(
+            accepted.body["httpMethod"].as_str(),
+            Some(expected),
+            "case {case}: expected the stored httpMethod {expected:?}, got {:?}",
+            accepted.body["httpMethod"]
+        );
+        let expected_record = with_changes(&stored, &json!({ "httpMethod": expected }));
+        assert_read_back(&gateway, &api, &resource, "ANY", &case, &expected_record).await;
+    }
+
+    // A value that is no verb of the catalog is still refused, and changes nothing.
     let refused = update_integration(
         &gateway,
         &api,
         &resource,
         "ANY",
-        vec![replace("/httpMethod", "GET")],
+        vec![replace("/httpMethod", "FETCH")],
     )
     .await;
     assert_failure(
         &refused,
         400,
         "BadRequestException",
-        "replace a lambda integration's method with GET",
+        "replace a lambda integration's method with FETCH",
     );
+    let expected_record = with_changes(&stored, &json!({ "httpMethod": "POST" }));
     assert_read_back(
         &gateway,
         &api,
         &resource,
         "ANY",
-        "replace a lambda integration's method with GET",
-        &stored,
+        "replace a lambda integration's method with FETCH",
+        &expected_record,
     )
     .await;
-
-    // Sent lowercase, so the accepted value is the documented one after the verb is
-    // normalised rather than the literal the request carried.
-    let accepted = update_integration(
-        &gateway,
-        &api,
-        &resource,
-        "ANY",
-        vec![replace("/httpMethod", "post")],
-    )
-    .await;
-    assert_eq!(
-        accepted.status, 200,
-        "case re-set a lambda integration's method to post: expected 200, got {} with {:?}",
-        accepted.status, accepted.body
-    );
-    assert_eq!(
-        accepted.body, stored,
-        "case re-set a lambda integration's method to post: expected the record unchanged, got {:?}",
-        accepted.body
-    );
 }
 
 #[tokio::test]

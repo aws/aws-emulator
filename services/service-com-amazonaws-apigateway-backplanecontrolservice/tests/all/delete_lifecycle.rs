@@ -13,7 +13,8 @@
 //! and the records that record owns, from state — so every later read of any of them
 //! answers the modelled `NotFoundException` (404), while a record the delete does not
 //! own is untouched. The tables span what the rule generalises over: which HTTP verb is
-//! deleted (the whole verb catalog, in either letter case), and the shape of the deleted
+//! deleted (the whole verb catalog, and a spelling of it the resource holds no method
+//! under), and the shape of the deleted
 //! subtree (a leaf, a chain, a branching tree, a mid node), not one recorded call.
 
 use std::collections::BTreeMap;
@@ -119,8 +120,8 @@ async fn listed_paths(gateway: &Gateway, api: &str, case: &str) -> Vec<String> {
 async fn deleting_a_method_removes_that_verb_and_leaves_the_others() {
     // Source of the verb catalog: `put_method::HTTP_METHODS`, the verbs API Gateway
     // accepts for a method plus its `ANY` catch-all. Every verb is a row, deleted in
-    // turn, and each is addressed in both letter cases because an HTTP verb is
-    // case-insensitive on the wire while naming one stored method.
+    // turn, and a lowercase spelling of it is a row of its own: a method is addressed by
+    // the verb it was created with, so another spelling names no method to delete.
     let gateway = Gateway::new();
     let (api, root) = create_api(&gateway, "method-deletes").await;
     let resource = create_resource(&gateway, &api, &root, "pets").await;
@@ -132,12 +133,18 @@ async fn deleting_a_method_removes_that_verb_and_leaves_the_others() {
 
     let mut remaining: Vec<String> = HTTP_METHODS.iter().map(|verb| (*verb).to_string()).collect();
     for (index, verb) in HTTP_METHODS.iter().enumerate() {
-        // Rows alternate the letter case of the verb on the wire.
-        let addressed = if index % 2 == 0 {
-            (*verb).to_string()
-        } else {
-            verb.to_ascii_lowercase()
-        };
+        // Rows alternate whether the verb is first addressed in a spelling the resource
+        // holds no method under, which is refused and deletes nothing.
+        if index % 2 == 0 {
+            let lowercase = verb.to_ascii_lowercase();
+            assert_failure(
+                &delete_method(&gateway, &api, &resource_id, &lowercase).await,
+                404,
+                "NotFoundException",
+                &format!("DeleteMethod({lowercase})"),
+            );
+        }
+        let addressed = (*verb).to_string();
         let case = format!("DeleteMethod({addressed})");
 
         let deleted = delete_method(&gateway, &api, &resource_id, &addressed).await;
@@ -152,9 +159,10 @@ async fn deleting_a_method_removes_that_verb_and_leaves_the_others() {
             deleted.body
         );
 
-        // The method is gone for a reader, in either letter case, and deleting it
+        // The method is gone for a reader, and so is every other spelling of its verb,
+        // and deleting it
         // again finds nothing to delete.
-        for probe in [addressed.clone(), verb.to_ascii_uppercase()] {
+        for probe in [addressed.clone(), verb.to_ascii_lowercase()] {
             assert_failure(
                 &get_method(&gateway, &api, &resource_id, &probe).await,
                 404,

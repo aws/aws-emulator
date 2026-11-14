@@ -127,6 +127,12 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::state::StageEntry;
 
+/// The refusal for a `stageName` carrying a character outside the set a stage name is
+/// spelled from: a fixed sentence naming that set, which quotes the rejected name back
+/// nowhere. One copy, so the call that creates a stage and the one that creates a
+/// deployment WITH a stage say the same thing about the same name.
+pub const INVALID_STAGE_NAME: &str = "Stage name only allows a-zA-Z0-9_";
+
 /// Refuse a `stageName` that is not one API Gateway accepts.
 ///
 /// From the member's own documentation: "Stage names can only contain alphanumeric
@@ -141,9 +147,7 @@ pub fn validate_stage_name(stage_name: &str) -> Result<(), String> {
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
-        return Err(format!(
-            "stageName may contain only alphanumeric characters, hyphens and underscores, got {stage_name:?}"
-        ));
+        return Err(INVALID_STAGE_NAME.to_string());
     }
     Ok(())
 }

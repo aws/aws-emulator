@@ -19,7 +19,8 @@
 //! stored record removes nothing and is refused 404.
 //!
 //! The tables span what the rule generalises over: the integration type (every value of
-//! the modelled `IntegrationType`), the method's verb and its letter case on the wire, how
+//! the modelled `IntegrationType`), the method's verb and a spelling of it the resource
+//! holds no method under, how
 //! many integration responses hang off the integration, and which identifier of the three
 //! is the unknown one.
 
@@ -171,13 +172,19 @@ async fn deleting_an_integration_removes_it_and_the_responses_stored_on_it() {
             method_response.status, method_response.body
         );
 
-        // Rows alternate the letter case of the verb on the wire: an HTTP verb is
-        // case-insensitive while naming one stored method.
-        let addressed = if index % 2 == 0 {
-            verb.to_ascii_uppercase()
-        } else {
-            verb.to_ascii_lowercase()
-        };
+        // Rows alternate whether a spelling the resource holds no method under is tried
+        // first: a method is addressed by the verb it was created with, so such a request
+        // reaches no integration to delete.
+        if index % 2 == 1 {
+            let lowercase = verb.to_ascii_lowercase();
+            assert_failure(
+                &delete_integration(&gateway, &api, &resource, &lowercase).await,
+                404,
+                "NotFoundException",
+                &format!("{case} / DeleteIntegration({lowercase})"),
+            );
+        }
+        let addressed = verb.to_ascii_uppercase();
         let deleted = delete_integration(&gateway, &api, &resource, &addressed).await;
         assert_eq!(
             deleted.status, 204,
@@ -191,7 +198,8 @@ async fn deleting_an_integration_removes_it_and_the_responses_stored_on_it() {
             deleted.body
         );
 
-        // The integration is gone for a reader, in either letter case of the verb, and
+        // The integration is gone for a reader, and a spelling of the verb the resource
+        // holds no method under reaches nothing either, and
         // deleting it again finds nothing to delete.
         for verb_probe in [verb.to_ascii_uppercase(), verb.to_ascii_lowercase()] {
             assert_failure(

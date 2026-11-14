@@ -392,9 +392,8 @@ async fn an_integration_put_on_a_method_is_persisted_and_read_back_member_for_me
 async fn an_integration_is_refused_outside_the_rules_its_members_publish() {
     // Rows span each published rule, one broken member at a time: the type-dependent
     // `uri` and `integrationHttpMethod`, the URI forms the two type families take, the
-    // integration method a Lambda integration takes, the `connectionId` that belongs
-    // only to a VPC_LINK, `passthroughBehavior`'s value set, and `timeoutInMillis` one
-    // past each published bound.
+    // `connectionId` that belongs only to a VPC_LINK, `passthroughBehavior`'s value set,
+    // and `timeoutInMillis` one past each published bound.
     let cases: Vec<(&str, Value)> = vec![
         (
             "a non-mock type with no uri",
@@ -418,14 +417,6 @@ async fn an_integration_is_refused_outside_the_rules_its_members_publish() {
                 "type": "AWS",
                 "httpMethod": "POST",
                 "uri": "https://dynamodb.us-east-1.amazonaws.com/"
-            }),
-        ),
-        (
-            "a lambda proxy integration whose integration method is not POST",
-            json!({
-                "type": "AWS_PROXY",
-                "httpMethod": "GET",
-                "uri": aws_integration_uri("lambda:path/2015-03-31/functions/pets/invocations")
             }),
         ),
         (

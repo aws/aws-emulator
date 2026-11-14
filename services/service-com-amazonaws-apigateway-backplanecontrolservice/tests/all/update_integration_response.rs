@@ -27,7 +27,8 @@
 //! kind (single-valued string, enum, map entry), the op (`add`, `replace`, `remove`), how
 //! many ops one request carries, a map key carrying an escaped `/` pointer token, the
 //! status code (values across the modelled `^[1-5]\d\d$` pattern, each published bound
-//! included), the method's verb and its letter case on the wire, and which of the four
+//! included), the method's verb and the spellings of it the resource holds no method
+//! under, and which of the four
 //! identifiers is the unknown one.
 
 use serde_json::{json, Value};
@@ -378,42 +379,57 @@ async fn a_patched_integration_response_is_reported_and_read_back_member_for_mem
 }
 
 #[tokio::test]
-async fn an_integration_response_is_patched_whatever_case_the_verb_is_spelled_in() {
-    // An HTTP verb is case-insensitive on the wire, so the method a patch reaches is the
-    // one the resource holds for that verb however the request spelled it — the rule
+async fn an_integration_response_is_reached_only_by_the_verb_its_method_was_put_under() {
+    // A method's verb is the IDENTIFIER the request names, so a patch reaches the record
+    // only under the spelling the method was created with — the rule
     // `PutIntegrationResponse` and `GetIntegrationResponse` already apply to the same
     // label.
-    let spellings = ["GET", "get", "Get", "gEt"];
+    let unresolved = ["get", "Get", "gEt", "POST"];
 
     let gateway = Gateway::new();
     let (api, root) = create_api(&gateway, "update-integration-response-verb-case").await;
     let resource = resource_with_an_integration(&gateway, &api, &root, "pets", "GET").await;
     seed(&gateway, &api, &resource, "GET", "200", json!({})).await;
+    let patched = json!({
+        "statusCode": "200",
+        "responseTemplates": { "application/json": "{\"verb\": \"GET\"}" }
+    });
+    let reported = update_ok(
+        &gateway,
+        &api,
+        &resource,
+        "GET",
+        "200",
+        "a patch sent with the verb the method was put under",
+        vec![replace(
+            "/responseTemplates/application~1json",
+            "{\"verb\": \"GET\"}",
+        )],
+    )
+    .await;
+    assert_eq!(
+        reported, patched,
+        "case a patch sent with the verb the method was put under: expected {patched:?}, got \
+         {reported:?}"
+    );
 
-    for spelling in spellings {
+    for spelling in unresolved {
         let case = format!("a patch sent with the verb spelled {spelling:?}");
-        let reported = update_ok(
+        let answer = update_integration_response(
             &gateway,
             &api,
             &resource,
             spelling,
             "200",
-            &case,
             vec![replace(
                 "/responseTemplates/application~1json",
                 &format!("{{\"verb\": \"{spelling}\"}}"),
             )],
         )
         .await;
-        let expected = json!({
-            "statusCode": "200",
-            "responseTemplates": { "application/json": format!("{{\"verb\": \"{spelling}\"}}") }
-        });
-        assert_eq!(
-            reported, expected,
-            "case {case}: expected {expected:?}, got {reported:?}"
-        );
-        assert_read_back(&gateway, &api, &resource, "GET", "200", &case, &expected).await;
+        assert_failure(&answer, 404, "NotFoundException", &case);
+        // Refused, so the record the method DOES hold is the patched one, unchanged.
+        assert_read_back(&gateway, &api, &resource, "GET", "200", &case, &patched).await;
     }
 }
 

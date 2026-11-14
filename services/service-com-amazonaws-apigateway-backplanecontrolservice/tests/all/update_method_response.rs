@@ -26,8 +26,9 @@
 //! The tables span what the rule generalises over: which map the path names, the entry's
 //! type (boolean, string), the op (`add`, `replace`, `remove`), how many ops one request
 //! carries, a key carrying an escaped `/` pointer token, the status code (values across
-//! the modelled `^[1-5]\d\d$` pattern and each published bound), the method's verb and its
-//! letter case on the wire, and which of the four identifiers is the unknown one.
+//! the modelled `^[1-5]\d\d$` pattern and each published bound), the method's verb and a
+//! spelling of it the resource holds no method under, and which of the four identifiers is
+//! the unknown one.
 
 use serde_json::{json, Value};
 use service_com_amazonaws_apigateway_backplanecontrolservice::ops::put_method_response::invalid_response_parameter;
@@ -315,24 +316,24 @@ async fn a_patched_method_response_member_is_stored_and_read_back() {
 }
 
 #[tokio::test]
-async fn the_patch_rule_holds_for_every_status_code_verb_and_letter_case() {
+async fn the_patch_rule_holds_for_every_status_code_and_verb() {
     // Rows differ along the status code — values across the modelled `^[1-5]\d\d$`
-    // pattern, including its lowest and highest — the verb of the owning method, and the
-    // letter case the verb travels in, which is case-insensitive while naming one stored
-    // method.
-    let rows: Vec<(&str, &str, &str)> = vec![
-        ("100", "GET", "GET"),
-        ("201", "POST", "post"),
-        ("302", "PUT", "Put"),
-        ("404", "HEAD", "head"),
-        ("500", "DELETE", "DELETE"),
-        ("599", "ANY", "any"),
+    // pattern, including its lowest and highest — the verb of the owning method, and
+    // whether a spelling the resource holds no method under is probed first: a verb is
+    // the identifier the request names, so another spelling of it reaches no record.
+    let rows: Vec<(&str, &str, bool)> = vec![
+        ("100", "GET", false),
+        ("201", "POST", true),
+        ("302", "PUT", true),
+        ("404", "HEAD", true),
+        ("500", "DELETE", false),
+        ("599", "ANY", true),
     ];
 
     let gateway = Gateway::new();
     let (api, root) = create_api(&gateway, "update-method-response-codes").await;
 
-    for (status, verb, addressed) in &rows {
+    for (status, verb, probe_other_spelling) in &rows {
         let resource = resource_with_a_method(
             &gateway,
             &api,
@@ -352,13 +353,31 @@ async fn the_patch_rule_holds_for_every_status_code_verb_and_letter_case() {
         )
         .await;
 
-        let case = format!("UpdateMethodResponse({addressed}/{status})");
+        let case = format!("UpdateMethodResponse({verb}/{status})");
         let key = response_header("X-Status");
+        if *probe_other_spelling {
+            let lowercase = verb.to_ascii_lowercase();
+            let answer = update_method_response(
+                &gateway,
+                &api,
+                &resource,
+                &lowercase,
+                status,
+                vec![replace("/responseModels/application~1json", "Pet")],
+            )
+            .await;
+            assert_failure(
+                &answer,
+                404,
+                "NotFoundException",
+                &format!("UpdateMethodResponse({lowercase}/{status})"),
+            );
+        }
         let updated = update_ok(
             &gateway,
             &api,
             &resource,
-            addressed,
+            verb,
             status,
             &case,
             vec![

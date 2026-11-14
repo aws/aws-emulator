@@ -12,7 +12,8 @@
 //! `method_response`.
 //!
 //! The RULE under test: an integration response is keyed by the whole
-//! (api, resource, method verb, status code) tuple, the verb case-insensitively, so a
+//! (api, resource, method verb, status code) tuple, the verb exactly as the method was
+//! created under, so a
 //! delete removes exactly the one record that tuple names — a response at the same status
 //! code on another verb, another resource or another API, and the method response keyed by
 //! that same status code, are all untouched — and once the record is gone its status code
@@ -21,7 +22,7 @@
 //! The sibling `control_plane_deletes` suite asserts the delete/read round trip and the
 //! not-found refusals of this operation over a table of status codes on ONE method; these
 //! tables span the other identifiers of the key: two APIs, two resources per API, two
-//! verbs per resource, and both spellings of the verb.
+//! verbs per resource, and a spelling of the verb the resource holds no method under.
 
 use serde_json::json;
 
@@ -162,8 +163,9 @@ async fn deleting_an_integration_response_removes_only_the_record_its_identifier
 
     // Rows differ along what the rule generalises over: which identifier of the key
     // distinguishes the target from its siblings (the status code, the verb on one
-    // resource, the resource under one API, the API itself) and the spelling of the verb in
-    // the request, which an HTTP verb's case-insensitivity makes immaterial.
+    // resource, the resource under one API, the API itself) and whether the request is
+    // first made under a spelling of the verb the resource holds no method under, which
+    // reaches no record at all.
     let rows: [(&str, usize, &str, bool); 5] = [
         ("the success code of the first method", 0, "200", false),
         ("a client error on the sibling verb of one resource", 1, "404", true),
@@ -172,13 +174,25 @@ async fn deleting_an_integration_response_removes_only_the_record_its_identifier
         ("a client error on the last method", 7, "404", false),
     ];
 
-    for (case, index, status, lowercase_verb) in rows {
+    for (case, index, status, probe_lowercase_verb) in rows {
         let method = methods[index].clone();
-        let verb = if lowercase_verb {
-            method.verb.to_ascii_lowercase()
-        } else {
-            method.verb.to_string()
-        };
+        if probe_lowercase_verb {
+            let lowercase = method.verb.to_ascii_lowercase();
+            assert_failure(
+                &delete_integration_response(
+                    &gateway,
+                    &method.api,
+                    &method.resource,
+                    &lowercase,
+                    status,
+                )
+                .await,
+                404,
+                "NotFoundException",
+                &format!("{case} / DeleteIntegrationResponse({lowercase})"),
+            );
+        }
+        let verb = method.verb.to_string();
 
         let deleted =
             delete_integration_response(&gateway, &method.api, &method.resource, &verb, status)

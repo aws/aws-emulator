@@ -162,7 +162,7 @@ pub(super) fn method_settings_in_force<'s>(
     matched_path: &str,
     verb: &str,
 ) -> Option<&'s MethodSetting> {
-    let verb = method_key(verb);
+    let verb = wire_verb(verb);
     let escaped = matched_path.replace('/', ESCAPED_PATH_SEPARATOR);
     [format!("{escaped}/{verb}"), format!("{matched_path}/{verb}")]
         .iter()

@@ -19,7 +19,8 @@
 //!
 //! The tables span what the rule generalises over: the status code (values across the
 //! modelled `^[1-5]\d\d$` pattern, each published bound and one past it), the method's
-//! verb and its letter case on the wire, how many responses the method carries, which of
+//! verb and a spelling of it the resource holds no method under, how many responses the
+//! method carries, which of
 //! the two caller-supplied maps each response carries, and which identifier of the four
 //! is the unknown one.
 
@@ -161,13 +162,19 @@ async fn deleting_a_method_response_removes_that_status_code_and_leaves_the_othe
             .map(|(status, _)| (*status).to_string())
             .collect();
         for (index, (status, _)) in responses.iter().enumerate() {
-            // Rows alternate the letter case of the verb on the wire: an HTTP verb is
-            // case-insensitive while naming one stored method.
-            let addressed = if index % 2 == 0 {
-                (*verb).to_string()
-            } else {
-                verb.to_ascii_lowercase()
-            };
+            // Rows alternate whether a spelling of the verb the resource holds no method
+            // under is tried first: a method is addressed by the verb it was created
+            // with, so such a request reaches no response to delete.
+            if index % 2 == 1 {
+                let lowercase = verb.to_ascii_lowercase();
+                assert_failure(
+                    &delete_method_response(&gateway, &api, &resource, &lowercase, status).await,
+                    404,
+                    "NotFoundException",
+                    &format!("{case} / DeleteMethodResponse({lowercase}/{status})"),
+                );
+            }
+            let addressed = (*verb).to_string();
             let probe = format!("{case} / DeleteMethodResponse({addressed}/{status})");
 
             let deleted =
@@ -183,9 +190,10 @@ async fn deleting_a_method_response_removes_that_status_code_and_leaves_the_othe
                 deleted.body
             );
 
-            // The response is gone for a reader, in either letter case of the verb, and
+            // The response is gone for a reader, and a spelling of the verb the resource
+            // holds no method under reaches nothing either, and
             // deleting it again finds nothing to delete.
-            for verb_probe in [addressed.clone(), verb.to_ascii_uppercase()] {
+            for verb_probe in [addressed.clone(), verb.to_ascii_lowercase()] {
                 assert_failure(
                     &get_method_response(&gateway, &api, &resource, &verb_probe, status).await,
                     404,

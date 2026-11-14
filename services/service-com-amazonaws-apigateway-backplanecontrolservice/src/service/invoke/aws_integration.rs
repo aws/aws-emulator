@@ -120,9 +120,11 @@ mod sqs;
 /// the Lambda proxy type and is not this one.
 const AWS_SERVICE_INTEGRATION_TYPE: &str = "AWS";
 
-/// The vendor field of every AWS integration ARN, from the form
-/// `Integration$uri` documents: `arn:aws:apigateway:{region}:{subdomain}:path|action/…`.
-const APIGATEWAY_VENDOR: &str = "apigateway";
+/// The vendor field of every AWS integration ARN, and the resource prefix of each of the
+/// two forms its resource takes — read from the operation that VALIDATES an integration's
+/// `uri` ([`crate::ops::put_integration`]), so the call that stores an ARN and this plane,
+/// which performs it, agree on what one is.
+use crate::ops::put_integration::{ACTION_FORM_PREFIX, APIGATEWAY_VENDOR, PATH_FORM_PREFIX};
 
 /// The subdomain field that names Amazon S3, one of the services whose calls this module
 /// makes.
@@ -130,14 +132,6 @@ const S3_SUBDOMAIN: &str = "s3";
 
 /// What Amazon S3 is called in the sentence an integration that reached no answer carries.
 const S3_SERVICE_NAME: &str = "Amazon S3";
-
-/// The resource prefix of the PATH form: the rest of the resource is the service's own
-/// REST path, which for Amazon S3 is `/{bucket}/{key}`.
-const PATH_FORM_PREFIX: &str = "path/";
-
-/// The resource prefix of the ACTION form: the rest names the action and then its
-/// parameters, `action/{ActionName}&{parameter}={value}`.
-const ACTION_FORM_PREFIX: &str = "action/";
 
 /// The `Bucket` parameter of the action form, as the Amazon S3 API names it.
 const BUCKET_PARAMETER: &str = "Bucket";

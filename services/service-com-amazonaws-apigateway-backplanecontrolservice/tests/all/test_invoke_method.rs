@@ -760,9 +760,18 @@ async fn the_method_is_resolved_by_the_verb_it_was_put_under() {
 
     for (index, verb) in verbs.iter().enumerate() {
         let expected_status = 200 + i64::try_from(index).expect("the index fits an i64");
-        // Asked for in the verb's own spelling and in lower case: an HTTP verb is
-        // case-insensitive, and a method is stored under one key for both.
-        for spelling in [verb.to_string(), verb.to_lowercase()] {
+        // A method is resolved by the verb it was PUT under, which is the identifier the
+        // request names: a lowercase spelling names no method, so the call is refused
+        // rather than simulated against the verb's own method.
+        let lowercase = verb.to_lowercase();
+        let unresolved = test_invoke(&gateway, &api, &resource, &lowercase, json!({})).await;
+        assert_eq!(
+            unresolved.http_status, 404,
+            "case {lowercase:?}: expected the modelled 404, got {} with {:?}",
+            unresolved.http_status, unresolved.body
+        );
+        {
+            let spelling = (*verb).to_string();
             let simulated = test_invoke(&gateway, &api, &resource, &spelling, json!({})).await;
             assert_eq!(
                 simulated.status(),

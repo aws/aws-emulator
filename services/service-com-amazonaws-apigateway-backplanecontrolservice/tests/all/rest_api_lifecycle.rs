@@ -934,8 +934,8 @@ async fn a_method_is_stored_per_http_verb_and_refused_outside_the_verb_catalog()
         );
     }
 
-    // The verb is case-insensitive on the wire and names one method on the resource,
-    // so a lowercase spelling resolves to the method already stored for that verb.
+    // A method is addressed by the verb it was CREATED with: the path label is the
+    // method's identifier, so a lowercase spelling names no method on the resource.
     let lowercase = gateway
         .call(
             "GET",
@@ -943,12 +943,7 @@ async fn a_method_is_stored_per_http_verb_and_refused_outside_the_verb_catalog()
             None,
         )
         .await;
-    assert_eq!(
-        lowercase.body["httpMethod"].as_str(),
-        Some("GET"),
-        "case GetMethod(get): expected the stored GET method, got {:?}",
-        lowercase.body
-    );
+    assert_failure(&lowercase, 404, "NotFoundException", "GetMethod(get)");
 
     for verb in rejected {
         let case = format!("PutMethod({verb})");

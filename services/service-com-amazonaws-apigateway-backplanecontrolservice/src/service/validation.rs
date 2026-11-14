@@ -89,14 +89,18 @@ const SELF_VALIDATED_MEMBERS: [(&str, &str, &str); 1] = [(
 /// `com.amazonaws.apigateway#PutMode`, declared `[merge, overwrite]`. Every recorded
 /// refusal of an invalid `op` — on `UpdateDocumentationVersion`, on `UpdateRestApi` and on
 /// `UpdateApiKey`, three different operations — and the recorded refusal of an invalid
-/// `mode` list their sets as below instead. The order is therefore a property of the ENUM
+/// `mode` list their sets as below instead, as does the recorded refusal of an invalid
+/// `type` on `PutIntegration`, whose `com.amazonaws.apigateway#IntegrationType` the public
+/// model declares `[HTTP, AWS, MOCK, HTTP_PROXY, AWS_PROXY]`. The order is therefore a
+/// property of the ENUM
 /// SHAPE (the order the service's own model declares its values in), not of any one
 /// request, and is recorded as such: a value set is rendered in the service's declared
 /// order, which for every other enum of this service is the order the public model
 /// preserves.
-const DECLARED_VALUE_SETS: [&[&str]; 2] = [
+const DECLARED_VALUE_SETS: [&[&str]; 3] = [
     &["add", "remove", "move", "test", "replace", "copy"],
     &["overwrite", "merge"],
+    &["HTTP", "MOCK", "AWS_PROXY", "HTTP_PROXY", "AWS"],
 ];
 
 /// This service's wording for the violations the framework found on `operation`'s
@@ -399,13 +403,15 @@ mod tests {
     /// below.
     const OP_VALUE_SET: &[&str] = DECLARED_VALUE_SETS[0];
     const PUT_MODE_VALUE_SET: &[&str] = DECLARED_VALUE_SETS[1];
+    const INTEGRATION_TYPE_VALUE_SET: &[&str] = DECLARED_VALUE_SETS[2];
 
     /// A value set is listed in the service's declared order: the recorded order for
-    /// `Op` and for `PutMode`, the model's own order for every other enum.
+    /// `Op`, for `PutMode` and for `IntegrationType`, the model's own order for every
+    /// other enum.
     #[test]
     fn an_enum_value_set_is_listed_in_the_services_declared_order() {
         // (case, the set as the model declares it, the set as the service lists it)
-        let rows: [(&str, &[&str], &[&str]); 6] = [
+        let rows: [(&str, &[&str], &[&str]); 8] = [
             (
                 "Op, in the model's declaration order",
                 &["add", "remove", "replace", "move", "copy", "test"],
@@ -436,6 +442,19 @@ mod tests {
                 "a value set holding some of Op's values",
                 &["add", "remove"],
                 &["add", "remove"],
+            ),
+            // Source: `smithy_query(query="shape",
+            // shape="com.amazonaws.apigateway#IntegrationType")` declares
+            // `[HTTP, AWS, MOCK, HTTP_PROXY, AWS_PROXY]`.
+            (
+                "IntegrationType, in the model's declaration order",
+                &["HTTP", "AWS", "MOCK", "HTTP_PROXY", "AWS_PROXY"],
+                INTEGRATION_TYPE_VALUE_SET,
+            ),
+            (
+                "IntegrationType, already in the service's order",
+                INTEGRATION_TYPE_VALUE_SET,
+                INTEGRATION_TYPE_VALUE_SET,
             ),
         ];
 

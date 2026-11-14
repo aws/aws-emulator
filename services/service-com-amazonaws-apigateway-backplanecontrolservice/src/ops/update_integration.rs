@@ -209,7 +209,10 @@ fn apply_patch(entry: &mut GetIntegrationOutput, patch: &Patch) -> Result<(), Pa
         // stored uppercased because an HTTP verb is case-insensitive on the wire.
         "httpMethod" => {
             patch_optional_string(&mut entry.http_method, patch, MAX_STRING_CHARS)?;
-            entry.http_method = entry.http_method.as_deref().map(method_key);
+            entry.http_method = entry
+                .http_method
+                .as_deref()
+                .map(super::put_integration::integration_method_key);
             Ok(())
         }
         "credentials" => patch_optional_string(&mut entry.credentials, patch, MAX_STRING_CHARS),

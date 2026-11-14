@@ -2515,3 +2515,10 @@ mod s3_object_created_invalidates_the_distribution_edge;
 // (The HTTPS front-door suite is declared ONCE, further up this tail: a module may be
 // declared only once, and two branches landing in the same window each appended their own
 // copy here.)
+// above: two branches landing in the same window declared it here as well, which compiled
+// two branches landing in the same window declared it here as well, which compiled neither.)
+// (`zz_probe` is declared ONCE, above: two branches landing in the same window declared it
+// here as well, which compiled neither.)
+// branches landing in the same window declared it here as well, which compiled neither.)
+// (`cloudformation_metric_stream_estate_is_drainable` is declared ONCE, above: two branches
+// landing in the same window declared it here as well, which compiled neither.)

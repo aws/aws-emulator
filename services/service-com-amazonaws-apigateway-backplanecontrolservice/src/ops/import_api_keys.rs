@@ -84,9 +84,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::state::ApiKeyEntry;
 
-// The published length range of an API key VALUE, wherever the value came from: the
-// sibling `CreateApiKey` enforces the same range on the value a caller supplies there.
-use super::create_api_key::{MAX_VALUE_CHARS, MIN_VALUE_CHARS};
+// The published length range of an API key VALUE, wherever the value came from, and the
+// sentence a value under the minimum is refused with: the sibling `CreateApiKey` enforces
+// the same range on the value a caller supplies there, so one row of a payload and one
+// request are answered the same way about a value that is too short to be a key.
+use super::create_api_key::{value_too_short, MAX_VALUE_CHARS, MIN_VALUE_CHARS};
 
 /// The one input format this operation reads, as the modelled `ApiKeysFormat` enum lists
 /// it ([`API_KEYS_FORMAT_VALUES`], `one of: csv`). The boundary validator refuses any
@@ -181,13 +183,9 @@ fn missing_required_column(column: &str) -> String {
     format!("Missing required column '{capitalised}' ")
 }
 
-/// The reason a record is skipped for a key value shorter than the published minimum,
-/// which is the recorded wording of this warning.
-fn value_too_short() -> String {
-    format!("API Key value should be at least {MIN_VALUE_CHARS} characters")
-}
-
-/// The same reason at the other end of the published range; see [`value_too_short`].
+/// The reason a record is skipped for a key value past the published maximum, which is
+/// the recorded wording of this WARNING — `CreateApiKey` words its own refusal of an
+/// over-long value differently (`create_api_key::value_exceeds_maximum`).
 fn value_too_long() -> String {
     format!("API Key value should be at most {MAX_VALUE_CHARS} characters")
 }

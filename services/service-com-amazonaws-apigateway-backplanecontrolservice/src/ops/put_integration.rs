@@ -204,7 +204,7 @@ use super::types::*;
 
 use crate::state::MethodEntry;
 
-use super::put_method::{method_key, HTTP_METHODS};
+use super::put_method::{method_key, wire_verb, HTTP_METHODS};
 
 /// The integration type that invokes no backend at all: `MOCK` is "for testing without
 /// actually invoking the backend" (`IntegrationType`). It is the one type that needs
@@ -233,9 +233,57 @@ pub const HTTP_INTEGRATION_TYPES: &[&str] = &["HTTP", "HTTP_PROXY"];
 /// integrating with the Lambda proxy integration".
 pub const LAMBDA_PROXY_INTEGRATION_TYPE: &str = "AWS_PROXY";
 
-/// The integration method a Lambda integration takes: `httpMethod` documents "For Lambda
-/// integrations, you must set the integration method to POST".
-pub const LAMBDA_INTEGRATION_METHOD: &str = "POST";
+/// The vendor (service-namespace) field of every AWS integration ARN, from the form `uri`
+/// documents for the `AWS`/`AWS_PROXY` types:
+/// `arn:{partition}:apigateway:{region}:{subdomain.service|service}:path|action/{service_api}`.
+///
+/// The ONE spelling for this crate: the data plane reads the same field of the same ARN to
+/// learn which call an integration names ([`crate::service::invoke`]), so the operation that
+/// stores the `uri` and the plane that performs it cannot disagree about what an AWS
+/// integration ARN is.
+pub const APIGATEWAY_VENDOR: &str = "apigateway";
+
+/// The resource prefix of the PATH form of that ARN: what follows names the integrated
+/// service's own REST path. One spelling, shared with the data plane; see
+/// [`APIGATEWAY_VENDOR`].
+pub const PATH_FORM_PREFIX: &str = "path/";
+
+/// The resource prefix of the ACTION form of that ARN: what follows names one of the
+/// integrated service's actions, and then its parameters. See [`PATH_FORM_PREFIX`].
+pub const ACTION_FORM_PREFIX: &str = "action/";
+
+/// The refusal for an AWS integration `uri` whose ARN names neither of those forms:
+/// entirely fixed text, which quotes back neither the submitted ARN nor the integration
+/// type. Shared with `UpdateIntegration`, which patches the same member.
+pub const AWS_URI_WITHOUT_PATH_OR_ACTION: &str =
+    "AWS ARN for integration must contain path or action";
+
+/// Whether `uri` is an AWS integration ARN whose resource names the PATH or the ACTION
+/// form — the only two the member documents.
+///
+/// Read through the one ARN parse this workspace has (`service_common::arn::parse`), which
+/// is what the data plane resolves the same `uri` with: it requires the six fields, the
+/// literal `arn` and a non-empty partition, vendor and resource, and leaves the resource
+/// field whole — the integrated service's own path, whose colons belong to it (a Lambda
+/// function's ARN rides there entire).
+fn names_a_path_or_an_action(uri: &str) -> bool {
+    ::service_common::arn::parse(uri).is_some_and(|arn| {
+        arn.vendor == APIGATEWAY_VENDOR
+            && (arn.resource.starts_with(PATH_FORM_PREFIX)
+                || arn.resource.starts_with(ACTION_FORM_PREFIX))
+    })
+}
+
+/// The integration's OWN HTTP method as it is stored: upper case, because the member
+/// carries an HTTP verb (`Integration$httpMethod`, "the integration's HTTP method type")
+/// and the verbs are spelled that way. Unlike a METHOD's verb, which is the identifier a
+/// request addresses a record by ([`super::put_method::method_key`]), this is a VALUE of
+/// the integration record, so the record keeps the verb the catalog spells.
+///
+/// Shared with `UpdateIntegration`, whose patch of that member reaches the same record.
+pub fn integration_method_key(http_method: &str) -> String {
+    wire_verb(http_method)
+}
 
 /// The `connectionType` an integration carries when the request sets none:
 /// `connectionType` documents "The default value is INTERNET".
@@ -405,8 +453,11 @@ fn integration_of(
     let mut integration = GetIntegrationOutput {
         r#type: Some(input.r#type.clone()),
         // An HTTP verb is case-insensitive on the wire, so the integration's own method
-        // is stored uppercased, the way a method's verb is.
-        http_method: input.integration_http_method.as_deref().map(method_key),
+        // is stored uppercased, the way the catalog spells it.
+        http_method: input
+            .integration_http_method
+            .as_deref()
+            .map(integration_method_key),
         uri: input.uri.as_deref().map(|uri| uri.trim().to_string()),
         connection_type: Some(
             input
@@ -451,10 +502,10 @@ fn integration_of(
 
 /// Refuse a stored `Integration` that breaks one of the rules its own members publish:
 /// the type-dependent `uri` and integration `httpMethod`, the URI forms the two type
-/// families take, the integration method a Lambda integration takes, the `connectionId`
-/// that belongs only to a `VPC_LINK`, the `passthroughBehavior` value set, the documented
-/// `timeoutInMillis` range, and a `cacheKeyParameters` entry that is not also a request
-/// parameter of the `method` the integration hangs off.
+/// families take, the `connectionId` that belongs only to a `VPC_LINK`, the
+/// `passthroughBehavior` value set, the documented `timeoutInMillis` range, and a
+/// `cacheKeyParameters` entry that is not also a request parameter of the `method` the
+/// integration hangs off.
 ///
 /// Every rule is stated over the RECORD, so the same check serves the operation that
 /// creates an integration and the one that patches it; `method` is the owning method,
@@ -497,14 +548,10 @@ pub fn validate_integration(
                     HTTP_METHODS.join(", ")
                 ));
             }
-            if integration_type == LAMBDA_PROXY_INTEGRATION_TYPE
-                && verb != LAMBDA_INTEGRATION_METHOD
-            {
-                return Err(format!(
-                    "An integration of type {integration_type} is a Lambda integration, whose \
-                     integration method must be {LAMBDA_INTEGRATION_METHOD}, got {verb}"
-                ));
-            }
+            // Which verb a Lambda integration is INVOKED through is the backend's own
+            // requirement ("For Lambda integrations, you must set the integration method
+            // to POST") and not a rule this call holds the record to: an `AWS_PROXY`
+            // integration is stored with whatever verb of the catalog the request names.
         }
         None if is_mock => {}
         None => return Err(EMPTY_INTEGRATION_HTTP_METHOD.to_string()),
@@ -518,15 +565,22 @@ pub fn validate_integration(
             )
         }
         Some(uri) => {
-            if AWS_INTEGRATION_TYPES.contains(&integration_type)
-                && !uri.starts_with(crate::state::ARN_PREFIX)
-            {
-                return Err(format!(
-                    "Invalid integration URI specified: an integration of type {integration_type} \
-                     takes an AWS integration ARN of the form \
-                     arn:{{partition}}:apigateway:{{region}}:{{service}}:path|action/{{service_api}}, \
-                     got {uri}"
-                ));
+            if AWS_INTEGRATION_TYPES.contains(&integration_type) {
+                if !uri.starts_with(crate::state::ARN_PREFIX) {
+                    return Err(format!(
+                        "Invalid integration URI specified: an integration of type {integration_type} \
+                         takes an AWS integration ARN of the form \
+                         arn:{{partition}}:apigateway:{{region}}:{{service}}:path|action/{{service_api}}, \
+                         got {uri}"
+                    ));
+                }
+                // The ARN's resource field is what names the integrated service's call:
+                // either the PATH form or the ACTION form. An ARN carrying neither
+                // addresses nothing, so it is refused HERE rather than stored and found
+                // unusable when the method is invoked.
+                if !names_a_path_or_an_action(uri) {
+                    return Err(AWS_URI_WITHOUT_PATH_OR_ACTION.to_string());
+                }
             }
             // A private HTTP integration's URI "is not used for routing" and names the
             // load balancer rather than a formed URL, so the HTTP(S) form is required

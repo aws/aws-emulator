@@ -626,6 +626,11 @@ mod collection_page_boundaries;
 // before it, and that the record keeps it.
 #[path = "all/minted_identifier_independence.rs"]
 mod minted_identifier_independence;
+// Appended for the reason the note above gives: the refusals this control plane states for
+// an API key value outside its range, a method verb no record is held under, an AWS
+// integration URI naming neither documented form, and a stage name outside its alphabet.
+#[path = "all/rest_validation_refusals.rs"]
+mod rest_validation_refusals;
 // Appended for the reason the note above gives: what a front api's PRIVATE proxy integration
 // serves — the backend's own status and body passed through whatever they are, behind the
 // backend's own `aws:SourceVpce` invoke gate.

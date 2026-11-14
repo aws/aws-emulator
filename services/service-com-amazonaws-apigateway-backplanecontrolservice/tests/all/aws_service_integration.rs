@@ -17,10 +17,12 @@
 //! no table store is mounted at all.
 //!
 //! The rows vary what the rule generalises over: which part of the `uri` puts the call out
-//! of reach (another service's subdomain, a form that is neither of the two documented
-//! ones, an action of the named service this emulator does not perform, a verb that names
-//! no action, a placeholder the integration maps nothing onto, a path under a service's root
-//! that publishes none), and whether the service the `uri` names is mounted at all.
+//! of reach (another service's subdomain, an action of the named service this emulator does
+//! not perform, a verb that names no action, a placeholder the integration maps nothing
+//! onto, a path under a service's root that publishes none), and whether the service the
+//! `uri` names is mounted at all. A `uri` that is neither of the two documented FORMS is
+//! not a row here: such an integration is refused when it is configured (see
+//! `rest_validation_refusals`), so no deployed method can carry one.
 
 use serde_json::{json, Value};
 
@@ -61,13 +63,6 @@ async fn an_aws_integration_naming_a_call_this_emulator_cannot_make_is_a_configu
             path_part: "another-service",
             uri: "arn:aws:apigateway:us-east-1:dynamodb:action/PutItem",
             integration_verb: "POST",
-            request_parameters: None,
-        },
-        Row {
-            case: "a form that is neither the path nor the action form",
-            path_part: "neither-form",
-            uri: "arn:aws:apigateway:us-east-1:s3:shelf/plain.txt",
-            integration_verb: "GET",
             request_parameters: None,
         },
         Row {

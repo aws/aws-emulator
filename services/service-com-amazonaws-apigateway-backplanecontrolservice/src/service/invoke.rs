@@ -283,7 +283,7 @@ use crate::ops::put_integration::{
     VPC_LINK_CONNECTION_TYPE,
 };
 use crate::ops::put_integration_response::static_mapping_literal;
-use crate::ops::put_method::method_key;
+use crate::ops::put_method::wire_verb;
 use crate::ops::put_method_response::METHOD_RESPONSE_HEADER_PREFIX;
 use crate::ops::types::{GetIntegrationOutput, GetIntegrationResponseOutput, MethodSetting};
 use crate::state::{
@@ -2821,24 +2821,6 @@ fn authorizer_result_ttl(authorizer: &crate::state::AuthorizerEntry) -> ::std::t
     )
 }
 
-/// Where the stage holds the result this authorizer returned for the identity
-/// `identity_values`, or `None` when it holds none at all — an authorizer whose TTL is zero
-/// ("if it equals 0, authorization caching is disabled") and one the request presented no
-/// identity value to.
-fn authorizer_cache_key(
-    authorizer: &crate::state::AuthorizerEntry,
-    identity_values: &[String],
-) -> Option<String> {
-    if authorizer.authorizer_result_ttl_in_seconds <= 0 || identity_values.is_empty() {
-        return None;
-    }
-    Some(format!(
-        "{id}|{identity}",
-        id = authorizer.id,
-        identity = identity_values.join("|")
-    ))
-}
-
 /// What the records say about the API key a request presented: which stored key admitted
 /// the call, and the usage plans that METER it for this stage.
 ///
@@ -4366,7 +4348,7 @@ fn match_method<'d>(
     verb: &str,
 ) -> Option<(&'d str, &'d crate::ops::types::MethodSnapshot)> {
     let methods = deployment.api_summary.get(path)?;
-    let requested = method_key(verb);
+    let requested = wire_verb(verb);
     methods
         .get_key_value(&requested)
         .or_else(|| methods.get_key_value(ANY_METHOD))
@@ -4936,3 +4918,8 @@ pub use request_validation::*;
 /// module.
 mod announced_address;
 pub use announced_address::*;
+
+/// Where the stage holds the result an authorizer returned for ONE identity, in a file of its
+/// own with the tests of that key's own property.
+mod authorizer_cache;
+use authorizer_cache::authorizer_cache_key;

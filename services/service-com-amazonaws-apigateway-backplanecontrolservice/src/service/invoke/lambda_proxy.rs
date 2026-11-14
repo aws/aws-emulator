@@ -102,18 +102,15 @@ use crate::ops::types::GetIntegrationOutput;
 use super::{IntegratedResponse, MethodRequest, UnservedIntegration, API_CONFIGURATION_ERROR,
             INTEGRATION_TIMEOUT, JSON_CONTENT_TYPE};
 
-/// The vendor field of every AWS integration ARN, from the form `Integration$uri`
-/// documents: `arn:aws:apigateway:{region}:{subdomain}:path|action/…`.
-const APIGATEWAY_VENDOR: &str = "apigateway";
+/// The vendor field of every AWS integration ARN, and the resource prefix of its PATH
+/// form — read from the operation that VALIDATES an integration's `uri`
+/// ([`crate::ops::put_integration`]), so the call that stores an ARN and this plane, which
+/// performs it, agree on what one is.
+use crate::ops::put_integration::{APIGATEWAY_VENDOR, PATH_FORM_PREFIX};
 
 /// The subdomain field that names AWS Lambda, which is the service whose function-invoking
 /// action this module performs.
 const LAMBDA_SUBDOMAIN: &str = "lambda";
-
-/// The resource prefix of the PATH form: the rest of the resource is the service's own REST
-/// path, which for the function-invoking action is
-/// `{version}/functions/{function-arn}/invocations`.
-const PATH_FORM_PREFIX: &str = "path/";
 
 /// The segment of that path that the function's own name or ARN follows.
 const FUNCTIONS_SEGMENT: &str = "/functions/";

@@ -153,10 +153,27 @@ pub const HTTP_METHODS: &[&str] = &[
     "ANY", "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT",
 ];
 
-/// The key a method is stored under: its verb, uppercased, because an HTTP verb is
-/// case-insensitive on the wire but names one method on a resource.
+/// The key a method is stored under, and the one an operation addressing a method by its
+/// `httpMethod` resolves it with: the verb EXACTLY as the request spelled it.
+///
+/// A method's verb is an IDENTIFIER, not a value read loosely: it is one of the
+/// enumeration in [`HTTP_METHODS`], and a request naming anything else — a verb outside
+/// the catalog, or one of them in another case — names no method on the resource. So the
+/// key is the request's own spelling, which is what makes `PutMethod` refuse a verb that
+/// is not in the catalog and every reader of a method answer `NotFoundException` for a
+/// verb the resource holds no method under.
 pub fn method_key(http_method: &str) -> String {
-    http_method.to_ascii_uppercase()
+    http_method.to_string()
+}
+
+/// The stored verb a REQUEST ARRIVING ON THE WIRE names — an invoke of a deployed stage,
+/// whose own HTTP method is the verb, and the method settings in force for it.
+///
+/// Upper case, because that is how the HTTP methods are spelled, and a stored method
+/// carries one of [`HTTP_METHODS`]: this reads a wire verb onto the catalog rather than
+/// addressing a record by an identifier the caller typed, which is [`method_key`].
+pub fn wire_verb(verb: &str) -> String {
+    verb.to_ascii_uppercase()
 }
 
 /// Refuse a request whose caller-sized members would grow the store past a bound.

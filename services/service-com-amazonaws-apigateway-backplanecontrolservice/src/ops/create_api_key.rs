@@ -116,6 +116,25 @@ pub const MAX_VALUE_CHARS: usize = 128;
 /// The shortest caller-supplied `value` AWS accepts; see [`MAX_VALUE_CHARS`].
 pub const MIN_VALUE_CHARS: usize = 20;
 
+/// The refusal for a caller-supplied `value` shorter than the published minimum: a fixed
+/// sentence naming that bound as a constant, which interpolates NOTHING from the request
+/// — neither the rejected length nor the value itself, which is a secret.
+///
+/// One copy for every way a value reaches this service: the key created one at a time
+/// here, and the rows of an `ImportApiKeys` payload, whose per-row warning is this same
+/// sentence.
+pub fn value_too_short() -> String {
+    format!("API Key value should be at least {MIN_VALUE_CHARS} characters")
+}
+
+/// The same refusal at the other end of the published range: `CreateApiKey` words the
+/// maximum differently from the minimum, naming the bound as the SIZE the value exceeds.
+/// Not shared with `ImportApiKeys`, whose per-row warning for an over-long value is its
+/// own sentence.
+pub fn value_exceeds_maximum() -> String {
+    format!("API Key value exceeds maximum size of {MAX_VALUE_CHARS} characters")
+}
+
 impl From<&ApiKeyEntry> for CreateApiKeyOutput {
     /// The `ApiKey` body for a stored key — the one place this crate renders that
     /// shape, so `CreateApiKey` and `GetApiKey` cannot report a record differently.
@@ -170,9 +189,9 @@ fn bound_input(input: &CreateApiKeyInput) -> Result<(), String> {
             bound_chars(member, value, MAX_STRING_CHARS)?;
         }
     }
-    if let Some(value) = &input.value {
-        bound_chars("value", value, MAX_VALUE_CHARS)?;
-    }
+    // `value` carries no bound of its own here: the published range it is held to
+    // ([`MIN_VALUE_CHARS`]..=[`MAX_VALUE_CHARS`]) bounds it, and each end of that range
+    // has its own refusal sentence.
     if let Some(stage_keys) = &input.stage_keys {
         bound_entries("stageKeys", stage_keys.len(), MAX_COLLECTION_ENTRIES)?;
         for stage_key in stage_keys {
@@ -287,10 +306,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the published bound is enforced here and the refusal names it.
         if let Some(value) = input.value.as_deref() {
             let length = value.chars().count();
-            if !(MIN_VALUE_CHARS..=MAX_VALUE_CHARS).contains(&length) {
-                return Err(bad_request(format!(
-                    "value must be between {MIN_VALUE_CHARS} and {MAX_VALUE_CHARS} characters, got {length}"
-                )));
+            if length < MIN_VALUE_CHARS {
+                return Err(bad_request(value_too_short()));
+            }
+            if length > MAX_VALUE_CHARS {
+                return Err(bad_request(value_exceeds_maximum()));
             }
         }
 
