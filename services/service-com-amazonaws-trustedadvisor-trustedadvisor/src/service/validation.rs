@@ -21,7 +21,9 @@
 //!    first one it misses, so a request missing two is stated as missing one. That is the
 //!    frozen crate's own short-circuit, recorded here because the sentence is now this
 //!    service's;
-//! 2. a clause states the value the member held, its dotted path and the requirement it
+//! 2. a clause states the value the member held — the bytes the caller SUBMITTED, which
+//!    past the framework's own 256-byte echo cap means reading them off the same built
+//!    input again ([`with_submitted_values`]) — its dotted path and the requirement it
 //!    failed — except on a member whose target shape the model marks `@sensitive`, whose
 //!    value is never echoed ([`SENSITIVE_MEMBERS`], [`subject`]);
 //! 3. a reported `@pattern` is the expression a value has to satisfy, WITHOUT the `^` /
@@ -83,12 +85,17 @@
 //! Both are the bounds `services/common/src/validation.rs` states for the same job on
 //! scalar values, for the same reason.
 //!
-//! What this module does NOT do is lengthen the SCALAR echo the framework stores: past
-//! 256 bytes the frozen crate keeps a prefix plus `... [<n> bytes]`, which is text AWS
-//! never emits, and carrying the whole value belongs in that crate — filed as
-//! `issues/things-that-do-not-work/20261022T133000Z-gap-smithy-schema-server-constraint-violation-stores-only-the-elided-rejected-value.md`.
-//! Only `nextToken` (`@length(4, 10000)`) can hold a value that long at all, and only
-//! past its own modelled maximum.
+//! What this module does NOT do is lengthen the echo BEYOND what the model allows: a value
+//! larger than the ceiling [`with_submitted_values`] states keeps the framework's own
+//! shortened rendering, so no one clause is sized by the request.
+//!
+//! [`with_submitted_values`] is the step that restores the SCALAR echo: past 256 bytes the
+//! framework's walk stores a prefix plus `... [<n> bytes]`, which is text AWS never emits,
+//! and three non-`@sensitive` members this service models declare `@length` maximum 2048
+//! (`ListRecommendationsForResource$awsResourceArn`, `$checkArn` and
+//! `RecommendationResourceExclusion$arn`) with `nextToken` at 10000, so a value INSIDE its
+//! modelled maximum reaches that cap by breaking a `@pattern` alone. The restoring walk is
+//! `services/common`'s, the one place in this tree that re-reads a built input for it.
 //!
 //! # NOTE on where these rules belong
 //!
@@ -450,6 +457,64 @@ fn is_sensitive(path: &str) -> bool {
             *segment != "member" && !segment.bytes().all(|byte| byte.is_ascii_digit())
         })
         .is_some_and(|segment| SENSITIVE_MEMBERS.contains(&segment))
+}
+
+/// `violations`, with every value echo the framework's walk stored SHORTENED replaced by
+/// the bytes the caller submitted.
+///
+/// A clause states the value the member held (rule 2), and the framework's constraint walk
+/// stores that value elided past its own 256-byte cap — a prefix plus `... [<n> bytes]`,
+/// text AWS never emits — because the clause interpolates whatever is stored and a caller
+/// controls the length. The value itself is still in the built input the violations were
+/// collected from, so it is read back off that input here, through the one re-walk this
+/// tree has for the job (`services/common`), rather than a second copy of it.
+///
+/// `input` and `schema` must be the ones the violations were collected from, so a
+/// violation's path names a member of that walk.
+///
+/// Two classes of clause keep what the framework's walk stored, because this service states
+/// them from something other than a restored scalar:
+///
+/// * a value that walk WITHHELD — a `@sensitive` member's, dropped as the violation was
+///   recorded — stays withheld, so rule 2's exception is not undone by the restoring walk's
+///   own offer to put such a value back;
+/// * a COLLECTION member's count summary, which rule 5 substitutes this service's own
+///   rendering of the collection for ([`rendered_collections`]); only the clause whose
+///   stored value IS that summary is held back, so a clause echoing something else about
+///   the same member (a duplicate element) is restored like any other scalar.
+///
+/// The ceiling on ONE restored value is the shared walk's own (16 KiB): every member this
+/// service models declares a `@length` maximum under it — 10000 on `nextToken`, the
+/// largest — so a value inside its modelled maximum is always echoed whole, and a value
+/// past that ceiling keeps the framework's shortened rendering rather than sizing one
+/// clause by the request.
+pub(super) fn with_submitted_values(
+    violations: Vec<Violation>,
+    input: &dyn SerializableStruct,
+    schema: &Schema,
+    collections: &RenderedCollections,
+) -> Vec<Violation> {
+    // What the framework's walk stored for each violation this service does NOT state from
+    // a restored scalar, put back below: the restoring walk has one rule for every
+    // violation it is handed, and these two classes are this service's own.
+    let stated_otherwise: Vec<Option<(Option<String>, bool)>> = violations
+        .iter()
+        .map(|violation| {
+            let substituted = collections.get(&violation.path).is_some_and(|collection| {
+                violation.value.as_deref() == Some(collection.summary.as_str())
+            });
+            (violation.sensitive || substituted)
+                .then(|| (violation.value.clone(), violation.sensitive))
+        })
+        .collect();
+    let mut restored = service_common::validation::with_submitted_values(violations, input, schema);
+    for (violation, stored) in restored.iter_mut().zip(stated_otherwise) {
+        if let Some((value, sensitive)) = stored {
+            violation.value = value;
+            violation.sensitive = sensitive;
+        }
+    }
+    restored
 }
 
 /// Every collection member of `input`, rendered as a clause states it and keyed by the

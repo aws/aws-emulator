@@ -55,6 +55,8 @@ mod recommendation_loop;
 mod recommendations_for_resource;
 #[path = "all/refusal_sentence_one_builder.rs"]
 mod refusal_sentence_one_builder;
+#[path = "all/rejected_value_echo.rs"]
+mod rejected_value_echo;
 #[path = "all/resource_arn_owning_account.rs"]
 mod resource_arn_owning_account;
 #[path = "all/seeded_support_plan.rs"]

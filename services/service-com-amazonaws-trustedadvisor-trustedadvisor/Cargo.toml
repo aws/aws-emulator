@@ -7,6 +7,10 @@ publish = false
 build = "build.rs"
 
 [dependencies]
+# `validation::with_submitted_values`: the workspace's ONE re-walk of a built input that
+# puts the value a caller submitted back on a constraint violation, where the framework's
+# own walk stored it shortened. This service's refusal clauses echo that value.
+service-common = { path = "../common" }
 engine = { workspace = true }
 smithy-macros = { workspace = true }
 aws-smithy-schema = { workspace = true }

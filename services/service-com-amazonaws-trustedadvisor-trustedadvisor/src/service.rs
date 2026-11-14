@@ -251,18 +251,17 @@ fn record_refusal<O: Operation>(ctx: &OperationContext<'_>, latency: std::time::
 /// constraint-trait validation over what was read. Only the WORDS and the envelope are
 /// this service's.
 ///
-/// The violations are then put through ONE reader of the SAME built input, which checks
-/// nothing: [`rendered_collections`] renders each collection member the way a clause
-/// states it, which the framework's walk stores as an element count.
+/// The violations are then put through TWO readers of the SAME built input, neither of
+/// which checks anything:
 ///
-/// What it does NOT do is restore an elided value echo. The framework's walk stores the
-/// rejected value shortened past 256 bytes (a prefix plus `... [<n> bytes]`), which is
-/// text AWS never emits; recovering it needs a second walk of the same input, and the
-/// place that belongs is the frozen crate — filed as
-/// `issues/things-that-do-not-work/20261022T133000Z-gap-smithy-schema-server-constraint-violation-stores-only-the-elided-rejected-value.md`.
-/// Every constrained member this service models is far shorter than that cap except
-/// `nextToken` (`@length(4, 10000)`), so the shortened echo is reachable only by a value
-/// that is itself past a modelled maximum.
+/// * [`rendered_collections`] renders each collection member the way a clause states it,
+///   which the framework's walk stores as an element count;
+/// * [`validation::with_submitted_values`] puts back the value a clause echoes, which the
+///   framework's walk stores shortened past 256 bytes (a prefix plus `... [<n> bytes]`,
+///   text AWS never emits). A clause states the value the member HELD, so it is read off
+///   the request rather than off that rendering — the members this service models reach
+///   2048 and 10000 bytes, well past the cap, so a value inside its modelled maximum
+///   can break a `@pattern` and still be too long for it.
 fn modelled_refusal<O: Operation>(
     protocol: &dyn ServerHttpProtocol,
     req: &RtRequest,
@@ -303,7 +302,10 @@ fn modelled_refusal<O: Operation>(
     if violations.is_empty() {
         return None;
     }
-    let message = refusal_message(&violations, &rendered_collections(&input, O::INPUT_SCHEMA))?;
+    let collections = rendered_collections(&input, O::INPUT_SCHEMA);
+    let violations =
+        validation::with_submitted_values(violations, &input, O::INPUT_SCHEMA, &collections);
+    let message = refusal_message(&violations, &collections)?;
     validation_exception(protocol, message)
 }
 

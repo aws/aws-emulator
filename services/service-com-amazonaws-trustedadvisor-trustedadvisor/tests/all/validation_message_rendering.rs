@@ -52,11 +52,12 @@ const ORGANIZATION_IDENTIFIER_PATTERN: &str =
 
 /// `AwsResourceArn`'s pattern, unanchored. Source:
 /// `^arn:aws(-\w+)*:[\w\d-]+:([\w\d-]*)?:[\w\d_-]*([:/].+)*$`, `@length(20, 2048)`.
-const AWS_RESOURCE_ARN_PATTERN: &str = r"arn:aws(-\w+)*:[\w\d-]+:([\w\d-]*)?:[\w\d_-]*([:/].+)*";
+pub(crate) const AWS_RESOURCE_ARN_PATTERN: &str =
+    r"arn:aws(-\w+)*:[\w\d-]+:([\w\d-]*)?:[\w\d_-]*([:/].+)*";
 
 /// The pattern `CheckIdentifier` and `CheckArn` share, unanchored. Source:
 /// `^arn:[\w-]+:trustedadvisor:::check\/[\w-]+$` on both.
-const CHECK_PATTERN: &str = r"arn:[\w-]+:trustedadvisor:::check\/[\w-]+";
+pub(crate) const CHECK_PATTERN: &str = r"arn:[\w-]+:trustedadvisor:::check\/[\w-]+";
 
 /// `AccountId`'s pattern, unanchored. Source: `^\d+$`, `@length(12, 12)`.
 const ACCOUNT_ID_PATTERN: &str = r"\d+";
@@ -114,12 +115,12 @@ fn emulator() -> MultiServiceRouter {
 }
 
 /// The `message` an error body carries, or the empty string when it carries none.
-fn message_of(body: &Value) -> &str {
+pub(crate) fn message_of(body: &Value) -> &str {
     body["message"].as_str().unwrap_or_default()
 }
 
 /// The envelope one clause goes into.
-fn one_error(clause: &str) -> String {
+pub(crate) fn one_error(clause: &str) -> String {
     format!("1 validation error detected: {clause}")
 }
 
@@ -150,7 +151,7 @@ fn sensitive_message(requirement: &str) -> String {
 /// Assert that one request is refused as a `ValidationException` whose message is exactly
 /// `expected`: the status the model binds the shape to, the shape name in BOTH places
 /// restJson1 carries it, and the sentence.
-async fn assert_refused(
+pub(crate) async fn assert_refused(
     router: &MultiServiceRouter,
     case: &str,
     method: &str,
@@ -526,13 +527,10 @@ async fn a_sensitive_member_states_its_constraint_without_its_value() {
 /// value as submitted. The rows differ along the member, the bound broken (length and
 /// range, each from both sides) and the value's size and type.
 ///
-/// Every row's value is inside the framework's own 256-byte echo cap, which is the only
-/// size at which the echo is the submitted bytes: past it the framework stores a prefix
-/// plus `... [<n> bytes]`, and recovering the whole value needs the frozen crate to carry
-/// it — filed as
-/// `issues/things-that-do-not-work/20261022T133000Z-gap-smithy-schema-server-constraint-violation-stores-only-the-elided-rejected-value.md`
-/// and out of scope here. Only `nextToken` (`@length(4, 10000)`) can reach that cap at
-/// all, and only with a value already past its modelled maximum.
+/// Every row's value is inside the framework's own 256-byte echo cap, the size at which
+/// the value the framework's walk stores IS the submitted bytes. The same rule over values
+/// PAST that cap — where the stored value is a shortened rendering and the submitted bytes
+/// are read back off the request — is `tests/all/rejected_value_echo.rs`.
 #[tokio::test]
 async fn a_member_that_is_not_sensitive_echoes_the_value_as_submitted() {
     let router = emulator();
