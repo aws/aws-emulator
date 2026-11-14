@@ -418,6 +418,11 @@ mod request_validation_before_state;
 // export configurations, what the reader then counts, and what the delete refuses. Declared
 #[path = "all/capacity_manager_data_exports.rs"]
 mod capacity_manager_data_exports;
+// What `CreateCapacityManagerDataExport` stores for the account, what the describe and the
+// attributes then report of it, how a replayed `ClientToken` is answered, and what the create
+// refuses.
+#[path = "all/capacity_manager_data_export_creation.rs"]
+mod capacity_manager_data_export_creation;
 // The form an Amazon FPGA Image id is read in before any lookup, and the two answers an id
 // outside and inside it gets. Declared beside `prefix_lists` for the reason the note above
 #[path = "all/fpga_image_id_form.rs"]

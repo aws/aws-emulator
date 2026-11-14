@@ -2439,6 +2439,16 @@ pub use image_usage_reports::*;
 pub mod declarative_policies_reports;
 pub use declarative_policies_reports::*;
 
+/// The CREATE side of the Capacity Manager data export configurations: what one is created
+/// from, the quota a create asks about, the bytes a stored configuration is charged, the
+/// comparison a replayed `ClientToken` is judged on, and the one writer that stores one. A
+/// SUBMODULE for the same reason [`image_usage_reports`] is one, and `pub use` keeps every
+/// name reachable as `crate::state::<name>`. The id SPACE of a configuration, the two
+/// refusals that id can draw, the count the account reports and the removal path stay beside
+/// this file's other id readers.
+pub mod capacity_manager_data_exports;
+pub use capacity_manager_data_exports::*;
+
 /// What one instance's console shows, which `GetConsoleOutput` serves as text and
 /// `GetConsoleScreenshot` draws as an image — one definition, so the two cannot report one
 /// instance's console differently.

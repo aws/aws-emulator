@@ -1,15 +1,30 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateCapacityManagerDataExport
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateCapacityManagerDataExport`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! IMPLEMENTED: stores one Capacity Manager data export configuration in
+//! [`crate::state::ComAmazonawsEc2Amazonec2State::capacity_manager_data_exports`] — the
+//! bucket and key prefix the request names, the schedule and output format it chose out of
+//! the modelled catalogs, and the tags it asked for — under an id this service mints, and
+//! answers that id. This is the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateCapacityManagerDataExport::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! The create is what ADDS a configuration `DescribeCapacityManagerDataExports` then reports
+//! and `DeleteCapacityManagerDataExport` removes, so the id it answers is read back out of
+//! the store rather than out of this stack frame.
+//!
+//! A configuration carries no status of its own and nothing is owed to the clock: the four
+//! `LatestDelivery*` members describe an export RUN rather than the configuration, so a
+//! configuration no export has run for yet carries none of them
+//! ([`crate::state::capacity_manager_data_exports`]).
+//!
+//! The request is read in the order EC2 reads one: its OWN parameters first — the
+//! `ClientToken` the token map keeps, the bucket name against Amazon S3's published naming
+//! rules, the key prefix against the length an S3 object key has, each catalog word, and the
+//! tag payload — then the account's state (a replayed `ClientToken`, and the store's
+//! ceilings), then `DryRun`, which answers "whether you have the required permissions for the
+//! action, WITHOUT ACTUALLY MAKING THE REQUEST", and only then the write. So a probe of a
+//! request that would have been refused is refused with THAT reason, a probe of one that
+//! would have succeeded stores nothing, and a replayed `ClientToken` answers the one
+//! configuration it created instead of a second one.
 //!
 //! ## Shape of an operation
 //!
@@ -153,18 +168,232 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateCapacityManagerDataExport` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateCapacityManagerDataExportErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateCapacityManagerDataExport"))
+        use ::std::time::SystemTime;
+
+        use crate::scaffolded::Scaffolded;
+        use crate::state::{
+            CAPACITY_MANAGER_DATA_EXPORT_TAGGABLE_RESOURCE, CapacityManagerDataExportSpec,
+            MAX_CLIENT_TOKEN_CHARS, MAX_S3_KEY_PREFIX_CHARS, MAX_STORED_BYTES,
+            capacity_manager_data_export_limit_exceeded,
+            capacity_manager_data_export_payload_bytes, dry_run_operation,
+            idempotent_parameter_mismatch, invalid_s3_bucket_name, missing_parameter,
+            modelled_catalog_word, require_service_state,
+            s3_bucket_name_is_well_formed, same_capacity_manager_data_export_request,
+            tags_from_specifications,
+        };
+
+        // A data export configuration carries no Region member of its own — it is a
+        // configuration of the account's Capacity Manager, which is how
+        // `DescribeCapacityManagerDataExports` reads one back too — so nothing here depends
+        // on the Region the request was signed for; `ctx` carries request metadata only, and
+        // the store is reached through the engine held on `self`.
+        let _ = ctx;
+
+        // "Unique, case-sensitive identifier that you provide to ensure the idempotency of
+        // the request" (`$ClientToken`): the token map keeps whatever it is given for the
+        // process's lifetime, so its length is bounded the way every other create in this
+        // crate bounds it.
+        if input
+            .client_token
+            .as_ref()
+            .is_some_and(|token| token.chars().count() > MAX_CLIENT_TOKEN_CHARS)
+        {
+            return Err(Scaffolded::invalid_parameter_value(format!(
+                "clientToken accepts at most {MAX_CLIENT_TOKEN_CHARS} characters"
+            )));
+        }
+
+        // "The name of the S3 bucket where the capacity data export files will be delivered"
+        // (`$S3BucketName`) is `@required` but client-optional, so a request that names none
+        // reaches here with an empty string: there is nowhere to deliver the export to, which
+        // is what EC2's `MissingParameter` says. A value outside Amazon S3's published naming
+        // rules names no bucket at all, which is the answer every operation of this crate
+        // that takes a bucket name shares ([`crate::state::s3_bucket_name_is_well_formed`]
+        // and [`crate::state::invalid_s3_bucket_name`]), so one bad bucket name reads the
+        // same whichever of them a caller sent it to.
+        if input.s3_bucket_name.is_empty() {
+            return Err(missing_parameter(
+                "The request must contain the parameter s3BucketName",
+            ));
+        }
+        if !s3_bucket_name_is_well_formed(&input.s3_bucket_name) {
+            return Err(invalid_s3_bucket_name());
+        }
+
+        // "The S3 key prefix for the exported data files" (`$S3BucketPrefix`): the leading
+        // part of the key each export file is written under, so it is held to the length an
+        // S3 object key has — the one bound of this crate for an S3 key prefix.
+        if input
+            .s3_bucket_prefix
+            .as_ref()
+            .is_some_and(|prefix| prefix.chars().count() > MAX_S3_KEY_PREFIX_CHARS)
+        {
+            return Err(Scaffolded::invalid_parameter_value(format!(
+                "s3BucketPrefix accepts at most {MAX_S3_KEY_PREFIX_CHARS} characters"
+            )));
+        }
+
+        // "The frequency at which data exports are generated" (`$Schedule`) and "the file
+        // format for the exported data" (`$OutputFormat`) are both `@required` modelled
+        // enums, so the boundary validator has already refused a request that omits either
+        // or names a word outside its catalog before this handler runs. The lookup here is
+        // what turns the wire's text into the CATALOG's own `&'static str`, which is what
+        // gets stored — so no request text reaches the store — and the empty-value guards
+        // state the same requirement for a caller that reaches this handler with the member
+        // present and empty: a configuration with no schedule or no format at all is the
+        // parameter missing rather than a word to look up.
+        if input.schedule.is_empty() {
+            return Err(missing_parameter(
+                "The request must contain the parameter schedule",
+            ));
+        }
+        if input.output_format.is_empty() {
+            return Err(missing_parameter(
+                "The request must contain the parameter outputFormat",
+            ));
+        }
+        let schedule = modelled_catalog_word(
+            Some(input.schedule.as_str()),
+            SCHEDULE_VALUES,
+            "schedule",
+            None,
+        )?
+        .unwrap_or_default();
+        let output_format = modelled_catalog_word(
+            Some(input.output_format.as_str()),
+            OUTPUT_FORMAT_VALUES,
+            "outputFormat",
+            None,
+        )?
+        .unwrap_or_default();
+
+        // "The tags to apply to the data export configuration" (`$TagSpecifications`) —
+        // refused by the one helper every create in this crate bounds its tag payload with,
+        // which also refuses a specification naming any other resource type rather than
+        // silently dropping it ("you must specify the resource type to tag, otherwise the
+        // request will fail", `TagSpecification`).
+        let tags = tags_from_specifications(
+            input.tag_specifications.as_deref(),
+            CAPACITY_MANAGER_DATA_EXPORT_TAGGABLE_RESOURCE,
+            Self::NAME,
+        )?;
+
+        // The configuration as this request asks for it: what a replayed `ClientToken` is
+        // compared against, what the byte charge below is asked for, and what the store is
+        // given. The id and the creation instant are the service's to decide, so they are set
+        // at the write.
+        let spec = CapacityManagerDataExportSpec {
+            s3_bucket_name: input.s3_bucket_name.clone(),
+            s3_bucket_prefix: input.s3_bucket_prefix.clone(),
+            schedule,
+            output_format,
+            tags,
+        };
+        let asked = spec.configuration();
+
+        // The caller-chosen bytes this create would retain for the process's lifetime: the
+        // bucket, the key prefix, the tags and the client token the token map keeps. A COUNT
+        // ceiling admits megabytes on its own, because the record holds strings the caller
+        // chose the length of, so both are asked below.
+        let payload_bytes =
+            capacity_manager_data_export_payload_bytes(&asked, input.client_token.as_deref());
+
+        let state = require_service_state(&*self.engine)?;
+        let mut store = state.lock();
+
+        // Idempotency: one token names the one configuration it created, so a replay reports
+        // that configuration and creates nothing. Read here, answered below the DryRun check,
+        // because a replay stores nothing and so passes the ceilings a fresh create has to
+        // clear.
+        let replayed = input.client_token.as_deref().and_then(|token| {
+            store
+                .capacity_manager_data_export_client_tokens
+                .get(token)
+                .cloned()
+        });
+
+        // A token is only idempotent for the REQUEST it was first given with: replayed with a
+        // different request it names a configuration the caller did not ask for, which EC2
+        // refuses rather than answers. Checked before the DryRun flag, so a dry run of such a
+        // request is refused with this reason too.
+        if let Some(export_id) = replayed.as_deref() {
+            let stored = store
+                .capacity_manager_data_exports
+                .get(export_id)
+                .ok_or_else(|| {
+                    Scaffolded::internal_error(format!(
+                        "a client token names Capacity Manager data export configuration \
+                         '{export_id}', which is not stored"
+                    ))
+                })?;
+            if !same_capacity_manager_data_export_request(stored, &asked) {
+                return Err(idempotent_parameter_mismatch());
+            }
+        }
+
+        if replayed.is_none() {
+            if !store.has_capacity_manager_data_export_capacity() {
+                return Err(capacity_manager_data_export_limit_exceeded(
+                    store.capacity_manager_data_exports.len(),
+                ));
+            }
+            if store.would_exceed_stored_bytes(payload_bytes) {
+                return Err(Scaffolded::request_limit_exceeded(format!(
+                    "This emulator holds {} of at most {MAX_STORED_BYTES} bytes of \
+                     caller-supplied data, so it cannot store {payload_bytes} more",
+                    store.stored_bytes()
+                )));
+            }
+        }
+
+        // DryRun sits AFTER every parameter has been read and the account's own state asked,
+        // and BEFORE the first write: the flag asks whether the request WOULD have worked, so
+        // one that would have been refused is refused with that reason instead, and one that
+        // would have succeeded leaves state untouched.
+        if input.dry_run == Some(true) {
+            return Err(dry_run_operation());
+        }
+
+        if let Some(export_id) = replayed {
+            return Ok(CreateCapacityManagerDataExportOutput {
+                capacity_manager_data_export_id: Some(export_id),
+            });
+        }
+
+        // The store mints the id and reads the creation instant off the clock
+        // (`crate::state::capacity_manager_data_exports`), so this handler decides neither
+        // of them twice.
+        let export_id = store.insert_capacity_manager_data_export(spec, SystemTime::now());
+        if let Some(token) = input.client_token.clone() {
+            store
+                .capacity_manager_data_export_client_tokens
+                .insert(token, export_id.clone());
+        }
+        // The bytes this record and its token retain are charged at the insert, so no path
+        // can store them uncharged;
+        // `crate::state::ComAmazonawsEc2Amazonec2State::remove_capacity_manager_data_export`
+        // gives them back.
+        store.add_stored_bytes(payload_bytes);
+
+        // Read the answer back OUT of the store, so the caller is told the id a later
+        // `DescribeCapacityManagerDataExports` will report rather than one held only in this
+        // stack frame.
+        store
+            .capacity_manager_data_exports
+            .get(&export_id)
+            .map(|stored| CreateCapacityManagerDataExportOutput {
+                // "The unique identifier for the created data export configuration. Use this
+                // ID to reference the export in other API calls"
+                // (`CreateCapacityManagerDataExportResult$CapacityManagerDataExportId`).
+                capacity_manager_data_export_id: stored
+                    .capacity_manager_data_export_id
+                    .clone(),
+            })
+            .ok_or_else(|| {
+                Scaffolded::internal_error(format!(
+                    "the newly created Capacity Manager data export configuration \
+                     '{export_id}' could not be read back"
+                ))
+            })
     }
 }

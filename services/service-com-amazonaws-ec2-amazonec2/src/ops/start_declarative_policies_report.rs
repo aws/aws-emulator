@@ -114,19 +114,12 @@ use std::time::{Instant, SystemTime};
 use crate::scaffolded::Scaffolded;
 use crate::state::{
     DECLARATIVE_POLICIES_REPORT_TAGGABLE_RESOURCE, DeclarativePoliciesReportSpec,
-    MAX_STORED_BYTES, MAX_STORED_DECLARATIVE_POLICIES_REPORTS, REPORT_STATE_RUNNING,
-    declarative_policies_report_payload_bytes, dry_run_operation, echoed_resource_id,
-    incorrect_state, invalid_parameter_value, invalid_s3_bucket_name, missing_parameter,
-    require_service_state, s3_bucket_name_is_well_formed, tags_from_specifications,
+    MAX_S3_KEY_PREFIX_CHARS, MAX_STORED_BYTES, MAX_STORED_DECLARATIVE_POLICIES_REPORTS,
+    REPORT_STATE_RUNNING, declarative_policies_report_payload_bytes, dry_run_operation,
+    echoed_resource_id, incorrect_state, invalid_parameter_value, invalid_s3_bucket_name,
+    missing_parameter, require_service_state, s3_bucket_name_is_well_formed,
+    tags_from_specifications,
 };
-
-/// The most characters an `S3Prefix` may carry: the published limit on the length of an
-/// Amazon S3 object key, which the prefix is the leading part of (the report is saved to
-/// "s3://AMZN-S3-DEMO-BUCKET/YOUR-OPTIONAL-S3-PREFIX/ec2_TARGETID_REPORTID_YYYYMMDDTHHMMZ.csv").
-///
-/// The model puts no `@length` on the member, so this is the only place that limit is kept —
-/// and it is also what bounds the caller-chosen bytes one stored report retains.
-const MAX_S3_PREFIX_CHARS: usize = 1024;
 
 /// Whether `target_id` is one of the three forms the member publishes: "the root ID,
 /// organizational unit ID, or account ID. Format: For root: `r-ab12`; For OU:
@@ -248,14 +241,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // "The prefix for your S3 object" (`$S3Prefix`): the leading part of the key the
-        // report is written under, so it is held to the length an S3 object key has.
+        // report is written under, so it is held to the length an S3 object key has — the one
+        // bound of this crate for an S3 key prefix ([`crate::state::MAX_S3_KEY_PREFIX_CHARS`]).
         if input
             .s3_prefix
             .as_ref()
-            .is_some_and(|prefix| prefix.chars().count() > MAX_S3_PREFIX_CHARS)
+            .is_some_and(|prefix| prefix.chars().count() > MAX_S3_KEY_PREFIX_CHARS)
         {
             return Err(invalid_parameter_value(format!(
-                "s3Prefix accepts at most {MAX_S3_PREFIX_CHARS} characters"
+                "s3Prefix accepts at most {MAX_S3_KEY_PREFIX_CHARS} characters"
             )));
         }
 

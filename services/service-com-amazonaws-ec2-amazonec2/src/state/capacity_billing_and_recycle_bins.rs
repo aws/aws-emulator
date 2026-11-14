@@ -376,6 +376,16 @@ pub fn inaccessible_storage_location<E>(message: impl Into<String>) -> Scaffolde
     Scaffolded::service_error(INACCESSIBLE_STORAGE_LOCATION, 400, message)
 }
 
+/// The most characters an Amazon S3 KEY PREFIX a request names may carry: the published
+/// limit on the length of an Amazon S3 object key, which a prefix is the leading part of
+/// (Amazon S3 User Guide, "Creating object key names" — "the name for a key is a sequence of
+/// Unicode characters whose UTF-8 encoding is at most 1,024 bytes long").
+///
+/// The ONE bound every operation of this crate that takes an S3 key prefix holds it to: no
+/// member of that kind carries a modelled `@length`, so this is the only place that limit is
+/// kept, and it is also what bounds the caller-chosen bytes one stored record retains for it.
+pub const MAX_S3_KEY_PREFIX_CHARS: usize = 1024;
+
 /// Refuse a `Bucket` that is outside the Amazon S3 general purpose bucket naming rules
 /// ([`s3_bucket_name_is_well_formed`]): HTTP 400 [`INVALID_REQUEST`], `The S3 bucket name
 /// contains invalid characters.`

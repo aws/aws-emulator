@@ -3276,6 +3276,15 @@ pub struct ComAmazonawsEc2Amazonec2State {
     /// `DeleteCapacityManagerDataExport` the one that removes it. Ordered by id, which is
     /// the order a report of them pages over.
     pub capacity_manager_data_exports: BTreeMap<String, CapacityManagerDataExportResponse>,
+    /// A `CreateCapacityManagerDataExport` `ClientToken` and the data export configuration
+    /// id it minted, so a repeat of the same request answers with that configuration instead
+    /// of creating a second one: "unique, case-sensitive identifier that you provide to
+    /// ensure the idempotency of the request"
+    /// (`CreateCapacityManagerDataExportRequest$ClientToken`). A token is dropped with the
+    /// configuration it named
+    /// ([`Self::remove_capacity_manager_data_export`]), so no token can name a configuration
+    /// that is gone.
+    pub capacity_manager_data_export_client_tokens: HashMap<String, String>,
     /// The tag keys EC2 Capacity Manager monitors for the account, by tag key, as
     /// [`MonitoredTagKeyRecord`]s — the instants the clock owes each key's activation and
     /// deactivation at, from which the status a reader sees is derived. See the
@@ -3722,6 +3731,7 @@ impl Default for ComAmazonawsEc2Amazonec2State {
             // A fresh account holds no Capacity Manager data export configuration until
             // `CreateCapacityManagerDataExport` makes one.
             capacity_manager_data_exports: BTreeMap::new(),
+            capacity_manager_data_export_client_tokens: HashMap::new(),
             // An account that has never called `UpdateCapacityManagerMonitoredTagKeys`
             // monitors no tag key at all, so Capacity Manager includes no tag dimension in
             // its capacity metric data.

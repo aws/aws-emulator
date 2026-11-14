@@ -31,9 +31,11 @@
 //! configurations the account holds and which one is named, which id form the request
 //! carries (the long form, the short form, the all-zero id), the WAY a value falls outside
 //! that form, and where the `DryRun` falls against the lookup — so no single recorded call
-//! is the specification. `CreateCapacityManagerDataExport` is still a scaffold in this
-//! emulator, so the configurations a row needs are written straight into the store the way
-//! that operation will, as [`super::image_usage_reports`] seeds AMI usage reports.
+//! is the specification. The configurations a row needs are written straight into the store,
+//! the way [`super::image_usage_reports`] seeds AMI usage reports, so a row controls every
+//! member a fixture carries — including the delivery members an export RUN sets, which
+//! `CreateCapacityManagerDataExport` leaves unset ([`super::capacity_manager_data_export_creation`]
+//! is where that create's own rules are asserted).
 //!
 //! Five rules about the DESCRIBE are under test:
 //!

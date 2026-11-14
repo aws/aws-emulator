@@ -730,14 +730,31 @@ impl ComAmazonawsEc2Amazonec2State {
     ///
     /// The one remover, so "the export is gone" is a fact of this map rather than of a
     /// handler's own bookkeeping: a later read of that id finds nothing and the count above
-    /// drops by one. "This stops future scheduled exports but does not delete previously
+    /// drops by one. It also drops every `ClientToken` that named the configuration — so a
+    /// token can never name one that is gone — and gives the store's byte budget back exactly
+    /// what [`capacity_manager_data_export_payload_bytes`] charged for them, the way
+    /// [`ComAmazonawsEc2Amazonec2State::remove_image_usage_report`] does for a report.
+    ///
+    /// "This stops future scheduled exports but does not delete previously
     /// exported files from S3" (`DeleteCapacityManagerDataExport`) — nothing in this
     /// emulator holds those files, so removing the configuration is the whole of the delete.
     pub fn remove_capacity_manager_data_export(
         &mut self,
         export_id: &str,
     ) -> Option<CapacityManagerDataExportResponse> {
-        self.capacity_manager_data_exports.remove(export_id)
+        let export = self.capacity_manager_data_exports.remove(export_id)?;
+        let tokens: usize = self
+            .capacity_manager_data_export_client_tokens
+            .iter()
+            .filter(|(_token, named)| named.as_str() == export_id)
+            .map(|(token, _named)| token.len())
+            .sum();
+        self.capacity_manager_data_export_client_tokens
+            .retain(|_token, named| named.as_str() != export_id);
+        self.release_stored_bytes(
+            capacity_manager_data_export_payload_bytes(&export, None).saturating_add(tokens),
+        );
+        Some(export)
     }
 }
 
