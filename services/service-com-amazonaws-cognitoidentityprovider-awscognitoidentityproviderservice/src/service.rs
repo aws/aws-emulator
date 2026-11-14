@@ -190,6 +190,16 @@ const LIST_USER_POOL_CLIENTS: &str = "ListUserPoolClients";
 /// the framework spells a member path.
 const MAX_RESULTS_MEMBER_PATH: &str = "maxResults";
 
+/// The validation path of the `UserPoolId` member every operation that works ON a stored
+/// user pool binds (`smithy_query(query="operation",operation="DescribeUserPoolClient")`
+/// puts it in `UserPoolIdType`, `@required`), as the framework spells a member path.
+const USER_POOL_ID_MEMBER_PATH: &str = "userPoolId";
+
+/// That same member as the MODEL names it, which is how the sentence answered for a request
+/// carrying no pool to address names it ([`absent_user_pool_id_sentence`]). Held beside the
+/// path it is cased from, and checked against the model by this file's own test.
+const USER_POOL_ID_MEMBER: &str = "UserPoolId";
+
 /// The `com-amazonaws-cognitoidentityprovider-awscognitoidentityproviderservice` emulated service: the generated [`ServiceDefinition`] plus
 /// the behavioral seams this file owns.
 ///
@@ -687,6 +697,33 @@ fn domain_name_prose(operation: &str, violations: &[(Violation, SubmittedEcho)])
         })
 }
 
+/// The sentence Amazon Cognito answers a request that names no user pool to work on, in
+/// place of the constraint report the framework would render — or `None` where this refusal
+/// is not that one.
+///
+/// Amazon Cognito resolves the pool a request addresses before it reads anything else about
+/// that request, so a request carrying no pool id at all is refused by the null check that
+/// resolution opens with: the member as the MODEL names it ([`USER_POOL_ID_MEMBER`]), then
+/// that it must not be null, and nothing about a value or a constraint. A pool id that WAS
+/// supplied keeps the constraint report, whatever its shape — that report quotes the value
+/// the request carried, which is what it is for — and so does every other member, present or
+/// absent.
+///
+/// The sentence is the WHOLE refusal, because the check it comes from is the first thing the
+/// request meets: a request that also breaks another member's rule is still refused for the
+/// pool it never named, and the other member is not reported beside it.
+fn absent_user_pool_id_sentence<'v>(
+    violations: impl IntoIterator<Item = &'v Violation>,
+) -> Option<String> {
+    violations
+        .into_iter()
+        .any(|violation| {
+            violation.path == USER_POOL_ID_MEMBER_PATH
+                && matches!(violation.kind, ViolationKind::MissingRequiredMember)
+        })
+        .then(|| format!("{USER_POOL_ID_MEMBER} must not be null"))
+}
+
 /// Whether `violation` is one this service does NOT refuse on, because Amazon Cognito
 /// SERVES the request that carries it — the handler then answers it from stored state.
 ///
@@ -820,8 +857,13 @@ where
             );
             // Read off the violations as the MODEL stated them, before the clause
             // renderings below requote the expression: the prose quotes the pattern a
-            // whole domain name must match, anchors included.
-            let prose = domain_name_prose(O::NAME, &collected);
+            // whole domain name must match, anchors included. A request that names no
+            // pool to work on is answered by the null check that pool resolution opens
+            // with, which is ahead of every clause about a member of the request.
+            let prose = absent_user_pool_id_sentence(
+                collected.iter().map(|(violation, _)| violation),
+            )
+            .or_else(|| domain_name_prose(O::NAME, &collected));
             // A violation this service does not refuse on is left out of the refusal and
             // noted, because the framework's own sequence WOULD refuse it.
             let served = collected
@@ -980,13 +1022,19 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
             Refusal::Invalid(violations) => {
                 // The requirement rendering is the same one the wrapper states
                 // ([`requirement_as_stated`]), so one request's expression cannot be
-                // quoted two ways and one enum's set cannot be listed two ways.
-                let violations: Vec<Violation> =
-                    violations.iter().map(requirement_as_stated).collect();
+                // quoted two ways and one enum's set cannot be listed two ways — and the
+                // sentence a request naming no pool earns is the same one
+                // ([`absent_user_pool_id_sentence`]), so that refusal is not worded one way
+                // here and another there.
+                let message = absent_user_pool_id_sentence(violations.iter()).unwrap_or_else(|| {
+                    let violations: Vec<Violation> =
+                        violations.iter().map(requirement_as_stated).collect();
+                    ::aws_smithy_schema_server::constraints::envelope(&violations)
+                        .unwrap_or_else(|| "invalid request".to_string())
+                });
                 Some(Refused {
                     code: INVALID_PARAMETER_EXCEPTION.to_string(),
-                    message: ::aws_smithy_schema_server::constraints::envelope(&violations)
-                        .unwrap_or_else(|| "invalid request".to_string()),
+                    message,
                 })
             }
             // An unauthenticated caller is the emulator's own refusal, not this
@@ -1774,5 +1822,48 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// RULE: the member the null-check sentence names
+    /// ([`super::absent_user_pool_id_sentence`]) is a member THIS MODEL declares, spelled as
+    /// the model spells it, and the path the sentence keys on is the validation path the
+    /// framework spells that same member as.
+    ///
+    /// Read off the model rather than restated, so the member renamed in the model fails here
+    /// instead of leaving a sentence naming a member no request can carry.
+    #[test]
+    fn the_pool_id_the_null_check_names_is_this_models_member() {
+        let model = std::fs::read_to_string(MODEL_PATH)
+            .expect("the model that generated this crate ships beside it");
+        let model: serde_json::Value =
+            serde_json::from_str(&model).expect("the model that generated this crate is JSON");
+        let shapes = model["shapes"]
+            .as_object()
+            .expect("a Smithy model declares shapes");
+
+        // Every operation input of this model that REQUIRES the member the sentence names.
+        let requiring: Vec<&String> = shapes
+            .iter()
+            .filter(|(_, shape)| shape["type"] == "structure")
+            .filter(|(_, shape)| {
+                shape["members"][super::USER_POOL_ID_MEMBER]["traits"]
+                    .get("smithy.api#required")
+                    .is_some()
+            })
+            .map(|(name, _)| name)
+            .collect();
+        assert!(
+            !requiring.is_empty(),
+            "the sentence names {:?}, which this model declares as a required member of no \
+             request at all",
+            super::USER_POOL_ID_MEMBER
+        );
+        assert_eq!(
+            super::constraints::path::member(super::USER_POOL_ID_MEMBER),
+            super::USER_POOL_ID_MEMBER_PATH,
+            "the path the sentence keys on must be the one the framework spells {:?} as, got {:?}",
+            super::USER_POOL_ID_MEMBER,
+            super::constraints::path::member(super::USER_POOL_ID_MEMBER)
+        );
     }
 }

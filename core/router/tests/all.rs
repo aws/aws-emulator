@@ -2563,3 +2563,8 @@ mod cloudformation_provisions_cloudfront_resources;
 // `lambda_signed_write_to_an_aoss_collection_endpoint` is declared ONCE, in the span above:
 // `cloudformation_domain_endpoint_is_dialled_by_consumers` is declared ONCE, further up this
 // tail: two landings each appended their own copy, and a module declared twice compiles
+// (`cloudtrail_read_only_api_calls` is declared ONCE, in the sorted block above beside the
+// other CloudTrail suites: a module may be declared only once.)
+// (`cloudwatch_alarm_ssm_ops_item_action` is declared ONCE, in the head region above: a
+// above, for the same reason.
+// (`cloudformation_domain_endpoint_is_dialled_by_consumers` is declared ONCE, further up this
