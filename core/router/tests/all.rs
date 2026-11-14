@@ -2317,3 +2317,11 @@ mod route53_health_check_string_match;
 // (`lambda_signed_write_to_an_aoss_collection_endpoint` and
 // `cloudformation_domain_endpoint_is_dialled_by_consumers` are declared ONCE each, in the
 // spans above: two `mod` items for one name is a redefinition that compiles neither.)
+// Declared in this appended tail, which is where every new suite inserts its lines: what a
+// stack-deployed `RedrivePolicy` does to a message the deployed consumer never processes spans
+// CloudFormation (which provisions the queue pair, the function and the mapping), AWS Lambda
+// (which polls and invokes), Amazon SQS (which counts the deliveries and performs the move)
+// and IAM (which answers for the execution role), so no single service crate's test target can
+// deploy the pipeline and then watch the dead-letter queue.
+#[path = "all/cloudformation_sqs_redrive_policy_dead_letters_a_failing_consumer.rs"]
+mod cloudformation_sqs_redrive_policy_dead_letters_a_failing_consumer;
