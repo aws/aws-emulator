@@ -171,6 +171,8 @@ mod map_runs;
 mod nested_type_discriminator;
 #[path = "all/optimized_lambda_task_attribution.rs"]
 mod optimized_lambda_task_attribution;
+#[path = "all/oversize_task_result_diagnosis.rs"]
+mod oversize_task_result_diagnosis;
 #[path = "all/parallel_branch_stop.rs"]
 mod parallel_branch_stop;
 #[path = "all/parallel_run_a_job.rs"]

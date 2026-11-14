@@ -520,11 +520,11 @@ pub(super) const WHOLE_INPUT_PATH: &str = "$";
 /// `Map` iteration or `Parallel` branch raised was already wrapped by the state inside
 /// it that raised it.
 fn diagnosed(name: &str, entered_at: i64, fault: Fault) -> Fault {
-    let worded = match fault.failure.cause.as_deref() {
-        // A document past what a state may carry, measured where the state that
-        // produced it was not in scope: the state being executed is the one that
-        // produced it, and the sentence names it here.
-        Some(cause) if is_unnamed_producer(cause) => Some(result_too_large(name)),
+    // A document past what a state may carry, measured where the state that produced it
+    // was not in scope: the state being executed is the one that produced it, and the
+    // sentence names it here.
+    let failure = produced_by_state(name, fault.failure);
+    let worded = match failure.cause.as_deref() {
         Some(cause) if names_its_state(cause) => Some(executing_state(name, entered_at, cause)),
         _ => None,
     };
@@ -532,11 +532,33 @@ fn diagnosed(name: &str, entered_at: i64, fault: Fault) -> Fault {
         Some(cause) => Fault {
             at: fault.at,
             failure: Failure {
-                error: fault.failure.error,
+                error: failure.error,
                 cause: Some(cause),
             },
         },
-        None => fault,
+        None => Fault {
+            at: fault.at,
+            failure,
+        },
+    }
+}
+
+/// `failure` as the state `name` reports it, for the quota sentence raised with no
+/// producer named ([`UNNAMED_PRODUCER`]): the state being executed is what produced the
+/// document, so that state names itself in the sentence.
+///
+/// The ONE place that naming is applied, read wherever such a failure is REPORTED — by
+/// the state that ends the execution with it ([`diagnosed`]) and by the catcher that
+/// takes it over ([`Interpreter::catch_or_fail`], whose error output a handler reads the
+/// cause out of) — so a client told about the same failure twice is told the same bytes.
+/// Every other failure is carried exactly as it was raised.
+fn produced_by_state(name: &str, failure: Failure) -> Failure {
+    match failure.cause.as_deref() {
+        Some(cause) if is_unnamed_producer(cause) => Failure {
+            error: failure.error,
+            cause: Some(result_too_large(name)),
+        },
+        _ => failure,
     }
 }
 
@@ -4062,11 +4084,7 @@ impl Trial {
     /// raised with no producer named ([`UNNAMED_PRODUCER`]) names the state under test
     /// here, exactly as an execution's own state names itself in it ([`diagnosed`]).
     fn failed(inspection: Inspection, failure: Failure) -> Self {
-        let Failure { error, cause } = failure;
-        let cause = cause.map(|cause| match is_unnamed_producer(&cause) {
-            true => result_too_large(SINGLE_STATE_LABEL),
-            false => cause,
-        });
+        let Failure { error, cause } = produced_by_state(SINGLE_STATE_LABEL, failure);
         Self {
             status: TEST_STATUS_FAILED,
             output: None,

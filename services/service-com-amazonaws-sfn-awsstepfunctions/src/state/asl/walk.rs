@@ -3242,16 +3242,15 @@ impl Interpreter<'_> {
                             Ok(bytes) => results_bytes = results_bytes.saturating_add(bytes),
                             Err(failure) => return (Err(failure), batch_end),
                         }
+                        // The array the iterations build IS this state's result, so it
+                        // outgrowing the limit is the same quota failure a single
+                        // iteration past it raises, worded the one way the service
+                        // words it: the state being executed is what names itself in
+                        // it ([`result_too_large`], named by [`diagnosed`] or by the
+                        // catcher that takes it over).
                         if results_bytes > MAX_PAYLOAD_BYTES {
                             return (
-                                Err(named(
-                                    DATA_LIMIT_ERROR,
-                                    format!(
-                                        "the 'Map' state's iterations produced at least \
-                                         {results_bytes} bytes, more than the \
-                                         {MAX_PAYLOAD_BYTES} a state's output may carry"
-                                    ),
-                                )),
+                                Err(named(DATA_LIMIT_ERROR, result_too_large(UNNAMED_PRODUCER))),
                                 batch_end,
                             );
                         }
@@ -3542,6 +3541,11 @@ impl Interpreter<'_> {
         at: Duration,
     ) -> Result<StateStep, Fault> {
         let (name, left) = caught;
+        // The failure as THIS state reports it: the quota sentence raised with no
+        // producer named is the document this state produced, so the error output a
+        // catcher is handed carries the same sentence the execution's own cause would
+        // ([`produced_by_state`]).
+        let failure = produced_by_state(name, failure);
         let catchers = state
             .get("Catch")
             .and_then(Value::as_array)
