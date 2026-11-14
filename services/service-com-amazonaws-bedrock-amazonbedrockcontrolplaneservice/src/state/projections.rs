@@ -392,24 +392,28 @@ pub fn policy_definition_hash(definition: Option<&AutomatedReasoningPolicyDefini
     ::hex::encode(Sha512::digest(canonical.as_bytes()))
 }
 
-/// A policy definition as its CONTENT: the format version it carries or the one the shape
-/// declares as its `@default` ([`POLICY_DEFINITION_FORMAT_VERSION`]), and each of its three
-/// lists, an absent one read as the empty list.
+/// A policy definition as its CONTENT: the format version this service writes definitions
+/// in ([`POLICY_DEFINITION_FORMAT_VERSION`]), and each of its three lists, an absent one
+/// read as the empty list.
 ///
 /// So a revision that holds NO definition, and one whose definition carries no types,
 /// variables or rules, are one definition — which is what makes [`policy_definition_hash`]
 /// a function of the definition's content alone, and what
 /// `ops/export_automated_reasoning_policy_version.rs` exports, so the definition that
 /// operation reports always hashes to the `definitionHash` the same revision reports.
+///
+/// `version` names the FORMAT the definition document is written in rather than anything
+/// about the policy, so it is this service's own format version wherever a definition is
+/// reported: a format token a request carried is a statement about the document that
+/// request sent, not about the one read back, and this service writes exactly one format.
+/// A definition therefore reads back in the format it is stored in whatever token reached
+/// it, and two definitions differing only in that token are one definition to the hash.
 #[must_use]
 pub fn policy_definition_content(
     definition: Option<&AutomatedReasoningPolicyDefinition>,
 ) -> AutomatedReasoningPolicyDefinition {
     AutomatedReasoningPolicyDefinition {
-        version: definition
-            .map(|definition| definition.version.clone())
-            .filter(|version| !version.is_empty())
-            .unwrap_or_else(|| POLICY_DEFINITION_FORMAT_VERSION.to_string()),
+        version: POLICY_DEFINITION_FORMAT_VERSION.to_string(),
         types: Some(
             definition
                 .and_then(|definition| definition.types.clone())

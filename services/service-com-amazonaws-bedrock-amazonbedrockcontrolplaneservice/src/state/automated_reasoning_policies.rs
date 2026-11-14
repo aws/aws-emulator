@@ -19,9 +19,15 @@ use super::*;
 /// fresh regions, which is why the bound is over the whole store rather than per region.
 pub const MAX_AUTOMATED_REASONING_POLICIES_PER_ACCOUNT: usize = 100;
 
-/// `AutomatedReasoningPolicyDefinition$version` when the request carried no version of
-/// its own — the member's modelled `@default("1")`
+/// The policy-definition FORMAT version this service writes every
+/// `AutomatedReasoningPolicyDefinition` it reports in — the one version of that document
+/// format there is, which is why it is also the member's modelled `@default("1")`
 /// (`smithy_query(query="shape",shape="AutomatedReasoningPolicyDefinition")`).
+///
+/// The member describes the document's own format rather than the policy, so a definition
+/// read back out of the store carries this token whatever token the request that wrote it
+/// carried: a single-component format token, not a dotted release number, and not the
+/// policy's own resource version (that one is the `:<version>` suffix of a versioned ARN).
 pub const POLICY_DEFINITION_FORMAT_VERSION: &str = "1";
 
 /// The most build workflows ONE Automated Reasoning policy may hold at once, past which a

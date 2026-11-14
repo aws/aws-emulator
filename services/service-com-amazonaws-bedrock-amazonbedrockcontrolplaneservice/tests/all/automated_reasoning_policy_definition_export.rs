@@ -23,6 +23,11 @@
 //! 5. **An ARN naming no revision is 404**: an id nothing minted and a minted id in another
 //!    region are reported as a missing policy, while a version number the policy has not
 //!    cut is reported as the missing version.
+//! 6. **The exported definition is stamped with the SERVICE's definition-format version**:
+//!    whatever format token the request that wrote the definition carried — a dotted
+//!    release number, another whole number, an empty string, none at all — the definition
+//!    read back carries the one format this service writes, and two definitions differing
+//!    only in that token report one `definitionHash`.
 //!
 //! Every expectation is derived from the model, cited per row
 //! (`smithy_query(query="operation",operation="ExportAutomatedReasoningPolicyVersion")`,
@@ -34,8 +39,10 @@ use serde_json::{json, Value};
 
 use crate::support::{emulator, label, Emulator, Reply, ACCOUNT, REGION};
 
-/// The format version `AutomatedReasoningPolicyDefinition$version` declares as its
-/// `@default`, which an exported definition that was stored without one carries.
+/// The policy-definition FORMAT version this service writes every definition in, which is
+/// the token `AutomatedReasoningPolicyDefinition$version` declares as its `@default`
+/// (`smithy_query(query="shape",shape="AutomatedReasoningPolicyDefinition")`: target
+/// `AutomatedReasoningPolicyFormatVersion`, a plain string, `@default("1")`).
 const DEFAULT_FORMAT_VERSION: &str = "1";
 
 /// What the refusal of an ARN naming a version the addressed policy has not cut says, as
@@ -167,12 +174,13 @@ fn definition(present: &[&str], counts: (usize, usize, usize), format_version: b
     built
 }
 
-/// A definition as its CONTENT: the format version it carries or the shape's default, and
+/// A definition as its CONTENT: the format version this service writes definitions in, and
 /// each of its three lists, an absent one read as the empty list.
 ///
 /// Two definitions that normalize alike hold the same rules, variables and types, which is
 /// what "the export reports the definition the revision holds" is asserted over — a list
-/// the request omitted and the same list sent empty are one definition.
+/// the request omitted and the same list sent empty are one definition, and so are two that
+/// differ only in the format token the request spelled (rule 6).
 fn content(definition: &Value) -> Value {
     let list = |name: &str| {
         definition
@@ -181,10 +189,7 @@ fn content(definition: &Value) -> Value {
             .unwrap_or_else(|| json!([]))
     };
     json!({
-        "version": definition
-            .get("version")
-            .and_then(Value::as_str)
-            .unwrap_or(DEFAULT_FORMAT_VERSION),
+        "version": DEFAULT_FORMAT_VERSION,
         "types": list("types"),
         "variables": list("variables"),
         "rules": list("rules"),
@@ -495,4 +500,125 @@ async fn an_arn_that_names_no_revision_is_refused() {
         "case the version that was cut: must export, got {} {:?}",
         served.status, served.body
     );
+}
+
+// ---------------------------------------------------------------------------------------
+// 6. The format version an exported definition is stamped with is this service's own.
+// ---------------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn an_exported_definition_carries_the_services_definition_format_version() {
+    // Rows differ along the format token the WRITING request spelled for one and the same
+    // definition content: `AutomatedReasoningPolicyFormatVersion` is a plain string with no
+    // enum, pattern or length constraint
+    // (`smithy_query(query="shape",shape="AutomatedReasoningPolicyFormatVersion")`), so any
+    // of these reaches the handler, and none of them is what the document read back is
+    // written in.
+    let rows: Vec<(&str, Option<&str>)> = vec![
+        ("no format version at all", None),
+        ("the format version this service writes", Some("1")),
+        ("a dotted release number", Some("1.0")),
+        ("a longer dotted release number", Some("1.0.0")),
+        ("a whole number past the one format there is", Some("2")),
+        ("a whole number below it", Some("0")),
+        ("a prefixed token", Some("v1")),
+        ("an empty token", Some("")),
+    ];
+
+    let emu = emulator();
+    // One content for every row, so the only thing a row varies is the format token.
+    let written = definition(&["types", "variables", "rules"], (2, 2, 2), false);
+    let mut hashes: Vec<(&str, String)> = Vec::new();
+
+    for (index, (case, token)) in rows.iter().enumerate() {
+        let mut sent = written.clone();
+        if let Some(token) = token {
+            sent["version"] = json!(token);
+        }
+        let (policy_arn, draft_hash) = policy(
+            &emu,
+            json!({
+                "name": format!("format stamped policy {index}"),
+                "policyDefinition": sent.clone(),
+            }),
+        )
+        .await;
+
+        // The draft reads back in the format this service writes, not in the one the request
+        // spelled.
+        let exported = export(&emu, &policy_arn).await;
+        assert_eq!(
+            exported.status, 200,
+            "case {case:?}: ExportAutomatedReasoningPolicyVersion must answer 200, got {} {:?}",
+            exported.status, exported.body
+        );
+        assert_eq!(
+            exported.body.get("version").and_then(Value::as_str),
+            Some(DEFAULT_FORMAT_VERSION),
+            "case {case:?}: the exported definition must carry the format version \
+             {DEFAULT_FORMAT_VERSION:?}, got {:?}",
+            exported.body.get("version")
+        );
+        assert_eq!(
+            content(&exported.body),
+            content(&sent),
+            "case {case:?}: the export must report the definition the draft holds, got {:?}",
+            exported.body
+        );
+
+        // A version cut from that draft freezes the same document, so the snapshot a
+        // versioned ARN exports is stamped alike.
+        let cut = create_version(
+            &emu,
+            &policy_arn,
+            json!({ "lastUpdatedDefinitionHash": draft_hash.clone() }),
+        )
+        .await;
+        assert_eq!(
+            cut.status, 200,
+            "case {case:?}: CreateAutomatedReasoningPolicyVersion must answer 200, got {} {:?}",
+            cut.status, cut.body
+        );
+        let frozen = export(&emu, &cut.text("policyArn")).await;
+        assert_eq!(
+            frozen.body.get("version").and_then(Value::as_str),
+            Some(DEFAULT_FORMAT_VERSION),
+            "case {case:?}: the frozen snapshot must carry the format version \
+             {DEFAULT_FORMAT_VERSION:?}, got {:?}",
+            frozen.body.get("version")
+        );
+
+        // And the exported document feeds straight back in: a policy created from it reports
+        // the hash the exported revision reported.
+        let (_, reimported_hash) = policy(
+            &emu,
+            json!({
+                "name": format!("format stamped reimport {index}"),
+                "policyDefinition": exported.body.clone(),
+            }),
+        )
+        .await;
+        assert_eq!(
+            reimported_hash, draft_hash,
+            "case {case:?}: a policy created from the exported definition must report the \
+             exported revision's definitionHash {draft_hash:?}, got {reimported_hash:?}"
+        );
+
+        hashes.push((case, draft_hash));
+    }
+
+    // The format token is not content: one definition written under any of these tokens is
+    // one definition, so every row reports the same `definitionHash`.
+    let (first_case, first_hash) = hashes
+        .first()
+        .cloned()
+        .expect("case setup: the table must carry rows");
+    for (case, hash) in &hashes {
+        assert_eq!(
+            hash, &first_hash,
+            "case {case:?}: a definition differing from {first_case:?} only in the format \
+             token the request spelled must report its definitionHash {first_hash:?}, got \
+             {hash:?}"
+        );
+    }
 }
