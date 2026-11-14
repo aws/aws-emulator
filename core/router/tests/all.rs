@@ -2010,3 +2010,30 @@ mod iam_secretsmanager_denial_envelope_by_protocol;
 // beside CloudFormation on one engine. See the file's own header.
 #[path = "all/cloudformation_s3_bucket_update_and_rename.rs"]
 mod cloudformation_s3_bucket_update_and_rename;
+// Declared in the appended tail, which is where every new suite inserts its lines: a Lambda
+// durable execution's status changes reaching the SQS target of a default-bus rule spans
+// CloudFormation and IAM (the role and the function), AWS Lambda (the execution and its
+// publication), EventBridge (which routes the envelope) and Amazon SQS (which holds what the
+// target received), on a router that authenticates every request — so no single service
+// crate's test target can see both ends of it.
+#[path = "all/lambda_durable_execution_status_events_reach_sqs.rs"]
+mod lambda_durable_execution_status_events_reach_sqs;
+// (`cloudformation_stack_clock` is declared once, in the span above: a module declared twice
+// in this file compiles its suite twice.)
+// Two suites that lost their declaration when two branches removed the same duplicated pair
+// (`cloudformation_monitored_alb_search_estate` and `cloudformation_domain_endpoint_outputs`)
+// are declared once each, in the sorted span beside the other CloudFormation suites: a module
+// may be declared only once, so a second declaration here would compile them twice.
+// (`elbv2_lambda_target_published_address` is declared once above, for the same reason.)
+// `cloudformation_provisions_cloudfront_resources` is declared once, in the sorted span above:
+// two `mod` items for one name is a redefinition that compiles neither.
+// suites exist under tests/all/ and are declared once each in the sorted span above.
+// (`cloudformation_stack_clock` and `elbv2_lambda_target_published_address` are each declared
+// once in the spans above: a module declared twice in this file compiles its suite twice.)
+// are declared once each, further up this tail, for the same reason.)
+// (`apigateway_cognito_authorizer_app_client_audience` is declared once, in the head region
+// above, for the reason the note above records.)
+// (`cloudwatch_alarm_ssm_ops_item_action` is declared once, in the head region above: a
+// module may be declared only once.)
+// (`zz_probe` is declared once, in the span above.)
+// (`cloudformation_metric_stream_estate_is_drainable` is declared once, in the span above.)

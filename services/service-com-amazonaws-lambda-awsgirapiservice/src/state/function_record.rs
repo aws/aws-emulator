@@ -462,6 +462,11 @@ impl FunctionRecord {
         let durable_config = self
             .config_of(version)
             .and_then(|config| config.durable_config.clone());
+        // The instant the execution started, at the resolution every report of it shares
+        // ([`crate::state::execution_instant`]): the `StartTimestamp` a read answers and the
+        // start instant every status-change event of this execution carries are one instant,
+        // and the `ExecutionTimeout` falls due a whole number of seconds after it.
+        let now = crate::state::execution_instant(now);
         let mut execution = DurableExecutionRecord {
             name: name.to_string(),
             execution_id: mint_durable_execution_id(),

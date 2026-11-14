@@ -1274,10 +1274,12 @@ fn invocation_input(request: &Run<'_>) -> Result<String, String> {
 
 /// The modules this RUNTIME supplies on the handler's import path, beside the deployment
 /// package's own: the AWS SDK a managed `python3.x` runtime ships
-/// ([`super::aws_sdk_guest`]).
+/// ([`super::aws_sdk_guest`]), and the durable-execution programming model it ships beside it
+/// ([`super::durable_sdk_guest`]).
 fn runtime_modules() -> ::serde_json::Map<String, ::serde_json::Value> {
     super::aws_sdk_guest::runtime_modules()
         .into_iter()
+        .chain(super::durable_sdk_guest::runtime_modules())
         .map(|module| (module.path, ::serde_json::Value::String(module.source)))
         .collect()
 }

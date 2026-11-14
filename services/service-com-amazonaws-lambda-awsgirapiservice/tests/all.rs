@@ -101,6 +101,8 @@ mod durable_execution_listing;
 mod durable_execution_refusals;
 #[path = "all/durable_execution_run.rs"]
 mod durable_execution_run;
+#[path = "all/durable_execution_sdk_runtime.rs"]
+mod durable_execution_sdk_runtime;
 #[path = "all/durable_execution_start.rs"]
 mod durable_execution_start;
 #[path = "all/durable_execution_status_events.rs"]

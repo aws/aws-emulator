@@ -148,6 +148,10 @@ pub use execution_role_session::{function_sdk_access, ExecutionRoleSessions};
 /// The AWS SDK modules a Python handler imports, which that seam is reached through.
 mod aws_sdk_guest;
 
+/// The DURABLE-EXECUTION programming model a Python handler is written against, which this
+/// runtime supplies the way it supplies the AWS SDK.
+mod durable_sdk_guest;
+
 /// Delivering one invocation's log to CloudWatch Logs, which is where a client reads it.
 pub mod log_delivery;
 pub use log_delivery::{log_target, LogEvent, LogGrants, LogTarget};
