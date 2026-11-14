@@ -19,7 +19,7 @@
 //! pipeline cannot run, which the action's own `ConfigurationError` failure reports.
 
 use super::super::execution::JobOutcome;
-use super::{FAILURE_CONFIGURATION_ERROR, FAILURE_JOB_FAILED};
+use super::{service_error_detail, FAILURE_CONFIGURATION_ERROR, FAILURE_JOB_FAILED};
 
 /// The `StatusType` a build that ran to success reports (`Build$buildStatus`).
 const BUILD_SUCCEEDED: &str = "SUCCEEDED";
@@ -94,7 +94,7 @@ pub(super) async fn run_codebuild_start(
                 message: format!(
                     "a build of the project {project_name} could not be started for this \
                      action: {}",
-                    ::aws_smithy_types::error::display::DisplayErrorContext(&err)
+                    service_error_detail(&err)
                 ),
                 external_id: None,
             }
@@ -122,7 +122,7 @@ pub(super) async fn run_codebuild_poll(
                 code: FAILURE_JOB_FAILED.to_string(),
                 message: format!(
                     "the build {build_id} this action started could not be read: {}",
-                    ::aws_smithy_types::error::display::DisplayErrorContext(&err)
+                    service_error_detail(&err)
                 ),
                 external_id: Some(build_id.to_string()),
             }

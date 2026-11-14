@@ -21,7 +21,7 @@
 use ::std::collections::BTreeMap;
 
 use super::super::execution::{ArtifactRef, JobOutcome};
-use super::{FAILURE_CONFIGURATION_ERROR, FAILURE_JOB_FAILED};
+use super::{service_error_detail, FAILURE_CONFIGURATION_ERROR, FAILURE_JOB_FAILED};
 
 /// The name of the document an Amazon ECR source action's output artifact carries, as AWS
 /// documents it for that action ("the `imageDetail.json` file").
@@ -177,7 +177,7 @@ pub(super) async fn run_ecr_source(
                 message: format!(
                     "the image {image_tag} of the repository {repository} could not be \
                      resolved: {}",
-                    ::aws_smithy_types::error::display::DisplayErrorContext(&err)
+                    service_error_detail(&err)
                 ),
                 external_id: None,
             };
@@ -244,7 +244,7 @@ pub(super) async fn run_ecr_source(
                     "the artifact could not be written to s3://{}/{}: {}",
                     output.bucket,
                     output.key,
-                    ::aws_smithy_types::error::display::DisplayErrorContext(&err)
+                    service_error_detail(&err)
                 ),
                 external_id: Some(digest),
             };

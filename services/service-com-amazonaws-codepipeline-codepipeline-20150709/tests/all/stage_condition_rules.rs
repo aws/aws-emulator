@@ -491,10 +491,12 @@ async fn a_variable_check_rules_verdict_is_computed_from_the_executions_variable
             "Succeeded",
         ),
         (
+            // Spelled out, so it is none of the eight operators the rule publishes
+            // (`PUBLISHED_OPERATORS`) and names no comparison this plane can perform.
             "an operator this plane does not apply",
             "#{variables.Release}",
             "4",
-            "MATCHES",
+            "EQUALS",
             "Abandoned",
             "Succeeded",
         ),
@@ -866,6 +868,302 @@ async fn the_listing_is_ordered_paged_and_filtered_by_execution() {
             executions,
             vec![first.clone(), first.clone()],
             "case {case:?}: only the named execution's evaluations are reported, got {page}"
+        );
+    }
+}
+
+/// Every comparison operator the `VariableCheck` rule publishes, from the CodePipeline
+/// rule reference `RuleTypeId$provider` links to: equality, inequality, the four
+/// orderings, and the two text predicates — whether the variable contains the value,
+/// and whether it matches the regular expression the value states.
+const PUBLISHED_OPERATORS: [&str; 8] =
+    ["EQ", "NE", "GT", "GE", "LT", "LE", "CONTAINS", "MATCHES"];
+
+/// One row of the operator table: the rule's name, the `Variable` and the `Value` it
+/// compares, the `Operator` it compares them with, and the `RuleExecutionStatus` the
+/// evaluation is expected to record.
+type OperatorRow = (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+);
+
+/// One group of sibling rules declared by ONE condition: the group's name, the status
+/// the execution reaches, and the group's rows.
+type OperatorGroup = (&'static str, &'static str, Vec<OperatorRow>);
+
+/// The variables every pipeline of the two operator suites below declares, and so the
+/// left-hand side its comparisons are performed over
+/// (`PipelineVariableDeclaration$defaultValue`).
+const DECLARED: [(&str, &str); 2] = [("Release", "4"), ("Channel", "release-candidate")];
+
+/// Run one pipeline whose gated stage declares `rules` as the ONE condition of its
+/// `beforeEntry`, and answer what that run reached: the execution's status, the
+/// `RuleExecutionStatus` recorded per rule name, and whether the gated stage delivered
+/// its object.
+///
+/// Creating the pipeline runs it once, and that run is the one whose entry to the gated
+/// stage the condition is evaluated for, so nothing else has to start one.
+async fn gated_run(
+    pipeline: &str,
+    rules: Vec<Value>,
+) -> (String, BTreeMap<String, String>, bool) {
+    let emulator = Emulator::new();
+    let deploy_bucket = format!("{pipeline}-delivery");
+    seed_buckets(&emulator, pipeline, &[deploy_bucket.as_str()]).await;
+    let mut body = declaration(
+        pipeline,
+        json!([
+            source_stage(SOURCE_BUCKET, SOURCE_KEY, ARTIFACT),
+            deploy_stage(
+                "Gated",
+                &deploy_bucket,
+                Some((
+                    "beforeEntry",
+                    json!({"conditions": [{"result": "FAIL", "rules": rules}]}),
+                )),
+            ),
+        ]),
+        None,
+    );
+    body["pipeline"]["pipelineType"] = json!("V2");
+    body["pipeline"]["variables"] = json!(DECLARED
+        .iter()
+        .map(|(name, value)| json!({"name": name, "defaultValue": value}))
+        .collect::<Vec<Value>>());
+    emulator.ok("CreatePipeline", &body).await;
+
+    let execution = creation_run(&emulator, pipeline).await;
+    let answer = wait_for_terminal(&emulator, pipeline, &execution).await;
+    let status = answer["pipelineExecution"]["status"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let page = list(
+        &emulator,
+        pipeline,
+        json!({"filter": {"pipelineExecutionId": execution}}),
+    )
+    .await;
+    let recorded: BTreeMap<String, String> = records(&page)
+        .iter()
+        .map(|record| {
+            (
+                record["ruleName"].as_str().unwrap_or_default().to_string(),
+                record["status"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
+    let (delivered, _) = emulator.get_object(&deploy_bucket, ENTRY.0).await;
+    (status, recorded, delivered == 200)
+}
+
+/// RULE: a `VariableCheck` rule's verdict is the comparison its `Operator` names,
+/// performed over its two resolved sides, for EVERY operator the rule publishes; and
+/// each rule of a condition records the verdict of its OWN comparison whatever a
+/// sibling rule decided. Only a comparison that cannot be performed here at all — an
+/// operator outside the published set, or a value that is not the expression its
+/// operator compares with — reaches no verdict.
+///
+/// The groups span the whole published catalog with the sides of each comparison
+/// side by side in ONE condition: comparisons that hold, comparisons that do not, and
+/// comparisons nothing could perform.
+#[tokio::test]
+async fn every_published_variable_check_operator_decides_its_own_rule() {
+    // (group, the status the execution reaches, [(rule name, Variable, Value, Operator,
+    // the `RuleExecutionStatus` the evaluation records)])
+    let groups: Vec<OperatorGroup> = vec![
+        (
+            "comparisons that hold",
+            "Succeeded",
+            vec![
+                ("Equal", "#{variables.Release}", "4", "EQ", "Succeeded"),
+                ("Unequal", "#{variables.Release}", "5", "NE", "Succeeded"),
+                ("Greater", "#{variables.Release}", "3", "GT", "Succeeded"),
+                ("AtLeast", "#{variables.Release}", "4", "GE", "Succeeded"),
+                ("Less", "#{variables.Release}", "5", "LT", "Succeeded"),
+            ],
+        ),
+        (
+            "the remaining ordering, both text predicates, and two comparisons nothing \
+             could perform",
+            "Succeeded",
+            vec![
+                ("AtMost", "#{variables.Release}", "4", "LE", "Succeeded"),
+                (
+                    "Substring",
+                    "#{variables.Channel}",
+                    "candidate",
+                    "CONTAINS",
+                    "Succeeded",
+                ),
+                (
+                    "Expression",
+                    "#{variables.Channel}",
+                    "^release-[a-z]+$",
+                    "MATCHES",
+                    "Succeeded",
+                ),
+                (
+                    "NotAnExpression",
+                    "#{variables.Channel}",
+                    "release-[",
+                    "MATCHES",
+                    ABANDONED,
+                ),
+                (
+                    "NotAnOperator",
+                    "#{variables.Channel}",
+                    "release-candidate",
+                    "EQUALS",
+                    ABANDONED,
+                ),
+            ],
+        ),
+        (
+            "comparisons that do not hold",
+            "Failed",
+            vec![
+                ("Equal", "#{variables.Release}", "5", "EQ", "Failed"),
+                (
+                    "Substring",
+                    "#{variables.Channel}",
+                    "beta",
+                    "CONTAINS",
+                    "Failed",
+                ),
+                (
+                    "Expression",
+                    "#{variables.Channel}",
+                    "^beta-",
+                    "MATCHES",
+                    "Failed",
+                ),
+            ],
+        ),
+    ];
+
+    // The operators that reached a verdict somewhere above, so the catalog is covered
+    // rather than only the rows one group happens to carry.
+    let mut decided: BTreeSet<String> = BTreeSet::new();
+
+    for (index, (group, execution_status, rows)) in groups.iter().enumerate() {
+        let rules: Vec<Value> = rows
+            .iter()
+            .map(|(name, variable, value, operator, _)| {
+                configured_rule(
+                    name,
+                    "VariableCheck",
+                    json!({
+                        "Variable": variable,
+                        "Value": value,
+                        "Operator": operator,
+                    }),
+                )
+            })
+            .collect();
+        let (status, recorded, delivered) = gated_run(&format!("operators-{index}"), rules).await;
+        assert_eq!(
+            status, *execution_status,
+            "case {group:?}: expected the execution to reach {execution_status}, got \
+             {status}"
+        );
+
+        let expected: BTreeMap<String, String> = rows
+            .iter()
+            .map(|(name, .., recorded_status)| (name.to_string(), recorded_status.to_string()))
+            .collect();
+        assert_eq!(
+            recorded, expected,
+            "case {group:?}: every rule of the condition records the verdict of its own \
+             comparison, got {recorded:?}"
+        );
+
+        for (_, _, _, operator, recorded_status) in rows {
+            if *recorded_status != ABANDONED {
+                decided.insert((*operator).to_string());
+            }
+        }
+
+        // The gate acts on the execution only where a rule reached a FAILING verdict:
+        // the stage delivered iff none did.
+        assert_eq!(
+            delivered,
+            *execution_status == "Succeeded",
+            "case {group:?}: the gated stage delivered iff no rule failed, got \
+             {delivered}"
+        );
+    }
+
+    let covered: BTreeSet<String> = PUBLISHED_OPERATORS
+        .iter()
+        .map(|operator| (*operator).to_string())
+        .collect();
+    assert_eq!(
+        decided, covered,
+        "every operator the rule publishes reached a verdict, got {decided:?}"
+    );
+}
+
+/// RULE: compiling the expression a `MATCHES` comparison states is work sized by the
+/// declaration, so it is bounded: an expression within the bound is applied and decides
+/// the rule, and one past it is not compiled at all — the evaluation reaches no verdict
+/// and the execution carries on, rather than the declaration choosing how much work one
+/// evaluation does.
+///
+/// The bound itself is this emulator's (`state::rules::MAX_EXPRESSION_CHARS`), so the
+/// rows sit at it and one step past it.
+#[tokio::test]
+async fn the_expression_a_matches_comparison_compiles_is_bounded() {
+    /// The bound, in characters of the expression.
+    const MAX_EXPRESSION_CHARS: usize = 1_000;
+
+    /// An expression of exactly `chars` characters that MATCHES the declared `Channel`:
+    /// the literal it ends with, after as many optional characters as fill the rest.
+    fn expression_of(chars: usize) -> String {
+        let literal = format!("{}$", DECLARED[1].1);
+        let padding = (chars - literal.len()) / 2;
+        let expression = format!("{}{literal}", "x?".repeat(padding));
+        assert_eq!(
+            expression.chars().count(),
+            chars,
+            "the expression is built to exactly {chars} characters"
+        );
+        expression
+    }
+
+    // (case, the expression's length in characters, the status the evaluation records)
+    let rows = [
+        ("at the bound", MAX_EXPRESSION_CHARS, "Succeeded"),
+        ("one step past the bound", MAX_EXPRESSION_CHARS + 2, ABANDONED),
+    ];
+
+    for (index, (case, length, recorded_status)) in rows.into_iter().enumerate() {
+        let rules = vec![configured_rule(
+            "Expression",
+            "VariableCheck",
+            json!({
+                "Variable": format!("#{{variables.{}}}", DECLARED[1].0),
+                "Value": expression_of(length),
+                "Operator": "MATCHES",
+            }),
+        )];
+        let (status, recorded, delivered) = gated_run(&format!("bounded-{index}"), rules).await;
+        assert_eq!(
+            recorded.get("Expression").map(String::as_str),
+            Some(recorded_status),
+            "case {case:?}: expected the evaluation recorded {recorded_status}, got \
+             {recorded:?}"
+        );
+        // Neither row reached a FAILING verdict, so neither condition was met: the gate
+        // acts on nothing and the stage runs.
+        assert_eq!(
+            (status.as_str(), delivered),
+            ("Succeeded", true),
+            "case {case:?}: an evaluation that reached no failing verdict lets the stage \
+             run, got {status} and {delivered}"
         );
     }
 }

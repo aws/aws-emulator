@@ -95,6 +95,10 @@ hex = { workspace = true }
 # `ipnet`: the reading of an IP CIDR range and of whether an address lies in it, which is
 # what an `IP` webhook's `AllowedIPRange` states.
 ipnet = "2"
+# Reads the regular expression a stage condition's `VariableCheck` rule states as the
+# value its `MATCHES` operator compares with, and applies it to the variable, rather than
+# this crate hand-writing an expression engine (`state::rules`).
+regex = "1.13"
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

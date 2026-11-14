@@ -1378,8 +1378,13 @@ fn fail_action(
     action.claimed = None;
     // The action is settled, so it is no longer waiting for anything.
     action.external_run = None;
-    action.summary = Some(message.to_string());
-    action.error = Some((code.to_string(), message.to_string()));
+    // Each of the two members carrying this failure is held to the length it is
+    // modelled with, so a relayed answer cannot take either past it.
+    action.summary = Some(within(message.to_string(), MAX_EXECUTION_SUMMARY));
+    action.error = Some((
+        code.to_string(),
+        within(message.to_string(), MAX_ERROR_MESSAGE),
+    ));
     action.last_status_change = now;
 }
 
@@ -1462,7 +1467,7 @@ fn record_outcome(
             action.status = Some(ACTION_SUCCEEDED.to_string());
             action.claimed = None;
             action.external_run = None;
-            action.summary = Some(summary);
+            action.summary = Some(within(summary, MAX_EXECUTION_SUMMARY));
             action.last_status_change = now;
             action.external_execution_id = external_id;
             let produced = match job {
@@ -1525,7 +1530,7 @@ fn record_outcome(
             summary,
         } => {
             action.claimed = None;
-            action.summary = Some(summary);
+            action.summary = Some(within(summary, MAX_EXECUTION_SUMMARY));
             action.due = Some(now + ACTION_STEP);
             // What a client sees as the run performing this action, which is the handle
             // the next step reads it by.
@@ -1664,9 +1669,7 @@ async fn artifact_data_key(
         .send()
         .await
         .map(|_| ())
-        .map_err(|error| {
-            ::aws_smithy_types::error::display::DisplayErrorContext(&error).to_string()
-        })
+        .map_err(|error| service_error_detail(&error))
 }
 
 /// One artifact write, carrying the server-side encryption the artifact store's
@@ -1699,6 +1702,75 @@ fn encrypted_put(
 /// here.
 fn internal_error_detail(reference: &str) -> String {
     format!("InternalError. Error reference code: {reference}.")
+}
+
+/// What an action reports about an error the service it called answered with: that
+/// error's own CODE and MESSAGE, the two facts the answering service published about it.
+///
+/// Those two are what an operator reading the failure needs and all the answering
+/// service stated. The client object this emulator holds the answer in is NOT part of
+/// the failure: formatting it renders Rust type names, the raw response document and
+/// the request and host ids of one call, none of which is a fact about the pipeline,
+/// and all of which would spend the characters the members carrying the failure are
+/// modelled for ([`MAX_ERROR_MESSAGE`], [`MAX_EXECUTION_SUMMARY`]).
+fn service_error_detail<E, R>(
+    error: &::aws_smithy_runtime_api::client::result::SdkError<E, R>,
+) -> String
+where
+    ::aws_smithy_runtime_api::client::result::SdkError<E, R>:
+        ::aws_smithy_types::error::metadata::ProvideErrorMetadata,
+{
+    let code = ::aws_smithy_types::error::metadata::ProvideErrorMetadata::code(error);
+    let message = ::aws_smithy_types::error::metadata::ProvideErrorMetadata::message(error);
+    match (code, message) {
+        (Some(code), Some(message)) => format!("{code}: {message}"),
+        (Some(code), None) => code.to_string(),
+        (None, Some(message)) => message.to_string(),
+        // An answer that published neither — a call that never reached the service, or
+        // whose answer could not be read — states WHICH of those it was, from the
+        // variant the client holds it as. That is one bounded sentence per kind, and
+        // nothing of the object itself.
+        (None, None) => unanswered_call_detail(error).to_string(),
+    }
+}
+
+/// Why a call the answering service published nothing about did not produce an answer.
+///
+/// The variants are the client's own classes of unanswered call, and each is a
+/// different thing for an operator to do about it, so they are told apart rather than
+/// collapsed into one sentence. The enum is `#[non_exhaustive]`, so a class added later
+/// falls back to the fact they all share.
+fn unanswered_call_detail<E, R>(
+    error: &::aws_smithy_runtime_api::client::result::SdkError<E, R>,
+) -> &'static str {
+    use ::aws_smithy_runtime_api::client::result::SdkError;
+    match error {
+        SdkError::ConstructionFailure(_) => "the call could not be constructed",
+        SdkError::TimeoutError(_) => "the call timed out",
+        SdkError::DispatchFailure(_) => "the call could not be dispatched",
+        SdkError::ResponseError(_) => "the answer to the call could not be read",
+        _ => "the call did not complete",
+    }
+}
+
+/// The most characters an action's summary carries: `ActionExecution$summary` and
+/// `ActionExecutionResult$externalExecutionSummary` target `ExecutionSummary`,
+/// `@length(min: 1, max: 2048)`
+/// (`smithy_query query="shape" shape="ExecutionSummary"`).
+const MAX_EXECUTION_SUMMARY: usize = 2_048;
+
+/// The most characters a failure's message carries: `ErrorDetails$message` targets
+/// `Message`, `@length(min: 1, max: 5000)`
+/// (`smithy_query query="shape" shape="ErrorDetails"`).
+const MAX_ERROR_MESSAGE: usize = 5_000;
+
+/// `text` held to the `limit` characters the member carrying it is modelled for, cut on
+/// a character boundary so what is recorded is still text.
+fn within(text: String, limit: usize) -> String {
+    match text.char_indices().nth(limit) {
+        None => text,
+        Some((cut, _)) => text[..cut].to_string(),
+    }
 }
 
 /// Perform one claimed job's real work.
@@ -1885,7 +1957,7 @@ async fn run_code_commit_source(
                 message: format!(
                     "the branch {branch} of the repository {repository} could not be \
                      resolved: {}",
-                    ::aws_smithy_types::error::display::DisplayErrorContext(&err)
+                    service_error_detail(&err)
                 ),
                 external_id: None,
             };
@@ -1926,7 +1998,7 @@ async fn run_code_commit_source(
                     code: FAILURE_JOB_FAILED.to_string(),
                     message: format!(
                         "the files of the commit {commit_id} could not be read: {}",
-                        ::aws_smithy_types::error::display::DisplayErrorContext(&err)
+                        service_error_detail(&err)
                     ),
                     external_id: Some(commit_id),
                 }
@@ -1976,7 +2048,7 @@ async fn run_code_commit_source(
                     code: FAILURE_JOB_FAILED.to_string(),
                     message: format!(
                         "the file {path} of the commit {commit_id} could not be read: {}",
-                        ::aws_smithy_types::error::display::DisplayErrorContext(&err)
+                        service_error_detail(&err)
                     ),
                     external_id: Some(commit_id),
                 }
@@ -2034,7 +2106,7 @@ async fn run_code_commit_source(
                     "the artifact could not be written to s3://{}/{}: {}",
                     output.bucket,
                     output.key,
-                    ::aws_smithy_types::error::display::DisplayErrorContext(&err)
+                    service_error_detail(&err)
                 ),
                 external_id: Some(commit_id),
             };
@@ -2154,7 +2226,7 @@ async fn run_lambda_invoke(
                 code: code.to_string(),
                 message: format!(
                     "the function {function_name} could not be invoked for this action: {}",
-                    ::aws_smithy_types::error::display::DisplayErrorContext(&err)
+                    service_error_detail(&err)
                 ),
                 external_id: Some(function_name.to_string()),
             }
@@ -2230,7 +2302,7 @@ async fn run_source(
                 code: source_failure_code(&err).to_string(),
                 message: format!(
                     "the source object s3://{bucket}/{key} could not be read: {}",
-                    ::aws_smithy_types::error::display::DisplayErrorContext(&err)
+                    service_error_detail(&err)
                 ),
                 external_id: None,
             }
@@ -2266,7 +2338,7 @@ async fn run_source(
                     "the artifact could not be written to s3://{}/{}: {}",
                     output.bucket,
                     output.key,
-                    ::aws_smithy_types::error::display::DisplayErrorContext(&err)
+                    service_error_detail(&err)
                 ),
                 external_id: None,
             };
@@ -2315,7 +2387,7 @@ async fn run_deploy(
                     "the input artifact s3://{}/{} could not be read: {}",
                     input.bucket,
                     input.key,
-                    ::aws_smithy_types::error::display::DisplayErrorContext(&err)
+                    service_error_detail(&err)
                 ),
                 external_id: None,
             }
@@ -2391,7 +2463,7 @@ async fn run_deploy(
                 code: FAILURE_JOB_FAILED.to_string(),
                 message: format!(
                     "the artifact could not be deployed to s3://{bucket}/{object_key}: {}",
-                    ::aws_smithy_types::error::display::DisplayErrorContext(&err)
+                    service_error_detail(&err)
                 ),
                 external_id: None,
             };

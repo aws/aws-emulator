@@ -11510,6 +11510,7 @@ dependencies = [
  "hmac 0.12.1",
  "http",
  "ipnet",
+ "regex",
  "serde_json",
  "serde_json_path",
  "service-com-amazonaws-codebuild-codebuild-20161006",

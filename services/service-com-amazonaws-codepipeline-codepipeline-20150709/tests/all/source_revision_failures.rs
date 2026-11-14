@@ -315,3 +315,146 @@ async fn a_revision_that_cannot_be_obtained_fails_with_revision_unavailable() {
         );
     }
 }
+
+/// The internal representation of the client error object an answer arrives in, which is
+/// no fact about a pipeline: the Rust type and field names of the error, the raw
+/// response document it carries and the per-call ids inside that document.
+const CLIENT_INTERNALS: [&str; 7] = [
+    "ServiceError",
+    "ErrorMetadata",
+    "SdkBody",
+    "StatusCode",
+    "RequestId",
+    "HostId",
+    "Response {",
+];
+
+/// The modelled length of `ErrorDetails$message` -> `Message`, `@length(min: 1, max:
+/// 5000)` (`smithy_query query="shape" shape="ErrorDetails"`).
+const MAX_ERROR_MESSAGE: usize = 5_000;
+
+/// The modelled length of `ActionExecution$summary` -> `ExecutionSummary`,
+/// `@length(min: 1, max: 2048)` (`smithy_query query="shape" shape="ActionExecution"`).
+const MAX_ACTION_SUMMARY: usize = 2_048;
+
+/// The `summary` the state reports for one action's latest execution.
+async fn action_summary(emulator: &Emulator, pipeline: &str, action: &str) -> String {
+    let state = emulator
+        .ok("GetPipelineState", &json!({"name": pipeline}))
+        .await;
+    state["stageStates"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|stage| stage["actionStates"].as_array().into_iter().flatten())
+        .find(|state| state["actionName"] == json!(action))
+        .and_then(|state| state["latestExecution"]["summary"].as_str())
+        .unwrap_or_else(|| panic!("the state reports the run of {action}, got {state}"))
+        .to_string()
+}
+
+/// RULE: a failure an action reports relays the answering service's OWN error — the
+/// code and the message that service published — inside this service's sentence about
+/// what could not be done, and both members carrying it stay within the length they are
+/// modelled with. The internal representation of the client error object the answer
+/// arrived in is not part of either.
+///
+/// The rows differ along the error the source read is answered with, each a different
+/// fact about the read: the key, the version, and the bucket.
+#[tokio::test]
+async fn a_failure_relays_the_answering_services_error_and_none_of_the_client_object() {
+    // (case, the source bucket exists, the object exists, the object version pinned,
+    //  the error code the S3 read is answered with)
+    let rows: Vec<(&str, bool, bool, Option<&str>, &str)> = vec![
+        ("no such object", true, false, None, "NoSuchKey"),
+        (
+            "an object version the bucket does not hold",
+            true,
+            true,
+            Some("00000000000000000000000000000001"),
+            "NoSuchVersion",
+        ),
+        ("no such bucket", false, false, None, "NoSuchBucket"),
+    ];
+
+    for (index, (case, make_bucket, write_source, pinned, answered_code)) in
+        rows.into_iter().enumerate()
+    {
+        let emulator = Emulator::new();
+        let pipeline = format!("relayed-{index}");
+        emulator.bucket(&artifact_bucket(&pipeline)).await;
+        emulator.bucket(DEPLOY_BUCKET).await;
+        if make_bucket {
+            emulator.bucket(SOURCE_BUCKET).await;
+        }
+        if write_source {
+            emulator
+                .put_object(SOURCE_BUCKET, SOURCE_KEY, b"the wrong revision")
+                .await;
+        }
+        emulator
+            .ok(
+                "CreatePipeline",
+                &declaration(
+                    &pipeline,
+                    json!([
+                        source_stage(SOURCE_BUCKET, SOURCE_KEY, ARTIFACT),
+                        deploy_stage("Deploy", ARTIFACT, DEPLOY_BUCKET, "gone.zip", false),
+                    ]),
+                    None,
+                ),
+            )
+            .await;
+        let mut start = json!({"name": pipeline});
+        if let Some(version) = pinned {
+            start["sourceRevisions"] = json!([{
+                "actionName": "Src",
+                "revisionType": "S3_OBJECT_VERSION_ID",
+                "revisionValue": version,
+            }]);
+        }
+        let started = emulator.ok("StartPipelineExecution", &start).await;
+        let execution = started["pipelineExecutionId"]
+            .as_str()
+            .expect("a start reports the execution it began")
+            .to_string();
+        let answer = wait_for_terminal(&emulator, &pipeline, &execution).await;
+        assert_eq!(
+            answer["pipelineExecution"]["status"], json!("Failed"),
+            "case {case:?}: a revision that cannot be obtained fails the execution, \
+             got {answer}"
+        );
+
+        let detail = action_detail(&emulator, &pipeline, &execution, "Src").await;
+        let message = detail["output"]["executionResult"]["errorDetails"]["message"]
+            .as_str()
+            .unwrap_or_else(|| panic!("case {case:?}: the failure states a message, got {detail}"))
+            .to_string();
+        let summary = action_summary(&emulator, &pipeline, "Src").await;
+        for (member, text, limit) in [
+            ("errorDetails.message", &message, MAX_ERROR_MESSAGE),
+            ("summary", &summary, MAX_ACTION_SUMMARY),
+        ] {
+            // The answering service's own error, relayed: its code, and the object the
+            // read was of.
+            assert!(
+                text.contains(answered_code) && text.contains(SOURCE_KEY),
+                "case {case:?}: {member} relays the {answered_code} answer about \
+                 {SOURCE_KEY}, got {text:?}"
+            );
+            for internal in CLIENT_INTERNALS {
+                assert!(
+                    !text.contains(internal),
+                    "case {case:?}: {member} carries the client object's {internal:?}, \
+                     got {text:?}"
+                );
+            }
+            let measured = text.chars().count();
+            assert!(
+                (1..=limit).contains(&measured),
+                "case {case:?}: {member} is modelled 1..={limit} characters, got \
+                 {measured}"
+            );
+        }
+    }
+}

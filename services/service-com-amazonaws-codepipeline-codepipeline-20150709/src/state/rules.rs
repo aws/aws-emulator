@@ -101,10 +101,13 @@ const CONFIG_VALUE: &str = "Value";
 const CONFIG_OPERATOR: &str = "Operator";
 
 /// The comparison operators the `VariableCheck` rule reference publishes, each with
-/// what it compares: equality, inequality, and the four orderings.
+/// what it compares: equality, inequality, the four orderings, and the two text
+/// predicates — whether the variable CONTAINS the value, and whether it MATCHES the
+/// regular expression the value states.
 ///
-/// An operator outside this set is one this plane cannot apply, and the evaluation
-/// reaches no verdict rather than guessing at one.
+/// Every one of them compares the two sides the configuration names and nothing else,
+/// so each is a verdict this plane computes. An operator outside this set is one it
+/// cannot apply, and the evaluation reaches no verdict rather than guessing at one.
 const OPERATOR_EQ: &str = "EQ";
 /// See [`OPERATOR_EQ`].
 const OPERATOR_NE: &str = "NE";
@@ -116,6 +119,10 @@ const OPERATOR_GE: &str = "GE";
 const OPERATOR_LT: &str = "LT";
 /// See [`OPERATOR_EQ`].
 const OPERATOR_LE: &str = "LE";
+/// See [`OPERATOR_EQ`].
+const OPERATOR_CONTAINS: &str = "CONTAINS";
+/// See [`OPERATOR_EQ`].
+const OPERATOR_MATCHES: &str = "MATCHES";
 
 /// The most rule executions this emulator retains per pipeline; recording another
 /// drops the oldest beyond this window.
@@ -304,6 +311,34 @@ impl Verdict {
     }
 }
 
+/// The most characters of a regular expression the `MATCHES` comparison compiles.
+///
+/// The `Value` a rule states is resolved text, which [`evaluate_conditions`] allows up
+/// to [`super::MAX_RESOLVED_CONFIGURATION_VALUE_BYTES`] of, and compiling an expression
+/// is work that grows with its length: a longer one is refused BEFORE anything is
+/// compiled, so no declaration sizes the work of an evaluation.
+const MAX_EXPRESSION_CHARS: usize = 1_000;
+
+/// The most memory one compiled expression may take.
+///
+/// The crate matches without backtracking — the time of a match is linear in the text
+/// it is applied to — so what is left to bound is the compiled program, stated here
+/// rather than left at the crate's own default.
+const MAX_EXPRESSION_PROGRAM_BYTES: usize = 64 * 1024;
+
+/// The expression `value` states, compiled within the bounds above, or `None` when it
+/// is not one this plane can apply.
+fn compiled_expression(value: &str) -> Option<::regex::Regex> {
+    if value.chars().count() > MAX_EXPRESSION_CHARS {
+        return None;
+    }
+    ::regex::RegexBuilder::new(value)
+        .size_limit(MAX_EXPRESSION_PROGRAM_BYTES)
+        .dfa_size_limit(MAX_EXPRESSION_PROGRAM_BYTES)
+        .build()
+        .ok()
+}
+
 /// Evaluate one rule against the configuration the execution resolved for it.
 ///
 /// `VariableCheck` compares the variable the configuration names against the value it
@@ -348,6 +383,20 @@ fn evaluate_rule(rule: &RuleDeclaration, resolved: &BTreeMap<String, String>) ->
     let holds = match operator.as_str() {
         OPERATOR_EQ => variable == value,
         OPERATOR_NE => variable != value,
+        // The two text predicates read the value as a substring and as a regular
+        // expression respectively: reading the expression is the `regex` crate's job,
+        // not this emulator's, and one it could not read within the bounds an
+        // evaluation is allowed is one the comparison cannot be performed with at all.
+        OPERATOR_CONTAINS => variable.contains(value.as_str()),
+        OPERATOR_MATCHES => match compiled_expression(value) {
+            Some(expression) => expression.is_match(variable),
+            None => {
+                return Verdict::Undecided(format!(
+                    "the rule's {CONFIG_VALUE} is not a regular expression this plane \
+                     can apply, so the comparison was not performed"
+                ))
+            }
+        },
         OPERATOR_GT => ordering == Some(::std::cmp::Ordering::Greater),
         OPERATOR_GE => matches!(
             ordering,
