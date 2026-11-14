@@ -226,3 +226,5 @@ mod recorded_item_status_and_resumed_recording;
 // module name to match the file name.
 #[path = "all/scratch_resume.rs"]
 mod scratch_resume;
+#[path = "all/discovered_resource_item_identity.rs"]
+mod discovered_resource_item_identity;
