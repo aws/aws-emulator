@@ -125,6 +125,8 @@ mod secretsmanager_reference;
 mod secure_string_decryption;
 #[path = "all/secure_string_encryption_at_rest.rs"]
 mod secure_string_encryption_at_rest;
+#[path = "all/secure_string_key_state.rs"]
+mod secure_string_key_state;
 #[path = "all/service_settings.rs"]
 mod service_settings;
 #[path = "all/state_manager_associations.rs"]

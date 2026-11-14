@@ -17,7 +17,8 @@
 //! reports the plaintext, and only if the parameter's key permits the caller `kms:Decrypt`
 //! under the encryption context binding the value to this parameter — otherwise the read
 //! is refused with `AccessDeniedException` (HTTP 400) carrying KMS's own sentence, and a
-//! value no key of this endpoint opens any more is `InvalidKeyId`. See
+//! value no key of this endpoint opens any more — one whose key is gone, or whose key is in
+//! a key state that runs no cryptographic operation — is `InvalidKeyId`. See
 //! [`crate::state::secure_string`]. For `String` and `StringList` the flag selects
 //! nothing, as it does for the service too ("This flag is ignored for String and
 //! StringList parameter types").

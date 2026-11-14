@@ -21,7 +21,10 @@
 //! [`crate::state::secure_string::seal`], under the key `KeyId` names (the Amazon Web
 //! Services managed key of this service when it names none) and bound to this parameter
 //! by the encryption context. A `KeyId` that names no key at this endpoint therefore
-//! refuses the put with `InvalidKeyId` rather than storing the value in the clear.
+//! refuses the put with `InvalidKeyId` rather than storing the value in the clear, and so
+//! does one naming a key whose KEY STATE runs no cryptographic operation — a key that is
+//! disabled or awaiting deletion or key material seals nothing, so the put is refused with
+//! the refusal KMS answered and the parameter keeps the versions it had.
 //!
 //! ## Parameter policies
 //!
@@ -804,6 +807,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     // endpoint has none of, so there is nothing to encrypt the value
                     // under and the put is refused rather than stored in the clear.
                     Err(crate::state::secure_string::SealRefusal::UnknownKey(why)) => {
+                        return Err(PutParameterErrorModeled::InvalidKeyId(InvalidKeyId {
+                            message: Some(why),
+                        })
+                        .into())
+                    }
+                    // The same "query key ID isn't valid" for a key that IS there and
+                    // whose key state runs no cryptographic operation: KMS seals nothing
+                    // under it, so the put is refused — carrying the refusal KMS answered
+                    // — and no version of the parameter is created, the store below never
+                    // being reached.
+                    Err(crate::state::secure_string::SealRefusal::UnusableKey(why)) => {
                         return Err(PutParameterErrorModeled::InvalidKeyId(InvalidKeyId {
                             message: Some(why),
                         })

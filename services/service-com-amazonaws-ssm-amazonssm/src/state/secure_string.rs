@@ -37,6 +37,14 @@
 //! encrypted at all: "This flag is ignored for String and StringList parameter types"
 //! (`smithy_query(query="doc",shape="GetParameterRequest",member="WithDecryption")`).
 //!
+//! A key's own KEY STATE decides every one of these calls before its policy is read: KMS
+//! runs no cryptographic operation under a key that is not usable right now, so a value
+//! can neither be sealed nor opened under a key that is disabled or awaiting deletion or
+//! key material ([`key_state_refusal`]). Parameter Store words none of that itself — it
+//! RELAYS what its KMS call failed with ([`relayed`]), KMS's own sentence followed by the
+//! metadata block an AWS error carries — and reports it as the `InvalidKeyId` both the
+//! read and the write model for a key that cannot serve the request.
+//!
 //! An Amazon Web Services managed key — the one [`super::DEFAULT_SECURE_STRING_KEY_ID`]
 //! names — carries a policy AWS manages for the service that owns it, so a caller needs
 //! no grant of its own on it; its value is still sealed and opened under it like any
@@ -52,6 +60,59 @@ pub const PARAMETER_ARN_CONTEXT_KEY: &str = "PARAMETER_ARN";
 
 /// The KMS operation a read that reports a decrypted `SecureString` performs on the key.
 const DECRYPT_OPERATION: &str = "Decrypt";
+
+/// The service name KMS's own error metadata carries, which is the service a relayed KMS
+/// refusal names.
+const KMS_SERVICE_NAME: &str = "AWSKMS";
+
+/// The status a KMS client error is answered with, which the relayed metadata block
+/// states.
+const KMS_REFUSAL_STATUS: u16 = 400;
+
+/// The error code KMS refuses a cryptographic operation on a DISABLED key under.
+const DISABLED_EXCEPTION: &str = "DisabledException";
+
+/// The error code KMS refuses a cryptographic operation under for every other key state
+/// it cannot run in — a key awaiting deletion or awaiting imported key material.
+const INVALID_STATE_EXCEPTION: &str = "KMSInvalidStateException";
+
+/// A refusal KMS answered, as the caller of Parameter Store sees it: this service words
+/// none of these refusals itself, it RELAYS what its KMS call failed with, so the message
+/// is KMS's own sentence followed by the metadata block an AWS error carries — the service
+/// that refused, the status its class is answered with, the error code it was stated
+/// under, and the id of the request it answered.
+///
+/// The request id is the only per-call field: KMS mints one per call, so it is drawn from
+/// this emulator's one request-id mint rather than taken from anything the caller sent.
+fn relayed(message: &str, code: &str) -> String {
+    format!(
+        "{message} (Service: {KMS_SERVICE_NAME}; Status Code: {KMS_REFUSAL_STATUS}; \
+         Error Code: {code}; Request ID: {}; Proxy: null)",
+        ::service_common::query_error_envelope::new_request_id()
+    )
+}
+
+/// Why `key` cannot run the cryptographic operation this call needs of it right now, as
+/// the refusal to relay; `None` when the key's state lets it run.
+///
+/// A KMS key serves a cryptographic operation only in a key state that permits one
+/// ([`kms_store::Cmk::is_usable`]), and which refusal says so is the key state itself: a
+/// key that is merely disabled is KMS's own `DisabledException`, and every other state
+/// outside a usable one is its `KMSInvalidStateException`. Both carry the sentence KMS
+/// words for the state ([`kms_store::invalid_state_message`]), so a key suspended as a
+/// kill switch refuses every value sealed under it in KMS's own words rather than in a
+/// second copy of them here.
+fn key_state_refusal(key: &kms_store::Cmk) -> Option<String> {
+    if key.is_usable() {
+        return None;
+    }
+    let code = if key.reported_key_state() == kms_store::KEY_STATE_DISABLED {
+        DISABLED_EXCEPTION
+    } else {
+        INVALID_STATE_EXCEPTION
+    };
+    Some(relayed(&kms_store::invalid_state_message(key), code))
+}
 
 /// One stored value a read was asked to report decrypted: the ciphertext as the store
 /// holds it, the parameter it is bound to, and the key it is sealed under.
@@ -92,6 +153,11 @@ pub enum SealRefusal {
     /// The `KeyId` names no key this endpoint holds, so there is no key to encrypt the
     /// value under: `InvalidKeyId`. Carries KMS's own sentence for the identifier.
     UnknownKey(String),
+    /// The key is there and its key state runs no cryptographic operation, so nothing can
+    /// seal the value under it: `InvalidKeyId` too, the one refusal both the read and the
+    /// write model for a key that cannot serve the request. Carries the refusal KMS
+    /// answered, relayed ([`key_state_refusal`]).
+    UnusableKey(String),
     /// The key is there and the value still could not be sealed under it, which nothing
     /// about the request explains: a server fault.
     Unavailable(String),
@@ -133,6 +199,12 @@ pub fn seal<Eng: Send + Sync + 'static>(
             region, key_id,
         )));
     };
+    // The key's own key state decides the call before its material is reached: a key KMS
+    // would run no `GenerateDataKey`/`Encrypt` under seals nothing here either, so the put
+    // is refused rather than storing a value the key cannot open again.
+    if let Some(refusal) = key_state_refusal(key) {
+        return Err(SealRefusal::UnusableKey(refusal));
+    }
     let blob = kms_store::seal(key, plaintext.as_bytes(), Some(&context(parameter_arn))).ok_or_else(
         || {
             SealRefusal::Unavailable(format!(
@@ -152,7 +224,8 @@ pub enum OpenRefusal {
     /// `AccessDeniedException`. Carries the sentence KMS words for the refusal.
     Denied(String),
     /// The value cannot be opened under the key the version names at all — the identifier
-    /// resolves to no key at this endpoint any more, or the stored ciphertext is not one
+    /// resolves to no key at this endpoint any more, the key's key state runs no
+    /// cryptographic operation ([`key_state_refusal`]), or the stored ciphertext is not one
     /// that key sealed for this parameter: `InvalidKeyId`.
     Key(String),
 }
@@ -215,6 +288,14 @@ where
                 )))
             }
         };
+        // The key's own key state decides the read before its policy is read and before
+        // its material is reached, exactly as a direct `kms:Decrypt` is decided: a key KMS
+        // runs no cryptographic operation under opens nothing here either, so a key
+        // suspended as a kill switch refuses every value sealed under it instead of the
+        // plaintext being served.
+        if let Some(refusal) = key_state_refusal(key) {
+            return Err(OpenRefusal::Key(refusal));
+        }
         let context = context(&value.parameter_arn);
         // An Amazon Web Services managed key's policy is AWS's own, managed for the
         // service that owns the key, so a caller needs no grant of its own on it.
