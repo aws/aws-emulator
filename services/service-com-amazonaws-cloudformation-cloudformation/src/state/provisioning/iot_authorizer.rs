@@ -62,6 +62,16 @@ const NOT_IMPLEMENTED: &str = "NotImplemented";
 /// The code a refusal carries for a declaration that states none of a required property.
 const MISSING_PROPERTY: &str = "InvalidRequest";
 
+/// The status an authorizer must be in before AWS IoT will delete it, which is one of the
+/// two values its `AuthorizerStatus` enum admits
+/// (`smithy_query(query="shape",shape="AuthorizerStatus")`): the owning service refuses the
+/// delete of an authorizer that is still in service, so a teardown moves it here first.
+const INACTIVE_STATUS: &str = "INACTIVE";
+
+/// The member of `UpdateAuthorizer` that carries the status, which is how an authorizer is
+/// taken out of service.
+const STATUS_MEMBER: &str = "status";
+
 /// The property naming the authorizer, which is the name it is created under rather than a
 /// member of the create's body.
 const AUTHORIZER_NAME: &str = "AuthorizerName";
@@ -240,6 +250,11 @@ pub(super) async fn update(
 
 /// Delete the authorizer a stack created, addressed by the name it was created under.
 ///
+/// The owning service refuses the delete of an authorizer that is still in service, so this
+/// walks the path that service documents for a teardown: `UpdateAuthorizer` takes it out of
+/// service, then `DeleteAuthorizer` removes it — which is why a stack whose authorizer was
+/// declared (or left) `ACTIVE` still releases it.
+///
 /// An authorizer the owning service no longer holds is already in the state the delete asks
 /// for, judged on the CODE and never on a message.
 pub(super) async fn delete(
@@ -247,6 +262,24 @@ pub(super) async fn delete(
     region: &str,
     resource: &StoredResource,
 ) -> Result<(), Refusal> {
+    let mut deactivate = Map::new();
+    deactivate.insert(
+        STATUS_MEMBER.to_string(),
+        Value::String(INACTIVE_STATUS.to_string()),
+    );
+    match call_iot(
+        ctx,
+        region,
+        "PUT",
+        &authorizer_uri(&resource.physical_resource_id),
+        Some(&Value::Object(deactivate)),
+    )
+    .await
+    {
+        Ok(_) => {}
+        Err(refusal) if refusal.code == AUTHORIZER_NOT_FOUND => return Ok(()),
+        Err(refusal) => return Err(refusal),
+    }
     match call_iot(
         ctx,
         region,

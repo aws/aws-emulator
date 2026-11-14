@@ -3028,6 +3028,15 @@ pub use streams::{
     MAX_STREAM_TAGS,
 };
 
+// WHEN an authorizer may be deleted — the status a record must carry before a delete of
+// it is admissible, and the sentence a delete that comes too early is refused with —
+// lives in `state/authorizers.rs`, beside the authorizer record it is about. Its names
+// are re-exported here so a handler reaches them as `crate::state::<name>`.
+pub mod authorizers;
+pub use authorizers::{
+    existing_authorizer_message, undeletable_authorizer_message, INACTIVE_AUTHORIZER_STATUS,
+};
+
 // The VERSIONS of an IoT policy — how one is added, how many a policy holds, and what a
 // reader of them reports — live in `state/policy_versions.rs`, beside the policy record
 // they hang off.

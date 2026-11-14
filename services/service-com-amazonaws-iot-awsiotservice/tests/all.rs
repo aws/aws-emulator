@@ -15,6 +15,8 @@ mod account_audit_configuration;
 mod authorization_decision;
 #[path = "all/authorizer_registry.rs"]
 mod authorizer_registry;
+#[path = "all/authorizer_teardown.rs"]
+mod authorizer_teardown;
 #[path = "all/bulk_thing_registration.rs"]
 mod bulk_thing_registration;
 #[path = "all/bulk_thing_registration_reports.rs"]

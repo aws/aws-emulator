@@ -42,17 +42,16 @@
 //!
 //! ## The error shape a request-validation refusal names
 //!
-//! AWS IoT refuses a request its validation layer will not accept — a value outside what
-//! the service recognises, ahead of the plane that owns the resource — with
-//! `InvalidRequestException`, and names that shape in `x-amzn-errortype` QUALIFIED with
-//! the service's API doc namespace ([`IOT_DOC_NAMESPACE`]), which is the form a restJson1
-//! client resolves an error shape from. A refusal raised by the plane BEHIND that layer
-//! (a target ARN a creator will not take, a resource that does not exist) names the bare
-//! shape, which is what the framework's serializer already writes.
+//! AWS IoT names `InvalidRequestException` in `x-amzn-errortype` QUALIFIED with the
+//! service's API doc namespace ([`IOT_DOC_NAMESPACE`]) — the shape name, a `:`, and the
+//! namespace — which is the form a restJson1 client resolves an error shape from. Every
+//! OTHER error shape of this service is named bare, which is what the framework's
+//! serializer already writes.
 //!
-//! `override_operation` below therefore serves the operations whose refusal belongs to
-//! that validation layer behind [`ValidationRefusalErrorType`], which qualifies the
-//! shape name on the way out and changes nothing else about the response.
+//! `override_operation` below therefore serves the operations that refuse with that shape
+//! — a value outside what the service recognises, and a precondition of the plane that
+//! owns the resource — behind [`ValidationRefusalErrorType`], which qualifies the shape
+//! name on the way out and changes nothing else about the response.
 
 use smithy_server_runtime::{
     http, BoxFuture, ErasedOperation, Operation, OperationContext, Refusal, Refused, Service,
@@ -132,9 +131,14 @@ fn qualified_invalid_request() -> String {
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
     entry: crate::ServiceDefinition<Eng>,
     /// The fleet-index reader, served behind [`ValidationRefusalErrorType`]: the
-    /// `indexName` this service does not recognise is refused by its validation layer,
-    /// so the refusal names the error shape the way that layer names it.
+    /// `indexName` this service does not recognise is refused `InvalidRequestException`,
+    /// so the refusal names that shape the way this service names it.
     describe_index: ValidationRefusalErrorType<crate::ops::describe_index::DescribeIndex<Eng>>,
+    /// The authorizer delete, served behind [`ValidationRefusalErrorType`] for the same
+    /// reason: an authorizer the account still has in service is refused
+    /// `InvalidRequestException`.
+    delete_authorizer:
+        ValidationRefusalErrorType<crate::ops::delete_authorizer::DeleteAuthorizer<Eng>>,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -147,7 +151,10 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             // The SAME shared engine the entry's own operations were constructed from,
             // so the wrapped reader reads the one store.
             describe_index: ValidationRefusalErrorType::new(
-                crate::ops::describe_index::DescribeIndex::new(engine),
+                crate::ops::describe_index::DescribeIndex::new(Arc::clone(&engine)),
+            ),
+            delete_authorizer: ValidationRefusalErrorType::new(
+                crate::ops::delete_authorizer::DeleteAuthorizer::new(engine),
             ),
         }
     }
@@ -175,14 +182,18 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         &self,
         req: &aws_smithy_runtime_api::http::Request,
     ) -> Option<&dyn ErasedOperation> {
-        // The fleet-index reader is served behind `ValidationRefusalErrorType` (see the
-        // module docs): its refusal of an `indexName` this service does not recognise
-        // belongs to the validation layer, which names the error shape qualified with the
-        // service's API doc namespace. Every other request resolves through the generated
-        // routing table.
+        // The operations that refuse with `InvalidRequestException` are served behind
+        // `ValidationRefusalErrorType` (see the module docs), which names that shape the
+        // way this service names it: qualified with its API doc namespace. Every other
+        // request resolves through the generated routing table.
         let key = self.entry.protocol().routing_key(req).ok()?;
-        (key == crate::ops::describe_index::DescribeIndex::<Eng>::NAME)
-            .then_some(&self.describe_index as &dyn ErasedOperation)
+        if key == crate::ops::describe_index::DescribeIndex::<Eng>::NAME {
+            return Some(&self.describe_index as &dyn ErasedOperation);
+        }
+        if key == crate::ops::delete_authorizer::DeleteAuthorizer::<Eng>::NAME {
+            return Some(&self.delete_authorizer as &dyn ErasedOperation);
+        }
+        None
     }
 
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {

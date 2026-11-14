@@ -8,6 +8,11 @@
 //! refused `ResourceNotFoundException` (404): this operation documents no
 //! idempotence, and it models the not-found error.
 //!
+//! The delete is admissible only while the record's status says the authorizer is out of
+//! service ([`crate::state::authorizers`]): an authorizer the account still has ACTIVE
+//! is refused the modelled `InvalidRequestException` (400) and left exactly as it was,
+//! so a caller deactivates it with `UpdateAuthorizer` and deletes it then.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -160,7 +165,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // ([`crate::state::not_found`]), the same sentence the describe path refuses
         // with: unlike `DeleteThing`, nothing this operation documents makes it
         // idempotent, and it models the not-found error.
-        if store.authorizers.remove(&input.authorizer_name).is_none() {
+        let Some(authorizer) = store.authorizers.get(&input.authorizer_name) else {
             return Err(DeleteAuthorizerErrorModeled::ResourceNotFoundException(
                 ResourceNotFoundException {
                     message: Some(crate::state::missing_authorizer_message(
@@ -169,7 +174,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 },
             )
             .into());
+        };
+
+        // An authorizer that is still in service is not torn out from under the clients
+        // it authorizes: the delete of one whose persisted status is not
+        // `INACTIVE` is the modelled `InvalidRequestException` (HTTP 400), naming the
+        // status the record carries and the status to move it to, and the record is left
+        // untouched for the caller to deactivate and delete.
+        if !authorizer.is_deactivated() {
+            let message = crate::state::undeletable_authorizer_message(
+                &input.authorizer_name,
+                &authorizer.status,
+            );
+            return Err(DeleteAuthorizerErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    message: Some(message),
+                },
+            )
+            .into());
         }
+
+        store.authorizers.remove(&input.authorizer_name);
 
         // `DeleteAuthorizer` models no output members at all, so a successful delete
         // is an empty 200.

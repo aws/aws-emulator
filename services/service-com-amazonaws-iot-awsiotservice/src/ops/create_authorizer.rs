@@ -220,9 +220,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if let Some(existing) = store.authorizers.get(&input.authorizer_name) {
             return Err(CreateAuthorizerErrorModeled::ResourceAlreadyExistsException(
                 ResourceAlreadyExistsException {
-                    message: Some(format!(
-                        "Authorizer {} already exists",
-                        existing.authorizer_name
+                    message: Some(crate::state::existing_authorizer_message(
+                        &existing.authorizer_name,
                     )),
                     resource_id: Some(existing.authorizer_name.clone()),
                     resource_arn: Some(existing.authorizer_arn.clone()),

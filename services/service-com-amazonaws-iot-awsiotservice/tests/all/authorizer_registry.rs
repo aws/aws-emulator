@@ -168,6 +168,12 @@ impl Emulator {
         self.call("PUT", &format!("/authorizer/{name}"), Some(body), REGION)
             .await
     }
+
+    /// Takes the authorizer out of service, which is what `UpdateAuthorizer`'s `status`
+    /// member is for and what a delete of it requires first.
+    async fn deactivate(&self, name: &str) -> Reply {
+        self.update(name, &json!({ "status": "INACTIVE" })).await
+    }
 }
 
 /// The ARN an authorizer created in `region` must carry.
@@ -631,6 +637,14 @@ async fn a_deleted_authorizer_is_gone_and_its_name_is_free_again() {
             "case {label:?}: CreateAuthorizer must succeed, got {created:?}"
         );
 
+        // A delete is admissible only once the authorizer is out of service, so the
+        // teardown of one walks the documented path: deactivate it, then delete it.
+        let deactivated = emulator.deactivate(&case.name).await;
+        assert_eq!(
+            deactivated.status, 200,
+            "case {label:?}: deactivating the authorizer must succeed, got {deactivated:?}"
+        );
+
         let deleted = emulator.delete(&case.name).await;
         assert_eq!(
             deleted.status, 200,
@@ -694,6 +708,11 @@ async fn deleting_one_authorizer_leaves_every_other_one_readable() {
     // authorizer still describes as it did before.
     for (index, case) in all.iter().enumerate() {
         let label = case.label;
+        let deactivated = emulator.deactivate(&case.name).await;
+        assert_eq!(
+            deactivated.status, 200,
+            "case {label:?}: deactivating the authorizer must succeed, got {deactivated:?}"
+        );
         let deleted = emulator.delete(&case.name).await;
         assert_eq!(
             deleted.status, 200,
