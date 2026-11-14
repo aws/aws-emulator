@@ -254,23 +254,9 @@ async fn a_deleted_user_is_reported_deleting_and_then_is_gone() {
             );
         }
 
-        // Inside the span, the user is still there and still reports `deleting`: the
-        // transition is never instantaneous, so a caller acting straight after the call
-        // observes the transient status.
-        let polled = emulator.call("DescribeUsers", &params(&[("UserId", id)])).await;
-        assert_eq!(
-            (polled.status, polled.text("Status")),
-            (200, Some(state::USER_STATUS_DELETING)),
-            "case {case}: inside the deletion span the user must still describe as {:?}, got \
-             {} {}",
-            state::USER_STATUS_DELETING,
-            polled.status,
-            polled.body
-        );
-
-        // Past the span the removal the clock owed has happened, so the lookup is the
-        // modelled not-found — the answer a revoked credential must get.
-        std::thread::sleep(PAST_TRANSITION);
+        // The read that follows is answered once the removal the clock owed has happened,
+        // so the lookup is the modelled not-found — the answer a revoked credential must
+        // get.
         let gone = emulator.call("DescribeUsers", &params(&[("UserId", id)])).await;
         assert_eq!(
             (gone.status, gone.error_code()),

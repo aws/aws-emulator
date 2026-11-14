@@ -2353,3 +2353,17 @@ mod cloudformation_sqs_redrive_policy_dead_letters_a_failing_consumer;
 // crate's test target can deploy it, crawl with it and read the catalog it wrote.
 #[path = "all/cloudformation_deployed_crawler_crawls_its_s3_target.rs"]
 mod cloudformation_deployed_crawler_crawls_its_s3_target;
+// of the suites this span once declared are declared ONCE, in the head region above:
+// loading one file as a module twice compiles nowhere.
+// (`apigateway_sns_service_integration` is declared once, further up this tail: a deployed
+// method whose integration is an `AWS` call on an SNS TOPIC is asked of the router that
+// mounts every service at once, and a module may be declared only once.)
+// (`cloudwatch_alarm_ssm_ops_item_action` is declared ONCE, in the head region above, for
+// the reason that entry records: the work item an alarm's Systems Manager OpsItem action
+// opens has to be read where a client reads it — through OpsCenter's own query — so neither
+// CloudWatch's nor Systems Manager's own test target can drive the transition and then read
+// what it opened.)
+// (`codebuild_s3_build_output` is declared once, further up this tail: what a build PUTS in,
+// and READS out of, the account's object store is asserted there, and a module may be
+// `cloudformation_domain_endpoint_is_dialled_by_consumers` are each declared once, further
+// up this tail: a module may be declared only once.)

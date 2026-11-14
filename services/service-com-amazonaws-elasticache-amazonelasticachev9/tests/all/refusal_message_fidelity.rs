@@ -31,7 +31,7 @@
 use service_com_amazonaws_elasticache_amazonelasticachev9::state;
 
 use crate::describe_cache_parameters::create_group;
-use crate::harness::{params, Emulator, Reply, PAST_TRANSITION, REGION};
+use crate::harness::{params, Emulator, Reply, REGION};
 use crate::modify_cache_parameter_group::modify;
 
 /// The sentence ElastiCache refuses a value that is not one of its identifiers with,
@@ -626,7 +626,15 @@ async fn a_user_group_is_deleted_and_read_back_as_gone() {
             too_early.status,
             too_early.body
         );
-        std::thread::sleep(PAST_TRANSITION);
+        // Reading the group back is answered once the create has settled it active,
+        // which is the state a delete is accepted from.
+        let active = describe(&emulator, id).await;
+        assert_eq!(
+            active.text("Status"),
+            Some("active"),
+            "case {id:?}: the read after the create must report the group active, got {}",
+            active.body
+        );
 
         let deleted = delete(&emulator, id).await;
         assert_eq!(
@@ -654,17 +662,9 @@ async fn a_user_group_is_deleted_and_read_back_as_gone() {
             deleted.body
         );
 
-        // Inside the removal span the group is still there, reported as deleting; after
-        // it, every reader answers the modelled not-found and the id is free again.
-        let during = describe(&emulator, id).await;
-        assert_eq!(
-            (during.status, during.text("Status")),
-            (200, Some("deleting")),
-            "case {id:?}: the group must still be reported while it is leaving, got {} {}",
-            during.status,
-            during.body
-        );
-        std::thread::sleep(PAST_TRANSITION);
+        // The read that follows the delete is answered once the removal the clock owed has
+        // been carried through: every reader answers the modelled not-found and the id is
+        // free again.
         let after = describe(&emulator, id).await;
         assert_eq!(
             (after.status, after.error_code()),

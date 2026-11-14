@@ -38,7 +38,7 @@
 use service_com_amazonaws_elasticache_amazonelasticachev9::state;
 
 use crate::cache_cluster_lifecycle::create_available_cluster;
-use crate::harness::{params, Emulator, Reply, PAST_TRANSITION, REGION};
+use crate::harness::{params, Emulator, Reply, REGION};
 use crate::resource_tags::{add_tags, list_tags, remove_tags};
 
 /// The account id every generated emulator presents, which every ARN it mints
@@ -621,8 +621,9 @@ async fn user_group_status(emulator: &Emulator, group: &str) -> String {
         .to_string()
 }
 
-/// Create one user group out of the service's own user, asserting it succeeded.
-async fn create_user_group(emulator: &Emulator, group: &str) {
+/// Create one user group out of the service's own user, asserting it succeeded,
+/// and answer with that call's own reply.
+async fn create_user_group(emulator: &Emulator, group: &str) -> Reply {
     let mut request = params(&[("UserGroupId", group), ("Engine", "redis")]);
     request.push(("UserIds.member.1".to_string(), "default".to_string()));
     let created = emulator.call("CreateUserGroup", &request).await;
@@ -631,6 +632,17 @@ async fn create_user_group(emulator: &Emulator, group: &str) {
         "case {group}: CreateUserGroup must answer 200, got {} {}",
         created.status, created.body
     );
+    created
+}
+
+/// The `Status` `reply` reports: the variable part of the sentence below, taken
+/// from the answer of the call that put the group in that status rather than
+/// from a literal written here.
+fn answered_status(case: &str, reply: &Reply) -> String {
+    reply
+        .text("Status")
+        .unwrap_or_else(|| panic!("case {case:?}: no Status in {}", reply.body))
+        .to_string()
 }
 
 #[tokio::test]
@@ -658,20 +670,25 @@ async fn a_user_group_that_cannot_be_deleted_states_the_statuses_a_delete_admits
 
     // The axis: the status the group is in when the delete arrives — one still
     // being created, one carrying a change the clock has not settled, and one
-    // already on its way out. Each row reads the status back out of the store,
-    // so the message's variable part is the group's own and not a literal.
+    // already on its way out. Each row reads the status out of the answer of the
+    // call that PUT the group in it, so the message's variable part is the
+    // group's own and not a literal, and the delete under test follows that
+    // answer straight away: a report of the group is answered only once the span
+    // has passed, so a read between the two would wait the group out of the
+    // status the row is about.
     for (case, group) in [
         ("still creating", "creating-group"),
         ("still modifying", "modifying-group"),
         ("already deleting", "deleting-group"),
     ] {
-        create_user_group(&emulator, group).await;
-        match case {
-            "still creating" => {}
+        let created = create_user_group(&emulator, group).await;
+        let status = match case {
+            "still creating" => answered_status(case, &created),
             _ => {
-                // The create settles `active` a span after the call, which is
-                // what lets the next change be accepted.
-                tokio::time::sleep(PAST_TRANSITION).await;
+                // Reading the group back is answered once the create has
+                // settled it `active`, which is what lets the next change be
+                // accepted.
+                user_group_status(&emulator, group).await;
                 let action = if case == "still modifying" {
                     "ModifyUserGroup"
                 } else {
@@ -690,34 +707,34 @@ async fn a_user_group_that_cannot_be_deleted_states_the_statuses_a_delete_admits
                     "case {case}: {action} must answer 200, got {} {}",
                     accepted.status, accepted.body
                 );
+                answered_status(case, &accepted)
             }
-        }
+        };
 
-        let status = user_group_status(&emulator, group).await;
+        let sentence = format!(
+            "User group {group} has status {status}. Only active or create-failed user groups \
+             can be deleted."
+        );
         let reply = emulator
             .call("DeleteUserGroup", &params(&[("UserGroupId", group)]))
             .await;
-        refused(
-            case,
-            &reply,
-            400,
-            "InvalidUserGroupState",
-            &format!(
-                "User group {group} has status {status}. Only active or create-failed user groups \
-                 can be deleted."
-            ),
-        );
-        assert_eq!(
-            user_group_status(&emulator, group).await,
-            status,
-            "case {case}: a refused delete must leave the status alone"
-        );
+        refused(case, &reply, 400, "InvalidUserGroupState", &sentence);
+        // A refused delete left the status alone: the identical call is refused
+        // over the same status again.
+        let again = emulator
+            .call("DeleteUserGroup", &params(&[("UserGroupId", group)]))
+            .await;
+        refused(case, &again, 400, "InvalidUserGroupState", &sentence);
     }
 
     // The status a delete DOES admit: the group the clock has settled `active` is
     // deleted, which is what makes the refusals above the state rule speaking.
     create_user_group(&emulator, "deletable-group").await;
-    tokio::time::sleep(PAST_TRANSITION).await;
+    assert_eq!(
+        user_group_status(&emulator, "deletable-group").await,
+        state::USER_STATUS_ACTIVE,
+        "the read after the create must report the group active"
+    );
     let deleted = emulator
         .call(
             "DeleteUserGroup",

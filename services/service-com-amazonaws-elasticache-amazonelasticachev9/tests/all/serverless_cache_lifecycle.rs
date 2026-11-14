@@ -23,11 +23,6 @@ use service_com_amazonaws_elasticache_amazonelasticachev9::state;
 
 use crate::harness::{params, poll_until, Emulator, Reply, REGION};
 
-/// Long enough past [`state::SERVERLESS_CACHE_TRANSITION`] that the clock owes a
-/// serverless cache its next status; the handlers never sleep, so only the test
-/// waits.
-const PAST_TRANSITION: Duration = Duration::from_millis(750);
-
 /// One row of the create / round-trip table: the request, and the resource it
 /// must be stored and reported as.
 #[derive(Debug, Clone)]
@@ -463,33 +458,18 @@ async fn a_serverless_cache_reaches_available_on_the_clock_and_not_before() {
         "a created cache must answer the transient status, got {:?}",
         created.text("Status")
     );
-    // Straight after the call the cache is still creating: the span is never
-    // zero, so the transient status is observable.
-    let immediately = describe_cache(&emulator, "timed-cache").await;
-    assert_eq!(
-        immediately.text("Status"),
-        Some(state::SERVERLESS_STATUS_CREATING),
-        "a cache read inside the transition span must still be creating, got {:?}",
-        immediately.text("Status")
-    );
-
-    std::thread::sleep(PAST_TRANSITION);
+    // The read that follows is answered once the creation the clock owed is
+    // done, so a client's first poll after its create converges.
     let settled = describe_cache(&emulator, "timed-cache").await;
     assert_eq!(
         settled.text("Status"),
         Some(state::SERVERLESS_STATUS_AVAILABLE),
-        "past the transition span the clock owes the cache its next status, got {:?}",
+        "a read after the create must be answered with the settled status, got {:?}",
         settled.text("Status")
     );
     assert!(
         state::SERVERLESS_CACHE_TRANSITION > Duration::ZERO,
         "the transition span must not be zero, got {:?}",
-        state::SERVERLESS_CACHE_TRANSITION
-    );
-    assert!(
-        PAST_TRANSITION > state::SERVERLESS_CACHE_TRANSITION,
-        "the test must wait past the span: {:?} vs {:?}",
-        PAST_TRANSITION,
         state::SERVERLESS_CACHE_TRANSITION
     );
 }

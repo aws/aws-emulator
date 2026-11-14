@@ -332,23 +332,16 @@ async fn a_reshard_writes_the_shards_a_later_read_reports() {
             "case {case:?}: the reshard must answer 200, got {} {}",
             resharded.status, resharded.body
         );
-        // Resharding is work the service carries out after the call, so the group is
-        // transient — a caller polling straight after this call sees it.
+        // Resharding is work the service carries out after the call, so the call
+        // itself answers with the group transient.
         assert_eq!(
             resharded.text("Status"),
             Some(state::STATUS_MODIFYING),
             "case {case:?}: expected the transient status in the answer, got {:?}",
             resharded.text("Status")
         );
-        let inside = describe_group(&emulator, "reshard-group").await;
-        assert_eq!(
-            inside.text("Status"),
-            Some(state::STATUS_MODIFYING),
-            "case {case:?}: expected the transient status inside the span, got {:?}",
-            inside.text("Status")
-        );
 
-        std::thread::sleep(PAST_TRANSITION);
+        // The read that follows is answered once that work is done.
         let described = describe_group(&emulator, "reshard-group").await;
         assert_eq!(
             described.text("Status"),

@@ -167,6 +167,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             None => None,
         };
 
+        // A report answers with the state the clock owes at the instant it
+        // answers, so a change already scheduled to fall due within a transition
+        // span is waited for here rather than reported as still outstanding: the
+        // first poll a client issues after the call that started the work
+        // converges (`crate::state::await_settled`).
+        crate::state::await_settled(&state).await;
         let now = SystemTime::now();
         // The end of the window: `EndTime` when the request bounds it, else the
         // instant of the call.

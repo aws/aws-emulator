@@ -22,7 +22,7 @@
 
 use service_com_amazonaws_elasticache_amazonelasticachev9::state;
 
-use crate::harness::{params, Emulator, Reply, PAST_TRANSITION};
+use crate::harness::{params, Emulator, Reply};
 
 /// The operations under test.
 const DESCRIBE: &str = "DescribeReservedCacheNodes";
@@ -359,8 +359,7 @@ async fn a_reservation_moves_from_payment_pending_to_active() {
         "purchase must succeed, got {}",
         bought.body
     );
-    // The transition is never instant, so the caller describing straight after
-    // the purchase still observes the transient state.
+    // The purchase's own answer is the transient state: the span is never zero.
     assert_eq!(
         bought.text("State"),
         Some(state::RESERVATION_STATE_PAYMENT_PENDING),
@@ -368,23 +367,14 @@ async fn a_reservation_moves_from_payment_pending_to_active() {
         state::RESERVATION_STATE_PAYMENT_PENDING,
         bought.body
     );
-    let pending = describe(&emulator, &[("ReservedCacheNodeId", row.reservation_id)]).await;
-    assert_eq!(
-        pending.text("State"),
-        Some(state::RESERVATION_STATE_PAYMENT_PENDING),
-        "before the span elapses the reservation is still {}, got {}",
-        state::RESERVATION_STATE_PAYMENT_PENDING,
-        pending.body
-    );
 
-    // Nothing sleeps in a handler; only the test waits out the span after which
-    // the clock owes the reservation its next state.
-    std::thread::sleep(PAST_TRANSITION);
+    // The read that follows is answered once the clock owes the reservation its
+    // next state.
     let settled = describe(&emulator, &[("ReservedCacheNodeId", row.reservation_id)]).await;
     assert_eq!(
         settled.text("State"),
         Some(state::RESERVATION_STATE_ACTIVE),
-        "once the span has elapsed the reservation is {}, got {}",
+        "the read after the purchase must report {}, got {}",
         state::RESERVATION_STATE_ACTIVE,
         settled.body
     );

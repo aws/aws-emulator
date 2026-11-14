@@ -270,30 +270,17 @@ async fn a_modify_changes_the_members_it_names_and_leaves_the_rest() {
             );
         }
 
-        // Inside the span the user still reports `modifying`, so a caller acting straight
-        // after the call observes the transient status — and the change is already there.
-        let polled = describe_user(&emulator, case, &id).await;
-        assert_eq!(
-            polled.text("Status"),
-            Some(state::STATUS_MODIFYING),
-            "case {case}: inside the span the user must still describe as {:?}, got {}",
-            state::STATUS_MODIFYING,
-            polled.body
-        );
-        assert_reports(case, "DescribeUsers inside the span", &polled, expected);
-
-        // Past the span the status the clock owed has been materialised, and the change
-        // is still the one the store holds.
-        std::thread::sleep(PAST_TRANSITION);
+        // The read that follows is answered once the status the clock owed has been
+        // materialised, and the change is the one the store holds.
         let settled = describe_user(&emulator, case, &id).await;
         assert_eq!(
             settled.text("Status"),
             Some(state::USER_STATUS_ACTIVE),
-            "case {case}: past the span the user must describe as {:?}, got {}",
+            "case {case}: the read after the modify must report {:?}, got {}",
             state::USER_STATUS_ACTIVE,
             settled.body
         );
-        assert_reports(case, "DescribeUsers past the span", &settled, expected);
+        assert_reports(case, "DescribeUsers after the modify", &settled, expected);
         for member in ["UserId", "UserName", "ARN"] {
             assert_eq!(
                 settled.text(member),

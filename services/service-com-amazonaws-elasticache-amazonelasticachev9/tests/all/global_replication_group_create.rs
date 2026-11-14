@@ -543,23 +543,6 @@ async fn a_global_datastore_create_this_emulator_cannot_serve_is_refused_and_sto
         },
     )
     .await;
-    // A group still `creating` cannot take on the primary role: created here,
-    // and never given its transition span.
-    let creating = emulator
-        .call(
-            "CreateReplicationGroup",
-            &params(&[
-                ("ReplicationGroupId", "primary-creating"),
-                ("ReplicationGroupDescription", "still creating"),
-                ("CacheNodeType", "cache.t3.micro"),
-            ]),
-        )
-        .await;
-    assert_eq!(
-        creating.status, 200,
-        "the creating primary must be creatable, got {}",
-        creating.body
-    );
     // The datastore the already-exists and already-a-member rows need.
     let minted = create_datastore(&emulator, REGION, &settled).await;
     assert_eq!(
@@ -580,7 +563,7 @@ async fn a_global_datastore_create_this_emulator_cannot_serve_is_refused_and_sto
         35,
         "the over-long row must be one character past the bound the accepted table pins"
     );
-    let rows: [Refusal; 10] = [
+    let rows: [Refusal; 9] = [
         (
             "an unknown primary",
             &[
@@ -589,15 +572,6 @@ async fn a_global_datastore_create_this_emulator_cannot_serve_is_refused_and_sto
             ],
             404,
             "ReplicationGroupNotFoundFault",
-        ),
-        (
-            "a primary that is still creating",
-            &[
-                ("GlobalReplicationGroupIdSuffix", "unsettled-primary"),
-                ("PrimaryReplicationGroupId", "primary-creating"),
-            ],
-            400,
-            "InvalidReplicationGroupState",
         ),
         (
             "a primary that is already a member",
@@ -712,6 +686,58 @@ async fn a_global_datastore_create_this_emulator_cannot_serve_is_refused_and_sto
             described.body
         );
     }
+
+    // The state gate, which needs a primary that is still being created: the
+    // create of that group is followed straight away by the datastore create,
+    // because a report of the group is answered only once the clock has settled
+    // it, so a read between the two would wait it out of `creating`.
+    let creating = emulator
+        .call(
+            "CreateReplicationGroup",
+            &params(&[
+                ("ReplicationGroupId", "primary-creating"),
+                ("ReplicationGroupDescription", "still creating"),
+                ("CacheNodeType", "cache.t3.micro"),
+            ]),
+        )
+        .await;
+    assert_eq!(
+        creating.status, 200,
+        "the creating primary must be creatable, got {}",
+        creating.body
+    );
+    let unsettled = emulator
+        .call(
+            "CreateGlobalReplicationGroup",
+            &params(&[
+                ("GlobalReplicationGroupIdSuffix", "unsettled-primary"),
+                ("PrimaryReplicationGroupId", "primary-creating"),
+            ]),
+        )
+        .await;
+    assert_eq!(
+        (unsettled.status, unsettled.error_code()),
+        (400, "InvalidReplicationGroupState"),
+        "case \"a primary that is still creating\": expected HTTP 400 \
+         InvalidReplicationGroupState, got HTTP {} {:?} — {}",
+        unsettled.status,
+        unsettled.error_code(),
+        unsettled.body
+    );
+    let absent = emulator
+        .call(
+            "DescribeGlobalReplicationGroups",
+            &params(&[("GlobalReplicationGroupId", "ldgnf-unsettled-primary")]),
+        )
+        .await;
+    assert_eq!(
+        (absent.status, absent.error_code()),
+        (404, "GlobalReplicationGroupNotFoundFault"),
+        "case \"a primary that is still creating\": a refused create must store nothing, got \
+         HTTP {} {}",
+        absent.status,
+        absent.body
+    );
 }
 
 #[tokio::test]

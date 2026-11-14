@@ -429,37 +429,24 @@ async fn a_cluster_reaches_available_on_the_clock_and_not_before() {
             "case {engine}: the create answer is transient, got {:?}",
             created.text("CacheCluster/CacheClusterStatus")
         );
-
-        // Straight after the call the transient status is still what a reader
-        // sees: the span is never zero.
-        let immediate = describe_cluster(&emulator, &id).await;
-        assert_eq!(
-            immediate.text("CacheCluster/CacheClusterStatus"),
-            Some("creating"),
-            "case {engine}: a describe inside the span still reports creating, got {:?}",
-            immediate.text("CacheCluster/CacheClusterStatus")
-        );
         // "If the cluster is in the creating state, only cluster-level
         // information is displayed until all of the nodes are successfully
-        // provisioned" — even though this describe asked for the node list.
+        // provisioned".
         assert!(
-            immediate
-                .all("CacheNodes/CacheNode/CacheNodeId")
-                .is_empty(),
+            created.all("CacheNodes/CacheNode/CacheNodeId").is_empty(),
             "case {engine}: a creating cluster reports cluster-level information only, got {}",
-            immediate.body
+            created.body
         );
-    }
 
-    std::thread::sleep(PAST_TRANSITION);
-
-    for engine in ["redis", "valkey", "memcached"] {
-        let id = format!("settle-{engine}");
+        // The next read is answered once the provisioning the clock owed the
+        // cluster is done, so it reports the settled cluster and the nodes that
+        // came up with it — the first read a client issues after its create
+        // converges rather than costing it a poll interval.
         let settled = describe_cluster(&emulator, &id).await;
         assert_eq!(
             settled.text("CacheCluster/CacheClusterStatus"),
             Some("available"),
-            "case {engine}: past the span the clock owes the cluster available, got {:?}",
+            "case {engine}: the read is answered once the cluster is available, got {:?}",
             settled.text("CacheCluster/CacheClusterStatus")
         );
         let node_statuses = settled.all("CacheNodes/CacheNode/CacheNodeStatus");
@@ -855,9 +842,15 @@ async fn modify_applies_immediately_or_records_pending_modified_values() {
                 described.body
             );
             assert_eq!(
-                described.text("CacheCluster/CacheClusterStatus"),
+                modified.text("CacheCluster/CacheClusterStatus"),
                 Some("modifying"),
-                "case {label}: an immediate modify leaves the cluster transient, got {:?}",
+                "case {label}: an immediate modify answers with the cluster transient, got {:?}",
+                modified.text("CacheCluster/CacheClusterStatus")
+            );
+            assert_eq!(
+                described.text("CacheCluster/CacheClusterStatus"),
+                Some("available"),
+                "case {label}: a later read is answered once the work is done, got {:?}",
                 described.text("CacheCluster/CacheClusterStatus")
             );
         } else {
@@ -1577,6 +1570,25 @@ async fn modify_refuses_a_member_that_names_no_change_it_can_make() {
         )
         .await;
     assert_eq!(grown.status, 200, "the grow must succeed: {}", grown.body);
+    // The added node is not provisioned yet when the grow answers, so that
+    // answer reports it `creating` with no endpoint while the two it joined
+    // still have theirs.
+    let growing = grown.all("CacheNodes/CacheNode/CacheNodeStatus");
+    assert_eq!(
+        growing,
+        vec!["available", "available", "creating"],
+        "the added node is still being provisioned, got {growing:?}"
+    );
+    assert_eq!(
+        grown.all("CacheNodes/CacheNode/Endpoint/Address").len(),
+        2,
+        "a node being added reports no endpoint until it is provisioned, got {}",
+        grown.body
+    );
+
+    // A later read is answered once the work the clock owed is done: the new
+    // node landed in the named zone, the existing nodes stayed where they were,
+    // and every node reports its endpoint.
     let described = describe_cluster(&emulator, "modify-refusals").await;
     let zones = described.all("CacheNodes/CacheNode/CustomerAvailabilityZone");
     assert_eq!(
@@ -1584,30 +1596,17 @@ async fn modify_refuses_a_member_that_names_no_change_it_can_make() {
         vec!["us-east-1a", "us-east-1a", "us-east-1f"],
         "only the new node is placed in the named zone, got {zones:?}"
     );
-    // The added node is not provisioned yet, so it reports no endpoint while
-    // the two it joined still do.
     let statuses = described.all("CacheNodes/CacheNode/CacheNodeStatus");
     assert_eq!(
         statuses,
-        vec!["available", "available", "creating"],
-        "the added node is still being provisioned, got {statuses:?}"
+        vec!["available", "available", "available"],
+        "every node is provisioned once the read is answered, got {statuses:?}"
     );
     assert_eq!(
         described.all("CacheNodes/CacheNode/Endpoint/Address").len(),
-        2,
-        "a node being added reports no endpoint until it is provisioned, got {}",
-        described.body
-    );
-
-    // Once the clock settles the cluster, the added node is provisioned and
-    // reports its endpoint like the rest.
-    std::thread::sleep(PAST_TRANSITION);
-    let settled = describe_cluster(&emulator, "modify-refusals").await;
-    assert_eq!(
-        settled.all("CacheNodes/CacheNode/Endpoint/Address").len(),
         3,
         "every node reports an endpoint once the cluster settles, got {}",
-        settled.body
+        described.body
     );
 }
 
@@ -1914,59 +1913,21 @@ async fn a_log_delivery_request_replaces_or_removes_the_stored_one() {
 #[tokio::test]
 async fn an_unknown_or_unsettled_cluster_is_refused() {
     let emulator = Emulator::new();
-    // Still `creating`: the span is never zero, so this cluster is transient.
-    create_cluster(&emulator, "fresh", &[]).await;
 
-    let cases: [(&str, &str, &str, u16, &str); 6] = [
-        (
-            "modify unknown",
-            "ModifyCacheCluster",
-            "nope",
-            404,
-            "CacheClusterNotFound",
-        ),
-        (
-            "delete unknown",
-            "DeleteCacheCluster",
-            "nope",
-            404,
-            "CacheClusterNotFound",
-        ),
+    // An id nothing holds is the not-found refusal, whichever operation asks.
+    let unknown: [(&str, &str, u16, &str); 3] = [
+        ("modify unknown", "ModifyCacheCluster", 404, "CacheClusterNotFound"),
+        ("delete unknown", "DeleteCacheCluster", 404, "CacheClusterNotFound"),
         (
             "describe unknown",
             "DescribeCacheClusters",
-            "nope",
             404,
             "CacheClusterNotFound",
         ),
-        (
-            "modify while creating",
-            "ModifyCacheCluster",
-            "fresh",
-            400,
-            "InvalidCacheClusterState",
-        ),
-        (
-            "delete while creating",
-            "DeleteCacheCluster",
-            "fresh",
-            400,
-            "InvalidCacheClusterState",
-        ),
-        // A describe is a read: it reports the transient cluster rather than
-        // refusing it.
-        (
-            "describe while creating",
-            "DescribeCacheClusters",
-            "fresh",
-            200,
-            "",
-        ),
     ];
-
-    for (case, action, id, status, code) in cases {
+    for (case, action, status, code) in unknown {
         let reply = emulator
-            .call(action, &params(&[("CacheClusterId", id)]))
+            .call(action, &params(&[("CacheClusterId", "nope")]))
             .await;
         assert_eq!(
             reply.status, status,
@@ -1980,6 +1941,53 @@ async fn an_unknown_or_unsettled_cluster_is_refused() {
             reply.body
         );
     }
+
+    // The state gate: a call that CHANGES a cluster still being created is
+    // refused with the status the cluster has. Each case creates a cluster of
+    // its own and calls straight after it, because the gate is what a mutation
+    // arriving INSIDE the transition span is answered with, while a report of
+    // that same cluster is answered only once the span has passed — so nothing
+    // may read the cluster between its create and the call under test.
+    let gated: [(&str, &str); 2] = [
+        ("modify while creating", "ModifyCacheCluster"),
+        ("delete while creating", "DeleteCacheCluster"),
+    ];
+    for (index, (case, action)) in gated.into_iter().enumerate() {
+        let id = format!("gated-{index}");
+        create_cluster(&emulator, &id, &[]).await;
+        let reply = emulator
+            .call(action, &params(&[("CacheClusterId", &id)]))
+            .await;
+        assert_eq!(
+            reply.status, 400,
+            "case {case}: expected HTTP 400, got {} {}",
+            reply.status, reply.body
+        );
+        assert_eq!(
+            reply.error_code(),
+            "InvalidCacheClusterState",
+            "case {case}: expected error code InvalidCacheClusterState, got {}",
+            reply.body
+        );
+    }
+
+    // A describe is a read: it reports the cluster rather than refusing it, and
+    // is answered once the work the clock owed it is done.
+    create_cluster(&emulator, "fresh", &[]).await;
+    let described = emulator
+        .call("DescribeCacheClusters", &params(&[("CacheClusterId", "fresh")]))
+        .await;
+    assert_eq!(
+        described.status, 200,
+        "case describe while creating: expected HTTP 200, got {} {}",
+        described.status, described.body
+    );
+    assert_eq!(
+        described.text("CacheCluster/CacheClusterStatus"),
+        Some("available"),
+        "case describe while creating: the read is answered settled, got {:?}",
+        described.text("CacheCluster/CacheClusterStatus")
+    );
 }
 
 /// One row of the subnet-group table.
@@ -2772,23 +2780,18 @@ async fn a_reboot_moves_only_the_named_nodes_and_settles_back() {
             rebooted.all("CacheNodes/CacheNode/CacheNodeStatus")
         );
 
-        // Persisted, not merely reported: a describe inside the span reads the
-        // same thing back, node for node, and the reboot changed nothing else
-        // about the cluster.
-        let immediate = describe_cluster(&emulator, case.id).await;
+        // Persisted, not merely reported: the next read reads the cluster back
+        // node for node — answered once the reboot the clock owed is over, so
+        // the cluster and every node it restarted are available again — and the
+        // reboot changed nothing else about the cluster.
+        let settled = describe_cluster(&emulator, case.id).await;
         assert_eq!(
-            immediate.text("CacheCluster/CacheClusterStatus"),
-            Some("rebooting cluster nodes"),
-            "case {case:?}: a describe inside the span still reports the reboot, got {:?}",
-            immediate.text("CacheCluster/CacheClusterStatus")
+            settled.text("CacheCluster/CacheClusterStatus"),
+            Some("available"),
+            "case {case:?}: the read is answered once the reboot is over, got {:?}",
+            settled.text("CacheCluster/CacheClusterStatus")
         );
-        assert_eq!(
-            immediate.all("CacheNodes/CacheNode/CacheNodeStatus"),
-            case.node_statuses,
-            "case {case:?}: the stored node statuses must be the reported ones, got {:?}",
-            immediate.all("CacheNodes/CacheNode/CacheNodeStatus")
-        );
-        let reported_ids = immediate.all("CacheNodes/CacheNode/CacheNodeId");
+        let reported_ids = settled.all("CacheNodes/CacheNode/CacheNodeId");
         let expected_ids = (1..=node_count)
             .map(|ordinal| format!("{ordinal:04}"))
             .collect::<Vec<String>>();
@@ -2797,21 +2800,10 @@ async fn a_reboot_moves_only_the_named_nodes_and_settles_back() {
             "case {case:?}: a reboot removes no node, got {reported_ids:?}"
         );
         assert_eq!(
-            immediate.text("CacheCluster/NumCacheNodes"),
+            settled.text("CacheCluster/NumCacheNodes"),
             Some(node_count.to_string().as_str()),
             "case {case:?}: a reboot changes no node count, got {:?}",
-            immediate.text("CacheCluster/NumCacheNodes")
-        );
-
-        // Past the span the clock owes the cluster `available` again, and every
-        // rebooted node with it.
-        std::thread::sleep(PAST_TRANSITION);
-        let settled = describe_cluster(&emulator, case.id).await;
-        assert_eq!(
-            settled.text("CacheCluster/CacheClusterStatus"),
-            Some("available"),
-            "case {case:?}: past the span the reboot is over, got {:?}",
-            settled.text("CacheCluster/CacheClusterStatus")
+            settled.text("CacheCluster/NumCacheNodes")
         );
         let settled_statuses = settled.all("CacheNodes/CacheNode/CacheNodeStatus");
         assert_eq!(

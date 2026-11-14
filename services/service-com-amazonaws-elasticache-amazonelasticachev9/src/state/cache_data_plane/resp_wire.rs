@@ -55,7 +55,34 @@ pub struct CacheSocket {
 impl CacheSocket {
     /// The cache as it is now: what the session's next command is judged against.
     fn facts(&self) -> CacheFacts {
-        super::cache_facts(&self.state.lock(), &self.identity)
+        super::cache_facts(&self.settled_store(), &self.identity)
+    }
+
+    /// The store with every change the clock owes an RBAC record already
+    /// materialised.
+    ///
+    /// A `ModifyUserGroup` leaves the membership change it accepted owed by the
+    /// clock, and the same holds for a `ModifyUser` and for a deletion; that
+    /// change is due at its instant whether or not a control-plane read noticed
+    /// it, so a session is judged against the membership of THIS moment rather
+    /// than the one that was current when somebody last described the group —
+    /// which is what makes a removed user's access stop and a restored user's
+    /// start without a describe in between. It is the one write a session makes
+    /// to the control plane's state; see [`crate::state::UserGroupRecord::settle`].
+    fn settled_store(
+        &self,
+    ) -> ::std::sync::MutexGuard<'_, crate::state::ComAmazonawsElasticacheAmazonelasticachev9State>
+    {
+        let now = SystemTime::now();
+        let mut store = self.state.lock();
+        // Walked only when the clock owes an RBAC record something: a session takes
+        // commands far more often than a membership changes, so the common case is one
+        // short-circuiting read rather than two map walks.
+        if store.rbac_change_due(now) {
+            store.settle_users(now);
+            store.settle_user_groups(now);
+        }
+        store
     }
 }
 
@@ -203,7 +230,7 @@ impl Session {
         // cache's own default user.
         let identity = match self.identity.clone() {
             Some(identity) => identity,
-            None => match super::default_identity(&self.socket.state.lock(), &facts) {
+            None => match super::default_identity(&self.socket.settled_store(), &facts) {
                 Some(identity) => Identity {
                     user_name: identity.user_name,
                     rules: identity.rules,
@@ -330,7 +357,8 @@ impl Session {
         let wanted = user_name
             .clone()
             .unwrap_or_else(|| crate::state::DEFAULT_USER_NAME.to_string());
-        match super::authenticate_cache_user(&self.socket.state.lock(), facts, &wanted, &secret) {
+        match super::authenticate_cache_user(&self.socket.settled_store(), facts, &wanted, &secret)
+        {
             Some(identity) => {
                 self.identity = Some(Identity {
                     user_name: identity.user_name,

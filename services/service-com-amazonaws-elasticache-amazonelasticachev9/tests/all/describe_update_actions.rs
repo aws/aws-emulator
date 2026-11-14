@@ -29,7 +29,7 @@ use aws_smithy_types::DateTime;
 use service_com_amazonaws_elasticache_amazonelasticachev9::state;
 
 use crate::cache_cluster_lifecycle::create_available_cluster;
-use crate::harness::{params, Emulator, Reply, PAST_TRANSITION};
+use crate::harness::{params, poll_until, Emulator, Reply, REGION};
 use crate::service_updates::{epoch_secs, now_secs};
 
 /// One published service update, as `DescribeServiceUpdates` reports it: the
@@ -335,11 +335,25 @@ async fn create_group(emulator: &Emulator, id: &str, engine: &str) {
         "case {id}: CreateReplicationGroup must succeed, got {} {}",
         created.status, created.body
     );
-    std::thread::sleep(PAST_TRANSITION);
+    // Read it back: the read is answered once the create has settled the group,
+    // which is the state an update action is applied to.
+    let described = emulator
+        .call(
+            "DescribeReplicationGroups",
+            &params(&[("ReplicationGroupId", id)]),
+        )
+        .await;
+    assert_eq!(
+        described.text("ReplicationGroup/Status"),
+        Some("available"),
+        "case {id}: the read after the create must report the group available, got {}",
+        described.body
+    );
 }
 
-/// Apply one published service update to one cache cluster.
-async fn apply(emulator: &Emulator, service_update_name: &str, cluster: &str) {
+/// Apply one published service update to one cache cluster, answering with the
+/// call's own reply.
+async fn apply(emulator: &Emulator, service_update_name: &str, cluster: &str) -> Reply {
     let mut pairs = params(&[("ServiceUpdateName", service_update_name)]);
     pairs.extend(id_filter("CacheClusterIds", &[cluster]));
     let applied = emulator.call("BatchApplyUpdateAction", &pairs).await;
@@ -348,6 +362,7 @@ async fn apply(emulator: &Emulator, service_update_name: &str, cluster: &str) {
         "case apply {service_update_name} to {cluster}: must answer the results message, got {} {}",
         applied.status, applied.body
     );
+    applied
 }
 
 /// The three resources and the one replication group every test below starts
@@ -821,16 +836,25 @@ async fn an_applied_action_is_reported_as_the_clock_carries_it() {
         reply.body
     );
 
-    // Applied, the action is under way: `waiting-to-start`, still nothing
-    // updated, and every node reports the customer as the initiator.
-    apply(&emulator, &update.name, "ua-memcached").await;
+    // Applied, the action is under way: the apply's own answer reports
+    // `waiting-to-start`, and the report that follows is answered once the clock
+    // has carried the action its next step, with every node reporting the
+    // customer as the initiator.
+    let applied_reply = apply(&emulator, &update.name, "ua-memcached").await;
     let applied_at = now_secs();
     let case = "just applied";
+    assert_eq!(
+        applied_reply.text("UpdateActionStatus"),
+        Some(state::UPDATE_ACTION_WAITING_TO_START),
+        "case {case}: the apply must start the action, got {}",
+        applied_reply.body
+    );
+    let case = "under way";
     let (applied, reply) = action_and_nodes(&emulator, case, &pairs).await;
     assert_eq!(
         member(&applied, case, "UpdateActionStatus"),
-        state::UPDATE_ACTION_WAITING_TO_START,
-        "case {case}: the apply must start the action, got {}",
+        state::UPDATE_ACTION_IN_PROGRESS,
+        "case {case}: the clock must carry the action to its next status, got {}",
         reply.body
     );
     assert_eq!(
@@ -845,11 +869,6 @@ async fn an_applied_action_is_reported_as_the_clock_carries_it() {
         "case {case}: the update was asked for by the customer, got {}",
         reply.body
     );
-    assert!(
-        reply.all("NodeUpdateStartDate").is_empty(),
-        "case {case}: the update has not reached the nodes yet, got {}",
-        reply.body
-    );
     for initiated in reply.all("NodeUpdateInitiatedDate") {
         let at = epoch_secs(case, "NodeUpdateInitiatedDate", initiated);
         assert!(
@@ -860,8 +879,24 @@ async fn an_applied_action_is_reported_as_the_clock_carries_it() {
 
     // The clock carries it through `in-progress` to `complete`: every node is
     // updated, the progress reports all of them, and the SLA was met because it
-    // finished before the recommended apply-by date.
-    std::thread::sleep(state::UPDATE_ACTION_TRANSITION * 4);
+    // finished before the recommended apply-by date. An action walks a chain of
+    // statuses, so this waits for the CONDITION — looking again until the action
+    // reports complete — rather than for a time.
+    let mut completion = pairs.clone();
+    completion.push((
+        "ShowNodeLevelUpdateStatus".to_string(),
+        "true".to_string(),
+    ));
+    poll_until(
+        &emulator,
+        REGION,
+        "settled",
+        "the update action reaching complete",
+        "DescribeUpdateActions",
+        &completion,
+        |reply| reply.text("UpdateActionStatus") == Some(state::UPDATE_ACTION_COMPLETE),
+    )
+    .await;
     let case = "settled";
     let (settled, reply) = action_and_nodes(&emulator, case, &pairs).await;
     assert_eq!(

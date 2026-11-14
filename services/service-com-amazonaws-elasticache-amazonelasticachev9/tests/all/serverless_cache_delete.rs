@@ -139,12 +139,6 @@ fn assert_refused(case: &str, reply: &Reply, status: u16, code: &str) {
 
 #[tokio::test]
 async fn a_delete_reports_the_cache_as_deleting_and_the_clock_removes_it() {
-    assert!(
-        PAST_TRANSITION > state::SERVERLESS_CACHE_TRANSITION,
-        "these tests wait {PAST_TRANSITION:?}, which must out-last the span this service \
-         publishes ({:?})",
-        state::SERVERLESS_CACHE_TRANSITION
-    );
     let emulator = Emulator::new();
 
     // Every row's cache, plus one that is never deleted: a delete takes away the
@@ -161,9 +155,18 @@ async fn a_delete_reports_the_cache_as_deleting_and_the_clock_removes_it() {
     }
     create_cache(&emulator, "survivor", "survivor-cache", &[("Engine", "redis")]).await;
 
-    // Past the create span every cache is available, which is the status a
-    // delete is accepted from.
-    std::thread::sleep(PAST_TRANSITION);
+    // Read every cache back: the read is answered once the create has settled
+    // it, and `available` is the status a delete is accepted from.
+    for case in CASES {
+        let described = describe_cache(&emulator, case.request_name).await;
+        assert_eq!(
+            described.text("Status"),
+            Some(state::SERVERLESS_STATUS_AVAILABLE),
+            "case {}: the read after the create must report the cache available, got {}",
+            case.case,
+            described.body
+        );
+    }
 
     for (case, arn) in CASES.iter().zip(&created) {
         let deleted = delete_cache(
@@ -191,34 +194,11 @@ async fn a_delete_reports_the_cache_as_deleting_and_the_clock_removes_it() {
             );
         }
 
-        // Straight after the call the cache is still there, reporting the
-        // transient status: the span is never zero, so a caller acting at once
-        // sees the deletion in progress.
-        let immediately = describe_cache(&emulator, case.request_name).await;
-        assert_eq!(
-            immediately.status, 200,
-            "case {}: a cache read inside the deletion span must still be reported, got {} {}",
-            case.case, immediately.status, immediately.body
-        );
-        assert_eq!(
-            immediately.text("Status"),
-            Some(state::SERVERLESS_STATUS_DELETING),
-            "case {}: a cache read inside the deletion span must report {:?}, got {:?}",
-            case.case,
-            state::SERVERLESS_STATUS_DELETING,
-            immediately.text("Status")
-        );
-    }
-
-    // Past the deletion span the clock owes every deleted cache its removal, so
-    // a read of one answers the modelled not-found fault and the list holds only
-    // the cache nothing deleted.
-    std::thread::sleep(PAST_TRANSITION);
-    for case in CASES {
+        // The read that follows is answered once the removal the clock owed has
+        // been carried through, so the cache is gone from it — and a cache the
+        // store no longer holds cannot be deleted again.
         let gone = describe_cache(&emulator, case.request_name).await;
         assert_refused(case.case, &gone, 404, "ServerlessCacheNotFoundFault");
-
-        // And a cache the store no longer holds cannot be deleted again.
         let again = delete_cache(
             &emulator,
             &[("ServerlessCacheName", case.request_name)],
@@ -227,6 +207,7 @@ async fn a_delete_reports_the_cache_as_deleting_and_the_clock_removes_it() {
         assert_refused(case.case, &again, 404, "ServerlessCacheNotFoundFault");
     }
 
+    // The list then holds only the cache nothing deleted.
     let listed = emulator
         .call("DescribeServerlessCaches", &params(&[]))
         .await;

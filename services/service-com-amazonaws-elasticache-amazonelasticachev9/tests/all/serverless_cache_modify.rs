@@ -325,13 +325,6 @@ fn assert_refused(case: &str, reply: &Reply, status: u16, code: &str) {
 
 #[tokio::test]
 async fn a_modify_applies_every_member_it_names_and_leaves_the_rest() {
-    assert!(
-        PAST_TRANSITION > state::SERVERLESS_CACHE_TRANSITION,
-        "these tests wait {PAST_TRANSITION:?}, which must out-last the span this service \
-         publishes ({:?})",
-        state::SERVERLESS_CACHE_TRANSITION
-    );
-
     for case in CASES {
         let emulator = Emulator::new();
         let create = if case.create.is_empty() {
@@ -340,8 +333,16 @@ async fn a_modify_applies_every_member_it_names_and_leaves_the_rest() {
             case.create
         };
         create_cache(&emulator, case.case, case.name, create).await;
-        // A cache is reconfigured from its settled, usable status.
-        std::thread::sleep(PAST_TRANSITION);
+        // A cache is reconfigured from its settled, usable status, and reading it
+        // back is answered once the create has settled it.
+        let created = describe_cache(&emulator, case.request_name).await;
+        assert_eq!(
+            created.text("Status"),
+            Some(state::SERVERLESS_STATUS_AVAILABLE),
+            "case {}: the read after the create must report the cache available, got {}",
+            case.case,
+            created.body
+        );
 
         let modified = modify_cache(&emulator, case.request_name, case.modify).await;
         assert_eq!(
@@ -360,43 +361,35 @@ async fn a_modify_applies_every_member_it_names_and_leaves_the_rest() {
         assert_reports(&emulator, case, "the modify's answer", &modified).await;
 
         // Capacity and engine changes are work the service carries out after the
-        // call, so the cache is transient until the clock owes it `AVAILABLE`
-        // again; a settings change leaves it usable at once. Either way the
-        // change is already in the store, so a read reports it.
+        // call, so the call itself answers with the cache transient until the
+        // clock owes it `AVAILABLE` again; a settings change leaves it usable at
+        // once.
         let after_call = if case.transient {
             state::SERVERLESS_STATUS_MODIFYING
         } else {
             state::SERVERLESS_STATUS_AVAILABLE
         };
-        for (where_from, reply) in [
-            ("the modify's answer", &modified),
-            (
-                "a read inside the modify span",
-                &describe_cache(&emulator, case.request_name).await,
-            ),
-        ] {
-            assert_eq!(
-                reply.text("Status"),
-                Some(after_call),
-                "case {} ({where_from}): expected Status {after_call:?}, got {:?}",
-                case.case,
-                reply.text("Status")
-            );
-        }
+        assert_eq!(
+            modified.text("Status"),
+            Some(after_call),
+            "case {} (the modify's answer): expected Status {after_call:?}, got {:?}",
+            case.case,
+            modified.text("Status")
+        );
 
-        // Past the span the cache is available again and still reports exactly
-        // what the modify stored: the change is persisted, not echoed.
-        std::thread::sleep(PAST_TRANSITION);
+        // The read that follows is answered once the work is done, so the cache
+        // is available again and still reports exactly what the modify stored:
+        // the change is persisted, not echoed.
         let settled = describe_cache(&emulator, case.request_name).await;
         assert_eq!(
             settled.text("Status"),
             Some(state::SERVERLESS_STATUS_AVAILABLE),
-            "case {}: past the modify span the cache must be {:?}, got {:?}",
+            "case {}: a read after the modify must report {:?}, got {:?}",
             case.case,
             state::SERVERLESS_STATUS_AVAILABLE,
             settled.text("Status")
         );
-        assert_reports(&emulator, case, "a read past the modify span", &settled).await;
+        assert_reports(&emulator, case, "a read after the modify", &settled).await;
     }
 }
 

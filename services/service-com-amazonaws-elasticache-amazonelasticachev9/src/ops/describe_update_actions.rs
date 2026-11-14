@@ -245,6 +245,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // does not hold reports no update action rather than being refused.
         let service_update_name = input.service_update_name.as_deref();
 
+        // A report answers with the state the clock owes at the instant it
+        // answers, so a change already scheduled to fall due within a transition
+        // span is waited for here rather than reported as still outstanding: the
+        // first poll a client issues after the call that started the work
+        // converges (`crate::state::await_settled`).
+        crate::state::await_settled(&state).await;
         let now = ::std::time::SystemTime::now();
         let mut store = state.lock();
         store.settle_all(now);

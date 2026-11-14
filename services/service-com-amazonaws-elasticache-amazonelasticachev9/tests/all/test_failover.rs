@@ -175,9 +175,10 @@ async fn test_failover_moves_the_primary_role_to_a_replica_of_the_named_shard() 
     for case in cases {
         let emulator = Emulator::new();
         create_group(&emulator, case.id, case.id, case.extra).await;
-        std::thread::sleep(PAST_TRANSITION);
 
-        // Before: the first member of the shard is its primary.
+        // Before: the first member of the shard is its primary. This read is
+        // answered once the create has settled the group, which is what lets
+        // the failover below be accepted.
         let described = describe_group(&emulator, case.id, case.id).await;
         assert_eq!(
             shard_members(&described, case.id, case.node_group_id, case.sharded),
@@ -192,32 +193,31 @@ async fn test_failover_moves_the_primary_role_to_a_replica_of_the_named_shard() 
             answered.status, answered.body
         );
 
-        // The node replacement is under way, so the group is not available — a
-        // caller acting straight after the call sees the work in progress.
+        // The node replacement is under way, so the group is not available — the
+        // call that started it answers with the work in progress.
         assert_eq!(
             answered.text("ReplicationGroup/Status"),
             Some("modifying"),
             "case {case:?}: the group must report the status the failover runs in, got {:?}",
             answered.text("ReplicationGroup/Status")
         );
-        let polled = describe_group(&emulator, case.id, case.id).await;
-        assert_eq!(
-            polled.text("ReplicationGroup/Status"),
-            Some("modifying"),
-            "case {case:?}: a describe during the failover must report the same status, got {:?}",
-            polled.text("ReplicationGroup/Status")
-        );
 
         // The promotion: the shard's first replica now holds the primary role
         // and the primary it had is a replica. `TestFailover`'s own answer and a
         // later describe must agree, because both are built from the one stored
-        // group.
+        // group; the describe is answered once the failover the clock owed is
+        // over.
         let promoted = case.members_before[1];
         let demoted = case.members_before[0];
         let mut expected_after = vec![promoted, demoted];
         expected_after.extend(case.members_before.iter().skip(2).copied());
-        std::thread::sleep(PAST_TRANSITION);
         let settled = describe_group(&emulator, case.id, case.id).await;
+        assert_eq!(
+            settled.text("ReplicationGroup/Status"),
+            Some("available"),
+            "case {case:?}: the read after the failover is answered once it is over, got {:?}",
+            settled.text("ReplicationGroup/Status")
+        );
         for (source, reply) in [("the answer", &answered), ("the describe", &settled)] {
             assert_eq!(
                 shard_members(reply, case.id, case.node_group_id, case.sharded),

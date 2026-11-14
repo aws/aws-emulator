@@ -793,21 +793,20 @@ async fn an_asynchronous_change_leaves_the_group_transient_and_a_settings_change
     for (case, pairs, asynchronous) in cases {
         let emulator = Emulator::new();
         create_group(&emulator, case, "transient", &[("NumCacheClusters", "2")]).await;
-        std::thread::sleep(PAST_TRANSITION);
+        // Read the group back: this is answered once the create has settled it,
+        // which is what lets the modify below be accepted.
+        describe_group(&emulator, case, "transient").await;
 
         let answered = modify_accepted(&emulator, case, "transient", pairs).await;
         let expected = if asynchronous { "modifying" } else { "available" };
-        // The answer and a describe taken straight after it agree, because both
-        // read the one stored group — the handler never sleeps.
-        let polled = describe_group(&emulator, case, "transient").await;
-        for (source, reply) in [("the answer", &answered), ("an immediate describe", &polled)] {
-            assert_eq!(
-                reply.text("ReplicationGroup/Status"),
-                Some(expected),
-                "case {case}: {source} must report {expected}, got {:?}",
-                reply.text("ReplicationGroup/Status")
-            );
-        }
+        // The call that starts the work answers with the transient status; a
+        // report of the group is answered once that work is done.
+        assert_eq!(
+            answered.text("ReplicationGroup/Status"),
+            Some(expected),
+            "case {case}: the answer must report {expected}, got {:?}",
+            answered.text("ReplicationGroup/Status")
+        );
 
         // A second modify is accepted while the first is still being worked
         // through — "this parameter causes the modifications in this request and
@@ -826,7 +825,6 @@ async fn an_asynchronous_change_leaves_the_group_transient_and_a_settings_change
             second.text("ReplicationGroup/Description")
         );
 
-        std::thread::sleep(PAST_TRANSITION);
         let settled = describe_group(&emulator, case, "transient").await;
         assert_eq!(
             settled.text("ReplicationGroup/Status"),

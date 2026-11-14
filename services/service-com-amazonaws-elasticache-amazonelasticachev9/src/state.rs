@@ -2,6 +2,16 @@
 
 //! Engine state for the com-amazonaws-elasticache-amazonelasticachev9 service.
 //!
+//! The transient statuses this service reports — a cluster `creating`, a snapshot
+//! `copying`, a group `modifying` — are held for a span the EMULATOR chooses, not
+//! one AWS documents: [`CLUSTER_TRANSITION`] and its siblings compress what
+//! ElastiCache takes minutes over into half a second, and
+//! [`SETTLE_WAIT_CAP`] is how long a report waits for such a span to pass before
+//! it answers ([`await_settled`]). Both are this emulator's deliberate choice,
+//! stated here beside the durations it does take from AWS — a maintenance
+//! window's minimum, a snapshot's retention, a reservation's term — which are
+//! kept as the service publishes them.
+//!
 //! The cache cluster is ElastiCache's primary resource: `CreateCacheCluster`
 //! mints one, `DescribeCacheClusters` reports it, `ModifyCacheCluster` changes
 //! it and `DeleteCacheCluster` removes it. A cache subnet group is the
@@ -194,7 +204,9 @@ mod rbac_engine_versions;
 mod serverless_caches;
 mod migrations;
 mod network_types;
+mod settle_wait;
 mod snapshots;
+pub use settle_wait::*;
 pub use network_types::*;
 pub use snapshots::*;
 pub use migrations::*;
@@ -405,10 +417,13 @@ pub fn maintenance_window_refusal(value: &str) -> Option<String> {
 /// `available`.
 ///
 /// ElastiCache takes minutes; the emulator chooses a span, and it is
-/// deliberately NOT zero, so a caller acting straight after the call still
-/// observes the transient status and the state errors that go with it. The due
-/// instant is stored on the record and materialised by whichever later call
-/// reads it — nothing sleeps.
+/// deliberately NOT zero, so the call that starts the work answers with the
+/// transient status and a MUTATION arriving inside the span is still refused by
+/// the state gate that goes with it. The due instant is stored on the record and
+/// materialised by whichever later call reads it; a REPORT issued inside the
+/// span is answered once the transition has fallen due
+/// ([`await_settled`]), so a client polling on an AWS-sized interval converges
+/// on its first poll.
 pub const CLUSTER_TRANSITION: Duration = Duration::from_millis(500);
 
 /// How long a snapshot stays in the status the call that started the work
@@ -416,9 +431,9 @@ pub const CLUSTER_TRANSITION: Duration = Duration::from_millis(500);
 /// `available`, and `deleting` after a delete before the clock owes its removal.
 ///
 /// The same reasoning as [`CLUSTER_TRANSITION`]: ElastiCache takes minutes, the
-/// emulator chooses a span, and it is deliberately NOT zero so a caller acting
-/// straight after `CreateSnapshot` or `DeleteSnapshot` still observes the
-/// transient status.
+/// emulator chooses a span, and it is deliberately NOT zero so `CreateSnapshot`
+/// / `CopySnapshot` / `DeleteSnapshot` answer with the transient status and a
+/// second change inside the span is still refused.
 pub const SNAPSHOT_TRANSITION: Duration = Duration::from_millis(500);
 
 /// How many clusters, and how many subnet groups, the store holds before a
@@ -2672,10 +2687,11 @@ pub const USER_STATUS_DELETING: &str = "deleting";
 /// store.
 ///
 /// The same reasoning as [`CLUSTER_TRANSITION`]: ElastiCache takes its own time,
-/// the emulator chooses a span, and it is deliberately NOT zero so a caller
-/// acting straight after `DeleteUser` still observes the transient `deleting`
-/// status and the state error that goes with it. The due instant is stored on the
-/// record and materialised by whichever later call reads it — nothing sleeps.
+/// the emulator chooses a span, and it is deliberately NOT zero so `DeleteUser`
+/// answers with the transient `deleting` status and a change arriving inside the
+/// span is still refused by the state error that goes with it. The due instant is
+/// stored on the record and materialised by whichever later call reads it; a
+/// report issued inside the span is answered once it has fallen due.
 pub const USER_DELETION_TRANSITION: Duration = CLUSTER_TRANSITION;
 
 /// How many passwords one user may hold, as `CreateUser$Passwords` documents it:

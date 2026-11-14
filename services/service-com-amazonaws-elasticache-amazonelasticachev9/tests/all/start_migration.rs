@@ -257,20 +257,10 @@ async fn a_start_into_a_replication_group_records_the_migration_and_moves_the_gr
             started.text("Status")
         );
         // The answer is not a value the handler made up for this response: the
-        // stored group reports the same status to a reader.
-        let described = describe_group(&emulator, case.id).await;
-        assert_eq!(
-            described.text("Status"),
-            Some(state::STATUS_MODIFYING),
-            "case {:?}: the stored group must report {:?}, got {:?}",
-            case.case,
-            state::STATUS_MODIFYING,
-            described.text("Status")
-        );
-
-        // The clock owes the group `available` again; the migration it carries
-        // stays open, so a second start is still refused once it has settled.
-        std::thread::sleep(PAST_TRANSITION);
+        // stored group carries the migration, and the read that follows is
+        // answered once the sync the clock owed is done — the migration it
+        // carries stays open, so a second start is still refused once it has
+        // settled.
         let settled = describe_group(&emulator, case.id).await;
         assert_eq!(
             settled.text("Status"),

@@ -175,7 +175,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `CreateUser` answers with it already active, and the built-in
         // `default` user is in the store from the moment it is built.
         let _ = ctx;
-        let now = ::std::time::SystemTime::now();
 
         // A `MaxRecords` that cannot be a page size and a `Marker` this service
         // did not mint are values the request cannot be served with, so each is
@@ -223,6 +222,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 })
         };
 
+        // A report answers with the state the clock owes at the instant it
+        // answers, so a change already scheduled to fall due within a transition
+        // span is waited for here rather than reported as still outstanding: the
+        // first poll a client issues after the call that started the work
+        // converges (`crate::state::await_settled`).
+        crate::state::await_settled(&state).await;
+        let now = ::std::time::SystemTime::now();
         let mut store = state.lock();
         store.settle_users(now);
 

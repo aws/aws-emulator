@@ -1128,6 +1128,284 @@ async fn a_full_cache_makes_room_by_the_policy_its_parameter_group_names() {
     }
 }
 
+/// Open a fresh TLS session on `address`:`port` and `AUTH` as `user`, looking again until
+/// the reply's error code is `expected` — `None` for an accepted one — or a generous
+/// deadline passes.
+///
+/// The one place this suite waits for a membership change to be in force on the data plane,
+/// and it waits for the CONDITION rather than for a time: the control plane is NOT read in
+/// between, so the only thing that can change a session's verdict is the data plane
+/// materialising the change the clock owes the user group when the command arrives.
+async fn auth_until(
+    case: &str,
+    address: &str,
+    port: &str,
+    user: &str,
+    secret: &str,
+    expected: Option<&str>,
+    description: &str,
+) -> Resp {
+    let deadline = std::time::Instant::now() + SESSION_VERDICT_DEADLINE;
+    loop {
+        let mut session = open_tls(case, address, port).await;
+        let answered = command(case, &mut session, &["AUTH", user, secret]).await;
+        if answered.error_code() == expected {
+            return answered;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case}: {description} never came about; the last AUTH as {user} answered \
+             {answered:?}"
+        );
+        tokio::time::sleep(LOOK_AGAIN_AFTER_SESSION).await;
+    }
+}
+
+/// How long [`auth_until`] looks for the verdict it waits on, and how often it looks again.
+///
+/// Generous on purpose: what it waits for is a change the clock makes due within a
+/// transition span, so nothing here depends on how fast or how loaded the host is.
+const SESSION_VERDICT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+/// See [`SESSION_VERDICT_DEADLINE`].
+const LOOK_AGAIN_AFTER_SESSION: std::time::Duration = std::time::Duration::from_millis(10);
+
+#[tokio::test]
+async fn a_user_group_change_decides_access_to_the_replication_group_it_is_attached_to() {
+    let emulator = Emulator::new();
+
+    // The axis: the FORM of the credential the user authenticates with — a password it
+    // holds, and a user that requires none — because the rule is about the group's
+    // MEMBERSHIP deciding access, whatever authenticates the member.
+    type Member = (&'static str, &'static str, &'static str);
+    let members: [Member; 2] = [
+        ("a user with a password", "with-password", "the-members-password"),
+        // A user that requires no password authenticates with any credential, so the one
+        // sent below is not what lets it in: its membership is.
+        ("a user that needs no password", "without-password", "anything"),
+    ];
+    for (case, id, _) in members {
+        let mut pairs = params(&[
+            ("UserId", id),
+            ("UserName", id),
+            ("Engine", "redis"),
+            ("AccessString", "on ~* +@all"),
+        ]);
+        if id == "with-password" {
+            pairs.extend(params(&[("Passwords.member.1", "the-members-password")]));
+        } else {
+            pairs.extend(params(&[("NoPasswordRequired", "true")]));
+        }
+        let created = emulator.call("CreateUser", &pairs).await;
+        assert_eq!(
+            created.status, 200,
+            "case {case}: the user {id} must be created, got {} {}",
+            created.status, created.body
+        );
+    }
+    let group = emulator
+        .call(
+            "CreateUserGroup",
+            &params(&[
+                ("UserGroupId", "rg-group"),
+                ("Engine", "redis"),
+                ("UserIds.member.1", "default"),
+                ("UserIds.member.2", "with-password"),
+                ("UserIds.member.3", "without-password"),
+            ]),
+        )
+        .await;
+    assert_eq!(
+        group.status, 200,
+        "the user group must be created, got {} {}",
+        group.status, group.body
+    );
+    poll_until(
+        &emulator,
+        REGION,
+        "rg-group",
+        "the user group reaching active",
+        "DescribeUserGroups",
+        &params(&[("UserGroupId", "rg-group")]),
+        |reply| reply.text("member/Status") == Some("active"),
+    )
+    .await;
+
+    // The replication group the group is attached to, with in-transit encryption on —
+    // which is the wire a client of such a group speaks.
+    let created = emulator
+        .call(
+            "CreateReplicationGroup",
+            &params(&[
+                ("ReplicationGroupId", "rbac-plane"),
+                ("ReplicationGroupDescription", "a group behind a user group"),
+                ("Engine", "redis"),
+                ("CacheNodeType", "cache.t3.micro"),
+                ("NumCacheClusters", "1"),
+                ("TransitEncryptionEnabled", "true"),
+            ]),
+        )
+        .await;
+    assert_eq!(
+        created.status, 200,
+        "the replication group must be created, got {} {}",
+        created.status, created.body
+    );
+    poll_until(
+        &emulator,
+        REGION,
+        "rbac-plane",
+        "the replication group reaching available",
+        "DescribeReplicationGroups",
+        &params(&[("ReplicationGroupId", "rbac-plane")]),
+        |reply| reply.text("ReplicationGroup/Status") == Some("available"),
+    )
+    .await;
+    let attached = emulator
+        .call(
+            "ModifyReplicationGroup",
+            &params(&[
+                ("ReplicationGroupId", "rbac-plane"),
+                ("UserGroupIdsToAdd.member.1", "rg-group"),
+                ("ApplyImmediately", "true"),
+            ]),
+        )
+        .await;
+    assert_eq!(
+        attached.status, 200,
+        "the user group must be attachable, got {} {}",
+        attached.status, attached.body
+    );
+    let described = poll_until(
+        &emulator,
+        REGION,
+        "rbac-plane",
+        "the replication group reporting the group attached and available again",
+        "DescribeReplicationGroups",
+        &params(&[("ReplicationGroupId", "rbac-plane")]),
+        |reply| {
+            reply.text("ReplicationGroup/Status") == Some("available")
+                && reply.all("UserGroupIds/member").contains(&"rg-group")
+        },
+    )
+    .await;
+    let (address, port) = endpoint_of(
+        &described,
+        "NodeGroup/PrimaryEndpoint/Address",
+        "NodeGroup/PrimaryEndpoint/Port",
+        "the group",
+    );
+
+    // Each row: the member authenticates while the group holds it, is refused once the
+    // group no longer does, and is accepted again when the group holds it once more — the
+    // IDENTICAL credential every time, so what changed is the membership. NOTHING reads the
+    // group through the control plane between the change and the session: what has to put
+    // the change in force on the data plane is the data plane itself, materialising what
+    // the clock owes the group when the command arrives.
+    for (case, id, secret) in members {
+        let accepted = auth_until(
+            case,
+            &address,
+            &port,
+            id,
+            secret,
+            None,
+            "a member of the attached group authenticating",
+        )
+        .await;
+        assert_eq!(
+            accepted,
+            Resp::Status("OK".to_string()),
+            "case {case}: a member of the attached group must authenticate, got {accepted:?}"
+        );
+
+        let removed = emulator
+            .call(
+                "ModifyUserGroup",
+                &params(&[
+                    ("UserGroupId", "rg-group"),
+                    ("UserIdsToRemove.member.1", id),
+                ]),
+            )
+            .await;
+        assert_eq!(
+            removed.status, 200,
+            "case {case}: the removal must be accepted, got {} {}",
+            removed.status, removed.body
+        );
+        let refused = auth_until(
+            case,
+            &address,
+            &port,
+            id,
+            secret,
+            Some("WRONGPASS"),
+            "the removed user's AUTH being refused",
+        )
+        .await;
+        assert_eq!(
+            refused.error_code(),
+            Some("WRONGPASS"),
+            "case {case}: a user the attached group no longer holds must authenticate \
+             nobody, got {refused:?}"
+        );
+        // The revocation is this user's own: the other member of the group still reaches
+        // the cache with its own credential.
+        let (other_case, other_id, other_secret) = members
+            .iter()
+            .find(|(_, other, _)| *other != id)
+            .copied()
+            .expect("the table holds a second member");
+        let mut other = open_tls(other_case, &address, &port).await;
+        let still_accepted = command(other_case, &mut other, &["AUTH", other_id, other_secret])
+            .await;
+        assert_eq!(
+            still_accepted,
+            Resp::Status("OK".to_string()),
+            "case {case}: removing one member must leave {other_id} its access, got \
+             {still_accepted:?}"
+        );
+
+        let restored = emulator
+            .call(
+                "ModifyUserGroup",
+                &params(&[("UserGroupId", "rg-group"), ("UserIdsToAdd.member.1", id)]),
+            )
+            .await;
+        assert_eq!(
+            restored.status, 200,
+            "case {case}: the restore must be accepted, got {} {}",
+            restored.status, restored.body
+        );
+        let reaccepted = auth_until(
+            case,
+            &address,
+            &port,
+            id,
+            secret,
+            None,
+            "the restored user's identical AUTH being accepted again",
+        )
+        .await;
+        assert_eq!(
+            reaccepted,
+            Resp::Status("OK".to_string()),
+            "case {case}: the identical credential must be accepted once the group holds \
+             the user again, got {reaccepted:?}"
+        );
+
+        // And the control plane agrees about the membership the sessions were judged
+        // against, read AFTER the data plane has already shown it.
+        let described = emulator
+            .call("DescribeUserGroups", &params(&[("UserGroupId", "rg-group")]))
+            .await;
+        assert!(
+            described.all("UserIds/member").contains(&id),
+            "case {case}: the group the sessions were judged against must hold {id}, got {}",
+            described.body
+        );
+    }
+}
+
 #[tokio::test]
 async fn the_socket_a_cache_was_served_on_closes_with_the_cache() {
     let emulator = Emulator::new();

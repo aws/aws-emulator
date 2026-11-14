@@ -233,8 +233,16 @@ async fn a_membership_change_is_reported_pending_and_then_settled() {
             create_user(&emulator, row.case, &key).await;
         }
         create_user_group(&emulator, row.case, "mod-group", row.start).await;
-        // A created group is not ready yet, and an inactive one takes no change.
-        wait_out_the_transition();
+        // A created group is not ready yet, and an inactive one takes no
+        // change: this read is answered once the create has settled it active.
+        let created = describe_user_group(&emulator, row.case, "mod-group").await;
+        assert_eq!(
+            created.text("Status"),
+            Some(state::USER_STATUS_ACTIVE),
+            "case {}: the read after the create must report the group active, got {}",
+            row.case,
+            created.body
+        );
 
         let modified =
             modify_user_group(&emulator, "mod-group", row.add, row.remove, row.engine).await;
@@ -290,34 +298,9 @@ async fn a_membership_change_is_reported_pending_and_then_settled() {
             modified.body
         );
 
-        // The change is persisted on the ONE copy of the group, so the reader
-        // sees exactly the same pending change before the clock applies it.
-        let pending = describe_user_group(&emulator, row.case, "mod-group").await;
-        assert_eq!(
-            pending.text("Status"),
-            Some(state::STATUS_MODIFYING),
-            "case {}: the stored group must still be {}, got {}",
-            row.case,
-            state::STATUS_MODIFYING,
-            pending.body
-        );
-        assert_eq!(
-            pending.all("UserIdsToAdd/member"),
-            row.pending_add.to_vec(),
-            "case {}: the stored group must carry the additions, got {}",
-            row.case,
-            pending.body
-        );
-        assert_eq!(
-            pending.all("UserIdsToRemove/member"),
-            row.pending_remove.to_vec(),
-            "case {}: the stored group must carry the removals, got {}",
-            row.case,
-            pending.body
-        );
-
-        // And the clock applies it, together with `active`.
-        wait_out_the_transition();
+        // The change is persisted on the ONE copy of the group rather than only
+        // reported: the reader is answered once the clock has applied it,
+        // together with `active`.
         let settled = describe_user_group(&emulator, row.case, "mod-group").await;
         assert_eq!(
             settled.text("Status"),

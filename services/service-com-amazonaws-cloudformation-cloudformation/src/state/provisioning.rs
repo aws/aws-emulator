@@ -2618,6 +2618,26 @@ pub async fn reconcile(
                 };
                 match readiness {
                     Ok(Readiness::Ready) => {
+                        // The identifiers the owning service publishes only once the
+                        // resource is UP — the address a cluster serves on, the endpoint a
+                        // stream is written to — are read here as well as when a wait
+                        // releases ([`Provisioner::ready_attributes`]): a service that
+                        // reports the resource ready straight away opens no wait, and the
+                        // values it publishes would otherwise never reach this resource's
+                        // attributes, so an output or a dependent property reading one would
+                        // resolve to nothing. A read that service refuses leaves the
+                        // attributes as they stand, exactly as it does at a released wait.
+                        if let Some(provisioner) = owner {
+                            let published = Box::pin(provisioner.ready_attributes(
+                                ctx,
+                                region,
+                                &resource.resource_type,
+                                &resource.physical_resource_id,
+                            ))
+                            .await
+                            .unwrap_or_default();
+                            resource.attributes.extend(published);
+                        }
                         outcome.transitions.push(ResourceTransition::finished(
                             &resource,
                             reporting.completed,

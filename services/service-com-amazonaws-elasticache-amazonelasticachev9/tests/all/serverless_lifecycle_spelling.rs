@@ -89,18 +89,11 @@ async fn a_serverless_cache_reports_its_lifecycle_in_the_wire_spelling() {
         let created = create_cache(&emulator, case, name, engine).await;
         // The create's own answer is the transient status: the span is never zero.
         assert_status(case, "the create's answer", &created, CREATING);
+        // A read is answered once the work the clock owed is done, which is the
+        // value a waiter polls for.
         assert_status(
             case,
-            "a read inside the create span",
-            &describe_cache(&emulator, name).await,
-            CREATING,
-        );
-
-        // The clock owes it the usable status, and that is the value a waiter polls for.
-        std::thread::sleep(PAST_TRANSITION);
-        assert_status(
-            case,
-            "a read once the clock has settled it",
+            "a read after the create",
             &describe_cache(&emulator, name).await,
             AVAILABLE,
         );
@@ -122,10 +115,9 @@ async fn a_serverless_cache_reports_its_lifecycle_in_the_wire_spelling() {
             modified.status, modified.body
         );
         assert_status(case, "the modify's answer", &modified, MODIFYING);
-        std::thread::sleep(PAST_TRANSITION);
         assert_status(
             case,
-            "a read once the modify has settled",
+            "a read after the modify",
             &describe_cache(&emulator, name).await,
             AVAILABLE,
         );
@@ -143,11 +135,13 @@ async fn a_serverless_cache_reports_its_lifecycle_in_the_wire_spelling() {
             deleted.status, deleted.body
         );
         assert_status(case, "the delete's answer", &deleted, DELETING);
-        assert_status(
-            case,
-            "a read inside the delete span",
-            &describe_cache(&emulator, name).await,
-            DELETING,
+        // The read after it is answered once the deletion the clock owed has
+        // been carried through, so there is no cache left to report.
+        let gone = describe_cache(&emulator, name).await;
+        assert_eq!(
+            gone.status, 404,
+            "case {case:?}: a read after the delete must not find the cache, got {} {}",
+            gone.status, gone.body
         );
     }
 }

@@ -427,9 +427,9 @@ pub const RESERVATION_STATE_RETIRED: &str = "retired";
 ///
 /// The same reasoning as [`CLUSTER_TRANSITION`]: AWS takes as long as the
 /// payment takes, the emulator chooses a span, and it is deliberately NOT zero
-/// so a caller describing straight after the purchase still observes the
-/// transient state. The due instant is stored on the record and materialised by
-/// whichever later call reads it — nothing sleeps.
+/// so the purchase itself answers with the transient state. The due instant is
+/// stored on the record and materialised by whichever later call reads it; a
+/// report issued inside the span is answered once it has fallen due.
 pub const RESERVATION_TRANSITION: Duration = Duration::from_millis(500);
 
 /// How many reserved cache nodes the store holds before a purchase is refused

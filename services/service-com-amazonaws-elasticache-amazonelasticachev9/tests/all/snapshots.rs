@@ -789,16 +789,23 @@ async fn a_snapshot_is_the_cluster_as_it_stood_when_it_was_taken() {
         "case before-change: expected HTTP 200, got {} {}",
         created.status, created.body
     );
-    // Taking a snapshot moves the source cluster into `snapshotting` until the
-    // clock owes it `available` again.
-    let snapshotting = describe_cluster(&emulator, "copied").await;
+    // Taking a snapshot leaves the source cluster `snapshotting` for a span:
+    // `CreateSnapshot` answers with the snapshot rather than the cluster, so
+    // what shows the cluster is transient is the state gate — a second snapshot
+    // of it, straight after, is refused with the status it has. The read that
+    // follows is answered once the cluster is available again.
+    let while_snapshotting = create_snapshot(&emulator, "during", "copied", &[]).await;
     assert_eq!(
-        snapshotting.text("CacheClusterStatus"),
-        Some("snapshotting"),
-        "case before-change: the source cluster must report snapshotting, got {}",
-        snapshotting.body
+        while_snapshotting.error_code(),
+        "InvalidCacheClusterState",
+        "case before-change: a snapshotting cluster refuses a second snapshot, got {} {}",
+        while_snapshotting.status, while_snapshotting.body
     );
-    std::thread::sleep(PAST_TRANSITION);
+    assert!(
+        while_snapshotting.error_message().contains("snapshotting"),
+        "case before-change: the refusal must name the status the cluster has, got {:?}",
+        while_snapshotting.error_message()
+    );
     let settled = describe_cluster(&emulator, "copied").await;
     assert_eq!(
         settled.text("CacheClusterStatus"),
@@ -823,7 +830,6 @@ async fn a_snapshot_is_the_cluster_as_it_stood_when_it_was_taken() {
         "the modify must succeed, got {} {}",
         modified.status, modified.body
     );
-    std::thread::sleep(PAST_TRANSITION);
 
     // ... and the snapshot already taken still reports what the cluster was.
     let before = describe_snapshots(&emulator, &[("SnapshotName", "before-change")]).await;
@@ -859,8 +865,16 @@ async fn a_snapshot_is_the_cluster_as_it_stood_when_it_was_taken() {
     }
 
     // Deleting the source cluster leaves its snapshots: a snapshot outlives the
-    // cluster it was taken from, and the describe still resolves that id.
-    std::thread::sleep(PAST_TRANSITION);
+    // cluster it was taken from, and the describe still resolves that id. The
+    // read first, because a delete needs the cluster settled and the read is
+    // answered once the snapshot it was taking is over.
+    let settled_again = describe_cluster(&emulator, "copied").await;
+    assert_eq!(
+        settled_again.text("CacheClusterStatus"),
+        Some("available"),
+        "the source cluster must be available again before the delete, got {}",
+        settled_again.body
+    );
     let deleted = emulator
         .call("DeleteCacheCluster", &params(&[("CacheClusterId", "copied")]))
         .await;
@@ -869,7 +883,6 @@ async fn a_snapshot_is_the_cluster_as_it_stood_when_it_was_taken() {
         "the delete must succeed, got {} {}",
         deleted.status, deleted.body
     );
-    std::thread::sleep(PAST_TRANSITION);
     let survivors = describe_snapshots(&emulator, &[("CacheClusterId", "copied")]).await;
     assert_eq!(
         survivors.status, 200,
@@ -1176,13 +1189,14 @@ async fn an_immediate_settings_modify_leaves_the_cluster_snapshotable() {
             "case {case}: the modify must answer 200, got {}",
             modified.body
         );
-        let described = describe_cluster(&emulator, cluster).await;
         assert_eq!(
-            described.text("CacheCluster/CacheClusterStatus"),
+            modified.text("CacheCluster/CacheClusterStatus"),
             Some("modifying"),
-            "case {case}: node work leaves the cluster transient, got {:?}",
-            described.text("CacheCluster/CacheClusterStatus")
+            "case {case}: node work answers with the cluster transient, got {:?}",
+            modified.text("CacheCluster/CacheClusterStatus")
         );
+        // Straight after that call, inside the span: the state-gated call is
+        // refused with the status the cluster has.
         let refused = create_snapshot(&emulator, &format!("{cluster}-snap"), cluster, &[]).await;
         assert_eq!(
             refused.error_code(),
@@ -1190,8 +1204,15 @@ async fn an_immediate_settings_modify_leaves_the_cluster_snapshotable() {
             "case {case}: a cluster doing node work refuses the state-gated call, got {} {}",
             refused.status, refused.body
         );
-        // The clock then owes it `available`, and the same call is accepted.
-        std::thread::sleep(PAST_TRANSITION);
+        // A read is answered once the node work the clock owed is done, and the
+        // same call is accepted from then on.
+        let described = describe_cluster(&emulator, cluster).await;
+        assert_eq!(
+            described.text("CacheCluster/CacheClusterStatus"),
+            Some("available"),
+            "case {case}: the read is answered once the node work is done, got {:?}",
+            described.text("CacheCluster/CacheClusterStatus")
+        );
         let accepted = create_snapshot(&emulator, &format!("{cluster}-snap"), cluster, &[]).await;
         assert_eq!(
             accepted.status, 200,

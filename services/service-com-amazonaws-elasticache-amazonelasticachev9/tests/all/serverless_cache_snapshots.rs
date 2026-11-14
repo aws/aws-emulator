@@ -314,9 +314,23 @@ async fn every_stored_cache_can_be_snapshotted_and_the_snapshot_is_read_back() {
                 }),
         );
     }
-    // A snapshot is taken of a settled cache, so the clock has to have made
-    // every one of them available first.
-    std::thread::sleep(PAST_TRANSITION);
+    // A snapshot is taken of a settled cache, so each cache is read back first:
+    // that read is answered once the create has settled it.
+    for case in CASES {
+        let described = emulator
+            .call(
+                "DescribeServerlessCaches",
+                &params(&[("ServerlessCacheName", case.cache_request_name)]),
+            )
+            .await;
+        assert_eq!(
+            described.text("Status"),
+            Some("available"),
+            "case {}: the read after the create must report the cache available, got {}",
+            case.case,
+            described.body
+        );
+    }
 
     for (case, version) in CASES.iter().zip(&versions) {
         let mut pairs = vec![
@@ -334,11 +348,12 @@ async fn every_stored_cache_can_be_snapshotted_and_the_snapshot_is_read_back() {
         // itself reports the transient status.
         assert_snapshot(case, &created, state::STATUS_CREATING, version);
 
-        // Read straight back, inside the span: the stored record is the one the
-        // create answered with, still `creating`.
+        // Read straight back: the stored record is the one the create answered
+        // with, and the read is answered once the snapshot the clock owed is
+        // available.
         let immediately =
             describe_snapshot(&emulator, case.case, case.snapshot_request_name).await;
-        assert_snapshot(case, &immediately, state::STATUS_CREATING, version);
+        assert_snapshot(case, &immediately, state::STATUS_AVAILABLE, version);
         assert_eq!(
             immediately.text("CreateTime"),
             created.text("CreateTime"),
@@ -372,9 +387,8 @@ async fn every_stored_cache_can_be_snapshotted_and_the_snapshot_is_read_back() {
         );
     }
 
-    // Past the snapshot span the clock owes every snapshot `available`, and the
-    // rest of what it reports is unchanged.
-    std::thread::sleep(PAST_TRANSITION);
+    // Every snapshot stays available, with the rest of what it reports
+    // unchanged.
     for (case, version) in CASES.iter().zip(&versions) {
         let settled = describe_snapshot(&emulator, case.case, case.snapshot_request_name).await;
         assert_snapshot(case, &settled, state::STATUS_AVAILABLE, version);

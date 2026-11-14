@@ -193,6 +193,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // member list is reported only when it was asked for.
         let include_members = input.show_member_info.unwrap_or(false);
 
+        // A report answers with the state the clock owes at the instant it
+        // answers, so a change already scheduled to fall due within a transition
+        // span is waited for here rather than reported as still outstanding: the
+        // first poll a client issues after the call that started the work
+        // converges (`crate::state::await_settled`).
+        crate::state::await_settled(&state).await;
         let now = ::std::time::SystemTime::now();
         let mut store = state.lock();
         store.settle_global_replication_groups(now);
