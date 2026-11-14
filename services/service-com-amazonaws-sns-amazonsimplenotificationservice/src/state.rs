@@ -2343,6 +2343,23 @@ pub fn effective_subscription_delivery_policy(
     topic: Option<&TopicRecord>,
     subscription: &SubscriptionRecord,
 ) -> String {
+    // Infallible for this shape: every member is a number, a string, a bool or a
+    // `serde_json::Value`, and no map key is caller-controlled, so the default branch is
+    // unreachable rather than an empty policy a client could read as one.
+    serde_json::to_string(&effective_subscription_delivery(topic, subscription)).unwrap_or_default()
+}
+
+/// The same policy as the document [`effective_subscription_delivery_policy`] reports, as the
+/// SHAPE of it: the budget one subscription's deliveries really run under.
+///
+/// The two are one rule, read two ways — a client reads the document, and a delivery to a
+/// subscribed URL reads the retry budget and the request policy out of this
+/// ([`crate::ops::publish::endpoint_delivery`]) — so what governs a delivery is exactly what
+/// `EffectiveDeliveryPolicy` reports for it.
+pub fn effective_subscription_delivery(
+    topic: Option<&TopicRecord>,
+    subscription: &SubscriptionRecord,
+) -> SubscriptionDeliveryPolicy {
     let mut from_topic = DeliveryPolicy::system_default();
     if let Some(configured) = topic
         .and_then(|topic| topic.attributes.get(DELIVERY_POLICY_ATTRIBUTE))
@@ -2368,7 +2385,7 @@ pub fn effective_subscription_delivery_policy(
             configured.overlay(&mut effective);
         }
     }
-    serde_json::to_string(&effective).unwrap_or_default()
+    effective
 }
 
 /// The fields a SUBSCRIPTION's ARN holds: an ARN whose resource is a topic name

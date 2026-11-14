@@ -86,6 +86,9 @@ mod filter_policy_parse_diagnostic;
 #[path = "all/filter_policy_wildcard_operator.rs"]
 mod filter_policy_wildcard_operator;
 
+#[path = "all/https_subscription_delivery.rs"]
+mod https_subscription_delivery;
+
 #[path = "all/invalid_next_token_sentence.rs"]
 mod invalid_next_token_sentence;
 

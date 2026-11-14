@@ -68,6 +68,20 @@ const SIGNED_MEMBERS: &[&str] = &[
     "Type",
 ];
 
+/// The members of a `SubscriptionConfirmation` that are signed, in the order the canonical
+/// string carries them (the same Developer Guide section: the confirmation carries a `Token`
+/// and a `SubscribeURL` where a notification carries a `Subject`, and those are what its own
+/// canonical string is built from).
+const CONFIRMATION_SIGNED_MEMBERS: &[&str] = &[
+    "Message",
+    "MessageId",
+    "SubscribeURL",
+    "Timestamp",
+    "Token",
+    "TopicArn",
+    "Type",
+];
+
 /// The first path segment of the signing certificate, as SNS names that document:
 /// `SimpleNotificationService-<id>.pem`.
 const CERTIFICATE_FILE_PREFIX: &str = "/SimpleNotificationService-";
@@ -170,10 +184,34 @@ impl Signer {
         envelope: &mut ::serde_json::Map<String, ::serde_json::Value>,
         certificate_member: &str,
     ) {
+        self.seal_over(SIGNED_MEMBERS, envelope, certificate_member);
+    }
+
+    /// The same for a `SubscriptionConfirmation`, whose canonical string is built from its own
+    /// member set ([`CONFIRMATION_SIGNED_MEMBERS`]): a subscriber verifies the request that
+    /// confirms it exactly as it verifies a notification, over the members THAT document
+    /// carries.
+    pub fn seal_confirmation(
+        &self,
+        envelope: &mut ::serde_json::Map<String, ::serde_json::Value>,
+        certificate_member: &str,
+    ) {
+        self.seal_over(CONFIRMATION_SIGNED_MEMBERS, envelope, certificate_member);
+    }
+
+    /// Write the signature members over the canonical string `members` selects out of
+    /// `envelope` — the one definition of sealing a document, which each kind of document
+    /// reaches with its own signed member set.
+    fn seal_over(
+        &self,
+        members: &[&str],
+        envelope: &mut ::serde_json::Map<String, ::serde_json::Value>,
+        certificate_member: &str,
+    ) {
         let Some(url) = self.certificate_url.as_deref() else {
             return;
         };
-        let Some(signature) = self.signature(&canonical_string(envelope)) else {
+        let Some(signature) = self.signature(&canonical_string(members, envelope)) else {
             ::tracing::warn!(
                 "the notification could not be signed, so it is delivered with no signature"
             );
@@ -209,11 +247,14 @@ impl Signer {
     }
 }
 
-/// The string the signature is over: each signed member of `envelope` that is present, as
-/// its name, a newline, its value and a newline, in [`SIGNED_MEMBERS`] order.
-fn canonical_string(envelope: &::serde_json::Map<String, ::serde_json::Value>) -> String {
+/// The string the signature is over: each of `members` that is present in `envelope`, as its
+/// name, a newline, its value and a newline, in the order `members` lists them.
+fn canonical_string(
+    members: &[&str],
+    envelope: &::serde_json::Map<String, ::serde_json::Value>,
+) -> String {
     let mut canonical = String::new();
-    for member in SIGNED_MEMBERS {
+    for member in members {
         let Some(value) = envelope.get(*member).and_then(::serde_json::Value::as_str) else {
             continue;
         };

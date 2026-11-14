@@ -398,8 +398,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // replay that write started owes are performed afterwards, because a delivery is
         // an in-process call into another service, which must not run under this store's
         // lock.
-        let (output, replay) = self.subscribe_into_store(input, ctx)?;
+        // The confirmation request a subscription to a URL is sent is an in-process call
+        // too, so it is made out here with that lock released as well.
+        let (output, replay, confirmation) = self.subscribe_into_store(input, ctx)?;
         super::publish::deliver_to_endpoints(ctx, &*self.engine, &replay).await;
+        if let Some(confirmation) = confirmation.as_ref() {
+            // The caller-supplied `Endpoint` is NOT dialled: this POST is made over the
+            // in-process transport of the emulator this handler runs within
+            // ([`smithy_server_runtime::EmbeddedEmulator::http_connector`], see
+            // [`super::publish::endpoint_delivery`]), which dispatches the request back into
+            // this same process. No socket is opened and no name is resolved, so a URL
+            // naming a host this emulator does not serve itself — a loopback address, an
+            // address of this machine's network, a metadata address, anything outside —
+            // reaches nothing: it is answered by that transport's own refusal and read as a
+            // subscriber that could not be reached. The endpoint text is data, never a
+            // destination.
+            super::publish::endpoint_delivery::send_confirmation(ctx, confirmation).await;
+        }
         Ok(output)
     }
 }
@@ -407,7 +422,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> Subscribe<Eng> {
     /// Create (or re-apply) the subscription the request names, and report the answer
     /// beside the deliveries the replay it may have started owes to that subscription's
-    /// endpoint.
+    /// endpoint and the confirmation request that endpoint is to be sent.
     ///
     /// The whole store-touching half of the operation, so the store's lock is taken and
     /// released here and the caller performs the deliveries with it released.
@@ -418,7 +433,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> Subscribe<Eng> {
         &self,
         input: SubscribeInput,
         ctx: &smithy_server_runtime::OperationContext<'_>,
-    ) -> Result<(SubscribeOutput, super::publish::Deliveries), SubscribeError> {
+    ) -> Result<
+        (
+            SubscribeOutput,
+            super::publish::Deliveries,
+            Option<super::publish::endpoint_delivery::PendingConfirmation>,
+        ),
+        SubscribeError,
+    > {
         let region = crate::state::request_region(ctx.parts());
         // Argument validation, BEFORE the store is consulted: a `TopicArn` that is
         // not an ARN at all — or one naming another region, which this endpoint does
@@ -795,6 +817,33 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> Subscribe<Eng> {
             super::publish::Deliveries::default()
         };
 
+        // The request that confirms the subscription goes to its ENDPOINT, which is where
+        // the token travels: "To confirm the subscription, you must run the
+        // ConfirmSubscription action with the token from the confirmation message"
+        // (`Subscribe`). It is built here, while the subscription is in hand, and POSTed by
+        // the caller with this store's lock released. A subscription still awaiting
+        // confirmation is sent it again by a repeated `Subscribe`, so a subscriber that did
+        // not receive the first one can ask for another; a confirmed subscription is sent
+        // nothing, because there is nothing left to confirm.
+        let confirmation = store
+            .subscriptions
+            .get(&arn)
+            .filter(|subscription| {
+                super::publish::endpoint_delivery::PendingConfirmation::is_sent_one(subscription)
+            })
+            .cloned()
+            .and_then(|subscription| {
+                // The id is minted only for a confirmation that is really sent, so a
+                // subscription nothing is POSTed to consumes none.
+                let message_id = store.next_unique_id();
+                super::publish::endpoint_delivery::PendingConfirmation::of(
+                    ctx,
+                    &subscription,
+                    Some(&topic),
+                    message_id,
+                )
+            });
+
         // An unconfirmed subscription's ARN is withheld unless the caller asked for it.
         let reported = if pending_confirmation && !input.return_subscription_arn {
             state::PENDING_CONFIRMATION_REPORTED.to_string()
@@ -806,6 +855,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> Subscribe<Eng> {
                 subscription_arn: Some(reported),
             },
             replay,
+            confirmation,
         ))
     }
 }

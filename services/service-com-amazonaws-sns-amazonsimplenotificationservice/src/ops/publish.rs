@@ -177,6 +177,17 @@ mod queue_encryption;
 #[path = "publish/stream_delivery.rs"]
 mod stream_delivery;
 
+/// The `http`/`https`-protocol half of the same fan-out, declared with a `#[path]` for the
+/// reason [`function_delivery`] is: a subscribed URL is an endpoint of no AWS service, so it
+/// is POSTed to over the emulator's own transport and governed by the subscription's own
+/// delivery policy rather than by a resource policy — one concern of its own.
+///
+/// `pub(crate)`: the confirmation request a subscription to such a URL is sent is POSTed by
+/// `Subscribe`, through this one definition of the envelopes and the transport rather than a
+/// second copy ([`endpoint_delivery::PendingConfirmation`]).
+#[path = "publish/endpoint_delivery.rs"]
+pub(crate) mod endpoint_delivery;
+
 /// Refuse the request with `InvalidParameterException`, the error SNS uses for a
 /// parameter that "does not comply with the associated constraints".
 fn invalid_parameter(message: String) -> PublishError {
@@ -636,6 +647,8 @@ pub struct Deliveries {
     functions: Vec<function_delivery::FunctionDelivery>,
     /// The records owed to the delivery streams subscribed over the `firehose` protocol.
     streams: Vec<stream_delivery::StreamDelivery>,
+    /// The requests owed to the URLs subscribed over the `http` and `https` protocols.
+    endpoints: Vec<endpoint_delivery::EndpointDelivery>,
     /// What the request has counted into the topic's own `AWS/SNS` counters so far
     /// ([`state::topic_metrics`]): the publishes it accepted and the messages its
     /// subscriptions' filter policies withheld.
@@ -658,6 +671,7 @@ impl Deliveries {
         self.queues.extend(other.queues);
         self.functions.extend(other.functions);
         self.streams.extend(other.streams);
+        self.endpoints.extend(other.endpoints);
         self.counted.absorb(&other.counted);
     }
 
@@ -934,6 +948,8 @@ pub(crate) fn subscription_deliveries(
     let queue_body: ::std::cell::OnceCell<String> = ::std::cell::OnceCell::new();
     let function_body: ::std::cell::OnceCell<String> = ::std::cell::OnceCell::new();
     let stream_body: ::std::cell::OnceCell<String> = ::std::cell::OnceCell::new();
+    let http_body: ::std::cell::OnceCell<String> = ::std::cell::OnceCell::new();
+    let https_body: ::std::cell::OnceCell<String> = ::std::cell::OnceCell::new();
     let mut raw_body: Option<::std::sync::Arc<str>> = None;
     let mut deliveries = Deliveries::default();
     // The digest of the published body the delivery-status records report, taken at most once
@@ -1024,7 +1040,35 @@ pub(crate) fn subscription_deliveries(
                 }
                 deliveries.streams.push(delivery);
             }
-            // Every other protocol (`http`, `email`, `application`, …) needs its own
+            // A subscribed URL is POSTed to, under the delivery policy in force on that
+            // subscription — which is the one `EffectiveDeliveryPolicy` reports for it, so
+            // the budget a delivery runs under is the budget a client reads.
+            endpoint_delivery::HTTP_PROTOCOL | endpoint_delivery::HTTPS_PROTOCOL => {
+                let body = if subscription.protocol == endpoint_delivery::HTTPS_PROTOCOL {
+                    https_body
+                        .get_or_init(|| protocol_body(published, endpoint_delivery::HTTPS_PROTOCOL))
+                } else {
+                    http_body
+                        .get_or_init(|| protocol_body(published, endpoint_delivery::HTTP_PROTOCOL))
+                };
+                let policy = state::effective_subscription_delivery(topic, subscription);
+                let Some(delivery) = endpoint_delivery::EndpointDelivery::of(
+                    subscription,
+                    published,
+                    body,
+                    logged,
+                    &signer,
+                    &policy,
+                ) else {
+                    continue;
+                };
+                if !budget.charge(delivery.body_len()) {
+                    report_exhausted_budget(&subscription.arn);
+                    return deliveries;
+                }
+                deliveries.endpoints.push(delivery);
+            }
+            // Every other protocol (`email`, `sms`, `application`, …) needs its own
             // delivery path, which is not implemented here.
             _ => continue,
         }
@@ -1313,6 +1357,17 @@ pub(crate) async fn deliver_to_endpoints<Eng: Send + Sync + 'static>(
         ))
         .await;
     }
+    if !deliveries.endpoints.is_empty() {
+        // BOXED, for the reason the legs above are.
+        Box::pin(deliver_to_urls(
+            ctx,
+            &deliveries.endpoints,
+            &mut queues,
+            &mut waiting,
+            &mut counted,
+        ))
+        .await;
+    }
     // The fan-out is over, so what it came to is published — off the answer, with no store
     // lock held.
     counted.publish(engine);
@@ -1409,6 +1464,39 @@ async fn deliver_to_streams(
     let mut puts = stream_delivery::Streams::new(ctx);
     for delivery in streams {
         let attempted = puts.put(delivery, waiting).await;
+        delivery
+            .record_status(ctx, attempted.taken(), &attempted.answered)
+            .await;
+        count_attempt(counted, delivery.topic_arn(), &attempted);
+        if attempted.taken() {
+            continue;
+        }
+        let Some(parked) = delivery.dead_letter_copy() else {
+            continue;
+        };
+        park_in_dead_letter(queues, &parked.target, &parked, waiting).await;
+    }
+}
+
+/// POST each notification this publish owes to the URL its subscription names, and park the
+/// ones no endpoint took in that subscription's dead-letter queue.
+///
+/// The caller-supplied endpoint is NOT dialled: every POST is made over the in-process
+/// transport of the emulator this operation runs within, which dispatches the request back
+/// into this same process, so no socket is opened and no name is resolved and a URL naming a
+/// host this emulator does not serve itself reaches nothing ([`endpoint_delivery`]).
+///
+/// Its own function so [`deliver_to_endpoints`] can hold it on the HEAP: see the call site.
+async fn deliver_to_urls(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    notifications: &[endpoint_delivery::EndpointDelivery],
+    queues: &mut Queues<'_, '_>,
+    waiting: &mut RetryBudget,
+    counted: &mut state::topic_metrics::TopicCounters,
+) {
+    let mut endpoints = endpoint_delivery::Endpoints::new(ctx);
+    for delivery in notifications {
+        let attempted = endpoints.deliver(delivery, waiting).await;
         delivery
             .record_status(ctx, attempted.taken(), &attempted.answered)
             .await;

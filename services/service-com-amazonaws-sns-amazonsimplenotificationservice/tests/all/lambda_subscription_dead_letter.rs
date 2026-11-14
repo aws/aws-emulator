@@ -36,7 +36,10 @@ use crate::sqs_subscription_delivery::{element, grant_to_sns};
 ///
 /// The policy is the suite-shared grant a queue subscribed to (or dead-lettered from) a topic
 /// carries, not a second copy of that document.
-async fn given_queue(emulator: &Emulator, name: &str) -> (String, String) {
+///
+/// `pub(crate)`: every suite over this harness that needs a queue SNS may write to stands one
+/// up through this one definition.
+pub(crate) async fn given_queue(emulator: &Emulator, name: &str) -> (String, String) {
     let (url, arn) = given_queue_without_policy(emulator, name).await;
     sqs(
         emulator,
@@ -91,7 +94,10 @@ const QUIET_BUDGET: std::time::Duration = std::time::Duration::from_millis(1_500
 
 /// The message bodies waiting on the queue at `url`, waiting until there are `expected` of them
 /// — or out the budget, which is how a row expecting NONE concludes there are none.
-async fn held(emulator: &Emulator, url: &str, expected: usize) -> Vec<String> {
+///
+/// `pub(crate)`: every suite over this harness that reads what a redrive held reads it through
+/// this one definition, so a row expecting none waits the same way whichever suite asks.
+pub(crate) async fn held(emulator: &Emulator, url: &str, expected: usize) -> Vec<String> {
     let deadline = Instant::now()
         + if expected == 0 {
             QUIET_BUDGET

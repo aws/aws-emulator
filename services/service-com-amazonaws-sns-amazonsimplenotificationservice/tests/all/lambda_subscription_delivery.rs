@@ -72,7 +72,9 @@ pub(crate) const LOOK_INTERVAL: Duration = Duration::from_millis(25);
 /// and the invocation is asserted on the function.
 pub(crate) struct Emulator {
     router: MultiServiceRouter,
-    engine: Arc<engine::InMemoryEngine>,
+    /// The one engine every mounted service shares, so a suite can read or wind the store
+    /// another service owns — the activation a function's `State` reports, say.
+    pub(crate) engine: Arc<engine::InMemoryEngine>,
 }
 
 pub(crate) fn emulator() -> Emulator {
@@ -708,7 +710,15 @@ async fn the_event_a_subscribed_function_receives_is_the_records_envelope() {
 
 /// A function called `name` whose package holds `source` as its handler module, brought to
 /// `Active` the way [`given_function`] brings one. Its ARN.
-async fn given_function_running(emulator: &Emulator, name: &str, source: &str) -> String {
+///
+/// `pub(crate)`: a suite that needs an endpoint RUNNING inside this emulator — a subscribed
+/// function that forwards what it was handed, or the handler behind a subscribed URL — stands
+/// one up through this one definition rather than a second copy.
+pub(crate) async fn given_function_running(
+    emulator: &Emulator,
+    name: &str,
+    source: &str,
+) -> String {
     let mut buffer = std::io::Cursor::new(Vec::new());
     {
         let mut writer = zip::ZipWriter::new(&mut buffer);

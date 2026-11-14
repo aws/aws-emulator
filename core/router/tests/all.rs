@@ -2481,3 +2481,8 @@ mod cloudformation_drift_detection_status_change_events;
 // (The Cognito authorizer suite is declared ONCE, in the head region above beside the other
 // cross-service suites: it was appended here as well while two branches were landing at once,
 // (The empty `zz_probe` is declared ONCE, further up this tail: it was appended here as well
+// (`cloudformation_provisions_cloudfront_resources` is declared ONCE, in the sorted span
+// above: two `mod` items for one name is a redefinition that compiles neither, and two
+// branches each appended it here.)
+// (The Amazon Cognito authorizer suite is declared ONCE, in the head region above: it was
+// (`zz_probe` is declared ONCE, in the span above: it was appended here as well while two
