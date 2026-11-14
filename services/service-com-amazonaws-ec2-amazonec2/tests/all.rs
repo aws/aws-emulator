@@ -2214,3 +2214,12 @@ mod aws_worded_refusal_sentences;
 // a create of a resource belonging to that table was handed a value shaped like a resource id.
 #[path = "all/local_gateway_route_table_id_malformed_forms.rs"]
 mod local_gateway_route_table_id_malformed_forms;
+// The CLASS and the WORDING of the refusal an event window association answers a target that
+// mixes instance ids, instance tags and Dedicated Host ids. Declared beside `prefix_lists` for
+// the reason the note above gives: the sorted neighbourhood and the tail of this file are where
+#[path = "all/event_window_target_kind_refusal.rs"]
+mod event_window_target_kind_refusal;
+// The one `IncorrectState` sentence the route server surface words for a route server, an
+// endpoint of one and a peer of an endpoint, in both delete states. Declared beside
+#[path = "all/route_server_incorrect_state_wording.rs"]
+mod route_server_incorrect_state_wording;

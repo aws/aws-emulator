@@ -521,21 +521,29 @@ pub fn require_event_window_targets_named<E>(
     Ok(named)
 }
 
-/// The refusal both calls that change a window's targets answer a request that breaks the
-/// one-type rule with: "Only one *type* of target (instance ID, instance tag, or Dedicated
-/// Host ID) can be associated with an event window"
-/// (`InstanceEventWindowAssociationRequest`), which is the rule itself as the documented
-/// sentence states it — one wording, whether the request named two types at once or named
-/// one the window cannot hold beside the type it already holds, because the rule broken is
-/// the same.
-pub const ONE_TARGET_TYPE_MESSAGE: &str = "Only one type of target (instance ID, instance \
-                                           tag, or Dedicated Host ID) can be associated \
-                                           with an event window";
+/// The sentence EC2 refuses a target that is not of one kind with: the three kinds of target
+/// a target association may be composed of, and nothing of the request — the ids and tags a
+/// caller sent are not part of it.
+///
+/// One wording, whether the request named two kinds at once or named one the window cannot
+/// hold beside the kind it already holds, because the rule broken is the same: "Only one
+/// *type* of target (instance ID, instance tag, or Dedicated Host ID) can be associated with
+/// an event window" (`InstanceEventWindowAssociationRequest`).
+pub const ONE_TARGET_TYPE_MESSAGE: &str = "Target Associations must be composed entirely of \
+                                           Instance IDs, Instance Tags, or Dedicated Host \
+                                           IDs.";
 
 /// The one kind of target a request named, for the call the rule "Only one type of target
 /// (instance ID, instance tag, or Dedicated Host ID) can be associated with an event window"
 /// (`InstanceEventWindowAssociationRequest`) is stated for: a request naming more than one
 /// kind is refused, as is one naming none ([`require_event_window_targets_named`]).
+///
+/// The kinds of target are members of ONE request structure
+/// (`InstanceEventWindowAssociationRequest`), so a target composed of more than one kind is
+/// an inadmissible VALUE of that structure rather than a pair of independent request
+/// parameters that cannot be named together: the refusal is
+/// [`Scaffolded::invalid_parameter_value`] ([`ONE_TARGET_TYPE_MESSAGE`]), the class a client
+/// repairs by fixing the field it names.
 pub fn require_one_event_window_target_kind<E>(
     instance_ids: &[String],
     instance_tags: &[Tag],
@@ -545,10 +553,18 @@ pub fn require_one_event_window_target_kind<E>(
         require_event_window_targets_named(instance_ids, instance_tags, dedicated_host_ids)?;
     match named.as_slice() {
         [one] => Ok(*one),
-        _ => Err(Scaffolded::invalid_parameter_combination(
-            ONE_TARGET_TYPE_MESSAGE,
-        )),
+        _ => Err(one_event_window_target_kind_required()),
     }
+}
+
+/// The ONE refusal of a target that is not composed of a single kind: HTTP 400
+/// `InvalidParameterValue` carrying [`ONE_TARGET_TYPE_MESSAGE`].
+///
+/// Shared by the two readings of the rule — the target one request names
+/// ([`require_one_event_window_target_kind`]) and the target that request would leave the
+/// window holding — so the same broken rule cannot be answered with two classes.
+pub fn one_event_window_target_kind_required<E>() -> Scaffolded<E> {
+    Scaffolded::invalid_parameter_value(ONE_TARGET_TYPE_MESSAGE)
 }
 
 /// Refuse an id list longer than this service serves, naming the member it came from —

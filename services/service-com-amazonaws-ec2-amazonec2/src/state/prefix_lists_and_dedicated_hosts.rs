@@ -1670,7 +1670,8 @@ pub fn require_known_route_server<E>(
 /// A deleted route server is still reported, in the terminal `deleted` state, so it still
 /// RESOLVES — but there is nothing left to associate, modify, endpoint or delete, and the
 /// state the caller would have to change is the route server's own, which is what EC2's
-/// `IncorrectState` names ([`incorrect_state_of`]). The ONE place that guard lives, so the
+/// `IncorrectState` names in this surface's own wording
+/// ([`route_server_incorrect_state`]). The ONE place that guard lives, so the
 /// operations acting on a route server cannot disagree about which ones admit a call.
 pub fn require_live_route_server<E>(
     store: &ComAmazonawsEc2Amazonec2State,
@@ -1687,11 +1688,7 @@ pub fn require_live_route_server<E>(
         state,
         ROUTE_SERVER_STATE_DELETING | ROUTE_SERVER_STATE_DELETED
     ) {
-        return Err(incorrect_state_of(
-            ROUTE_SERVER_TAGGABLE_RESOURCE,
-            route_server_id,
-            state,
-        ));
+        return Err(route_server_incorrect_state(route_server_id));
     }
     Ok(())
 }

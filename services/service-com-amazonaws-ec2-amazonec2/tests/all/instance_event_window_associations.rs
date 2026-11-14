@@ -96,7 +96,7 @@ async fn past_the_transition() {
 /// Create one event window and answer the id the service minted for it. The schedule is
 /// whatever satisfies the window rules — [`super::instance_event_windows`] is where the
 /// schedule itself is covered.
-async fn create_window(router: &MultiServiceRouter, name: &str) -> String {
+pub(super) async fn create_window(router: &MultiServiceRouter, name: &str) -> String {
     let (status, body) = api(
         router,
         "CreateInstanceEventWindow",
@@ -118,7 +118,7 @@ async fn create_window(router: &MultiServiceRouter, name: &str) -> String {
 }
 
 /// Launch `count` instances and answer their ids, in the order the launch reported them.
-async fn launch_instances(router: &MultiServiceRouter, count: usize) -> Vec<String> {
+pub(super) async fn launch_instances(router: &MultiServiceRouter, count: usize) -> Vec<String> {
     let (status, body) = api(
         router,
         "RunInstances",
@@ -144,7 +144,7 @@ async fn launch_instances(router: &MultiServiceRouter, count: usize) -> Vec<Stri
 }
 
 /// Allocate `count` Dedicated Hosts in the Region's first zone and answer their ids.
-async fn allocate_hosts(router: &MultiServiceRouter, count: usize) -> Vec<String> {
+pub(super) async fn allocate_hosts(router: &MultiServiceRouter, count: usize) -> Vec<String> {
     let zone = availability_zones_in_region(REGION)[0].zone_name.clone();
     let (status, body) = api(
         router,
@@ -174,20 +174,20 @@ async fn allocate_hosts(router: &MultiServiceRouter, count: usize) -> Vec<String
 /// The association target one window reports, read off the wire.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(super) struct Target {
-    instance_ids: Vec<String>,
-    tags: Vec<(String, String)>,
-    dedicated_host_ids: Vec<String>,
+    pub(super) instance_ids: Vec<String>,
+    pub(super) tags: Vec<(String, String)>,
+    pub(super) dedicated_host_ids: Vec<String>,
 }
 
 impl Target {
-    fn of_instances(ids: &[String]) -> Self {
+    pub(super) fn of_instances(ids: &[String]) -> Self {
         Self {
             instance_ids: ids.to_vec(),
             ..Self::default()
         }
     }
 
-    fn of_tags(tags: &[(&str, &str)]) -> Self {
+    pub(super) fn of_tags(tags: &[(&str, &str)]) -> Self {
         Self {
             tags: tags
                 .iter()
@@ -197,7 +197,7 @@ impl Target {
         }
     }
 
-    fn of_hosts(ids: &[String]) -> Self {
+    pub(super) fn of_hosts(ids: &[String]) -> Self {
         Self {
             dedicated_host_ids: ids.to_vec(),
             ..Self::default()
@@ -252,7 +252,7 @@ fn reported_state(case: &str, body: &str) -> String {
 }
 
 /// The target the describe reports for `window_id`, and the state it reports with it.
-async fn described(case: &str, router: &MultiServiceRouter, window_id: &str) -> (Option<Target>, String) {
+pub(super) async fn described(case: &str, router: &MultiServiceRouter, window_id: &str) -> (Option<Target>, String) {
     let (status, body) = api(
         router,
         "DescribeInstanceEventWindows",
@@ -304,7 +304,7 @@ fn change_params(window_id: &str, target: &Target) -> Params {
     params
 }
 
-async fn associate(router: &MultiServiceRouter, window_id: &str, target: &Target) -> (u16, String) {
+pub(super) async fn associate(router: &MultiServiceRouter, window_id: &str, target: &Target) -> (u16, String) {
     api(
         router,
         "AssociateInstanceEventWindow",
@@ -599,7 +599,7 @@ async fn a_refused_change_carries_ec2s_code_and_writes_nothing() {
             case: "an association naming two types of target".to_string(),
             action: "AssociateInstanceEventWindow",
             params: change_params(&tagged, &mixed),
-            code: "InvalidParameterCombination",
+            code: "InvalidParameterValue",
             window: tagged.clone(),
             held: Some(held.clone()),
         },
@@ -607,7 +607,7 @@ async fn a_refused_change_carries_ec2s_code_and_writes_nothing() {
             case: "an association of instances onto a window associated with tags".to_string(),
             action: "AssociateInstanceEventWindow",
             params: change_params(&tagged, &Target::of_instances(&instances[..1])),
-            code: "InvalidParameterCombination",
+            code: "InvalidParameterValue",
             window: tagged.clone(),
             held: Some(held.clone()),
         },
@@ -616,7 +616,7 @@ async fn a_refused_change_carries_ec2s_code_and_writes_nothing() {
                 .to_string(),
             action: "AssociateInstanceEventWindow",
             params: change_params(&tagged, &Target::of_hosts(&hosts[..1])),
-            code: "InvalidParameterCombination",
+            code: "InvalidParameterValue",
             window: tagged.clone(),
             held: Some(held.clone()),
         },

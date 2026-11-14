@@ -36,7 +36,7 @@ use ec2::state::{
     ComAmazonawsEc2Amazonec2State as Ec2State, AMAZON_SIDE_ASN_RANGE, DEPENDENCY_VIOLATION,
     INVALID_NETWORK_INSIGHTS_ACCESS_SCOPE_ID_NOT_FOUND,
     INVALID_TRAFFIC_MIRROR_FILTER_ID_NOT_FOUND, ROUTE_SERVER_STATE_AVAILABLE,
-    ROUTE_SERVER_STATE_DELETED, ROUTE_SERVER_STATE_DELETING, ROUTE_SERVER_TAGGABLE_RESOURCE,
+    ROUTE_SERVER_STATE_DELETED, ROUTE_SERVER_STATE_DELETING,
     TRAFFIC_MIRROR_FILTER_TAGGABLE_RESOURCE, TRANSITION_DELAY,
 };
 use smithy_server_runtime::MultiServiceRouter;
@@ -552,6 +552,32 @@ async fn described_state(case: &str, router: &MultiServiceRouter, route_server_i
     reported(case, &body, "state")
 }
 
+/// Look at the route server `route_server_id` until its describe reports `wanted`, answering
+/// as soon as it does. The clock, not a caller, moves a `deleting` route server to `deleted`
+/// and a `pending` one to `available`, so a test that needs one of those states waits for the
+/// CONDITION — with a deadline generous enough that a loaded host cannot turn "not yet" into
+/// a failure.
+async fn poll_until_route_server_state(
+    case: &str,
+    router: &MultiServiceRouter,
+    route_server_id: &str,
+    wanted: &str,
+) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let state = described_state(case, router, route_server_id).await;
+        if state == wanted {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "case {case:?}: expected the route server {route_server_id} to reach {wanted:?}, \
+             last read {state:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 /// RULE, second shape: a deleted route server is still DESCRIBED, in the delete states its
 /// modelled enum publishes — `deleting` while the move is owed, then the terminal `deleted` —
 /// so a caller polling for the delete to finish has something to stop on, while the route
@@ -689,7 +715,7 @@ async fn no_operation_acts_on_a_route_server_a_delete_took_down() {
         &[param("RouteServerId", &target)],
     )
     .await;
-    past_the_transition().await;
+    poll_until_route_server_state(case, &router, &target, ROUTE_SERVER_STATE_DELETED).await;
 
     // (the operation, the parameters it names beside the route server)
     let acting: Vec<(&str, Vec<Param>)> = vec![
@@ -701,10 +727,10 @@ async fn no_operation_acts_on_a_route_server_a_delete_took_down() {
         ("AssociateRouteServer", vec![param("VpcId", &vpc)]),
         ("CreateRouteServerEndpoint", vec![param("SubnetId", &subnet)]),
     ];
-    let message = format!(
-        "{ROUTE_SERVER_TAGGABLE_RESOURCE} '{target}' is in the '{ROUTE_SERVER_STATE_DELETED}' \
-         state."
-    );
+    // The sentence EC2 words for this class names the resource and the id the request
+    // carried, and says its state does not admit the call without naming which state that is
+    // — so one sentence answers every one of these calls, in either delete state.
+    let message = format!("Route Server {target} is in an invalid state.");
     for (action, extra) in acting {
         let mut params = vec![param("RouteServerId", &target)];
         params.extend(extra);
@@ -730,7 +756,7 @@ async fn no_operation_acts_on_a_route_server_a_delete_took_down() {
     )
     .await;
     let live = reported(case, &body, "routeServerId");
-    past_the_transition().await;
+    poll_until_route_server_state(case, &router, &live, ROUTE_SERVER_STATE_AVAILABLE).await;
     for (action, extra) in [
         (
             "ModifyRouteServer",

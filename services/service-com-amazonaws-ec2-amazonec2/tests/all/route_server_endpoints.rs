@@ -914,6 +914,31 @@ async fn described_state(case: &str, router: &MultiServiceRouter, id: &str) -> S
     endpoint_state(case, &body, id)
 }
 
+/// Look at the endpoint `id` until its describe reports `wanted`, answering as soon as it
+/// does. The clock, not a caller, moves a `deleting` endpoint to `deleted`, so a test that
+/// needs the terminal state waits for the CONDITION — with a deadline generous enough that a
+/// loaded host cannot turn "not yet" into a failure.
+async fn poll_until_endpoint_state(
+    case: &str,
+    router: &MultiServiceRouter,
+    id: &str,
+    wanted: &str,
+) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let state = described_state(case, router, id).await;
+        if state == wanted {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "case {case:?}: expected the endpoint {id} to reach {wanted:?}, last read \
+             {state:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 /// One row of the delete table: a distinct input along what the rule generalises over — which
 /// route server and subnet the endpoint belongs to, how many tags it carries, and whether the
 /// delete arrives while the endpoint is still coming up or once it is up.
@@ -1156,7 +1181,8 @@ async fn delete_route_server_endpoint_refuses_an_id_that_names_nothing() {
 
 /// The rule: an endpoint whose deletion has already been asked for has nothing left to
 /// delete, so a second `DeleteRouteServerEndpoint` is refused with HTTP 400 `IncorrectState`
-/// naming the state the endpoint is in — in either delete state — and "If you have the
+/// and the sentence EC2 words for that class — the resource and the id the request carried,
+/// with no state token — in either delete state, and "If you have the
 /// required permissions, the error response is DryRunOperation" (`DryRun`): a dry run of a
 /// delete that would have succeeded reports that outcome with HTTP 412 and deletes nothing,
 /// while a dry run of one that would have been refused is refused with its own reason
@@ -1253,7 +1279,13 @@ async fn delete_route_server_endpoint_refuses_a_second_delete_and_performs_no_dr
     ];
     for (case, wait, dry_run) in refusals {
         if wait {
-            tokio::time::sleep(Duration::from_millis(900)).await;
+            poll_until_endpoint_state(
+                case,
+                &router,
+                &doomed,
+                ec2::state::ROUTE_SERVER_ENDPOINT_STATE_DELETED,
+            )
+            .await;
         }
         let mut params = vec![param("RouteServerEndpointId", &doomed)];
         if dry_run {
@@ -1271,16 +1303,12 @@ async fn delete_route_server_endpoint_refuses_a_second_delete_and_performs_no_dr
             "case {case:?}: expected {expected}, got {code:?} with body {body}",
             expected = ec2::state::INCORRECT_STATE
         );
-        let expected_state = if wait {
-            ec2::state::ROUTE_SERVER_ENDPOINT_STATE_DELETED
-        } else {
-            ec2::state::ROUTE_SERVER_ENDPOINT_STATE_DELETING
-        };
+        // The sentence EC2 words for this class names the resource and the id the request
+        // carried, and says the state does not admit the call without naming which state
+        // that is — so the SAME sentence answers the refusal whichever of the two delete
+        // states the endpoint had reached.
         let message = error_message(&body);
-        let expected = format!(
-            "{kind} '{doomed}' is in the '{expected_state}' state.",
-            kind = ec2::state::RESOURCE_TYPE_ROUTE_SERVER_ENDPOINT,
-        );
+        let expected = format!("Route Server Endpoint {doomed} is in an invalid state.");
         assert_eq!(
             message, expected,
             "case {case:?}: expected the message {expected:?}, got {message:?}"

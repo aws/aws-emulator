@@ -1205,18 +1205,50 @@ pub fn invalid_route_server_peer_id_not_found<E>(peer_id: &str) -> Scaffolded<E>
     )
 }
 
-/// Refuse a request whose route server peer is not in a state that admits it: HTTP 400
-/// `IncorrectState`, `Route Server Peer <id> is in an invalid state.`
+/// How EC2 names a route server in the sentence of a refusal it words itself, rather than in
+/// the `ResourceType` token a tag specification names it by
+/// ([`ROUTE_SERVER_TAGGABLE_RESOURCE`]).
+pub const ROUTE_SERVER_REFUSAL_NAME: &str = "Route Server";
+
+/// How EC2 names a route server endpoint in such a sentence
+/// ([`ROUTE_SERVER_REFUSAL_NAME`]), beside the hyphenated
+/// [`RESOURCE_TYPE_ROUTE_SERVER_ENDPOINT`] a tag specification carries.
+pub const ROUTE_SERVER_ENDPOINT_REFUSAL_NAME: &str = "Route Server Endpoint";
+
+/// How EC2 names a route server peer in such a sentence ([`ROUTE_SERVER_REFUSAL_NAME`]).
+pub const ROUTE_SERVER_PEER_REFUSAL_NAME: &str = "Route Server Peer";
+
+/// Refuse a request aimed at a resource of the route server surface whose own state does not
+/// admit it: HTTP 400 `IncorrectState`, `<Resource> <id> is in an invalid state.`
 ///
-/// This resource's refusal names the peer and says that its state does not admit the request,
-/// WITHOUT naming the state it is in or the states that would: the state a peer is in is what
-/// `DescribeRouteServerPeers` reports, and the refusal that a request came at the wrong time
-/// is the same sentence whichever state the peer had reached. That is why it is worded here
-/// rather than through the shared `<Kind> '<id>' is in the '<state>' state.`
-/// ([`super::incorrect_state_of`]), which every resource whose refusal DOES name its state
-/// keeps using.
+/// The sentence names the KIND of resource in EC2's own words (`resource`) and the id the
+/// request carried, and says that its state does not admit the call — WITHOUT naming the
+/// state it is in or the states that would. The state a resource of this surface is in is
+/// what its own describe reports, and the refusal that a request came at the wrong time is
+/// the same sentence whichever state the resource had reached, so there is no slot for one.
+/// That is why this family is worded here rather than through the shared `<Kind> '<id>' is in
+/// the '<state>' state.` ([`super::incorrect_state_of`]), which the resources whose refusal
+/// DOES name its state keep using.
+pub fn route_server_surface_incorrect_state<E>(resource: &str, id: &str) -> Scaffolded<E> {
+    incorrect_state(format!("{resource} {id} is in an invalid state."))
+}
+
+/// Refuse a request whose route server is not in a state that admits it, in that family's
+/// wording ([`route_server_surface_incorrect_state`]).
+pub fn route_server_incorrect_state<E>(route_server_id: &str) -> Scaffolded<E> {
+    route_server_surface_incorrect_state(ROUTE_SERVER_REFUSAL_NAME, route_server_id)
+}
+
+/// Refuse a request whose route server endpoint is not in a state that admits it, in that
+/// family's wording ([`route_server_surface_incorrect_state`]).
+pub fn route_server_endpoint_incorrect_state<E>(endpoint_id: &str) -> Scaffolded<E> {
+    route_server_surface_incorrect_state(ROUTE_SERVER_ENDPOINT_REFUSAL_NAME, endpoint_id)
+}
+
+/// Refuse a request whose route server peer is not in a state that admits it, in that
+/// family's wording ([`route_server_surface_incorrect_state`]).
 pub fn route_server_peer_incorrect_state<E>(peer_id: &str) -> Scaffolded<E> {
-    incorrect_state(format!("Route Server Peer {peer_id} is in an invalid state."))
+    route_server_surface_incorrect_state(ROUTE_SERVER_PEER_REFUSAL_NAME, peer_id)
 }
 
 // ---------------------------------------------------------------------------

@@ -141,12 +141,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         use crate::scaffolded::Scaffolded;
         use crate::state::{
             event_window_association_target, instance_event_window_limit_exceeded,
-            instance_event_window_payload_bytes, require_event_window_target_capacity,
-            require_event_window_target_id_count, require_known_instance,
-            require_one_event_window_target_kind, require_service_state, unresolvable_host_id,
-            unresolvable_instance_event_window_id, validate_event_window_target_tags,
-            with_target_ids, with_target_tags, EventWindowTargetKind,
-            INSTANCE_EVENT_WINDOW_STATE_ASSOCIATING, MAX_STORED_BYTES, ONE_TARGET_TYPE_MESSAGE,
+            instance_event_window_payload_bytes, one_event_window_target_kind_required,
+            require_event_window_target_capacity, require_event_window_target_id_count,
+            require_known_instance, require_one_event_window_target_kind, require_service_state,
+            unresolvable_host_id, unresolvable_instance_event_window_id,
+            validate_event_window_target_tags, with_target_ids, with_target_tags,
+            EventWindowTargetKind, INSTANCE_EVENT_WINDOW_STATE_ASSOCIATING, MAX_STORED_BYTES,
             TRANSITION_DELAY,
         };
 
@@ -186,14 +186,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "Only one type of target ... can be associated with an event window" is a rule
         // about the WINDOW and not only about one request, so a window already associated
         // with targets of another type cannot take on these ones beside them — the same
-        // refusal, worded the same way, as a request that names two types at once.
+        // refusal, in the same class and worded the same way
+        // ([`crate::state::one_event_window_target_kind_required`]), as a request that names
+        // two types at once.
         if EventWindowTargetKind::held_by(&held)
             .into_iter()
             .any(|held_kind| held_kind != kind)
         {
-            return Err(Scaffolded::invalid_parameter_combination(
-                ONE_TARGET_TYPE_MESSAGE,
-            ));
+            return Err(one_event_window_target_kind_required());
         }
 
         // "Associates one or more targets with an event window": the call ADDS to the
