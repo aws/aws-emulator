@@ -5,6 +5,9 @@
 //! `billingViewTypes`, `names`, `ownerAccountId`, `sourceAccountId` and
 //! `activeTimeRange`, ordered by ARN, and paginated with `maxResults` and an
 //! opaque `nextToken` that resumes after the last ARN the previous page returned.
+//! A request that names no `maxResults` asks for the page size the member
+//! documents a default for, not for the whole result set, so a page never
+//! carries more than one page size of views.
 //! The `activeTimeRange` filter selects views by the period the resource behind
 //! them was active, so the account's default view — which has no such resource —
 //! is listed whatever range the caller asks about.
@@ -142,6 +145,18 @@ impl From<ListBillingViewsErrorModeled> for ListBillingViewsError {
 pub struct ListBillingViews<Eng> {
     engine: ::std::sync::Arc<Eng>,
 }
+
+/// The page size used when the request omits `maxResults`.
+///
+/// From the `maxResults` doc: "The maximum number of billing views to retrieve.
+/// Default is 100."
+const DEFAULT_MAX_RESULTS: usize = 100;
+
+/// The smallest and largest page size the model's `maxResults` range allows
+/// (`BillingViewsMaxResults`, 1..100), used to clamp a size that reached this
+/// handler anyway.
+const MIN_MAX_RESULTS: usize = 1;
+const MAX_MAX_RESULTS: usize = 100;
 
 /// Refuse a request member as invalid, in the modeled `ValidationException`
 /// shape (HTTP 400) this operation declares.
@@ -369,15 +384,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
-        // `maxResults` is the page size; absent, the whole result set is one page.
-        let next_token = match input.max_results.and_then(|max| usize::try_from(max).ok()) {
-            Some(limit) if matched.len() > limit => {
-                matched.truncate(limit);
-                matched
-                    .last()
-                    .map(|view| crate::state::encode_page_token(&view.arn))
-            }
-            _ => None,
+        // `maxResults` is the page size; a request that names none asks for the
+        // documented default, not for every view the account holds, so the walk
+        // continues through `nextToken` whenever views remain past the page.
+        let limit = input
+            .max_results
+            .and_then(|max| usize::try_from(max).ok())
+            .unwrap_or(DEFAULT_MAX_RESULTS)
+            .clamp(MIN_MAX_RESULTS, MAX_MAX_RESULTS);
+        let next_token = if matched.len() > limit {
+            matched.truncate(limit);
+            matched
+                .last()
+                .map(|view| crate::state::encode_page_token(&view.arn))
+        } else {
+            None
         };
 
         Ok(ListBillingViewsOutput {

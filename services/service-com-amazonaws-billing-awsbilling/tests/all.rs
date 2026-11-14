@@ -37,6 +37,8 @@ mod credit_allocation_history;
 mod credits;
 #[path = "all/enterprise_support_charge_summary.rs"]
 mod enterprise_support_charge_summary;
+#[path = "all/omitted_page_size.rs"]
+mod omitted_page_size;
 #[path = "all/refusal_and_projection_fidelity.rs"]
 mod refusal_and_projection_fidelity;
 #[path = "all/refusal_message_text.rs"]

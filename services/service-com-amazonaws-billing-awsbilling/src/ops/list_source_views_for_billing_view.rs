@@ -4,7 +4,8 @@
 //! Reports the source-view ARNs persisted on the billing view the request names,
 //! in the order that view stores them, paginated with `maxResults` and an opaque
 //! `nextToken` that resumes at the entry after the last one the previous page
-//! returned. The operation is `@readonly`: it only reads
+//! returned. A request that names no `maxResults` gets the largest page the
+//! model admits, not an unbounded one. The operation is `@readonly`: it only reads
 //! [`crate::state::BillingView::source_views`], so a caller can poll it without
 //! changing what the next caller sees.
 //!
@@ -141,6 +142,23 @@ pub struct ListSourceViewsForBillingView<Eng> {
     engine: ::std::sync::Arc<Eng>,
 }
 
+/// The smallest and largest page size the model's `maxResults` range allows
+/// (`BillingViewsMaxResults`, 1..100), used to clamp a size that reached this
+/// handler anyway.
+const MIN_MAX_RESULTS: usize = 1;
+const MAX_MAX_RESULTS: usize = 100;
+
+/// The page size used when the request omits `maxResults`.
+///
+/// This `maxResults` doc ("The number of entries a paginated response
+/// contains.") names no default, so an omitted page size is the largest page
+/// this read serves at all — [`MAX_MAX_RESULTS`] — rather than every entry the
+/// view holds. A view's source views are capped well below it
+/// ([`crate::state::MAX_SOURCE_VIEWS_PER_VIEW`], the modelled `@length` of
+/// `BillingViewSourceViewsList`), so this bound is what keeps the omitted case
+/// a page rather than the page size a caller sees.
+const DEFAULT_MAX_RESULTS: usize = MAX_MAX_RESULTS;
+
 /// The `nextToken` for a page that ended after `returned` entries of the view's
 /// source-view list.
 ///
@@ -255,13 +273,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         let remaining = view.source_views.get(resume_after..).unwrap_or_default();
 
-        // `maxResults` is the page size; absent, the whole list is one page.
-        let (page, next_token) = match input.max_results.and_then(|max| usize::try_from(max).ok()) {
-            Some(limit) if remaining.len() > limit => (
+        // `maxResults` is the page size; a request that names none gets the
+        // largest page this read serves, so the answer is always a page and the
+        // walk continues through `nextToken` whenever entries remain.
+        let limit = input
+            .max_results
+            .and_then(|max| usize::try_from(max).ok())
+            .unwrap_or(DEFAULT_MAX_RESULTS)
+            .clamp(MIN_MAX_RESULTS, MAX_MAX_RESULTS);
+        let (page, next_token) = if remaining.len() > limit {
+            (
                 &remaining[..limit],
                 Some(encode_page_token(resume_after + limit)),
-            ),
-            _ => (remaining, None),
+            )
+        } else {
+            (remaining, None)
         };
 
         Ok(ListSourceViewsForBillingViewOutput {
