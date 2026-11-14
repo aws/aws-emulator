@@ -183,6 +183,8 @@ mod failed_create_rollback;
 mod failed_resource_status_reason;
 #[path = "all/failed_update_resource_rollback.rs"]
 mod failed_update_resource_rollback;
+#[path = "all/fleet_estate_physical_identifiers.rs"]
+mod fleet_estate_physical_identifiers;
 #[path = "all/forced_deletion_is_gated_by_status.rs"]
 mod forced_deletion_is_gated_by_status;
 #[path = "all/forced_deletion_refusal_wording.rs"]
