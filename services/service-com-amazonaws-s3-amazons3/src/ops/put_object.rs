@@ -1006,7 +1006,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> PutObject<Eng> {
             });
         }
 
-        let etag = crate::state::object_etag(&body);
+        // The entity tag this write records: the digest of the bytes stored, except for an
+        // object sealed with a KMS key or with the caller's own, whose tag is not that digest
+        // ([`crate::state::stored_object_etag`] carries the rule and the encryption this write
+        // settled on decides it).
+        let etag =
+            crate::state::stored_object_etag(&crate::state::object_etag(&body), &encryption);
         // The checksum this write stores with the object: the algorithm the request named,
         // computed over the bytes it carried. "When you perform a request with a
         // checksum-based data integrity check, Amazon S3 … calculates the checksum"

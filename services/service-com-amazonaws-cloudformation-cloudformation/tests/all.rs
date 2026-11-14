@@ -47,6 +47,8 @@ mod bucket_lifecycle_tag_filters;
 mod bucket_metrics_and_lifecycle_configurations;
 #[path = "all/bucket_notification_configuration.rs"]
 mod bucket_notification_configuration;
+#[path = "all/bucket_policy_update_and_rename_rollback.rs"]
+mod bucket_policy_update_and_rename_rollback;
 #[path = "all/bucket_property_updates.rs"]
 mod bucket_property_updates;
 #[path = "all/bucket_replication_configuration.rs"]

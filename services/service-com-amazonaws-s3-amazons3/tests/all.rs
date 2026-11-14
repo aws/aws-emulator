@@ -275,6 +275,8 @@ mod object_default_encryption;
 mod object_encryption;
 #[path = "all/object_encryption_update.rs"]
 mod object_encryption_update;
+#[path = "all/object_etag_under_encryption.rs"]
+mod object_etag_under_encryption;
 #[path = "all/object_event_notifications.rs"]
 mod object_event_notifications;
 #[path = "all/object_event_sequencer_order.rs"]
@@ -313,6 +315,8 @@ mod object_restore;
 mod object_scoped_refusal_envelope;
 #[path = "all/object_select_content.rs"]
 mod object_select_content;
+#[path = "all/object_select_content_authorization.rs"]
+mod object_select_content_authorization;
 #[path = "all/object_storage.rs"]
 mod object_storage;
 #[path = "all/object_subresource_version_id.rs"]

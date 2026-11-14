@@ -260,6 +260,57 @@ pub fn multipart_object_etag(parts: &[&[u8]]) -> String {
     format!("\"{}-{}\"", hex::encode(digest.finalize()), parts.len())
 }
 
+/// The entity tag an object stored under `encryption` carries, given `plaintext` — the
+/// entity tag of its bytes as [`object_etag`] or [`multipart_object_etag`] computed it.
+///
+/// Whether an object's entity tag IS the digest of its bytes depends on how the object is
+/// encrypted: "objects created by the PUT Object, POST Object, or Copy operation, or through
+/// the Amazon Web Services Management Console, and are encrypted by SSE-S3 or plaintext, have
+/// ETags that are an MD5 digest of their object data. Objects created … that are encrypted by
+/// SSE-C or SSE-KMS, have ETags that are not an MD5 digest of their object data" (Amazon S3
+/// API Reference, *Common Response Headers*, `ETag`). So an object stored unencrypted or
+/// under SSE-S3 keeps the digest of its bytes, and one stored under a KMS key
+/// ([`ObjectEncryption::uses_kms`]) or under a key the CALLER supplied
+/// ([`SSE_CUSTOMER_ALGORITHM`]) carries a tag that is not that digest — which is what tells a
+/// client that the bytes it would checksum are not the bytes Amazon S3 holds.
+///
+/// Such an object is sealed with a data key, and the tag is of the SEALED representation
+/// rather than of the plaintext. This emulator holds the bytes in this process's memory and
+/// performs no cryptography, so what the tag is derived from is the plaintext's own digest
+/// together with the key the object is sealed under ([`ObjectEncryption::sealing_key`]),
+/// rendered in the same 32 hexadecimal digits — and, for an object a multipart upload
+/// assembled, keeping the `-<parts>` suffix that makes a multipart tag recognisable as one.
+/// That makes the tag a value no client can mistake for the digest of the object's data,
+/// stable for the object (every read reports the one the write recorded), different for the
+/// same bytes sealed under a different key, and still changed by any change to the bytes.
+///
+/// A tag is settled by the WRITE that stores the object and never recomputed afterwards:
+/// `UpdateObjectEncryption` "preserves all object metadata properties, including the storage
+/// class, creation date, last modified date, ETag, and checksum properties" (that operation's
+/// own documentation), so re-recording an object's encryption leaves its tag exactly as it is.
+pub fn stored_object_etag(plaintext: &str, encryption: &ObjectEncryption) -> String {
+    let Some(key) = encryption.sealing_key() else {
+        return plaintext.to_string();
+    };
+    let value = etag_value(plaintext);
+    // A multipart tag is `<digest>-<parts>`: the part count is not part of the digest, so it
+    // is carried through rather than hashed.
+    let (digest, parts) = match value.split_once('-') {
+        Some((digest, parts)) => (digest, Some(parts)),
+        None => (value, None),
+    };
+    let mut sealed = Md5::new();
+    sealed.update(digest.as_bytes());
+    // A separator, so a digest and a key reference cannot be read as another pair of them.
+    sealed.update([0u8]);
+    sealed.update(key.as_bytes());
+    let sealed = hex::encode(sealed.finalize());
+    match parts {
+        Some(parts) => format!("\"{sealed}-{parts}\""),
+        None => format!("\"{sealed}\""),
+    }
+}
+
 /// The entity tag's own VALUE: the digest [`object_etag`] rendered, without the double
 /// quotes around it.
 ///

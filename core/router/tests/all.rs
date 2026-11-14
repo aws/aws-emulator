@@ -1996,3 +1996,17 @@ mod iam_secretsmanager_denial_envelope_by_protocol;
 // (That suite is declared ONCE, in the sorted span at the head of this file: a module may be
 // declared only once, and two branches landing at once declared it twice.)
 // (`zz_probe` is declared ONCE, in the span above: a module may be declared only once.)
+// Declared here beside the other CloudFormation suites, ONCE: the pair below was appended to
+// the tail as well while two branches were landing at once, which declared each of them a
+// second time and compiled neither (`mod` is a definition, not an include). The API Gateway
+// suite above it was appended twice the same way; its declaration in the sorted head region is
+// the one that stands.
+// Both suites above are declared ONCE, in the sorted span beside the other CloudFormation
+// suites: the pair was appended here as well while two branches were landing at once, which
+// declared each of them a second time and compiled neither.
+// EMPTY, and declared only because the build script requires every file under `tests/all/` to
+// be declared: the suite that pins what an `UpdateStack` does to the `AWS::S3::Bucket` a stack
+// already created runs in the CloudFormation crate's own test target, which mounts Amazon S3
+// beside CloudFormation on one engine. See the file's own header.
+#[path = "all/cloudformation_s3_bucket_update_and_rename.rs"]
+mod cloudformation_s3_bucket_update_and_rename;

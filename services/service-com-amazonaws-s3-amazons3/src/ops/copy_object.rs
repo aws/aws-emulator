@@ -1055,9 +1055,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> CopyObject<Eng> {
 
         // The destination object. Its bytes are the source's, so its entity tag is the
         // digest of those bytes, computed the one way every object's is
-        // ([`crate::state::object_etag`]); its last-modified time is NOW, because the copy
-        // is a write of its own.
-        let etag = crate::state::object_etag(&source_object.body);
+        // ([`crate::state::object_etag`]) — except where the DESTINATION's own encryption
+        // seals them, which is a tag that is not that digest
+        // ([`crate::state::stored_object_etag`]): the copy is a write of its own, stored under
+        // the encryption this request settled on rather than the source's. Its last-modified
+        // time is NOW, for the same reason.
+        let etag = crate::state::stored_object_etag(
+            &crate::state::object_etag(&source_object.body),
+            &encryption,
+        );
         let last_modified = now;
         let mut object = crate::state::Object {
             etag: etag.clone(),

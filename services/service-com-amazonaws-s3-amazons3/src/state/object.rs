@@ -307,6 +307,33 @@ impl ObjectEncryption {
         None
     }
 
+    /// WHAT an object stored under this configuration is SEALED with, when it is sealed with a
+    /// key at all: the key the object's data key is wrapped by, named by the only thing S3
+    /// keeps about it — the KMS key's own ARN for SSE-KMS, and the DIGEST of the key the
+    /// caller supplied for SSE-C ("Amazon S3 does not store the encryption key you provide").
+    ///
+    /// `None` for an object stored unencrypted or under SSE-S3, whose key is Amazon S3's own
+    /// and is not reported anywhere: the two cases whose entity tag IS the digest of the
+    /// object's bytes ([`stored_object_etag`] is the one reader of this, and carries that
+    /// rule).
+    ///
+    /// The algorithm travels with the key, so one key id under `aws:kms` and under
+    /// `aws:kms:dsse` — two different encryptions of the same bytes — do not name the same
+    /// sealing.
+    pub fn sealing_key(&self) -> Option<String> {
+        let algorithm = self
+            .sse_algorithm
+            .as_deref()
+            .filter(|_| self.uses_kms())
+            .or(self.sse_customer_algorithm.as_deref())?;
+        let key = self
+            .kms_key_id
+            .as_deref()
+            .or(self.sse_customer_key_md5.as_deref())
+            .unwrap_or_default();
+        Some(format!("{algorithm}:{key}"))
+    }
+
     /// Whether an object's own `BucketKeyEnabled` is REPORTED, and as what: `Some(true)` for
     /// an object written with an S3 Bucket Key in force, and `None` for every other object.
     ///

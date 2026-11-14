@@ -28,10 +28,11 @@
 //!   error codes (see `s3_refusal`), never the framework's generic
 //!   `ValidationException`, because a client branches on the S3 code.
 //! - `override_routing_error` — how this service words a request that reached it
-//!   but named no modeled operation. S3's SELECT data plane is the one such request
-//!   this service words itself: no routing-table entry claims `?select`, and S3
-//!   refuses a Select request with `MethodNotAllowed` (405) rather than the
-//!   framework's "not written yet" 501. Everything else keeps the default.
+//!   but named no modeled operation. Every one of them keeps the framework's default: the
+//!   requests this service serves that no routing-table entry claims are resolved to
+//!   operations of their own at `override_operation` instead (the browser-form upload, the
+//!   website endpoint and the SELECT data plane, [`select_object_content`]), which is the one
+//!   seam that can answer them from the store and from the calling principal.
 //! - `override_framework_error` — how this service words a transport-level
 //!   failure the orchestrator detects up front (e.g. a malformed `aws-chunked`
 //!   body). The default returns `None`, keeping the entry's protocol-correct
@@ -94,6 +95,9 @@ pub mod request_authorization;
 // The `AWS/S3` request metrics a bucket's own metrics configurations publish about the
 // requests this service serves on its objects — see `service/request_metrics.rs`.
 pub mod request_metrics;
+// What this service answers a request addressed to the S3 SELECT data plane, which no
+// modelled operation is bound to — see `service/select_object_content.rs`.
+pub mod select_object_content;
 pub mod sigv4;
 // The WEBSITE ENDPOINT a bucket configured for static website hosting is served on, which is
 // a different endpoint from the REST API's — see `service/website_endpoint.rs`.
@@ -1271,6 +1275,18 @@ fn front_door<Eng: Send + Sync + 'static>(
         website_endpoint::WEBSITE_ENDPOINT,
         Box::new(website_endpoint::WebsiteEndpoint::new(Arc::clone(engine))),
     );
+    // And the SELECT data plane, which no routing-table entry claims either: the one operation
+    // of this model whose output is a `@streaming` event-stream union, so the scaffold
+    // generator typed none of it. What this service answers such a request — the
+    // authorization refusal its caller earns, else the refusal of the withdrawn feature — is
+    // [`select_object_content`], served from here because the first half needs the store and
+    // the calling principal, which only an operation is given.
+    table.add_operation(
+        select_object_content::SELECT_OBJECT_CONTENT,
+        Box::new(select_object_content::SelectObjectContent::new(Arc::clone(
+            engine,
+        ))),
+    );
     table
 }
 
@@ -1745,38 +1761,6 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             .unwrap_or(crate::state::ACCESS_DENIED_MESSAGE)
     }
 
-    /// The refusal S3 answers a request against a resource it does not serve at all:
-    /// HTTP 405 with the error code `MethodNotAllowed` and that code's published message
-    /// (see [`crate::state::METHOD_NOT_ALLOWED_CODE`]).
-    ///
-    /// Rendered through THIS service's own protocol, in the same
-    /// [`crate::scaffolded::Unmodeled`] channel an implemented handler answers this code
-    /// with (`GetObjectTorrent` is the one beside it), so the envelope a client parses —
-    /// the bare `<Error>` root with its `<Code>`, `<Message>` and request-correlation
-    /// elements, and the matching `x-amz-request-id` / `x-amz-id-2` headers — is byte for
-    /// byte the one every other S3 refusal carries. No `Allow` header accompanies it: the
-    /// feature is withdrawn rather than bound to some other method, so there is no method
-    /// against this resource to name.
-    ///
-    /// `None` on the serializer failure a fixed code and a fixed message cannot actually
-    /// provoke, which leaves the framework's own routing refusal to answer rather than
-    /// panicking in the request path.
-    fn method_not_allowed(&self) -> Option<aws_smithy_runtime_api::http::Response> {
-        let refusal = crate::scaffolded::Unmodeled {
-            code: crate::state::METHOD_NOT_ALLOWED_CODE,
-            status: crate::state::METHOD_NOT_ALLOWED_STATUS,
-            message: crate::state::METHOD_NOT_ALLOWED_MESSAGE.to_string(),
-        };
-        self.protocol
-            .serialize_error(
-                &refusal,
-                &crate::scaffolded::UNMODELED_SCHEMA,
-                refusal.code,
-                refusal.status,
-            )
-            .ok()
-    }
-
     /// The operation that answers `req` for the bucket NAME it addresses, when that name is
     /// one Amazon S3 can address no bucket by ([`names_a_bucket`]) — else `None`, which is
     /// every request that addresses a bucket by an addressable name and every request that
@@ -2045,6 +2029,16 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         if self.addresses_form_post_upload(req) {
             return self.door.get(post_object::POST_OBJECT);
         }
+        // The SELECT data plane, which the model's routing table cannot name either: no entry
+        // claims `?select`, so the request resolved to nothing and was answered as unwritten.
+        // What this service answers it with is decided from the store and from the calling
+        // principal ([`select_object_content`]), which is why it is an operation. Resolved from
+        // the request's PATH-STYLE address ([`Self::path_style_path`]), so a
+        // virtual-hosted-style Select request — the form every SDK sends for an endpoint
+        // addressed by bucket name — resolves the same as a path-style one.
+        if addresses_s3_select(&self.path_style_path(req), wire::request_query(req.uri())) {
+            return self.door.get(select_object_content::SELECT_OBJECT_CONTENT);
+        }
         // A write or a delete addressing an ID-ADDRESSED bucket configuration subresource
         // that states no `id` is that subresource's call with an id missing, never the
         // bucket-level `CreateBucket` or `DeleteBucket` bound to the same method and the bare
@@ -2118,36 +2112,18 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // modeled operation — neither `override_operation` nor the generated
         // routing table resolved it. Returning `None` renders the protocol-correct
         // default for this service's envelope (query -> 400 InvalidAction text/xml,
-        // awsJson -> 404, rpcv2Cbor -> 404, rest -> 501).
+        // awsJson -> 404, rpcv2Cbor -> 404, rest -> 501), which is what every one of them
+        // keeps: an operation that really is merely unwritten answers the 501 that counts it
+        // as such.
         //
-        // S3's SELECT data plane is exactly that case: `SelectObjectContent` is the one
-        // operation of this model whose output is a `@streaming` event-stream union, which
-        // the scaffold generator declines to type (`src/ops/SKIPPED_STUBS.md`), so no
-        // routing-table entry claims `?select` and the default would answer the framework's
-        // 501 `NotImplemented` — "nobody has written this yet". That is not one of the two
-        // things S3 answers a Select request with: it either serves the rows, or — having
-        // withdrawn S3 Select from every account that had not already enabled it — refuses
-        // the request outright, with the 405 `MethodNotAllowed` it answers any resource that
-        // does not serve the method asked of it (`GetObjectTorrent`, which no account can
-        // enable, is refused the same way). The withdrawal is account-wide rather than
-        // per-object, so the refusal is the same for every Select request, whatever
-        // expression, serialization, scan range or encryption it carries and whichever
-        // bucket or key it names — and a client that probes Select and falls back on this
-        // code sees the code it branches on instead of an unmodeled exception.
-        //
-        // Everything else keeps the framework's default, so an operation that really is
-        // merely unwritten still answers the 501 that counts it as such.
-        //
-        // WHICH requests those are is decided on the request's PATH-STYLE address
-        // ([`Self::path_style_path`]), not on the raw path: a virtual-hosted-style Select
-        // request — the form every SDK sends for an endpoint addressed by bucket name —
-        // carries its bucket in the host and the key alone in the path, and reading that raw
-        // path as the address made it look like a request against a bucket rather than
-        // against an object, which is not Select and fell through to the 501.
-        if !addresses_s3_select(&self.path_style_path(req), wire::request_query(req.uri())) {
-            return None;
-        }
-        self.method_not_allowed()
+        // The requests this service serves that no routing-table entry claims — the
+        // browser-form upload, the website endpoint and the SELECT data plane — are resolved
+        // to operations of their own at [`Self::override_operation`] and never reach here;
+        // each needs the store and the calling principal to be answered, which only an
+        // operation is given (see [`select_object_content`] for the one this seam used to
+        // word).
+        let _ = req;
+        None
     }
 
     fn override_protocol(&self) -> Option<&dyn smithy_server_runtime::ServerHttpProtocol> {

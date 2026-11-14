@@ -562,8 +562,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> CompleteMultipart
         // order by part number to create a new object": the object's bytes are the parts'
         // bytes, in the order the list named them, and its entity tag is the multipart tag
         // over those same parts ([`crate::state::multipart_object_etag`]) rather than the
-        // digest of the assembled bytes.
-        let etag = crate::state::multipart_object_etag(&assembled);
+        // digest of the assembled bytes — sealed, where the encryption the upload was
+        // initiated under seals the body, into a tag that is not that digest either
+        // ([`crate::state::stored_object_etag`]), with the `-<parts>` suffix a multipart tag
+        // carries kept.
+        let etag = crate::state::stored_object_etag(
+            &crate::state::multipart_object_etag(&assembled),
+            &upload.encryption,
+        );
         // The checksum the completed object carries: "when you perform a
         // CreateMultipartUpload request, you specify the checksum algorithm" and the
         // checksum type "determines how part-level checksums are combined to create an
