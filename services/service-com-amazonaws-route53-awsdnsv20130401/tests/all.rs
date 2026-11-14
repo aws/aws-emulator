@@ -67,6 +67,11 @@ mod health_check_request_interval_enumeration;
 mod health_check_child_list_bound;
 #[path = "all/health_check_deletion.rs"]
 mod health_check_deletion;
+// Declared beside the status suite: this one is what a checker's report is DERIVED
+// from — the probe of the endpoint the configuration names — and that the series
+// the same probes are folded into agrees with it.
+#[path = "all/health_check_endpoint_probe.rs"]
+mod health_check_endpoint_probe;
 #[path = "all/health_check_last_failure_reason.rs"]
 mod health_check_last_failure_reason;
 #[path = "all/health_check_listing.rs"]

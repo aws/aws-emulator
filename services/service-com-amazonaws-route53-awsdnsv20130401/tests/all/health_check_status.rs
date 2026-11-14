@@ -7,11 +7,18 @@
 //! read out of the health check the account holds — the checkers are the
 //! health-checking Regions the configuration names (all the modelled ones when
 //! it names none), each reporting from an address inside a block
-//! `GetCheckerIpRanges` publishes, with the status the check's `Type` decides
-//! and the instant of the last probe on its `RequestInterval` cadence. A health
+//! `GetCheckerIpRanges` publishes, with the description of the LATEST probe of
+//! that endpoint and the instant of the last probe on its `RequestInterval`
+//! cadence. A health
 //! check nothing is checking — one whose `Type` probes no endpoint, or whose
 //! checks are disabled — has no checker reporting on it, and an id that names no
 //! health check of the account is refused rather than answered.
+//!
+//! Every endpoint these tables configure is one this emulator serves nothing on,
+//! so the probe of it reaches nothing and that is what the checkers report; the
+//! probe of an endpoint the emulator DOES serve, and the `SearchString` predicate
+//! applied to the body it answers with, is driven over two services in
+//! `core/router/tests/all/route53_health_check_string_match.rs`.
 //!
 //! So the tables below drive the status over a SET of health checks rather than
 //! one: every `HealthCheckType` in the model's own value list, several
@@ -29,10 +36,8 @@ use std::net::Ipv4Addr;
 use smithy_server_runtime::MultiServiceRouter;
 
 use service_com_amazonaws_route53_awsdnsv20130401::ops::types::HEALTH_CHECK_REGION_VALUES;
-use service_com_amazonaws_route53_awsdnsv20130401::state::{
-    HEALTH_CHECK_TYPE_CALCULATED, HEALTH_CHECK_TYPE_TCP, STATUS_HTTP_OK,
-    STATUS_TCP_CONNECTION_ESTABLISHED,
-};
+use service_com_amazonaws_route53_awsdnsv20130401::state::endpoint_probe::STATUS_CONNECTION_FAILED;
+use service_com_amazonaws_route53_awsdnsv20130401::state::HEALTH_CHECK_TYPE_CALCULATED;
 
 use crate::checker_ip_ranges::reported_blocks;
 use crate::health_check_updates::update_health_check;
@@ -116,15 +121,14 @@ pub(crate) fn observations_in(reply: &Reply, case: &str) -> Vec<Observation> {
         .collect()
 }
 
-/// The status a checker reports for a health check of `kind`: the criterion that
-/// type sets, which is a connection for a `TCP` check and a response for the
-/// types that send a request.
-fn expected_status(kind: &str) -> &'static str {
-    if kind == HEALTH_CHECK_TYPE_TCP {
-        STATUS_TCP_CONNECTION_ESTABLISHED
-    } else {
-        STATUS_HTTP_OK
-    }
+/// The status a checker reports for a health check whose configured endpoint is
+/// one THIS emulator serves nothing on: no checker of it can connect, so what
+/// every one of them reports is that transport failure. Which criterion the
+/// `Type` sets is immaterial — there was no connection to apply it to — and the
+/// suite that drives a check against an endpoint the emulator DOES serve is
+/// `core/router/tests/all/route53_health_check_string_match.rs`.
+fn expected_status(_kind: &str) -> &'static str {
+    STATUS_CONNECTION_FAILED
 }
 
 /// `(network address, prefix length)` of an `a.b.c.d/nn` block, or `None` when
@@ -269,7 +273,7 @@ async fn one_checker_per_health_checking_region_reports_on_a_health_check_that_p
             assert_eq!(
                 observation.status,
                 expected_status(row.kind),
-                "case {:?}: expected the status its type's criterion decides, got {:?}",
+                "case {:?}: expected the description of a probe that reached nothing, got {:?}",
                 row.kind,
                 observation.status
             );

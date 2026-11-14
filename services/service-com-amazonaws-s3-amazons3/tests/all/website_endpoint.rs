@@ -552,3 +552,47 @@ async fn a_bucket_with_no_website_configuration_serves_no_website() {
         text(&near_miss)
     );
 }
+
+#[tokio::test]
+async fn a_bucket_whose_name_carries_dots_is_served_at_its_own_website_host() {
+    // "A bucket name can consist of … lowercase letters, numbers, dots (.), and hyphens"
+    // (Amazon S3 User Guide, *Bucket naming rules*), and such a bucket is served at
+    // `<bucket>.s3-website-<Region>.amazonaws.com` like any other — so the bucket is
+    // everything in front of the website label, not the host's first label alone. The rows
+    // span the forms a name takes around that reading: several dot-separated parts, one dot,
+    // a part that is only digits, and a plain name beside them.
+    let rows: &[(&str, &str)] = &[
+        ("several dotted parts", "website.dotted.example"),
+        ("one dot", "website.dotted"),
+        ("a numeric part", "website.2026.example"),
+        ("no dot at all", "website-undotted-example"),
+        // A name that itself carries a label of the website endpoint's form: the endpoint's
+        // own label is the LAST one, because the Region and the DNS suffix follow it.
+        ("a part shaped like the website label", "website.s3-website-us-east-1.site"),
+    ];
+    for (case, name) in rows {
+        let router = router();
+        site(&router, name, "").await;
+        for (spelling, host) in [
+            ("the hyphenated form", website_host(name)),
+            ("the dotted form", dotted_website_host(name)),
+            ("the root label's dot", format!("{}.", website_host(name))),
+        ] {
+            let served = website(&router, "GET", &host, "/").await;
+            assert_eq!(
+                served.status,
+                200,
+                "case {case:?} ({spelling}): the site of {name:?} must be served at {host:?}, \
+                 got {} with {:?}",
+                served.status,
+                text(&served)
+            );
+            assert_eq!(
+                text(&served),
+                INDEX_BODY,
+                "case {case:?} ({spelling}): expected the index document, got {:?}",
+                text(&served)
+            );
+        }
+    }
+}

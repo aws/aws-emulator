@@ -392,7 +392,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        _ctx: &smithy_server_runtime::OperationContext<'_>,
+        ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             // Unreachable under the router, which always mounts this service on
@@ -402,103 +402,119 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             })
         })?;
 
-        let mut store = state.lock();
+        // The compare-and-set, under the store guard, in a scope of its own: the
+        // guard is gone by the time the assessment below AWAITS, because a probe
+        // of this health check's endpoint is a call into another service of this
+        // emulator and no store is locked across one.
+        let stored = {
+            let mut store = state.lock();
 
-        // A health check is addressed by the bare id `CreateHealthCheck`
-        // assigned it, which is the id the store is keyed by.
-        let existing: StoredHealthCheck = store
-            .health_checks
-            .get(&input.health_check_id)
-            .cloned()
-            .ok_or_else(|| {
-                UpdateHealthCheckErrorModeled::NoSuchHealthCheck(no_such_health_check(
-                    &input.health_check_id,
-                ))
-            })?;
-
-        // `HealthCheckVersion` is the optimistic-concurrency token: "If the
-        // value in the UpdateHealthCheck request matches the value of
-        // HealthCheckVersion in the health check, Route 53 updates the health
-        // check with the new settings. If the value of HealthCheckVersion in the
-        // health check is greater, the health check was changed after you got
-        // the version number. Route 53 does not update the health check, and it
-        // returns a HealthCheckVersionMismatch error." A request that carries no
-        // version asks for no such guard, so the update proceeds.
-        //
-        // The comparison and the write below are one compare-and-set: the store
-        // guard taken above is held across both, so two requests presenting the
-        // same version cannot both observe it as current — one is applied and
-        // the other is refused here, and the counter moves once. Never read the
-        // version, drop the guard and write under a second one.
-        if let Some(requested) = input
-            .health_check_version
-            .filter(|requested| *requested != existing.version)
-        {
-            return Err(UpdateHealthCheckErrorModeled::HealthCheckVersionMismatch(
-                HealthCheckVersionMismatch {
-                    message: Some(health_check_version_mismatch_message(
+            // A health check is addressed by the bare id `CreateHealthCheck`
+            // assigned it, which is the id the store is keyed by.
+            let existing: StoredHealthCheck = store
+                .health_checks
+                .get(&input.health_check_id)
+                .cloned()
+                .ok_or_else(|| {
+                    UpdateHealthCheckErrorModeled::NoSuchHealthCheck(no_such_health_check(
                         &input.health_check_id,
-                        existing.version,
-                        requested,
+                    ))
+                })?;
+
+            // `HealthCheckVersion` is the optimistic-concurrency token: "If the
+            // value in the UpdateHealthCheck request matches the value of
+            // HealthCheckVersion in the health check, Route 53 updates the health
+            // check with the new settings. If the value of HealthCheckVersion in
+            // the health check is greater, the health check was changed after you
+            // got the version number. Route 53 does not update the health check,
+            // and it returns a HealthCheckVersionMismatch error." A request that
+            // carries no version asks for no such guard, so the update proceeds.
+            //
+            // The comparison and the write below are one compare-and-set: the
+            // store guard taken above is held across both, so two requests
+            // presenting the same version cannot both observe it as current — one
+            // is applied and the other is refused here, and the counter moves
+            // once. Never read the version, drop the guard and write under a
+            // second one.
+            if let Some(requested) = input
+                .health_check_version
+                .filter(|requested| *requested != existing.version)
+            {
+                return Err(UpdateHealthCheckErrorModeled::HealthCheckVersionMismatch(
+                    HealthCheckVersionMismatch {
+                        message: Some(health_check_version_mismatch_message(
+                            &input.health_check_id,
+                            existing.version,
+                            requested,
+                        )),
+                    },
+                )
+                .into());
+            }
+
+            let config = configuration_after(&input, &existing.config);
+
+            // What the update would leave behind has to hold together as a
+            // configuration in its own right: the type's members are as
+            // conditional on each other after an update as they are on a create,
+            // which is why both paths ask the same question of the resulting
+            // configuration.
+            if let Some(problem) = ip_address_problem(&config, &existing.config)
+                .or_else(|| health_check_config_problem(&config))
+            {
+                return Err(UpdateHealthCheckErrorModeled::InvalidInput(InvalidInput {
+                    message: Some(format!("Invalid request: {problem}")),
+                })
+                .into());
+            }
+            if let Some(missing) = store.missing_child_health_check(&config) {
+                return Err(UpdateHealthCheckErrorModeled::InvalidInput(InvalidInput {
+                    message: Some(format!(
+                        "Invalid request: ChildHealthChecks names no health check of this \
+                         account: {missing}"
                     )),
-                },
-            )
-            .into());
-        }
+                })
+                .into());
+            }
 
-        let config = configuration_after(&input, &existing.config);
+            // The write this operation exists for, and the version that records
+            // it: `HealthCheckVersion` is "a sequential counter that Amazon
+            // Route 53 sets to 1 when you create a health check and increments by
+            // 1 each time you update settings for the health check", so every
+            // update that is applied moves it on — which is what makes the token
+            // above reject a caller holding a version from before this update.
+            let stored = store
+                .health_checks
+                .get_mut(&input.health_check_id)
+                .ok_or_else(|| {
+                    UpdateHealthCheckErrorModeled::NoSuchHealthCheck(no_such_health_check(
+                        &input.health_check_id,
+                    ))
+                })?;
+            stored.config = config;
+            stored.version += 1;
+            // This update changed the configuration the checkers assess, so the
+            // next probe is due at once and the description they report is of the
+            // endpoint THIS configuration names: an observation of the
+            // configuration the update replaced is no longer what any checker is
+            // reporting.
+            stored.last_probe = None;
+            if let Some(evaluation) = stored.evaluation.as_mut() {
+                evaluation.reassess_now();
+            }
 
-        // What the update would leave behind has to hold together as a
-        // configuration in its own right: the type's members are as conditional
-        // on each other after an update as they are on a create, which is why
-        // both paths ask the same question of the resulting configuration.
-        if let Some(problem) = ip_address_problem(&config, &existing.config)
-            .or_else(|| health_check_config_problem(&config))
-        {
-            return Err(UpdateHealthCheckErrorModeled::InvalidInput(InvalidInput {
-                message: Some(format!("Invalid request: {problem}")),
-            })
-            .into());
-        }
-        if let Some(missing) = store.missing_child_health_check(&config) {
-            return Err(UpdateHealthCheckErrorModeled::InvalidInput(InvalidInput {
-                message: Some(format!(
-                    "Invalid request: ChildHealthChecks names no health check of this \
-                     account: {missing}"
-                )),
-            })
-            .into());
-        }
-
-        // The write this operation exists for, and the version that records it:
-        // `HealthCheckVersion` is "a sequential counter that Amazon Route 53
-        // sets to 1 when you create a health check and increments by 1 each time
-        // you update settings for the health check", so every update that is
-        // applied moves it on — which is what makes the token above reject a
-        // caller holding a version from before this update.
-        let stored = store
-            .health_checks
-            .get_mut(&input.health_check_id)
-            .ok_or_else(|| {
-                UpdateHealthCheckErrorModeled::NoSuchHealthCheck(no_such_health_check(
-                    &input.health_check_id,
-                ))
-            })?;
-        stored.config = config;
-        stored.version += 1;
-
-        // The response is read back out of the store, so what the caller is told
-        // is what a later GetHealthCheck will tell it.
-        let stored = stored.clone();
-        // The store guard goes before the assessment runs: this update may have
-        // changed what the check assesses (the threshold it debounces by, the
-        // alarm it reads, the children it adds up, whether it is disabled or
-        // inverted), and publishing a probe reaches the CloudWatch metric store,
-        // which is never locked at the same time as this one. Reporting the alarm
-        // an alarm-reading check monitors reads that service's alarm store under
-        // the same rule.
-        drop(store);
-        health_check_status::drive_health_check_metrics(&self.engine);
+            // The response is read back out of the store, so what the caller is
+            // told is what a later GetHealthCheck will tell it.
+            stored.clone()
+        };
+        // The store guard is already gone: this update may have changed what the
+        // check assesses (the endpoint it probes, the threshold it debounces by,
+        // the alarm it reads, the children it adds up, whether it is disabled or
+        // inverted), and the assessment reaches the CloudWatch metric store and
+        // whichever service serves the endpoint — neither of which is ever locked
+        // at the same time as this store. Reporting the alarm an alarm-reading
+        // check monitors reads that service's alarm store under the same rule.
+        health_check_status::drive_health_check_metrics(&self.engine, ctx.callback().clone()).await;
         let monitored_alarm = monitored_alarm::configuration(&*self.engine, &stored.config);
         Ok(UpdateHealthCheckOutput {
             health_check: stored.to_health_check(monitored_alarm),

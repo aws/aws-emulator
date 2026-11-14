@@ -213,128 +213,141 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // against the same thing.
         let config = health_check_config_with_defaults(&input.health_check_config);
 
-        let mut store = state.lock();
+        // The write, under the store guard, in a scope of its own: the guard is
+        // gone by the time the assessment below AWAITS, because a probe of this
+        // health check's endpoint is a call into another service of this emulator
+        // and no store is locked across one.
+        let stored = {
+            let mut store = state.lock();
 
-        // A CALCULATED health check is "healthy" as a function of its children,
-        // so a child it names has to be a health check the account holds.
-        if let Some(missing) = store.missing_child_health_check(&config) {
-            return Err(CreateHealthCheckErrorModeled::InvalidInput(InvalidInput {
-                message: Some(format!(
-                    "Invalid request: HealthCheckConfig.ChildHealthChecks names no health \
-                     check of this account: {missing}"
-                )),
-            })
-            .into());
-        }
+            // A CALCULATED health check is "healthy" as a function of its
+            // children, so a child it names has to be a health check the account
+            // holds.
+            if let Some(missing) = store.missing_child_health_check(&config) {
+                return Err(CreateHealthCheckErrorModeled::InvalidInput(InvalidInput {
+                    message: Some(format!(
+                        "Invalid request: HealthCheckConfig.ChildHealthChecks names no health \
+                         check of this account: {missing}"
+                    )),
+                })
+                .into());
+            }
 
-        // `CallerReference` is the idempotency token. "If you send a
-        // CreateHealthCheck request with the same CallerReference and settings
-        // as a previous request, and if the health check doesn't exist, Amazon
-        // Route 53 creates the health check. If the health check does exist,
-        // Route 53 returns the health check configuration in the response" —
-        // and "with different settings, Route 53 returns a
-        // HealthCheckAlreadyExists error".
-        let named_id = store
-            .health_check_by_caller_reference
-            .get(&input.caller_reference)
-            .cloned();
-        if let Some(named_id) = named_id {
-            // The health check the reference names, or none when it was created
-            // and later deleted: the index outlives the health check, because
-            // the reference stays held after a delete.
-            match store.health_checks.get(&named_id).cloned() {
-                // The same request again: the health check it asked for is
-                // already there, so it is reported rather than duplicated —
-                // nothing is created and no version moves.
-                Some(existing) if existing.config == config => {
-                    let location =
-                        resource_location(ctx, &format!("healthcheck/{}", existing.id));
-                    // The guard goes before the alarm read: the configuration of
-                    // the CloudWatch alarm an alarm-reading check monitors lives
-                    // in CloudWatch's store, and the two stores are never locked
-                    // at once.
-                    drop(store);
-                    let monitored_alarm =
-                        monitored_alarm::configuration(&*self.engine, &existing.config);
-                    return Ok(CreateHealthCheckOutput {
-                        health_check: existing.to_health_check(monitored_alarm),
-                        location,
-                    });
-                }
-                // Everything else is the collision: "the same value for
-                // CallerReference as an existing health check, and one or more
-                // values that differ from the existing health check that has
-                // the same caller reference", and "the same value for
-                // CallerReference as a health check that you created and later
-                // deleted, regardless of the other settings in the request".
-                _ => {
-                    return Err(CreateHealthCheckErrorModeled::HealthCheckAlreadyExists(
-                        HealthCheckAlreadyExists {
-                            message: Some(HEALTH_CHECK_ALREADY_EXISTS_MESSAGE.to_string()),
-                        },
-                    )
-                    .into());
+            // `CallerReference` is the idempotency token. "If you send a
+            // CreateHealthCheck request with the same CallerReference and settings
+            // as a previous request, and if the health check doesn't exist, Amazon
+            // Route 53 creates the health check. If the health check does exist,
+            // Route 53 returns the health check configuration in the response" —
+            // and "with different settings, Route 53 returns a
+            // HealthCheckAlreadyExists error".
+            let named_id = store
+                .health_check_by_caller_reference
+                .get(&input.caller_reference)
+                .cloned();
+            if let Some(named_id) = named_id {
+                // The health check the reference names, or none when it was
+                // created and later deleted: the index outlives the health check,
+                // because the reference stays held after a delete.
+                match store.health_checks.get(&named_id).cloned() {
+                    // The same request again: the health check it asked for is
+                    // already there, so it is reported rather than duplicated —
+                    // nothing is created and no version moves.
+                    Some(existing) if existing.config == config => {
+                        let location =
+                            resource_location(ctx, &format!("healthcheck/{}", existing.id));
+                        // The guard goes before the alarm read: the configuration
+                        // of the CloudWatch alarm an alarm-reading check monitors
+                        // lives in CloudWatch's store, and the two stores are
+                        // never locked at once.
+                        drop(store);
+                        let monitored_alarm =
+                            monitored_alarm::configuration(&*self.engine, &existing.config);
+                        return Ok(CreateHealthCheckOutput {
+                            health_check: existing.to_health_check(monitored_alarm),
+                            location,
+                        });
+                    }
+                    // Everything else is the collision: "the same value for
+                    // CallerReference as an existing health check, and one or more
+                    // values that differ from the existing health check that has
+                    // the same caller reference", and "the same value for
+                    // CallerReference as a health check that you created and later
+                    // deleted, regardless of the other settings in the request".
+                    _ => {
+                        return Err(CreateHealthCheckErrorModeled::HealthCheckAlreadyExists(
+                            HealthCheckAlreadyExists {
+                                message: Some(HEALTH_CHECK_ALREADY_EXISTS_MESSAGE.to_string()),
+                            },
+                        )
+                        .into());
+                    }
                 }
             }
-        }
 
-        // The account's own quota: a caller chooses `CallerReference` freely, so
-        // without this the store would grow for every distinct one it sends.
-        if store.health_checks.len() >= MAX_HEALTH_CHECKS {
-            return Err(CreateHealthCheckErrorModeled::TooManyHealthChecks(
-                TooManyHealthChecks {
-                    message: Some(format!(
-                        "the current account has reached the limit of {MAX_HEALTH_CHECKS} health \
-                         checks"
-                    )),
-                },
-            )
-            .into());
-        }
+            // The account's own quota: a caller chooses `CallerReference` freely,
+            // so without this the store would grow for every distinct one it
+            // sends.
+            if store.health_checks.len() >= MAX_HEALTH_CHECKS {
+                return Err(CreateHealthCheckErrorModeled::TooManyHealthChecks(
+                    TooManyHealthChecks {
+                        message: Some(format!(
+                            "the current account has reached the limit of {MAX_HEALTH_CHECKS} \
+                             health checks"
+                        )),
+                    },
+                )
+                .into());
+            }
 
-        let id = store.mint_health_check_id();
-        let health_check = StoredHealthCheck {
-            id: id.clone(),
-            caller_reference: input.caller_reference.clone(),
-            // The health check's evaluation starts with the create: Route 53
-            // begins assessing the endpoint (or the alarm, or the children) the
-            // configuration names, and reports that assessment as the health
-            // check's CloudWatch series.
-            evaluation: health_check_status::HealthCheckEvaluation::new(
-                &config,
-                ::std::time::SystemTime::now(),
-            ),
-            config,
-            version: FIRST_HEALTH_CHECK_VERSION,
-            // Creating the health check is what starts Route 53 checking its
-            // endpoint, so this instant is the base of the probe cadence
-            // `GetHealthCheckStatus` reports a `CheckedTime` from.
-            created_at_millis: now_millis(),
-            // CreateHealthCheck takes no tags; a health check is tagged
-            // afterwards, through ChangeTagsForResource.
-            tags: BTreeMap::new(),
+            let id = store.mint_health_check_id();
+            let health_check = StoredHealthCheck {
+                id: id.clone(),
+                caller_reference: input.caller_reference.clone(),
+                // The health check's evaluation starts with the create: Route 53
+                // begins assessing the endpoint (or the alarm, or the children)
+                // the configuration names, and reports that assessment as the
+                // health check's CloudWatch series.
+                evaluation: health_check_status::HealthCheckEvaluation::new(
+                    &config,
+                    ::std::time::SystemTime::now(),
+                ),
+                config,
+                version: FIRST_HEALTH_CHECK_VERSION,
+                // Creating the health check is what starts Route 53 checking its
+                // endpoint, so this instant is the base of the probe cadence
+                // `GetHealthCheckStatus` reports a `CheckedTime` from.
+                created_at_millis: now_millis(),
+                // CreateHealthCheck takes no tags; a health check is tagged
+                // afterwards, through ChangeTagsForResource.
+                tags: BTreeMap::new(),
+                // Nothing has probed the endpoint yet: the assessment this create
+                // drives below is the first probe, and what it observes is what
+                // the checkers then report.
+                last_probe: None,
+            };
+            store
+                .health_check_by_caller_reference
+                .insert(input.caller_reference, id.clone());
+            // Insert and read back in ONE step: what the caller is told is read out
+            // of the store it was just written to, so a later GetHealthCheck tells
+            // it the same thing.
+            store
+                .health_checks
+                .entry(id.clone())
+                .or_insert(health_check)
+                .clone()
         };
-        store
-            .health_check_by_caller_reference
-            .insert(input.caller_reference, id.clone());
-        // Insert and read back in ONE step: what the caller is told is read out
-        // of the store it was just written to, so a later GetHealthCheck tells
-        // it the same thing.
-        let stored = store
-            .health_checks
-            .entry(id.clone())
-            .or_insert(health_check)
-            .clone();
-        // The store guard goes before the assessment runs: publishing a probe
-        // reaches the CloudWatch metric store, and reporting the alarm an
-        // alarm-reading check monitors reads that service's alarm store — and the
-        // two stores are never locked at once.
-        drop(store);
-        health_check_status::drive_health_check_metrics(&self.engine);
+        // The store guard is already gone: publishing a probe reaches the
+        // CloudWatch metric store and probing the endpoint reaches whichever
+        // service serves it, and no store of another service is ever locked at the
+        // same time as this one. Reporting the alarm an alarm-reading check
+        // monitors reads that service's alarm store under the same rule.
+        health_check_status::drive_health_check_metrics(&self.engine, ctx.callback().clone()).await;
         let monitored_alarm = monitored_alarm::configuration(&*self.engine, &stored.config);
+        let location = resource_location(ctx, &format!("healthcheck/{}", stored.id));
         Ok(CreateHealthCheckOutput {
             health_check: stored.to_health_check(monitored_alarm),
-            location: resource_location(ctx, &format!("healthcheck/{id}")),
+            location,
         })
     }
 }

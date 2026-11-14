@@ -136,7 +136,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        _ctx: &smithy_server_runtime::OperationContext<'_>,
+        ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             // Unreachable under the router, which always mounts this service on
@@ -146,37 +146,43 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             })
         })?;
 
-        let mut store = state.lock();
+        // The delete, under the store guard, in a scope of its own: the guard is
+        // gone by the time the assessment below AWAITS, because a probe of a
+        // health check's endpoint is a call into another service of this emulator
+        // and no store is locked across one.
+        {
+            let mut store = state.lock();
 
-        // A health check is addressed by the bare id `CreateHealthCheck`
-        // assigned it, which is the id the store is keyed by. Taking the record
-        // out IS the delete: "Amazon Route 53 does not prevent you from deleting
-        // a health check even if the health check is associated with one or more
-        // resource record sets", and `HealthCheckInUse`'s own documentation says
-        // that error "is not in use", so nothing this store holds can refuse the
-        // call — a record set keeps the id it referenced, dangling.
-        let deleted = store
-            .health_checks
-            .remove(&input.health_check_id)
-            .ok_or_else(|| {
-                DeleteHealthCheckErrorModeled::NoSuchHealthCheck(no_such_health_check(
-                    &input.health_check_id,
-                ))
-            })?;
+            // A health check is addressed by the bare id `CreateHealthCheck`
+            // assigned it, which is the id the store is keyed by. Taking the
+            // record out IS the delete: "Amazon Route 53 does not prevent you
+            // from deleting a health check even if the health check is associated
+            // with one or more resource record sets", and `HealthCheckInUse`'s
+            // own documentation says that error "is not in use", so nothing this
+            // store holds can refuse the call — a record set keeps the id it
+            // referenced, dangling.
+            let deleted = store
+                .health_checks
+                .remove(&input.health_check_id)
+                .ok_or_else(|| {
+                    DeleteHealthCheckErrorModeled::NoSuchHealthCheck(no_such_health_check(
+                        &input.health_check_id,
+                    ))
+                })?;
 
-        // The health check's `CallerReference` outlives it, so the index
-        // `CreateHealthCheck` recognises a reference by keeps the entry: "the
-        // same value for CallerReference as a health check that you created and
-        // later deleted, regardless of the other settings in the request" is one
-        // of the conditions that create refuses.
-        store.retain_deleted_health_check_reference(deleted.caller_reference);
+            // The health check's `CallerReference` outlives it, so the index
+            // `CreateHealthCheck` recognises a reference by keeps the entry: "the
+            // same value for CallerReference as a health check that you created
+            // and later deleted, regardless of the other settings in the request"
+            // is one of the conditions that create refuses.
+            store.retain_deleted_health_check_reference(deleted.caller_reference);
+        }
 
-        // The store guard goes before the assessment runs: the deleted health
-        // check is no longer assessed, and publishing the remaining checks'
-        // probes reaches the CloudWatch metric store, which is never locked at
-        // the same time as this one.
-        drop(store);
-        health_check_status::drive_health_check_metrics(&self.engine);
+        // The store guard is already gone: the deleted health check is no longer
+        // assessed, and assessing the ones that remain reaches the CloudWatch
+        // metric store and whichever service serves each endpoint, neither of
+        // which is ever locked at the same time as this store.
+        health_check_status::drive_health_check_metrics(&self.engine, ctx.callback().clone()).await;
         Ok(DeleteHealthCheckOutput {})
     }
 }

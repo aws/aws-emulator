@@ -35,6 +35,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// publishes that assessment as.
 pub mod health_check_status;
 
+/// The probe a health checker makes of an endpoint-type health check's endpoint,
+/// and the description it reports what it observed as.
+pub mod endpoint_probe;
+
 /// Where a simulated DNS query appears to come from, which is what a geolocation
 /// record set is selected by.
 pub mod client_location;
@@ -1195,6 +1199,16 @@ pub struct StoredHealthCheck {
     /// probe schedule at all; see
     /// [`health_check_status::HealthCheckEvaluation`].
     pub evaluation: Option<health_check_status::HealthCheckEvaluation>,
+    /// What the LATEST probe of this health check's endpoint observed, or `None`
+    /// when no probe of it has been made yet — a check whose type probes no
+    /// endpoint, or one whose checks are disabled, so "Route 53 stops submitting
+    /// requests to your application, server, or other resource".
+    ///
+    /// This is the single-probe observation the checkers report
+    /// ([`StoredHealthCheck::reported_status`]); the probe that produced it is
+    /// also the observation the aggregate assessment beside it was folded from,
+    /// so the two planes of the API describe one endpoint rather than two.
+    pub last_probe: Option<endpoint_probe::ProbeReport>,
 }
 
 impl StoredHealthCheck {
@@ -1316,35 +1330,42 @@ impl StoredHealthCheck {
         self.created_at_millis + (elapsed / interval) * interval
     }
 
-    /// What one health checker reports about this health check's endpoint.
+    /// What one health checker reports about this health check's endpoint, or
+    /// `None` when no probe of it has been made.
     ///
-    /// The description names the criterion the check's `Type` sets — a TCP
-    /// connection for a `TCP` check, a response for the types that send a
-    /// request — and reports it as met. The emulator reaches a caller's endpoint
-    /// over no network, and its own world holds nothing that drops a connection,
-    /// answers a non-success status or withholds the body a string-match check
-    /// searches, so a checker of an endpoint this service is checking has no
-    /// failure to report. What the stored configuration decides is WHICH
-    /// checkers report ([`StoredHealthCheck::checker_regions`]), WHETHER any do
-    /// ([`StoredHealthCheck::endpoint_is_being_checked`]) and WHEN they last did
-    /// ([`StoredHealthCheck::last_checked_at_millis`]).
-    pub fn reported_status(&self) -> &'static str {
-        if self.config.r#type == HEALTH_CHECK_TYPE_TCP {
-            return STATUS_TCP_CONNECTION_ESTABLISHED;
-        }
-        STATUS_HTTP_OK
+    /// The description of the LATEST probe
+    /// ([`endpoint_probe::probe`]): the criterion the check's `Type` sets, applied
+    /// to what that probe observed — a connection for a `TCP` check, the answer
+    /// for the types that send a request, and the answer's body for the types that
+    /// search it for `SearchString`. So the description follows the ENDPOINT: a
+    /// body that stops carrying the string a string-match check searches for turns
+    /// every checker's `Success: ` into a `Failure: ` with the stored
+    /// configuration and the `HealthCheckVersion` untouched, which is what a
+    /// health check exists to report.
+    ///
+    /// Reading it is a pure read: the probe behind it was made by the checker
+    /// clock, on the cadence the stored due instants set
+    /// ([`health_check_status::drive_health_check_metrics`]), so what a caller is
+    /// told does not depend on whether anybody called.
+    pub fn reported_status(&self) -> Option<&str> {
+        self.last_probe.as_ref().map(|probe| probe.status.as_str())
     }
 
     /// The modelled `HealthCheckObservation` list `GetHealthCheckStatus`
     /// reports: one observation per health checker checking this endpoint, or
     /// none when nothing is checking it (see
-    /// [`StoredHealthCheck::endpoint_is_being_checked`]).
+    /// [`StoredHealthCheck::endpoint_is_being_checked`]) or when no probe of it
+    /// has been made yet — a checker with nothing observed reports nothing rather
+    /// than a status no probe stands behind.
     pub fn to_health_check_observations(&self, now_millis: i64) -> Vec<HealthCheckObservation> {
         if !self.endpoint_is_being_checked() {
             return Vec::new();
         }
+        let Some(status) = self.reported_status() else {
+            return Vec::new();
+        };
         let report = StatusReport {
-            status: Some(self.reported_status().to_string()),
+            status: Some(status.to_string()),
             checked_time: Some(::aws_smithy_types::DateTime::from_millis(
                 self.last_checked_at_millis(now_millis),
             )),
@@ -1392,13 +1413,15 @@ impl StoredHealthCheck {
 const MILLIS_PER_SECOND: i64 = 1_000;
 
 /// What a health checker reports for an endpoint that answered the request an
-/// `HTTP`, `HTTPS`, `HTTP_STR_MATCH` or `HTTPS_STR_MATCH` check sends it.
+/// `HTTP`, `HTTPS`, `HTTP_STR_MATCH` or `HTTPS_STR_MATCH` check sends it with the
+/// lowest status those types accept.
 ///
 /// `StatusReport$Status` is "a description of the status of the health check
 /// endpoint as reported by one of the Amazon Route 53 health checkers" — free
 /// text the model constrains in no way — and Route 53 writes such a description
 /// as a sentence that opens with `Success: ` or `Failure: ` and names what the
-/// checker observed.
+/// checker observed. The description of ANY answer is built from the status the
+/// endpoint gave ([`endpoint_probe`]); this is that description for a `200`.
 pub const STATUS_HTTP_OK: &str = "Success: HTTP Status Code 200, OK";
 
 /// What a health checker reports for an endpoint that accepted the connection a
@@ -1406,7 +1429,11 @@ pub const STATUS_HTTP_OK: &str = "Success: HTTP Status Code 200, OK";
 pub const STATUS_TCP_CONNECTION_ESTABLISHED: &str = "Success: TCP connection established";
 
 /// What a checker's `StatusReport$Status` opens with when the probe it describes
-/// FAILED, as opposed to the `Success: ` the descriptions above open with.
+/// PASSED its type's criterion.
+pub const STATUS_SUCCESS_PREFIX: &str = "Success: ";
+
+/// What a checker's `StatusReport$Status` opens with when the probe it describes
+/// FAILED, as opposed to the [`STATUS_SUCCESS_PREFIX`] of one that did not.
 ///
 /// The one place that distinction is drawn, so the reader of a check's last
 /// failure reason ([`StoredHealthCheck::to_last_failure_observations`]) and the

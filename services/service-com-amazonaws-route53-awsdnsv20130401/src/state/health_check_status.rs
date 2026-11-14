@@ -23,9 +23,13 @@
 //! `HealthCheckConfig$Type` documents how each kind of health check is assessed,
 //! and [`observe`] follows it:
 //!
-//! * the endpoint types try to reach an endpoint of the caller's. This emulator
-//!   makes no outbound connection, so no endpoint outside it answers one of its
-//!   health checkers and the probe FAILS;
+//! * the endpoint types try to reach an endpoint of the caller's, which this
+//!   emulator's checkers do over its own in-process transport
+//!   ([`endpoint_probe`]): the endpoints they can reach are the ones this
+//!   emulator itself serves, and the criterion the type documents — a
+//!   connection, an accepted status, the `SearchString` the answer's body
+//!   carries — decides whether the probe PASSES. An endpoint nothing here serves
+//!   is one no checker could connect to, so its probe fails;
 //! * `CALCULATED` "adds up the number of health checks that Route 53 health
 //!   checkers consider to be healthy and compares that number with the value of
 //!   `HealthThreshold`" — the children's own current assessments, held right
@@ -95,6 +99,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use ::service_com_amazonaws_cloudwatch_graniteserviceversion20100801 as cloudwatch;
 
+use ::smithy_server_runtime::EmbeddedEmulator;
+
+use super::endpoint_probe::{self, ProbeReport};
 use super::{
     ComAmazonawsRoute53Awsdnsv20130401State, StoredHealthCheck, DEFAULT_FAILURE_THRESHOLD,
     DEFAULT_REQUEST_INTERVAL, ENDPOINT_HEALTH_CHECK_TYPES, HEALTH_CHECK_TYPE_CALCULATED,
@@ -230,6 +237,14 @@ impl HealthCheckEvaluation {
         self.healthy
     }
 
+    /// Bring the next probe forward to NOW, which is what a write that changed
+    /// what this health check assesses leaves behind: the checkers assess the
+    /// configuration the write stored rather than carrying on reporting an
+    /// observation of the one it replaced.
+    pub fn reassess_now(&mut self) {
+        self.next_probe_at = Instant::now();
+    }
+
     /// Fold one observation into the status, which moves only once `threshold`
     /// consecutive observations have disagreed with it.
     fn observed(&mut self, observation: Observation, threshold: u32) {
@@ -312,23 +327,29 @@ fn failure_threshold(config: &HealthCheckConfig) -> u32 {
     configured.max(1).unsigned_abs()
 }
 
-/// What one probe of `config` observes, given the status the account's health
-/// checks report (`reported`) and the state of the CloudWatch alarms the
-/// alarm-backed checks name (`alarm_states`).
+/// What one probe of `config` observes, given what the probe of its endpoint
+/// reported (`probe`), the status the account's health checks report (`reported`)
+/// and the state of the CloudWatch alarms the alarm-backed checks name
+/// (`alarm_states`).
 ///
 /// `None` is "nothing was assessed", which is what an
 /// `InsufficientDataHealthStatus` of `LastKnownStatus` asks for: the status the
 /// check already reports stays.
 fn observe(
     config: &HealthCheckConfig,
+    probe: Option<&ProbeReport>,
     reported: &HashMap<String, Option<bool>>,
     alarm_states: &HashMap<String, Option<String>>,
 ) -> Observation {
     match config.r#type.as_str() {
-        // An endpoint of the caller's: this emulator's health checkers make no
-        // outbound connection, so nothing outside the emulator answers them and
-        // the probe fails.
-        kind if ENDPOINT_HEALTH_CHECK_TYPES.contains(&kind) => Some(false),
+        // An endpoint of the caller's: what the probe of that endpoint observed
+        // ([`endpoint_probe`]), which is the SAME observation the checkers report
+        // as this check's `StatusReport` — so the series and the checkers cannot
+        // disagree about one endpoint. A round in which no probe was made (a
+        // disabled check, a configuration with no endpoint) assessed nothing.
+        kind if ENDPOINT_HEALTH_CHECK_TYPES.contains(&kind) => {
+            probe.map(|report| report.healthy)
+        }
         HEALTH_CHECK_TYPE_CALCULATED => {
             // "Route 53 adds up the number of health checks that Route 53 health
             // checkers consider to be healthy and compares that number with the
@@ -396,11 +417,19 @@ const INSUFFICIENT_DATA_UNHEALTHY: &str = "Unhealthy";
 /// probes this materialises are the ones the stored due instants have already
 /// made due, so what a caller sees does not depend on whether anybody called.
 ///
+/// `transport` is the handle this plane probes an endpoint over, which a write is
+/// handed with the request it is serving (`OperationContext::callback`) and the
+/// clock it starts keeps: every one of them serves this same emulator and this
+/// same state, so which is kept cannot change what a probe reaches.
+///
 /// With no async runtime to spawn onto there is no clock, and the probes due at
 /// the moment of the write are then the whole series until the next write — the
 /// router always runs on one.
-pub fn drive_health_check_metrics<Eng: Send + Sync + 'static>(engine: &::std::sync::Arc<Eng>) {
-    publish_due_probes(&**engine);
+pub async fn drive_health_check_metrics<Eng: Send + Sync + 'static>(
+    engine: &::std::sync::Arc<Eng>,
+    transport: EmbeddedEmulator,
+) {
+    publish_due_probes(&**engine, &transport).await;
     let Some(state) = super::service_state(&**engine) else {
         return;
     };
@@ -426,7 +455,7 @@ pub fn drive_health_check_metrics<Eng: Send + Sync + 'static>(engine: &::std::sy
             // keeps a due probe from costing a CPU-bound spin, and it hands the
             // runtime back between wake-ups.
             ::tokio::time::sleep(wait).await;
-            publish_due_probes(&*engine);
+            publish_due_probes(&*engine, &transport).await;
         }
         if capped {
             // Only THIS clock's claim, so a clock started since keeps its own.
@@ -510,18 +539,24 @@ fn next_probe_wait_or_release(
 /// each assessment is reported as.
 ///
 /// Three steps, so no store guard is ever held over work a caller's configuration
-/// sizes and the two services' stores are never locked at once:
+/// sizes, over a call into another service, or while that service's own store is
+/// locked:
 ///
 /// 1. under THIS service's guard, snapshot what the assessments read — which
 ///    checks are due, the configuration each is assessed by, and the status every
 ///    check of the account reports;
-/// 2. with NO guard held, read the alarm states the alarm-backed checks name from
-///    CloudWatch's store and compute every assessment;
-/// 3. under this service's guard again, fold each assessment into its check and
+/// 2. with NO guard held, PROBE the endpoint each due endpoint-type check names
+///    ([`endpoint_probe`]), read the alarm states the alarm-backed checks name
+///    from CloudWatch's store, and compute every assessment;
+/// 3. under this service's guard again, record each endpoint check's probe as the
+///    observation its checkers report, fold each assessment into its check and
 ///    take the datapoint it is published as — arithmetic per check, with dueness
 ///    re-checked so two passes cannot publish one probe twice — and append the
 ///    datapoints once that guard is gone.
-fn publish_due_probes<Eng: Send + Sync + 'static>(engine: &Eng) {
+async fn publish_due_probes<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    transport: &EmbeddedEmulator,
+) {
     let Some(state) = super::service_state(engine) else {
         return;
     };
@@ -546,6 +581,17 @@ fn publish_due_probes<Eng: Send + Sync + 'static>(engine: &Eng) {
             .collect();
         (due, reported)
     };
+    // The probes of this round, made with no guard held and BOUNDED as a whole by
+    // [`PROBE_ROUND_BUDGET`], so neither the number of health checks an account holds nor an
+    // endpoint that answers slowly decides how long the write that drove this round takes. A
+    // DISABLED check is not probed at all — "Route 53 stops submitting requests to your
+    // application, server, or other resource" — so no request is sent for it.
+    let mut probes: HashMap<String, ProbeReport> = ::tokio::time::timeout(
+        PROBE_ROUND_BUDGET,
+        probe_round(transport, &due),
+    )
+    .await
+    .unwrap_or_default();
     let alarm_names: Vec<String> = due
         .iter()
         .filter_map(|(_, config)| config.alarm_identifier.as_ref())
@@ -555,7 +601,7 @@ fn publish_due_probes<Eng: Send + Sync + 'static>(engine: &Eng) {
     let assessed: Vec<(String, Observation)> = due
         .into_iter()
         .map(|(id, config)| {
-            let observation = observe(&config, &reported, &alarm_states);
+            let observation = observe(&config, probes.get(&id), &reported, &alarm_states);
             (id, observation)
         })
         .collect();
@@ -572,6 +618,9 @@ fn publish_due_probes<Eng: Send + Sync + 'static>(engine: &Eng) {
                 continue;
             };
             let disabled = check.config.disabled == Some(true);
+            let probe = probes.remove(&id);
+            let probed_nothing = disabled
+                || !ENDPOINT_HEALTH_CHECK_TYPES.contains(&check.config.r#type.as_str());
             let Some(evaluation) = check.evaluation.as_mut() else {
                 continue;
             };
@@ -587,6 +636,16 @@ fn publish_due_probes<Eng: Send + Sync + 'static>(engine: &Eng) {
                 evaluation.observed(observation, threshold);
             }
             let stamp = evaluation.advance(interval);
+            // What this round's probe observed is what the checkers report for it
+            // ([`StoredHealthCheck::reported_status`]). A check nothing probes has
+            // nothing to report; one whose probe this round did not get to keeps
+            // the observation its checkers last made, rather than losing it to a
+            // round that ran out of budget.
+            if let Some(report) = probe {
+                check.last_probe = Some(report);
+            } else if probed_nothing {
+                check.last_probe = None;
+            }
             let healthy = check.reported_healthy().unwrap_or(true);
             published.push((
                 id,
@@ -601,6 +660,41 @@ fn publish_due_probes<Eng: Send + Sync + 'static>(engine: &Eng) {
     };
     append_datapoints(engine, &published);
 }
+
+/// Probe the endpoints of the due checks in `due`, answering what each probe observed.
+///
+/// Called under the round budget its caller holds it to, so the work one round makes is
+/// bounded whatever the account holds. A disabled check is not probed ("Route 53 stops
+/// submitting requests to your application, server, or other resource"), and a type with no
+/// endpoint has nothing to probe.
+///
+/// Call it with no store guard held: each probe awaits an answer from whichever service of
+/// this emulator serves the endpoint.
+async fn probe_round(
+    transport: &EmbeddedEmulator,
+    due: &[(String, HealthCheckConfig)],
+) -> HashMap<String, ProbeReport> {
+    let mut probes: HashMap<String, ProbeReport> = HashMap::new();
+    for (id, config) in due {
+        if config.disabled == Some(true) {
+            continue;
+        }
+        if let Some(report) = endpoint_probe::probe(transport, config).await {
+            probes.insert(id.clone(), report);
+        }
+    }
+    probes
+}
+
+/// The longest ONE round of probing may take in total, whatever its endpoints do and however
+/// many of them a round has due at once.
+///
+/// One probe's own bound ([`endpoint_probe`]'s timeout), applied to the whole round: so a
+/// write that drives a round, and the checker clock's own wake-up, are held for no longer
+/// than a single probe can take, rather than for a span that grows with the number of health
+/// checks an account holds. A check a round ran out of budget for keeps the observation its
+/// checkers last made and is probed by the next round, whose due instant has not moved.
+const PROBE_ROUND_BUDGET: Duration = Duration::from_secs(5);
 
 /// The health checks whose next probe is due at `now`, in store order.
 fn due_checks(

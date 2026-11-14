@@ -89,17 +89,32 @@ fn addressed_bucket_in_host(host: &str) -> Option<String> {
     // The port is not part of the name, and neither is any userinfo in front of it.
     let host = host.rsplit('@').next().unwrap_or(host);
     let host = host.split(':').next().unwrap_or(host);
-    let (bucket, rest) = host.split_once('.')?;
-    let label = rest.split('.').next().unwrap_or(rest);
-    // The two published spellings and nothing else: the label IS `s3-website` (the dotted
-    // form), or it carries the Region after a hyphen (the older one). A label that merely
-    // begins with those characters is another host.
-    if label != WEBSITE_ENDPOINT_LABEL
-        && !label.starts_with(&format!("{WEBSITE_ENDPOINT_LABEL}-"))
-    {
+    // A fully qualified name may be written with the root label's dot, which names the same
+    // host.
+    let host = host.trim_end_matches('.');
+    // The bucket is everything in FRONT of the website label, not the first label alone: "a
+    // bucket name can consist of … lowercase letters, numbers, dots (.), and hyphens"
+    // (Amazon S3 User Guide, *Bucket naming rules*), and such a bucket is served at
+    // `<bucket>.s3-website-<Region>.amazonaws.com` like any other — so a name carrying dots
+    // is not read as a one-label bucket under some other host. The LAST such label is the
+    // endpoint's, because what follows it is the Region and the DNS suffix: a bucket whose
+    // own name carries a label of that form keeps it.
+    let labels: Vec<&str> = host.split('.').collect();
+    let at = labels.iter().rposition(|label| names_website_endpoint(label))?;
+    if at == 0 {
         return None;
     }
-    super::names_a_bucket(bucket).then(|| bucket.to_string())
+    let bucket = labels[..at].join(".");
+    super::names_a_bucket(&bucket).then_some(bucket)
+}
+
+/// Whether `label` is the host label that says a request addresses the WEBSITE endpoint.
+///
+/// The two published spellings and nothing else: the label IS [`WEBSITE_ENDPOINT_LABEL`] (the
+/// dotted form), or it carries the Region after a hyphen (the older one). A label that merely
+/// begins with those characters is another host.
+fn names_website_endpoint(label: &str) -> bool {
+    label == WEBSITE_ENDPOINT_LABEL || label.starts_with(&format!("{WEBSITE_ENDPOINT_LABEL}-"))
 }
 
 /// The status a redirect takes when the rule that calls for it names no `HttpRedirectCode`:

@@ -2236,3 +2236,14 @@ mod cloudformation_rest_api_request_validation;
 // which declared it a second time and compiled neither.)
 // (`https_front_door_concurrent_pooled_producer` is declared ONCE, in the span above: it was
 // time and compiled neither.)
+// Declared beside the suite above, in this quiet span of the sorted list rather than at the
+// tail of this file where every concurrently landing router suite appends its line: this one
+// is the health-check PROBE of an endpoint the emulator itself serves.
+#[path = "all/route53_health_check_string_match.rs"]
+mod route53_health_check_string_match;
+// (`cloudtrail_read_only_api_calls` is declared in the sorted block beside the other
+// CloudTrail suites already: a module may be declared only once, and a second `mod` item for
+// it compiles neither.)
+// (`lambda_signed_write_to_an_aoss_collection_endpoint` is declared once, in the span above:
+// two landings each appended their own copy here, and a file loaded as a module twice does
+// not compile.)
