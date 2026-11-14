@@ -766,13 +766,15 @@ pub fn label_limit_message() -> String {
 ///
 /// The standard tier's ceiling is one an upgrade lifts, so its refusal says so and
 /// points at the tier guide; the advanced tier's is the service's own ceiling, with no
-/// higher tier to name.
+/// higher tier to name, so its refusal opens by naming the VALUE as what was too large.
+/// Each sentence carries the tier's own published limit and nothing from the request:
+/// the size the caller sent is never echoed back.
 pub fn value_limit_message(tier: &str) -> String {
     let limit = value_limit(tier);
     if tier == TIER_ADVANCED {
         format!(
-            "{TIER_ADVANCED} tier parameters support a maximum parameter value of {limit} \
-             characters."
+            "The specified parameter value is too large. {TIER_ADVANCED}-tier parameters \
+             support a maximum parameter value of {limit} characters."
         )
     } else {
         format!(

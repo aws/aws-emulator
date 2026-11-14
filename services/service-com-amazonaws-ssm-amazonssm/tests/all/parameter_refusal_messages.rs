@@ -855,8 +855,10 @@ const ADVANCED_LIMIT: usize = 8 * 1024;
 const TIER_GUIDE: &str = "https://docs.aws.amazon.com/systems-manager/latest/userguide/parameter-store-advanced-parameters.html";
 
 /// A value past the tier's content size limit is refused with that tier's sentence: the
-/// standard tier's offers the upgrade that lifts the ceiling, and each limit is the
-/// published one.
+/// standard tier's offers the upgrade that lifts the ceiling, the advanced tier's — which
+/// no upgrade lifts — names the value as what was too large, and each limit is the
+/// published one. Neither sentence echoes the size the request carried, and a refused put
+/// leaves no parameter behind.
 #[tokio::test]
 async fn the_tier_ceiling_refusal_offers_the_upgrade() {
     let router = router();
@@ -865,8 +867,10 @@ async fn the_tier_ceiling_refusal_offers_the_upgrade() {
          characters. To create a larger parameter value, upgrade the parameter to use the \
          advanced-parameter tier. For more information, see {TIER_GUIDE}"
     );
-    let advanced =
-        format!("Advanced tier parameters support a maximum parameter value of {ADVANCED_LIMIT} characters.");
+    let advanced = format!(
+        "The specified parameter value is too large. Advanced-tier parameters support a \
+         maximum parameter value of {ADVANCED_LIMIT} characters."
+    );
 
     /// One row: the tier the request names, the value's size, and the sentence (or `None`
     /// where the value is within the limit).
@@ -904,6 +908,12 @@ async fn the_tier_ceiling_refusal_offers_the_upgrade() {
             Some(&advanced),
         ),
         (
+            "far past the advanced limit",
+            Some("Advanced"),
+            ADVANCED_LIMIT * 2,
+            Some(&advanced),
+        ),
+        (
             "intelligent tiering past the advanced limit",
             Some("Intelligent-Tiering"),
             ADVANCED_LIMIT + 1,
@@ -922,11 +932,29 @@ async fn the_tier_ceiling_refusal_offers_the_upgrade() {
                 status, 200,
                 "case {case:?}: the value is within the limit, got {status} {body}"
             ),
-            Some(sentence) => assert_eq!(
-                refusal(status, &body),
-                (400, "ValidationException".to_string(), (*sentence).clone()),
-                "case {case:?}: expected the tier's own ceiling sentence, got {status} {body}"
-            ),
+            Some(sentence) => {
+                assert_eq!(
+                    refusal(status, &body),
+                    (400, "ValidationException".to_string(), (*sentence).clone()),
+                    "case {case:?}: expected the tier's own ceiling sentence, got {status} \
+                     {body}"
+                );
+                // The sentence is the tier's, not the request's: the size the caller sent
+                // is nowhere in it, and the refused put stored nothing.
+                let sent = size.to_string();
+                assert!(
+                    !error_message(&body).contains(&sent),
+                    "case {case:?}: the sentence echoes the request's size {sent}, got {}",
+                    error_message(&body)
+                );
+                let (status, read) = call(&router, "GetParameter", &json!({ "Name": name })).await;
+                assert_eq!(
+                    (status, error_code(&read).as_str()),
+                    (400, "ParameterNotFound"),
+                    "case {case:?}: the refused put left a parameter behind, got {status} \
+                     {read}"
+                );
+            }
         }
     }
 }
