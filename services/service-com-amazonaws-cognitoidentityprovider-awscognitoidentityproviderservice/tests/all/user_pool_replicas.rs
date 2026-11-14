@@ -58,8 +58,9 @@ const UPDATE_STATUSES: [&str; 2] = [REPLICA_STATUS_ACTIVE, REPLICA_STATUS_INACTI
 /// How many overlapping updates of one replica the race test drives.
 const RACER_COUNTS: [usize; 3] = [2, 3, 5];
 
-/// One emulator with just this service mounted.
-fn router() -> MultiServiceRouter {
+/// One emulator with just this service mounted. Shared with the sibling replica
+/// suites, which drive the same wire surface.
+pub(crate) fn router() -> MultiServiceRouter {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     router.register_service(cognito_idp::EmulatedService::new(engine));
@@ -68,7 +69,11 @@ fn router() -> MultiServiceRouter {
 }
 
 /// Call `operation` with `body` and return its status and JSON response body.
-async fn call(router: &MultiServiceRouter, operation: &str, body: &Value) -> (u16, Value) {
+pub(crate) async fn call(
+    router: &MultiServiceRouter,
+    operation: &str,
+    body: &Value,
+) -> (u16, Value) {
     let request = http::Request::builder()
         .method("POST")
         .uri("/")
@@ -97,7 +102,7 @@ async fn call(router: &MultiServiceRouter, operation: &str, body: &Value) -> (u1
 }
 
 /// Call `operation`, requiring success, and return its response body.
-async fn ok(router: &MultiServiceRouter, operation: &str, body: &Value) -> Value {
+pub(crate) async fn ok(router: &MultiServiceRouter, operation: &str, body: &Value) -> Value {
     let (status, payload) = call(router, operation, body).await;
     assert_eq!(
         status, 200,
@@ -107,7 +112,7 @@ async fn ok(router: &MultiServiceRouter, operation: &str, body: &Value) -> Value
 }
 
 /// The `__type` of an error body, which is the wire error code.
-fn error_code(payload: &Value) -> &str {
+pub(crate) fn error_code(payload: &Value) -> &str {
     payload
         .get("__type")
         .and_then(Value::as_str)
@@ -115,7 +120,7 @@ fn error_code(payload: &Value) -> &str {
 }
 
 /// The `message` member of an error body.
-fn error_message(payload: &Value) -> &str {
+pub(crate) fn error_message(payload: &Value) -> &str {
     payload
         .get("message")
         .and_then(Value::as_str)
@@ -130,7 +135,7 @@ fn error_message(payload: &Value) -> &str {
 /// to hold to be replicated at all: "you must use a multi-region key to enable
 /// multi-region replication for a user pool"
 /// (`smithy_query(query="doc",shape="KeyConfigurationType",member="KeyType")`).
-async fn pool_in_tier(
+pub(crate) async fn pool_in_tier(
     router: &MultiServiceRouter,
     name: &str,
     tier: Option<&str>,
@@ -159,7 +164,7 @@ async fn pool_in_tier(
 /// `pool_arn` with its Region field replaced by `region`: the ARN a replica of
 /// that pool carries, since a replicated user pool keeps ONE id across the
 /// Regions it is replicated to.
-fn arn_in_region(pool_arn: &str, region: &str) -> String {
+pub(crate) fn arn_in_region(pool_arn: &str, region: &str) -> String {
     let mut fields: Vec<&str> = pool_arn.split(':').collect();
     assert!(
         fields.len() > 3,
@@ -171,7 +176,7 @@ fn arn_in_region(pool_arn: &str, region: &str) -> String {
 
 /// The replicas `ListUserPoolReplicas` reports for `user_pool_id`, in the order
 /// the listing served them.
-async fn replicas(router: &MultiServiceRouter, user_pool_id: &str) -> Vec<Value> {
+pub(crate) async fn replicas(router: &MultiServiceRouter, user_pool_id: &str) -> Vec<Value> {
     let listed = ok(
         router,
         "ListUserPoolReplicas",
@@ -189,7 +194,7 @@ async fn replicas(router: &MultiServiceRouter, user_pool_id: &str) -> Vec<Value>
 }
 
 /// The entry `ListUserPoolReplicas` must carry for the replica in `region`.
-fn expected_entry(pool_arn: &str, region: &str, status: &str, role: &str) -> Value {
+pub(crate) fn expected_entry(pool_arn: &str, region: &str, status: &str, role: &str) -> Value {
     json!({
         "RegionName": region,
         "Status": status,

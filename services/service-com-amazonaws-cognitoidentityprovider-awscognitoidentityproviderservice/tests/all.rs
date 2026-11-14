@@ -303,6 +303,8 @@ mod user_pool_mfa_config;
 mod user_pool_mfa_posture_rewrite;
 #[path = "all/user_pool_replica_deletion.rs"]
 mod user_pool_replica_deletion;
+#[path = "all/user_pool_replica_end_to_end.rs"]
+mod user_pool_replica_end_to_end;
 #[path = "all/user_pool_replicas.rs"]
 mod user_pool_replicas;
 #[path = "all/user_pool_request_preconditions.rs"]

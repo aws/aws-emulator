@@ -4289,7 +4289,13 @@ pub struct ApiCategory {
 /// `UserCreation`, `UpdateProvisionedLimit` also `UserFederation`), beside the
 /// remaining request-rate categories of user pool operations, whose published
 /// per-category rates are the included rates here (Amazon Cognito Developer
-/// Guide, "Quotas in Amazon Cognito").
+/// Guide, "Quotas in Amazon Cognito"). The model enumerates NO category value,
+/// so this list is what identifies a limit: a category Amazon Cognito publishes
+/// a request-rate quota for belongs HERE, whether or not the model's prose
+/// happens to name it, and only a value this list does not hold identifies no
+/// limit. Adding a published category it is still missing is the whole of
+/// publishing it — every reader of a limit resolves a definition through
+/// [`api_category`] and renders it from this entry.
 ///
 /// Every limit is provisionable from the rate it includes up to the account's
 /// Service Quotas ceiling for it
@@ -4320,6 +4326,14 @@ pub const API_CATEGORIES: &[ApiCategory] = &[
     ApiCategory {
         name: "UserAccountRecovery",
         free_rate: 30,
+    },
+    // The category of the reads that resolve a user's own resources — the
+    // devices, groups and sign-in records a user holds — which the guide
+    // publishes beside the categories above and at the same rate as the
+    // category of user creations.
+    ApiCategory {
+        name: "UserResourceRead",
+        free_rate: 50,
     },
 ];
 

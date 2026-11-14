@@ -46,11 +46,18 @@ use super::log_delivery_configuration::{call, error_code, error_message, ok};
 /// identifies it and the rate it includes at no additional cost, in requests
 /// per second.
 ///
-/// Hand-written from this service's own catalogue of account limits
-/// (`API_CATEGORIES` in `src/state.rs`, whose category names are the ones
-/// `LimitDefinitionType.Attributes` and `UpdateProvisionedLimit` document in
-/// the model and whose included rates are the published per-category
-/// request-rate quotas), so that a change on either side has to be deliberate.
+/// Hand-written from the request-rate quotas Amazon Cognito publishes per API
+/// category (Amazon Cognito Developer Guide, "Quotas in Amazon Cognito"); the
+/// model names `UserAuthentication` and `UserCreation` on
+/// `LimitDefinitionType.Attributes`
+/// (`smithy_query(query="doc",shape="LimitDefinitionType",member="Attributes")`)
+/// and `UserFederation` on `UpdateProvisionedLimit`, and enumerates no category
+/// value at all, so the service's own list is what identifies a limit. This
+/// table is a second copy of that list, so that a change to the service's
+/// catalogue (`API_CATEGORIES` in `src/state.rs`) has to be deliberate:
+/// `the_catalogue_and_this_suites_table_hold_the_same_limits` below detects
+/// drift between the two, while the behavioural coverage is the rest of this
+/// suite running over every row.
 struct Limit {
     category: &'static str,
     included: i64,
@@ -82,6 +89,10 @@ const LIMITS: &[Limit] = &[
     Limit {
         category: "UserAccountRecovery",
         included: 30,
+    },
+    Limit {
+        category: "UserResourceRead",
+        included: 50,
     },
 ];
 
@@ -582,6 +593,83 @@ async fn a_definition_that_identifies_no_limit_is_refused_by_both_operations() {
             assert_eq!(
                 message, expected_message,
                 "case {case:?}: expected {expected_message:?}, got {message:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_catalogue_and_this_suites_table_hold_the_same_limits() {
+    // Drift detection, not behaviour: the limits this account holds are the
+    // categories Amazon Cognito publishes a request-rate quota for, and this
+    // suite drives every row of its own table over the wire — so a row the
+    // service's catalogue does not hold, or an entry of the catalogue no row
+    // covers, means the two copies have drifted apart and the coverage below is
+    // no longer the coverage it reads as.
+    let tabled: Vec<(&str, i64)> = LIMITS
+        .iter()
+        .map(|limit| (limit.category, limit.included))
+        .collect();
+    let catalogued: Vec<(&str, i64)> = cognito_idp::state::API_CATEGORIES
+        .iter()
+        .map(|category| (category.name, i64::from(category.free_rate)))
+        .collect();
+    assert_eq!(
+        catalogued, tabled,
+        "case \"the account's API rate limits\": the catalogue and this suite's table must hold \
+         the same categories with the same included rates, got {catalogued:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_category_neighbouring_a_published_one_identifies_no_limit() {
+    let (router, _engine) = router_and_engine();
+
+    // A category is a published value itself rather than something that
+    // resembles one: a published name with another word appended, the same name
+    // in another case, and one with surrounding space each identify no limit, so
+    // neither operation resolves them through the catalogue. The rows are built
+    // around a published category the issue cited and one it did not, so the
+    // rule is asserted on more than a single name.
+    let mut rows: Vec<(String, String)> = Vec::new();
+    for published in ["UserResourceRead", "UserAccountRecovery"] {
+        rows.push((
+            format!("{published} with another word appended"),
+            format!("{published}Write"),
+        ));
+        rows.push((
+            format!("{published} in upper case"),
+            published.to_uppercase(),
+        ));
+        rows.push((
+            format!("{published} surrounded by space"),
+            format!(" {published} "),
+        ));
+    }
+    rows.push((
+        "a plausible but unpublished category".to_string(),
+        "UserResourceDeletion".to_string(),
+    ));
+
+    for (position, category) in rows {
+        for operation in ["GetProvisionedLimit", "UpdateProvisionedLimit"] {
+            let case = format!("{operation} with {position}");
+            let mut request = json!({ "LimitDefinition": definition(&category) });
+            if operation == "UpdateProvisionedLimit" {
+                request["RequestedLimitValue"] = json!(1_000);
+            }
+            let (status, payload) = call(&router, operation, &request).await;
+            assert_eq!(
+                (status, error_code(&payload)),
+                (400, "InvalidParameterException"),
+                "case {case:?}: expected a 400 InvalidParameterException, got {status} \
+                 with {payload}"
+            );
+            let message = error_message(&payload);
+            let expected = unknown_category_message(&category);
+            assert_eq!(
+                message, expected,
+                "case {case:?}: expected {expected:?}, got {message:?}"
             );
         }
     }
