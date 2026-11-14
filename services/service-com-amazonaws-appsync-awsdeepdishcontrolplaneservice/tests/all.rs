@@ -103,6 +103,8 @@ mod function_update;
 mod functions;
 #[path = "all/graphql_api_create_rules.rs"]
 mod graphql_api_create_rules;
+#[path = "all/graphql_api_environment_variables_authorization.rs"]
+mod graphql_api_environment_variables_authorization;
 #[path = "all/graphql_api_lifecycle.rs"]
 mod graphql_api_lifecycle;
 #[path = "all/graphql_api_query_endpoint.rs"]

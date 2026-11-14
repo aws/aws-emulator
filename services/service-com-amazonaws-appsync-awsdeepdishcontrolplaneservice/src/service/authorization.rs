@@ -58,6 +58,10 @@
 //! The resource a request is judged against is the one its OWN URI addresses
 //! ([`judged_resource`]), built with this service's own ARN spellings, so a policy written
 //! about a domain, an API or a channel namespace covers exactly the calls that address it.
+//! A request that addresses a sub-resource this service publishes no ARN spelling for
+//! carries no such ARN to be judged by, so the resource is the request's own URI path hung
+//! off this service's ARN prefix ([`Addressed::Path`]) — which is the resource IAM names in
+//! the refusal, and the one a policy has to state to lift it.
 //!
 //! ## The callers this gate does not bound
 //!
@@ -218,12 +222,27 @@ enum Addressed {
     /// An ARN the request itself carries, which is already the whole resource: the tagging
     /// surface addresses its target that way (`/v1/tags/{resourceArn}`).
     Arn(String),
+    /// A sub-resource of this service that has no ARN spelling of its own, addressed by the
+    /// request's own URI path — version prefix and leading `/` included — as the resource
+    /// portion of this service's ARN.
+    Path(String),
     /// The request names no single resource of its own — a listing, or a sandbox
     /// evaluation — so the action is judged against every resource of this service the
     /// account holds in the region addressed, which is how IAM writes the resource of such
     /// a request.
     Account,
 }
+
+/// The child space of an API that carries its environment variables, and the one child
+/// space of this service that no ARN spelling of its own covers — neither this service's
+/// own ARN builders nor the resource types IAM publishes for it name an environment
+/// variable set — so a call addressing it is judged by its URI path ([`Addressed::Path`]).
+///
+/// Source: `smithy_query(query="operation",
+/// operation="GetGraphqlApiEnvironmentVariables,PutGraphqlApiEnvironmentVariables")` — both
+/// are bound to `/v1/apis/{apiId}/environmentVariables`, and no other operation of this
+/// service is bound under this segment.
+const ENVIRONMENT_VARIABLES_SEGMENT: &str = "environmentVariables";
 
 /// The member a create names the custom domain it is about to create by, which is where
 /// that request carries the resource its URI does not.
@@ -248,7 +267,12 @@ pub fn judged_resource(ctx: &OperationContext<'_>, req: &RtRequest) -> String {
     ) {
         // Already whole: the tagging surface carries the ARN of its target.
         Addressed::Arn(arn) => arn,
-        Addressed::Resource(resource) => ::engine::emulator_arn(ACTION_PREFIX, &region, &resource),
+        // Both are the resource portion of an ARN of this service: the spelling its own
+        // builders mint for a resource that has one, the request's URI path for a
+        // sub-resource that has none.
+        Addressed::Resource(resource) | Addressed::Path(resource) => {
+            ::engine::emulator_arn(ACTION_PREFIX, &region, &resource)
+        }
         Addressed::Account => ::engine::emulator_arn(ACTION_PREFIX, &region, ANY_RESOURCE),
     }
 }
@@ -298,6 +322,11 @@ fn named(
 /// `apis/{apiId}/*` covers every child of that API. A call that addresses a child
 /// COLLECTION rather than one member of it is judged against the parent it collects under,
 /// which is the resource such a call names.
+///
+/// A child that no ARN spelling covers ([`ENVIRONMENT_VARIABLES_SEGMENT`]) is named by the
+/// request's own URI path instead: there is no ARN of it to judge the call by, and the path
+/// is the only spelling that identifies it — so a policy written about the parent API does
+/// not reach it, and one written about the path does.
 fn addressed(
     path: &str,
     input: Option<&::serde_json::Map<String, ::serde_json::Value>>,
@@ -323,6 +352,15 @@ fn addressed(
             let Some(api_id) = segment(2) else {
                 return Addressed::Account;
             };
+            // The one child space with no ARN spelling of its own, which the request's URI
+            // path identifies instead. Rebuilt from the decoded segments, so the resource
+            // the decision is taken about does not depend on how the caller escaped them.
+            if segment(3).as_deref() == Some(ENVIRONMENT_VARIABLES_SEGMENT) {
+                let version = segment(0).unwrap_or_default();
+                return Addressed::Path(format!(
+                    "/{version}/apis/{api_id}/{ENVIRONMENT_VARIABLES_SEGMENT}"
+                ));
+            }
             Addressed::Resource(match (segment(3).as_deref(), segment(4)) {
                 (Some("channelNamespaces"), Some(name)) => {
                     crate::state::channel_namespace_resource(&api_id, &name)
@@ -340,8 +378,8 @@ fn addressed(
                     _ => crate::state::type_resource(&api_id, &type_name),
                 },
                 // Every other child space — the API keys, the cache, the schema, the
-                // environment variables, the source-API associations — is addressed under
-                // the API itself, which is the resource those calls name.
+                // source-API associations — is addressed under the API itself, which is the
+                // resource those calls name.
                 _ => crate::state::api_resource(&api_id),
             })
         }
@@ -874,10 +912,12 @@ mod tests {
                 Addressed::Resource("apis/abcdefghijklmnopqrstuvwxyz".to_string()),
             ),
             (
-                "a GraphQL API's environment variables",
+                "a GraphQL API's environment variables, which no ARN spelling covers",
                 "/v1/apis/abcdefghijklmnopqrstuvwxyz/environmentVariables",
                 None,
-                Addressed::Resource("apis/abcdefghijklmnopqrstuvwxyz".to_string()),
+                Addressed::Path(
+                    "/v1/apis/abcdefghijklmnopqrstuvwxyz/environmentVariables".to_string(),
+                ),
             ),
             (
                 "an Event API",
