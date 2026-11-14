@@ -17,6 +17,11 @@ use std::time::SystemTime;
 mod iceberg;
 pub use iceberg::*;
 
+/// The tables an Amazon Web Services service creates in a table bucket on the
+/// account's behalf, and the one place such a table is written.
+mod service_managed;
+pub use service_managed::*;
+
 /// The region a table bucket's ARN carries when the request carries no
 /// parseable SigV4 credential scope to name one.
 pub const DEFAULT_REGION: &str = "us-east-1";
@@ -941,6 +946,12 @@ pub struct Table {
     pub name: String,
     pub table_arn: String,
     pub table_type: TableType,
+    /// The service that manages the table (`GetTable$managedByService`), set only on the
+    /// tables an Amazon Web Services service created in the bucket on the account's behalf
+    /// ([`ComAmazonawsS3tablesS3tablebucketsState::create_service_managed_table`]). A table
+    /// a caller created through `CreateTable` is managed by no service, so it stays `None`
+    /// for the life of the record.
+    pub managed_by_service: Option<String>,
     pub namespace: Vec<String>,
     pub namespace_id: String,
     pub table_bucket_id: String,

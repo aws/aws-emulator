@@ -907,6 +907,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // modeled type is for the tables Amazon Web Services creates on an
             // account's behalf.
             table_type: TableType::Customer,
+            // No Amazon Web Services service manages a table a caller created through this
+            // API: a managing service is what provisions a table of its own in the bucket
+            // (`ComAmazonawsS3tablesS3tablebucketsState::create_service_managed_table`).
+            managed_by_service: None,
             namespace: namespace_names,
             namespace_id,
             table_bucket_id: bucket_id,

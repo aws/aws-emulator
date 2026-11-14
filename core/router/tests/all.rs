@@ -1859,6 +1859,14 @@ mod elbv2_lambda_target_published_address;
 // can wire it and then read the group back.
 #[path = "all/logs_vended_group_lambda_subscriber_permission.rs"]
 mod logs_vended_group_lambda_subscriber_permission;
+// Declared in the appended tail, which is where every new suite inserts its lines: a deployed
+// method whose integration is an `AWS` call on an SNS TOPIC, served by making that call —
+// asked of the router that mounts every service at once, which is where the hop between the
+// stage, the topic and the topic's queue subscriber is observable end to end.
+#[path = "all/apigateway_sns_service_integration.rs"]
+mod apigateway_sns_service_integration;
+// (`cloudformation_provisions_cloudfront_resources` is declared once, in the sorted span
+// above: two `mod` items for one name is a redefinition that compiles neither.)
 // Both suites below are declared ONCE, in the sorted span above beside the other
 // CloudFormation suites: the pair was appended here as well while two branches were landing
 // at once, which declared each of them a second time and compiled neither.
@@ -1875,6 +1883,8 @@ mod cloudformation_provisions_cloudfront_resources;
 // suites exist under tests/all/ and had lost their declaration when two branches removed
 // the same duplicated pair, which compiles them nowhere.
 // (`cloudformation_monitored_alb_search_estate` and `cloudformation_domain_endpoint_outputs`
+// are declared once, further up this tail: a module may be declared only once, and two
+// branches landing at once each re-added the pair here.)
 // are declared in the head region above: a module may be declared only once.)
 // are declared further up this tail already: a module may be declared only once.)
 // Declared in the appended tail, which is where every new suite inserts its lines: a deployed
@@ -1893,6 +1903,9 @@ mod apigateway_sns_service_integration;
 // crate's test target can drive it.
 #[path = "all/lambda_signed_write_to_an_aoss_collection_endpoint.rs"]
 mod lambda_signed_write_to_an_aoss_collection_endpoint;
+// (`apigateway_cognito_authorizer_app_client_audience` is declared once, in the head region
+// above, and `cloudformation_metric_stream_estate_is_drainable` once further down this tail:
+// a module may be declared only once.)
 // (`apigateway_cognito_authorizer_app_client_audience` is declared once in the head region
 // above, and `cloudformation_metric_stream_estate_is_drainable` once in the tail below: a
 // module may be declared only once, and a second declaration compiles neither.)
@@ -1927,6 +1940,14 @@ mod cloudformation_metric_stream_estate_is_drainable;
 // cluster and then read the alarm's state.
 #[path = "all/redshift_health_alarms_evaluate.rs"]
 mod redshift_health_alarms_evaluate;
+// (`cloudwatch_alarm_ssm_ops_item_action` is declared once, in the head region above: a
+// module may be declared only once.)
+// stack-deployed metric-stream pipeline exports before and after an update rewrites its filter
+// spans CloudFormation, IAM, CloudWatch, Firehose and Amazon S3 at once, so no single service
+// crate's test target can deploy the pipeline and then read the objects it delivered.
+#[path = "all/cloudformation_metric_stream_filter_update.rs"]
+mod cloudformation_metric_stream_filter_update;
+// (`zz_probe` is declared once, further up this tail: a module may be declared only once.)
 // (`zz_probe` is declared once further up this tail: a module may be declared only once.)
 // (`zz_probe` is declared ONCE, further up this tail: it was appended here as well while two
 // branches were landing at once, which declared it a second time and compiled neither.)
@@ -2029,6 +2050,10 @@ mod cognito_vended_session_is_bounded_by_its_role_policy;
 // the mapping vended.
 #[path = "all/cognito_rules_role_mapping.rs"]
 mod cognito_rules_role_mapping;
+// `cloudformation_provisions_cloudfront_resources` is declared once, just below: two `mod`
+// items for one name is a redefinition that compiles neither.
+// are declared further up this tail already: a module may be declared only once.)
+// are declared in the head region above: a module may be declared only once.)
 // envelope an identity-based authorization refusal travels in is read by comparing IAM's
 // awsQuery answer with Secrets Manager's awsJson1_1 one for ONE principal, so neither
 // crate's own test target can ask it.

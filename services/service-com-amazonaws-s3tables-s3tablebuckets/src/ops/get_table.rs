@@ -241,10 +241,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             warehouse_location: table.warehouse_location.clone(),
             created_at: ::aws_smithy_types::DateTime::from(table.created_at),
             created_by: table.created_by.clone(),
-            // No Amazon Web Services service manages a table a caller created
-            // through this API, and none of it is a replica, so the members that
-            // report a managing service carry nothing.
-            managed_by_service: None,
+            // The service that manages the table, as the record carries it: set on a table
+            // a service provisioned in the bucket on the account's behalf, and nothing for a
+            // table a caller created through this API. No table here is a replica, so the
+            // member that reports a managed table's replication carries nothing.
+            managed_by_service: table.managed_by_service.clone(),
             modified_at: ::aws_smithy_types::DateTime::from(table.modified_at),
             modified_by: table.modified_by.clone(),
             owner_account_id: table.owner_account_id.clone(),

@@ -20,24 +20,27 @@
 //! `ENABLED_UNTIL_EARLIEST_ALLOWED_END` -> `DISABLED` transitions decided in one place
 //! ([`Commitment::status`]).
 
-//! Five concerns of that state live in their own files beside this one, because each is a
+//! Six concerns of that state live in their own files beside this one, because each is a
 //! rule of its own that several operations consult: the per-shard WRITE quota a producer is
 //! metered by ([`write_quota`]), what KMS says about the key a stream is encrypted with
 //! ([`kms_key`]), whether this service can assume a channel's service execution role at all
 //! ([`service_execution_role`]), whether that role may use that key
-//! ([`channel_key_access`]), and where in a shard a reader starts and what one read of it
-//! from there delivers ([`shard_reading`]).
+//! ([`channel_key_access`]), where in a shard a reader starts and what one read of it
+//! from there delivers ([`shard_reading`]), and the destination streaming table a channel's
+//! create provisions in S3 Tables ([`streaming_table`]).
 
 mod channel_key_access;
 mod kms_key;
 mod service_execution_role;
 mod shard_reading;
+mod streaming_table;
 mod write_quota;
 
 pub use channel_key_access::*;
 pub use kms_key::*;
 pub use service_execution_role::*;
 pub use shard_reading::*;
+pub use streaming_table::*;
 pub use write_quota::*;
 
 use std::collections::HashMap;

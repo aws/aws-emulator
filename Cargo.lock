@@ -15019,6 +15019,7 @@ dependencies = [
  "serde_json",
  "service-com-amazonaws-iam-awsidentitymanagementv20100508",
  "service-com-amazonaws-kms-trentservice",
+ "service-com-amazonaws-s3tables-s3tablebuckets",
  "service-common",
  "sha2 0.10.9",
  "tokio",

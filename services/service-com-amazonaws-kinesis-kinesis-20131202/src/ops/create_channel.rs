@@ -14,6 +14,12 @@
 //! region already holds a channel under is refused with the modelled `ResourceInUseException`
 //! and leaves the stored channel untouched.
 //!
+//! A STREAMING TABLE destination is a promise about another service: "Amazon Kinesis Data
+//! Streams creates this table in the specified table bucket"
+//! (`S3TablesConfiguration$TableName`), so the create provisions each configured table in S3
+//! Tables — marked as managed by this service — as it stores the channel
+//! ([`crate::state::provision_streaming_tables`]).
+//!
 //! The `ServiceExecutionRoleARN` is resolved against this account's IAM records
 //! SYNCHRONOUSLY, before any channel state is written and before anything the request says
 //! about the streams it names is judged: a channel delivers AS that role, so a role this
@@ -490,8 +496,9 @@ fn channel_streams(
 /// way. The whole write lives here so the caller holds the store's lock for exactly this
 /// long, which is what serialises two overlapping creates of one name: exactly one of them
 /// inserts a record and the other is told the name is taken.
-fn create_channel(
+fn create_channel<Eng: ::std::marker::Send + ::std::marker::Sync + 'static>(
     store: &mut crate::state::ComAmazonawsKinesisKinesis20131202State,
+    engine: &Eng,
     region: &str,
     now: ::std::time::SystemTime,
     input: &CreateChannelInput,
@@ -532,6 +539,19 @@ fn create_channel(
     }
 
     let streams = channel_streams(store, region, now, input, destination.kind)?;
+
+    // The destination half of provisioning: a streaming table destination promises a table
+    // in S3 Tables ("Amazon Kinesis Data Streams creates this table in the specified table
+    // bucket", `S3TablesConfiguration$TableName`), so that table is created here, once every
+    // refusal this request could earn has been taken — a create that is refused provisions
+    // nothing.
+    if let Some(tables) = input.s3_tables_destination_configuration.as_ref() {
+        crate::state::provision_streaming_tables(
+            engine,
+            &tables.s3_tables_configuration_list,
+            now,
+        );
+    }
 
     let id = crate::state::channel_id(region, &input.channel_name, now);
     let channel = crate::state::Channel {
@@ -669,7 +689,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
-        let created = create_channel(&mut state.lock(), &region, now, &input);
+        let created = create_channel(&mut state.lock(), &*self.engine, &region, now, &input);
         match created {
             Ok(channel_description) => {
                 audit(&akid, &region, "created");

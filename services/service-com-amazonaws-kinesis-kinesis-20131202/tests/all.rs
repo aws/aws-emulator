@@ -113,6 +113,8 @@ mod stream_removal;
 mod stream_tag_removal;
 #[path = "all/stream_tags.rs"]
 mod stream_tags;
+#[path = "all/streaming_table_destination.rs"]
+mod streaming_table_destination;
 #[path = "all/success_response_members.rs"]
 mod success_response_members;
 #[path = "all/warm_throughput.rs"]

@@ -36,6 +36,9 @@ aws-sdk-kms = { version = "1", default-features = false, features = ["rt-tokio",
 # The one place this tree states the Region LABEL grammar, for the caller-supplied region
 # that ends up in the authority of the KMS endpoint the lookup above is routed on.
 service-common = { path = "../common" }
+# A channel with a streaming table destination creates that table in S3 Tables, which owns
+# every table record: the create writes it through that service's own state.
+service-com-amazonaws-s3tables-s3tablebuckets = { workspace = true }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

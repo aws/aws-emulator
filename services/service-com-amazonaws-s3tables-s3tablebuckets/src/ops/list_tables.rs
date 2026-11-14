@@ -236,7 +236,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                             table_arn: table.table_arn.clone(),
                             created_at: ::aws_smithy_types::DateTime::from(table.created_at),
                             modified_at: ::aws_smithy_types::DateTime::from(table.modified_at),
-                            managed_by_service: None,
+                            managed_by_service: table.managed_by_service.clone(),
                             namespace_id: Some(table.namespace_id.clone()),
                             table_bucket_id: Some(table.table_bucket_id.clone()),
                         },
