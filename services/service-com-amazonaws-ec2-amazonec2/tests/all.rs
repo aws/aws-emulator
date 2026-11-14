@@ -39,8 +39,6 @@ mod published_accelerator_and_connection_facts;
 mod published_instance_type_family_tables;
 // What `CreateClientVpnEndpoint` persists — the endpoint it stores from the request's members,
 // the certificates it resolves against Certificate Manager, and what it refuses. Declared
-// beside `prefix_lists` for the reason the note above gives: the sorted neighbourhood and the
-// tail of this file are where every new ec2 suite inserts its lines.
 #[path = "all/create_client_vpn_endpoint.rs"]
 mod create_client_vpn_endpoint;
 // The WORDING of EC2's duplicate-resource and unreadable-id refusals: the fixed sentence of
@@ -2210,3 +2208,9 @@ mod admission_checks;
 // error class, with only the parts AWS interpolates. Declared at the tail of this file, which
 #[path = "all/aws_worded_refusal_sentences.rs"]
 mod aws_worded_refusal_sentences;
+// WHICH sentence a value that is no local-gateway-route-table id is refused with: the request
+// boundary's `The local-gateway-route-table ID '<id>' is malformed` for a value that is no
+// identifier at all, and the owning service's `Invalid LocalGateway Route Table id <id>` where
+// a create of a resource belonging to that table was handed a value shaped like a resource id.
+#[path = "all/local_gateway_route_table_id_malformed_forms.rs"]
+mod local_gateway_route_table_id_malformed_forms;

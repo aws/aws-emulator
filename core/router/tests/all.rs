@@ -2542,3 +2542,24 @@ mod cloudformation_provisions_cloudfront_resources;
 // line was appended here as well while two branches were landing at once, which declared it a
 // (The metric-stream estate suite is declared ONCE, in the head region above, for the same
 // reason the pair of CloudFormation suites above records.)
+// `cloudformation_provisions_cloudfront_resources` is declared ONCE, in the sorted span at
+// are declared ONCE each, just above in this tail: a module declared twice in this file
+// Declared ONCE, a few lines above in this same appended tail: two branches landing in the
+// same window each appended a declaration of it here, which is a redefinition that compiled
+// neither, so the duplicate is removed and the first declaration stands.
+// `cloudtrail_read_only_api_calls` is declared ONCE, in the sorted block beside the other
+// CloudTrail suites: the tail is where every suite landing in the same window appends, so two
+// landings each appended their own copy and a module declared twice compiles neither.
+// `cloudwatch_alarm_ssm_ops_item_action` is declared ONCE, in the sorted span at the head of
+// this file, for the reason recorded there: the work item an alarm's Systems Manager OpsItem
+// action opens has to be read where a client reads it — through OpsCenter's own query — so
+// neither CloudWatch's nor Systems Manager's own test target can drive the transition and
+// then read what it opened.
+// `cloudformation_metric_stream_filter_update` is declared ONCE, in the sorted span at the
+// head of this file: two landings each appended their own copy here, and a module declared
+// twice compiles neither.
+// `codebuild_s3_build_output` is declared ONCE, further up this tail: two landings each
+// appended their own copy, and a module declared twice compiles neither.
+// `lambda_signed_write_to_an_aoss_collection_endpoint` is declared ONCE, in the span above:
+// `cloudformation_domain_endpoint_is_dialled_by_consumers` is declared ONCE, further up this
+// tail: two landings each appended their own copy, and a module declared twice compiles

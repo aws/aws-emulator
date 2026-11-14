@@ -18,8 +18,9 @@
 //!   own validator words: a client VPN attachment — the Client VPN endpoint's resource, not the
 //!   transit gateway's — keeps the service's shared `<kind> ID '<id>'` template, and so do the
 //!   local gateway route table's own operations, while the creates of a resource belonging to
-//!   that table answer `Invalid LocalGateway Route Table id <id>`; the rows drive both halves of
-//!   each split;
+//!   that table answer a value SHAPED like a resource id with `Invalid LocalGateway Route Table
+//!   id <id>` and keep the shared template for a value that is no identifier at all; the rows
+//!   drive both halves of each split;
 //! * a class whose sentence interpolates the request's value does so in that class's own
 //!   QUOTING and POSITION — unquoted and in the middle for the attachment, single-quoted for
 //!   the address and the interface, unquoted and last for the route table;
@@ -73,9 +74,6 @@ type Wording = fn(&str) -> String;
 
 /// One `(action, wording)` pair of a table whose rows differ in which validator answers.
 type ActionWording = (&'static str, Wording);
-
-/// One `(action, form field, wording)` row, where the member's form field differs too.
-type ActionFieldWording = (&'static str, &'static str, Wording);
 
 /// A `(key, value)` request parameter.
 fn p(key: &str, value: &str) -> (String, String) {
@@ -336,64 +334,71 @@ fn malformed_image_rows() -> Vec<Row> {
 
 /// Class 8: a value that is no local gateway route table id at all.
 ///
-/// Two sentences, one per VALIDATOR: a create of a resource BELONGING to the table — a static
-/// route, a customer-owned address pool — words it with a fixed prefix and the id UNQUOTED and
-/// last, while the readers of the table itself — the search and the delete of a route, the
-/// describe of the tables themselves — keep the service's `The <kind> ID '<id>' is malformed`
-/// shape. The rows drive both, over the same values, so the split is pinned rather than assumed.
+/// Two sentences: a create of a resource BELONGING to the table — a static route, a
+/// customer-owned address pool — words a value SHAPED like a resource id (a prefix, a separator
+/// and a lowercase hexadecimal suffix) with a fixed prefix and the id UNQUOTED and last, while
+/// the readers of the table itself — the search and the delete of a route, the describe of the
+/// tables themselves — keep the service's `The <kind> ID '<id>' is malformed` shape, which is
+/// also what EVERY one of them answers a value that is no identifier at all with. The rows
+/// drive both, over the same values, so the split is pinned rather than assumed.
 fn malformed_route_table_rows() -> Vec<Row> {
-    let actions: [ActionFieldWording; 5] = [
-        (
-            "CreateLocalGatewayRoute",
-            "LocalGatewayRouteTableId",
-            create_route_wording,
-        ),
-        (
-            "CreateCoipPool",
-            "LocalGatewayRouteTableId",
-            create_route_wording,
-        ),
+    // `(action, form field, whether this action CREATES a resource belonging to the table)`:
+    // only a create's own validator words this class in the owning service's sentence, and
+    // only for a value shaped like an identifier.
+    let actions: [(&'static str, &'static str, bool); 5] = [
+        ("CreateLocalGatewayRoute", "LocalGatewayRouteTableId", true),
+        ("CreateCoipPool", "LocalGatewayRouteTableId", true),
         (
             "SearchLocalGatewayRoutes",
             "LocalGatewayRouteTableId",
-            table_wording,
+            false,
         ),
         (
             "DeleteLocalGatewayRoute",
             "LocalGatewayRouteTableId",
-            table_wording,
+            false,
         ),
         (
             "DescribeLocalGatewayRouteTables",
             "LocalGatewayRouteTableId.1",
-            table_wording,
+            false,
         ),
     ];
     // The prefix without its separator, another local gateway resource's id, a suffix of
-    // neither published length, and text that is no id at all.
+    // neither published length, and text that is no id at all. The second column is whether
+    // the value is SHAPED like an EC2 resource id — a prefix, a separator and a lowercase
+    // hexadecimal suffix — which is what decides whether a create's own validator sees it at
+    // all; it is written out per row rather than recomputed, so the table says which sentence
+    // each row drives.
     let values = [
-        "lgwrtb-00000000000000000",
-        "lgw-00000000000000001",
-        "lgw-rtb-0a1b2c3",
-        "not-a-route-table-id",
+        ("lgwrtb-00000000000000000", true),
+        ("lgw-00000000000000001", true),
+        ("lgw-rtb-0a1b2c3", true),
+        ("not-a-route-table-id", false),
     ];
     actions
         .into_iter()
-        .flat_map(|(action, field, wording)| {
-            values.into_iter().map(move |value| Row {
+        .flat_map(|(action, field, creates_in_table)| {
+            values.into_iter().map(move |(value, shaped)| Row {
                 case: format!("{action} given the unreadable route table id {value}"),
                 action,
                 params: vec![p(field, value)],
                 code: INVALID_LOCAL_GATEWAY_ROUTE_TABLE_ID_MALFORMED,
-                message: wording(value),
+                message: if creates_in_table && shaped {
+                    create_route_wording(value)
+                } else {
+                    table_wording(value)
+                },
                 withheld: None,
             })
         })
         .collect()
 }
 
-/// The sentence the validator of a create of a resource belonging to the table words a
-/// malformed route table id with.
+/// The sentence the validator of a create of a resource belonging to the table words a value
+/// SHAPED like a resource id with: the words of the service that owns the local gateway, which
+/// is the only one that sees such a value. A value that is no identifier at all is refused
+/// before it, with [`table_wording`].
 fn create_route_wording(id: &str) -> String {
     format!("Invalid LocalGateway Route Table id {id}")
 }

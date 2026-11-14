@@ -147,6 +147,8 @@ mod number_canonicalization;
 mod on_demand_backups;
 #[path = "all/on_demand_throughput_capacity_mode.rs"]
 mod on_demand_throughput_capacity_mode;
+#[path = "all/page_size_clause_forms.rs"]
+mod page_size_clause_forms;
 #[path = "all/paging_start_keys.rs"]
 mod paging_start_keys;
 #[path = "all/parallel_scan_segment_refusals.rs"]

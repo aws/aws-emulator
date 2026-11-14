@@ -303,10 +303,16 @@ struct Refusal {
 }
 
 /// The sentence a create of a resource belonging to a local gateway route table words a value
-/// that is no route table id at all with: a fixed prefix then the id the REQUEST sent, unquoted
-/// and last.
-fn malformed_message(id: &str) -> String {
-    format!("Invalid LocalGateway Route Table id {id}")
+/// that is no route table id with: the owning service's own words — a fixed prefix then the id
+/// the REQUEST sent, unquoted and last — for a value SHAPED like an EC2 resource id, and the
+/// request boundary's shared template for a value that is no identifier at all, which never
+/// reaches that service. `shaped` is the row's own statement of which of the two it is.
+fn malformed_message(id: &str, shaped: bool) -> String {
+    if shaped {
+        format!("Invalid LocalGateway Route Table id {id}")
+    } else {
+        format!("The local-gateway-route-table ID '{id}' is malformed")
+    }
 }
 
 /// The sentence this resource words a well-formed id the account holds no route table for with.
@@ -341,21 +347,24 @@ fn refusals(route_table_id: &str) -> Vec<Refusal> {
     ];
     // A value that is no local gateway route table id at all: the prefix without its separator,
     // another local gateway resource's id, suffixes of neither published length, an upper-case
-    // suffix, the prefix alone, and text that is no id at all.
-    for malformed in [
-        "lgwrtb-0123456789abcdef0",
-        "lgw-00000000000000001",
-        "lgw-rtb-0a1b2c3",
-        "lgw-rtb-0123456789abcdef",
-        "lgw-rtb-0A1B2C3D",
-        "lgw-rtb-",
-        "not-a-route-table-id",
+    // suffix, the prefix alone, and text that is no id at all. The second column is whether the
+    // value is SHAPED like an EC2 resource id — a prefix, a separator and a lowercase
+    // hexadecimal suffix — written out per row rather than recomputed, so the table says which
+    // of the two sentences this class carries each row drives.
+    for (malformed, shaped) in [
+        ("lgwrtb-0123456789abcdef0", true),
+        ("lgw-00000000000000001", true),
+        ("lgw-rtb-0a1b2c3", true),
+        ("lgw-rtb-0123456789abcdef", true),
+        ("lgw-rtb-0A1B2C3D", false),
+        ("lgw-rtb-", false),
+        ("not-a-route-table-id", false),
     ] {
         rows.push(Refusal {
             case: format!("the unreadable route table id {malformed}"),
             params: vec![p("LocalGatewayRouteTableId", malformed)],
             code: INVALID_LOCAL_GATEWAY_ROUTE_TABLE_ID_MALFORMED,
-            message: Some(malformed_message(malformed)),
+            message: Some(malformed_message(malformed, shaped)),
         });
     }
     // Both id lengths EC2 publishes for this resource, held by no route table of the account.
@@ -483,14 +492,14 @@ async fn a_dry_run_reports_the_outcome_and_writes_nothing() {
             "not-a-route-table-id".to_string(),
             REFUSAL_STATUS,
             INVALID_LOCAL_GATEWAY_ROUTE_TABLE_ID_MALFORMED,
-            Some(malformed_message("not-a-route-table-id")),
+            Some(malformed_message("not-a-route-table-id", false)),
         ),
         (
             "a route table id of neither published length".to_string(),
             "lgw-rtb-0a1b2c3".to_string(),
             REFUSAL_STATUS,
             INVALID_LOCAL_GATEWAY_ROUTE_TABLE_ID_MALFORMED,
-            Some(malformed_message("lgw-rtb-0a1b2c3")),
+            Some(malformed_message("lgw-rtb-0a1b2c3", true)),
         ),
     ];
 

@@ -1920,8 +1920,9 @@ pub fn cidr_block_is_well_formed(value: &str) -> bool {
 ///
 /// This is the sentence the operations that read a `LocalGatewayRouteTableId` as a parameter of
 /// an action on the TABLE itself answer — the delete of a table, the associations with it, and
-/// the search and the delete of a route in it — as their recorded refusals show. The operations
-/// that CREATE a resource belonging to the table word the same class differently
+/// the search and the delete of a route in it — as their recorded refusals show, and the
+/// sentence every operation answers a value that is no identifier at all with. The operations
+/// that CREATE a resource belonging to the table word a value SHAPED like an id differently
 /// ([`invalid_route_table_id_for_create`]). Which sentence an operation answers is a fact of
 /// that operation's validator, read off its own recorded refusal.
 pub fn invalid_local_gateway_route_table_id_malformed<E>(id: &str) -> Scaffolded<E> {
@@ -1939,16 +1940,30 @@ pub fn invalid_local_gateway_route_table_id_malformed<E>(id: &str) -> Scaffolded
 /// CREATES a resource belonging to that table: HTTP 400
 /// `InvalidLocalGatewayRouteTableID.Malformed`.
 ///
-/// `Invalid LocalGateway Route Table id <id>` — a fixed prefix naming the resource in the prose
-/// spelling [`invalid_local_gateway_route_table_id_not_found`] uses, then the id the REQUEST
-/// sent, UNQUOTED and last, bounded by [`echoed_resource_id`]. The sentence the recorded
-/// refusals of the two creates that take this id as the table their new resource belongs to —
-/// a static route (`CreateLocalGatewayRoute`) and a customer-owned address pool
-/// (`CreateCoipPool`) — each carry, rather than the service's shared
-/// [`invalid_local_gateway_route_table_id_malformed`] sentence the table's own operations and
-/// the associations with it are recorded answering. The sentence belongs to the validators
-/// recorded with it, so an operation added later takes the one ITS recorded refusal carries.
+/// Which sentence the refusal carries follows the FORM of the value the request sent:
+///
+/// * a value shaped like an EC2 resource id ([`resource_id_shaped`]) that is none EC2 could
+///   have issued for this resource is refused in the words of the service that owns the
+///   local gateway — `Invalid LocalGateway Route Table id <id>`, a fixed prefix naming the
+///   resource in the prose spelling [`invalid_local_gateway_route_table_id_not_found`] uses,
+///   then the id the REQUEST sent, UNQUOTED and last, bounded by [`echoed_resource_id`];
+/// * a value that is no identifier at all never reaches that service: it is refused at the
+///   request boundary, in the boundary's own words for this resource kind
+///   ([`invalid_local_gateway_route_table_id_malformed`]), the sentence the table's own
+///   operations and the associations with it answer every malformed id with.
+///
+/// Both sentences are recorded for the creates that take this id as the table their new
+/// resource belongs to — a static route (`CreateLocalGatewayRoute`) and a customer-owned
+/// address pool (`CreateCoipPool`): the same operation answers a value carrying a hex
+/// suffix (`lgw-rtb-` or `lgwrtb-` and digits of a length EC2 does not issue) with the
+/// first and a value that is no id at all with the second, where every operation ON the
+/// table answers both with the second. Nothing about the model distinguishes them, so the
+/// form of the value is the only thing that chooses, and an operation added later takes the
+/// sentence ITS recorded refusal carries.
 pub fn invalid_route_table_id_for_create<E>(id: &str) -> Scaffolded<E> {
+    if !resource_id_shaped(id) {
+        return invalid_local_gateway_route_table_id_malformed(id);
+    }
     Scaffolded::service_error(
         INVALID_LOCAL_GATEWAY_ROUTE_TABLE_ID_MALFORMED,
         400,

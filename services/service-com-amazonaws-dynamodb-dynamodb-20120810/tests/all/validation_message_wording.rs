@@ -226,7 +226,7 @@ async fn a_constraint_violation_is_stated_in_the_validation_envelope() {
             "the same bound on another operation's Limit",
             "Scan",
             json!({"TableName": "Music", "Limit": 0}),
-            "1 validation error detected: Value at 'Limit' failed to satisfy constraint: \
+            "1 validation error detected: Value '0' at 'limit' failed to satisfy constraint: \
              Member must have value greater than or equal to 1"
                 .to_string(),
         ),

@@ -787,11 +787,11 @@ async fn a_numeric_member_outside_its_range_is_refused_in_its_operation_s_form()
             case: "the same bound on another data-plane read, far below it",
             operation: "Scan",
             member: "Limit",
-            path: "Limit",
+            path: "limit",
             value: -7,
             requirement: "",
             table: Some(TABLE),
-            echoes: false,
+            echoes: true,
         },
         RangeRow {
             case: "a parallel-scan segment count one past its maximum",

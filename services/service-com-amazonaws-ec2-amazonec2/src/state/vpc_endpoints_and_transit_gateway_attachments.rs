@@ -531,6 +531,28 @@ pub fn prefixed_id_is_well_formed(prefix: &str, id: &str) -> bool {
         .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
+/// Whether `value` is SHAPED like an EC2 resource id, whatever resource it would name:
+/// a non-empty prefix, a `-`, and a non-empty suffix of lowercase hexadecimal digits.
+///
+/// The question [`prefixed_id_is_well_formed`] asks of ONE resource kind, asked of the
+/// form alone: this says whether a value could be read as an id at all, not whether EC2
+/// could have issued it for the resource the parameter names (that needs the kind's own
+/// prefix and one of the two published digit counts). The two readings separate a value
+/// EC2's own request boundary cannot read as an identifier from one it hands on to the
+/// service that owns the resource, which is the difference the recorded refusals of
+/// `CreateCoipPool` carry: a value with this form but no route table behind it is refused
+/// in the owning service's words, and one without it in the boundary's own.
+pub fn resource_id_shaped(value: &str) -> bool {
+    let Some((prefix, suffix)) = value.rsplit_once('-') else {
+        return false;
+    };
+    !prefix.is_empty()
+        && !suffix.is_empty()
+        && suffix
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 /// The most characters of a refused resource id that [`invalid_id_message`] repeats back.
 ///
 /// The message names the value the REQUEST sent, and a resource id member is a bare string

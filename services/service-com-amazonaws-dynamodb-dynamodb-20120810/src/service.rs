@@ -412,9 +412,11 @@ fn stated_enum_order(allowed: &[String]) -> Vec<String> {
 // (`Limit`, `@range` min 1, on `Query` and on `ListBackups`; `RequestItems`,
 // `@length` min 1, on `BatchGetItem` and on `BatchWriteItem`), so nothing about
 // the model or about the violation distinguishes them: only the OPERATION being
-// served does, which is why [`ITEM_REQUEST_FORM_OPERATIONS`] and
-// [`VALIDATOR_PATH_FORM_OPERATIONS`] list the operations whose refusals are
-// observed to take the first two forms and every other operation takes the last.
+// served and the MEMBER it is about do, which is why
+// [`ITEM_REQUEST_FORM_OPERATIONS`] and [`VALIDATOR_PATH_FORM_OPERATIONS`] list
+// the operations whose refusals are observed to take the first two forms and
+// every other operation takes the last, and [`VALUE_ECHOING_MEMBERS`] names the
+// members a listed operation is observed to state in the last form even so.
 // [`OperationScopedClauseForm`] is how the served operation
 // reaches [`Service::override_refusal`], which the framework hands no request.
 //
@@ -496,7 +498,8 @@ impl ClauseForm {
     }
 }
 
-/// The form `operation`'s refusals take.
+/// The form `operation`'s refusals take, for every member that has no form of its own
+/// ([`VALUE_ECHOING_MEMBERS`]).
 fn clause_form(operation: &str) -> ClauseForm {
     if ITEM_REQUEST_FORM_OPERATIONS.binary_search(&operation).is_ok() {
         ClauseForm::WireMemberOnly
@@ -510,11 +513,42 @@ fn clause_form(operation: &str) -> ClauseForm {
     }
 }
 
+/// The members a listed operation states in the REQUEST-VALIDATOR form — the validator's
+/// own path with the rejected value echoed — whatever form [`clause_form`] gives the rest
+/// of that operation's clauses.
+///
+/// Which form a clause takes is a fact of the served operation AND of the member, not of
+/// the violation class: the parallel-scan bounds of a table walk are stated in the
+/// item-request form (`Value at 'TotalSegments' …`) while that same walk's page size is
+/// stated with the value echoed (`Value '0' at 'limit' …`), and a KEYED read's page size —
+/// the same member name, the same `@range` minimum on the same target shape
+/// (`smithy_query(query="operation", operation="Query,Scan")` gives both `Limit` members
+/// targeting `PositiveIntegerObject`) — is stated in the item-request form. Nothing about
+/// the model or about the violation distinguishes them, so this list is the only place the
+/// difference is recorded, and a member later found to be stated with its value echoed
+/// needs its own entry here. Each member is named by the path the validating walk reports
+/// it under, and `tests/all/page_size_clause_forms.rs` reads the forms back side by side
+/// so the difference is visible rather than silent.
+const VALUE_ECHOING_MEMBERS: &[(&str, &[&str])] = &[("Scan", &["limit"])];
+
+/// The members `operation` states with the rejected value echoed, over the validator's own
+/// path ([`VALUE_ECHOING_MEMBERS`]) — empty for every operation that states none.
+fn value_echoing_members(operation: &str) -> &'static [&'static str] {
+    VALUE_ECHOING_MEMBERS
+        .iter()
+        .find(|(named, _)| *named == operation)
+        .map_or(&[][..], |(_, members)| *members)
+}
+
 tokio::task_local! {
     /// The form the operation this request is being served as states its clauses in,
     /// set by [`OperationScopedClauseForm::run`] around that operation's whole run and
     /// read back by [`EmulatedService::override_refusal`].
     static SERVED_CLAUSE_FORM: ClauseForm;
+
+    /// The members that operation states with the rejected value echoed whatever form the
+    /// rest of its clauses take ([`VALUE_ECHOING_MEMBERS`]), set and read back the same way.
+    static SERVED_VALUE_ECHOING_MEMBERS: &'static [&'static str];
 
     /// Whether that operation states a clause about a member the service checks itself
     /// BARE ([`BARE_CLAUSE_OPERATIONS`]), set and read back the same way.
@@ -535,6 +569,19 @@ fn served_clause_form() -> ClauseForm {
     SERVED_CLAUSE_FORM
         .try_with(|form| *form)
         .unwrap_or(ClauseForm::PathAndValue)
+}
+
+/// The form the operation this task is serving states a clause about the member at `path`
+/// in: the member's own form where that operation gives it one
+/// ([`VALUE_ECHOING_MEMBERS`]), and the operation's own form for every other member.
+fn served_clause_form_for(path: &str) -> ClauseForm {
+    if SERVED_VALUE_ECHOING_MEMBERS
+        .try_with(|members| members.contains(&path))
+        .unwrap_or(false)
+    {
+        return ClauseForm::PathAndValue;
+    }
+    served_clause_form()
 }
 
 /// Whether the operation this task is serving states such a clause bare. Absent
@@ -594,11 +641,14 @@ impl<Eng: Send + Sync + 'static> ErasedOperation for OperationScopedClauseForm<E
             let answered = SERVED_CLAUSE_FORM
                 .scope(
                     clause_form(operation),
-                    SERVED_BARE_CLAUSE.scope(
-                        states_service_checked_clause_bare(operation),
-                        SERVED_NULL_CLAUSE.scope(
-                            states_absent_member_as_clause(operation),
-                            op.run(svc, req, ctx),
+                    SERVED_VALUE_ECHOING_MEMBERS.scope(
+                        value_echoing_members(operation),
+                        SERVED_BARE_CLAUSE.scope(
+                            states_service_checked_clause_bare(operation),
+                            SERVED_NULL_CLAUSE.scope(
+                                states_absent_member_as_clause(operation),
+                                op.run(svc, req, ctx),
+                            ),
                         ),
                     ),
                 )
@@ -778,14 +828,16 @@ fn validation_envelope(violations: &[Violation]) -> Option<String> {
             return Some(crate::state::missing_parameter_message(&absent));
         }
     }
-    let form = served_clause_form();
     // A violated idempotency token is stated alone ([`MASKING_MEMBERS`]).
     if let Some(masking) = masking_violation(violations) {
-        return crate::state::validation_message([violation_clause(masking, form)?]);
+        return crate::state::validation_message([violation_clause(
+            masking,
+            served_clause_form_for(&masking.path),
+        )?]);
     }
     let clauses: Vec<String> = in_stated_member_order(violations)
         .into_iter()
-        .map(|violation| violation_clause(violation, form))
+        .map(|violation| violation_clause(violation, served_clause_form_for(&violation.path)))
         .collect::<Option<Vec<_>>>()?;
     // A refusal about nothing but the members this service checks itself is stated bare
     // by the operations that state such a clause bare ([`BARE_CLAUSE_OPERATIONS`]), and
