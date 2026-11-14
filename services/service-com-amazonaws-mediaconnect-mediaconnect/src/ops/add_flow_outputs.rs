@@ -290,6 +290,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ) {
                 return Err(bad_request(rejection));
             }
+            // `CidrAllowList` is "the range of IP addresses that should be allowed to
+            // initiate output requests to this flow", each entry a Classless Inter-Domain
+            // Routing (CIDR) block the service has to parse to admit a requester — so an
+            // entry that is not a range appends nothing, judged by the one place this
+            // crate judges a range of IP addresses, the same one CreateFlow stores an
+            // output under.
+            if let Some(rejection) = crate::state::cidr_block_list_rejection(
+                &format!("Outputs[{index}].CidrAllowList"),
+                output.cidr_allow_list.as_deref(),
+            ) {
+                return Err(bad_request(rejection));
+            }
         }
 
         // An output's name is unique within its flow, so each new output is named

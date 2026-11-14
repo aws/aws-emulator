@@ -551,6 +551,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(bad_request(rejection));
         }
 
+        // `WhitelistCidr` is "the range of IP addresses that should be allowed to
+        // contribute content to your source ... in the form of a Classless Inter-Domain
+        // Routing (CIDR) block", a range the service has to parse to admit a contributor —
+        // so a request that names a value which is not a range writes nothing and leaves
+        // the source exactly as it was, judged by the one place this crate judges a range
+        // of IP addresses, the same one the create and add paths store a source under. A
+        // request that names no range is never refused for the one the source already
+        // carries.
+        if let Some(rejection) =
+            crate::state::cidr_block_rejection("WhitelistCidr", input.whitelist_cidr.as_deref())
+        {
+            return Err(bad_request(rejection));
+        }
+
         // What each setting becomes once this request is applied: the request's value
         // where it carries one, the stored value where it does not.
         if let Some(description) = input.description.clone() {

@@ -62,6 +62,7 @@ use crate::ops::types::{
     VpcInterfaceAttachment, VpcInterfaceRequest, WindowMaintenanceSchedule,
 };
 mod arns;
+mod cidr_blocks;
 mod offerings;
 mod router_filters;
 mod routers;
@@ -70,6 +71,7 @@ mod flows;
 mod source_report_preconditions;
 mod vpc_interface_role;
 mod vpc_placement;
+pub use cidr_blocks::*;
 pub use flows::*;
 pub use source_report_preconditions::*;
 pub use vpc_interface_role::*;

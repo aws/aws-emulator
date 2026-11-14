@@ -430,6 +430,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(bad_request(rejection));
         }
 
+        // `CidrAllowList` is "the range of IP addresses that should be allowed to initiate
+        // output requests to this flow", each entry a Classless Inter-Domain Routing
+        // (CIDR) block the service has to parse to admit a requester — so a request
+        // carrying an entry that is not a range writes nothing and leaves the output
+        // exactly as it was, judged by the one place this crate judges a range of IP
+        // addresses, the same one the create and add paths store an output under. A
+        // request that carries no list is never refused for the one the output already
+        // holds.
+        if let Some(rejection) = crate::state::cidr_block_list_rejection(
+            "CidrAllowList",
+            input.cidr_allow_list.as_deref(),
+        ) {
+            return Err(bad_request(rejection));
+        }
+
         // What each setting becomes once this request is applied: the request's value
         // where it carries one, the stored value where it does not.
         if let Some(description) = input.description.clone() {

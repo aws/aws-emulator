@@ -310,6 +310,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ) {
                 return Err(bad_request(rejection));
             }
+            // `WhitelistCidr` is "the range of IP addresses that should be allowed to
+            // contribute content to your source ... in the form of a Classless
+            // Inter-Domain Routing (CIDR) block", so a value that is not a range appends
+            // nothing — judged by the one place this crate judges a range of IP addresses
+            // (`crate::state::cidr_block_rejection`), the same one CreateFlow stores a
+            // source under.
+            if let Some(rejection) = crate::state::cidr_block_rejection(
+                &format!("Sources[{index}].WhitelistCidr"),
+                source.whitelist_cidr.as_deref(),
+            ) {
+                return Err(bad_request(rejection));
+            }
         }
 
         // Each source this request points at a bridge gives that bridge one output of its

@@ -213,6 +213,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     network.name
                 )));
             }
+            // `GatewayNetwork.CidrBlock` is "a unique IP address range to use for this
+            // network ... in the form of a Classless Inter-Domain Routing (CIDR) block",
+            // which the service has to parse to configure the network — so a value that
+            // is not a range configures none and stores no gateway at all, refused
+            // through the one place this crate judges a range of IP addresses
+            // (`crate::state::cidr_block_rejection`).
+            if let Some(rejection) = crate::state::cidr_block_rejection(
+                &format!("Networks[{index}].CidrBlock"),
+                Some(network.cidr_block.as_str()),
+            ) {
+                return Err(bad_request(rejection));
+            }
         }
 
         // `EgressCidrBlocks` is a required member naming "the range of IP addresses that
@@ -232,6 +244,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::MAX_GATEWAY_EGRESS_CIDR_BLOCKS,
                 input.egress_cidr_blocks.len()
             )));
+        }
+        // Each entry is a range the gateway admits contributors and output requests from,
+        // "in the form of a Classless Inter-Domain Routing (CIDR) block", so a value that
+        // is not a range admits nobody and stores no gateway at all — the same judgement,
+        // from the same place, the networks above are judged by.
+        if let Some(rejection) = crate::state::cidr_block_list_rejection(
+            "EgressCidrBlocks",
+            Some(&input.egress_cidr_blocks),
+        ) {
+            return Err(bad_request(rejection));
         }
 
         let region = crate::state::request_region(ctx.parts());

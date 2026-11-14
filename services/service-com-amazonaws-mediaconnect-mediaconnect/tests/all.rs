@@ -23,6 +23,8 @@ mod bridge_output_admission;
 mod bridge_source_admission;
 #[path = "all/bridge_update_references.rs"]
 mod bridge_update_references;
+#[path = "all/cidr_block_members.rs"]
+mod cidr_block_members;
 #[path = "all/create_bridge_direction_contract.rs"]
 mod create_bridge_direction_contract;
 #[path = "all/create_flow_stored_formats.rs"]

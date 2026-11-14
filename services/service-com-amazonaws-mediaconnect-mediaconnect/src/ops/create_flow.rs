@@ -437,6 +437,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ) {
                 return Err(bad_request(rejection));
             }
+            // `WhitelistCidr` is "the range of IP addresses that should be allowed to
+            // contribute content to your source ... in the form of a Classless
+            // Inter-Domain Routing (CIDR) block", a range the service has to parse to
+            // admit a contributor — so a value that is not a range stores no flow at all,
+            // judged by the one place this crate judges a range of IP addresses
+            // (`crate::state::cidr_block_rejection`), which the add and update paths judge
+            // the same member by.
+            if let Some(rejection) = crate::state::cidr_block_rejection(
+                &format!("Sources[{index}].WhitelistCidr"),
+                source.whitelist_cidr.as_deref(),
+            ) {
+                return Err(bad_request(rejection));
+            }
         }
         for (index, output) in input.outputs.iter().flatten().enumerate() {
             if let Some(rejection) = crate::state::output_request_reference_rejection(
@@ -444,6 +457,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 output,
                 &requested_media_stream_names,
                 &requested_vpc_interface_names,
+            ) {
+                return Err(bad_request(rejection));
+            }
+            // `CidrAllowList` is the same kind of member on the output side — "the range
+            // of IP addresses that should be allowed to initiate output requests to this
+            // flow", each entry a CIDR block — so its entries are judged by the same
+            // function, as AddFlowOutputs and UpdateFlowOutput judge them.
+            if let Some(rejection) = crate::state::cidr_block_list_rejection(
+                &format!("Outputs[{index}].CidrAllowList"),
+                output.cidr_allow_list.as_deref(),
             ) {
                 return Err(bad_request(rejection));
             }
