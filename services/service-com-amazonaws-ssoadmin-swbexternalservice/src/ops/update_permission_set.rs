@@ -186,6 +186,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             })
         })?;
         let region = crate::state::request_region(ctx.parts());
+        // The SESSION LENGTH this update would write: bounded to the window IAM Identity
+        // Center serves (`crate::state::session_duration_refusal`), which the model's
+        // form-only `Duration` pattern cannot express. Judged on the REQUEST alone, before
+        // anything is resolved, so a value outside the window leaves the stored record
+        // exactly as it was.
+        if let Some(message) =
+            crate::state::session_duration_refusal(input.session_duration.as_deref())
+        {
+            return Err(UpdatePermissionSetErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(message),
+                    // The model's `ValidationExceptionReason` enum carries only KMS key
+                    // states, none of which this refusal is.
+                    reason: None,
+                },
+            )
+            .into());
+        }
         let mut store = state.lock();
         // What the CLOCK already owes every instance, plus the account's ambient instance
         // if nothing has enabled one yet, so this update resolves the same instance a read

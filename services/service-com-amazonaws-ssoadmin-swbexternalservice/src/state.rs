@@ -43,6 +43,17 @@ use crate::ops::types::{
 mod pagination;
 pub use pagination::*;
 
+/// The window a permission set's `SessionDuration` has to fall in, and the refusal a value
+/// outside it earns. Re-exported, so `crate::state::session_duration_refusal` stays the
+/// path the two permission-set writes ask it through.
+mod session_duration;
+pub use session_duration::*;
+
+/// The validation every write that takes caller-supplied `Tags` asks of that list.
+/// Re-exported, so `crate::state::tag_list_refusal` stays the path those writes share.
+mod tag_requests;
+pub use tag_requests::*;
+
 /// The identity-store instance every `InstanceArn`-taking operation resolves against.
 ///
 /// IAM Identity Center allows ONE instance per account, so the emulator seeds exactly
@@ -961,11 +972,12 @@ pub enum TagRefusal {
 /// requested value in place, a key it does not hold is added, and every other key is
 /// left untouched.
 ///
-/// A tag set is keyed by `Tag$Key`, and the model declares no `@uniqueItems` on
-/// `TagList`, so one request may name a key twice — and a create that stored its `Tags`
-/// as the caller sent them may hold a key twice already. The value a key ends up with is
-/// the one written LAST, and a key this merge writes is left holding ONE entry, so the
-/// value stored here is the value [`tags_in_key_order`] reports.
+/// A tag set is keyed by `Tag$Key`, so it holds ONE value per key: the value a key ends up
+/// with is the one written LAST, and a key this merge writes is left holding one entry, so
+/// the value stored here is the value [`tags_in_key_order`] reports. A request that named
+/// one key twice never reaches this merge — [`tag_list_refusal`] refuses it before anything
+/// is written — so the repetition this handles is a key the RESOURCE already carries, which
+/// is what a merge is for.
 pub fn merge_tags(stored: &mut Vec<Tag>, requested: &[Tag]) {
     for tag in requested {
         let mut written = false;
@@ -993,10 +1005,9 @@ pub fn merge_tags(stored: &mut Vec<Tag>, requested: &[Tag]) {
 /// gone whatever value it held, a key not named is left untouched.
 ///
 /// A key the resource does not carry removes nothing rather than failing, so repeating
-/// the same call answers the same and changes nothing further. The model declares no
-/// `@uniqueItems` on `TagList`, so a key may be held more than once (a create that stored
-/// its `Tags` as the caller sent them); naming it removes EVERY entry for it, leaving the
-/// read with no value for that key at all.
+/// the same call answers the same and changes nothing further, and naming the same key
+/// twice in one call removes it once. EVERY entry held for a named key is removed, so the
+/// read is left with no value for that key at all.
 pub fn remove_tags(stored: &mut Vec<Tag>, keys: &[String]) {
     stored.retain(|held| !keys.iter().any(|key| key == &held.key));
 }

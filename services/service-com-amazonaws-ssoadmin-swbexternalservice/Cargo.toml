@@ -28,6 +28,10 @@ hex = { workspace = true }
 # derived from: the `RequestId` of an assignment operation (the model's `UUId` shape)
 # and the `ps-` suffix of a permission-set ARN.
 sha2 = { workspace = true }
+# `service-common` carries this tree's ONE reading of an ISO 8601 duration string
+# (`iso8601_span`), which is how a permission set's `SessionDuration` is measured against
+# the window the service bounds it to.
+service-common = { path = "../common" }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

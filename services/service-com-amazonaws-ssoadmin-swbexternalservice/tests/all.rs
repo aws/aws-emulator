@@ -103,6 +103,8 @@ mod customer_managed_policy_reference_order;
 mod customer_managed_policy_references;
 #[path = "all/discovered_instance_surface.rs"]
 mod discovered_instance_surface;
+#[path = "all/duplicate_tag_keys.rs"]
+mod duplicate_tag_keys;
 #[path = "all/enumeration_default_page_size.rs"]
 mod enumeration_default_page_size;
 #[path = "all/inline_policy.rs"]
@@ -189,6 +191,8 @@ mod permission_set_provisioning_status_list;
 mod permission_set_provisioning_status_poll;
 #[path = "all/permission_set_provisioning_targets.rs"]
 mod permission_set_provisioning_targets;
+#[path = "all/permission_set_session_duration.rs"]
+mod permission_set_session_duration;
 #[path = "all/permission_set_surface_resolution.rs"]
 mod permission_set_surface_resolution;
 #[path = "all/permission_set_update.rs"]

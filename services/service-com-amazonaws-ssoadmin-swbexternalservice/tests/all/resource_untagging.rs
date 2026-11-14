@@ -439,13 +439,14 @@ async fn untagging_removes_exactly_the_keys_it_names_on_every_taggable_resource_
     }
 }
 
-/// Rule 1 at the edge the model leaves open: `TagList` declares no `@uniqueItems`, so a
-/// create can store the same key twice. Naming that key removes EVERY entry for it, so
-/// the read is left with no value for it at all.
+/// Rule 1 where the tag set's KEYING bites: a key is unique within one request, so a create
+/// naming the same key twice is refused and mints nothing (`duplicate_tag_keys.rs` owns that
+/// refusal across every write that takes `Tags`) — while the key a served create stored once
+/// is removed entirely, leaving the read with no value for it at all.
 #[tokio::test]
-async fn a_key_a_create_stored_twice_is_removed_entirely() {
+async fn a_create_naming_one_key_twice_is_refused_and_a_stored_key_is_removed_entirely() {
     let (router, instance_arn) = organization_router();
-    let (status, body) = call(
+    let (status, refused) = call(
         &router,
         "CreatePermissionSet",
         &json!({
@@ -459,9 +460,30 @@ async fn a_key_a_create_stored_twice_is_removed_entirely() {
         }),
     )
     .await;
+    assert_refused(
+        "a create naming one key twice",
+        "CreatePermissionSet",
+        "ValidationException",
+        status,
+        &refused,
+    );
+
+    let (status, body) = call(
+        &router,
+        "CreatePermissionSet",
+        &json!({
+            "InstanceArn": instance_arn,
+            "Name": "distinct-keyed-set",
+            "Tags": [
+                {"Key": "env", "Value": "second"},
+                {"Key": "owner", "Value": "platform"},
+            ],
+        }),
+    )
+    .await;
     assert_eq!(
         status, 200,
-        "the create carrying a duplicated key must answer 200, got {status} {body}"
+        "the create carrying distinct keys must answer 200, got {status} {body}"
     );
     let resource_arn = body["PermissionSet"]["PermissionSetArn"]
         .as_str()
@@ -477,17 +499,17 @@ async fn a_key_a_create_stored_twice_is_removed_entirely() {
     .await;
     assert_eq!(
         status, 200,
-        "case \"a duplicated key removed\": expected 200, got {status} {body}"
+        "case \"a stored key removed\": expected 200, got {status} {body}"
     );
     let (status, listed) = list_tags(&router, Some(&instance_arn), &resource_arn).await;
     assert_eq!(
         status, 200,
-        "case \"a duplicated key removed\": the list must answer 200, got {status} {listed}"
+        "case \"a stored key removed\": the list must answer 200, got {status} {listed}"
     );
     assert_eq!(
         reported(&listed),
         pairs(&[("owner", "platform")]),
-        "case \"a duplicated key removed\": no entry for the named key may survive, got {listed}"
+        "case \"a stored key removed\": no entry for the named key may survive, got {listed}"
     );
 }
 

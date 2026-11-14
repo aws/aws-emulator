@@ -209,17 +209,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Region where the IAM Identity Center instance was originally enabled", and the
         // request's own credential scope is where that enablement happened.
         let region = crate::state::request_region(ctx.parts());
-        // A key in the reserved namespace names a tag Amazon Web Services applies itself,
-        // which an end user may not write (`crate::state::mutates_system_tag`, which states
-        // where this guard sits among this service's pre-mutation refusals) — the guard the
-        // tagging writes apply to their own members, asked of the `Tags` this create would
-        // attach to the instance at enablement. Judged on the REQUEST alone, before
-        // anything is resolved or stored, so a refused create enables no instance.
-        if crate::state::mutates_system_tag(input.tags.iter().flatten().map(|tag| tag.key.as_str()))
+        // The caller-supplied `Tags` this create would attach to the instance at enablement,
+        // judged by the ONE validation every write of this service that takes tags shares
+        // (`crate::state::tag_list_refusal`, which states both questions it asks and where
+        // this guard sits among this service's pre-mutation refusals). Judged on the REQUEST
+        // alone, before anything is resolved or stored, so a refused create enables no
+        // instance.
+        if let Some(message) =
+            crate::state::tag_list_refusal(input.tags.as_deref().unwrap_or_default())
         {
             return Err(CreateInstanceErrorModeled::ValidationException(
                 ValidationException {
-                    message: Some(crate::state::SYSTEM_TAG_MUTATION_MESSAGE.to_string()),
+                    message: Some(message),
                     // The model's `ValidationExceptionReason` enum carries only KMS key
                     // states, none of which this refusal is.
                     reason: None,

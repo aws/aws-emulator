@@ -94,7 +94,7 @@ fn flow_cases() -> Vec<FlowCase> {
             label: "a name spanning the charset the pattern admits",
             name: "ops+team=eu.west-1@x_1".to_string(),
             description: Some("x".to_string()),
-            session_duration: Some("P1D"),
+            session_duration: Some("PT90M"),
             principal_type: "GROUP",
             principal_id: "11111111-2222-4333-8444-555555555555",
             account_id: "123456789012",

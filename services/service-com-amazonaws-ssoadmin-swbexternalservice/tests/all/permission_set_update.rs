@@ -51,6 +51,19 @@ fn hours_of_length(length: usize) -> String {
     format!("PT{}H", "9".repeat(length - 3))
 }
 
+/// A duration of exactly `length` characters naming ONE HOUR: `PT`, 3600 seconds padded
+/// with leading zeros, `S`.
+///
+/// The digit run of the same `(\d+)S` component the pattern admits, so the published length
+/// bound can be hit by a value that is also inside the session-duration window the service
+/// serves (1 hour to 12 hours) — [`hours_of_length`] fills the digits with nines and so
+/// names a span far outside it.
+fn padded_hour_of_length(length: usize) -> String {
+    // `PT` and `S` are three of the characters, and `3600` is four more.
+    debug_assert!(length >= 7, "a PT..S duration of one hour is at least 7 characters");
+    format!("PT{}3600S", "0".repeat(length - 7))
+}
+
 /// The values the create stores, so every row below starts from a permission set that
 /// already carries all three updatable members and an omitted member has something to be
 /// left alone.
@@ -115,13 +128,14 @@ fn written_update_cases() -> Vec<UpdateCase> {
             sent: json!({"Description": "tab:\there\nline two\r¡Año! café ÿ ~{}[]"}),
         },
         UpdateCase {
-            // `Duration`'s pattern admits a bare day component.
-            label: "SessionDuration in days",
-            sent: json!({"SessionDuration": "P1D"}),
+            // `Duration`'s pattern admits a day component before the time components.
+            label: "SessionDuration with a day component",
+            sent: json!({"SessionDuration": "P0DT6H"}),
         },
         UpdateCase {
+            // The session-duration window's lower bound, named in seconds.
             label: "SessionDuration in seconds",
-            sent: json!({"SessionDuration": "PT900S"}),
+            sent: json!({"SessionDuration": "PT3600S"}),
         },
         UpdateCase {
             label: "SessionDuration with every time component",
@@ -155,7 +169,7 @@ fn update_cases_at_upper_bounds() -> Vec<UpdateCase> {
         },
         UpdateCase {
             label: "SessionDuration at its upper length bound",
-            sent: json!({"SessionDuration": hours_of_length(SESSION_DURATION_MAX)}),
+            sent: json!({"SessionDuration": padded_hour_of_length(SESSION_DURATION_MAX)}),
         },
     ]
 }

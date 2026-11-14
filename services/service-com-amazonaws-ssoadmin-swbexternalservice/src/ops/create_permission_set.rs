@@ -183,19 +183,35 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // resolves and the `CreatedDate` it stores are the same moment, so the new record
         // cannot be dated after the state it was created against.
         let now = ::std::time::SystemTime::now();
-        // A key in the reserved namespace names a tag Amazon Web Services applies itself,
-        // which an end user may not write (`crate::state::mutates_system_tag`, which states
-        // where this guard sits among this service's pre-mutation refusals) — the guard the
-        // tagging writes apply to their own members, asked of the `Tags` a create carries.
-        // Judged on the REQUEST alone, before anything is resolved or stored, so a refused
-        // create leaves no resource behind.
-        if crate::state::mutates_system_tag(input.tags.iter().flatten().map(|tag| tag.key.as_str()))
+        // The caller-supplied `Tags` this create would attach, judged by the ONE validation
+        // every write of this service that takes tags shares
+        // (`crate::state::tag_list_refusal`, which states both questions it asks and where
+        // this guard sits among this service's pre-mutation refusals). Judged on the REQUEST
+        // alone, before anything is resolved or stored, so a refused create leaves no
+        // resource behind.
+        if let Some(message) =
+            crate::state::tag_list_refusal(input.tags.as_deref().unwrap_or_default())
         {
             return Err(CreatePermissionSetErrorModeled::ValidationException(
                 ValidationException {
-                    message: Some(crate::state::SYSTEM_TAG_MUTATION_MESSAGE.to_string()),
+                    message: Some(message),
                     // The model's `ValidationExceptionReason` enum carries only KMS key
                     // states, none of which this refusal is.
+                    reason: None,
+                },
+            )
+            .into());
+        }
+        // The SESSION LENGTH the permission set would hold: bounded to the window IAM
+        // Identity Center serves (`crate::state::session_duration_refusal`), which the
+        // model's form-only `Duration` pattern cannot express. Judged on the request alone
+        // too, so a value outside the window stores nothing.
+        if let Some(message) =
+            crate::state::session_duration_refusal(input.session_duration.as_deref())
+        {
+            return Err(CreatePermissionSetErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(message),
                     reason: None,
                 },
             )

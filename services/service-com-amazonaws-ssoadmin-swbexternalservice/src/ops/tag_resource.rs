@@ -182,15 +182,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             })
         })?;
         let region = crate::state::request_region(ctx.parts());
-        // A key in the reserved namespace names a tag Amazon Web Services applies itself,
-        // which an end user may not mutate (`crate::state::mutates_system_tag`, which
-        // states where this guard sits among this service's pre-mutation refusals). Judged
-        // on the REQUEST alone, so it is settled before the resource it names is resolved,
-        // and for the whole request at once, so nothing is written when one key of the set
-        // is a system one.
-        if crate::state::mutates_system_tag(input.tags.iter().map(|tag| tag.key.as_str())) {
+        // The caller-supplied `Tags` this write would store, judged by the ONE validation
+        // every write of this service that takes tags shares
+        // (`crate::state::tag_list_refusal`, which states both questions it asks and where
+        // this guard sits among this service's pre-mutation refusals). Judged on the REQUEST
+        // alone, so it is settled before the resource it names is resolved, and for the
+        // whole request at once, so nothing is written when one key of the set is refused.
+        if let Some(message) = crate::state::tag_list_refusal(&input.tags) {
             return Err(TagResourceErrorModeled::ValidationException(ValidationException {
-                message: Some(crate::state::SYSTEM_TAG_MUTATION_MESSAGE.to_string()),
+                message: Some(message),
                 // The model's `ValidationExceptionReason` enum carries only KMS key
                 // states, none of which this refusal is.
                 reason: None,

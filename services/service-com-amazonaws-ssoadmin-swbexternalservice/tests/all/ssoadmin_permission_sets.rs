@@ -537,7 +537,8 @@ struct PermissionSetCase {
 /// axis the rule generalises over — which optional members are present, the length of
 /// `Name` at both published bounds (1..32), its character class (`^[\w+=,.@-]+$`), the
 /// length of `Description` at its upper bound (1..700), and the ISO-8601 forms the
-/// `Duration` pattern admits.
+/// `Duration` pattern admits INSIDE the session-duration window the service serves
+/// (`permission_set_session_duration.rs` owns that window and the refusal outside it).
 fn permission_set_cases() -> Vec<PermissionSetCase> {
     vec![
         PermissionSetCase {
@@ -561,7 +562,7 @@ fn permission_set_cases() -> Vec<PermissionSetCase> {
             label: "Name of one character",
             name: "a".to_string(),
             description: Some("x".to_string()),
-            session_duration: Some("PT900S"),
+            session_duration: Some("PT3600S"),
             relay_state: None,
             tags: None,
         },
@@ -570,7 +571,7 @@ fn permission_set_cases() -> Vec<PermissionSetCase> {
             label: "Name of 32 characters, full charset",
             name: format!("{}+=,.@-_", "n".repeat(25)),
             description: Some("d".repeat(700)),
-            session_duration: Some("P1Y2M3DT4H5M6S"),
+            session_duration: Some("PT4H5M6S"),
             relay_state: Some("s3://bucket/key?x=1"),
             tags: Some(json!([
                 {"Key": "Owner", "Value": "platform"},
@@ -578,10 +579,10 @@ fn permission_set_cases() -> Vec<PermissionSetCase> {
             ])),
         },
         PermissionSetCase {
-            label: "day-only session duration",
+            label: "a session duration carrying a day component",
             name: "DailySet".to_string(),
             description: None,
-            session_duration: Some("P1D"),
+            session_duration: Some("P0DT12H"),
             relay_state: None,
             tags: None,
         },

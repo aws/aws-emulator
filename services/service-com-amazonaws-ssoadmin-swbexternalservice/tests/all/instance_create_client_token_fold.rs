@@ -8,18 +8,19 @@
 //! parameters"): a reused `@idempotencyToken` is a REPLAY only when every other parameter
 //! of the request is the one the token belongs to — `Name` as sent, and `Tags` as the
 //! MULTISET of `(Key, Value)` pairs the request carried, so reordering them changes
-//! nothing while any difference in the pairs themselves (one dropped, one added, one
-//! repeated in another's place, a value or a key changed) is a DIFFERENT request, which
-//! the reused token earns the modelled `ConflictException` for. The parameters are those
-//! of the call that minted the instance, not the state the instance has drifted to since,
-//! so tagging it afterwards cannot turn a true retry into a conflict.
+//! nothing while any difference in the pairs themselves (one dropped, one added, a value or
+//! a key changed) is a DIFFERENT request, which the reused token earns the modelled
+//! `ConflictException` for. The parameters are those of the call that minted the instance,
+//! not the state the instance has drifted to since, so tagging it afterwards cannot turn a
+//! true retry into a conflict.
 //!
 //! `instance_create.rs` owns the create's own rules and the headline idempotency row;
 //! this suite is the one that spans the MULTISET comparison, whose rows differ along what
 //! the rule generalises over: the number of pairs (none, one, several, and the 75 the
-//! model's `TagList` admits at its upper bound), their order, which pairs they are,
-//! whether a pair REPEATS, and whether `Name` and `Tags` are present at all. The `Tag` /
-//! `TagList` constraints the rows span are from
+//! model's `TagList` admits at its upper bound), their order, which pairs they are, and
+//! whether `Name` and `Tags` are present at all. A list that names one KEY twice is refused
+//! before the token is consulted at all, so no row carries one (`duplicate_tag_keys.rs`
+//! owns that refusal). The `Tag` / `TagList` constraints the rows span are from
 //! `smithy_query(query="shape",shape="Tag,TagList")`: `Key` `length 1..128`, `Value`
 //! `length 0..256`, `TagList` `length 0..75`. The harness is the one
 //! `ssoadmin_permission_sets.rs` owns, and every call goes through
@@ -81,17 +82,6 @@ fn rows() -> Vec<Row> {
                 ("the pairs reversed", request(name, &[("Tier", "test"), ("Owner", "platform")])),
             ]),
             conflicts: variants(&[
-                // The same list LENGTH and every pair of the request present in the
-                // stored set, yet a different parameter set: the stored instance carries
-                // a pair this request never sent.
-                (
-                    "the first pair repeated in the second's place",
-                    request(name, &[("Owner", "platform"), ("Owner", "platform")]),
-                ),
-                (
-                    "the second pair repeated in the first's place",
-                    request(name, &[("Tier", "test"), ("Tier", "test")]),
-                ),
                 ("one pair dropped", request(name, &[("Owner", "platform")])),
                 (
                     "a third pair added",
@@ -131,44 +121,15 @@ fn rows() -> Vec<Row> {
             ]),
         },
         Row {
-            label: "a list that itself repeats a pair".to_string(),
-            first: request(name, &[("Owner", "platform"), ("Owner", "platform")]),
-            replays: variants(&[(
-                "the request verbatim",
-                request(name, &[("Owner", "platform"), ("Owner", "platform")]),
-            )]),
-            conflicts: variants(&[
-                (
-                    "the repeat replaced by another pair, the same length",
-                    request(name, &[("Owner", "platform"), ("Tier", "test")]),
-                ),
-                (
-                    "the repeat collapsed to one pair",
-                    request(name, &[("Owner", "platform")]),
-                ),
-                (
-                    "one more repeat",
-                    request(
-                        name,
-                        &[
-                            ("Owner", "platform"),
-                            ("Owner", "platform"),
-                            ("Owner", "platform"),
-                        ],
-                    ),
-                ),
-            ]),
-        },
-        Row {
-            label: "three pairs, one of them repeated, with a Key at its 128-character \
-                    bound and a Value at the empty lower bound"
+            label: "three pairs, with a Key at its 128-character bound and a Value at the \
+                    empty lower bound"
                 .to_string(),
             first: (
                 Some(name.to_string()),
                 Some(vec![
                     ("a".repeat(128), String::new()),
                     ("b".to_string(), "2".to_string()),
-                    ("b".to_string(), "2".to_string()),
+                    ("c".to_string(), "3".to_string()),
                 ]),
             ),
             replays: variants(&[
@@ -179,7 +140,7 @@ fn rows() -> Vec<Row> {
                         Some(vec![
                             ("a".repeat(128), String::new()),
                             ("b".to_string(), "2".to_string()),
-                            ("b".to_string(), "2".to_string()),
+                            ("c".to_string(), "3".to_string()),
                         ]),
                     ),
                 ),
@@ -189,7 +150,7 @@ fn rows() -> Vec<Row> {
                         Some(name.to_string()),
                         Some(vec![
                             ("b".to_string(), "2".to_string()),
-                            ("b".to_string(), "2".to_string()),
+                            ("c".to_string(), "3".to_string()),
                             ("a".repeat(128), String::new()),
                         ]),
                     ),
@@ -197,24 +158,23 @@ fn rows() -> Vec<Row> {
             ]),
             conflicts: variants(&[
                 (
-                    "the repeat replaced by a third distinct pair",
+                    "one pair replaced by a fourth distinct pair",
                     (
                         Some(name.to_string()),
                         Some(vec![
                             ("a".repeat(128), String::new()),
                             ("b".to_string(), "2".to_string()),
-                            ("c".to_string(), "3".to_string()),
+                            ("d".to_string(), "4".to_string()),
                         ]),
                     ),
                 ),
                 (
-                    "the other pair repeated instead, the same length",
+                    "the bounded key dropped",
                     (
                         Some(name.to_string()),
                         Some(vec![
-                            ("a".repeat(128), String::new()),
-                            ("a".repeat(128), String::new()),
                             ("b".to_string(), "2".to_string()),
+                            ("c".to_string(), "3".to_string()),
                         ]),
                     ),
                 ),
@@ -225,7 +185,7 @@ fn rows() -> Vec<Row> {
                         Some(vec![
                             ("a".repeat(128), "v".to_string()),
                             ("b".to_string(), "2".to_string()),
-                            ("b".to_string(), "2".to_string()),
+                            ("c".to_string(), "3".to_string()),
                         ]),
                     ),
                 ),
@@ -262,10 +222,10 @@ fn rows() -> Vec<Row> {
         .collect();
     let mut ascending = many.clone();
     ascending.sort();
-    // One pair standing in for another: the same count, and every pair of this request is
-    // one the first call sent — yet the first call's set carries a pair this one does not.
-    let mut one_repeated = many.clone();
-    one_repeated[40] = many[7].clone();
+    // One pair carrying another's VALUE: the same count and every KEY the first call sent,
+    // yet a different parameter set.
+    let mut one_revalued = many.clone();
+    one_revalued[40] = (many[40].0.clone(), many[7].1.clone());
     let mut one_dropped = many.clone();
     one_dropped.pop();
     rows.push(Row {
@@ -277,8 +237,8 @@ fn rows() -> Vec<Row> {
         ]),
         conflicts: variants(&[
             (
-                "one of the 75 pairs repeating another",
-                (Some(name.to_string()), Some(one_repeated)),
+                "one of the 75 pairs carrying another's value",
+                (Some(name.to_string()), Some(one_revalued)),
             ),
             ("one of the 75 pairs dropped", (Some(name.to_string()), Some(one_dropped))),
         ]),

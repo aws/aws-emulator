@@ -8,7 +8,8 @@
 //! 1. a tag set is keyed by `Tag$Key`, so `TagResource` MERGES: a key the resource
 //!    already carries takes the requested value, a key it does not carry is added, and
 //!    every other key it holds is left alone — which makes repeating a call change
-//!    nothing further;
+//!    nothing further, and which is why a request naming one key twice is refused rather
+//!    than merged (`duplicate_tag_keys.rs` owns that refusal);
 //! 2. the merge is stored ON the resource the `ResourceArn` names — each of the four
 //!    kinds the model's `TaggableResourceArn` admits (an instance, a permission set, an
 //!    application and a trusted token issuer) — and `ListTagsForResource` REPORTS exactly
@@ -102,10 +103,6 @@ fn batches() -> Vec<Batch> {
         Batch {
             label: "a Key at the 128-character bound and a Value at the 256-character bound",
             tags: vec![("k".repeat(128), "v".repeat(256))],
-        },
-        Batch {
-            label: "the same key twice in one call: the value written last is the one kept",
-            tags: pairs(&[("duplicated", "first"), ("duplicated", "last")]),
         },
         Batch {
             label: "an empty Tags list, which the TagList lower bound of 0 admits",
@@ -375,13 +372,14 @@ async fn tagging_merges_into_the_stored_set_on_every_taggable_resource_kind() {
     }
 }
 
-/// Rule 1 at the edge the model leaves open: `TagList` declares no `@uniqueItems`, so a
-/// create can store the same key twice. A tag set still holds ONE value per key, so the
-/// report names the value written last and a later re-valuing is what the next read sees.
+/// Rule 1 where the tag set's KEYING bites: a key is unique within one request, so a create
+/// naming the same key twice is refused and mints nothing — and the key is then stored once
+/// and re-valued by a later write, which is what a merge is for.
+/// `duplicate_tag_keys.rs` owns that refusal across every write that takes `Tags`.
 #[tokio::test]
-async fn a_key_a_create_stored_twice_still_carries_one_value() {
+async fn a_create_naming_one_key_twice_is_refused_and_the_key_is_stored_once() {
     let (router, instance_arn) = organization_router();
-    let (status, body) = call(
+    let (status, refused) = call(
         &router,
         "CreatePermissionSet",
         &json!({
@@ -395,25 +393,63 @@ async fn a_key_a_create_stored_twice_still_carries_one_value() {
         }),
     )
     .await;
+    assert_refused(
+        "a create naming one key twice",
+        "CreatePermissionSet",
+        "ValidationException",
+        status,
+        &refused,
+    );
+    let (status, listed) = call(
+        &router,
+        "ListPermissionSets",
+        &json!({"InstanceArn": instance_arn}),
+    )
+    .await;
     assert_eq!(
         status, 200,
-        "the create carrying a duplicated key must answer 200, got {status} {body}"
+        "case \"a create naming one key twice\": ListPermissionSets expected 200, got \
+         {status} {listed}"
     );
-    let resource_arn = body["PermissionSet"]["PermissionSetArn"]
+    assert_eq!(
+        listed["PermissionSets"].as_array().map(Vec::len),
+        Some(0),
+        "case \"a create naming one key twice\": a refused create must mint no resource, \
+         got {listed}"
+    );
+
+    // The same key, named ONCE by a create that is served, and then re-valued by a write.
+    let (status, created) = call(
+        &router,
+        "CreatePermissionSet",
+        &json!({
+            "InstanceArn": instance_arn,
+            "Name": "distinct-keyed-set",
+            "Tags": [
+                {"Key": "env", "Value": "second"},
+                {"Key": "owner", "Value": "platform"},
+            ],
+        }),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "case \"distinct keys\": CreatePermissionSet expected 200, got {status} {created}"
+    );
+    let resource_arn = created["PermissionSet"]["PermissionSetArn"]
         .as_str()
-        .unwrap_or_else(|| panic!("the create minted no ARN: {body}"))
+        .unwrap_or_else(|| panic!("the create minted no ARN: {created}"))
         .to_string();
 
     let (status, listed) = list_tags(&router, Some(&instance_arn), &resource_arn, None).await;
     assert_eq!(
         status, 200,
-        "case \"a duplicated key as created\": expected 200, got {status} {listed}"
+        "case \"distinct keys\": expected 200, got {status} {listed}"
     );
     assert_eq!(
         reported(&listed),
         pairs(&[("env", "second"), ("owner", "platform")]),
-        "case \"a duplicated key as created\": one value per key, the last one written, \
-         got {listed}"
+        "case \"distinct keys\": one value per key, got {listed}"
     );
 
     let (status, body) = tag_resource(
@@ -425,17 +461,17 @@ async fn a_key_a_create_stored_twice_still_carries_one_value() {
     .await;
     assert_eq!(
         status, 200,
-        "case \"re-valuing a duplicated key\": expected 200, got {status} {body}"
+        "case \"re-valuing a stored key\": expected 200, got {status} {body}"
     );
     let (status, listed) = list_tags(&router, Some(&instance_arn), &resource_arn, None).await;
     assert_eq!(
         status, 200,
-        "case \"re-valuing a duplicated key\": the list must answer 200, got {status} {listed}"
+        "case \"re-valuing a stored key\": the list must answer 200, got {status} {listed}"
     );
     assert_eq!(
         reported(&listed),
         pairs(&[("env", "third"), ("owner", "platform")]),
-        "case \"re-valuing a duplicated key\": the report must name the value just \
+        "case \"re-valuing a stored key\": the report must name the value just \
          written, got {listed}"
     );
 }

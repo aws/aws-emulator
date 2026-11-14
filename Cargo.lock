@@ -20058,6 +20058,7 @@ dependencies = [
  "http",
  "rand 0.9.5",
  "serde_json",
+ "service-common",
  "sha2 0.10.9",
  "tokio",
  "tracing",
