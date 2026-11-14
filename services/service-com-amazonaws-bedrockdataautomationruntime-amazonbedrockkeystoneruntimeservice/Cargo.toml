@@ -61,6 +61,10 @@ emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
 hex = { workspace = true }
+# Generates the tag keys the modelled `TagKey` character class is asserted over
+# (`tests/all/tag_key_combining_mark_class.rs`), from a fixed seed so a failing case is
+# reproducible. Only the seedable generator is needed, so no entropy source is pulled in.
+rand = { version = "0.9", default-features = false, features = ["std", "std_rng"] }
 # Writes the PDF documents the standard-output suite stages as a job's input asset, so the
 # asset a job really parses is a document a PDF reader opens rather than bytes shaped like
 # one.

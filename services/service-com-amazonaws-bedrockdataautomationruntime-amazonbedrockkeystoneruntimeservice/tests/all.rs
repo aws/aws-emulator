@@ -41,6 +41,8 @@ mod state_roundtrip;
 mod store_unavailable_refusal;
 #[path = "all/support.rs"]
 mod support;
+#[path = "all/tag_key_combining_mark_class.rs"]
+mod tag_key_combining_mark_class;
 #[path = "all/tag_key_refusal.rs"]
 mod tag_key_refusal;
 #[path = "all/tag_key_refusal_element_path.rs"]

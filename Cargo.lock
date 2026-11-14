@@ -10345,6 +10345,7 @@ dependencies = [
  "pdf-extract",
  "pdf-writer",
  "percent-encoding",
+ "rand 0.9.5",
  "regex",
  "serde_json",
  "service-com-amazonaws-bedrockdataautomation-amazonbedrockkeystonebuildtimeservice",

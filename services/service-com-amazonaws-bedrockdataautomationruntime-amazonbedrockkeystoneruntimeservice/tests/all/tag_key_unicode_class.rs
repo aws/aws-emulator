@@ -15,141 +15,29 @@
 //! it, so a character admitted by a wider approximation of `\p{L}` than the model declares
 //! cannot pass unnoticed.
 
-use std::sync::Arc;
-
-use bytes::Bytes;
 use serde_json::{json, Value};
-use service_com_amazonaws_bedrockdataautomationruntime_amazonbedrockkeystoneruntimeservice as bda;
 use smithy_server_runtime::MultiServiceRouter;
 
-/// This service's sigv4 signing name (`OPERATIONS.md`): the credential scope the router
-/// routes on.
-const SIGNING_NAME: &str = "bedrock";
+use crate::support::{
+    call, tag_key_refusal_message as expected_refusal, tag_key_router, tag_key_submission,
+    tag_keys,
+};
 
-/// The region every request below signs for.
-const REGION: &str = "us-west-2";
+/// Where the submissions below write their output. What this suite reads back is the tag
+/// map rather than the output, so one prefix serves the whole suite.
+const OUTPUT_PREFIX: &str = "s3://out-bucket/tag-key-class/";
 
-/// A legal `dataAutomationProfileArn` (pattern from `smithy_query` shape
-/// `DataAutomationProfileArn`, whose account segment accepts the literal `aws`).
-const PROFILE_ARN: &str =
-    "arn:aws:bedrock:us-west-2:aws:data-automation-profile/us.data-automation-v1";
-
-/// A legal `dataAutomationConfiguration.dataAutomationProjectArn` (pattern from
-/// `smithy_query` shape `DataAutomationProjectArn`): what tells the service WHAT to
-/// extract, which every accepted submission has to name.
-const PROJECT_ARN: &str =
-    "arn:aws:bedrock:us-west-2:000000000000:data-automation-project/receipts";
-
-/// The modelled `TagKey` pattern without the outer anchors a Smithy `@pattern` does not
-/// need (`smithy_query` shape `TagKey`), as a refusal's requirement clause prints it.
-const UNANCHORED_TAG_KEY_PATTERN: &str = r"(?!aws:)[\p{L}\p{Z}\p{N}_.:/=+\-@]*";
-
-/// A router serving only this service over one shared engine, with [`PROJECT_ARN`]
-/// arranged in the store of the service that OWNS data-automation projects: a submission
-/// naming a project nobody created is refused before any rule this suite is about.
+/// A router serving only this service over one shared engine, with the project every
+/// submission below references arranged in the store of the service that owns it: a
+/// submission naming a project nobody created is refused before any rule this suite is
+/// about.
 fn service() -> MultiServiceRouter {
-    let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
-    crate::support::seed_project(&engine, PROJECT_ARN, "tag-key-class-receipts");
-    let mut router = MultiServiceRouter::new();
-    router.set_request_authentication(false);
-    router.register_service(bda::EmulatedService::new(engine));
-    router
-}
-
-/// One wire answer: the HTTP status and the parsed JSON body.
-struct Answer {
-    status: u16,
-    body: Value,
-}
-
-impl Answer {
-    /// The awsJson error code: the body's `__type`, local name only.
-    fn error_code(&self) -> &str {
-        self.body
-            .get("__type")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .split('#')
-            .next_back()
-            .unwrap_or_default()
-    }
-
-    /// The error message the body carries, or the empty string.
-    fn message(&self) -> &str {
-        self.body
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-    }
-}
-
-/// Call one operation on `router` the way an SDK would.
-async fn call(router: &MultiServiceRouter, operation: &str, body: Value) -> Answer {
-    let request = http::Request::builder()
-        .method("POST")
-        .uri("/")
-        .header(
-            "x-amz-target",
-            format!("AmazonBedrockKeystoneRuntimeService.{operation}"),
-        )
-        .header("content-type", "application/x-amz-json-1.1")
-        .header(
-            "authorization",
-            format!(
-                "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260101/{REGION}/{SIGNING_NAME}/aws4_request, \
-                 SignedHeaders=host, Signature=0000"
-            ),
-        )
-        .body(Bytes::from(
-            serde_json::to_vec(&body).expect("serialize the request body"),
-        ))
-        .expect("build the request");
-    let response = router.dispatch(request).await;
-    let status = response.status().as_u16();
-    let bytes = response.into_body();
-    let body = if bytes.is_empty() {
-        Value::Null
-    } else {
-        serde_json::from_slice(&bytes).expect("a JSON response body")
-    };
-    Answer { status, body }
+    tag_key_router("tag-key-class-receipts")
 }
 
 /// A submission carrying every required member at its minimum, optionally with `tags`.
-fn submission(output: &str, tags: Option<Value>) -> Value {
-    let mut body = json!({
-        "inputConfiguration": {"s3Uri": "s3://in-bucket/assets/receipt.pdf"},
-        "outputConfiguration": {"s3Uri": output},
-        "dataAutomationProfileArn": PROFILE_ARN,
-        "dataAutomationConfiguration": {"dataAutomationProjectArn": PROJECT_ARN},
-    });
-    if let Some(tags) = tags {
-        body["tags"] = tags;
-    }
-    body
-}
-
-/// The tag keys the resource `arn` currently carries, sorted.
-async fn tag_keys(router: &MultiServiceRouter, arn: &str) -> Vec<String> {
-    let answer = call(router, "ListTagsForResource", json!({"resourceARN": arn})).await;
-    assert_eq!(
-        answer.status, 200,
-        "the resource's tags must read back, got {} / {}",
-        answer.status, answer.body
-    );
-    let mut keys: Vec<String> = answer.body["tags"]
-        .as_array()
-        .expect("the answer must carry a tags list")
-        .iter()
-        .map(|tag| {
-            tag["key"]
-                .as_str()
-                .expect("every reported tag has a key")
-                .to_string()
-        })
-        .collect();
-    keys.sort();
-    keys
+fn submission(tags: Option<Value>) -> Value {
+    tag_key_submission(OUTPUT_PREFIX, tags)
 }
 
 /// One row of the class table: what makes the key interesting, the key, and whether the
@@ -215,23 +103,10 @@ const CLASS_ROWS: &[Row] = &[
     Row { case: "the reserved prefix away from the start", key: "team:aws:owner", admitted: true },
 ];
 
-/// The refusal message a malformed tag key at input path `path` must read as.
-fn expected_refusal(path: &str) -> String {
-    format!(
-        "1 validation error detected: Value at '{path}' failed to satisfy constraint: \
-         Member must satisfy regular expression pattern: {UNANCHORED_TAG_KEY_PATTERN}"
-    )
-}
-
 #[tokio::test]
 async fn the_modelled_tag_key_class_admits_only_the_categories_it_names() {
     let router = service();
-    let answer = call(
-        &router,
-        "InvokeDataAutomationAsync",
-        submission("s3://out-bucket/tag-key-class/", None),
-    )
-    .await;
+    let answer = call(&router, "InvokeDataAutomationAsync", submission(None)).await;
     assert_eq!(
         answer.status, 200,
         "a well-formed submission must be accepted, got {} / {}",
@@ -258,10 +133,7 @@ async fn the_modelled_tag_key_class_admits_only_the_categories_it_names() {
         let operations: [(&str, Value, &str); 3] = [
             (
                 "InvokeDataAutomationAsync",
-                submission(
-                    "s3://out-bucket/tag-key-class/",
-                    Some(json!([{"key": key, "value": "v"}])),
-                ),
+                submission(Some(json!([{"key": key, "value": "v"}]))),
                 "tags.1.member.key",
             ),
             (
