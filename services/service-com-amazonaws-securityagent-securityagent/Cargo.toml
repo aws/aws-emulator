@@ -8,6 +8,11 @@ build = "build.rs"
 
 [dependencies]
 engine = { workspace = true }
+# `uuid_from_random_bytes`: the one rendering of 16 opaque bytes as the hyphenated uuid
+# that is the body of every prefixed identifier this service mints (an agent space's
+# `as-<uuid>`, a pack's `srp-<uuid>`, a target domain's id), so the uuid layout is not
+# spelled out a second time here.
+service-common = { path = "../common" }
 smithy-macros = { workspace = true }
 aws-smithy-schema = { workspace = true }
 aws-smithy-schema-server = { workspace = true }

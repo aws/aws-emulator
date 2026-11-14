@@ -124,8 +124,8 @@ async fn a_read_reports_every_resolved_record_in_every_view() {
         stored.insert(id, name.to_string());
     }
     let known: Vec<String> = stored.keys().cloned().collect();
-    // Ids no create minted: 32 hex `f`s (the form of a minted id, with a value the
-    // per-process counter cannot reach), a readable label, a name in another script.
+    // Ids no create minted: 32 hex `f`s (an opaque value of no resource class's id
+    // form), a readable label, a name in another script.
     let unknown: Vec<String> = vec![
         "f".repeat(32),
         "no-such-agent-space".to_string(),

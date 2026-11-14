@@ -368,9 +368,9 @@ async fn batch_get_agent_spaces_partitions_the_requested_ids() {
     }
     let known: Vec<String> = stored.keys().cloned().collect();
 
-    // Ids no `CreateAgentSpace` call minted: a readable label, 32 hex `f`s (the form of
-    // a minted id, with a value the monotonic counter cannot reach in this process), a
-    // name in another script, and the empty string.
+    // Ids no `CreateAgentSpace` call minted: a readable label, 32 hex `f`s (an opaque
+    // value of no resource class's id form), a name in another script, and the empty
+    // string.
     let unknown: Vec<String> = ["no-such-agent-space", &"f".repeat(32), "неизвестно", ""]
         .iter()
         .map(|id| id.to_string())

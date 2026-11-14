@@ -12,7 +12,10 @@
 //! RULE: every identifier and every verification token this service mints is a fresh
 //! opaque value of the account's ONE mint — unique across every resource the account
 //! holds whatever its type, carrying nothing the request supplied, and never the
-//! ordinal of the call that asked for it, so no two mints hand out one value.
+//! ordinal of the call that asked for it, so no two mints hand out one value. An
+//! identifier is rendered in the form its RESOURCE CLASS is read by (that class's
+//! prefix, then the draw as this resource's own body); `crate::minted_identifier_forms`
+//! owns that form rule, and what the cases here add is the uniqueness it sits on.
 //!
 //! The cases assert that rule over a TABLE whose rows span the dimension it
 //! generalises over — the resource TYPE, since a collision across types is exactly what
@@ -23,23 +26,25 @@ use std::collections::BTreeSet;
 
 use serde_json::{json, Value};
 use service_com_amazonaws_securityagent_securityagent::state::{
-    agent_space_arn, default_vpc_id, region_subnets, LATTICE_ID_SUFFIX_LEN,
-    RESOURCE_CONFIGURATION_ID_PREFIX, RESOURCE_GATEWAY_ID_PREFIX, VERIFICATION_METHOD_DNS_TXT,
+    agent_space_arn, default_vpc_id, region_subnets, AGENT_SPACE_ID_PREFIX,
+    LATTICE_ID_SUFFIX_LEN, RESOURCE_CONFIGURATION_ID_PREFIX, RESOURCE_GATEWAY_ID_PREFIX,
+    SECURITY_REQUIREMENT_PACK_ID_PREFIX, TARGET_DOMAIN_ID_PREFIX, VERIFICATION_METHOD_DNS_TXT,
     VERIFICATION_METHOD_HTTP_ROUTE, VERIFICATION_METHOD_PRIVATE_VPC,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::support::{call, emulator, member, ok};
+use crate::support::{assert_uuid_body, call, emulator, member, ok};
 
 /// The region every case signs for, and so the region the ARNs and the account's
 /// network below are read in.
 const REGION: &str = "us-east-1";
 
-/// How many characters one of this service's own identifiers carries. The form is the
-/// emulator's to choose — no identifier shape of this service carries a `@pattern` or a
-/// `@length` in the model — so what a case may assert about it is the form the service
-/// does hand out, and above all that it is hex, which is what makes it impossible for
-/// the value to echo the names the requests below carry.
+/// How many characters one of this service's own OPAQUE identifiers carries — the form
+/// a resource class the service is not known to hand a prefixed identifier out for is
+/// minted in. The form is the emulator's to choose there (no identifier shape of this
+/// service carries a `@pattern` or a `@length` in the model), so what a case may assert
+/// about it is the form the service does hand out, and above all that it is hex, which
+/// is what makes it impossible for the value to echo the names the requests below carry.
 const MINTED_ID_LEN: usize = 32;
 
 /// How many characters a domain-ownership token carries.
@@ -49,8 +54,12 @@ const VERIFICATION_TOKEN_LEN: usize = 64;
 /// besides its uniqueness.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Form {
-    /// One of this service's own identifiers: [`MINTED_ID_LEN`] lowercase hex.
-    Identifier,
+    /// An identifier of one of this service's resource CLASSES, in that class's own
+    /// form: its prefix, then the uuid body minted for this one resource.
+    ClassId(&'static str),
+    /// An identifier of a class the service is not known to prefix: [`MINTED_ID_LEN`]
+    /// lowercase hex.
+    OpaqueId,
     /// A domain-ownership token: [`VERIFICATION_TOKEN_LEN`] lowercase hex.
     Token,
     /// An identifier of a resource this service creates in VPC Lattice, in that
@@ -154,7 +163,7 @@ async fn mint_every_resource(router: &MultiServiceRouter) -> Vec<Minted> {
             case: case.to_string(),
             member: "agentSpaceId",
             value: id,
-            form: Form::Identifier,
+            form: Form::ClassId(AGENT_SPACE_ID_PREFIX),
         });
     }
 
@@ -192,7 +201,7 @@ async fn mint_every_resource(router: &MultiServiceRouter) -> Vec<Minted> {
             case: case.to_string(),
             member: "packId",
             value: id,
-            form: Form::Identifier,
+            form: Form::ClassId(SECURITY_REQUIREMENT_PACK_ID_PREFIX),
         });
     }
 
@@ -248,7 +257,7 @@ async fn mint_every_resource(router: &MultiServiceRouter) -> Vec<Minted> {
             case: case.to_string(),
             member: "targetDomainId",
             value: id.clone(),
-            form: Form::Identifier,
+            form: Form::ClassId(TARGET_DOMAIN_ID_PREFIX),
         });
         match challenge_token(&created) {
             Some(token) => {
@@ -302,7 +311,7 @@ async fn mint_every_resource(router: &MultiServiceRouter) -> Vec<Minted> {
             case: case.to_string(),
             member: "applicationId",
             value: id,
-            form: Form::Identifier,
+            form: Form::OpaqueId,
         });
     }
 
@@ -359,7 +368,7 @@ async fn mint_every_resource(router: &MultiServiceRouter) -> Vec<Minted> {
             case: case.to_string(),
             member: "artifactId",
             value: id,
-            form: Form::Identifier,
+            form: Form::OpaqueId,
         });
     }
 
@@ -423,8 +432,9 @@ async fn mint_every_resource(router: &MultiServiceRouter) -> Vec<Minted> {
     minted
 }
 
-/// Every minted value is of the form its resource type carries, and nothing else: hex
-/// only, so it can carry no text from the request that asked for it.
+/// Every minted value is of the form its resource type carries, and nothing else: its
+/// class's prefix where it has one, and hex beyond it, so it can carry no text from the
+/// request that asked for it.
 fn assert_well_formed(minted: &Minted) {
     let Minted {
         case,
@@ -433,7 +443,13 @@ fn assert_well_formed(minted: &Minted) {
         form,
     } = minted;
     match form {
-        Form::Identifier | Form::Token => {
+        Form::ClassId(prefix) => {
+            let body = value.strip_prefix(prefix).unwrap_or_else(|| {
+                panic!("case {case:?}: expected {member} to start {prefix:?}, got {value:?}")
+            });
+            assert_uuid_body(body, case, member);
+        }
+        Form::OpaqueId | Form::Token => {
             let expected = if *form == Form::Token {
                 VERIFICATION_TOKEN_LEN
             } else {

@@ -514,9 +514,9 @@ async fn the_filter_selects_exactly_the_packs_it_names() {
 
             // Every pack this API creates is CUSTOMER_MANAGED and every seeded one is
             // AWS_MANAGED, so a filter naming a management type selects from exactly one
-            // of the two groups. The created packs sort before the seeded ones (a minted
-            // packId is lowercase hex, a seeded one starts `srp-`), which is the order
-            // the store's keys \u2014 and so the listing \u2014 walk.
+            // of the two groups. Both groups are keyed by a pack id of the one class
+            // form, so the store's keys — and so the listing — walk them in one sorted
+            // order, whichever group a key belongs to.
             let mut wanted: Vec<String> = created
                 .iter()
                 .filter(|(_, pack_status)| {
@@ -534,8 +534,8 @@ async fn the_filter_selects_exactly_the_packs_it_names() {
                 })
                 .map(|entry| entry.pack_id.to_string())
                 .collect();
-            seeded.sort();
             wanted.append(&mut seeded);
+            wanted.sort();
 
             // The whole result in one page, and the same result paged one at a time:
             // the cursor must respect the filter too.

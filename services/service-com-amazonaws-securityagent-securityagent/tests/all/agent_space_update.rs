@@ -426,10 +426,10 @@ async fn update_refuses_an_agent_space_that_does_not_exist() {
     let id = created_id(&created, "the one real agent space");
     let before = read(&router, &id, "the one real agent space").await;
 
-    // Ids of the minted form that no create produced (the counter starts at 1), an id in
-    // another script, a readable label, and one that merely extends a real id.
+    // Opaque ids no create produced, an id in another script, a readable label, and one
+    // that merely extends a real id.
     let rows: Vec<(&str, String)> = vec![
-        ("32 hex f's, a value the id counter cannot reach", "f".repeat(32)),
+        ("32 hex f's, of no resource class's id form", "f".repeat(32)),
         ("a readable label", "no-such-agent-space".to_string()),
         ("an id in another script", "неизвестно".to_string()),
         ("a real id with a suffix", format!("{id}-suffix")),

@@ -1404,6 +1404,61 @@ pub struct TargetDomainIdentity {
     pub verification_token: String,
 }
 
+// ---------------------------------------------------------------------------
+// The form each resource class's identifier carries
+// ---------------------------------------------------------------------------
+
+/// The prefix every `agentSpaceId` this service hands out carries.
+///
+/// RECORDED, not modelled: `AgentSpaceId` carries neither a `@pattern` nor a `@length`,
+/// but every agent space id the recording holds — the one a create answered with, and
+/// the deliberately unknown id a fixture probes a refusal with — begins with these
+/// characters, followed by a body of that one space's own.
+pub const AGENT_SPACE_ID_PREFIX: &str = "as-";
+
+/// The prefix every `packId` of this service carries, whoever manages the pack.
+///
+/// RECORDED, not modelled: `SecurityRequirementPackId` carries no `@pattern` or
+/// `@length`, and every pack id the recording holds begins with these characters — the
+/// managed catalog's four ([`AWS_MANAGED_PACKS`]) are the ones it holds literally. So one
+/// class prefix serves every pack id rather than the catalog having one namespace and a
+/// created pack another.
+pub const PACK_ID_CLASS_PREFIX: &str = "srp-";
+
+/// The marker a pack id carries between its class prefix and its body: which
+/// `ManagementType` the pack is of.
+///
+/// RECORDED, not modelled: the catalog's ids are `srp-am-<name>` — the class prefix, the
+/// AWS-managed marker, then that pack's own body — so the marker is part of the form, and
+/// a pack this API creates is `CUSTOMER_MANAGED` ([`MANAGEMENT_TYPE_CUSTOMER_MANAGED`])
+/// and carries the customer-managed marker instead.
+pub const PACK_ID_AWS_MANAGED_MARKER: &str = "am-";
+
+/// See [`PACK_ID_AWS_MANAGED_MARKER`].
+pub const PACK_ID_CUSTOMER_MANAGED_MARKER: &str = "cm-";
+
+/// The prefix every `packId` this API hands out for a pack a caller created carries: the
+/// class prefix and the customer-managed marker, ahead of that one pack's own body.
+pub const SECURITY_REQUIREMENT_PACK_ID_PREFIX: &str = "srp-cm-";
+
+/// The prefix every `targetDomainId` this service hands out carries.
+///
+/// RECORDED, not modelled: `TargetDomainId` carries no `@pattern`, and what the recording
+/// shows is the FORM the service's resource classes take — a short lowercase class
+/// abbreviation, a hyphen, then a body freshly generated for that one resource
+/// ([`AGENT_SPACE_ID_PREFIX`], [`SECURITY_REQUIREMENT_PACK_ID_PREFIX`]) — which is what a
+/// client telling one of this service's ids from another relies on.
+pub const TARGET_DOMAIN_ID_PREFIX: &str = "td-";
+
+/// What the body after one of those prefixes is drawn over, so the uuid body of an
+/// identifier cannot collide with the digest of a verification token drawn from the same
+/// mint.
+const IDENTIFIER_BODY_CONTEXT: &str = "securityagent-resource-identifier:";
+
+/// How many bytes a uuid carries, which is how much of the digest behind an identifier's
+/// body is laid out as one.
+const UUID_BYTES: usize = 16;
+
 /// The ONE generator every identifier and every verification token this service mints
 /// is drawn from.
 ///
@@ -1412,14 +1467,17 @@ pub struct TargetDomainIdentity {
 ///
 /// * a counter this mint NEVER reuses, shared by every resource type, so two resources
 ///   of this account are never handed one identifier — not two agent spaces, and not an
-///   agent space and a pack — while the values handed out keep rising, which is what
-///   makes a store keyed by them walk in creation order;
+///   agent space and a pack;
 /// * a namespace drawn once per mint from entropy the system seeded
 ///   ([`system_entropy`]), so what one mint hands out is not what another hands out,
 ///   and a value is not the ordinal of the call that created it.
 ///
 /// So every minted value is opaque, is unique within the account across resource types,
-/// and carries nothing from the request that asked for it.
+/// and carries nothing from the request that asked for it. What a value looks like is
+/// the RESOURCE CLASS's, not this mint's: a class whose identifier form the service
+/// hands out is known renders the mint's draw in that form (a prefix the class is read
+/// by, then the draw as this resource's own body), which is why the renderings below sit
+/// beside each other here rather than in the handlers.
 #[derive(Debug)]
 pub struct IdentifierMint {
     /// The namespace every value this mint hands out carries, drawn once per mint.
@@ -1450,15 +1508,40 @@ impl IdentifierMint {
     /// resource that also names a second value derived from the same identity.
     ///
     /// 32 lowercase hex characters: the mint's namespace, then this resource's own
-    /// number. None of the service's identifier shapes carries a `@pattern` or a
-    /// `@length` in the model, so the FORM is this emulator's to choose; what the model
-    /// does promise — "unique identifier" — is the uniqueness above.
+    /// number. This is the form for a resource class the service is not known to hand a
+    /// prefixed identifier out for: no identifier shape of this service carries a
+    /// `@pattern` or a `@length` in the model, so nothing pins a form there, and what is
+    /// promised — "unique identifier" — is the uniqueness above. A class whose form the
+    /// recording does show draws [`Self::next_uuid`] and renders it behind that class's
+    /// prefix instead.
     pub fn next_identifier(&mut self) -> MintedIdentifier {
         let sequence = self.next_sequence();
         MintedIdentifier {
             id: format!("{:016x}{sequence:016x}", self.namespace),
             sequence,
         }
+    }
+
+    /// A fresh draw of this mint as the hyphenated lowercase uuid that is the BODY of a
+    /// prefixed identifier: the per-resource half of `<class prefix><body>`.
+    ///
+    /// The 16 bytes the uuid lays out are the SHA-256 of this draw's own never-reused
+    /// number, the mint's seeded namespace and a context of its own, so the body is
+    /// unique per draw (the number), is not the ordinal of the call that asked for it
+    /// (the namespace), carries nothing the request supplied, and cannot coincide with a
+    /// verification token drawn from the same mint (the context). The uuid LAYOUT — its
+    /// version and variant bits and its `8-4-4-4-12` groups — comes from the shared
+    /// renderer, so it is not spelled out again here.
+    pub fn next_uuid(&mut self) -> String {
+        let sequence = self.next_sequence();
+        let mut digest = Sha256::new();
+        digest.update(IDENTIFIER_BODY_CONTEXT.as_bytes());
+        digest.update(self.namespace.to_be_bytes());
+        digest.update(sequence.to_be_bytes());
+        let digest = digest.finalize();
+        let mut body = [0u8; UUID_BYTES];
+        body.copy_from_slice(&digest[..UUID_BYTES]);
+        ::service_common::uuid_from_random_bytes(body)
     }
 
     /// A fresh secret of this mint for the challenge `context`: 64 lowercase hex
@@ -1701,34 +1784,51 @@ impl ComAmazonawsSecurityagentSecurityagentState {
     /// resource this account holds, and the token is this ONE domain's proof of
     /// control: no other domain, and no other verification method, is ever told to
     /// publish it.
+    ///
+    /// The id is rendered in the target domain class's own form
+    /// ([`TARGET_DOMAIN_ID_PREFIX`] and a body of this domain's own), so a client that
+    /// routes on, validates or stores it can tell it from an agent space's or a pack's
+    /// id. The token is not an identifier and carries no class prefix: it is the
+    /// challenge value its owner publishes.
     pub fn mint_target_domain_identity(&mut self) -> TargetDomainIdentity {
         TargetDomainIdentity {
-            target_domain_id: self.identifiers.next_identifier().id,
+            target_domain_id: format!(
+                "{TARGET_DOMAIN_ID_PREFIX}{}",
+                self.identifiers.next_uuid()
+            ),
             verification_token: self.identifiers.next_secret(VERIFICATION_TOKEN_CONTEXT),
         }
     }
 
     /// Mint the `agentSpaceId` of a new agent space.
     ///
-    /// Opaque to the caller — `AgentSpaceId` carries neither a `@pattern` nor a
-    /// `@length` in the model — and a fresh draw of the account's one mint, so it is
-    /// unique across every resource this account holds and the stored order is the
-    /// creation order. The ARN this id goes into is built from it
-    /// ([`agent_space_arn`]), so the two agree and are distinct per space.
+    /// The agent space class's own form ([`AGENT_SPACE_ID_PREFIX`]) over a fresh draw of
+    /// the account's one mint, so the id is unique across every resource this account
+    /// holds while a client reading it can tell which class of this service's resources
+    /// it names. The body is opaque to the caller — `AgentSpaceId` carries neither a
+    /// `@pattern` nor a `@length` in the model and nothing of the request reaches it.
+    /// The ARN this id goes into is built from it ([`agent_space_arn`]), so the two
+    /// agree and are distinct per space.
     pub fn mint_agent_space_id(&mut self) -> String {
-        self.identifiers.next_identifier().id
+        format!("{AGENT_SPACE_ID_PREFIX}{}", self.identifiers.next_uuid())
     }
 
     /// Mint the `packId` of a new security requirement pack.
     ///
-    /// A fresh draw of the account's one mint, taken while the store is locked, so two
-    /// calls — including two concurrent calls carrying the same `name` — get two
-    /// distinct ids and neither overwrites the other, and a pack id can never be an
-    /// agent space's or a target domain's id. `SecurityRequirementPackId` carries no
-    /// `@pattern` or `@length` in the model, so the form is this emulator's to choose,
-    /// and drawing it from the mint makes the map's order the creation order.
+    /// The pack class's own form for a pack this API creates
+    /// ([`SECURITY_REQUIREMENT_PACK_ID_PREFIX`]: the class prefix and the
+    /// customer-managed marker) over a fresh draw of the account's one mint, taken while
+    /// the store is locked, so two calls — including two concurrent calls carrying the
+    /// same `name` — get two distinct ids and neither overwrites the other, and a pack id
+    /// can never be an agent space's or a target domain's id. A created pack is therefore
+    /// read by an id of the same CLASS as the managed catalog's
+    /// ([`AWS_MANAGED_PACKS`]), marked for the management type it has, rather than out of
+    /// a second namespace — which is what lets a client handle every pack id uniformly.
     pub fn mint_security_requirement_pack_id(&mut self) -> String {
-        self.identifiers.next_identifier().id
+        format!(
+            "{SECURITY_REQUIREMENT_PACK_ID_PREFIX}{}",
+            self.identifiers.next_uuid()
+        )
     }
 
     /// The security requirement `name` names IN the pack `pack_id`, or `None` when that

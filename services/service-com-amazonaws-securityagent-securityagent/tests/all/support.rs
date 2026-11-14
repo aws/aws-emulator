@@ -135,3 +135,37 @@ pub async fn ok(router: &MultiServiceRouter, operation: &str, body: &Value, case
 pub fn member(payload: &Value, name: &str) -> Option<String> {
     payload.get(name).and_then(Value::as_str).map(str::to_string)
 }
+
+/// How many characters a hyphenated uuid carries, and where its hyphens fall: the
+/// `8-4-4-4-12` groups. Shared because more than one suite asserts on the uuid BODY an
+/// identifier of this service carries behind its resource class's prefix.
+pub const UUID_LEN: usize = 36;
+/// See [`UUID_LEN`].
+pub const UUID_HYPHENS: [usize; 4] = [8, 13, 18, 23];
+
+/// `value` is the hyphenated lowercase uuid a minted identifier's body is: the
+/// [`UUID_LEN`] characters of the `8-4-4-4-12` groups, hex and nothing else, so the body
+/// can carry no text from the request that asked for it.
+pub fn assert_uuid_body(value: &str, case: &str, member: &str) {
+    assert_eq!(
+        value.len(),
+        UUID_LEN,
+        "case {case:?}: expected a {UUID_LEN}-character uuid body on {member}, got \
+         {value:?}"
+    );
+    for (index, byte) in value.bytes().enumerate() {
+        if UUID_HYPHENS.contains(&index) {
+            assert_eq!(
+                byte, b'-',
+                "case {case:?}: expected a hyphen at {index} of the {member} uuid body, \
+                 got {value:?}"
+            );
+        } else {
+            assert!(
+                byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase(),
+                "case {case:?}: expected lowercase hex at {index} of the {member} uuid \
+                 body, got {value:?}"
+            );
+        }
+    }
+}

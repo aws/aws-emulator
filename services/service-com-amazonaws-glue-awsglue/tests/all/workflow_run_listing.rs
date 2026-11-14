@@ -132,9 +132,9 @@ fn set_start_instants(engine: &Arc<engine::InMemoryEngine>, workflow: &str, offs
     }
 }
 
-/// Move the due instant of every run of `workflow`, and of every job run those runs'
-/// actions began, to `at` — so a row can hold the transient window open or make the owed
-/// transition due without sleeping.
+/// Move EVERY due instant every run of `workflow` still owes, and every one the job runs
+/// those runs' actions began still owe, to `at` — so a row can hold the transient window open
+/// or make the owed transition due without sleeping.
 ///
 /// The actions move WITH the run because a run is a composite of them: it comes to rest only
 /// once the runs it began have. A job run owes up to TWO states at once — the state it is in

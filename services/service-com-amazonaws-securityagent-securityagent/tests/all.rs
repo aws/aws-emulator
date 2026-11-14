@@ -35,6 +35,8 @@ mod artifact_storage;
 mod aws_managed_pack_catalog;
 #[path = "all/error_message_wording.rs"]
 mod error_message_wording;
+#[path = "all/minted_identifier_forms.rs"]
+mod minted_identifier_forms;
 #[path = "all/minted_identifiers.rs"]
 mod minted_identifiers;
 #[path = "all/private_connection_lifecycle.rs"]
