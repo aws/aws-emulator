@@ -51,7 +51,7 @@ pub fn tenant_database_key(db_instance_identifier: &str, tenant_db_name: &str) -
 /// The immutable resource id reported as `TenantDatabaseResourceId`, of the same minted
 /// alphabet as the other server-assigned ids this service hands out.
 pub fn mint_tenant_database_resource_id(mint: u64) -> String {
-    format!("tdb-{}", super::base36(mint, 26))
+    format!("tdb-{}", super::minted_token("tenant-database", mint, 26))
 }
 
 /// The name of the secret RDS manages for a TENANT DATABASE's master user password: the

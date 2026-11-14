@@ -207,6 +207,8 @@ mod global_cluster_member_resource_id;
 mod global_cluster_membership;
 #[path = "all/global_cluster_modification.rs"]
 mod global_cluster_modification;
+#[path = "all/global_cluster_mutation_envelopes.rs"]
+mod global_cluster_mutation_envelopes;
 #[path = "all/global_clusters.rs"]
 mod global_clusters;
 #[path = "all/global_database_published_versions.rs"]

@@ -1666,6 +1666,14 @@ impl ComAmazonawsRdsAmazonrdsv19State {
             // are still readable — so its regions are counted too, or a region whose
             // records were all deleted would keep a bucket nothing bounds.
             .chain(self.events.keys().map(String::as_str))
+            // The network the owner of subnets answered for a region is cached per region
+            // and outlives the records it was read for, so its keys are counted too: a
+            // read that caches one must not be able to open a bucket the cap cannot see.
+            .chain(
+                self.default_subnet_group_networks
+                    .keys()
+                    .map(String::as_str),
+            )
             .collect();
         known.contains(region) || known.len() < MAX_REGIONS
     }
@@ -2499,17 +2507,6 @@ impl GlobalClusterRecord {
         false
     }
 
-    /// Accept a delete: the global cluster's own answer reports the `deleting` status that
-    /// says the delete was accepted. Nothing is provisioned for a global database that
-    /// holds no member cluster, so the record leaves the store with this call rather than
-    /// a span later — see `DeleteGlobalCluster`.
-    pub fn deleting(&self) -> Self {
-        Self {
-            status: GLOBAL_CLUSTER_STATUS_DELETING.to_string(),
-            ..self.clone()
-        }
-    }
-
     /// Project the stored record onto the modelled `GlobalCluster` output shape.
     pub fn to_wire(&self) -> GlobalCluster {
         GlobalCluster {
@@ -3007,12 +3004,14 @@ pub fn check_region(region: &str) -> Result<(), String> {
 /// The 8-4-4-4-12 lowercase-hexadecimal token a server-minted resource id of this service
 /// takes when the id AWS assigns is a UUID: `label` says which kind of resource it belongs
 /// to, and `mint` is the store's one monotone counter, so two resources — of the same kind
-/// or of different kinds — can never be minted the same token. The digest is the
-/// maintained `sha2` crate's, so nothing here is hand-rolled.
+/// or of different kinds — can never be minted the same token. It is drawn from the same
+/// seed every other minted token of this service is ([`mint_seed`]), so it is unique to its
+/// one resource rather than to that resource's position in a creation sequence. The digest
+/// is the maintained `sha2` crate's, so nothing here is hand-rolled.
 pub fn mint_uuid_token(label: &str, mint: u64) -> String {
     use ::sha2::{Digest, Sha256};
 
-    let digest = Sha256::digest(format!("{label}:{mint}"));
+    let digest = Sha256::digest(mint_seed(label, mint));
     let mut bytes = [0u8; 16];
     bytes.copy_from_slice(&digest[..16]);
     let hex = ::hex::encode(bytes);
@@ -3126,26 +3125,6 @@ pub fn now_as_wire_timestamp() -> ::aws_smithy_types::DateTime {
         .unwrap_or_default()
         .as_secs_f64();
     ::aws_smithy_types::DateTime::from_secs_f64(seconds)
-}
-
-/// `value` in base 36 (digits, then uppercase letters), left-padded with `0` to
-/// `width` characters — the alphabet RDS's server-assigned ids are drawn from.
-fn base36(value: u64, width: usize) -> String {
-    const DIGITS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-    let mut out = Vec::with_capacity(width);
-    let mut remaining = value;
-    loop {
-        out.push(DIGITS[(remaining % 36) as usize]);
-        remaining /= 36;
-        if remaining == 0 {
-            break;
-        }
-    }
-    while out.len() < width {
-        out.push(b'0');
-    }
-    out.reverse();
-    String::from_utf8(out).expect("base-36 digits are ASCII")
 }
 
 /// The Route 53 hosted zone id reported for the endpoints of one region under one control

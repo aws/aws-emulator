@@ -574,8 +574,7 @@ pub const DB_CLUSTER_STATUS_MODIFYING: &str = "modifying";
 
 /// The status a DB cluster reports once a delete has been accepted for it, as
 /// `DBCluster$Status` carries it — the same `deleting` status the other delete paths of
-/// this service report ([`DB_INSTANCE_STATUS_DELETING`],
-/// [`GLOBAL_CLUSTER_STATUS_DELETING`]).
+/// this service report ([`DB_INSTANCE_STATUS_DELETING`]).
 ///
 /// It is a TRANSIENT status: `DeleteDBCluster` "deletes a previously provisioned DB
 /// cluster", answering with the cluster it accepted the delete for, and the record then
@@ -648,10 +647,14 @@ pub const EVENT_SUBSCRIPTION_STATUS_ACTIVE: &str = "active";
 /// owed for it.
 pub const GLOBAL_CLUSTER_STATUS_AVAILABLE: &str = "available";
 
-/// The status a global database cluster reports in the answer to the delete that was
-/// accepted for it, as `GlobalCluster$Status` carries it — the same `deleting` status the
-/// other delete paths of this service report.
-pub const GLOBAL_CLUSTER_STATUS_DELETING: &str = "deleting";
+// A global database cluster reports no status of its own for an accepted delete.
+//
+// `DeleteGlobalCluster` takes a global database that holds no member cluster, so there is
+// nothing provisioned to tear down and no transient phase to report: the record leaves the
+// store with the call that was accepted, and the answer reports the global database as it
+// stood when that call was accepted — see `DeleteGlobalCluster`. Hence this family
+// publishes no `deleting` status beside the two statuses below: a status no read of this
+// service could ever confirm is one it must not report.
 
 /// The status an Aurora global database cluster reports while a change to it is being
 /// applied, the `modifying` status the other modify paths of this service report

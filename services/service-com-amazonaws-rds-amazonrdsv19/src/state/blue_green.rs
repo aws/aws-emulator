@@ -54,12 +54,17 @@ const MAX_IDENTIFIER_TOKEN_LEN: usize = 255 - BLUE_GREEN_IDENTIFIER_PREFIX.len()
 const ARN_RESOURCE_TYPE: &str = "blue-green-deployment";
 
 /// The identifier this service assigns a new blue/green deployment: the published
-/// `bgd-<token>` form, with the token taken from the store's one monotone counter so no two
-/// deployments can be minted the same id.
+/// `bgd-<token>` form, with the token minted as every other server-assigned token of this
+/// service is ([`super::minted_token`]), so no two deployments can be minted the same id.
 pub fn mint_blue_green_deployment_identifier(mint: u64) -> String {
     format!(
         "{BLUE_GREEN_IDENTIFIER_PREFIX}{}",
-        super::base36(mint, MINTED_IDENTIFIER_TOKEN_LEN).to_ascii_lowercase()
+        super::minted_token(
+            "blue-green-deployment",
+            mint,
+            MINTED_IDENTIFIER_TOKEN_LEN
+        )
+        .to_ascii_lowercase()
     )
 }
 
@@ -117,12 +122,15 @@ pub fn blue_green_deployment_not_found_message(named: &str) -> String {
 /// deployment whose source is `source_identifier`.
 ///
 /// Amazon RDS names the green database after the blue one with a `-green-<token>` suffix,
-/// the token being server-assigned; the token here comes from the store's one monotone
-/// counter, like every other minted id. `max_len` is the identifier bound the green
-/// database's own type carries, and the name is kept inside it by shortening the part
-/// taken from the source.
+/// the token being server-assigned; the token here is minted as every other
+/// server-assigned token of this service is ([`super::minted_token`]). `max_len` is the
+/// identifier bound the green database's own type carries, and the name is kept inside it
+/// by shortening the part taken from the source.
 pub fn green_identifier(source_identifier: &str, mint: u64, max_len: usize) -> String {
-    let suffix = format!("-green-{}", super::base36(mint, 6).to_ascii_lowercase());
+    let suffix = format!(
+        "-green-{}",
+        super::minted_token("green-database", mint, 6).to_ascii_lowercase()
+    );
     let room = max_len.saturating_sub(suffix.len());
     let mut prefix: String = source_identifier.chars().take(room).collect();
     // An identifier "can't end with a hyphen", which a shortened prefix might.

@@ -217,19 +217,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
-        // The answer reports the global cluster with the `deleting` status that says the
-        // delete was accepted. A global database that holds no member cluster has nothing
-        // provisioned to tear down, so the record leaves the store with this call rather
-        // than a span later — and every later lookup of the identifier is the modelled
-        // not-found above.
-        let deleted = record.deleting();
+        // The answer reports the global cluster AS IT STOOD when the delete was accepted —
+        // the snapshot every refusal above was judged against, status included. A global
+        // database that holds no member cluster has nothing provisioned to tear down, so
+        // the record leaves the store with this call rather than a span later: no transient
+        // phase of it is ever observable, and a status no read of this service could
+        // confirm is not a status this answer may invent. Every later lookup of the
+        // identifier is the modelled not-found above.
+        let accepted = record.to_wire();
         store
             .global_clusters
             .remove(&identifier)
             .expect("the record was found above and the store is locked");
 
         Ok(DeleteGlobalClusterOutput {
-            global_cluster: Some(deleted.to_wire()),
+            global_cluster: Some(accepted),
         })
     }
 }

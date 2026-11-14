@@ -634,8 +634,9 @@ async fn deleting_a_persisted_global_cluster_is_accepted_and_only_then_is_it_not
         );
         assert_eq!(
             text(&deleted, "Status"),
-            "deleting",
-            "case {case:?}: expected the accepted delete's status, got {deleted}"
+            "available",
+            "case {case:?}: expected the status the global database held when the delete \
+             was accepted, got {deleted}"
         );
         // Only now is the identifier not found — by the report and by a second delete
         // alike.

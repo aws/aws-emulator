@@ -27,7 +27,7 @@ pub fn db_shard_group_arn(region: &str, identifier: &str) -> String {
 /// Both draw on the one store-wide counter, so no two resources of this service can be
 /// minted the same id.
 pub fn mint_db_shard_group_resource_id(mint: u64) -> String {
-    format!("shardgroup-{}", base36(mint, 26))
+    format!("shardgroup-{}", minted_token("db-shard-group", mint, 26))
 }
 
 /// A stored Aurora Limitless Database DB shard group: everything the service persists

@@ -2159,3 +2159,8 @@ mod ses_delivery_event_advances_the_subscribed_queue;
 // branches were landing at once, which declared each a second time and compiled neither.)
 // a module may be declared only once. Declaring it again here compiled nothing and broke this
 // target's build, which is what the duplicate below was removed for too.)
+// at the top of this file: two branches landing at once had appended a second declaration
+// of it here.)
+// (`zz_probe` is declared once, in the head region above: a module may be declared only
+// once, and two branches landing at once had appended a second declaration of it here.)
+// above: two branches landing at once had appended a second declaration of it here.)

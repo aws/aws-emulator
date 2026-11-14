@@ -111,6 +111,12 @@ impl ComAmazonawsRdsAmazonrdsv19State {
     /// Recorded once per region and not refreshed on every read: the group an instance was
     /// placed in reports the network it was placed in, and nothing in this service changes
     /// a default VPC.
+    ///
+    /// The region a request names is the caller's, so this cache is held to the same region
+    /// ceiling every stored record is ([`Self::has_room_for_region`], which counts this
+    /// map's own keys): a caller naming a fresh region on each call cannot open more buckets
+    /// here than that, and a region past the ceiling simply keeps no cached network — the
+    /// group then reports the network of the region it does know, or none.
     pub fn record_default_subnet_group_network(
         &mut self,
         region: &str,
@@ -134,5 +140,58 @@ impl ComAmazonawsRdsAmazonrdsv19State {
             group.vpc_id = network.vpc_id.clone();
         }
         group
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One network, as the owner of subnets would have answered for a default VPC.
+    fn a_network(region: &str) -> DefaultSubnetGroupNetwork {
+        DefaultSubnetGroupNetwork {
+            vpc_id: Some(region_vpc_id(region)),
+            subnet_ids: vec![format!("subnet-{region}")],
+            subnet_zones: BTreeMap::new(),
+        }
+    }
+
+    /// The cached answer is held to the store's region ceiling: a caller naming a fresh
+    /// region on every call opens at most [`MAX_REGIONS`] buckets here, after which the
+    /// cache stops growing — and the regions it already answered for keep their network.
+    #[test]
+    fn the_cached_network_cannot_open_more_region_buckets_than_the_cap() {
+        let mut store = ComAmazonawsRdsAmazonrdsv19State::default();
+        let region_at = |index: usize| format!("us-west-{index}");
+
+        for index in 0..MAX_REGIONS + 8 {
+            let region = region_at(index);
+            store.record_default_subnet_group_network(&region, a_network(&region));
+            assert!(
+                store.default_subnet_group_networks.len() <= MAX_REGIONS,
+                "after caching {} region(s) the store holds {} buckets, over the cap of \
+                 {MAX_REGIONS}",
+                index + 1,
+                store.default_subnet_group_networks.len()
+            );
+        }
+        assert_eq!(
+            store.default_subnet_group_networks.len(),
+            MAX_REGIONS,
+            "every region up to the cap is cached, and none past it"
+        );
+
+        // A region the cache already answered for is still answered for, and re-recording
+        // it is accepted rather than refused as a new bucket.
+        let first = region_at(0);
+        store.record_default_subnet_group_network(&first, a_network(&first));
+        assert!(
+            store.knows_default_subnet_group_network(&first),
+            "a region inside the cap keeps the network it was given"
+        );
+        assert!(
+            !store.knows_default_subnet_group_network(&region_at(MAX_REGIONS + 1)),
+            "a region past the cap caches nothing, so the group reports no subnets for it"
+        );
     }
 }
