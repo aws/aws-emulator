@@ -2343,3 +2343,13 @@ mod route53_health_check_string_match;
 #[path = "all/cloudformation_sqs_redrive_policy_dead_letters_a_failing_consumer.rs"]
 mod cloudformation_sqs_redrive_policy_dead_letters_a_failing_consumer;
 // (`cloudformation_metric_stream_filter_update` is declared ONCE, in the head region above: a
+// (`apigateway_sns_service_integration` is declared ONCE, a few lines up in this same appended
+// tail: two branches landing at once appended a second declaration of it here, and a module
+// declared twice compiles neither.)
+// top of this file: two branches landing at once appended a second declaration of it here, and
+// a module declared twice compiles neither.)
+// Declared in this appended tail: what a stack-deployed `AWS::Glue::Crawler` DOES when it is
+// started spans CloudFormation, IAM, AWS Glue and Amazon S3 at once, so no single service
+// crate's test target can deploy it, crawl with it and read the catalog it wrote.
+#[path = "all/cloudformation_deployed_crawler_crawls_its_s3_target.rs"]
+mod cloudformation_deployed_crawler_crawls_its_s3_target;
