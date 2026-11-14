@@ -343,10 +343,6 @@ mod cloudformation_opensearch_domain_deployments;
 mod cloudformation_opensearch_vpc_endpoint_access;
 #[path = "all/cloudformation_search_indexing_pipeline_outputs.rs"]
 mod cloudformation_search_indexing_pipeline_outputs;
-#[path = "all/cloudformation_monitored_alb_search_estate.rs"]
-mod cloudformation_monitored_alb_search_estate;
-#[path = "all/cloudformation_domain_endpoint_outputs.rs"]
-mod cloudformation_domain_endpoint_outputs;
 #[path = "all/cloudformation_ec2_ebs_instance_estate.rs"]
 mod cloudformation_ec2_ebs_instance_estate;
 // the sorted `k…` span (beside the other kinesis suites) are both regions concurrently
@@ -1481,11 +1477,6 @@ mod s3_access_point_policy_denial;
 // a bucket a stack created carries, which CloudFormation stamps and Amazon S3 reports.
 #[path = "all/cloudformation_stamps_s3_bucket_stack_provenance.rs"]
 mod cloudformation_stamps_s3_bucket_stack_provenance;
-// The stack CLOCK the suites above drive instead of waiting for it: one helper, because
-// `settle` is global over the CloudFormation store, so every suite that asserts a settled
-// stack pulls the due instants into the past the same way.
-#[path = "all/cloudformation_stack_clock.rs"]
-mod cloudformation_stack_clock;
 // outputs of a stack whose deployment COMPLETED — the create and the revision that swaps
 // which role its deployed domain allows — each carrying the value the owning service holds.
 #[path = "all/cloudformation_updated_stack_outputs.rs"]
@@ -1841,14 +1832,6 @@ mod ec2_management_events;
 // no single crate's test target can make the call and then read the item it wrote.
 #[path = "all/apigateway_dynamodb_service_integration.rs"]
 mod apigateway_dynamodb_service_integration;
-// client that dials the address an Application Load Balancer PUBLISHES is answered with when
-// the listener forwards to a `lambda` target group spans CloudFormation (which archives the
-// handler into a deployment package), IAM and STS (the execution role and its session), Amazon
-// SQS (the queue the handler reports each invocation to), AWS Lambda (which runs it) and ELBv2
-// (which opens the address and makes the invocation), so no single service crate's test target
-// can ask whether the address the assembled emulator publishes answers at all.
-#[path = "all/elbv2_lambda_target_published_address.rs"]
-mod elbv2_lambda_target_published_address;
 // EventBridge at once, so no single service crate's test target can deploy it. Declared
 // once, in the head region above.
 // it. Declared once, in the head region above.
@@ -1874,7 +1857,31 @@ mod cloudformation_provisions_cloudfront_resources;
 // Declared in the appended tail, which is where every new suite inserts its lines. Both
 // suites exist under tests/all/ and had lost their declaration when two branches removed
 // the same duplicated pair, which compiles them nowhere.
+#[path = "all/cloudformation_monitored_alb_search_estate.rs"]
+mod cloudformation_monitored_alb_search_estate;
+#[path = "all/cloudformation_domain_endpoint_outputs.rs"]
+mod cloudformation_domain_endpoint_outputs;
+// The stack CLOCK the suites above drive instead of waiting for it: one helper, because
+// `settle` is global over the CloudFormation store, so every suite that asserts a settled
+// stack pulls the due instants into the past the same way.
+#[path = "all/cloudformation_stack_clock.rs"]
+mod cloudformation_stack_clock;
+// client that dials the address an Application Load Balancer PUBLISHES is answered with when
+// the listener forwards to a `lambda` target group spans CloudFormation (which archives the
+// handler into a deployment package), IAM and STS (the execution role and its session), Amazon
+// SQS (the queue the handler reports each invocation to), AWS Lambda (which runs it) and ELBv2
+// (which opens the address and makes the invocation), so no single service crate's test target
+// can ask whether the address the assembled emulator publishes answers at all.
+#[path = "all/elbv2_lambda_target_published_address.rs"]
+mod elbv2_lambda_target_published_address;
 // (`cloudformation_monitored_alb_search_estate` and `cloudformation_domain_endpoint_outputs`
+// are declared further up this tail already: a module may be declared only once.)
+// Declared at the end of the appended tail, which is where every new suite inserts its lines:
+// whether a CloudWatch alarm over the health series an Amazon Redshift cluster publishes about
+// itself evaluates spans both crates at once, so neither crate's own test target can create the
+// cluster and then read the alarm's state.
+#[path = "all/redshift_health_alarms_evaluate.rs"]
+mod redshift_health_alarms_evaluate;
 // are declared in the head region above: a module may be declared only once.)
 // are declared further up this tail already: a module may be declared only once.)
 // Declared in the appended tail, which is where every new suite inserts its lines: a vector
