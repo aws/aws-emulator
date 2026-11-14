@@ -181,7 +181,7 @@ async fn the_history_reports_the_runs_the_schedule_made_due() {
 
     // Each row's schedule names its SECOND run a day or more away, so the history it reports
     // holds exactly the first run and two reads of it report the same one.
-    let rows: [Schedule; 3] = [
+    let rows: [Schedule; 4] = [
         Schedule {
             case: "a rate schedule with a stated lookback",
             name: "errors-every-day",
@@ -193,6 +193,16 @@ async fn the_history_reports_the_runs_the_schedule_made_due() {
             case: "a cron schedule taking the default lookback",
             name: "errors-at-three",
             expression: "cron(0 3 * * ? *)",
+            timezone: None,
+            start_time_offset: None,
+        },
+        Schedule {
+            // The default lookback is the schedule's own PERIOD — the gap between two
+            // instants it names — and not the time until its next instant, so a weekly cron
+            // reads a week back whatever time of day its first run is triggered at.
+            case: "a weekly cron schedule taking the default lookback",
+            name: "errors-on-monday",
+            expression: "cron(0 3 ? * MON *)",
             timezone: None,
             start_time_offset: None,
         },

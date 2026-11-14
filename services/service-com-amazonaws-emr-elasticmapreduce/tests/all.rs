@@ -133,3 +133,5 @@ mod validation_refusal_identity;
 mod unreadable_request_values;
 #[path = "all/unsupported_instance_types.rs"]
 mod unsupported_instance_types;
+#[path = "all/zz_probe_notebook_lifecycle.rs"]
+mod zz_probe_notebook_lifecycle;

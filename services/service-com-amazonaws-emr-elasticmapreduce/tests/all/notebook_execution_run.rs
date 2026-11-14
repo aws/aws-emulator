@@ -47,11 +47,14 @@ pub(crate) const NOTEBOOK_ROLE: &str = "EMR_Notebooks_DefaultRole";
 
 /// How long a poll waits for an execution to reach a terminal status before giving up: the
 /// four phases of a finishing walk at [`NOTEBOOK_PHASE_SPAN`] each, with room to spare.
-const DEADLINE: Duration = Duration::from_secs(40);
+///
+/// `pub(crate)` with [`walked`] below: the sibling suite that stops an execution the clock
+/// has already moved on reads the same bound rather than carrying its own.
+pub(crate) const DEADLINE: Duration = Duration::from_secs(40);
 
 /// How long a poll sleeps between reads: short enough that the phases of a progression are
 /// observed rather than jumped over.
-const POLL_INTERVAL: Duration = Duration::from_millis(20);
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 /// The statuses an execution never leaves (`NotebookExecutionStatus`).
 pub(crate) const TERMINAL: [&str; 3] = ["FINISHED", "FAILED", "STOPPED"];
@@ -207,7 +210,14 @@ pub(crate) async fn described(router: &MultiServiceRouter, id: &str) -> Value {
 
 /// Poll `DescribeNotebookExecution` until the execution reaches a terminal status, answering
 /// every status seen on the way (in order, without repeats) and the execution as last read.
-async fn walked(case: &str, router: &MultiServiceRouter, id: &str) -> (Vec<String>, Value) {
+///
+/// `pub(crate)`: the sibling suite that stops an execution already under way settles it
+/// through this one walk rather than a copy of it.
+pub(crate) async fn walked(
+    case: &str,
+    router: &MultiServiceRouter,
+    id: &str,
+) -> (Vec<String>, Value) {
     let started = Instant::now();
     let mut seen: Vec<String> = Vec::new();
     loop {
@@ -601,6 +611,9 @@ async fn the_walk_of_an_execution_whose_notebook_ran_passes_through_no_failure()
 /// The stop leg of the SAME rule: an execution a caller stops before it has ended reaches
 /// `STOPPED`, under the id `StartNotebookExecution` answered — whatever its notebook was
 /// going to come to.
+///
+/// A stop asked for once the clock has already moved the execution ON is the sibling suite
+/// `crate::zz_probe_notebook_lifecycle`'s row of the same rule.
 #[tokio::test]
 async fn an_execution_the_caller_stops_reaches_stopped() {
     let router = emulator();

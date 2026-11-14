@@ -30,7 +30,9 @@ use crate::stack_lifecycle::{
     wait_for_the_transition, xml_text, xml_texts,
 };
 use crate::stack_resource_provisioning::s3;
-use service_com_amazonaws_cloudformation_cloudformation::state::{status, CAPABILITY_AUTO_EXPAND};
+use service_com_amazonaws_cloudformation_cloudformation::state::{
+    rollback_requested, status, CAPABILITY_AUTO_EXPAND,
+};
 use smithy_server_runtime::MultiServiceRouter;
 
 /// The bucket the snippets live in, as a client's own `PutObject` stored them.
@@ -510,6 +512,25 @@ async fn an_include_that_cannot_be_read_fails_the_stack_and_provisions_nothing()
             "case {:?}: expected an event carrying {:?}, got {reasons:?}",
             row.case,
             row.reason
+        );
+        // ...and it is an event reason of its OWN, verbatim: processing the template is
+        // what failed, so nothing was ever asked of the service that owns the resource and
+        // no resource event could carry the diagnostic — the stack's own failed event is
+        // where a client polling the create reads what the template could not do. The
+        // rollback that failure opens is the SEPARATE event that says the rollback was
+        // asked for.
+        assert!(
+            reasons.contains(&reported),
+            "case {:?}: expected an event whose reason is exactly {reported:?}, got \
+             {reasons:?}",
+            row.case
+        );
+        let on_the_rollback = rollback_requested(&reported);
+        assert!(
+            reasons.contains(&on_the_rollback),
+            "case {:?}: expected an event whose reason is exactly {on_the_rollback:?}, got \
+             {reasons:?}",
+            row.case
         );
 
         // Nothing was provisioned: the transform fails before provisioning, so the

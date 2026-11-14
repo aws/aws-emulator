@@ -157,7 +157,7 @@ async fn send_task_failure_fails_the_execution_with_the_reported_error() {
         );
 
         // The reply CLOSED the task, and a repeat of it answers for a task that is
-        // gone — stating the one fixed reason this error class carries.
+        // gone — quoting the activity that handed that task out.
         let held = held_tasks(&emulator, &activity);
         assert_eq!(
             held, 0,
@@ -295,6 +295,10 @@ async fn a_failure_reply_is_refused_for_the_tokens_a_result_reply_is() {
         .ok("DeleteActivity", &json!({ "activityArn": deleted_activity }))
         .await;
 
+    // A well-formed token no task was ever scheduled under, read here so the refusal it
+    // owes is built from the same token the row below sends.
+    let unscheduled_token = task_token(MINTED_ID, &stopped_activity);
+
     // Each row: the token, the modelled error it is refused with, and the message that
     // error carries.
     let cases: Vec<(&str, String, &str, String)> = vec![
@@ -306,9 +310,9 @@ async fn a_failure_reply_is_refused_for_the_tokens_a_result_reply_is() {
         ),
         (
             "a well-formed token no task was ever scheduled under",
-            task_token(MINTED_ID, &stopped_activity),
+            unscheduled_token.clone(),
             "TaskTimedOut",
-            task_timed_out_message(&task_token(MINTED_ID, &stopped_activity)),
+            task_timed_out_message(&unscheduled_token),
         ),
         (
             "a token whose activity was deleted while the task was outstanding",

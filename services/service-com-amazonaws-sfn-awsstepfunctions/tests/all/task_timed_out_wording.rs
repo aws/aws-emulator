@@ -12,10 +12,11 @@
 //! it is inert, leaving the execution the token once belonged to exactly as it was.
 //!
 //! The rows differ along what the rule generalises over: WHICH `SendTask*` operation is
-//! refused (all three of them, each with its own members), and WHY the token answers
-//! nothing — a task already answered, a token no task was ever scheduled under, a task
-//! whose execution was stopped under it, a callback (`.waitForTaskToken`) token whose
-//! execution has already succeeded, and one naming an execution the store never held.
+//! refused (all three of them, each with its own members), WHY the token answers nothing
+//! — a task already answered, a token no task was ever scheduled under, a task whose
+//! execution was stopped under it, a callback token whose execution has already
+//! succeeded, and one naming an execution the store never held — and WHICH kind of
+//! resource the token names, which is what decides the quoted value.
 //!
 //! The harness (`Emulator`, `create_machine`, `start_execution`, `describe_execution`) is
 //! the one `state_machine_lifecycle` builds and the activity helpers (`create_activity`,
@@ -144,7 +145,7 @@ pub(crate) async fn refused(
     for leaked in absent {
         assert!(
             !message.contains(leaked),
-            "case {case:?}: expected {operation}'s refusal to quote no identifier, got \
+            "case {case:?}: expected {operation}'s refusal to carry no other identifier, got \
              {leaked:?} in {message:?}"
         );
     }
@@ -222,7 +223,8 @@ async fn every_send_task_call_refuses_a_closed_activity_token_naming_its_activit
 
 /// A CALLBACK (`.waitForTaskToken`) token — one that names the execution that was waiting
 /// at it rather than an activity — is refused by the same rule once that execution has
-/// finished, and the refusal is INERT: the execution still reports what it settled with.
+/// finished, and where there is no activity to name the refusal quotes the reason; the
+/// refusal is INERT: the execution still reports what it settled with.
 #[tokio::test]
 async fn a_replayed_callback_token_is_refused_without_touching_the_execution() {
     let emulator = Emulator::new();

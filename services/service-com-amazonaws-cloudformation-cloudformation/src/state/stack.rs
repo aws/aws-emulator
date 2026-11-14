@@ -3098,6 +3098,13 @@ enum FailureReport {
     /// rollback it owes begins at this instant. `rests` is whether the stack stays in the
     /// failed status, as it is for the two reports above.
     FailedValidation { rests: bool },
+    /// Processing the TEMPLATE failed the operation: the document the stack would have
+    /// deployed could not be produced, so nothing was ever asked of any owning service
+    /// and no resource has an event that could carry the diagnostic — the stack's own
+    /// failed event reports it verbatim, even where the rollback it owes begins at this
+    /// same instant. The stack does not rest in the failed status, exactly as
+    /// [`FailureReport::Superseded`] does not.
+    Diagnosed,
 }
 
 impl StoredStack {
@@ -3171,6 +3178,29 @@ impl StoredStack {
             reason,
             FailureReport::FailedValidation { rests },
         );
+    }
+
+    /// Record a failure of the operation in flight that PROCESSING THE TEMPLATE reached:
+    /// the document the stack would have deployed could not be produced at all — an
+    /// `Fn::Transform` CloudFormation could not apply — so nothing was ever asked of any
+    /// owning service.
+    ///
+    /// Everything [`Self::fail_transition_superseded`] records is recorded, and the stack
+    /// does not rest in the failed status either: the rollback that failure owes begins at
+    /// this same instant. What IS recorded beside it is the stack's own failed EVENT,
+    /// carrying the diagnostic verbatim — the report [`Self::fail_transition_on_validation`]
+    /// makes for the other stages that run before provisioning, and for the same reason:
+    /// no resource of this stack has an event that could carry a failure of the template
+    /// itself, so the stack's own event is where a client polling the operation reads it.
+    /// The transform's sentence is CloudFormation's own, not a validation's, so the event
+    /// carries no detailed status.
+    pub fn fail_transition_on_template(
+        &mut self,
+        now: SystemTime,
+        failed_status: &str,
+        reason: String,
+    ) {
+        self.record_failure(now, failed_status, reason, FailureReport::Diagnosed);
     }
 
     /// The one writer of a failed transition, for every one of the reports above.

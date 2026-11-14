@@ -732,7 +732,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // transforms the template declares are applied to the SPLICED document, so the
         // stage served and deployed is the whole pipeline's — and, like the first pass
         // above, that expansion happens before the store lock.
-        let transform_failure = match processing {
+        let processing_failure = match processing {
             crate::state::include::Processed::Unchanged => None,
             crate::state::include::Processed::Expanded(processed) => {
                 stack.processed_template = crate::state::template::process_with_parameters(
@@ -743,12 +743,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 None
             }
             crate::state::include::Processed::Failed(reason) => Some(reason),
-        }
-        // A `Rules` assertion the values in force do not satisfy, or a directive the
-        // declared transform cannot apply where it stands, fails this create the same way:
-        // the stack is created, deploys nothing, and settles into the rollback below
-        // carrying that reason.
-        .or(deployment_failure);
+        };
+        // Whether PROCESSING the template is what failed this create, kept beside the
+        // reason rather than re-derived from its text below: that stage produces the
+        // document the stack would have deployed, so its failure is reported on the
+        // stack's own event
+        // ([`crate::state::StoredStack::fail_transition_on_template`]).
+        let refused_by_processing = processing_failure.is_some();
+        let transform_failure = processing_failure
+            // A `Rules` assertion the values in force do not satisfy, or a directive the
+            // declared transform cannot apply where it stands, fails this create the same
+            // way: the stack is created, deploys nothing, and settles into the rollback
+            // below carrying that reason.
+            .or(deployment_failure);
 
         // Everything the template's resources and outputs are computed from is now in
         // place: materialise the resources its PROCESSED stage declares and evaluate its
@@ -1125,7 +1132,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     // no resource has an event that could carry it and the stack's own
                     // `CREATE_FAILED` event reports it either way, with the detailed status
                     // the model gives a validation failure
-                    // ([`crate::state::StoredStack::fail_transition_on_validation`]).
+                    // ([`crate::state::StoredStack::fail_transition_on_validation`]). A
+                    // failure of the TEMPLATE PROCESSING stage is reported the same way and
+                    // for the same reason — the document the stack would have deployed could
+                    // not be produced, so the transform's own sentence is on the stack's
+                    // event ([`crate::state::StoredStack::fail_transition_on_template`]) —
+                    // and carries no detailed status, being no validation's verdict.
                     if stack.disable_rollback {
                         if refused_by_validation {
                             stack.fail_transition_on_validation(
@@ -1149,6 +1161,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                                 status::CREATE_FAILED,
                                 failure.clone(),
                                 false,
+                            );
+                        } else if refused_by_processing {
+                            stack.fail_transition_on_template(
+                                failed_at,
+                                status::CREATE_FAILED,
+                                failure.clone(),
                             );
                         } else {
                             stack.fail_transition_superseded(
