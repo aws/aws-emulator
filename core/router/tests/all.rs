@@ -2478,3 +2478,6 @@ mod cloudformation_drift_detection_status_change_events;
 // for the same reason.)
 // (`cloudformation_metric_stream_filter_update` is declared once in the head region above: a
 // (`https_front_door_concurrent_pooled_producer` is declared once further up this tail: a
+// (The Cognito authorizer suite is declared ONCE, in the head region above beside the other
+// cross-service suites: it was appended here as well while two branches were landing at once,
+// (The empty `zz_probe` is declared ONCE, further up this tail: it was appended here as well

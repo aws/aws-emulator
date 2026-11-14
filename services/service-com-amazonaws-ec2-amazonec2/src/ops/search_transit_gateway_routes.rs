@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op SearchTransitGatewayRoutes
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `SearchTransitGatewayRoutes`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`SearchTransitGatewayRoutes::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -150,18 +141,335 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `SearchTransitGatewayRoutes` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(SearchTransitGatewayRoutesErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
+        // `ctx` carries request metadata only; this operation reads none of it. The store is
+        // reached through the engine held on `self`.
+        let _ = ctx;
+        use crate::state;
+
+        // "Checks whether you have the required permissions for the action, without actually
+        // making the request, and provides an error response. If you have the required
+        // permissions, the error response is DryRunOperation" (`DryRun`): a question about the
+        // CALLER, so it is answered before any member of the request is read as something to
+        // search. Every caller of this emulator is permitted.
+        if input.dry_run.unwrap_or(false) {
+            return Err(state::dry_run_operation());
+        }
+
+        // `TransitGatewayRouteTableId` is `@required` but modelled `clientOptional`, so a
+        // request that carried it EMPTY reaches this handler as an empty string rather than
+        // being refused at the boundary: a parameter the request did not really carry is EC2's
+        // `MissingParameter`.
         //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("SearchTransitGatewayRoutes"))
+        // `Filters` is `@required` as well, and a LIST, so a request that carries no filter at
+        // all carries no `Filter.N.*` field either and the member arrives null — which the
+        // boundary validator refuses before this handler runs (asserted as a row of this
+        // operation's refusal table). An empty slice is therefore unreachable from the wire,
+        // and narrowing by nothing below would report the whole table rather than answer for a
+        // member the request did not carry.
+        if input.transit_gateway_route_table_id.is_empty() {
+            return Err(state::missing_parameter(
+                "The request must contain the parameter transitGatewayRouteTableId",
+            ));
+        }
+        let filters: &[Filter] = input.filters.as_slice();
+
+        // "The token for the next page of results" (`NextToken`) — anything else is refused
+        // rather than read as a destination.
+        let start_at = match input.next_token.as_deref() {
+            None => None,
+            Some(token) => Some(
+                state::decode_page_token(token)
+                    .ok_or_else(|| state::invalid_pagination_token_for(token))?,
+            ),
+        };
+
+        // Matching cost is filters x values x routes, so each request-controlled factor is
+        // capped BEFORE any work proportional to it is done, the model bounding none of them,
+        // and their PRODUCT is charged to one [`crate::state::MatchBudget`] below — the bound
+        // the per-factor caps cannot give.
+        if filters.len() > state::MAX_FILTERS {
+            return Err(state::invalid_parameter_value(format!(
+                "The request carries {supplied} filters, above the maximum of {maximum}",
+                supplied = filters.len(),
+                maximum = state::MAX_FILTERS,
+            )));
+        }
+
+        // A filter name this operation does not document is refused whether or not any route
+        // would have matched it, so an unsupported filter can never read as "no results". The
+        // attribute filters compare text, so each value is compiled into its pattern ONCE
+        // here; a `route-search.*` filter compares CIDR BLOCKS rather than text, so its values
+        // are read as blocks once here instead, and a value that is not a block is refused
+        // rather than compared as a string it would never equal.
+        let mut selectors: Vec<state::CompiledFilter> = Vec::with_capacity(filters.len());
+        let mut searches: Vec<state::RouteSearch> = Vec::new();
+        for filter in filters {
+            let name = filter.name.as_deref().unwrap_or_default();
+            if !ROUTE_FILTERS.contains(&name) {
+                // This operation's `Filters` are checked at the PARAMETER layer, as its
+                // recorded refusal of an undocumented name shows, so the crate's one wording
+                // for that layer answers it rather than the sentence the describes that
+                // resolve their own filters use.
+                return Err(state::invalid_filter_parameter_value(name));
+            }
+            let values = filter.values.as_deref().unwrap_or_default();
+            if values.len() > state::MAX_FILTER_VALUES {
+                return Err(state::invalid_parameter_value(format!(
+                    "The filter '{name}' carries {supplied} values, above the maximum of \
+                     {maximum}",
+                    supplied = values.len(),
+                    maximum = state::MAX_FILTER_VALUES,
+                )));
+            }
+            // A capped NUMBER of comparisons is not capped WORK: the text matcher's cost is
+            // the product of the pattern's length and the value's, so each value's size is
+            // bounded too, before any matching runs under the lock.
+            if let Some(oversize) = values
+                .iter()
+                .find(|value| value.len() > state::MAX_FILTER_VALUE_BYTES)
+            {
+                return Err(state::invalid_parameter_value(format!(
+                    "A value of the filter '{name}' carries {supplied} bytes, above the maximum \
+                     of {maximum}",
+                    supplied = oversize.len(),
+                    maximum = state::MAX_FILTER_VALUE_BYTES,
+                )));
+            }
+            match state::RouteSearchKind::of_filter(name) {
+                Some(kind) => {
+                    let mut blocks = Vec::with_capacity(values.len());
+                    for value in values {
+                        let block = state::canonical_cidr_block(value).ok_or_else(|| {
+                            // The same PARAMETER layer the unknown-name refusal above comes
+                            // from, which states its reason after the period: a
+                            // `route-search.*` filter relates CIDR BLOCKS, so a value that is
+                            // not one relates to nothing.
+                            state::invalid_parameter_value(format!(
+                                "Value ({value}) for parameter {FILTER_PARAMETER} is invalid. \
+                                 This is not a valid CIDR block."
+                            ))
+                        })?;
+                        blocks.push(block);
+                    }
+                    searches.push(state::RouteSearch::new(kind, blocks));
+                }
+                None => selectors.push(state::CompiledFilter::new(
+                    name.to_string(),
+                    values.to_vec(),
+                )),
+            }
+        }
+
+        // "The maximum number of routes to return. If a value is not provided, the default is
+        // 1000" (`MaxResults`), which the model holds to 5..=1000 at the boundary — so a
+        // request that names none gets that documented default, and one that names a size gets
+        // it. Held to the largest page this emulator builds
+        // ([`crate::state::MAX_PAGE_SIZE`], which is that same 1000), so no conversion can
+        // widen a page: a value that cannot convert gets the SMALLEST page rather than the
+        // largest.
+        let limit = match input.max_results {
+            None => DEFAULT_MAX_RESULTS,
+            Some(max_results) => usize::try_from(max_results).unwrap_or(1),
+        }
+        .clamp(1, state::MAX_PAGE_SIZE);
+
+        let state_handle = state::require_service_state(&*self.engine)?;
+        let mut store = state_handle.lock();
+        // A move the clock already owes a record of this store fell due whether or not anybody
+        // called, so those moves are applied before this read — the search reports the state
+        // each resource is in NOW rather than the one it was written in, and it changes nothing
+        // a later caller would not have seen anyway.
+        store.materialize_due_transitions();
+
+        // "Searches for routes in the specified transit gateway route table": the table is the
+        // thing being read, so an id the account holds no table for is a refusal rather than a
+        // search that matched nothing. The form of the id first, so "not an id of this kind"
+        // never reads as "no such route table".
+        let route_table_id = input.transit_gateway_route_table_id.as_str();
+        state::require_well_formed_transit_gateway_route_table_id(route_table_id)?;
+        if !store.transit_gateway_route_tables.contains_key(route_table_id) {
+            return Err(state::invalid_transit_gateway_route_table_id_not_found(
+                route_table_id,
+            ));
+        }
+
+        // Every comparison, and every candidate, is charged to ONE budget, so the PRODUCT of
+        // the table's routes, the filters, their values and each value's length is bounded
+        // however the caller combines them — which is also what bounds how long this holds the
+        // state lock.
+        let mut budget = state::MatchBudget::new(state::MAX_FILTER_MATCH_STEPS);
+
+        // The destinations of the table, once: the order they come out in is the order this
+        // search reports and pages over, and the `route-search.longest-prefix-match` filters
+        // are resolved over the WHOLE set before any route is selected
+        // ([`crate::state::RouteSearch::resolve_longest_prefix`]).
+        let destinations: Vec<&str> = store
+            .transit_gateway_routes_of(route_table_id)
+            .map(|(destination, _)| destination)
+            .collect();
+        for search in &mut searches {
+            search.resolve_longest_prefix(&destinations, &mut budget);
+        }
+
+        // The default is to report every route of the table; every filter the request carries
+        // must then hold ("If you specify multiple filters, the filters are joined with an AND"
+        // — `Filter`).
+        let mut selected: Vec<(&str, &TransitGatewayRoute)> = Vec::new();
+        for (destination, route) in store.transit_gateway_routes_of(route_table_id) {
+            if budget.exhausted() {
+                break;
+            }
+            if matches_every_filter(route, &selectors, &mut budget)
+                && searches
+                    .iter()
+                    .all(|search| search.matches(Some(destination), &mut budget))
+            {
+                selected.push((destination, route));
+            }
+        }
+        // A spent budget means the answer is INCOMPLETE, which is not something to report as a
+        // result: the request asked for more filtering than one call will do, and is told so
+        // rather than given a silently truncated page.
+        if budget.exhausted() {
+            return Err(crate::scaffolded::Scaffolded::request_limit_exceeded(
+                format!(
+                    "The request's filters would take more than {steps} comparisons to \
+                     evaluate; narrow them or page with MaxResults",
+                    steps = state::MAX_FILTER_MATCH_STEPS,
+                ),
+            ));
+        }
+
+        // The routes come out of the table in destination order (the store's own key order),
+        // which is both the stable paging order and what the cursor names a position in — a
+        // route has no id of its own, its destination being what names it in its table — so a
+        // token naming the destination the next page starts at always advances, and the key the
+        // cursor is compared against IS the key the order is by.
+        let from = match start_at.as_deref() {
+            None => 0,
+            Some(cursor) => selected.partition_point(|(destination, _)| *destination < cursor),
+        };
+        let page = selected.get(from..).unwrap_or_default();
+
+        // "This value is null when there are no more results to return" (`NextToken`): a token
+        // only when a route follows this page, and "Indicates whether there are additional
+        // routes available" (`AdditionalRoutesAvailable`) is that same fact — the one place
+        // either is decided, so they cannot disagree.
+        let next_token = page
+            .get(limit)
+            .map(|(destination, _)| state::encode_page_token(destination));
+
+        Ok(SearchTransitGatewayRoutesOutput {
+            routes: Some(
+                page.iter()
+                    .take(limit)
+                    .map(|(_, route)| (*route).clone())
+                    .collect(),
+            ),
+            additional_routes_available: Some(next_token.is_some()),
+            next_token,
+        })
     }
+}
+
+/// "The maximum number of routes to return. If a value is not provided, the default is 1000"
+/// (`SearchTransitGatewayRoutesRequest$MaxResults`) — the page a request that names no size
+/// gets, which is also the top of the range the model puts on that member (5..=1000).
+const DEFAULT_MAX_RESULTS: usize = 1000;
+
+/// The request member this operation's `Filters` are reported under when one of them is
+/// refused at the PARAMETER layer: the member of the request, singular, as that layer spells
+/// it — the same name [`crate::state::invalid_filter_parameter_value`] writes for an
+/// undocumented filter NAME, so the two refusals of one member cannot name it differently.
+const FILTER_PARAMETER: &str = "Filter";
+
+/// The filter names this operation documents, from
+/// `SearchTransitGatewayRoutesRequest$Filters`:
+///
+/// ```text
+/// smithy_query(query="doc",shape="SearchTransitGatewayRoutesRequest",member="Filters",model_path="services/service-com-amazonaws-ec2-amazonec2/smithy-model/com-amazonaws-ec2-amazonec2.json")
+/// ```
+///
+/// That doc names no `tag:<key>` or `tag-key` filter for this operation, and the modelled
+/// `TransitGatewayRoute` carries no tags either, so neither is accepted here. Every entry is
+/// answered either by [`filter_values`] (an attribute of the route or of one of its
+/// attachments) or by [`crate::state::RouteSearchKind::of_filter`] (a CIDR relation between the
+/// route's destination and the value).
+const ROUTE_FILTERS: [&str; 10] = [
+    "attachment.resource-id",
+    "attachment.resource-type",
+    "attachment.transit-gateway-attachment-id",
+    "prefix-list-id",
+    "route-search.exact-match",
+    "route-search.longest-prefix-match",
+    "route-search.subnet-of-match",
+    "route-search.supernet-of-match",
+    "state",
+    "type",
+];
+
+/// The values the EC2 filter `name` compares against this route, for the filters that compare
+/// an ATTRIBUTE of the route as text.
+///
+/// A filter naming an attribute this route does not carry compares against NO values, so it
+/// selects nothing — the same answer AWS gives for any attribute a resource holds no value
+/// for. The `attachment.*` names compare against EVERY attachment of the route, because one
+/// filter value matching any of them is what "the id of the transit gateway attachment" asks.
+/// The `route-search.*` names are not here: they relate CIDR blocks rather than text, and are
+/// answered by the crate's shared [`crate::state::RouteSearch`].
+fn filter_values<'a>(
+    route: &'a TransitGatewayRoute,
+    name: &str,
+) -> Vec<::std::borrow::Cow<'a, str>> {
+    use ::std::borrow::Cow;
+
+    let text = |value: Option<&'a str>| -> Vec<Cow<'a, str>> {
+        value.map(Cow::Borrowed).into_iter().collect()
+    };
+    let attachments = || route.transit_gateway_attachments.as_deref().unwrap_or_default();
+    let of_each = |member: fn(&'a TransitGatewayRouteAttachment) -> Option<&'a str>| {
+        attachments()
+            .iter()
+            .filter_map(member)
+            .map(Cow::Borrowed)
+            .collect()
+    };
+    match name {
+        // "attachment.transit-gateway-attachment-id - The id of the transit gateway
+        // attachment."
+        "attachment.transit-gateway-attachment-id" => {
+            of_each(|attachment| attachment.transit_gateway_attachment_id.as_deref())
+        }
+        // "attachment.resource-id - The resource id of the transit gateway attachment."
+        "attachment.resource-id" => of_each(|attachment| attachment.resource_id.as_deref()),
+        // "attachment.resource-type - The attachment resource type."
+        "attachment.resource-type" => of_each(|attachment| attachment.resource_type.as_deref()),
+        // "prefix-list-id - The ID of the prefix list": the prefix list a route that came from
+        // a prefix list reference names (`TransitGatewayRoute$PrefixListId`).
+        "prefix-list-id" => text(route.prefix_list_id.as_deref()),
+        // "state - The state of the route (active | blackhole)."
+        "state" => text(route.state.as_deref()),
+        // "type - The type of route (propagated | static)."
+        "type" => text(route.r#type.as_deref()),
+        // Unreachable: the handler has already refused every other name, and the
+        // `route-search.*` ones never reach here. An undefined name compares against nothing,
+        // so it could never widen a result even if that check were bypassed.
+        _ => Vec::new(),
+    }
+}
+
+/// Does `route` satisfy every ATTRIBUTE filter?
+///
+/// The AND/OR evaluation EC2 defines for every `Filters` member, through the crate's one
+/// implementation of it ([`crate::state::matches_every_filter`]): "If you specify multiple
+/// filters, the filters are joined with an AND" (`Filter`), and within one filter "if you
+/// specify multiple values for a filter, the values are joined with an OR" (`Filter$Values`) —
+/// each value matched case-sensitively, with EC2's own `*`/`?` wildcards, by the pattern the
+/// value was compiled into.
+fn matches_every_filter(
+    route: &TransitGatewayRoute,
+    selectors: &[crate::state::CompiledFilter],
+    budget: &mut crate::state::MatchBudget,
+) -> bool {
+    crate::state::matches_every_filter(selectors, budget, &|name| filter_values(route, name))
 }

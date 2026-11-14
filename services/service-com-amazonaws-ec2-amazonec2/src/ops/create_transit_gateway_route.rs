@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateTransitGatewayRoute
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateTransitGatewayRoute`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateTransitGatewayRoute::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -164,13 +155,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // that is not a CIDR block at all matches no destination, so it is refused with the
         // code EC2 answers a parameter value it cannot accept with, before anything is
         // resolved.
-        if !state::cidr_block_is_well_formed(&input.destination_cidr_block) {
+        //
+        // Read in the CANONICAL form of the prefix it names, because that is what names the
+        // route inside its table: two spellings of one address prefix (`10.0.1.5/24` and
+        // `10.0.1.0/24`) are one destination, so they are one route rather than two records
+        // one of which a later delete or search could never reach.
+        let Some(destination) = state::canonical_cidr_block(&input.destination_cidr_block) else {
             return Err(state::invalid_parameter_value(format!(
                 "Invalid value '{destination}' for destinationCidrBlock. A destination is a \
                  CIDR block",
                 destination = input.destination_cidr_block,
             )));
-        }
+        };
 
         // "Indicates whether to drop traffic that matches this route" (`Blackhole`): a
         // blackhole route drops the traffic instead of sending it to an attachment, so a
@@ -253,10 +249,55 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         }
 
-        // Storing the route itself is still unwritten, so the operation answers the
-        // scaffold's 501 rather than a success it cannot back with state. Every refusal the
-        // request earns is minted above, before this point, so a client learns that its
-        // input is wrong from the code the real service answers rather than from this.
-        Err(crate::scaffolded::Scaffolded::not_implemented(Self::NAME))
+        // A route IS the destination it matches inside one table, so a table that already
+        // holds a route for that destination has nothing to create: a second one would give
+        // one destination two routes. `ReplaceTransitGatewayRoute` is the operation that
+        // changes where an existing route sends its traffic, and the stored route is left
+        // exactly as it was. Refused through the crate's one wording of that code
+        // (`state::route_already_exists`), which the routes of a VPC route table answer with
+        // too, so one code is not worded two ways.
+        if store
+            .transit_gateway_route(&input.transit_gateway_route_table_id, &destination)
+            .is_some()
+        {
+            return Err(state::route_already_exists(&destination));
+        }
+
+        // "The attachments" a report of the route names
+        // (`TransitGatewayRoute$TransitGatewayAttachments`): the resource the attachment
+        // attaches and that resource's type are read off the STORED attachment, never taken
+        // from the request, so the route and the attachment it forwards to cannot disagree
+        // about what is on the other end of it. A blackhole route names none.
+        let attachment = input
+            .transit_gateway_attachment_id
+            .as_deref()
+            .and_then(|attachment_id| {
+                let record = store.transit_gateway_attachments.get(attachment_id)?;
+                Some(TransitGatewayRouteAttachment {
+                    resource_id: record.view.resource_id().map(str::to_string),
+                    transit_gateway_attachment_id: Some(attachment_id.to_string()),
+                    resource_type: Some(record.view.resource_type().to_string()),
+                })
+            });
+
+        let route = store
+            .insert_transit_gateway_route(state::TransitGatewayRouteSpec {
+                transit_gateway_route_table_id: input.transit_gateway_route_table_id.clone(),
+                destination_cidr_block: destination,
+                attachment,
+            })
+            // The writer declines a route table it does not hold and a destination that table
+            // already routes as well, but both were resolved above under this same lock, so the
+            // only bound left for it to decline on is how much this store will hold.
+            .ok_or_else(|| {
+                state::transit_gateway_route_limit_exceeded(&input.transit_gateway_route_table_id)
+            })?;
+
+        // "Information about the route" (`CreateTransitGatewayRouteResult$Route`): the route as
+        // it was STORED, so this operation and `SearchTransitGatewayRoutes` cannot report one
+        // route differently.
+        Ok(CreateTransitGatewayRouteOutput {
+            route: Some(route),
+        })
     }
 }

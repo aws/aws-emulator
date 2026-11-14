@@ -294,6 +294,8 @@ fn remove_transit_gateway_route_table(
     store
         .transit_gateway_route_table_available_at
         .remove(route_table_id);
+    // The static routes the table held, which are resources OF it and name no other table.
+    store.remove_transit_gateway_routes_of(route_table_id);
 
     let propagations: Vec<(String, String)> = store
         .transit_gateway_propagations

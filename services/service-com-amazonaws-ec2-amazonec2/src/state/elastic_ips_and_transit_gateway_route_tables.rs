@@ -2593,6 +2593,9 @@ impl ComAmazonawsEc2Amazonec2State {
             }
             self.transit_gateway_route_table_available_at
                 .remove(&route_table_id);
+            // The static routes the table held: a route is a resource OF its table, so it
+            // goes with the table rather than being left in a table nothing resolves.
+            self.remove_transit_gateway_routes_of(&route_table_id);
             self.transit_gateway_associations
                 .retain(|(held, _), _| *held != route_table_id);
             self.transit_gateway_propagations

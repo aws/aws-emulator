@@ -2468,6 +2468,15 @@ pub struct ComAmazonawsEc2Amazonec2State {
     /// reports and pages over.
     pub transit_gateway_prefix_list_references:
         BTreeMap<(String, String), TransitGatewayPrefixListReferenceRecord>,
+    /// Every static route a `CreateTransitGatewayRoute` has written, by
+    /// (`TransitGatewayRouteTableId`, destination), as the modelled [`TransitGatewayRoute`]
+    /// shape itself — see [`crate::state::transit_gateway_routes`]. One entry per pair,
+    /// because a route IS the destination it matches inside one table; ordered by route table
+    /// and then by destination, which is the order `SearchTransitGatewayRoutes` reports and
+    /// pages over.
+    ///
+    /// Starts EMPTY: a route table holds no static route until one is created in it.
+    pub transit_gateway_routes: BTreeMap<(String, String), TransitGatewayRoute>,
     /// Every Dedicated Host the account holds, by `HostId`, as the modelled [`Host`]
     /// shape itself — so a member a writer sets round-trips through a describe without a
     /// field-by-field copy that can silently drop one. Ordered by id, which is the order
@@ -3589,6 +3598,7 @@ impl Default for ComAmazonawsEc2Amazonec2State {
             transit_gateway_associations: BTreeMap::new(),
             vpn_gateways: BTreeMap::new(),
             transit_gateway_prefix_list_references: BTreeMap::new(),
+            transit_gateway_routes: BTreeMap::new(),
             dedicated_hosts: BTreeMap::new(),
             dedicated_host_client_tokens: HashMap::new(),
             // A fresh account has purchased no Dedicated Host reservation.

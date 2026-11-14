@@ -195,7 +195,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // refused rather than compared as a string it would never equal.
         let filters: &[Filter] = input.filters.as_deref().unwrap_or_default();
         let mut selectors: Vec<crate::state::CompiledFilter> = Vec::with_capacity(filters.len());
-        let mut searches: Vec<RouteSearch> = Vec::new();
+        let mut searches: Vec<crate::state::RouteSearch> = Vec::new();
         for filter in filters {
             let name = filter.name.as_deref().unwrap_or_default();
             if !ROUTE_FILTERS.contains(&name) {
@@ -224,7 +224,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     crate::state::MAX_FILTER_VALUE_BYTES
                 )));
             }
-            match RouteSearchKind::of_filter(name) {
+            match crate::state::RouteSearchKind::of_filter(name) {
                 Some(kind) => {
                     let mut blocks = Vec::with_capacity(values.len());
                     for value in values {
@@ -237,12 +237,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                             })?;
                         blocks.push(block);
                     }
-                    let longest = vec![None; blocks.len()];
-                    searches.push(RouteSearch {
-                        kind,
-                        blocks,
-                        longest,
-                    });
+                    searches.push(crate::state::RouteSearch::new(kind, blocks));
                 }
                 None => selectors.push(crate::state::CompiledFilter::new(
                     name.to_string(),
@@ -304,37 +299,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the state lock.
         let mut budget = crate::state::MatchBudget::new(crate::state::MAX_FILTER_MATCH_STEPS);
 
-        // "route-search.longest-prefix-match - The longest prefix that matches the route":
-        // unlike every other filter this is not a property of one route but a comparison
-        // BETWEEN the table's routes, so the most specific destination containing each value
-        // is found first, here, and the filter then selects the routes that have it. It is
-        // computed over the whole table, each filter being evaluated against the table
-        // independently before the filters are joined with an AND.
+        // The destinations of the table, once: the `route-search.longest-prefix-match` filters
+        // are resolved over the WHOLE set before any route is selected, by the crate's shared
+        // [`crate::state::RouteSearch::resolve_longest_prefix`]. A route whose destination is a
+        // prefix list carries no block to compare, so it is not one of them.
+        let destinations: Vec<String> = routes
+            .values()
+            .filter_map(|record| canonical_destination(&record.view))
+            .collect();
         for search in &mut searches {
-            if !matches!(search.kind, RouteSearchKind::LongestPrefix) {
-                continue;
-            }
-            for (index, block) in search.blocks.iter().enumerate() {
-                let mut best: Option<u32> = None;
-                for route in routes.values().map(|record| &record.view) {
-                    if !budget.spend() {
-                        break;
-                    }
-                    let Some(destination) = canonical_destination(route) else {
-                        continue;
-                    };
-                    if crate::state::cidr_block_contains_block(&destination, block) {
-                        let length = crate::state::cidr_block_prefix_length(&destination);
-                        best = match (best, length) {
-                            (Some(best), Some(length)) => Some(best.max(length)),
-                            (best, length) => best.or(length),
-                        };
-                    }
-                }
-                if let Some(slot) = search.longest.get_mut(index) {
-                    *slot = best;
-                }
-            }
+            search.resolve_longest_prefix(&destinations, &mut budget);
         }
 
         // The default is to report every route of the table; every filter the request
@@ -406,8 +380,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// That doc names no `tag:<key>` or `tag-key` filter for this operation, and the modelled
 /// `LocalGatewayRoute` carries no tags either, so neither is accepted here. Every entry is
 /// answered either by [`filter_values`] (an attribute of the route) or by
-/// [`RouteSearchKind::of_filter`] (a CIDR relation between the route's destination and the
-/// value).
+/// [`crate::state::RouteSearchKind::of_filter`] (a CIDR relation between the route's
+/// destination and the value).
 const ROUTE_FILTERS: [&str; 7] = [
     "prefix-list-id",
     "route-search.exact-match",
@@ -417,102 +391,6 @@ const ROUTE_FILTERS: [&str; 7] = [
     "state",
     "type",
 ];
-
-/// Which CIDR relation a `route-search.*` filter asks for between a route's destination and
-/// the block the filter names.
-///
-/// These are the filters that are NOT text comparisons: each one relates two CIDR blocks,
-/// so a value is read as a block and compared by address range rather than by the `*`/`?`
-/// pattern an attribute filter uses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RouteSearchKind {
-    /// "route-search.exact-match - The exact match of the specified filter": the route's
-    /// destination IS the block.
-    Exact,
-    /// "route-search.longest-prefix-match - The longest prefix that matches the route": of
-    /// the destinations that contain the block, the most specific one.
-    LongestPrefix,
-    /// "route-search.subnet-of-match - The routes with a subnet that match the specified
-    /// CIDR filter": the route's destination is inside the block.
-    SubnetOf,
-    /// "route-search.supernet-of-match - The routes with a CIDR that encompass the CIDR
-    /// filter": the route's destination encompasses the block. The doc's own example —
-    /// "if you have 10.0.1.0/29 and 10.0.1.0/31 routes in your route table and you specify
-    /// supernet-of-match as 10.0.1.0/30, then the result returns 10.0.1.0/29" — is this
-    /// relation and not [`Self::SubnetOf`]'s.
-    SupernetOf,
-}
-
-impl RouteSearchKind {
-    /// The relation `name` asks for, or `None` when it is not a `route-search.*` filter at
-    /// all (an attribute filter, compared as text by [`filter_values`]).
-    fn of_filter(name: &str) -> Option<Self> {
-        match name {
-            "route-search.exact-match" => Some(Self::Exact),
-            "route-search.longest-prefix-match" => Some(Self::LongestPrefix),
-            "route-search.subnet-of-match" => Some(Self::SubnetOf),
-            "route-search.supernet-of-match" => Some(Self::SupernetOf),
-            _ => None,
-        }
-    }
-}
-
-/// One `route-search.*` filter: the relation it asks for and its values read as CIDR blocks
-/// ONCE, before any route is compared against them.
-#[derive(Debug)]
-struct RouteSearch {
-    kind: RouteSearchKind,
-    /// The filter's values, canonical ([`crate::state::canonical_cidr_block`]), in the order
-    /// the request gave them.
-    blocks: Vec<String>,
-    /// For a [`RouteSearchKind::LongestPrefix`] filter, the longest destination prefix
-    /// in the table that contains each value — one entry per entry of [`Self::blocks`], and
-    /// `None` where no route's destination contains that value. Left all-`None` for every
-    /// other relation, which needs no cross-route comparison.
-    longest: Vec<Option<u32>>,
-}
-
-impl RouteSearch {
-    /// Does a route whose canonical destination block is `destination` satisfy this filter?
-    ///
-    /// "If you specify multiple values for a filter, the values are joined with an OR"
-    /// (`Filter$Values`), so one value holding is enough — and a filter carrying no value at
-    /// all matches nothing, there being no block for the destination to relate to. A route
-    /// whose destination is a prefix list rather than a CIDR block carries no block to
-    /// compare, so it matches no `route-search.*` filter — the same answer EC2 gives for any
-    /// attribute a resource holds no value for.
-    ///
-    /// Every comparison is charged to `budget`, so one request's searching cannot cost more
-    /// than the ceiling however it combines filters and values.
-    fn matches(&self, destination: Option<&str>, budget: &mut crate::state::MatchBudget) -> bool {
-        let Some(destination) = destination else {
-            return false;
-        };
-        self.blocks.iter().enumerate().any(|(index, block)| {
-            if !budget.spend() {
-                return false;
-            }
-            match self.kind {
-                RouteSearchKind::Exact => destination == block.as_str(),
-                RouteSearchKind::SubnetOf => {
-                    crate::state::cidr_block_contains_block(block, destination)
-                }
-                RouteSearchKind::SupernetOf => {
-                    crate::state::cidr_block_contains_block(destination, block)
-                }
-                // The longest prefix was found over the whole table above: this route is
-                // selected when its destination contains the value and is exactly that
-                // long, so two equally specific destinations are both reported.
-                RouteSearchKind::LongestPrefix => {
-                    self.longest.get(index).copied().flatten().is_some_and(|best| {
-                        crate::state::cidr_block_prefix_length(destination) == Some(best)
-                            && crate::state::cidr_block_contains_block(destination, block)
-                    })
-                }
-            }
-        })
-    }
-}
 
 /// The route's destination CIDR block in canonical form, or `None` for a route whose
 /// destination is a prefix list (or a block this emulator cannot read).

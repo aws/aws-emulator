@@ -1936,6 +1936,7 @@ use crate::ops::types::{
     TransitGatewayPrefixListAttachment,
     TransitGatewayPrefixListReference, TransitGatewayPropagation,
     TransitGatewayRequestOptions,
+    TransitGatewayRoute,
     TransitGatewayRouteTable, TransitGatewayRouteTableAnnouncement,
     TransitGatewayRouteTableAssociation,
     TransitGatewayRouteTablePropagation,
@@ -2056,6 +2057,22 @@ pub use transit_gateway_metering_policy_entries::*;
 /// entries belong to live in the "Transit gateway policy tables" section of this module.
 pub mod transit_gateway_policy_table_entries;
 pub use transit_gateway_policy_table_entries::*;
+
+/// The static routes of a transit gateway route table — what one is stored as, the states and
+/// types its catalogs admit, the refusals a create answers, the store's bounds and its one
+/// writer — in a module of its own, re-exported so a handler reaches them as
+/// `crate::state::<item>` like every other primitive here. The tables the routes belong to
+/// live in the transit gateway route table store beside them.
+pub mod transit_gateway_routes;
+pub use transit_gateway_routes::*;
+
+/// The `route-search.*` filters an EC2 route search is narrowed by — which CIDR relation each
+/// documented name asks for and how that relation is evaluated against a route's destination —
+/// in a module of its own beside [`CompiledFilter`] and [`MatchBudget`], re-exported so a
+/// handler reaches them as `crate::state::<item>` like every other primitive here. Shared by
+/// every operation that searches a route table, so the relations cannot drift between them.
+pub mod route_search_filters;
+pub use route_search_filters::*;
 
 /// The `Reservation` shape, under the name the scaffold generated for it.
 ///

@@ -1579,6 +1579,12 @@ mod describe_transit_gateway_connects;
 // the implemented creates store — with the moves the clock owes them — read back through it.
 #[path = "all/transit_gateway_route_tables.rs"]
 mod transit_gateway_route_tables;
+// The static routes of a transit gateway route table: what `CreateTransitGatewayRoute` stores
+// for one destination of one table, the state and the attachment information it answers,
+// what `SearchTransitGatewayRoutes` reports back and how the documented filters and the page
+// size narrow it, and that the routes go when their table does.
+#[path = "all/transit_gateway_routes.rs"]
+mod transit_gateway_routes;
 // `DescribeTransitGatewayAttachments` reports out of the attachment store — every kind of
 // attachment, as the kind-independent shape — how the id list, the documented filters and the
 // page size narrow it, and that the association a writer stored reads back through it.
