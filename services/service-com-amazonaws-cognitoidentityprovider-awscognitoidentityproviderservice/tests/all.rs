@@ -265,6 +265,8 @@ mod token_issuer_endpoint;
 mod token_signing;
 #[path = "all/token_signing_algorithm.rs"]
 mod token_signing_algorithm;
+#[path = "all/trigger_source_branching.rs"]
+mod trigger_source_branching;
 #[path = "all/ui_customization.rs"]
 mod ui_customization;
 #[path = "all/update_group.rs"]
