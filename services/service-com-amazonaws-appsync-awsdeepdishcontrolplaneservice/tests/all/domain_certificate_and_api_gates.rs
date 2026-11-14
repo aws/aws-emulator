@@ -44,8 +44,9 @@ const DOMAIN_NOT_FOUND_ON_CHANGE: &str = "Domain name not found.";
 /// domain, which AppSync words without the sentence's full stop.
 const DOMAIN_NOT_FOUND_ON_READ: &str = "Domain name not found";
 
-/// AppSync's text for a domain that exists and carries no API association.
-const ASSOCIATION_NOT_FOUND: &str = "API association not found.";
+/// AppSync's text for a domain that exists and carries no API association, which states
+/// the condition about the DOMAIN rather than about the association.
+const ASSOCIATION_NOT_FOUND: &str = "Domain name is not associated.";
 
 /// The number of characters an AppSync API id has; `state::API_ID_LEN` is the
 /// service's own copy.

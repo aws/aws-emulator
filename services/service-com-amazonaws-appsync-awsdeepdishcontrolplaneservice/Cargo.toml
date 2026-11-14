@@ -116,6 +116,11 @@ sqlparser = { version = "0.59", default-features = false, features = ["std"] }
 # service what its web ACL decides about each request it is handed
 # (`src/service/graphql_api/query.rs`), rather than holding a second reading of a rule tree.
 service-com-amazonaws-wafv2-awswaf-20190729 = { workspace = true }
+# The service that holds the certificate a custom domain is served with: which names one
+# certificate covers is ITS fact, so `CreateDomainName` asks that store whether the
+# certificate it was handed can serve the requested domain name
+# (`src/state/domain_certificate.rs`).
+service-com-amazonaws-acm-certificatemanager = { workspace = true }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
@@ -146,6 +151,10 @@ service-com-amazonaws-kms-trentservice = { workspace = true }
 # the SDK rather than by hand-rolling either wire form.
 aws-sdk-rds = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
 aws-sdk-secretsmanager = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
+# Mints the real self-signed certificate the custom-domain certificate suite imports into
+# Certificate Manager, so a case's expectation rests on a certificate whose subject
+# alternative names that service really holds rather than on a hand-written record.
+rcgen = "0.13"
 
 [lints]
 workspace = true

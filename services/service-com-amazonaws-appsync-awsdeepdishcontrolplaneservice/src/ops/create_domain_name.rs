@@ -4,7 +4,10 @@
 //! Creates one custom domain name and reports the `DomainNameConfig` it stored: the
 //! endpoint AppSync serves the domain through, minted from this service's own state,
 //! plus the certificate and description the request named. The certificate side of the
-//! rule lives in [`crate::state::certificate_region_refusal`].
+//! rule lives in [`crate::state::certificate_region_refusal`] (the one Region a custom
+//! domain's distribution reads a certificate from) and
+//! [`crate::state::certificate_coverage_refusal`] (whether that certificate covers the
+//! name the domain is created under).
 //!
 //! ## Shape of an operation
 //!
@@ -168,7 +171,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let region = crate::state::request_region(ctx);
-        let mut guard = state.lock();
 
         // The certificate the domain is served with is read before any resource is
         // resolved: a certificate the distribution serving this domain could never
@@ -180,6 +182,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             })
             .into());
         }
+
+        // Nor can a certificate that does not COVER the requested name: the domain
+        // answers HTTPS on that name, and this certificate is what would terminate the
+        // handshake. Read in the service that holds the certificate
+        // ([`crate::state::certificate_coverage_refusal`]), with this service's own store
+        // not yet held, and judged before anything is stored — so the refused pair leaves
+        // no domain behind.
+        if let Some(message) = crate::state::certificate_coverage_refusal(
+            &*self.engine,
+            &input.domain_name,
+            &input.certificate_arn,
+        ) {
+            return Err(CreateDomainNameErrorModeled::BadRequestException(BadRequestException {
+                message: Some(message),
+                ..Default::default()
+            })
+            .into());
+        }
+
+        let mut guard = state.lock();
 
         // A custom domain is addressed by its domain name, so a create under a name
         // this account already holds conflicts with the domain holding it rather than

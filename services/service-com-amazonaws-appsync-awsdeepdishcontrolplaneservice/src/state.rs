@@ -82,6 +82,11 @@ pub use data_source_introspection::*;
 mod introspected_cluster;
 pub use introspected_cluster::*;
 
+/// Whether the certificate a custom domain is created with covers the name the domain is
+/// created under, read in the service that holds the certificate.
+mod domain_certificate;
+pub use domain_certificate::*;
+
 use crate::ops::types::{
     AdditionalAuthenticationProvider, Api, ApiAssociation, ApiCache, ApiKey, AppSyncRuntime,
     AuthMode, ChannelNamespace, DataSource, DomainNameConfig, DynamodbDataSourceConfig,
@@ -1336,10 +1341,10 @@ pub const DOMAIN_NAME_EXISTS_MESSAGE: &str = "Domain name already exists.";
 /// API association: the association, not the domain, is the resource the call
 /// addresses, so an absent one is reported as the absent association it is.
 ///
-/// Worded after the service's other absent-resource sentences ([`API_NOT_FOUND_MESSAGE`],
-/// [`API_KEY_NOT_FOUND_PREFIX`]); AppSync's own sentence for this one is not among the
-/// texts this service has to go on, so it is provisional until the real one is known.
-pub const API_ASSOCIATION_NOT_FOUND_MESSAGE: &str = "API association not found.";
+/// AppSync states the condition about the DOMAIN rather than about the association —
+/// recorded behavior for `GetApiAssociation` on a custom domain that was never linked to
+/// an API — and the sentence interpolates no request value, so it is entirely fixed text.
+pub const API_ASSOCIATION_NOT_FOUND_MESSAGE: &str = "Domain name is not associated.";
 
 /// The text `BadRequestException` (HTTP 400) carries for an `AssociateApi` on a mapping
 /// the service is still deploying: `AssociationStatus` documents that during
