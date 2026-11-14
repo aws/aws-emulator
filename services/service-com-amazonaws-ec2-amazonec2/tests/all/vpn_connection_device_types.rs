@@ -9,11 +9,13 @@
 //!
 //! The rules under test:
 //!
-//! 1. The operation reports the devices a sample configuration file is published for —
-//!    facts of the SERVICE, not of a Region or of the account: every device carries all
-//!    four modelled members (`VpnConnectionDeviceTypeId`, `Vendor`, `Platform`,
-//!    `Software`), ids are distinct, and the answer is the same in every Region and on
-//!    every repeat, with nothing created in between.
+//! 1. The operation reports EVERY device a sample configuration file is published for —
+//!    facts of the SERVICE, not of a Region or of the account: one device per published
+//!    (vendor, platform, software release) entry of the guide's list, so a vendor with two
+//!    platforms and a platform with two releases each contribute a device of their own.
+//!    Every device carries all four modelled members (`VpnConnectionDeviceTypeId`,
+//!    `Vendor`, `Platform`, `Software`), ids are distinct, and the answer is the same in
+//!    every Region and on every repeat, with nothing created in between.
 //! 2. A device's `VpnConnectionDeviceTypeId` is a function of the device: it is stable
 //!    across calls and across a freshly built emulator, so an id read once can be
 //!    handed back later.
@@ -25,8 +27,11 @@
 //!    paginating operation — is refused with `InvalidPaginationToken`.
 //! 4. `DryRun` performs nothing and answers 412 `DryRunOperation`.
 //!
-//! Device ORDER within a response is deliberately not asserted — EC2 says the order of
-//! elements in a response might vary — so every comparison here is over a sorted set.
+//! Device MEMBERSHIP is therefore compared over a sorted set, so a row says nothing about
+//! where in the response a device sits. The one ordering claim asserted is the catalog's
+//! own cursor order — vendor, then platform, then software — because that is the order a
+//! `NextToken` walk resumes in: it is what makes the devices of one vendor contiguous and
+//! keeps a paged walk from reporting a device twice or skipping one.
 
 use std::collections::BTreeSet;
 
@@ -215,6 +220,120 @@ async fn the_devices_are_the_same_in_every_region_and_on_every_call() {
         fresh, baseline,
         "case \"a fresh emulator\": a device id is a function of the device, got {fresh:?}"
     );
+}
+
+/// The whole published list is reported, one device per published entry, in cursor order.
+///
+/// The rows are entries of the list in "Your customer gateway device"
+/// (<https://docs.aws.amazon.com/vpn/latest/s2svpn/your-cgw.html>), the page the modelled
+/// `VpnConnectionDeviceType` shape's own doc links to. They span what the published list
+/// varies along: the vendor that opens it and the one that closes it, a platform the guide
+/// publishes TWO software releases for, a vendor the guide publishes two and three
+/// platforms for, two vendors whose names share a prefix, an operating system named as the
+/// platform, and software releases written as a single version, as a floor and with a
+/// wildcarded minor.
+#[tokio::test]
+async fn the_whole_published_device_list_is_reported_in_cursor_order() {
+    let (router, _engine) = super::ec2_query::emulator();
+    let reported = all_devices(&router, "us-west-2", "the published list").await;
+
+    // (case, vendor, platform, software)
+    let cases: [(&str, &str, &str, &str); 13] = [
+        ("the vendor that opens the list", "AXGate", "NF", "aos 3.2+"),
+        (
+            "a second software release of one platform",
+            "Check Point",
+            "Security Gateway",
+            "R80.10+",
+        ),
+        ("a vendor sharing a prefix with another", "Cisco Meraki", "MX", "15.12+"),
+        (
+            "the qualified vendor name of that prefix",
+            "Cisco Systems, Inc.",
+            "ASA",
+            "ASA 9.7+",
+        ),
+        (
+            "a second platform of that vendor",
+            "Cisco Systems, Inc.",
+            "CSR",
+            "IOS-XE 16.9+",
+        ),
+        (
+            "a newer release of one platform",
+            "Fortinet",
+            "Fortigate 40+ Series",
+            "FortiOS 6.4.4+",
+        ),
+        ("a single software release", "H3C", "MSR", "Comware 7"),
+        ("a third platform of one vendor", "Juniper", "ScreenOS", "6.3"),
+        (
+            "an operating system as the platform",
+            "Microsoft",
+            "Windows Server",
+            "2012 R2",
+        ),
+        ("a second platform of one vendor", "Sophos", "UTM", "9.4+"),
+        ("a router appliance", "Ubiquiti", "EdgeRouter", "EdgeOS 1.10+"),
+        ("a wildcarded minor release", "WatchGuard", "Fireware", "XTM 12.x"),
+        ("the vendor that closes the list", "Zyxel", "ZyWALL USG", "4.2+"),
+    ];
+
+    for (case, vendor, platform, software) in cases {
+        let found = reported.iter().find(|device| {
+            device.vendor == vendor && device.platform == platform && device.software == software
+        });
+        assert!(
+            found.is_some(),
+            "case {case:?}: expected the published device {vendor} / {platform} / {software} \
+             among the {} reported, got {reported:?}",
+            reported.len()
+        );
+    }
+
+    // Two releases of one platform are two devices, each with its own id: the id is a
+    // function of all three published members, not of the vendor and platform alone.
+    for (case, vendor, platform) in [
+        ("two releases of one firewall", "Check Point", "Security Gateway"),
+        ("two releases of one appliance", "Fortinet", "Fortigate 40+ Series"),
+        ("two releases of one platform", "WatchGuard", "Fireware"),
+    ] {
+        let releases: BTreeSet<&String> = reported
+            .iter()
+            .filter(|device| device.vendor == vendor && device.platform == platform)
+            .map(|device| &device.software)
+            .collect();
+        let ids: BTreeSet<&String> = reported
+            .iter()
+            .filter(|device| device.vendor == vendor && device.platform == platform)
+            .map(|device| &device.id)
+            .collect();
+        assert!(
+            releases.len() > 1,
+            "case {case:?}: expected more than one published release of {vendor} {platform}, \
+             got {releases:?}"
+        );
+        assert_eq!(
+            ids.len(),
+            releases.len(),
+            "case {case:?}: each release of {vendor} {platform} needs its own id, got {ids:?}"
+        );
+    }
+
+    // The response is in the catalog's cursor order, so the devices of one vendor are
+    // contiguous and no device is reported twice.
+    let order: Vec<(&String, &String, &String)> = reported
+        .iter()
+        .map(|device| (&device.vendor, &device.platform, &device.software))
+        .collect();
+    for pair in order.windows(2) {
+        assert!(
+            pair[0] < pair[1],
+            "case \"cursor order\": expected {:?} to sort before {:?}",
+            pair[0],
+            pair[1]
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

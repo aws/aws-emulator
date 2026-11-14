@@ -267,21 +267,49 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// configuration for is not in the list, because this operation reports exactly the
 /// devices a sample configuration can be produced for; a row is added when the guide
 /// publishes one, never because a request asked for it.
+///
+/// The POPULATION of the table is that whole list, not a sample of it: the guide
+/// publishes a SEPARATE example configuration — and so a separate device type — for every
+/// software release of a platform it covers (`Fortigate 40+ Series` on `FortiOS 4.0+` and
+/// on `FortiOS 6.4.4+`), and for every platform of a vendor (`ASA`, `CSR` and `ISR` of
+/// `Cisco Systems, Inc.`), so each of those is a row of its own rather than one row per
+/// vendor or per platform. The vendor and platform are spelled the way the guide spells
+/// them — the vendor of the `ASA`, `CSR` and `ISR` entries is published as `Cisco
+/// Systems, Inc.`, which is a different vendor from `Cisco Meraki`.
 const VPN_CONNECTION_DEVICE_CATALOG: &[(&str, &str, &str)] = &[
+    ("AXGate", "NF", "aos 3.2+"),
+    ("Barracuda", "CloudGen Firewall", "8.0+"),
+    ("Barracuda", "NextGen Firewall F-Series", "6.2+"),
     ("Check Point", "Security Gateway", "R77.10+"),
-    ("Cisco", "ASA", "ASA 8.2+"),
-    ("Cisco", "ISR", "IOS 12.4+"),
+    ("Check Point", "Security Gateway", "R80.10+"),
+    ("Cisco Meraki", "MX", "15.12+"),
+    ("Cisco Systems, Inc.", "ASA", "ASA 8.2+"),
+    ("Cisco Systems, Inc.", "ASA", "ASA 9.7+"),
+    ("Cisco Systems, Inc.", "CSR", "IOS-XE 16.9+"),
+    ("Cisco Systems, Inc.", "ISR", "IOS 12.4+"),
     ("Fortinet", "Fortigate 40+ Series", "FortiOS 4.0+"),
+    ("Fortinet", "Fortigate 40+ Series", "FortiOS 6.4.4+"),
+    ("H3C", "MSR", "Comware 7"),
     ("Juniper", "J-Series", "JunOS 9.5+"),
     ("Juniper", "SRX", "JunOS 11.0+"),
+    ("Juniper", "ScreenOS", "6.3"),
+    ("Microsoft", "Windows Server", "2012 R2"),
     ("Mikrotik", "RouterOS", "6.44.3"),
     ("Netgate", "pfSense", "OS 2.2.5+"),
     ("Palo Alto Networks", "PAN-OS", "PAN-OS 4.1.2+"),
+    ("Palo Alto Networks", "PAN-OS", "PAN-OS 7.0+"),
     ("SonicWALL", "NSA/TZ", "SonicOS 5.9"),
     ("SonicWALL", "NSA/TZ", "SonicOS 6.2"),
+    ("Sophos", "UTM", "9.4+"),
     ("Sophos", "XG Next-Gen Firewall", "Sophos XG 17.5+"),
     ("Strongswan", "Ubuntu", "Ubuntu 16.04"),
+    ("Ubiquiti", "EdgeRouter", "EdgeOS 1.10+"),
+    ("VyOS", "VyOS", "1.1.7"),
+    ("Vyatta", "Network OS", "6.5+"),
+    ("WatchGuard", "Fireware", "XTM 11.x"),
+    ("WatchGuard", "Fireware", "XTM 12.x"),
     ("Yamaha", "RT Series", "Rev.14.01.21+"),
+    ("Zyxel", "ZyWALL USG", "4.2+"),
 ];
 
 /// The separator a device's page cursor joins its parts with.
