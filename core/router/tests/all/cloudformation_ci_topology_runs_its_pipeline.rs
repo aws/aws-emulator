@@ -22,6 +22,13 @@
 //! The rows differ along what the rule generalises over: how the buildspec writes the file
 //! (from the start, or added to), and whether the path it reads is one the build wrote at
 //! all — which is what decides the build's status and so the execution's.
+//!
+//! A second table pins the same rule over the two counts it also generalises over, because a
+//! deployed pipeline is one a client drives repeatedly and a template may declare more than
+//! one build: its rows declare one, two and three `AWS::CodeBuild::Project` resources with a
+//! Build stage each, and start the published pipeline `STARTS` times, one settled execution
+//! after another. Every start reaches `Succeeded` with every declared Build stage having run
+//! a build of its own, of the project that stage's own `ProjectName` configuration names.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -341,6 +348,19 @@ async fn build_action_result(
     pipeline: &str,
     execution: &str,
 ) -> Value {
+    action_result(router, case, pipeline, execution, "Build").await
+}
+
+/// The result the action of the stage `stage` reported in `execution`, as
+/// `ListActionExecutions` reports it — one read for any declared stage, so a topology whose
+/// pipeline builds in several stages is read exactly like one that builds in a single stage.
+async fn action_result(
+    router: &MultiServiceRouter,
+    case: &str,
+    pipeline: &str,
+    execution: &str,
+    stage: &str,
+) -> Value {
     let answer = codepipeline_ok(
         router,
         case,
@@ -356,10 +376,10 @@ async fn build_action_result(
         .cloned()
         .unwrap_or_default()
         .into_iter()
-        .find(|detail| detail["stageName"] == json!("Build"))
+        .find(|detail| detail["stageName"] == json!(stage))
         .map(|detail| detail["output"]["executionResult"].clone())
         .unwrap_or_else(|| {
-            panic!("case {case:?}: the execution must report its Build action, got {answer}")
+            panic!("case {case:?}: the execution must report its {stage} action, got {answer}")
         })
 }
 
@@ -718,4 +738,405 @@ fn is_execution_id(id: &str) -> bool {
                         .chars()
                         .all(|character| character.is_ascii_digit() || ('a'..='f').contains(&character))
             })
+}
+
+/// The `Build$buildStatus` a build that ran to success reports
+/// (`smithy_query(query="shape", shape="com.amazonaws.codebuild#StatusType")`).
+const BUILD_SUCCEEDED: &str = "SUCCEEDED";
+
+/// The terminal `PipelineExecutionStatus` of an execution whose every action succeeded.
+const EXECUTION_SUCCEEDED: &str = "Succeeded";
+
+/// Buildspecs that each write a file of their own and read it back, so every build the
+/// second table runs is one that succeeds. A row declares a different NUMBER of them, which
+/// is the number of projects and Build stages its template then declares.
+const BUILDSPECS: [&str; 3] = [
+    "version: 0.2\nphases:\n  build:\n    commands:\n      - 'echo first > first.txt'\n      \
+     - 'cat first.txt'\n",
+    "version: 0.2\nphases:\n  pre_build:\n    commands:\n      - 'echo second > second.txt'\n  \
+     build:\n    commands:\n      - 'cat second.txt'\n",
+    "version: 0.2\nphases:\n  build:\n    commands:\n      - 'echo third > third.txt'\n      \
+     - 'cat third.txt'\n      - 'cat third.txt'\n",
+];
+
+/// How many times each row starts the pipeline the stack published, one settled execution
+/// after another: a client that drives a deployed topology comes back to it, and the rule
+/// holds for every start rather than only the first.
+const STARTS: usize = 2;
+
+/// The logical id — and so the `Ref` — of the project the Build stage at `position` names.
+fn project_logical_id(position: usize) -> String {
+    format!("CodeBuildProject{}", position + 1)
+}
+
+/// The name of the Build stage at `position`.
+fn build_stage_name(position: usize) -> String {
+    format!("Build{}", position + 1)
+}
+
+/// The stack output publishing the name of the project the Build stage at `position` names.
+fn project_output_key(position: usize) -> String {
+    format!("ProjectName{}", position + 1)
+}
+
+/// The CI template a client deploys when its pipeline builds in SEVERAL stages: the estate
+/// [`template`] declares, with one `AWS::CodeBuild::Project` and one Build stage per
+/// buildspec — each stage naming its own project through its `ProjectName` configuration and
+/// consuming the artifact the Source stage published. The `Outputs` publish the pipeline's
+/// name, each project's name and the two role ARNs, which are the handles a client drives
+/// the deployed topology by.
+fn staged_template(source: &str, buildspecs: &[&str]) -> String {
+    let projects: Vec<String> = (0..buildspecs.len()).map(project_logical_id).collect();
+    let project_arns: Vec<Value> = projects
+        .iter()
+        .map(|logical| json!({ "Fn::GetAtt": [logical, "Arn"] }))
+        .collect();
+
+    let mut resources = serde_json::Map::new();
+    resources.insert("ArtifactBucket".to_string(), json!({ "Type": "AWS::S3::Bucket" }));
+    resources.insert(
+        "CodeBuildRole".to_string(),
+        json!({
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [{
+                        "Effect": "Allow",
+                        "Principal": { "Service": CODEBUILD_PRINCIPAL },
+                        "Action": "sts:AssumeRole",
+                    }],
+                },
+                "Policies": [{
+                    "PolicyName": "build",
+                    "PolicyDocument": {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Effect": "Allow",
+                                "Action": [
+                                    "logs:CreateLogGroup",
+                                    "logs:CreateLogStream",
+                                    "logs:PutLogEvents",
+                                ],
+                                "Resource": "*",
+                            },
+                            {
+                                "Effect": "Allow",
+                                "Action": ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"],
+                                "Resource": "*",
+                            },
+                        ],
+                    },
+                }],
+            },
+        }),
+    );
+    resources.insert(
+        "PipelineRole".to_string(),
+        json!({
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [{
+                        "Effect": "Allow",
+                        "Principal": { "Service": CODEPIPELINE_PRINCIPAL },
+                        "Action": "sts:AssumeRole",
+                    }],
+                },
+                "Policies": [{
+                    "PolicyName": "pipeline",
+                    "PolicyDocument": {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Effect": "Allow",
+                                "Action": ["s3:Get*", "s3:PutObject"],
+                                "Resource": "*",
+                            },
+                            {
+                                "Effect": "Allow",
+                                "Action": ["codebuild:StartBuild", "codebuild:BatchGetBuilds"],
+                                "Resource": project_arns,
+                            },
+                        ],
+                    },
+                }],
+            },
+        }),
+    );
+
+    let mut outputs = serde_json::Map::new();
+    outputs.insert(
+        "PipelineName".to_string(),
+        json!({ "Value": { "Ref": "Pipeline" } }),
+    );
+    outputs.insert(
+        "CodeBuildRoleArn".to_string(),
+        json!({ "Value": { "Fn::GetAtt": ["CodeBuildRole", "Arn"] } }),
+    );
+    outputs.insert(
+        "PipelineRoleArn".to_string(),
+        json!({ "Value": { "Fn::GetAtt": ["PipelineRole", "Arn"] } }),
+    );
+
+    let mut stages = vec![json!({
+        "Name": "Source",
+        "Actions": [{
+            "Name": "Source",
+            "ActionTypeId": {
+                "Category": "Source",
+                "Owner": "AWS",
+                "Provider": "S3",
+                "Version": "1",
+            },
+            "Configuration": {
+                "S3Bucket": source,
+                "S3ObjectKey": "source.zip",
+                "PollForSourceChanges": "false",
+            },
+            "OutputArtifacts": [{ "Name": "SourceOutput" }],
+            "RunOrder": 1,
+        }],
+    })];
+    for (position, buildspec) in buildspecs.iter().enumerate() {
+        let logical = project_logical_id(position);
+        resources.insert(
+            logical.clone(),
+            json!({
+                "Type": "AWS::CodeBuild::Project",
+                "Properties": {
+                    "Artifacts": { "Type": "CODEPIPELINE" },
+                    "Source": { "Type": "CODEPIPELINE", "BuildSpec": buildspec },
+                    "Environment": {
+                        "Type": "LINUX_CONTAINER",
+                        "ComputeType": "BUILD_GENERAL1_SMALL",
+                        "Image": "aws/codebuild/amazonlinux2-x86_64-standard:5.0",
+                    },
+                    "ServiceRole": { "Fn::GetAtt": ["CodeBuildRole", "Arn"] },
+                },
+            }),
+        );
+        stages.push(json!({
+            "Name": build_stage_name(position),
+            "Actions": [{
+                "Name": build_stage_name(position),
+                "ActionTypeId": {
+                    "Category": "Build",
+                    "Owner": "AWS",
+                    "Provider": "CodeBuild",
+                    "Version": "1",
+                },
+                "Configuration": { "ProjectName": { "Ref": logical } },
+                "InputArtifacts": [{ "Name": "SourceOutput" }],
+                "RunOrder": 1,
+            }],
+        }));
+        outputs.insert(
+            project_output_key(position),
+            json!({ "Value": { "Ref": logical } }),
+        );
+    }
+
+    resources.insert(
+        "Pipeline".to_string(),
+        json!({
+            "Type": "AWS::CodePipeline::Pipeline",
+            "Properties": {
+                "RoleArn": { "Fn::GetAtt": ["PipelineRole", "Arn"] },
+                "ArtifactStore": { "Type": "S3", "Location": { "Ref": "ArtifactBucket" } },
+                "Stages": stages,
+            },
+        }),
+    );
+
+    json!({
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": Value::Object(resources),
+        "Outputs": Value::Object(outputs),
+    })
+    .to_string()
+}
+
+/// One row of the second table: how many Build stages — and so how many projects — the
+/// deployed template declares.
+struct StagedRow {
+    case: &'static str,
+    buildspecs: &'static [&'static str],
+}
+
+/// The rows: the same topology deployed with one, two and three Build stages.
+const STAGED_ROWS: &[StagedRow] = &[
+    StagedRow {
+        case: "a deployed pipeline that builds in one stage",
+        buildspecs: &[BUILDSPECS[0]],
+    },
+    StagedRow {
+        case: "a deployed pipeline that builds in two stages",
+        buildspecs: &[BUILDSPECS[0], BUILDSPECS[1]],
+    },
+    StagedRow {
+        case: "a deployed pipeline that builds in three stages",
+        buildspecs: &[BUILDSPECS[0], BUILDSPECS[1], BUILDSPECS[2]],
+    },
+];
+
+/// Every row: the stack converges, the roles it published round-trip through IAM, and each
+/// of the `STARTS` executions of the published pipeline reaches `Succeeded` having run every
+/// declared Build stage as a build of its own — of the project that stage's configuration
+/// names — rather than one execution succeeding and a later one stalling.
+#[tokio::test]
+async fn a_deployed_ci_topology_runs_every_declared_build_stage_on_every_start() {
+    let router = build_router();
+
+    for (index, row) in STAGED_ROWS.iter().enumerate() {
+        let case = row.case;
+        let stack = format!("ci-staged-{index}");
+        let source = format!("ci-staged-source-{index}");
+        source_bucket(&router, case, &source).await;
+
+        let (status, body) = query(
+            &router,
+            "cloudformation",
+            "2010-05-15",
+            "CreateStack",
+            &[
+                ("StackName", stack.as_str()),
+                ("TemplateBody", &staged_template(&source, row.buildspecs)),
+                ("Capabilities.member.1", "CAPABILITY_IAM"),
+                ("Capabilities.member.2", "CAPABILITY_NAMED_IAM"),
+            ],
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: CreateStack must answer 200, got {status} with {body}"
+        );
+
+        let (stack_status, described) = settled_stack(&router, case, &stack).await;
+        assert_eq!(
+            stack_status, "CREATE_COMPLETE",
+            "case {case:?}: the CI template must deploy, got {stack_status} with reason {:?}",
+            opt_element(&described, "StackStatusReason")
+        );
+
+        let pipeline = output(case, &described, "PipelineName");
+        let projects: Vec<String> = (0..row.buildspecs.len())
+            .map(|position| output(case, &described, &project_output_key(position)))
+            .collect();
+
+        // Each declared role is a role IAM really holds, with the trust the template stated.
+        for (key, principal) in [
+            ("CodeBuildRoleArn", CODEBUILD_PRINCIPAL),
+            ("PipelineRoleArn", CODEPIPELINE_PRINCIPAL),
+        ] {
+            let arn = output(case, &described, key);
+            let document = trust_document(&router, case, &arn).await;
+            assert!(
+                allows_assume_role(&document, principal),
+                "case {case:?}: the role {arn} must be assumable by {principal}, got {document}"
+            );
+        }
+
+        let mut executions: Vec<String> = Vec::new();
+        let mut builds: Vec<String> = Vec::new();
+        for attempt in 1..=STARTS {
+            let attempt_case = format!("{case}, start {attempt}");
+            let case = attempt_case.as_str();
+
+            let started = codepipeline_ok(
+                &router,
+                case,
+                "StartPipelineExecution",
+                &json!({ "name": pipeline }),
+            )
+            .await;
+            let execution = started["pipelineExecutionId"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            assert!(
+                is_execution_id(&execution),
+                "case {case:?}: the execution id must have the modelled shape, got {execution:?}"
+            );
+            assert!(
+                !executions.contains(&execution),
+                "case {case:?}: every start is its own execution, got {execution} again"
+            );
+
+            let settled = settled_execution(&router, case, &pipeline, &execution).await;
+            assert_eq!(
+                settled, EXECUTION_SUCCEEDED,
+                "case {case:?}: expected the execution to be {EXECUTION_SUCCEEDED}, got \
+                 {settled:?}"
+            );
+
+            // Each declared Build stage ran a build of its own, of the project it names.
+            for (position, project) in projects.iter().enumerate() {
+                let stage = build_stage_name(position);
+                let result = action_result(&router, case, &pipeline, &execution, &stage).await;
+                assert!(
+                    result["errorDetails"].is_null(),
+                    "case {case:?}: the succeeded stage {stage} carries no error, got {result}"
+                );
+                let external = result["externalExecutionId"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                assert!(
+                    !external.is_empty(),
+                    "case {case:?}: the {stage} action must name the build it ran, got {result}"
+                );
+                assert!(
+                    !builds.contains(&external),
+                    "case {case:?}: the {stage} action must run a build of its own, got \
+                     {external} again"
+                );
+                let ran = build(&router, case, &external).await;
+                assert_eq!(
+                    ran["projectName"].as_str(),
+                    Some(project.as_str()),
+                    "case {case:?}: the {stage} build must belong to {project}, got {ran}"
+                );
+                assert_eq!(
+                    ran["buildStatus"].as_str(),
+                    Some(BUILD_SUCCEEDED),
+                    "case {case:?}: expected the {stage} build to be {BUILD_SUCCEEDED}, got {ran}"
+                );
+                builds.push(external);
+            }
+            executions.push(execution);
+        }
+
+        // Every start left a record of its own on the pipeline the stack published.
+        let listed = codepipeline_ok(
+            &router,
+            case,
+            "ListPipelineExecutions",
+            &json!({ "pipelineName": pipeline }),
+        )
+        .await;
+        let summaries = listed["pipelineExecutionSummaries"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        for execution in &executions {
+            let summary = summaries
+                .iter()
+                .find(|summary| summary["pipelineExecutionId"] == json!(execution))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "case {case:?}: the pipeline must report the execution {execution}, got \
+                         {listed}"
+                    )
+                });
+            assert_eq!(
+                summary["status"].as_str(),
+                Some(EXECUTION_SUCCEEDED),
+                "case {case:?}: expected {execution} to be listed {EXECUTION_SUCCEEDED}, got \
+                 {summary}"
+            );
+        }
+    }
 }
