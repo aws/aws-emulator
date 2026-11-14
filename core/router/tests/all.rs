@@ -2568,3 +2568,15 @@ mod cloudformation_provisions_cloudfront_resources;
 // (`cloudwatch_alarm_ssm_ops_item_action` is declared ONCE, in the head region above: a
 // above, for the same reason.
 // (`cloudformation_domain_endpoint_is_dialled_by_consumers` is declared ONCE, further up this
+// Declared ONCE each, higher up this file, because branches landing in the same window kept
+// appending their own copy of these lines to this tail and two `mod` items for one name is a
+// redefinition that compiles neither: `cloudformation_provisions_cloudfront_resources`,
+// `cloudformation_stack_clock`, `elbv2_lambda_target_published_address`,
+// `apigateway_cognito_authorizer_app_client_audience`,
+// `cloudformation_metric_stream_estate_is_drainable` and `zz_probe`.
+// (`cloudformation_metric_stream_filter_update` is declared ONCE, a few lines above this one:
+// two landings each appended a declaration of it to this tail, and a module may be declared
+// (`https_front_door_concurrent_pooled_producer` is declared ONCE, a few lines above this
+// one: two landings each appended a declaration of it to this tail, and a module may be
+// (`apigatewaymanagementapi_manage_connections_authorization` is declared ONCE, further up
+// this tail, for the same reason.)

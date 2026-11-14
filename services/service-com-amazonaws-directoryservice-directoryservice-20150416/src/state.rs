@@ -106,7 +106,9 @@ pub use directory_updates::UpdateActivityRecord;
 
 pub use directory_network::{server_address, SubnetNetwork};
 pub use directory_servers::{os_version_of, MICROSOFT_AD_OS_VERSION};
-pub use ec2_security_groups::{placement_vpc_id, provision_controllers_group};
+pub use ec2_security_groups::{
+    placement_vpc_id, provision_controllers_group, release_controllers_group,
+};
 pub use ec2_subnets::{resolve_subnet_networks, vpc_absence};
 pub use subnet_zones::single_zone_defect;
 
@@ -2583,6 +2585,35 @@ impl Directory {
             (Some(settings), _) => settings.vpc_id.as_deref(),
             (None, Some(settings)) => settings.vpc_id.as_deref(),
             (None, None) => None,
+        }
+    }
+
+    /// The security group this service PROVISIONED for this directory's servers, read from
+    /// whichever settings block this directory's type reports its placement as
+    /// ([`Self::vpc_id`]): the group EC2 minted for the create
+    /// ([`ec2_security_groups::provision_controllers_group`]), which is the one the teardown
+    /// releases again. `None` for a directory no group was provisioned for.
+    pub fn provisioned_security_group_id(&self) -> Option<&str> {
+        match (self.vpc_settings.as_ref(), self.connect_settings.as_ref()) {
+            (Some(settings), _) => settings.security_group_id.as_deref(),
+            (None, Some(settings)) => settings.security_group_id.as_deref(),
+            (None, None) => None,
+        }
+    }
+
+    /// Stop naming the security group this directory's servers sat behind, because the owner
+    /// of security groups no longer holds it
+    /// ([`ec2_security_groups::release_controllers_group`]).
+    ///
+    /// A `SecurityGroupId` is a claim that EC2 holds that group, so the one place the claim
+    /// is withdrawn is the one place the group is really gone — nothing else clears it, and a
+    /// directory whose group is still there goes on naming it.
+    pub fn forget_security_group(&mut self) {
+        if let Some(settings) = self.vpc_settings.as_mut() {
+            settings.security_group_id = None;
+        }
+        if let Some(settings) = self.connect_settings.as_mut() {
+            settings.security_group_id = None;
         }
     }
 

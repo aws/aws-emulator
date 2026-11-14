@@ -63,6 +63,8 @@ mod directory_dns_addresses;
 mod directory_lifecycle;
 #[path = "all/directory_limits.rs"]
 mod directory_limits;
+#[path = "all/directory_network_release.rs"]
+mod directory_network_release;
 #[path = "all/directory_networking_and_settings.rs"]
 mod directory_networking_and_settings;
 #[path = "all/directory_os_version.rs"]
@@ -93,6 +95,8 @@ mod ip_route_removal;
 mod ip_route_update_serialization;
 #[path = "all/ldaps.rs"]
 mod ldaps;
+#[path = "all/ldaps_client_trajectory.rs"]
+mod ldaps_client_trajectory;
 #[path = "all/log_subscription_forwarding.rs"]
 mod log_subscription_forwarding;
 #[path = "all/log_subscriptions.rs"]
