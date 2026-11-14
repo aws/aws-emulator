@@ -1,0 +1,69 @@
+Issue-Source: trace-sweep-divergence
+Issue-Trace: elasticache-serverless-cache-iam-user-endpoint-discovery
+Issue-Step: task#8
+Issue-Severity: MEDIUM
+Issue-Corpus: simparity-wire-aws-v1
+Issue-Corpus-Kind: wire
+Issue-Trace-Ids: elasticache-serverless-cache-iam-user-endpoint-discovery
+Issue-Shape-Id: com.amazonaws.elasticache#AmazonElastiCacheV9
+Issue-Key: elasticache|CreateUserGroup|2xx->2xx|$.CreateUserGroupResponse.CreateUserGroupResult.MinimumEngineVersion
+Issue-Key: elasticache|DescribeUserGroups|2xx->2xx|$.DescribeUserGroupsResponse.DescribeUserGroupsResult.UserGroups.member.MinimumEngineVersion
+Issue-Key: elasticache|CreateServerlessCache|2xx->2xx|$.CreateServerlessCacheResponse.CreateServerlessCacheResult.ServerlessCache.DailySnapshotTime
+Issue-Key: elasticache|CreateServerlessCache|2xx->2xx|$.CreateServerlessCacheResponse.CreateServerlessCacheResult.ServerlessCache.SecurityGroupIds
+Issue-Key: elasticache|CreateServerlessCache|2xx->2xx|$.CreateServerlessCacheResponse.CreateServerlessCacheResult.ServerlessCache.SnapshotRetentionLimit
+Issue-Key: elasticache|DescribeServerlessCaches|2xx->2xx|$.DescribeServerlessCachesResponse.DescribeServerlessCachesResult.ServerlessCaches.member.DailySnapshotTime
+Issue-Key: elasticache|DescribeServerlessCaches|2xx->2xx|$.DescribeServerlessCachesResponse.DescribeServerlessCachesResult.ServerlessCaches.member.Endpoint.Port
+Issue-Key: elasticache|DescribeServerlessCaches|2xx->2xx|$.DescribeServerlessCachesResponse.DescribeServerlessCachesResult.ServerlessCaches.member.ReaderEndpoint.Port
+Issue-Key: elasticache|DescribeServerlessCaches|2xx->2xx|$.DescribeServerlessCachesResponse.DescribeServerlessCachesResult.ServerlessCaches.member.SecurityGroupIds
+Issue-Key: elasticache|DescribeServerlessCaches|2xx->2xx|$.DescribeServerlessCachesResponse.DescribeServerlessCachesResult.ServerlessCaches.member.SnapshotRetentionLimit
+Issue-Commit: 588eab0496abf0a5bc1b8cec7adc2c989702bf8c
+
+# ElastiCache user-group and serverless-cache projections omit modeled members and misstate MinimumEngineVersion (4 causes)
+
+> _Note: this issue was identified against the code base at commit `588eab0496abf0a5bc1b8cec7adc2c989702bf8c`. If you are an issue fixer working on this, the code base you are currently working in can have drifted, so you might need to trace the issue back to the current code base._
+
+## Operation
+CreateUserGroup
+
+## Description
+4 net-new wire causes on the elasticache RBAC user-group and serverless-cache response-projection paths, all in fixture elasticache-serverless-cache-iam-user-endpoint-discovery. None of the four steps was marked owned by an open issue and none was blocked by a stub. The shared fault: the resource structures these operations return are built from a partial, hard-coded projection — modeled members are left unserialized and MinimumEngineVersion is stamped with a fixed emulator default instead of being derived from the resource's engine. A fixer must close ALL FOUR causes below before submitting.
+
+Adjacent open issues that do NOT cover these (named so they are not mistaken for duplicates): 20261109T204539Z-elasticache-user-records-carry-the-wrong-minimumengineversion-and.md covers MinimumEngineVersion on the *User* record (CreateUser/DescribeUsers) and carries only those steps' replay keys, not the *UserGroup* record's; 20261112T120609Z-elasticache-reference-catalogs-diverge-from-aws-across-five.md covers the engine-version/parameter reference catalogs, not a per-resource projection; 20261110T153512Z-elasticache-describeserverlesscaches-never-converges-the-serverless-cache-poll.md covers a 404 convergence failure on the serverless poll, not the member set of a 200 response; 20261111T005655Z-elasticache-data-plane-still-unreachable-and-multi-wait.md covers data-plane reachability of the advertised endpoint, not the omitted ServerlessCache members.
+
+Cause 1 of 4: CreateUserGroup stamps a fixed MinimumEngineVersion on the user group it returns. AWS: Smithy — CreateUserGroup's output is the UserGroup shape, whose member MinimumEngineVersion (target String) is documented as "The minimum engine version required, which is Redis OSS 6.0"; that prose fixes no value for a valkey group, so the value itself is recorded behavior only. Recorded behavior: for a user group created with Engine=valkey, AWS returns MinimumEngineVersion '7.2'. Emulator: returns '6.0' — '$.CreateUserGroupResponse.CreateUserGroupResult.MinimumEngineVersion: value_mismatch (expected 7.2, got 6.0)', status 200 on both sides. Why: a client that reads MinimumEngineVersion to decide which engine versions may have this group attached computes a floor two minor versions too low and attaches the group to a replication group or serverless cache on an engine version AWS would refuse. Fix: the UserGroup projection in the CreateUserGroup handler/serializer in the elasticache crate — MinimumEngineVersion must be derived from the group's Engine (and its members' access configuration) rather than returned as one hard-coded constant. Traces: elasticache-serverless-cache-iam-user-endpoint-discovery#task#8.
+
+Cause 2 of 4: DescribeUserGroups repeats the same fixed MinimumEngineVersion when reading the group back. AWS: Smithy — DescribeUserGroups returns UserGroups as a list of the same UserGroup shape, so the read-back value must equal what the create stamped and what AWS reports for the group's engine. Recorded behavior: the valkey group reports MinimumEngineVersion '7.2' on every read. Emulator: '6.0' — '$.DescribeUserGroupsResponse.DescribeUserGroupsResult.UserGroups.member.MinimumEngineVersion: value_mismatch (expected 7.2, got 6.0)', status 200 on both sides; the same divergence recurs on a later re-read of the group in the same fixture (task#13). Why: the wrong floor is not merely a create-time artifact — a client that polls the group and gates on it never sees the correct value, so the mis-plan above is permanent rather than transient. Fix: the shared UserGroup projection used by the DescribeUserGroups handler/serializer plus the engine-derived version field on the user-group record in elasticache state, so create and describe derive one value. Traces: elasticache-serverless-cache-iam-user-endpoint-discovery#task#9 (cluster also covers task#13).
+
+Cause 3 of 4: CreateServerlessCache returns a ServerlessCache that omits three modeled members. AWS: Smithy — the ServerlessCache shape carries SnapshotRetentionLimit (target IntegerOptional, "the number of days for which ElastiCache retains automatic snapshots"), DailySnapshotTime (target String, "the daily time that a cache snapshot will be created. Default is NULL") and SecurityGroupIds (target SecurityGroupIdsList, "the IDs of the EC2 security groups associated with the serverless cache"); for a cache created with no snapshot configuration the recording shows AWS serializing SnapshotRetentionLimit as 0, a DailySnapshotTime value, and SecurityGroupIds as a SecurityGroupId member list naming the group the cache resolved to. Emulator: all three members are absent from the create response — '$.CreateServerlessCacheResponse.CreateServerlessCacheResult.ServerlessCache.SnapshotRetentionLimit: missing (expected 0, got None)', '...DailySnapshotTime: missing', '...SecurityGroupIds: missing (expected {SecurityGroupId: ...}, got None)' — status 200 on both sides. Why: a client that reads the create response to learn the cache's backup posture sees no SnapshotRetentionLimit at all and cannot distinguish "snapshots disabled (0)" from "field unknown", and a client that reads SecurityGroupIds to audit or to reuse the resolved security group gets nothing, so it concludes the cache has no security group attached. Fix: the ServerlessCache projection in the CreateServerlessCache handler/serializer in elasticache, plus the serverless-cache record in state which must retain the resolved security groups and the snapshot defaults it created the cache with. Traces: elasticache-serverless-cache-iam-user-endpoint-discovery#task#10.
+
+Cause 4 of 4: DescribeServerlessCaches omits the same three modeled members on read-back. AWS: Smithy — DescribeServerlessCaches returns ServerlessCaches as a list of the same ServerlessCache shape, so SnapshotRetentionLimit, DailySnapshotTime and SecurityGroupIds must be present on the read exactly as on the create. Recorded behavior: the member reports SnapshotRetentionLimit 0, a DailySnapshotTime, and a SecurityGroupIds member list. Emulator: all three absent — '$.DescribeServerlessCachesResponse.DescribeServerlessCachesResult.ServerlessCaches.member.SnapshotRetentionLimit: missing (expected 0, got None)', '...DailySnapshotTime: missing', '...SecurityGroupIds: missing', status 200 on both sides. Why: the omission is durable, so a client that discovers caches by describing them (rather than from its own create response) can never read the cache's snapshot posture or its security groups. Fix: the shared ServerlessCache projection used by the DescribeServerlessCaches handler/serializer in elasticache, so the describe path serializes the same member set as the create path. Scope note: this cluster also reports Endpoint.Port and ReaderEndpoint.Port differing from the recording (expected 6379/6380, the emulator answers its own data listener port for both). The absolute port number is an environment value and is NOT part of this cause — only the three omitted modeled members are. The endpoint-advertisement behavior is the subject of the open issue 20261111T005655Z-elasticache-data-plane-still-unreachable-and-multi-wait.md. Traces: elasticache-serverless-cache-iam-user-endpoint-discovery#task#11.
+
+## Evidence
+All four quotes come from the wire replay of corpus simparity-wire-aws-v1 against the emulator built from this checkout; every cluster's verdict is 'mismatch' with expected status 200 and actual status 200 (no status or error-code divergence). Resource names, security group ids, timestamps and ports in the recording are per-run values filling the shape; the member set, the serialized 0 for SnapshotRetentionLimit, and the engine-derived MinimumEngineVersion are the requirements.
+
+Cause 1 — fixture elasticache-serverless-cache-iam-user-endpoint-discovery, step task#8, operation CreateUserGroup; expected 200, actual 200:
+  $.CreateUserGroupResponse.CreateUserGroupResult.MinimumEngineVersion: value_mismatch (expected '7.2', got '6.0')
+
+Cause 2 — same fixture, step task#9 (cluster also covers task#13), operation DescribeUserGroups; expected 200, actual 200:
+  $.DescribeUserGroupsResponse.DescribeUserGroupsResult.UserGroups.member.MinimumEngineVersion: value_mismatch (expected '7.2', got '6.0')
+
+Cause 3 — same fixture, step task#10, operation CreateServerlessCache; expected 200, actual 200:
+  $.CreateServerlessCacheResponse.CreateServerlessCacheResult.ServerlessCache.DailySnapshotTime: missing (expected '<shaped-not-asserted>', got None)
+  $.CreateServerlessCacheResponse.CreateServerlessCacheResult.ServerlessCache.SnapshotRetentionLimit: missing (expected '0', got None)
+  $.CreateServerlessCacheResponse.CreateServerlessCacheResult.ServerlessCache.SecurityGroupIds: missing (expected {'SecurityGroupId': '<shaped-not-asserted>'}, got None)
+
+Cause 4 — same fixture, step task#11, operation DescribeServerlessCaches; expected 200, actual 200:
+  $.DescribeServerlessCachesResponse.DescribeServerlessCachesResult.ServerlessCaches.member.DailySnapshotTime: missing (expected '<shaped-not-asserted>', got None)
+  $.DescribeServerlessCachesResponse.DescribeServerlessCachesResult.ServerlessCaches.member.SnapshotRetentionLimit: missing (expected '0', got None)
+  $.DescribeServerlessCachesResponse.DescribeServerlessCachesResult.ServerlessCaches.member.SecurityGroupIds: missing (expected {'SecurityGroupId': '<shaped-not-asserted>'}, got None)
+  (also reported, excluded as an environment value: Endpoint.Port expected '6379' got '34523'; ReaderEndpoint.Port expected '6380' got '34523')
+
+Smithy cited (services/service-com-amazonaws-elasticache-amazonelasticachev9/smithy-model/com-amazonaws-elasticache-amazonelasticachev9.json): UserGroup with members UserGroupId, Status, Engine (EngineType), UserIds, MinimumEngineVersion (String, doc "The minimum engine version required, which is Redis OSS 6.0"), ReplicationGroups, ServerlessCaches, ARN; ServerlessCache with members ServerlessCacheName, Status, Engine, MajorEngineVersion, FullEngineVersion, CacheUsageLimits, SecurityGroupIds (SecurityGroupIdsList), Endpoint and ReaderEndpoint (Endpoint: Address, Port), SubnetIds, SnapshotRetentionLimit (IntegerOptional), DailySnapshotTime (String), NetworkType, ConnectionType.
+
+## Steps to Reproduce
+1. Call git_clone(), then replay_wire_corpus() — the emulator is built from this checkout and the corpus simparity-wire-aws-v1 is replayed against it.
+2. Cause 1: replay fixture elasticache-serverless-cache-iam-user-endpoint-discovery step task#8 — call elasticache CreateUserGroup with Engine=valkey and a user id, then read MinimumEngineVersion in the CreateUserGroupResult: observe '6.0' where AWS reports '7.2'.
+3. Cause 2: step task#9 (and again at task#13) — call DescribeUserGroups for that group and read UserGroups.member.MinimumEngineVersion: observe '6.0' where AWS reports '7.2'.
+4. Cause 3: step task#10 — call CreateServerlessCache for a valkey serverless cache with no snapshot configuration and inspect the returned ServerlessCache: observe SnapshotRetentionLimit, DailySnapshotTime and SecurityGroupIds all absent where AWS serializes 0, a daily snapshot time, and a SecurityGroupIds member list.
+5. Cause 4: step task#11 — call DescribeServerlessCaches for that cache and inspect ServerlessCaches.member: observe the same three members still absent on the read-back path.
+6. A fix is confirmed only when all four steps above (task#8, task#9, task#10, task#11 of that fixture) replay clean.
