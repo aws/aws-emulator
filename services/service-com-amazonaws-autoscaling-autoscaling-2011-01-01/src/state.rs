@@ -126,8 +126,9 @@ pub use scaling_policies::{PolicyKey, StoredScalingPolicy};
 pub mod notification_configurations;
 
 pub use notification_configurations::{
-    too_many_topics_message, unknown_notification_type_message, NotificationConfigurationRefusal,
-    NotificationConfigurations, MAX_NOTIFICATION_TOPICS_PER_GROUP,
+    absent_notification_configuration_message, too_many_topics_message,
+    unknown_notification_type_message, NotificationConfigurationRefusal, NotificationConfigurations,
+    MAX_NOTIFICATION_TOPICS_PER_GROUP,
 };
 
 /// The Amazon SNS notifications this service publishes to the topics those configurations

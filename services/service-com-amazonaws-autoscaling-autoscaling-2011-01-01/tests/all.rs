@@ -25,6 +25,8 @@ mod cancel_instance_refresh;
 mod cancel_instance_refresh_absent_group;
 #[path = "all/client_error_refusal_wording.rs"]
 mod client_error_refusal_wording;
+#[path = "all/delete_notification_configuration.rs"]
+mod delete_notification_configuration;
 #[path = "all/describe_lifecycle_hooks_projection.rs"]
 mod describe_lifecycle_hooks_projection;
 #[path = "all/describe_policies_page_size.rs"]

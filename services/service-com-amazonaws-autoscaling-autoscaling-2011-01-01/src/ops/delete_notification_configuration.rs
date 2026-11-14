@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeleteNotificationConfiguration
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DeleteNotificationConfiguration`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DeleteNotificationConfiguration::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Takes one Amazon SNS notification configuration off an Auto Scaling group.
+//!
+//! The collection, the delete rule and the refusal a pair the group holds no configuration
+//! for is answered with are [`crate::state::notification_configurations`]; the stored
+//! configuration this call removes is the one `PutNotificationConfiguration` wrote and
+//! `DescribeNotificationConfigurations` projects from.
 //!
 //! ## Shape of an operation
 //!
@@ -156,18 +154,53 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DeleteNotificationConfiguration` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DeleteNotificationConfigurationErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DeleteNotificationConfiguration"))
+        let Some(store) = crate::state::service_state(&*self.engine) else {
+            return Err(
+                DeleteNotificationConfigurationErrorModeled::ResourceContentionFault(
+                    ResourceContentionFault {
+                        message: Some(
+                            "the Auto Scaling store is not mounted on this engine".to_string(),
+                        ),
+                    },
+                )
+                .into(),
+            );
+        };
+
+        let group_name = input.auto_scaling_group_name;
+        let topic_arn = input.topic_arn;
+
+        {
+            let mut state = store.lock();
+            state.materialize_due(&*self.engine, ::std::time::SystemTime::now());
+
+            // A notification configuration belongs to a group, so a name no group answers
+            // to is refused with the wording this service's group-scoped WRITE paths answer
+            // with: the detail field after the dash is left unfilled, so no part of the
+            // request appears in it.
+            let Some(group) = state.groups.get_mut(&group_name) else {
+                return Err(crate::scaffolded::Scaffolded::validation_error(
+                    crate::state::ABSENT_GROUP_MESSAGE_WITHOUT_DETAIL,
+                ));
+            };
+
+            // The operation deletes the notification the request specifies, so a pair the
+            // group holds no configuration for specifies none: this operation models no
+            // error for a request naming a resource the service does not hold, which this
+            // service answers `ValidationError` for.
+            group
+                .delete_notification_configuration(&topic_arn)
+                .map_err(|refusal| {
+                    crate::scaffolded::Scaffolded::validation_error(refusal.message())
+                })?;
+        }
+
+        crate::state::audit(
+            ctx.parts(),
+            "DeleteNotificationConfiguration",
+            &format!("{group_name}/{topic_arn}"),
+            "notification configuration deleted",
+        );
+        Ok(DeleteNotificationConfigurationOutput)
     }
 }

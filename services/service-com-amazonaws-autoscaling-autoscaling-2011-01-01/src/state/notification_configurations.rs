@@ -23,6 +23,17 @@
 //! the documented ceiling ("your maximum limit of SNS topics, which is 10 per Auto Scaling
 //! group") a count of topics.
 //!
+//! # The delete
+//!
+//! `DeleteNotificationConfiguration` "deletes the specified notification"
+//! (`smithy_query(query="operation",operation="DeleteNotificationConfiguration")`), and the
+//! notification it specifies is the one entry the request's (`AutoScalingGroupName`,
+//! `TopicARN`) pair keys — so it takes that topic's whole entry, every event type included,
+//! and leaves the group's other topics alone. The configuration has to BE there: a pair
+//! this collection holds no entry for names no notification to delete, so the request is
+//! refused rather than answered as a no-op
+//! ([`NotificationConfigurationRefusal::AbsentConfiguration`]).
+//!
 //! # What the group is told about
 //!
 //! [`StoredGroup::notification_topics`] is the one reading of "which topics does this group
@@ -60,6 +71,9 @@ pub enum NotificationConfigurationRefusal {
     /// The group is already configured with [`MAX_NOTIFICATION_TOPICS_PER_GROUP`] topics
     /// and this request names one more.
     LimitExceeded,
+    /// The group holds no configuration for the topic the request names, so there is no
+    /// notification to delete; carries the topic it named.
+    AbsentConfiguration(String),
 }
 
 impl NotificationConfigurationRefusal {
@@ -71,6 +85,9 @@ impl NotificationConfigurationRefusal {
                 unknown_notification_type_message(notification_type)
             }
             Self::LimitExceeded => too_many_topics_message(),
+            Self::AbsentConfiguration(topic_arn) => {
+                absent_notification_configuration_message(topic_arn)
+            }
         }
     }
 }
@@ -104,6 +121,24 @@ impl StoredGroup {
             topic_arn.to_string(),
             notification_types.iter().cloned().collect(),
         );
+        Ok(())
+    }
+
+    /// Take the configuration naming `topic_arn` off this group, per the delete rule in
+    /// this module's own documentation.
+    ///
+    /// The whole entry goes, so the group stops notifying that topic about every event it
+    /// was configured for; a topic this group holds no entry for is refused and nothing is
+    /// written.
+    pub fn delete_notification_configuration(
+        &mut self,
+        topic_arn: &str,
+    ) -> Result<(), NotificationConfigurationRefusal> {
+        if self.notification_configurations.remove(topic_arn).is_none() {
+            return Err(NotificationConfigurationRefusal::AbsentConfiguration(
+                topic_arn.to_string(),
+            ));
+        }
         Ok(())
     }
 
@@ -141,5 +176,20 @@ pub fn too_many_topics_message() -> String {
     format!(
         "The notification configuration exceeds the limit of \
          {MAX_NOTIFICATION_TOPICS_PER_GROUP} SNS topics per Auto Scaling group"
+    )
+}
+
+/// The message a request naming a notification this group was never configured with is
+/// refused with: Amazon EC2 Auto Scaling reports the absence as the TOPIC not existing for
+/// the account, since a configuration is what makes a topic one of the account's
+/// notification topics at all.
+///
+/// Two variable parts, both quoted: the topic the request named, and the account the
+/// request was made for — this emulator's own account, which is the account every resource
+/// it holds belongs to. The rest, punctuation included, is fixed text.
+pub fn absent_notification_configuration_message(topic_arn: &str) -> String {
+    format!(
+        "Notification Topic '{topic_arn}' doesn't exist for '{}'",
+        ::engine::emulator_account_id()
     )
 }
