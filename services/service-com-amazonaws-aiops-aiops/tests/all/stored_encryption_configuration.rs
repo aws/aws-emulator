@@ -19,6 +19,11 @@
 //! Both writers of the member apply it, so each row below is driven through
 //! `CreateInvestigationGroup` AND through `UpdateInvestigationGroup`.
 //!
+//! A configuration whose two members disagree names no such key and is refused instead of
+//! stored, which `tests/all/encryption_configuration_names_a_usable_key.rs` is the suite
+//! for; the row below naming the customer managed key type with no key id is here because
+//! this table spans the FORMS of the structure, and it states what that form answers.
+//!
 //! An account holds one investigation group per Region, so each row signs for two
 //! Regions of its own: one for the create leg and one for the update leg.
 
@@ -26,7 +31,7 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 use service_com_amazonaws_aiops_aiops::ops::types::ENCRYPTION_CONFIGURATION_TYPE_VALUES;
-use service_com_amazonaws_aiops_aiops::state::AWS_OWNED_KEY_TYPE;
+use service_com_amazonaws_aiops_aiops::state::{AWS_OWNED_KEY_TYPE, KMS_KEY_ID_REQUIRED};
 use smithy_server_runtime::MultiServiceRouter;
 
 /// The canonical emulator account (`engine::EMULATOR_ACCOUNT_ID`) every ARN carries.
@@ -196,13 +201,18 @@ async fn stored_configuration(
 }
 
 /// One row: the configuration a write carries (or omits) and what the group stores for
-/// it.
+/// it — or, for a configuration the service cannot honour, the sentence the write is
+/// refused with.
 struct Row {
     case: &'static str,
     /// The `encryptionConfiguration` the request carries; `None` omits the member.
     supplied: Option<Value>,
-    /// What a read of the group must report afterwards.
+    /// What a read of the group must report afterwards, when the write is served; `Null`
+    /// for a row that is refused, which stores nothing for a read to report.
     expected: Value,
+    /// The sentence the write is refused with, when the configuration names no key the
+    /// group's data could be encrypted under.
+    refused: Option<String>,
 }
 
 /// The rows, differing along the FORM of the configuration the request carries: the
@@ -217,36 +227,53 @@ fn rows(region: &str) -> Vec<Row> {
             case: "the member omitted entirely",
             supplied: None,
             expected: default.clone(),
+            refused: None,
         },
         Row {
             case: "an empty structure",
             supplied: Some(json!({})),
             expected: default.clone(),
+            refused: None,
         },
         Row {
             case: "a kmsKeyId with no type",
             supplied: Some(json!({ "kmsKeyId": key })),
             expected: json!({ "type": CUSTOMER_MANAGED_KEY_TYPE, "kmsKeyId": key }),
+            refused: None,
         },
         Row {
             case: "the AWS owned key, named",
             supplied: Some(default.clone()),
             expected: default,
+            refused: None,
         },
         Row {
             case: "a customer managed key with its key id",
             supplied: Some(json!({ "type": CUSTOMER_MANAGED_KEY_TYPE, "kmsKeyId": key })),
             expected: json!({ "type": CUSTOMER_MANAGED_KEY_TYPE, "kmsKeyId": key }),
+            refused: None,
         },
         Row {
             case: "a customer managed key named with no key id",
             supplied: Some(json!({ "type": CUSTOMER_MANAGED_KEY_TYPE })),
-            expected: json!({ "type": CUSTOMER_MANAGED_KEY_TYPE }),
+            // Nothing is stored for a refused write, so this row states no stored value:
+            // `refused` is what it asserts.
+            expected: Value::Null,
+            refused: Some(KMS_KEY_ID_REQUIRED.to_string()),
         },
     ]
 }
 
-/// A create stores the configuration the rule says it stores, and a read reports it.
+/// The `message` a refused call carried.
+fn message(body: &Value) -> String {
+    body.get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("<no message>")
+        .to_string()
+}
+
+/// A create stores the configuration the rule says it stores, and a read reports it — and
+/// a configuration the service cannot honour is refused and stores nothing.
 #[tokio::test]
 async fn a_create_stores_a_configuration_that_names_the_key_type() {
     let router = emulator();
@@ -255,6 +282,19 @@ async fn a_create_stores_a_configuration_that_names_the_key_type() {
         let mut body = json!({ "name": "stored-encryption", "roleArn": ROLE_ARN });
         if let Some(supplied) = row.supplied.clone() {
             body["encryptionConfiguration"] = supplied;
+        }
+        if let Some(sentence) = &row.refused {
+            let (status, refusal) =
+                call(&router, &region, "POST", "/investigationGroups", Some(&body)).await;
+            assert_eq!(
+                (status, message(&refusal)),
+                (400, sentence.clone()),
+                "case {:?}: create carrying {:?} must be refused with {sentence:?}, got {status} \
+                 / {refusal:?}",
+                row.case,
+                row.supplied
+            );
+            continue;
         }
         let arn = create_ok(&router, &region, &body, row.case).await;
         let got = stored_configuration(&router, &region, &arn, row.case).await;
@@ -269,7 +309,8 @@ async fn a_create_stores_a_configuration_that_names_the_key_type() {
 /// An update stores the same configuration the create would have stored for the same
 /// request — so the key the request names survives the write, and a request naming no
 /// key at all replaces the stored one with the documented default rather than erasing
-/// what the group reports or keeping a key the request did not name.
+/// what the group reports or keeping a key the request did not name. A configuration the
+/// create would have refused the update refuses too, leaving the stored one alone.
 #[tokio::test]
 async fn an_update_stores_the_configuration_the_create_would_store() {
     let router = emulator();
@@ -287,7 +328,7 @@ async fn an_update_stores_the_configuration_the_create_would_store() {
             &router,
             &region,
             &json!({ "name": "stored-encryption", "roleArn": ROLE_ARN,
-                     "encryptionConfiguration": before }),
+                     "encryptionConfiguration": before.clone() }),
             row.case,
         )
         .await;
@@ -297,6 +338,31 @@ async fn an_update_stores_the_configuration_the_create_would_store() {
         let mut patch = json!({});
         if let Some(supplied) = supplied.clone() {
             patch["encryptionConfiguration"] = supplied;
+        }
+        if let Some(sentence) = &row.refused {
+            let (status, refusal) = call(
+                &router,
+                &region,
+                "PATCH",
+                &format!("/investigationGroups/{}", label(&arn)),
+                Some(&patch),
+            )
+            .await;
+            assert_eq!(
+                (status, message(&refusal)),
+                (400, sentence.clone()),
+                "case {:?}: update carrying {patch:?} must be refused with {sentence:?}, got \
+                 {status} / {refusal:?}",
+                row.case
+            );
+            let got = stored_configuration(&router, &region, &arn, row.case).await;
+            assert_eq!(
+                got, before,
+                "case {:?}: a refused update must leave the stored configuration as it was \
+                 ({before}), got {got:?}",
+                row.case
+            );
+            continue;
         }
         update_ok(&router, &region, &arn, &patch, row.case).await;
         let got = stored_configuration(&router, &region, &arn, row.case).await;

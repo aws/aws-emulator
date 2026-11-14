@@ -19,6 +19,8 @@ mod create_encryption_configuration_forms;
 mod cross_account_configuration_names_an_account;
 #[path = "all/encryption_configuration_keeps_the_named_key.rs"]
 mod encryption_configuration_keeps_the_named_key;
+#[path = "all/encryption_configuration_names_a_usable_key.rs"]
+mod encryption_configuration_names_a_usable_key;
 #[path = "all/error_message_rules.rs"]
 mod error_message_rules;
 #[path = "all/group_reader_and_id_shape.rs"]

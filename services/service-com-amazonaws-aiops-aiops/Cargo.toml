@@ -27,6 +27,9 @@ hex = { workspace = true }
 # account's IAM answers about it, for the `roleArn` an investigation group runs as;
 # `iam_client` under it is the in-process hop that asks IAM.
 service-common = { path = "../common" }
+# Asks this emulator's own KMS, over the in-process callback, whether the key an
+# `encryptionConfiguration` names is one investigation data could be encrypted with.
+aws-sdk-kms = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
@@ -38,6 +41,9 @@ hex = { workspace = true }
 # roles it resolves through IAM's own wire, so the records read are the ones `CreateRole`
 # wrote.
 service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
+# The encryption-key suite mounts KMS beside this service on one engine and creates the
+# keys it resolves through KMS's own wire, so the state read is the one `CreateKey` wrote.
+service-com-amazonaws-kms-trentservice = { workspace = true }
 
 [lints]
 workspace = true

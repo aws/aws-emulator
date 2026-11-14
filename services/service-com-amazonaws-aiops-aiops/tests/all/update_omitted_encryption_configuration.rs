@@ -22,8 +22,9 @@
 //! of the stored configuration nor the shape of the patch:
 //!
 //! * what the group was created with: the member omitted, the Amazon Web Services key
-//!   named, a customer managed key with its key id, a customer managed key named with
-//!   no key id, and a bare `kmsKeyId`;
+//!   named, a customer managed key with its key id, and a bare `kmsKeyId` (a customer
+//!   managed key named with NO key id is not among them: it names no key, so no group can
+//!   be created with it — `tests/all/encryption_configuration_names_a_usable_key.rs`);
 //! * what the omitting update carries instead: no member at all, a boolean, a string, a
 //!   list, a map and every other member the operation accepts at once
 //!   (`smithy_query(query="operation",operation="UpdateInvestigationGroup")`).
@@ -217,7 +218,12 @@ fn chat_channel() -> Value {
 }
 
 /// The configurations a group can be created with: the member omitted (`None`) and each
-/// form the structure admits, since neither of its members is `@required`.
+/// form the structure admits and the service can honour, since neither of its members is
+/// `@required`.
+///
+/// The customer managed key type with NO key id is absent for a reason: it names no key,
+/// so no group can be created with it at all — the suite for that refusal is
+/// `tests/all/encryption_configuration_names_a_usable_key.rs`.
 fn created_configurations(region: &str) -> Vec<(&'static str, Option<Value>)> {
     let key = key_arn(region);
     vec![
@@ -229,10 +235,6 @@ fn created_configurations(region: &str) -> Vec<(&'static str, Option<Value>)> {
         (
             "created with a customer managed key and its key id",
             Some(json!({ "type": CUSTOMER_MANAGED_KEY_TYPE, "kmsKeyId": key })),
-        ),
-        (
-            "created with a customer managed key and no key id",
-            Some(json!({ "type": CUSTOMER_MANAGED_KEY_TYPE })),
         ),
         (
             "created with a bare kmsKeyId",

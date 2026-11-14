@@ -21,6 +21,13 @@
 //! service could not assume is refused with the modelled `ValidationException`
 //! ([`crate::state::role_arn_rejection`]).
 //!
+//! Its investigation data is encrypted with the key `encryptionConfiguration` names, so
+//! the structure's two members have to AGREE
+//! ([`crate::state::encryption_configuration_rejection`]) and a customer managed key the
+//! request names is resolved against this emulator's own KMS before anything is stored
+//! ([`crate::state::encryption_key_rejection`]); a configuration failing either is
+//! refused with the modelled `ValidationException` and no group is minted.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -276,6 +283,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // replacement role too. Awaited before the store is locked.
         let region = crate::state::request_region(ctx.parts());
         if let Some(why) = crate::state::role_arn_rejection(ctx, &region, &input.role_arn).await {
+            return Err(CreateInvestigationGroupErrorModeled::ValidationException(
+                ValidationException { message: Some(why) },
+            )
+            .into());
+        }
+
+        // The KMS key the configuration names is RESOLVED for the same reason the role
+        // is: the group's investigation data is encrypted WITH that key, so a key KMS
+        // reports it cannot encrypt with backs no investigation group and the create is
+        // refused rather than minting a group whose configuration reports a key nothing
+        // stands behind. The whole rule — and which answers ground a refusal — lives in
+        // `crate::state::encryption_key_rejection`, which the update path applies to a
+        // replacement configuration too. Awaited before the store is locked.
+        if let Some(why) = crate::state::encryption_key_rejection(
+            ctx,
+            &region,
+            input.encryption_configuration.as_ref(),
+        )
+        .await
+        {
             return Err(CreateInvestigationGroupErrorModeled::ValidationException(
                 ValidationException { message: Some(why) },
             )

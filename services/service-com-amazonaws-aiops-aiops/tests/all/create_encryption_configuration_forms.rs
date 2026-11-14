@@ -10,6 +10,13 @@
 //! key at all gets the documented Amazon Web Services owned key. The stored member
 //! therefore always names how the group's data is encrypted.
 //!
+//! A form whose two members DISAGREE names no such key, and is refused with the modelled
+//! `ValidationException` instead of being stored: the customer managed key type naming no
+//! `kmsKeyId`, and the Amazon Web Services owned key type naming one. The rule behind
+//! those two rows, over both writers of the member and over what KMS reports about the
+//! key, is `tests/all/encryption_configuration_names_a_usable_key.rs`; here they are the
+//! two forms of this table that are not stored.
+//!
 //! Neither member of the structure is `@required`
 //! (`smithy_query(query="shape",shape="EncryptionConfiguration")`), so the member
 //! absent, a structure carrying nothing and a structure carrying only a `kmsKeyId` are
@@ -30,7 +37,9 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 use service_com_amazonaws_aiops_aiops::ops::types::ENCRYPTION_CONFIGURATION_TYPE_VALUES;
-use service_com_amazonaws_aiops_aiops::state::AWS_OWNED_KEY_TYPE;
+use service_com_amazonaws_aiops_aiops::state::{
+    AWS_OWNED_KEY_TYPE, KMS_KEY_ID_NOT_ACCEPTED, KMS_KEY_ID_REQUIRED,
+};
 use smithy_server_runtime::MultiServiceRouter;
 
 /// The canonical emulator account (`engine::EMULATOR_ACCOUNT_ID`) every ARN carries.
@@ -197,6 +206,23 @@ fn supplied(form: Form, key: &str) -> Option<Value> {
     }
 }
 
+/// Why a form is refused rather than stored, or `None` when the form is one the service
+/// can honour: the two members have to AGREE, so the customer managed key type requires a
+/// key id and the Amazon Web Services owned key type admits none.
+fn refusal(form: Form) -> Option<String> {
+    match form {
+        Form::Present {
+            key_type: Some(CUSTOMER_MANAGED_KEY_TYPE),
+            kms_key_id: false,
+        } => Some(KMS_KEY_ID_REQUIRED.to_string()),
+        Form::Present {
+            key_type: Some(AWS_OWNED_KEY_TYPE),
+            kms_key_id: true,
+        } => Some(KMS_KEY_ID_NOT_ACCEPTED.to_string()),
+        _ => None,
+    }
+}
+
 /// What the rule says the group stores for `form`, and so what every later read of it
 /// reports: the configuration as given when it names a key type, the customer managed
 /// key type with the supplied id when it names an id and no type, and the documented
@@ -239,6 +265,7 @@ async fn stored_configuration(
 
 /// Whatever form a create carries, the group it mints reports a configuration that names
 /// how its data is encrypted — and a read of it does not change what a later read sees.
+/// A form whose members disagree mints no group at all.
 #[tokio::test]
 async fn a_create_stores_a_configuration_that_names_the_key_type_for_every_form() {
     let router = emulator();
@@ -254,6 +281,32 @@ async fn a_create_stores_a_configuration_that_names_the_key_type_for_every_form(
         }
         let (status, created) =
             call(&router, &region, "POST", "/investigationGroups", Some(&body)).await;
+
+        if let Some(sentence) = refusal(form) {
+            assert_eq!(
+                (
+                    status,
+                    created.get("message").and_then(Value::as_str).unwrap_or("")
+                ),
+                (400, sentence.as_str()),
+                "case {case:?}: a create carrying {:?} must be refused with {sentence:?}, got \
+                 {status} / {created:?}",
+                supplied(form, &key)
+            );
+            // Nothing was minted, so this Region still holds no group.
+            let (status, listed) = call(&router, &region, "GET", "/investigationGroups", None).await;
+            let groups = listed
+                .get("investigationGroups")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            assert_eq!(
+                (status, groups),
+                (200, 0),
+                "case {case:?}: a refused create must store no group, got {status} / {listed:?}"
+            );
+            continue;
+        }
+
         assert_eq!(
             status, 201,
             "case {case:?}: expected 201 from CreateInvestigationGroup, got {status} / {created:?}"

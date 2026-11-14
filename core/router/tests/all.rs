@@ -2073,6 +2073,15 @@ mod cognito_rules_role_mapping;
 // crate's own test target can ask it.
 #[path = "all/iam_secretsmanager_denial_envelope_by_protocol.rs"]
 mod iam_secretsmanager_denial_envelope_by_protocol;
+// (`apigateway_cognito_authorizer_app_client_audience` is declared at line 30, in the sorted
+// block above: a module may be declared only once, and two branches landing at once declared
+// it twice.)
+// (`zz_probe` is declared in the head region above: a module may be declared only once, and
+// two branches landing at once appended it twice.)
+// (`cloudformation_metric_stream_estate_is_drainable` is declared in the head region above:
+// a module may be declared only once, and two branches landing at once appended it twice.)
+// (`apigateway_cognito_authorizer_app_client_audience` is declared in the head region above:
+// (`zz_probe` is declared further up this tail already: a module may be declared only once.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared once, further up this
 // file: a module may be declared only once.)
 // (That suite is declared ONCE, in the sorted span at the head of this file: a module may be

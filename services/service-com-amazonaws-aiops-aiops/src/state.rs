@@ -50,6 +50,12 @@ use crate::ops::types::{
     ServiceQuotaExceededException,
 };
 
+/// Asking this emulator's own KMS about the key a write's `encryptionConfiguration`
+/// names — the one rule of this module that cannot be decided from the request alone.
+mod encryption_key;
+
+pub use encryption_key::{encryption_key_rejection, KMS_KEY_NOT_USABLE};
+
 /// Characters an investigation-group id is built from.
 ///
 /// Taken from the modelled `InvestigationGroupArn` pattern, whose last segment is
@@ -1030,30 +1036,91 @@ pub fn map_key_rejection(
 /// Every operation that accepts the structure applies this one rule, each rendering
 /// the refusal as its own modelled `ValidationException`.
 ///
-/// The refusal is the service's own `ValidationException` MESSAGE, worded through
-/// [`validation_message`]: the member path and the value set it had to satisfy, with
-/// the rejected value withheld, exactly as a boundary refusal for the same class of
+/// The value-set refusal is the service's own `ValidationException` MESSAGE, worded
+/// through [`validation_message`]: the member path and the value set it had to satisfy,
+/// with the rejected value withheld, exactly as a boundary refusal for the same class of
 /// violation reads.
 ///
 /// `type` is NOT `@required` on the structure, so a configuration that omits it is a
-/// request the model admits and this rule has nothing to say about — hence the early
-/// `?` on the member rather than a refusal.
+/// request the model admits and the VALUE SET has nothing to say about — hence naming
+/// no type is not refused here.
+///
+/// The structure's two members have to AGREE, which is the second half of this rule and
+/// no modelled constraint states it: the structure is "Use this structure to specify a
+/// customer managed KMS key to use to encrypt investigation data" and `kmsKeyId` is "if
+/// the investigation group uses a customer managed key for encryption, this field
+/// displays the ID of that key" (`smithy_query(query="shape",shape="EncryptionConfiguration")`),
+/// so the customer managed key type IS the request to encrypt with the key the member
+/// names and the Amazon Web Services owned key type is the request to use no customer
+/// managed key at all. A configuration selecting a customer managed key while naming no
+/// key names nothing to encrypt with, and one selecting the Amazon Web Services owned
+/// key while naming a key asks for two different keys at once; neither is a
+/// configuration the service can honour, so both are refused
+/// ([`KMS_KEY_ID_REQUIRED`], [`KMS_KEY_ID_NOT_ACCEPTED`]) and nothing is stored.
+///
+/// A configuration naming a key and NO type asks for that key
+/// ([`stored_encryption_configuration`]), so it agrees with itself and is accepted.
+///
+/// Whether the key a coherent configuration names is a key that EXISTS is a question
+/// only KMS can answer, so it is asked separately and over the wire:
+/// [`encryption_key_rejection`].
 pub fn encryption_configuration_rejection(
     configuration: Option<&EncryptionConfiguration>,
 ) -> Option<String> {
-    let supplied = configuration?.r#type.as_deref()?;
-    if crate::ops::types::ENCRYPTION_CONFIGURATION_TYPE_VALUES.contains(&supplied) {
-        return None;
+    let configuration = configuration?;
+    let names_a_key = configuration.kms_key_id.is_some();
+    // A configuration naming NO type is one the model admits: `type` is not `@required`,
+    // and a structure naming only a key asks for that key.
+    let supplied = configuration.r#type.as_deref()?;
+    if !crate::ops::types::ENCRYPTION_CONFIGURATION_TYPE_VALUES.contains(&supplied) {
+        let allowed = crate::ops::types::ENCRYPTION_CONFIGURATION_TYPE_VALUES
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect();
+        return Some(validation_message(
+            ENCRYPTION_CONFIGURATION_TYPE_MEMBER,
+            &requirement_text(ViolationKind::EnumValue(allowed)),
+        ));
     }
-    let allowed = crate::ops::types::ENCRYPTION_CONFIGURATION_TYPE_VALUES
-        .iter()
-        .map(|value| (*value).to_string())
-        .collect();
-    Some(validation_message(
-        "encryptionConfiguration.type",
-        &requirement_text(ViolationKind::EnumValue(allowed)),
-    ))
+    if supplied == CUSTOMER_MANAGED_KMS_KEY_TYPE && !names_a_key {
+        return Some(KMS_KEY_ID_REQUIRED.to_string());
+    }
+    if supplied == AWS_OWNED_KEY_TYPE && names_a_key {
+        return Some(KMS_KEY_ID_NOT_ACCEPTED.to_string());
+    }
+    None
 }
+
+/// The `encryptionConfiguration.type` member, as a refusal about it spells the path.
+const ENCRYPTION_CONFIGURATION_TYPE_MEMBER: &str = "encryptionConfiguration.type";
+
+/// The `encryptionConfiguration.kmsKeyId` member, spelled the same way.
+const KMS_KEY_ID_MEMBER: &str = "encryptionConfiguration.kmsKeyId";
+
+/// The sentence a write selecting a customer managed key while naming no key is refused
+/// with: the service's own vocabulary for a member another member's value makes
+/// mandatory, naming the two members and the value that ties them and nothing the
+/// request sent.
+///
+/// It is NOT worded through [`validation_message`]: that envelope states which member
+/// violated which modelled CONSTRAINT, and no constraint is violated here — the model
+/// marks neither member `@required` — what the request got wrong is the agreement
+/// between them ([`encryption_configuration_rejection`]).
+pub static KMS_KEY_ID_REQUIRED: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "{KMS_KEY_ID_MEMBER} must be specified when {ENCRYPTION_CONFIGURATION_TYPE_MEMBER} is \
+         {CUSTOMER_MANAGED_KMS_KEY_TYPE}."
+    )
+});
+
+/// The other direction of the same rule: the sentence a write selecting the Amazon Web
+/// Services owned key while naming a customer managed key is refused with.
+pub static KMS_KEY_ID_NOT_ACCEPTED: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "{KMS_KEY_ID_MEMBER} cannot be specified when {ENCRYPTION_CONFIGURATION_TYPE_MEMBER} is \
+         {AWS_OWNED_KEY_TYPE}."
+    )
+});
 
 /// Why the caller-sized collections on a create or update request are unacceptable,
 /// or `None` when every one of them is within the store's bounds.
@@ -1233,6 +1300,11 @@ pub fn default_encryption_configuration() -> EncryptionConfiguration {
 /// Single-homed here because every writer of the member — the create and the update —
 /// stores what this returns, so the two cannot disagree about what a configuration
 /// means.
+///
+/// Every writer applies [`encryption_configuration_rejection`] first, so a configuration
+/// reaching this one AGREES with itself: a structure naming the customer managed key type
+/// carries the key id, and one naming the Amazon Web Services owned key type carries
+/// none.
 pub fn stored_encryption_configuration(
     supplied: Option<EncryptionConfiguration>,
 ) -> EncryptionConfiguration {
@@ -1371,6 +1443,11 @@ const SOURCE_ROLE_ARN_MEMBER: &str = "sourceRoleArn";
 /// [`map_key_rejection`] states them, and every operation applies that rule before this
 /// one, because a modelled constraint is what the request boundary would have refused
 /// the request with first.
+///
+/// The rules that resolve a value against another emulated service are not part of it
+/// either — [`role_arn_rejection`] and [`encryption_key_rejection`] are awaited, and
+/// every operation applies them AFTER this chain, so a request the chain can refuse from
+/// its own contents is refused without a hop.
 pub fn write_configuration_rejection(
     encryption_configuration: Option<&EncryptionConfiguration>,
     cross_account_configurations: Option<&[CrossAccountConfiguration]>,

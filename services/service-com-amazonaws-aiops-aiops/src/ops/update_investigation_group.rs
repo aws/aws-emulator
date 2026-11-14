@@ -12,6 +12,14 @@
 //! could not assume is refused with the modelled `ValidationException` and the stored
 //! group keeps the role it had ([`crate::state::role_arn_rejection`]).
 //!
+//! A request that REPLACES the group's `encryptionConfiguration` is held to the rules of
+//! the create too: the structure's two members have to AGREE
+//! ([`crate::state::encryption_configuration_rejection`]), and a customer managed key the
+//! request names has to be one this emulator's KMS reports it could encrypt with
+//! ([`crate::state::encryption_key_rejection`]) — a configuration failing either is
+//! refused with the modelled `ValidationException` and the stored configuration is left
+//! exactly as it was.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -252,6 +260,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
                 .into());
             }
+        }
+
+        // A group's investigation data is encrypted WITH the key its
+        // `encryptionConfiguration` names, so a request that REPLACES that configuration
+        // is held to the same resolution the create is: a key KMS reports it cannot
+        // encrypt with encrypts nothing, so it is refused with the modelled
+        // `ValidationException` and the stored configuration is left as it was
+        // (`crate::state::encryption_key_rejection`). A request naming no key resolves
+        // nothing — the documented Amazon Web Services owned key is KMS's own.
+        if let Some(why) = crate::state::encryption_key_rejection(
+            ctx,
+            &region,
+            input.encryption_configuration.as_ref(),
+        )
+        .await
+        {
+            return Err(UpdateInvestigationGroupErrorModeled::ValidationException(
+                ValidationException { message: Some(why) },
+            )
+            .into());
         }
 
         let mut store = state.lock();
