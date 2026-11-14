@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op UpdateOauth2CredentialProvider
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `UpdateOauth2CredentialProvider`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`UpdateOauth2CredentialProvider::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -196,18 +187,120 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `UpdateOauth2CredentialProvider` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(UpdateOauth2CredentialProviderErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("UpdateOauth2CredentialProvider"))
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            UpdateOauth2CredentialProviderErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: Some("the credential provider store is unavailable".to_string()),
+                },
+            )
+        })?;
+        let region = crate::state::request_region(ctx.parts());
+        let now = ::std::time::SystemTime::now();
+        let vault = crate::state::DEFAULT_TOKEN_VAULT_ID;
+
+        // The configuration an update carries is decided exactly as a create's
+        // is: `credentialProviderVendor` SELECTS which member of the union
+        // carries the credentials, and that member's own `discoveryUrl` carries
+        // a pattern the model states inside a union, which the framework's
+        // constraint walk does not reach. Decided before anything is written, so
+        // a refused update leaves the provider as it was.
+        let requested = crate::state::RequestedOauth2Configuration::from_input(
+            &input.credential_provider_vendor,
+            &input.oauth2_provider_config_input,
+        )
+        .map_err(UpdateOauth2CredentialProviderErrorModeled::ValidationException)?;
+
+        // This operation "Updates an existing OAuth2 credential provider", and
+        // the store is keyed by the `name` every credential-provider route
+        // addresses a provider by, so a name naming no stored provider is the
+        // modelled 404 rather than a provider minted by an update. The guard is
+        // dropped before the await below.
+        {
+            let store = state.lock();
+            if !store.oauth2_credential_providers.contains_key(&input.name) {
+                return Err(provider_not_found(&input.name).into());
+            }
+        }
+
+        // The secret the updated provider reports is a secret Secrets Manager
+        // really holds: the one this update puts the caller's new client secret
+        // into for a managed provider, or the one the request references for an
+        // external one. The ARN is `@required` on this operation's own answer,
+        // so the provider is left untouched — and no success reported — when
+        // there is no secret to name.
+        let client_secret = requested
+            .resolve_secret(ctx, &region, vault, &input.name)
+            .await
+            .map_err(secret_problem)?;
+
+        let mut store = state.lock();
+        // The provider was there when this request started and the secret
+        // resolution above awaited: one deleted in the meantime is gone, so the
+        // update is refused rather than re-creating it.
+        let record = store
+            .oauth2_credential_providers
+            .get_mut(&input.name)
+            .ok_or_else(|| provider_not_found(&input.name))?;
+
+        record.apply_update(
+            input.credential_provider_vendor,
+            requested.config_output,
+            client_secret,
+            now,
+        );
+
+        Ok(record.update_output())
+    }
+}
+
+/// The refusal of an update whose `name` resolves to no provider of this
+/// account, worded as every other credential-provider route words it: the
+/// provider is addressed by name, so the refusal echoes the name the request
+/// addressed it by.
+fn provider_not_found(name: &str) -> UpdateOauth2CredentialProviderErrorModeled {
+    UpdateOauth2CredentialProviderErrorModeled::ResourceNotFoundException(
+        crate::state::oauth2_credential_provider_not_found(name),
+    )
+}
+
+/// How an update answers when the secret the provider's client secret lives in
+/// could not be reported, on the same rule the create beside it follows: a
+/// reference naming no secret of this account is the modelled 404 for "a
+/// resource referenced by the operation does not exist"; a secret whose own KMS
+/// key will not decrypt it is the modelled `DecryptionFailure`, the one failure
+/// the caller recovers from by fixing the key rather than the request; anything
+/// else is this emulator failing to reach Secrets Manager, which is a server
+/// failure rather than a statement about the request.
+fn secret_problem(
+    problem: crate::state::ApiKeySecretProblem,
+) -> UpdateOauth2CredentialProviderError {
+    match problem {
+        crate::state::ApiKeySecretProblem::Absent => {
+            UpdateOauth2CredentialProviderErrorModeled::ResourceNotFoundException(
+                crate::state::resource_not_found(crate::state::RESOURCE_SECRET),
+            )
+            .into()
+        }
+        crate::state::ApiKeySecretProblem::Undecryptable => {
+            UpdateOauth2CredentialProviderErrorModeled::DecryptionFailure(DecryptionFailure {
+                message: crate::state::SECRET_UNDECRYPTABLE_MESSAGE.to_string(),
+            })
+            .into()
+        }
+        crate::state::ApiKeySecretProblem::Unavailable(detail) => {
+            ::tracing::warn!(
+                %detail,
+                "the OAuth2 credential provider's client secret could not be stored in or \
+                 resolved against Secrets Manager, so the provider was left unchanged",
+            );
+            UpdateOauth2CredentialProviderErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: Some(
+                        "the client secret could not be stored in Secrets Manager".to_string(),
+                    ),
+                },
+            )
+            .into()
+        }
     }
 }

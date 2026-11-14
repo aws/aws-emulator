@@ -37,7 +37,7 @@ use crate::ops::types::{
     MicrosoftOauth2ProviderConfigOutput, Oauth2AuthorizationServerMetadata,
     Oauth2CredentialProviderItem, Oauth2Discovery, Oauth2ProviderConfigInput,
     Oauth2ProviderConfigOutput, SalesforceOauth2ProviderConfigOutput, Secret, SecretReference,
-    SlackOauth2ProviderConfigOutput,
+    SlackOauth2ProviderConfigOutput, UpdateOauth2CredentialProviderOutput,
 };
 
 /// The ARN path segment an OAuth2 credential provider of a token vault is
@@ -758,6 +758,49 @@ impl Oauth2CredentialProviderRecord {
             // Reported only for a status that HAS a reason; a provider this
             // emulator creates is READY, which has none.
             failure_reason: None,
+        }
+    }
+
+    /// Replace this provider's configuration with the one an update supplied.
+    ///
+    /// An update carries the whole configuration — the vendor, the configuration
+    /// member that vendor selects and the client secret it authenticates with are
+    /// all `@required` on the request — so the provider afterwards is configured
+    /// exactly as the update asked, with nothing of the previous configuration
+    /// left mixed in. What the update does NOT touch is what identifies the
+    /// provider rather than configures it: the name it is addressed by, the ARN
+    /// minted from that name, the tags it carries and the instant it was created.
+    pub fn apply_update(
+        &mut self,
+        vendor: String,
+        config_output: Oauth2ProviderConfigOutput,
+        client_secret: StoredOauth2Secret,
+        at: SystemTime,
+    ) {
+        self.credential_provider_vendor = vendor;
+        self.config_output = config_output;
+        self.client_secret = client_secret;
+        self.updated_at = at;
+    }
+
+    /// This provider as `UpdateOauth2CredentialProvider`'s response envelope —
+    /// the members the read reports minus the failure reason the update's own
+    /// output does not declare, off the one record the update has just written,
+    /// so the update and a later read cannot disagree.
+    pub fn update_output(&self) -> UpdateOauth2CredentialProviderOutput {
+        let read = self.get_output();
+        UpdateOauth2CredentialProviderOutput {
+            client_secret_arn: read.client_secret_arn,
+            client_secret_json_key: read.client_secret_json_key,
+            client_secret_source: read.client_secret_source,
+            name: read.name,
+            credential_provider_vendor: read.credential_provider_vendor,
+            credential_provider_arn: read.credential_provider_arn,
+            callback_url: read.callback_url,
+            oauth2_provider_config_output: read.oauth2_provider_config_output,
+            created_time: read.created_time,
+            last_updated_time: read.last_updated_time,
+            status: read.status,
         }
     }
 
