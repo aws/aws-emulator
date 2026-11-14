@@ -80,36 +80,39 @@ pub(crate) async fn get_policy(router: &MultiServiceRouter, id: &str) -> Answer 
 // ---------------------------------------------------------------------------
 
 /// `ResponseHeadersPolicyCorsConfig`, as a client submits it.
+///
+/// Its fields are `pub(crate)` so a sibling suite that drives a CORS configuration through
+/// the EDGE states one with this builder rather than growing a copy of it.
 #[derive(Debug, Clone)]
 pub(crate) struct Cors {
-    origins: Vec<String>,
-    headers: Vec<String>,
+    pub(crate) origins: Vec<String>,
+    pub(crate) headers: Vec<String>,
     /// Values of `ResponseHeadersPolicyAccessControlAllowMethodsValues`.
-    methods: Vec<String>,
-    credentials: bool,
+    pub(crate) methods: Vec<String>,
+    pub(crate) credentials: bool,
     /// `AccessControlExposeHeaders`, or `None` to leave the optional wrapper out.
-    expose: Option<Vec<String>>,
+    pub(crate) expose: Option<Vec<String>>,
     /// `AccessControlMaxAgeSec`, or `None` to leave the optional member out.
-    max_age: Option<i32>,
-    origin_override: bool,
+    pub(crate) max_age: Option<i32>,
+    pub(crate) origin_override: bool,
 }
 
 /// `ResponseHeadersPolicyXSSProtection`.
 #[derive(Debug, Clone)]
 pub(crate) struct Xss {
-    r#override: bool,
-    protection: bool,
-    mode_block: Option<bool>,
-    report_uri: Option<String>,
+    pub(crate) r#override: bool,
+    pub(crate) protection: bool,
+    pub(crate) mode_block: Option<bool>,
+    pub(crate) report_uri: Option<String>,
 }
 
 /// `ResponseHeadersPolicyStrictTransportSecurity`.
 #[derive(Debug, Clone)]
 pub(crate) struct Hsts {
-    r#override: bool,
-    include_subdomains: Option<bool>,
-    preload: Option<bool>,
-    max_age: i32,
+    pub(crate) r#override: bool,
+    pub(crate) include_subdomains: Option<bool>,
+    pub(crate) preload: Option<bool>,
+    pub(crate) max_age: i32,
 }
 
 /// `ResponseHeadersPolicySecurityHeadersConfig`: every sub-structure optional, so a row

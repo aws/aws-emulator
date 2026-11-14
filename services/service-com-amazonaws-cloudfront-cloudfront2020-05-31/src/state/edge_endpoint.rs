@@ -44,10 +44,29 @@
 //! A listener's life is its resource's: the handle is held on the store under that
 //! resource's id, and dropping it (the delete) closes the port and severs every connection
 //! in flight on it.
+//!
+//! # Which viewers an address admits
+//!
+//! These addresses are the emulator's own loopback ports, so a page the developer's browser
+//! visits can send requests to them — and CORS response headers would only hide the answer
+//! from that page, not stop the request arriving. Every request is therefore put through the
+//! core's own browser check ([`refused_before_the_edge`]) before the edge sees it, and a
+//! request a browser sent from another site is refused `403` unless the distribution this
+//! address serves NAMES its origin: the origins the CORS configurations of the response
+//! headers policies its cache behaviours attach carry
+//! ([`EdgeTarget::granted_origins`]), which is a statement made through the CONTROL plane,
+//! where no browser reaches. A distribution that names none admits none, which is the core's
+//! own default.
+//!
+//! That grant is written to make a response headers policy's headers right, so the fact that
+//! it also decides which pages this port answers is ANNOUNCED where the operator of this
+//! emulator sees it: a warning naming the distribution, the address and the origin, once per
+//! address and origin ([`EdgeTarget::announce`]).
 
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use ::bytes::Bytes;
@@ -91,7 +110,30 @@ const EDGE_PATH_PREFIX: &str = "/_aws/cloudfront";
 /// `Host` is the listener's own address, which the forwarded request replaces with this
 /// service's endpoint (the data plane resolves the distribution from the reserved path
 /// instead), and the two framing headers describe a body this leg re-frames itself.
-const HEADERS_NOT_FORWARDED: [&str; 3] = ["host", "content-length", "transfer-encoding"];
+///
+/// The BROWSER-SET headers are not copied either, and for a different reason: they are the
+/// browser's own classification of the request it sent to THIS address, which is where that
+/// classification is read and the request admitted or refused
+/// ([`refused_before_the_edge`]). The leg below is this emulator calling itself, not a
+/// browser calling anything, and a leg carrying them is one the emulator's own front door
+/// refuses as a cross-site browser request — for a viewer request this address has already
+/// admitted. The one value the data plane still needs, the viewer's `Origin`, travels under a
+/// reserved name of this emulator's own instead
+/// ([`crate::service::edge::response_headers::VIEWER_ORIGIN`]).
+const HEADERS_NOT_FORWARDED: [&str; 8] = [
+    "host",
+    "content-length",
+    "transfer-encoding",
+    VIEWER_ORIGIN_HEADER,
+    "origin",
+    "sec-fetch-site",
+    "sec-fetch-mode",
+    "sec-fetch-dest",
+];
+
+/// The reserved name the viewer's `Origin` is forwarded under, stated once by the module that
+/// reads it.
+const VIEWER_ORIGIN_HEADER: &str = crate::service::edge::response_headers::VIEWER_ORIGIN;
 
 /// WHICH distribution a viewer request this address accepted is served from — the one
 /// thing the two addresses of this service differ in.
@@ -115,7 +157,90 @@ trait EdgeTarget: Send + Sync + 'static {
     /// domain, which is a name this service holds a record for rather than an address of
     /// this machine.
     fn routes_host(&self, host: &str) -> bool;
+
+    /// This service's own records, which is where everything this address decides is read
+    /// from.
+    fn records(&self) -> &::engine::ServiceState<super::ComAmazonawsCloudfrontCloudfront20200531State>;
+
+    /// The `host:port` this address answers on, once the create that opened it has bound the
+    /// listener — which is what the announcement below names the address by.
+    fn address(&self) -> Option<String>;
+
+    /// The cross-origin grants this address has ANNOUNCED already, so each is announced once
+    /// rather than per request ([`Self::announce`]).
+    fn announced(&self) -> &Mutex<BTreeSet<String>>;
+
+    /// The browser origins this address serves a request addressed to `host` from: the
+    /// origins the distribution it resolves to GRANTS in the CORS configuration of the
+    /// response headers policies its cache behaviours attach
+    /// ([`super::ComAmazonawsCloudfrontCloudfront20200531State::cors_granted_origins`]).
+    ///
+    /// A distribution that grants none — one with no CORS configuration at all — admits
+    /// none, which is the default this address carries otherwise
+    /// ([`refused_before_the_edge`]).
+    ///
+    /// At most [`MAX_CORS_ORIGINS_READ_PER_REQUEST`] of them are read, so what one viewer
+    /// request costs here is bounded whatever a configuration holds.
+    fn granted_origins(&self, host: Option<&str>) -> Vec<String> {
+        let Some(distribution) = self.distribution_of(host) else {
+            return Vec::new();
+        };
+        let granted = self
+            .records()
+            .lock()
+            .cors_granted_origins(&distribution, MAX_CORS_ORIGINS_READ_PER_REQUEST);
+        self.announce(&distribution, &granted);
+        granted
+    }
+
+    /// Say, where the operator of this emulator sees it, that this address now serves a
+    /// browser request from an origin that is not its own.
+    ///
+    /// A distribution's CORS configuration is written to make a policy's headers right; that
+    /// it also decides which pages this loopback address answers is a consequence worth
+    /// stating, so the grant is announced ONCE per address and origin, naming the
+    /// distribution, the address and the origin. The record is bounded by
+    /// [`MAX_CORS_ORIGINS_READ_PER_REQUEST`], the same bound the read above carries, and the
+    /// announcement stops when it is full; nothing about which requests are admitted depends
+    /// on it.
+    fn announce(&self, distribution: &str, granted: &[String]) {
+        if granted.is_empty() {
+            return;
+        }
+        let mut announced = self
+            .announced()
+            .lock()
+            .unwrap_or_else(::std::sync::PoisonError::into_inner);
+        for origin in granted {
+            if announced.len() >= MAX_CORS_ORIGINS_READ_PER_REQUEST
+                || !announced.insert(origin.clone())
+            {
+                continue;
+            }
+            ::tracing::warn!(
+                distribution = %distribution,
+                address = %self.address().unwrap_or_default(),
+                origin = %origin,
+                "this distribution's response headers policy names this origin, so this \
+                 address serves a browser request a page of that origin sends; every other \
+                 site is refused"
+            );
+        }
+    }
 }
+
+/// The most origins the admission above reads out of one distribution's configuration for one
+/// viewer request.
+///
+/// A viewer request is decided before a path has selected a cache behaviour, so the grants of
+/// EVERY behaviour's policy are read: a distribution carries at most
+/// [`super::MAX_CACHE_BEHAVIORS`] ordered behaviours plus the default one, and this allows ten
+/// granted origins for each of them — the share CloudFront's published quota gives a policy's
+/// other per-policy lists ([`super::MAX_HEADERS_IN_POLICY`]). So what one request costs here is
+/// a constant, whatever a caller's configuration holds, and an origin past the bound is simply
+/// not admitted: this fails CLOSED.
+const MAX_CORS_ORIGINS_READ_PER_REQUEST: usize =
+    super::MAX_HEADERS_IN_POLICY * (super::MAX_CACHE_BEHAVIORS + 1);
 
 /// The target of a DISTRIBUTION's own edge address: the one distribution the create that
 /// opened the listener minted, whatever host the viewer addressed it by.
@@ -123,6 +248,13 @@ struct ServedDistribution {
     /// Published to the handler once the create that opened the listener has minted the id.
     /// A request that arrives before then is answered as a request for no distribution.
     distribution: Arc<OnceLock<String>>,
+    /// The `host:port` this address answers on, published once the listener is bound.
+    address: Arc<OnceLock<String>>,
+    /// This service's own records, read for what the distribution this address serves
+    /// GRANTS ([`EdgeTarget::granted_origins`]). Read, never written.
+    state: ::engine::ServiceState<super::ComAmazonawsCloudfrontCloudfront20200531State>,
+    /// The grants already announced ([`EdgeTarget::announce`]).
+    announced: Mutex<BTreeSet<String>>,
 }
 
 impl EdgeTarget for ServedDistribution {
@@ -135,6 +267,20 @@ impl EdgeTarget for ServedDistribution {
     fn routes_host(&self, _host: &str) -> bool {
         false
     }
+
+    fn records(
+        &self,
+    ) -> &::engine::ServiceState<super::ComAmazonawsCloudfrontCloudfront20200531State> {
+        &self.state
+    }
+
+    fn address(&self) -> Option<String> {
+        self.address.get().cloned()
+    }
+
+    fn announced(&self) -> &Mutex<BTreeSet<String>> {
+        &self.announced
+    }
 }
 
 /// The target of a CONNECTION GROUP's routing endpoint: the distribution of the tenant
@@ -146,9 +292,13 @@ struct ServedConnectionGroup {
     /// Published to the handler once the create that opened the listener has minted the
     /// group's id, exactly as [`ServedDistribution`]'s is.
     group: Arc<OnceLock<String>>,
+    /// The `host:port` this address answers on, published once the listener is bound.
+    address: Arc<OnceLock<String>>,
     /// This service's own records, the single source of truth for which tenant a domain is
     /// routed to.
     state: ::engine::ServiceState<super::ComAmazonawsCloudfrontCloudfront20200531State>,
+    /// The grants already announced ([`EdgeTarget::announce`]).
+    announced: Mutex<BTreeSet<String>>,
 }
 
 impl EdgeTarget for ServedConnectionGroup {
@@ -182,6 +332,20 @@ impl EdgeTarget for ServedConnectionGroup {
 
     fn routes_host(&self, host: &str) -> bool {
         self.distribution_of(Some(host)).is_some()
+    }
+
+    fn records(
+        &self,
+    ) -> &::engine::ServiceState<super::ComAmazonawsCloudfrontCloudfront20200531State> {
+        &self.state
+    }
+
+    fn address(&self) -> Option<String> {
+        self.address.get().cloned()
+    }
+
+    fn announced(&self) -> &Mutex<BTreeSet<String>> {
+        &self.announced
     }
 }
 
@@ -239,10 +403,14 @@ pub async fn open_edge_endpoint<Eng: Send + Sync + 'static>(
 ) -> Option<EdgeEndpoint> {
     let shared = (engine as &dyn ::std::any::Any).downcast_ref::<::engine::InMemoryEngine>()?;
     let resource: Arc<OnceLock<String>> = Arc::new(OnceLock::new());
+    let address: Arc<OnceLock<String>> = Arc::new(OnceLock::new());
     let target = ServedDistribution {
         distribution: Arc::clone(&resource),
+        address: Arc::clone(&address),
+        state: shared.state(),
+        announced: Mutex::new(BTreeSet::new()),
     };
-    open(shared, callback, resource, Arc::new(target)).await
+    open(shared, callback, resource, address, Arc::new(target)).await
 }
 
 /// Open the listener one CONNECTION GROUP's routing endpoint is served on, and report the
@@ -258,11 +426,14 @@ pub async fn open_connection_group_endpoint<Eng: Send + Sync + 'static>(
 ) -> Option<EdgeEndpoint> {
     let shared = (engine as &dyn ::std::any::Any).downcast_ref::<::engine::InMemoryEngine>()?;
     let resource: Arc<OnceLock<String>> = Arc::new(OnceLock::new());
+    let address: Arc<OnceLock<String>> = Arc::new(OnceLock::new());
     let target = ServedConnectionGroup {
         group: Arc::clone(&resource),
+        address: Arc::clone(&address),
         state: shared.state(),
+        announced: Mutex::new(BTreeSet::new()),
     };
-    open(shared, callback, resource, Arc::new(target)).await
+    open(shared, callback, resource, address, Arc::new(target)).await
 }
 
 /// Open one address of this service, serving `target`: the ONE place a listener of this
@@ -272,6 +443,7 @@ async fn open(
     shared: &::engine::InMemoryEngine,
     callback: EmbeddedEmulator,
     resource: Arc<OnceLock<String>>,
+    address: Arc<OnceLock<String>>,
     target: Arc<dyn EdgeTarget>,
 ) -> Option<EdgeEndpoint> {
     let listeners = shared.listeners();
@@ -290,8 +462,12 @@ async fn open(
     // caller falls back to the name CloudFront's own zone would carry.
     let opened = ::tokio::spawn(async move { listeners.tcp_plaintext(handler).await.ok() }).await;
     let listener = opened.ok().flatten()?;
+    let authority = ::service_common::data_plane_addressing::listener_authority(&listener);
+    // The handler now knows the address it answers on, which is what it names this address by
+    // when it announces a cross-origin grant ([`EdgeTarget::announce`]).
+    let _ = address.set(authority.clone());
     Some(EdgeEndpoint {
-        authority: ::service_common::data_plane_addressing::listener_authority(&listener),
+        authority,
         resource,
         _listener: listener,
     })
@@ -396,25 +572,12 @@ async fn answer(
     encrypted: bool,
 ) -> ::http::Response<Full<Bytes>> {
     let (parts, body) = request.into_parts();
-    let addressed = parts
-        .headers
-        .get(::http::header::HOST)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string)
-        .or_else(|| parts.uri.host().map(str::to_string));
-    if let Some(refused) = refused_before_the_edge(&parts, target.as_ref()) {
-        return refused;
-    }
-    let Some(distribution) = target.distribution_of(addressed.as_deref()) else {
-        // Either the create that opened this listener has not named its resource yet, or
-        // this address routes the host the viewer addressed to no tenant: there is nothing
-        // here to serve, reported as the edge reports a request it can resolve to no
-        // distribution.
-        return generated(BAD_GATEWAY, NO_DISTRIBUTION);
-    };
-    // One permit per request IN FLIGHT, taken BEFORE a byte of the body is read: what the
-    // bodies being read hold at once is then the in-flight cap times the ceiling below,
-    // rather than the connection cap (or the number of distributions) times it.
+    // One permit per request IN FLIGHT, taken BEFORE this request makes this service do
+    // anything at all — before the stored records the admission is decided from are read and
+    // before a byte of the body is: what the requests in flight cost at once is then the
+    // in-flight cap times what one of them may cost, rather than the connection cap (or the
+    // number of distributions) times it. Everything the permit covers is inside the request
+    // deadline below as well, so neither bound leaves work outside it.
     let Ok(permit) = in_flight().try_acquire_owned() else {
         return generated(SERVICE_UNAVAILABLE, SERVER_BUSY);
     };
@@ -422,6 +585,22 @@ async fn answer(
     let served = ::tokio::time::timeout(request_deadline(), async move {
         // Held for the whole read and dispatch, and released with it.
         let _permit: OwnedSemaphorePermit = permit;
+        let addressed = parts
+            .headers
+            .get(::http::header::HOST)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
+            .or_else(|| parts.uri.host().map(str::to_string));
+        if let Some(refused) = refused_before_the_edge(&parts, target.as_ref()) {
+            return refused;
+        }
+        let Some(distribution) = target.distribution_of(addressed.as_deref()) else {
+            // Either the create that opened this listener has not named its resource yet, or
+            // this address routes the host the viewer addressed to no tenant: there is
+            // nothing here to serve, reported as the edge reports a request it can resolve to
+            // no distribution.
+            return generated(BAD_GATEWAY, NO_DISTRIBUTION);
+        };
         let Ok(collected) = limited.collect().await else {
             return generated(PAYLOAD_TOO_LARGE, BODY_TOO_LARGE);
         };
@@ -502,6 +681,16 @@ fn forwarded(
         }
         builder = builder.header(name, value);
     }
+    // The viewer's `Origin`, under the reserved name of this emulator's own: the data plane
+    // decides the response headers policy's CORS group from it, and this leg stays a request
+    // no browser sent.
+    if let Some(origin) = parts
+        .headers
+        .get(::http::header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+    {
+        builder = builder.header(VIEWER_ORIGIN_HEADER, origin);
+    }
     let built = builder.body(SdkBody::from(body)).ok()?;
     RtRequest::try_from(built).ok()
 }
@@ -538,6 +727,25 @@ fn within_the_distribution(path: &str) -> Option<&str> {
 /// admitted names are this service's own records — the same names the emulator's front door
 /// already serves a viewer request on host-style — never a name taken from the request, and
 /// the browser check below still decides what a browser may do with any of them.
+///
+/// The browser check runs on EVERY request this address accepts, as it does on a core HTTP
+/// listener, and the only thing that differs is the allowlist it runs against: the ORIGINS
+/// the distribution this address serves NAMES ([`EdgeTarget::granted_origins`]), through the
+/// CORS configuration of the response headers policies its cache behaviours attach. That is a
+/// statement made through the CONTROL plane, which no browser reaches, so it is an
+/// allowlist the operator of this emulator wrote, carried by the core's own
+/// [`RemoteOrigins::Exact`] — read here from this service's own records and never from the
+/// request. Every other browser request from another site is refused before the edge exactly
+/// as the core refuses it, whatever its method: this address is reachable from a page the
+/// developer's browser visits, and CORS response headers would only hide the answer from that
+/// page, not stop the request arriving. A distribution that names no origin therefore carries
+/// the core's own default, admitting none, and a grant that admits an origin is announced
+/// where the operator sees it ([`EdgeTarget::announce`]).
+///
+/// The `allow_remote` the check is given is `true` because this address is a VIEWER data
+/// plane and nothing else: it serves one distribution's objects, never this emulator's
+/// control plane or its administrative endpoint, which is what that flag keeps a configured
+/// remote origin away from.
 fn refused_before_the_edge(
     parts: &::http::request::Parts,
     target: &dyn EdgeTarget,
@@ -561,13 +769,13 @@ fn refused_before_the_edge(
     ) {
         return Some(generated(NOT_IMPLEMENTED, NO_WEBSOCKETS));
     }
+    let granted = target.granted_origins(Some(host));
     if let BrowserVerdict::Forbid(reason) = ::emulator_server::classify_browser_request(
         header("origin"),
         header("sec-fetch-site"),
-        // This address is the emulator's own, reached from the machine it runs on: the same
-        // default a core HTTP listener carries, which admits no remote origin.
-        &RemoteOrigins::SameOriginOnly,
-        false,
+        // The origins the distribution this address serves NAMES, and nothing else.
+        &RemoteOrigins::Exact(granted),
+        true,
     ) {
         return Some(generated(FORBIDDEN, reason));
     }

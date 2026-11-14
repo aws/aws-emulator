@@ -49,7 +49,12 @@
 //! 8. only then is the ORIGIN the behaviour's `TargetOriginId` names fetched, in process,
 //!    through the emulator this service is running within — over the scheme that origin's
 //!    own `OriginProtocolPolicy` names ([`origin_uri`]) and as the distribution's own origin
-//!    access control says that origin is to be addressed (see below).
+//!    access control says that origin is to be addressed (see below);
+//! 8. and whatever the answer turns out to be — the origin's, the cache's, or a page
+//!    CloudFront generated itself — the header groups of the behaviour's
+//!    `ResponseHeadersPolicyId` are applied to it: the CORS headers for a viewer whose
+//!    `Origin` the policy grants, the security and custom headers it configures, and the
+//!    headers its `RemoveHeadersConfig` takes off ([`response_headers`]).
 //!
 //! # What the origin fetch is, and what it is not
 //!
@@ -136,6 +141,9 @@ pub mod generated_headers;
 /// The real-time log RECORD one served viewer request produces, and the Kinesis data streams
 /// the cache behaviour's real-time log configuration delivers it to.
 pub mod realtime_logs;
+/// The headers the cache behaviour's RESPONSE HEADERS POLICY puts on the answer, and the ones
+/// it takes off.
+pub mod response_headers;
 /// SIGNED URLs and SIGNED COOKIES: whether a cache behaviour that restricts its content to
 /// trusted signers serves one viewer request.
 pub mod signed_access;
@@ -151,7 +159,7 @@ use super::origin_access::{self, OriginAccess};
 use compression::Encoding;
 use crate::ops::types::{
     AllowedMethods, CacheBehavior, DefaultCacheBehavior, ForwardedValues, Origin,
-    TrustedKeyGroups,
+    ResponseHeadersPolicyConfig, TrustedKeyGroups,
 };
 use crate::state::{
     managed_cache_policy, matches_path_pattern, same_domain, CachedEdgeResponse,
@@ -255,6 +263,13 @@ const NO_ORIGIN_DETAIL: &str = "CloudFront wasn't able to connect to the origin.
 const GEO_RESTRICTED_DETAIL: &str =
     "The Amazon CloudFront distribution is configured to block access from your country.";
 
+/// The detail line CloudFront's generated page carries for a viewer method the matched cache
+/// behaviour does not allow — the refusal `AllowedMethods` makes, which names the method as
+/// the thing refused rather than the request.
+const METHOD_NOT_ALLOWED_DETAIL: &str =
+    "This distribution is not configured to allow the HTTP request method that was used for \
+     this request. The distribution supports only cachable requests.";
+
 /// The headers that belong to ONE hop of an HTTP connection and are never forwarded to an
 /// origin, as RFC 9110 lists them, plus the viewer's own `Authorization` and the headers
 /// CloudFront itself puts on an origin request.
@@ -270,7 +285,7 @@ const GEO_RESTRICTED_DETAIL: &str =
 /// edge's value and never a viewer's — a header a viewer sent under that name describes a
 /// request the edge did not serve. The whole `CloudFront-*` family is dropped for that same
 /// reason, through [`generated_headers::is_generated`].
-const HEADERS_NEVER_FORWARDED: [&str; 11] = [
+const HEADERS_NEVER_FORWARDED: [&str; 12] = [
     "authorization",
     "connection",
     "keep-alive",
@@ -282,6 +297,11 @@ const HEADERS_NEVER_FORWARDED: [&str; 11] = [
     "upgrade",
     "x-amz-security-token",
     X_AMZ_CF_ID,
+    // The reserved name the viewer's `Origin` reaches this data plane under when the request
+    // came in on a distribution's own address ([`response_headers::VIEWER_ORIGIN`]): it is
+    // this emulator's own plumbing between one of its addresses and this service, so it stops
+    // here rather than travelling on to an origin.
+    response_headers::VIEWER_ORIGIN,
 ];
 
 /// The header a viewer asks for a content coding with, and the one an answer states its
@@ -613,6 +633,9 @@ struct Behavior {
     /// policy keys on and forwards: "a `CacheBehavior` must include either a
     /// `CachePolicyId` or `ForwardedValues`" ([`forwarding`] reads it).
     forwarded_values: Option<ForwardedValues>,
+    /// `ResponseHeadersPolicyId` — the policy whose header groups the edge applies to the
+    /// answer it serves this request ([`response_headers`]).
+    response_headers_policy_id: Option<String>,
 }
 
 impl Behavior {
@@ -631,6 +654,7 @@ impl Behavior {
             default_ttl: behavior.default_ttl,
             max_ttl: behavior.max_ttl,
             forwarded_values: behavior.forwarded_values.clone(),
+            response_headers_policy_id: behavior.response_headers_policy_id.clone(),
         }
     }
 
@@ -649,6 +673,7 @@ impl Behavior {
             default_ttl: behavior.default_ttl,
             max_ttl: behavior.max_ttl,
             forwarded_values: behavior.forwarded_values.clone(),
+            response_headers_policy_id: behavior.response_headers_policy_id.clone(),
         }
     }
 
@@ -1006,7 +1031,7 @@ pub async fn serve<Eng: Send + Sync + 'static>(
     if let Some(logged) = logged.as_ref() {
         ::service_com_amazonaws_wafv2_awswaf_20190729::service::logs::deliver(ctx, logged).await;
     }
-    let (response, served_from, origin_latency) = match edge_refusal {
+    let (mut response, served_from, origin_latency) = match edge_refusal {
         Some(refusal) => (
             refused_by_web_acl(refusal, &cf_id),
             edge_metrics::ServedFrom::CloudFront,
@@ -1047,6 +1072,21 @@ pub async fn serve<Eng: Send + Sync + 'static>(
             }
         },
     };
+    // The header groups of the response headers policy the matched behaviour attaches, put on
+    // the answer CloudFront is about to serve — whoever produced it, since the policy is the
+    // distribution's statement about the RESPONSE rather than about the origin
+    // ([`response_headers`]). Applied before the request is counted and logged, so what those
+    // report is the answer the viewer actually gets.
+    if let Some(policy) = served_for
+        .as_ref()
+        .and_then(|served| served.response_headers_policy.as_ref())
+    {
+        response_headers::apply(
+            policy,
+            response_headers::ViewerCors::of_request(req),
+            &mut response,
+        );
+    }
     // What the edge DID with this request is reported as the distribution's own CloudWatch
     // series, whoever produced the answer: the counters and error rates a client watches a
     // distribution with are the viewer requests it served ([`edge_metrics`]). The series the
@@ -1213,6 +1253,11 @@ struct ServedFor {
     /// `RealtimeLogConfigArn` of the behaviour that matched — the configuration this
     /// request's log record goes through, when the behaviour names one.
     realtime_log_config_arn: Option<String>,
+    /// The configuration of the response headers policy the matched behaviour attaches, read
+    /// under the store's lock, or `None` when the behaviour attaches none (or names one this
+    /// account no longer holds). Its header groups are applied to whatever the edge serves
+    /// ([`response_headers`]).
+    response_headers_policy: Option<ResponseHeadersPolicyConfig>,
 }
 
 /// Decide what the edge does with one viewer request, under the store's lock, and name the
@@ -1254,6 +1299,15 @@ fn plan_request(
         country: viewer_country(req),
         path_pattern: behavior.path_pattern.clone(),
         realtime_log_config_arn: behavior.realtime_log_config_arn.clone(),
+        // Resolved HERE, under the lock the whole plan is decided under, so the policy
+        // applied to the answer is the one the behaviour attached when the request was
+        // planned — a read of a policy AWS published included
+        // (`readable_response_headers_policy`).
+        response_headers_policy: behavior
+            .response_headers_policy_id
+            .as_deref()
+            .and_then(|id| store.readable_response_headers_policy(id))
+            .map(|policy| policy.config.clone()),
     };
     let plan = plan_resolved(store, &addressed, &resolved, req, cf_id, now, behavior);
     (Some(served_for), plan)
@@ -1319,7 +1373,7 @@ fn plan_resolved(
         );
         return Plan::Generated {
             status: FORBIDDEN,
-            detail: BAD_REQUEST_DETAIL,
+            detail: METHOD_NOT_ALLOWED_DETAIL,
         };
     }
     // Enforced HERE, by CloudFront, before the edge cache is read and before any origin
@@ -2005,7 +2059,9 @@ async fn fetch_origin<Eng: Send + Sync + 'static>(
         content_encoding,
     };
     if let Some(directive) = fetch.cache {
-        if is_cacheable_status(status) && answer.body.len() <= MAX_CACHED_BODY_BYTES {
+        // The status the edge may hold at all; the size bound the entry has to stay within is
+        // [`cache`]'s own, stated where the bytes are held.
+        if is_cacheable_status(status) {
             cache(
                 engine,
                 &fetch.distribution_id,
@@ -2091,6 +2147,11 @@ fn is_cacheable_status(status: u16) -> bool {
 /// The ORIGIN'S OWN bytes are held, under its own description of them: what the edge serves
 /// from the entry is computed for each viewer request ([`served_origin_answer`]), so an
 /// object cached for one viewer is not held under another viewer's content coding.
+///
+/// The size bound is enforced HERE, where the bytes are held, as well as where the plan asks
+/// for them to be: an answer larger than [`MAX_CACHED_BODY_BYTES`] is served to this viewer
+/// and not held, so what one viewer request can add to this process stays bounded whoever
+/// calls this.
 fn cache<Eng: Send + Sync + 'static>(
     engine: &Eng,
     distribution_id: &str,
@@ -2098,6 +2159,15 @@ fn cache<Eng: Send + Sync + 'static>(
     viewer_path: &str,
     answer: &OriginAnswer,
 ) {
+    if answer.body.len() > MAX_CACHED_BODY_BYTES {
+        ::tracing::debug!(
+            distribution = %distribution_id,
+            bytes = answer.body.len(),
+            "this origin answer is larger than the edge cache holds, so it is served to this \
+             viewer and not held"
+        );
+        return;
+    }
     let Some(state) = crate::state::service_state(engine) else {
         return;
     };
@@ -2583,6 +2653,7 @@ mod tests {
                 default_ttl: None,
                 max_ttl: None,
                 forwarded_values: None,
+                response_headers_policy_id: None,
             };
             let mut req = RtRequest::new(SdkBody::empty());
             req.set_uri("/index.html").expect("a valid URI");
@@ -2870,6 +2941,7 @@ mod tests {
             default_ttl: None,
             max_ttl: None,
             forwarded_values: None,
+            response_headers_policy_id: None,
         }
     }
 

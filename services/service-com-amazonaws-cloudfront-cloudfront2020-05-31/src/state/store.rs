@@ -647,6 +647,51 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
             .find(|distribution| references_response_headers_policy(&distribution.config, id))
     }
 
+    /// The web origins the distribution `id` names GRANTS a browser: the origins the
+    /// response headers policies its cache behaviours attach name in their
+    /// `AccessControlAllowOrigins` — "a list of origins (domain names) that CloudFront can
+    /// use as the value for the `Access-Control-Allow-Origin` HTTP response header".
+    ///
+    /// What the ADDRESS this distribution's edge is served on admits a browser request from
+    /// ([`EdgeEndpoint`]): a page an origin this configuration does not name serves is
+    /// refused by that address before the edge, so the grant is read from this store's own
+    /// records rather than from the request. EVERY behaviour's policy is read, the default
+    /// one and each ordered one, because the address decides before a path has selected a
+    /// behaviour.
+    ///
+    /// At most `limit` origins are reported, and the walk stops there: the caller states how
+    /// much of a configuration one viewer request may cost it, so this read is bounded
+    /// whatever a policy holds, and an origin past the bound is simply not admitted. Each
+    /// policy is read as a read of a policy does
+    /// ([`Self::readable_response_headers_policy`]), so one AWS published counts as much as
+    /// one this account created, and the wildcard entry names no origin
+    /// ([`crate::service::edge::response_headers::named_origins`]).
+    pub fn cors_granted_origins(&self, id: &str, limit: usize) -> Vec<String> {
+        let Some(distribution) = self.distribution(id) else {
+            return Vec::new();
+        };
+        let attached: Vec<String> = super::distribution_queries::behavior_attachments(
+            &distribution.config,
+            |behavior| behavior.response_headers_policy_id.as_deref(),
+            |behavior| behavior.response_headers_policy_id.as_deref(),
+        )
+        .map(str::to_string)
+        .collect();
+        let mut granted: BTreeSet<String> = BTreeSet::new();
+        for policy_id in attached {
+            let Some(policy) = self.readable_response_headers_policy(&policy_id) else {
+                continue;
+            };
+            for origin in crate::service::edge::response_headers::named_origins(&policy.config) {
+                if granted.len() >= limit {
+                    return granted.into_iter().collect();
+                }
+                granted.insert(origin.to_string());
+            }
+        }
+        granted.into_iter().collect()
+    }
+
     /// The origin access control `id` names, or `None` when the store holds none.
     pub fn origin_access_control(&self, id: &str) -> Option<&StoredOriginAccessControl> {
         self.origin_access_controls.get(id)

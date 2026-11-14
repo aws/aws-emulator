@@ -2711,3 +2711,13 @@ mod iam_session_tag_authorization;
 // `zz_probe` is declared ONCE, further up this tail: it had been re-declared here while two
 // branches were landing at once, which compiles neither copy.
 // module may be declared only once, and two landings each appended their own copy here.)
+// (The suites that were declared here as well — the metric-stream estate and the
+// metric-stream filter update, the CloudTrail read-only calls, `zz_probe` and the Redshift
+// health alarms — are each declared ONCE, further down this tail: two landings each appended
+// their own copy, and a module declared twice loads the same file twice, which compiles
+// to touch this directory should delete both it and this declaration. (Declared ONCE, in the
+// head region above: a module may be declared only once.)
+// (The Bedrock knowledge base, the DynamoDB in-place update, the OpenSearch domain endpoint,
+// the HTTPS front door, both Cognito session suites and the IAM/Secrets Manager envelope are
+// each declared ONCE, further down this tail, for that same reason.)
+// are declared ONCE each, further up this tail, for that same reason.)

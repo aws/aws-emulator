@@ -586,6 +586,20 @@ pub(crate) async fn dial(authority: &str, method: &str, path: &str) -> String {
 ///
 /// `pub(crate)` so every suite that dials a published address uses this one client.
 pub(crate) async fn dial_as(authority: &str, method: &str, path: &str, host: &str) -> String {
+    dial_with(authority, method, path, host, &[]).await
+}
+
+/// [`dial_as`] carrying `headers` beside the `Host` — for a rule about a header the viewer
+/// sets, such as the `Origin` a browser states on a cross-origin fetch.
+///
+/// `pub(crate)` so every suite that dials a published address uses this one client.
+pub(crate) async fn dial_with(
+    authority: &str,
+    method: &str,
+    path: &str,
+    host: &str,
+    headers: &[(&str, &str)],
+) -> String {
     let port = authority
         .parse::<std::net::SocketAddr>()
         .unwrap_or_else(|error| panic!("the published address {authority} is no address: {error}"))
@@ -597,8 +611,12 @@ pub(crate) async fn dial_as(authority: &str, method: &str, path: &str, host: &st
     .await
     .unwrap_or_else(|_| panic!("the published address {authority} did not accept a connection"))
     .unwrap_or_else(|error| panic!("the published address {authority} refused a connection: {error}"));
+    let stated = headers
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}\r\n"))
+        .collect::<String>();
     let request =
-        format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+        format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\n{stated}Connection: close\r\n\r\n");
     stream
         .write_all(request.as_bytes())
         .await
