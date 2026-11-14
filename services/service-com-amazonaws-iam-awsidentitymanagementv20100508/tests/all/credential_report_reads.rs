@@ -66,6 +66,14 @@ const PUBLISHED_HEADER: &str = "user,arn,user_creation_time,password_enabled,\
                                access_key_2_last_used_service,cert_1_active,\
                                cert_1_last_rotated,cert_2_active,cert_2_last_rotated";
 
+/// How far short of the report's validity window the inside-the-window case stands.
+///
+/// Generous on purpose: the case is read over a real HTTP call while the host's clock runs,
+/// so a margin of a second or two would make the outcome depend on how fast the machine is.
+/// A minute is far inside the window the service publishes
+/// (`state::CREDENTIAL_REPORT_VALIDITY_SECONDS`) and still one rewind away from its end.
+const WINDOW_MARGIN_SECONDS: i64 = 60;
+
 /// One `GetCredentialReport` call, presented as signed by `akid` when a row names one. The
 /// operation takes no input, so the call carries no form parameter beyond the action.
 async fn get(router: &MultiServiceRouter, akid: Option<&str>) -> (u16, String) {
@@ -273,24 +281,32 @@ async fn the_clock_and_the_held_generation_are_what_a_read_answers() {
         "a read must answer the report that was generated, not a fresh one"
     );
 
-    // One second short of the validity window's end: still served, and still the same
-    // report. The ARTIFACT is what is compared here: this suite stands the clock by moving
-    // the generation record into the past, so the instant the record names moves with it,
-    // while a real clock advancing leaves it where it was.
+    // Inside the validity window, a margin short of its end: still served, and still the
+    // same report. The ARTIFACT is what is compared here: this suite stands the clock by
+    // moving the generation record into the past, so the instant the record names moves with
+    // it, while a real clock advancing leaves it where it was.
+    //
+    // The margin is generous rather than one second ([`WINDOW_MARGIN_SECONDS`]): the read
+    // below is a real HTTP call and the host's own clock keeps running while it is served, so
+    // a case standing one second short of the end answers differently on a loaded or slower
+    // machine. The window's far side is still measured exactly, by the rewind that follows.
     rewind(
         &engine,
-        state::CREDENTIAL_REPORT_VALIDITY_SECONDS - state::CREDENTIAL_REPORT_GENERATION_SECONDS - 1,
+        state::CREDENTIAL_REPORT_VALIDITY_SECONDS
+            - state::CREDENTIAL_REPORT_GENERATION_SECONDS
+            - WINDOW_MARGIN_SECONDS,
     );
     let (status, body) = get(&router, None).await;
     assert_eq!(
-        served("one second short of the window's end", status, &body).csv,
+        served("inside the window, short of its end", status, &body).csv,
         first.csv,
         "a report inside its window must still be the one that was generated"
     );
 
     // From the window's end: the report has expired, and a fresh generation is what the
-    // account needs.
-    rewind(&engine, 1);
+    // account needs. Time only ever moves the record further past the end, so this side of
+    // the boundary is exact however long the call takes.
+    rewind(&engine, WINDOW_MARGIN_SECONDS);
     let (status, body) = get(&router, None).await;
     refused("the report has expired", status, &body, 410, "ReportExpired");
 

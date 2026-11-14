@@ -42,6 +42,9 @@ aws-smithy-types = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 bytes = { workspace = true }
 http = { workspace = true }
+# Renders the authenticator a content address carries (`state::document_content`) as the
+# hex the address spells it in.
+hex = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 
@@ -50,7 +53,6 @@ emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
 sha2 = { workspace = true }
-hex = { workspace = true }
 # Decodes one `application/vnd.amazon.eventstream` frame, so the prompt-optimization suite
 # reads the response stream back the way an SDK's decoder does.
 aws-smithy-eventstream = "0.60"

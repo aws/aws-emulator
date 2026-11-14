@@ -30,11 +30,19 @@
 //! EXTERNAL WORKER RUNS IN THIS EMULATOR, so the walk computes the path it can — the
 //! request's document enters at the flow's input node and reaches the output nodes that node
 //! is connected to — and delivers an in-stream `validationException` for a path through any
-//! other node kind rather than inventing a value nothing produced.
+//! other node kind rather than inventing a value nothing produced. An input that addresses
+//! no input node of the flow leaves that node without the input the run depends on, which is
+//! the in-stream `dependencyFailedException` that failure class carries.
 //!
 //! A served invocation emits one `flowOutputEvent` per output node the value reached, then
 //! the `flowCompletionEvent` the modelled `FlowCompletionReason` names for a flow that ran
-//! to the end.
+//! to the end. Each one IS an execution, and the 200 reports which in the modelled
+//! `executionId` header: the id the request named, else one minted for that invocation
+//! ([`execution_id`]). A request that asks for the trace is served, beside those, the
+//! `flowTraceEvent`s of the run that really happened — what the input node emitted and what
+//! reached each output node, under the field names the stored flow's own connections carry
+//! ([`entry_output_traces`], [`node_input_trace`]); nothing traces a node the walk did not
+//! take.
 //!
 //! This operation is hand-authored rather than generated: its output is a `@streaming`
 //! union, which the op-stub generator declines (`src/ops/SKIPPED_STUBS.md`) and whose
@@ -73,7 +81,7 @@ use super::types::*;
 use aws_smithy_runtime_api::http::{Request, Response};
 use aws_smithy_schema_server::ProtocolError;
 use service_common::event_stream::{
-    error_response, event_stream_only_response, frame_event, read_request, EventStreamOperation,
+    error_response, event_stream_response, frame_event, read_request, EventStreamOperation,
     RequestRefusal,
 };
 use smithy_server_runtime::{BoxFuture, OperationContext, Refusal, ServerHttpProtocol, Service};
@@ -130,13 +138,12 @@ const NOT_FOUND_EVENT: &str = "resourceNotFoundException";
 /// See [`NOT_FOUND_EVENT`]: the member an input fault of the invocation travels under.
 const VALIDATION_EVENT: &str = "validationException";
 
+/// See [`NOT_FOUND_EVENT`]: the member a failure of something the RUN depended on travels
+/// under.
+const DEPENDENCY_FAILED_EVENT: &str = "dependencyFailedException";
+
 /// See [`NOT_FOUND_EVENT`]: the member a server fault of the invocation travels under.
 const INTERNAL_EVENT: &str = "internalServerException";
-
-/// The `NodeType` an output of a flow leaves at
-/// (`smithy_query(query="shape",shape="NodeType")` -> FlowInputNode, FlowOutputNode,
-/// LambdaFunctionNode, KnowledgeBaseNode, PromptNode, ConditionNode, LexNode).
-const FLOW_OUTPUT_NODE: &str = "FlowOutputNode";
 
 /// The `FlowCompletionReason` of a flow that ran to the end
 /// (`smithy_query(query="shape",shape="FlowCompletionReason")` -> SUCCESS, INPUT_REQUIRED).
@@ -203,11 +210,35 @@ impl<Eng: Send + Sync + 'static> InvokeFlow<Eng> {
     ///
     /// Infallible by construction once the invocation has begun: every outcome of the run
     /// is a frame in the 200 the caller already holds.
-    fn respond(&self, protocol: &dyn ServerHttpProtocol, input: &InvokeFlowInput) -> Response {
+    fn respond(
+        &self,
+        protocol: &dyn ServerHttpProtocol,
+        ctx: &OperationContext<'_>,
+        input: &InvokeFlowInput,
+        execution_id: &str,
+    ) -> Response {
         let mut frames = Vec::new();
-        match self.run(input) {
+        match self.run(ctx, input) {
             Ok(outputs) => {
+                // A request that asked for the trace is served the trace of the run that
+                // really happened, beside its outputs: what the entry node emitted, and
+                // what reached each output node it is connected to.
+                let traced = input.enable_trace == Some(true);
+                if traced {
+                    for trace in entry_output_traces(input, &outputs) {
+                        if let Err(error) = frame_trace(protocol, &mut frames, trace) {
+                            return self.framing_failure(protocol, error);
+                        }
+                    }
+                }
                 for output in outputs {
+                    if traced {
+                        if let Some(trace) = node_input_trace(&output) {
+                            if let Err(error) = frame_trace(protocol, &mut frames, trace) {
+                                return self.framing_failure(protocol, error);
+                            }
+                        }
+                    }
                     if let Err(error) = frame(
                         protocol,
                         &mut frames,
@@ -215,7 +246,6 @@ impl<Eng: Send + Sync + 'static> InvokeFlow<Eng> {
                         false,
                         &FlowOutputEvent {
                             node_name: output.node_name,
-                            node_type: FLOW_OUTPUT_NODE.to_string(),
                             content: FlowOutputContent::Document(output.document),
                         },
                         &FlowOutputEvent::SCHEMA,
@@ -250,6 +280,21 @@ impl<Eng: Send + Sync + 'static> InvokeFlow<Eng> {
                     return self.framing_failure(protocol, error);
                 }
             }
+            Err(InStream::DependencyFailed(resource_name)) => {
+                if let Err(error) = frame(
+                    protocol,
+                    &mut frames,
+                    DEPENDENCY_FAILED_EVENT,
+                    true,
+                    &DependencyFailedException {
+                        message: Some(flows::dependency_failed_message()),
+                        resource_name: Some(resource_name),
+                    },
+                    &SCHEMA_DEPENDENCY_FAILED_EXCEPTION,
+                ) {
+                    return self.framing_failure(protocol, error);
+                }
+            }
             Err(InStream::Invalid(message)) => {
                 if let Err(error) = frame(
                     protocol,
@@ -280,10 +325,25 @@ impl<Eng: Send + Sync + 'static> InvokeFlow<Eng> {
                 }
             }
         }
-        // `InvokeFlowResponse`'s one modelled header reports the execution a multi-turn
-        // interaction continues in, and this service opens none (a request naming one is
-        // refused above), so the stream IS the response.
-        event_stream_only_response(frames)
+        // Every served invocation IS an execution, and `InvokeFlowResponse` reports which
+        // one in its modelled header: the id the request named, else the one this service
+        // minted for this invocation. The headers are serialized from the output shape
+        // through the protocol, so the header name and the rendering are the model's.
+        match event_stream_response(
+            protocol,
+            OPERATION_NAME,
+            &InvokeFlowOutput {
+                execution_id: Some(execution_id.to_string()),
+            },
+            &InvokeFlowOutput::SCHEMA,
+            frames,
+        ) {
+            Ok(response) => response,
+            Err(error) => self.framing_failure(
+                protocol,
+                format!("the response could not be serialized: {error}"),
+            ),
+        }
     }
 
     /// The last resort when a frame itself could not be serialized: the stream cannot
@@ -293,7 +353,17 @@ impl<Eng: Send + Sync + 'static> InvokeFlow<Eng> {
     }
 
     /// Run the flow, with every outcome of the run stated as what the stream delivers.
-    fn run(&self, input: &InvokeFlowInput) -> Result<Vec<flows::FlowOutputValue>, InStream> {
+    /// Run the flow, with every outcome of the run stated as what the stream delivers.
+    ///
+    /// `ctx` is what keys the resolution to the PRINCIPAL the authorization decision was
+    /// made about — the account that principal acts in and the Region it signed for — so the
+    /// flow this walks is one that caller's own account holds and never one named by the
+    /// request's identifiers alone (see `flows::run`).
+    fn run(
+        &self,
+        ctx: &OperationContext<'_>,
+        input: &InvokeFlowInput,
+    ) -> Result<Vec<flows::FlowOutputValue>, InStream> {
         let entry = input
             .inputs
             .first()
@@ -301,6 +371,7 @@ impl<Eng: Send + Sync + 'static> InvokeFlow<Eng> {
         let FlowInputContent::Document(document) = &entry.content;
         let outputs = flows::run(
             &*self.engine,
+            ctx,
             &input.flow_identifier,
             &input.flow_alias_identifier,
             &entry.node_name,
@@ -311,13 +382,9 @@ impl<Eng: Send + Sync + 'static> InvokeFlow<Eng> {
                 InStream::Internal("the flow store is unavailable".to_string())
             }
             flows::FlowRefusal::NotFound => InStream::NotFound(flows::not_found_message()),
+            flows::FlowRefusal::InputNodeUnavailable(node) => InStream::DependencyFailed(node),
             flows::FlowRefusal::Unservable(message) => InStream::Invalid(message),
         })?;
-        // Only once the flow has RESOLVED and RUN is a leg this service cannot compute
-        // refused: the recorded refusal of a flow nobody created delivers the missing
-        // resource whatever else the request carries, so resolution comes first and this is
-        // what a caller whose flow exists is told about the member.
-        unservable_leg(input)?;
         Ok(outputs)
     }
 }
@@ -328,33 +395,112 @@ impl<Eng: Send + Sync + 'static> InvokeFlow<Eng> {
 enum InStream {
     /// `resourceNotFoundException`.
     NotFound(String),
+    /// `dependencyFailedException`, carrying the name of the dependency that failed.
+    DependencyFailed(String),
     /// `validationException`.
     Invalid(String),
     /// `internalServerException`.
     Internal(String),
 }
 
-/// The first leg of the request this service cannot compute, as the sentence the in-stream
-/// `validationException` states.
-fn unservable_leg(input: &InvokeFlowInput) -> Result<(), InStream> {
-    if input.enable_trace == Some(true) {
-        return Err(InStream::Invalid(
-            "enableTrace: a trace reports the input and the output of every node the flow \
-             ran, and the nodes whose work this emulator performs none of produce none, so \
-             there is no node-level trace to report; omit enableTrace to take the flow's \
-             outputs without one"
-                .to_string(),
-        ));
+/// The `FlowResponseStream` member one trace travels under, which the frames carry as
+/// their `:event-type`.
+const TRACE_EVENT: &str = "flowTraceEvent";
+
+/// The traces of what the flow's ENTRY node emitted: one per output name the walk really
+/// carried the invocation's document out on, with the document that left.
+///
+/// The field name is the connection's own `sourceOutput` where the connection names one,
+/// else the `nodeOutputName` the request supplied the document as — both are names the
+/// stored flow or the request carries, never invented. One trace per distinct output name,
+/// because a value fanned out to two nodes left the entry node once on each name it left
+/// by.
+fn entry_output_traces(
+    input: &InvokeFlowInput,
+    outputs: &[flows::FlowOutputValue],
+) -> Vec<FlowTrace> {
+    let Some(entry) = input.inputs.first() else {
+        return Vec::new();
+    };
+    let mut named: Vec<(String, &::aws_smithy_types::Document)> = Vec::new();
+    for output in outputs {
+        let FlowInputContent::Document(document) = &entry.content;
+        let name = output
+            .carried_by
+            .as_ref()
+            .map(|carried| carried.source_output.clone())
+            .or_else(|| entry.node_output_name.clone());
+        let Some(name) = name else { continue };
+        if named.iter().any(|(seen, _)| *seen == name) {
+            continue;
+        }
+        named.push((name, document));
     }
-    if input.execution_id.is_some() {
-        return Err(InStream::Invalid(
-            "executionId: it names the execution a multi-turn interaction is continued in, \
-             and this service's flow invocation never requests more input, so it opens no \
-             execution to continue; omit executionId to invoke the flow in one turn"
-                .to_string(),
-        ));
-    }
-    Ok(())
+    named
+        .into_iter()
+        .map(|(name, document)| {
+            FlowTrace::nodeOutputTrace(FlowTraceNodeOutputEvent {
+                node_name: entry.node_name.clone(),
+                timestamp: crate::state::now(),
+                fields: vec![FlowTraceNodeOutputField {
+                    node_output_name: name,
+                    content: FlowTraceNodeOutputContent::Document(document.clone()),
+                }],
+            })
+        })
+        .collect()
+}
+
+/// The trace of what reached ONE node of the flow: the input of that node the connection
+/// carried the value to, and the document that arrived.
+///
+/// `None` for a hop whose connection names no input — a trace field's `nodeInputName` is
+/// `@required`, and nothing here invents a name the stored flow does not carry.
+fn node_input_trace(output: &flows::FlowOutputValue) -> Option<FlowTrace> {
+    let carried = output.carried_by.as_ref()?;
+    Some(FlowTrace::nodeInputTrace(FlowTraceNodeInputEvent {
+        node_name: output.node_name.clone(),
+        timestamp: crate::state::now(),
+        fields: vec![FlowTraceNodeInputField {
+            node_input_name: carried.target_input.clone(),
+            content: FlowTraceNodeInputContent::Document(output.document.clone()),
+        }],
+    }))
+}
+
+/// Append one `flowTraceEvent` to the stream.
+fn frame_trace(
+    protocol: &dyn ServerHttpProtocol,
+    frames: &mut Vec<u8>,
+    trace: FlowTrace,
+) -> Result<(), String> {
+    frame(
+        protocol,
+        frames,
+        TRACE_EVENT,
+        false,
+        &FlowTraceEvent { trace },
+        &FlowTraceEvent::SCHEMA,
+    )
+}
+
+/// The execution one invocation runs as, as its `executionId` reports it.///
+/// "The unique identifier for the current flow execution. If you don't provide a value,
+/// Amazon Bedrock creates the identifier for you"
+/// (`smithy_query(query="doc",shape="InvokeFlowRequest",member="executionId")`), so a
+/// request that names an execution runs as that one and a request that names none runs as a
+/// fresh execution of this service's own minting — a distinct one per invocation, which is
+/// what lets a caller tell two invocations of the same alias apart.
+///
+/// The minted form is a version-4 UUID (`crate::state::new_uuid`), whose 36 characters of
+/// lowercase hexadecimal and hyphens sit inside the modelled `FlowExecutionId`'s
+/// `@length(2, 100)` and satisfy its `@pattern ^[0-9a-zA-Z._:-]+$`
+/// (`smithy_query(query="operation",operation="InvokeFlow")`).
+fn execution_id(input: &InvokeFlowInput) -> String {
+    input
+        .execution_id
+        .clone()
+        .unwrap_or_else(crate::state::new_uuid)
 }
 
 /// Append one `FlowResponseStream` member to the stream. `is_exception` marks a modelled
@@ -420,7 +566,9 @@ impl<Eng: Send + Sync + 'static> EventStreamOperation for InvokeFlow<Eng> {
             {
                 return error_response(protocol, &InvokeFlowError::AccessDeniedException(denied));
             }
-            self.respond(protocol, &input)
+            // `ctx` travels on into the run: the resolution of the flow and its alias is
+            // keyed to the same principal this decision was made about (see `flows::run`).
+            self.respond(protocol, ctx, &input, &execution_id(&input))
         })
     }
 }

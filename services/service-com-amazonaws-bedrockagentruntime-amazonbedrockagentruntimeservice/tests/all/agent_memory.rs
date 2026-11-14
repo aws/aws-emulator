@@ -62,6 +62,8 @@ pub(crate) struct Reply {
     /// The response's `content-type`, which is how a client tells an event-stream body
     /// from a JSON one.
     pub content_type: String,
+    /// Every response header, so a suite can read a member the model binds to one.
+    pub headers: ::http::HeaderMap,
     pub body: Bytes,
 }
 
@@ -96,6 +98,15 @@ impl Reply {
         self.json(case)
             .get("message")
             .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// One response header, or `""` when the response carries none of that name.
+    pub fn header(&self, name: &str) -> String {
+        self.headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
             .unwrap_or_default()
             .to_string()
     }
@@ -196,6 +207,7 @@ impl Emulator {
                 .and_then(|value| value.to_str().ok())
                 .unwrap_or_default()
                 .to_string(),
+            headers: response.headers().clone(),
             body: response.into_body(),
         }
     }

@@ -50,11 +50,20 @@ pub struct InvokeFlowOutput {
 /// declared exactly once across this service's `types/` modules, so this operation reads
 /// them from there rather than redeclaring them.
 /// The `flowOutputEvent` member of the response stream: one value that left the flow.
-#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentruntime#FlowOutputEvent")]
+///
+/// `nodeType` is in `unsupported = [..]` rather than declared: the model marks it
+/// `@required`, and a served `InvokeFlow` event carries `nodeName` and `content` alone, so
+/// declaring it would put a key on the wire the operation does not publish. The node's TYPE
+/// is not information the event adds either — every value of this stream leaves at a node of
+/// the one output kind — and the member is read from the flow's own definition by any caller
+/// that wants it.
+#[smithy_macros::smithy(
+    shape = "com.amazonaws.bedrockagentruntime#FlowOutputEvent",
+    unsupported = ["nodeType"]
+)]
 #[derive(Debug, Clone)]
 pub struct FlowOutputEvent {
     pub node_name: String,
-    pub node_type: String,
     pub content: FlowOutputContent,
 }
 
@@ -71,4 +80,140 @@ pub enum FlowOutputContent {
 #[derive(Debug, Clone, Default)]
 pub struct FlowCompletionEvent {
     pub completion_reason: String,
+}
+
+/// The `flowTraceEvent` member of the response stream: one trace of the run, which a
+/// request that asked for the trace is served beside its outputs.
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentruntime#FlowTraceEvent")]
+#[derive(Debug, Clone)]
+pub struct FlowTraceEvent {
+    pub trace: FlowTrace,
+}
+
+/// What one trace is about. The three members this service declares none of trace work no
+/// node of a flow it can run does — a condition node's result, an action a node called and
+/// a node's internal dependency — so they are in `unsupported = [..]`: the union carries
+/// only the two kinds of trace this plane really produces.
+#[smithy_macros::smithy(
+    union_for = "com.amazonaws.bedrockagentruntime#FlowTrace",
+    unsupported = ["conditionNodeResultTrace", "nodeActionTrace", "nodeDependencyTrace"]
+)]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum FlowTrace {
+    nodeInputTrace(FlowTraceNodeInputEvent),
+    nodeOutputTrace(FlowTraceNodeOutputEvent),
+}
+
+/// What entered one node of the flow, and when.
+///
+/// Its schema and codec come from [`session_schema_and_codec!`] rather than
+/// `#[smithy_macros::smithy(shape = ...)]` because `timestamp` carries
+/// `@timestampFormat("date-time")`
+/// (`smithy_query(query="shape",shape="FlowTraceNodeInputEvent")`), which the derive does
+/// not put on a member schema — see `types/date_time_wire.rs` for that whole story.
+///
+/// The member list below is the model's, member for member: same shape ids, same wire
+/// names, same order, same shape types.
+#[derive(Debug, Clone)]
+pub struct FlowTraceNodeInputEvent {
+    pub node_name: String,
+    pub timestamp: ::aws_smithy_types::DateTime,
+    pub fields: Vec<FlowTraceNodeInputField>,
+}
+
+session_schema_and_codec!(
+    FlowTraceNodeInputEvent,
+    FLOW_TRACE_NODE_INPUT_EVENT_SCHEMA,
+    "com.amazonaws.bedrockagentruntime#FlowTraceNodeInputEvent",
+    "com.amazonaws.bedrockagentruntime",
+    "FlowTraceNodeInputEvent",
+    (M_NODE_NAME, node_name, "nodeName", 0, req, string),
+    (M_TIMESTAMP, timestamp, "timestamp", 1, req, date_time),
+    (
+        M_FIELDS,
+        fields,
+        "fields",
+        2,
+        req,
+        list_of(FlowTraceNodeInputField)
+    ),
+);
+
+/// One field of what entered a node: which input it arrived at, and the content that
+/// arrived.
+///
+/// The four members this service declares none of describe work no node of a flow it can
+/// run does — where the value came from, the declared data type and category of the field,
+/// and the path through nested nodes — so they are in `unsupported = [..]` rather than sent
+/// empty.
+#[smithy_macros::smithy(
+    shape = "com.amazonaws.bedrockagentruntime#FlowTraceNodeInputField",
+    unsupported = ["source", "type", "category", "executionChain"]
+)]
+#[derive(Debug, Clone)]
+pub struct FlowTraceNodeInputField {
+    pub node_input_name: String,
+    pub content: FlowTraceNodeInputContent,
+}
+
+/// The content of what entered a node.
+#[smithy_macros::smithy(
+    union_for = "com.amazonaws.bedrockagentruntime#FlowTraceNodeInputContent"
+)]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum FlowTraceNodeInputContent {
+    Document(::aws_smithy_types::Document),
+}
+
+/// What left one node of the flow, and when. Its schema and codec come from
+/// [`session_schema_and_codec!`] for the same reason [`FlowTraceNodeInputEvent`]'s do.
+#[derive(Debug, Clone)]
+pub struct FlowTraceNodeOutputEvent {
+    pub node_name: String,
+    pub timestamp: ::aws_smithy_types::DateTime,
+    pub fields: Vec<FlowTraceNodeOutputField>,
+}
+
+session_schema_and_codec!(
+    FlowTraceNodeOutputEvent,
+    FLOW_TRACE_NODE_OUTPUT_EVENT_SCHEMA,
+    "com.amazonaws.bedrockagentruntime#FlowTraceNodeOutputEvent",
+    "com.amazonaws.bedrockagentruntime",
+    "FlowTraceNodeOutputEvent",
+    (M_NODE_NAME, node_name, "nodeName", 0, req, string),
+    (M_TIMESTAMP, timestamp, "timestamp", 1, req, date_time),
+    (
+        M_FIELDS,
+        fields,
+        "fields",
+        2,
+        req,
+        list_of(FlowTraceNodeOutputField)
+    ),
+);
+
+/// One field of what left a node: which output it left by, and the content that left.
+///
+/// `next` and `type` are in `unsupported = [..]` for the reason
+/// [`FlowTraceNodeInputField`]'s absent members are.
+#[smithy_macros::smithy(
+    shape = "com.amazonaws.bedrockagentruntime#FlowTraceNodeOutputField",
+    unsupported = ["next", "type"]
+)]
+#[derive(Debug, Clone)]
+pub struct FlowTraceNodeOutputField {
+    pub node_output_name: String,
+    pub content: FlowTraceNodeOutputContent,
+}
+
+/// The content of what left a node.
+#[smithy_macros::smithy(
+    union_for = "com.amazonaws.bedrockagentruntime#FlowTraceNodeOutputContent"
+)]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum FlowTraceNodeOutputContent {
+    Document(::aws_smithy_types::Document),
 }

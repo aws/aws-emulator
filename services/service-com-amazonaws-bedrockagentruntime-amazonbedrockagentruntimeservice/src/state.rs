@@ -232,6 +232,14 @@ pub struct ComAmazonawsBedrockagentruntimeAmazonbedrockagentruntimeserviceState 
     pub knowledge_base_sessions: BTreeMap<String, knowledge_base_session::KnowledgeBaseSession>,
     /// Monotonic counter handing out [`InvocationStepRecord::order`] values.
     pub order_counter: u64,
+    /// The secret the addresses this service hands out for the content of an ingested
+    /// document are authenticated under ([`document_content`]).
+    ///
+    /// Drawn from the system's randomness when this store is created and never revealed:
+    /// an address `GetDocumentContent` minted carries a tag only this store could have
+    /// produced, so the content plane serves a document only to the address the read that
+    /// authorized it handed out. Never reported, never logged.
+    pub document_address_key: ::service_common::page_tokens::PageTokenKey,
 }
 
 /// The next store-order position, taken from
@@ -667,6 +675,20 @@ fn iam_user_name(arn: &str) -> Option<&str> {
     let resource = arn_resource(arn, "iam")?;
     let name = resource.strip_prefix("user/")?.split('/').next_back()?;
     (!name.is_empty()).then_some(name)
+}
+
+/// The ACCOUNT the principal a request speaks for acts in, read off that principal's own
+/// ARN ([`Caller::arn`]), or `None` when it names none — an expired session credential,
+/// which speaks for nobody.
+///
+/// What it is FOR: an authorization decision is made about a principal, and the resources
+/// this emulator holds belong to one account ([`::engine::emulator_account_id`]), so an
+/// operation that resolves a resource after that decision keys the resolution to the same
+/// principal's account rather than to the request's identifiers alone. Read through the ONE
+/// ARN parse this tree has (`service_common::arn`).
+#[must_use]
+pub fn caller_account(caller: &Caller) -> Option<String> {
+    ::service_common::arn::parse(&caller.arn).map(|arn| arn.account.to_string())
 }
 
 /// The resource part of an ARN whose service segment is `service`.

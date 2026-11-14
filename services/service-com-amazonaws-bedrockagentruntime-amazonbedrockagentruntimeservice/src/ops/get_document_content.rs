@@ -10,11 +10,16 @@
 //! * the knowledge base, the data source and the document are the Bedrock Agent
 //!   build-time plane's, so each one it does not hold is the modelled
 //!   `ResourceNotFoundException` (HTTP 404) ([`crate::state::document_content`]);
-//! * `presignedUrl` is a SigV4 query-signed URL for the source object itself, signed by
-//!   this emulator (`ctx.url_signer()`), so a client that follows it reads the very bytes
-//!   the ingestion read — the URL leads back here and never to the real service;
-//! * `mimeType` and `documentContentLength` are the object store's own content type and
-//!   byte count for that object, never guessed from the identifier.
+//! * `presignedUrl` is a SigV4 query-signed URL for the document's content, signed by this
+//!   emulator (`ctx.url_signer()`), so a client that follows it reads the very bytes the
+//!   ingestion took in — the URL leads back here and never to the real service. HOW the
+//!   document reached the knowledge base is not a property of the request and the model
+//!   draws no distinction between the ways it can: a document taken from an object is
+//!   addressed at that object, and one whose bytes travelled inline in the ingestion is
+//!   addressed on this service's own content plane (`crate::service`), which serves those
+//!   stored bytes;
+//! * `mimeType` and `documentContentLength` are the content's own media type and byte
+//!   count, as the store holding the bytes reports them, never guessed from the identifier.
 //!
 //! This operation is `@readonly`
 //! (`smithy_query(query="operation",operation="GetDocumentContent")`) and writes nothing a
@@ -28,9 +33,7 @@
 //!   hand out and no object holding one;
 //! * `userContext` — access-control filtering needs the per-document ACLs nothing in this
 //!   emulator holds, so a content read cannot be narrowed to the documents one user may
-//!   read;
-//! * a document whose bytes were pushed INLINE into the build-time plane rather than taken
-//!   from an object store: it lives at no address, so no URL could lead a caller to it.
+//!   read.
 //!
 //! Each is the modelled `ValidationException`, because a plausible-looking success — a URL
 //! that leads nowhere, or content the caller asked to have filtered — is worse than an
@@ -266,14 +269,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
                 .into())
             }
-            Err(content::ContentRefusal::NotInObjectStore) => {
-                return Err(refuse(format!(
-                    "documentId: the content of {} travelled in the ingestion that took it \
-                     in rather than living in an object store, so this service holds no \
-                     address a pre-signed URL could lead to",
-                    input.document_id
-                )))
-            }
             Err(refusal) => {
                 return Err(GetDocumentContentErrorModeled::ResourceNotFoundException(
                     ResourceNotFoundException {
@@ -289,20 +284,65 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         };
 
-        // The URL leads back to THIS emulator: a SigV4 query-signed `GetObject` on the
-        // object the ingestion read, signed by the framework's own signer, so the client
-        // that follows it reads the document from the object store that holds it.
-        let path = format!("/{}/{}", document.bucket, document.key);
-        let signed = ctx
-            .url_signer()
-            .sign(
-                smithy_server_runtime::SignedUrlRequest::new(
-                    ::http::Method::GET,
-                    S3_SIGNING_NAME,
-                    &path,
-                ),
-                PRESIGNED_URL_LIFETIME,
-            )
+        // The URL leads back to THIS emulator, signed by the framework's own signer, so the
+        // client that follows it reads the document's content from the store that holds it:
+        // the object the ingestion read, or — for bytes that travelled in the ingestion —
+        // this service's own content plane, whose address also carries the authenticator
+        // this store minted for exactly this document.
+        let presigned_url = match &document.location {
+            content::ContentLocation::Object { bucket, key } => {
+                let path = format!("/{bucket}/{key}");
+                self.sign(
+                    ctx,
+                    smithy_server_runtime::SignedUrlRequest::new(
+                        ::http::Method::GET,
+                        S3_SIGNING_NAME,
+                        &path,
+                    ),
+                )?
+            }
+            content::ContentLocation::Ingested => {
+                let address = content::ContentAddress::new(
+                    knowledge_base_id,
+                    &input.data_source_id,
+                    &input.document_id,
+                );
+                let token = self.content_token(&address)?;
+                let path = address.path();
+                self.sign(
+                    ctx,
+                    smithy_server_runtime::SignedUrlRequest::new(
+                        ::http::Method::GET,
+                        ctx.identity().signing_name(),
+                        &path,
+                    )
+                    .query(content::DOCUMENT_TOKEN_FIELD, &token),
+                )?
+            }
+        };
+
+        Ok(GetDocumentContentOutput {
+            mime_type: document.mime_type,
+            presigned_url,
+            document_content_length: Some(document.length),
+        })
+    }
+}
+
+impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> GetDocumentContent<Eng> {
+    /// One pre-signed address, valid for [`PRESIGNED_URL_LIFETIME`].
+    ///
+    /// A read of a document this emulator holds owes an address the caller can fetch the
+    /// content from, so a request that cannot be signed is a failure of the read rather
+    /// than a success reporting an address nothing serves.
+    fn sign(
+        &self,
+        ctx: &smithy_server_runtime::OperationContext<'_>,
+        request: smithy_server_runtime::SignedUrlRequest<'_>,
+    ) -> Result<String, GetDocumentContentError> {
+        ctx.url_signer()
+            .sign(request, PRESIGNED_URL_LIFETIME)
+            .map(|signed| signed.as_str().to_string())
             .map_err(|error| {
                 GetDocumentContentErrorModeled::InternalServerException(InternalServerException {
                     message: Some(format!(
@@ -310,13 +350,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     )),
                     reason: None,
                 })
-            })?;
+                .into()
+            })
+    }
 
-        Ok(GetDocumentContentOutput {
-            mime_type: document.mime_type,
-            presigned_url: signed.as_str().to_string(),
-            document_content_length: Some(document.length),
-        })
+    /// The authenticator this service's store mints for the address of `address`, which is
+    /// what lets the content plane serve that one document to that one address.
+    fn content_token(
+        &self,
+        address: &crate::state::document_content::ContentAddress,
+    ) -> Result<String, GetDocumentContentError> {
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            GetDocumentContentErrorModeled::InternalServerException(InternalServerException {
+                message: Some("the document content store is unavailable".to_string()),
+                reason: None,
+            })
+        })?;
+        let store = state.lock();
+        Ok(store.content_token(address))
     }
 }
 

@@ -51,6 +51,10 @@ use crate::ops::invoke_inline_agent::{self, InvokeInlineAgent};
 use crate::ops::optimize_prompt::{self, OptimizePrompt};
 use crate::ops::retrieve_and_generate_stream::{self, RetrieveAndGenerateStream};
 
+/// See the module docs of that file: serves the content of an ingested document at the
+/// pre-signed URL `GetDocumentContent` hands out for it, which is not an API call at all.
+pub(crate) mod ingested_content;
+
 /// The `@pattern` this service PUBLISHES for a member whose on-disk model records a STALE
 /// spelling of the same constraint, keyed by the stale text the generated schema carries.
 ///
@@ -125,6 +129,10 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     invoke_inline_agent: EventStreamRoute<InvokeInlineAgent<Eng>>,
     optimize_prompt: EventStreamRoute<OptimizePrompt<Eng>>,
     retrieve_and_generate_stream: EventStreamRoute<RetrieveAndGenerateStream<Eng>>,
+    /// Serves the pre-signed addresses `GetDocumentContent` hands out for the content of a
+    /// document whose bytes travelled in its ingestion; [`Service::override_operation`]
+    /// hands it the requests it claims (see [`ingested_content`]).
+    ingested_content: ingested_content::IngestedContentRoute<Eng>,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -140,8 +148,9 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             invoke_inline_agent: EventStreamRoute(InvokeInlineAgent::new(engine.clone())),
             optimize_prompt: EventStreamRoute(OptimizePrompt::new(engine.clone())),
             retrieve_and_generate_stream: EventStreamRoute(RetrieveAndGenerateStream::new(
-                engine,
+                engine.clone(),
             )),
+            ingested_content: ingested_content::IngestedContentRoute::new(engine),
         }
     }
 }
@@ -155,6 +164,13 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
     }
 
     fn can_handle(&self, parts: &http::request::Parts) -> bool {
+        // The content of an ingested document, which is not an API call at all: it is the
+        // artifact `GetDocumentContent` hands out a pre-signed URL for, on a path space no
+        // Bedrock model publishes (see [`ingested_content`]). Claimed first, because such a
+        // request addresses no modelled route for the rule below to recognise.
+        if crate::state::document_content::addresses_ingested_content(parts.uri.path()) {
+            return true;
+        }
         // This service signs as `bedrock`, the signing name every Bedrock-family service
         // shares while serving its own endpoint (`bedrock-agent-runtime` here). Claiming
         // on that name alone makes all six claimants for every Bedrock request, which the
@@ -209,6 +225,11 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         }
         if retrieve_and_generate_stream::addresses(req) {
             return Some(&self.retrieve_and_generate_stream);
+        }
+        // The fetch of a document's content, which the generated table cannot serve either:
+        // the model binds no operation to its path space at all.
+        if self.ingested_content.claims(req).is_some() {
+            return Some(&self.ingested_content as &dyn ErasedOperation);
         }
         None
     }

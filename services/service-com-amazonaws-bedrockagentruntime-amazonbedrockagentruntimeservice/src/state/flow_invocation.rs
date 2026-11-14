@@ -25,6 +25,16 @@
 //! sentence [`FlowRefusal::Unservable`] carries, because an output synthesised for a node
 //! nothing ran would be indistinguishable from one the flow really produced.
 //!
+//! An input that addresses no INPUT NODE of the flow is a different refusal
+//! ([`FlowRefusal::InputNodeUnavailable`]): the flow is invocable and the request is well
+//! formed, but the node the input was sent to is not a node the flow enters at, so the
+//! flow's own input node is left without the input the run depends on.
+//!
+//! The walk also records, for each hop it takes, the two field names the connection it
+//! followed carries ([`CarriedBy`]), because those are what a TRACE of the run reports: the
+//! output of the source node the value left by and the input of the target it arrived at,
+//! both read from the stored flow rather than invented.
+//!
 //! READ-ONLY for everything a later caller can observe: the one write on its path is the
 //! build-time plane materialising the status transitions its own clock had already made
 //! due, which is owed whether or not anybody calls.
@@ -49,6 +59,11 @@ pub enum FlowRefusal {
     /// string is the sentence the refusal states, naming what about the flow or the request
     /// it could not compute.
     Unservable(String),
+    /// The request's input does not address the flow's own input node, so the flow cannot
+    /// be run at all: the node it names is not one the flow holds, or is not the flow's
+    /// input node, and the flow's real input node is then left with no input. The string is
+    /// the name of what the input addressed, which is the dependency the failure is about.
+    InputNodeUnavailable(String),
 }
 
 /// One value a flow invocation delivers: the output node it left the flow at, and the
@@ -59,6 +74,21 @@ pub struct FlowOutputValue {
     pub node_name: String,
     /// The document that reached that node.
     pub document: Document,
+    /// The OUTPUT of the source node the connection carried the value from, and the INPUT
+    /// of `node_name` it carried it to, as the connection the walk followed names them
+    /// (`FlowDataConnectionConfiguration`). `None` for a connection that carries no such
+    /// configuration, which names neither end's field.
+    pub carried_by: Option<CarriedBy>,
+}
+
+/// The two field names one data connection of a flow names: which output of its source the
+/// value left by, and which input of its target it arrived at.
+#[derive(Debug, Clone)]
+pub struct CarriedBy {
+    /// The source node's output the value left by.
+    pub source_output: String,
+    /// The target node's input the value arrived at.
+    pub target_input: String,
 }
 
 /// The `FlowNodeType` of a flow's input node, as the build-time model spells it
@@ -82,15 +112,46 @@ const PREPARED: &str = "Prepared";
 
 /// Run `document` through the flow the alias routes to, entering at `input_node`.
 ///
+/// The resolution is keyed to the PRINCIPAL the authorization decision was made about, not
+/// to the request's identifiers alone, and `ctx` is where both halves of that key come from:
+///
+/// * the ACCOUNT the caller acts in (`crate::state::caller_account`). Every flow, alias and
+///   version this plane runs belongs to the one account this emulator serves
+///   ([`::engine::emulator_account_id`]), so a principal of any other account names none of
+///   them and is answered not-found whatever identifiers it carries;
+/// * the REGION the caller signed for (`crate::state::request_region`), the scope the
+///   authorization resource was built in (`alias_resource_arn`).
+///
+/// An identifier in ARN form names ONE resource in ONE place, so an ARN whose partition,
+/// service, Region or account is not that pair names no flow this call can run and is
+/// answered not-found rather than reduced to a bare id that would resolve in the caller's
+/// own place ([`names_this_place`]). This is the rule the sibling knowledge-base lookup of
+/// this plane keeps (`crate::state::knowledge_base_retrieval::knowledge_base_id_from_identifier`).
+///
 /// The whole lookup happens under ONE hold of the build-time plane's store, so the
 /// definition that is walked is the one the alias routed to at that instant.
 pub fn run<Eng: Send + Sync + 'static>(
     engine: &Eng,
+    ctx: &smithy_server_runtime::OperationContext<'_>,
     flow_identifier: &str,
     flow_alias_identifier: &str,
     input_node: &str,
     document: &Document,
 ) -> Result<Vec<FlowOutputValue>, FlowRefusal> {
+    // Decided BEFORE any flow store is read, from the caller's own identity and scope, so an
+    // identifier naming another account or another place is answered the same way whether or
+    // not a flow of that id exists here.
+    let caller = crate::state::caller(engine, ctx);
+    let account = crate::state::caller_account(&caller).unwrap_or_default();
+    if account != ::engine::emulator_account_id() {
+        return Err(FlowRefusal::NotFound);
+    }
+    let region = crate::state::request_region(ctx);
+    if !names_this_place(flow_identifier, &account, &region)
+        || !names_this_place(flow_alias_identifier, &account, &region)
+    {
+        return Err(FlowRefusal::NotFound);
+    }
     let Some(agents) = agent_state::service_state(engine) else {
         return Err(FlowRefusal::StoreUnavailable);
     };
@@ -152,6 +213,31 @@ pub fn run<Eng: Send + Sync + 'static>(
     walk(definition, input_node, document)
 }
 
+/// Whether `identifier` names a resource of THIS caller's place: a bare identifier always
+/// does — it names the resource of that id in the account and Region the caller acts in —
+/// and an ARN only when its partition, its service, its Region and its account are the ones
+/// this emulator would have minted for a principal of `account` signing for `region`.
+///
+/// Read through the ONE ARN parse this tree has (`service_common::arn`), against an ARN this
+/// emulator itself mints, so nothing here spells an ARN form of its own.
+fn names_this_place(identifier: &str, account: &str, region: &str) -> bool {
+    if !identifier.starts_with("arn:") {
+        return true;
+    }
+    let own = ::engine::emulator_arn(crate::state::ARN_NAMESPACE, region, "flow/own");
+    let (Some(named), Some(own)) = (
+        ::service_common::arn::parse(identifier),
+        ::service_common::arn::parse(&own),
+    ) else {
+        return false;
+    };
+    named.partition == own.partition
+        && named.vendor == own.vendor
+        && named.region == own.region
+        && named.account == own.account
+        && named.account == account
+}
+
 /// The values the request's document reaches the flow's output nodes with.
 ///
 /// The walk is one hop by construction: the input node's `Data` connections are followed,
@@ -170,16 +256,10 @@ fn walk(
             .map(|node| node.r#type.clone())
     };
     let Some(entry_type) = node_type(input_node) else {
-        return Err(FlowRefusal::Unservable(format!(
-            "the flow holds no node named {input_node}, so the input it was sent to does \
-             not exist in this flow"
-        )));
+        return Err(FlowRefusal::InputNodeUnavailable(input_node.to_string()));
     };
     if entry_type != INPUT_NODE {
-        return Err(FlowRefusal::Unservable(format!(
-            "the node {input_node} is of type {entry_type}, and an invocation enters a flow \
-             at a node of type {INPUT_NODE}"
-        )));
+        return Err(FlowRefusal::InputNodeUnavailable(input_node.to_string()));
     }
 
     let mut reached: Vec<FlowOutputValue> = Vec::new();
@@ -203,6 +283,15 @@ fn walk(
         reached.push(FlowOutputValue {
             node_name: connection.target.clone(),
             document: document.clone(),
+            carried_by: match connection.configuration.as_ref() {
+                Some(::service_com_amazonaws_bedrockagent_amazonbedrockagentbuildtimelambda::ops::types::FlowConnectionConfiguration::Data(data)) => {
+                    Some(CarriedBy {
+                        source_output: data.source_output.clone(),
+                        target_input: data.target_input.clone(),
+                    })
+                }
+                _ => None,
+            },
         });
     }
     if reached.is_empty() {
@@ -243,6 +332,21 @@ pub fn not_found_message() -> String {
 const FLOW_RESOURCE_NOT_FOUND: &str = "Failed to retrieve resource because it doesn't \
                                        exist. Retry the request with a different resource \
                                        identifier.";
+
+/// The message a flow invocation delivers inside its stream when the input it carries does
+/// not address the flow's own input node ([`FlowRefusal::InputNodeUnavailable`]).
+///
+/// Fixed text for this error class, as the model words `DependencyFailedException`
+/// (`smithy_query(query="shape",shape="DependencyFailedException")`): the run depended on
+/// the flow's input node receiving the invocation's input, and it did not, so the failure is
+/// the dependency's rather than a fault in a member of the request.
+pub fn dependency_failed_message() -> String {
+    DEPENDENCY_FAILED.to_string()
+}
+
+/// The sentence [`dependency_failed_message`] answers with.
+const DEPENDENCY_FAILED: &str = "There was an issue with a dependency. Check the resource \
+                                 configurations and retry the request.";
 
 /// The resource an identity-based policy for `bedrock:InvokeFlow` names: the flow alias the
 /// call invokes.

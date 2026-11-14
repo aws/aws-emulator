@@ -82,13 +82,17 @@ macro_rules! session_shape_type {
     (union_of) => {
         ::aws_smithy_schema::ShapeType::Union
     };
+    (list_of) => {
+        ::aws_smithy_schema::ShapeType::List
+    };
 }
 
 /// One member's schema, as the vendored codegen would emit it, plus the
 /// `@timestampFormat("date-time")` chain call it cannot.
 ///
 /// `$kind` is the member's shape kind — `string` (a `string` or an `enum` shape, both
-/// string-encoded), `date_time`, `map_of_string` or `union_of(T)`.
+/// string-encoded), `date_time`, `map_of_string`, `union_of(T)` or `list_of(T)` (a list of
+/// structures, written through the item shape's own schema).
 macro_rules! session_member_schema {
     ($ns:literal, $local:literal, $wire:literal, $idx:literal, date_time) => {
         ::aws_smithy_schema::Schema::new_member(
@@ -134,6 +138,17 @@ macro_rules! session_write_member {
         })?;
     };
     ($s:ident, $m:expr, $v:expr, union_of($inner:ty)) => { $s.write_struct($m, $v)?; };
+    ($s:ident, $m:expr, $v:expr, list_of($inner:ty)) => {
+        $s.write_list($m, &|__sl| {
+            for __it in $v.iter() {
+                // The item's OWN schema, as the vendored codegen writes a list of
+                // structures (`codegen::emit_write`), so the item is written as its shape
+                // rather than as the list member.
+                __sl.write_struct(&<$inner>::SCHEMA, __it)?;
+            }
+            Ok(())
+        })?;
+    };
 }
 
 /// Read one member, as the vendored codegen's `codegen::emit_read` does for that kind.
@@ -158,6 +173,16 @@ macro_rules! session_read_member {
     ($d:ident, $m:expr, union_of($inner:ty)) => {
         <$inner as ::aws_smithy_schema_server::DeserializableStruct>::deserialize($d)?
     };
+    ($d:ident, $m:expr, list_of($inner:ty)) => {{
+        let mut __out: ::std::vec::Vec<$inner> = ::std::vec::Vec::new();
+        $d.read_list($m, &mut |__dl| {
+            __out.push(
+                <$inner as ::aws_smithy_schema_server::DeserializableStruct>::deserialize(__dl)?,
+            );
+            Ok(())
+        })?;
+        __out
+    }};
 }
 
 /// Write a member only when the value is there: a `@required` member always, an `Option`

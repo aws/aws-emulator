@@ -6,9 +6,13 @@
 //! THE RULES UNDER TEST:
 //!
 //! * a content read answers WHERE the content of one ingested document lives: the
-//!   `presignedUrl` addresses the very object the ingestion took the document from, in this
-//!   emulator, and `mimeType` and `documentContentLength` are that object's own content
-//!   type and byte count. Following the URL yields exactly the stored bytes;
+//!   `presignedUrl` addresses the content the ingestion really took in, in this emulator,
+//!   and `mimeType` and `documentContentLength` are that content's own media type and byte
+//!   count. Following the URL yields exactly those bytes. HOW the document reached the
+//!   knowledge base is no part of the request: a document taken from an object is addressed
+//!   at that object, and one whose bytes travelled inline in the ingestion is addressed on
+//!   this service's own content plane — which serves it only to the address the read that
+//!   was authorized for it handed out;
 //! * the knowledge base, the data source and the document are the Bedrock Agent build-time
 //!   plane's, so each one that plane does not hold is the modelled
 //!   `ResourceNotFoundException` (404), naming what could not be found;
@@ -28,6 +32,7 @@
 
 use std::collections::BTreeMap;
 
+use base64::Engine as _;
 use serde_json::{json, Value};
 
 use service_com_amazonaws_s3_amazons3::state as s3_state;
@@ -283,6 +288,299 @@ fn s3_document(id: &str, key: &str) -> Value {
     })
 }
 
+/// A `documentId` as a client sends it in a non-greedy `@httpLabel`: `DocumentId` admits any
+/// text but a control character (`@pattern ^\P{C}*$`), so the characters a URL path cannot
+/// carry verbatim are percent-encoded.
+fn document_label(id: &str) -> String {
+    id.replace('%', "%25")
+        .replace(':', "%3A")
+        .replace('/', "%2F")
+        .replace(' ', "%20")
+}
+
+/// One document pushed in with its content defined inline in TEXT.
+fn inline_text_document(id: &str, text: &str) -> Value {    json!({
+        "content": {
+            "dataSourceType": "CUSTOM",
+            "custom": {
+                "customDocumentIdentifier": { "id": id },
+                "sourceType": "IN_LINE",
+                "inlineContent": {
+                    "type": "TEXT",
+                    "textContent": { "data": text },
+                },
+            },
+        },
+    })
+}
+
+/// One document pushed in with its content defined inline in BYTES, which travel
+/// base64-encoded on the wire (`ByteContentDoc$data` is a `@blob`), under the media type
+/// the ingestion declares for them.
+fn inline_byte_document(id: &str, mime_type: &str, bytes: &[u8]) -> Value {
+    json!({
+        "content": {
+            "dataSourceType": "CUSTOM",
+            "custom": {
+                "customDocumentIdentifier": { "id": id },
+                "sourceType": "IN_LINE",
+                "inlineContent": {
+                    "type": "BYTE",
+                    "byteContent": {
+                        "mimeType": mime_type,
+                        "data": base64::engine::general_purpose::STANDARD.encode(bytes),
+                    },
+                },
+            },
+        },
+    })
+}
+
+/// RULE: HOW a document's bytes reached the knowledge base is not a property of the
+/// request — the model draws no distinction between a document crawled from an object store
+/// and one whose bytes travelled in the ingestion request — so a content read of ANY
+/// document the plane holds is a 200 reporting that content's own media type and byte count
+/// with a pre-signed URL this emulator answers, whose `GET` yields the ingested bytes
+/// byte for byte.
+///
+/// The rows span what the rule generalises over: the kind of inline content (text, bytes),
+/// the media type the ingestion declared for it, the published minimum length of the
+/// content, text whose byte count differs from its character count, and a `documentId`
+/// carrying the separators and spaces a URL has to survive.
+#[tokio::test]
+async fn a_content_read_serves_a_document_whose_bytes_travelled_in_its_ingestion() {
+    /// One inline-ingested document, and the content a read of it must report.
+    struct Row {
+        case: &'static str,
+        document_id: &'static str,
+        /// The document as `IngestKnowledgeBaseDocuments` takes it in.
+        ingested: Value,
+        /// The `mimeType` the read must report.
+        reported_mime_type: &'static str,
+        /// The bytes the pre-signed URL must yield, which are the ingested ones.
+        content: Vec<u8>,
+    }
+
+    let binary: Vec<u8> = vec![0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x00, 0xff, 0xfe, 0x0a];
+    let rows = vec![
+        Row {
+            case: "text defined inline",
+            document_id: "inline-text",
+            ingested: inline_text_document("inline-text", "the pump is serviced every 90 days"),
+            reported_mime_type: "text/plain",
+            content: b"the pump is serviced every 90 days".to_vec(),
+        },
+        Row {
+            case: "inline text whose byte count is not its character count",
+            document_id: "inline-unicode",
+            ingested: inline_text_document("inline-unicode", "résumé\nabrégé — ✓\n"),
+            reported_mime_type: "text/plain",
+            content: "résumé\nabrégé — ✓\n".as_bytes().to_vec(),
+        },
+        Row {
+            case: "inline text at the published minimum length of one character",
+            document_id: "inline-minimal",
+            ingested: inline_text_document("inline-minimal", "x"),
+            reported_mime_type: "text/plain",
+            content: b"x".to_vec(),
+        },
+        Row {
+            case: "bytes defined inline under the media type the ingestion declared",
+            document_id: "inline-pdf",
+            ingested: inline_byte_document("inline-pdf", "application/pdf", &binary),
+            reported_mime_type: "application/pdf",
+            content: binary.clone(),
+        },
+        Row {
+            case: "inline bytes under another declared media type",
+            document_id: "reports/2026 Q1/notes.md",
+            ingested: inline_byte_document(
+                "reports/2026 Q1/notes.md",
+                "text/markdown",
+                b"# notes\n\n- one\n- two\n",
+            ),
+            reported_mime_type: "text/markdown",
+            content: b"# notes\n\n- one\n- two\n".to_vec(),
+        },
+        Row {
+            // `ByteContentDoc$mimeType` is a `String` whose `@pattern [a-z]{1,20}/.{1,20}`
+            // (`smithy_query(query="shape",shape="ByteContentDoc")`) admits characters no
+            // HTTP header value can carry, so the read reports the declared type as stored
+            // and the fetch still serves the bytes within a bounded response.
+            case: "a declared media type no HTTP header value can carry",
+            document_id: "inline-hostile-type",
+            ingested: inline_byte_document(
+                "inline-hostile-type",
+                "text/plain\r\nx-injected: yes",
+                b"the bytes are served whatever the declared type says",
+            ),
+            reported_mime_type: "text/plain\r\nx-injected: yes",
+            content: b"the bytes are served whatever the declared type says".to_vec(),
+        },
+    ];
+
+    let emulator = Emulator::new();
+    let source = emulator.custom_source("inline-content").await;
+    for row in &rows {
+        emulator
+            .ingest_documents(row.case, &source, json!([row.ingested.clone()]))
+            .await;
+    }
+
+    for row in &rows {
+        let reply = emulator
+            .document_content(
+                ACCOUNT_KEY,
+                &source.knowledge_base_id,
+                &source.data_source_id,
+                &document_label(row.document_id),
+                None,
+            )
+            .await;
+        assert_eq!(
+            reply.status,
+            200,
+            "case {:?}: expected 200, got {} {:?}",
+            row.case,
+            reply.status,
+            reply.json(row.case)
+        );
+        let answer = reply.json(row.case);
+        assert_eq!(
+            answer["mimeType"].as_str(),
+            Some(row.reported_mime_type),
+            "case {:?}: expected the content's own media type, got {answer:?}",
+            row.case
+        );
+        assert_eq!(
+            answer["documentContentLength"].as_i64(),
+            Some(row.content.len() as i64),
+            "case {:?}: expected the ingested byte count, got {answer:?}",
+            row.case
+        );
+        let url = answer["presignedUrl"]
+            .as_str()
+            .unwrap_or_else(|| panic!("case {:?}: no presignedUrl in {answer:?}", row.case))
+            .to_string();
+        assert!(
+            url.contains("X-Amz-Signature="),
+            "case {:?}: the URL must be a pre-signed address, got {url}",
+            row.case
+        );
+        let (status, body) = emulator.follow(row.case, &url).await;
+        assert_eq!(
+            status,
+            200,
+            "case {:?}: following {url} must reach the content, got {status} {:?}",
+            row.case,
+            String::from_utf8_lossy(&body)
+        );
+        assert_eq!(
+            body.as_ref(),
+            row.content.as_slice(),
+            "case {:?}: following the URL must yield the ingested bytes, got {:?}",
+            row.case,
+            String::from_utf8_lossy(&body)
+        );
+    }
+}
+
+/// RULE: the address a content read hands out is good for the ONE document it was minted
+/// for: it carries an authenticator only this emulator's store can produce, so an address a
+/// caller assembled, one whose authenticator was altered, and one re-pointed at another
+/// document all reach nothing.
+#[tokio::test]
+async fn an_address_no_content_read_minted_reaches_nothing() {
+    let emulator = Emulator::new();
+    let source = emulator.custom_source("inline-addresses").await;
+    for (id, text) in [("inline-one", "the first document"), ("inline-two", "the second")] {
+        emulator
+            .ingest_documents(id, &source, json!([inline_text_document(id, text)]))
+            .await;
+    }
+
+    let mut addresses: Vec<String> = Vec::new();
+    for document in ["inline-one", "inline-two"] {
+        let reply = emulator
+            .document_content(
+                ACCOUNT_KEY,
+                &source.knowledge_base_id,
+                &source.data_source_id,
+                document,
+                None,
+            )
+            .await;
+        addresses.push(
+            reply.json(document)["presignedUrl"]
+                .as_str()
+                .unwrap_or_else(|| panic!("setup: no presignedUrl for {document}"))
+                .to_string(),
+        );
+    }
+    let first = addresses[0].clone();
+    let second = addresses[1].clone();
+
+    // (case, the address that is fetched) — each one differs from the minted address in a
+    // single way, and none of them is one this emulator handed out.
+    let token_field = "documentToken=";
+    let altered = {
+        let (head, tail) = first
+            .split_once(token_field)
+            .expect("a minted address carries the authenticator");
+        let (token, rest) = tail.split_once('&').unwrap_or((tail, ""));
+        // One hex digit of the authenticator changed, which no other document's tag is.
+        let flipped = match token.starts_with('0') {
+            true => format!("1{}", &token[1..]),
+            false => format!("0{}", &token[1..]),
+        };
+        format!("{head}{token_field}{flipped}&{rest}")
+    };
+    let without_token = {
+        let (head, tail) = first
+            .split_once(token_field)
+            .expect("a minted address carries the authenticator");
+        let rest = tail.split_once('&').map(|(_, rest)| rest).unwrap_or("");
+        format!("{head}{rest}")
+    };
+    // The authenticator of the second document on the first document's path.
+    let swapped = {
+        let (head, _) = first
+            .split_once(token_field)
+            .expect("a minted address carries the authenticator");
+        let (_, tail) = second
+            .split_once(token_field)
+            .expect("a minted address carries the authenticator");
+        format!("{head}{token_field}{tail}")
+    };
+    let unsigned = first
+        .split_once('?')
+        .map(|(path, _)| path.to_string())
+        .expect("a minted address carries a query");
+
+    for (case, url) in [
+        ("an authenticator one digit away from the minted one", altered),
+        ("an address carrying no authenticator at all", without_token),
+        ("another document's authenticator", swapped),
+        ("the same path with no pre-signed query", unsigned),
+    ] {
+        let (status, body) = emulator.follow(case, &url).await;
+        assert_ne!(
+            status,
+            200,
+            "case {case:?}: {url} must not serve any content, got {:?}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+
+    // The positive control: the address this emulator really minted still serves.
+    let (status, body) = emulator.follow("the minted address", &first).await;
+    assert_eq!(
+        (status, String::from_utf8_lossy(&body).to_string()),
+        (200, "the first document".to_string()),
+        "the minted address must serve the document it was minted for"
+    );
+}
+
 /// RULE: a content read describes and addresses the OBJECT the ingestion took the document
 /// from — its own content type and byte count — and the URL it answers leads back to this
 /// emulator and yields exactly those bytes.
@@ -491,22 +789,7 @@ async fn a_content_read_refuses_a_leg_it_cannot_compute() {
         .ingest_documents(
             "the document that exists",
             &source,
-            json!([
-                s3_document("doc-in-s3", "held/two.txt"),
-                json!({
-                    "content": {
-                        "dataSourceType": "CUSTOM",
-                        "custom": {
-                            "customDocumentIdentifier": { "id": "doc-inline" },
-                            "sourceType": "IN_LINE",
-                            "inlineContent": {
-                                "type": "TEXT",
-                                "textContent": { "data": "the bytes travelled in the request" },
-                            },
-                        },
-                    },
-                }),
-            ]),
+            json!([s3_document("doc-in-s3", "held/two.txt")]),
         )
         .await;
 
@@ -531,12 +814,6 @@ async fn a_content_read_refuses_a_leg_it_cannot_compute() {
             body: Some(json!({ "userContext": { "dataAccessPolicyArn":
                 "arn:aws:bedrock:us-west-2:000000000000:data-access-policy/ABCDEFGHIJ" } })),
             names: "userContext",
-        },
-        Row {
-            case: "a document whose bytes travelled in the ingestion",
-            document: "doc-inline",
-            body: None,
-            names: "documentId",
         },
     ];
 

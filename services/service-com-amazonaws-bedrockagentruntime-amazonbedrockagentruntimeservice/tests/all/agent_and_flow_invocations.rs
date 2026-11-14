@@ -67,6 +67,9 @@ const FLOW_IDENTIFIER_PATTERN: &str =
 /// An IAM role ARN matching the build-time plane's modelled `FlowExecutionRoleArn`.
 const FLOW_ROLE: &str = "arn:aws:iam::000000000000:role/service-role/AmazonBedrockExecutionRoleForFlows";
 
+/// The account id every ARN this emulator mints carries.
+const ACCOUNT: &str = "000000000000";
+
 /// One frame of an event-stream body, read the way an SDK's decoder reads it.
 pub(crate) struct Frame {
     /// `:message-type`: `event` for a data event, `exception` for an in-band modelled
@@ -1100,10 +1103,12 @@ async fn a_prepared_flow_delivers_the_outputs_its_own_definition_reaches() {
                 row.case,
                 frame.payload
             );
-            assert_eq!(
-                frame.payload["nodeType"].as_str(),
-                Some("FlowOutputNode"),
-                "case {:?}: an output leaves at a node of that type, got {:?}",
+            // A served output event carries `nodeName` and `content` alone: `nodeType` is a
+            // key this operation's recorded responses do not publish, whatever the model
+            // marks it.
+            assert!(
+                frame.payload.get("nodeType").is_none(),
+                "case {:?}: an output event publishes no nodeType, got {:?}",
                 row.case,
                 frame.payload
             );
@@ -1124,7 +1129,11 @@ async fn a_prepared_flow_delivers_the_outputs_its_own_definition_reaches() {
 }
 
 /// RULE: a flow invocation this service cannot run is refused INSIDE the stream, as the
-/// `validationException` member of `FlowResponseStream`, naming what could not be computed.
+/// `FlowResponseStream` member of the failure's own class: an input that does not address
+/// the flow's own input node leaves that node with no input, which is a failure of something
+/// the run DEPENDED on (`dependencyFailedException`, naming the dependency in
+/// `resourceName`), while a flow that is not invocable at all is refused as the input fault
+/// it is (`validationException`, naming what could not be computed).
 #[tokio::test]
 async fn a_flow_invocation_this_service_cannot_run_is_refused_inside_the_stream() {
     let emulator = Emulator::new();
@@ -1144,13 +1153,16 @@ async fn a_flow_invocation_this_service_cannot_run_is_refused_inside_the_stream(
     emulator.prepare_flow("setup", &ready).await;
     let (ready_alias, _) = emulator.create_flow_alias("setup", &ready, "DRAFT").await;
 
-    // (case, flowId, aliasId, body, what the refusal must name)
-    let rows: Vec<(&str, &String, &String, Value, &str)> = vec![
+    // (case, flowId, aliasId, body, the stream member it travels under, the payload key
+    // that carries what the refusal is about, and what that key must name)
+    let rows: Vec<(&str, &String, &String, Value, &str, &str, &str)> = vec![
         (
             "a flow nothing has prepared",
             &unprepared,
             &unprepared_alias,
             flow_request("FlowInput", json!({ "data": "hello" })),
+            "validationException",
+            "message",
             "NotPrepared",
         ),
         (
@@ -1158,33 +1170,22 @@ async fn a_flow_invocation_this_service_cannot_run_is_refused_inside_the_stream(
             &ready,
             &ready_alias,
             flow_request("NoSuchNode", json!({ "data": "hello" })),
+            "dependencyFailedException",
+            "resourceName",
             "NoSuchNode",
         ),
         (
-            "a request asking for the node-level trace",
+            "a node of the flow that is not its input node",
             &ready,
             &ready_alias,
-            {
-                let mut body = flow_request("FlowInput", json!({ "data": "hello" }));
-                body["enableTrace"] = json!(true);
-                body
-            },
-            "enableTrace",
-        ),
-        (
-            "a request naming an execution to continue",
-            &ready,
-            &ready_alias,
-            {
-                let mut body = flow_request("FlowInput", json!({ "data": "hello" }));
-                body["executionId"] = json!("exec-1");
-                body
-            },
-            "executionId",
+            flow_request("FlowOutput", json!({ "data": "hello" })),
+            "dependencyFailedException",
+            "resourceName",
+            "FlowOutput",
         ),
     ];
 
-    for (case, flow, alias, body, names) in rows {
+    for (case, flow, alias, body, event, key, names) in rows {
         let reply = emulator.invoke_flow(flow, alias, body).await;
         assert_eq!(
             reply.status,
@@ -1196,13 +1197,400 @@ async fn a_flow_invocation_this_service_cannot_run_is_refused_inside_the_stream(
         let frames = decode_frames(case, &reply.body);
         assert_eq!(
             frame_names(&frames),
-            vec!["validationException"],
-            "case {case:?}: expected the in-stream validation event"
+            vec![event],
+            "case {case:?}: expected the in-stream {event}"
         );
-        let message = frames[0].payload["message"].as_str().unwrap_or_default();
+        let stated = frames[0].payload[key].as_str().unwrap_or_default();
         assert!(
-            message.contains(names),
-            "case {case:?}: the refusal must name {names:?}, got {message:?}"
+            stated.contains(names),
+            "case {case:?}: the refusal's {key} must name {names:?}, got {stated:?}"
+        );
+    }
+}
+
+/// The modelled response header `InvokeFlowResponse$executionId` is bound to
+/// (`smithy_query(query="operation",operation="InvokeFlow")`).
+const EXECUTION_ID_HEADER: &str = "x-amz-bedrock-flow-execution-id";
+
+/// The bounds and the shape the modelled `FlowExecutionId` admits, from the same query:
+/// `@length(2, 100)` and `@pattern ^[0-9a-zA-Z._:-]+$`.
+const EXECUTION_ID_LENGTH: (usize, usize) = (2, 100);
+
+/// Whether `value` is a `FlowExecutionId`: inside [`EXECUTION_ID_LENGTH`] and spelled with
+/// the characters the modelled pattern admits.
+fn is_flow_execution_id(value: &str) -> bool {
+    (EXECUTION_ID_LENGTH.0..=EXECUTION_ID_LENGTH.1).contains(&value.chars().count())
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-'))
+}
+
+/// RULE: a served `InvokeFlow` IS one flow execution, so its 200 reports which in the
+/// modelled `executionId` header — the id the request named when it named one, else one the
+/// service mints inside the modelled `FlowExecutionId` constraints — and two invocations
+/// that name none report two different executions.
+#[tokio::test]
+async fn a_served_invocation_reports_the_execution_it_ran() {
+    let emulator = Emulator::new();
+    let (ready, _) = emulator
+        .create_flow("execution-id-flow", passthrough_definition())
+        .await;
+    emulator.prepare_flow("setup", &ready).await;
+    let (ready_alias, _) = emulator.create_flow_alias("setup", &ready, "DRAFT").await;
+    // A flow nothing prepared: its invocation is refused INSIDE the stream, which is still
+    // a served 200 and so still an execution.
+    let (unprepared, _) = emulator
+        .create_flow("execution-id-unprepared", passthrough_definition())
+        .await;
+    let (unprepared_alias, _) = emulator
+        .create_flow_alias("setup", &unprepared, "DRAFT")
+        .await;
+
+    /// One invocation, and the execution the response must report for it.
+    struct Row {
+        case: &'static str,
+        prepared: bool,
+        /// The `executionId` the request carries, if any.
+        requested: Option<&'static str>,
+    }
+
+    // The rows span what the rule generalises over: whether the request names an execution,
+    // the published bounds of `FlowExecutionId` and the punctuation its pattern admits, and
+    // whether the run the stream carries succeeded or was refused inside the stream.
+    let shortest = "ab";
+    let longest: String = "e".repeat(EXECUTION_ID_LENGTH.1);
+    let punctuation = "exec.1_2:3-4";
+    let rows = [
+        Row {
+            case: "an invocation naming no execution",
+            prepared: true,
+            requested: None,
+        },
+        Row {
+            case: "an execution named at the shortest admitted length",
+            prepared: true,
+            requested: Some(shortest),
+        },
+        Row {
+            case: "an execution named with every punctuation class the pattern admits",
+            prepared: true,
+            requested: Some(punctuation),
+        },
+        Row {
+            case: "an invocation refused inside its own stream",
+            prepared: false,
+            requested: None,
+        },
+        Row {
+            case: "an execution named on a run that is refused inside its stream",
+            prepared: false,
+            requested: Some("continued-execution"),
+        },
+    ];
+
+    for row in &rows {
+        let (flow, alias) = match row.prepared {
+            true => (&ready, &ready_alias),
+            false => (&unprepared, &unprepared_alias),
+        };
+        let mut body = flow_request("FlowInput", json!({ "data": "the pump is serviced" }));
+        if let Some(requested) = row.requested {
+            body["executionId"] = json!(requested);
+        }
+        let reply = emulator.invoke_flow(flow, alias, body).await;
+        assert_eq!(
+            reply.status,
+            200,
+            "case {:?}: expected 200, got {} {:?}",
+            row.case,
+            reply.status,
+            String::from_utf8_lossy(&reply.body)
+        );
+        let reported = reply.header(EXECUTION_ID_HEADER);
+        assert!(
+            is_flow_execution_id(&reported),
+            "case {:?}: expected a FlowExecutionId in {EXECUTION_ID_HEADER}, got {reported:?}",
+            row.case
+        );
+        if let Some(requested) = row.requested {
+            assert_eq!(
+                reported, requested,
+                "case {:?}: the response must report the execution the request named, got \
+                 {reported:?}",
+                row.case
+            );
+        }
+    }
+
+    // The longest admitted id, built at run time, takes the same path as the rows above.
+    let mut body = flow_request("FlowInput", json!({ "data": "the pump is serviced" }));
+    body["executionId"] = json!(longest);
+    let reply = emulator.invoke_flow(&ready, &ready_alias, body).await;
+    assert_eq!(
+        reply.header(EXECUTION_ID_HEADER),
+        longest,
+        "case \"an execution named at the longest admitted length\": expected the named \
+         execution, got {:?}",
+        reply.header(EXECUTION_ID_HEADER)
+    );
+
+    // Two invocations of the SAME flow and alias that name no execution are two executions.
+    let mut minted: Vec<String> = Vec::new();
+    for attempt in 0..2 {
+        let reply = emulator
+            .invoke_flow(
+                &ready,
+                &ready_alias,
+                flow_request("FlowInput", json!({ "data": attempt })),
+            )
+            .await;
+        let reported = reply.header(EXECUTION_ID_HEADER);
+        assert!(
+            is_flow_execution_id(&reported),
+            "case \"invocation {attempt}\": expected a FlowExecutionId, got {reported:?}"
+        );
+        minted.push(reported);
+    }
+    assert_ne!(
+        minted[0], minted[1],
+        "two invocations of one alias are two executions, got {minted:?}"
+    );
+}
+
+/// RULE: a request that asks for the trace is served the trace of the run that really
+/// happened — what the flow's input node emitted and what reached each output node it is
+/// connected to, under the field names the stored flow's own connections carry — and a
+/// request that does not ask for it is served none; either way the stream still ends on one
+/// completion event.
+#[tokio::test]
+async fn the_trace_of_a_run_is_served_only_when_the_request_asks_for_it() {
+    /// One flow, and the nodes a traced invocation of it must report.
+    struct Row {
+        case: &'static str,
+        definition: Value,
+        /// The output nodes the value reaches, in the order the stream reports them.
+        outputs: Vec<&'static str>,
+    }
+
+    // The rows differ along how many nodes the run traverses, which is what the trace of a
+    // run generalises over.
+    let rows = vec![
+        Row {
+            case: "an input node wired to one output node",
+            definition: passthrough_definition(),
+            outputs: vec!["FlowOutput"],
+        },
+        Row {
+            case: "an input node fanned out to two output nodes",
+            definition: fan_out_definition(),
+            outputs: vec!["LeftOutput", "RightOutput"],
+        },
+    ];
+
+    let emulator = Emulator::new();
+    for (index, row) in rows.into_iter().enumerate() {
+        let (flow, _) = emulator
+            .create_flow(&format!("traced-flow-{index}"), row.definition.clone())
+            .await;
+        emulator.prepare_flow(row.case, &flow).await;
+        let (alias, _) = emulator.create_flow_alias(row.case, &flow, "DRAFT").await;
+        let document = json!({ "data": { "left": 1, "right": "two" } });
+
+        // Asked for: the trace of the run, then the outputs, then the one completion.
+        let mut body = flow_request("FlowInput", document.clone());
+        body["enableTrace"] = json!(true);
+        let traced = emulator.invoke_flow(&flow, &alias, body).await;
+        assert_eq!(
+            traced.status,
+            200,
+            "case {:?}: expected 200, got {} {:?}",
+            row.case,
+            traced.status,
+            String::from_utf8_lossy(&traced.body)
+        );
+        let frames = decode_frames(row.case, &traced.body);
+        let names = frame_names(&frames);
+        let traces = names.iter().filter(|name| **name == "flowTraceEvent").count();
+        assert_eq!(
+            traces,
+            1 + row.outputs.len(),
+            "case {:?}: expected one trace of what the input node emitted and one per \
+             output node reached, got {names:?}",
+            row.case
+        );
+        assert_eq!(
+            names.last(),
+            Some(&"flowCompletionEvent"),
+            "case {:?}: the stream still ends on one completion event, got {names:?}",
+            row.case
+        );
+        assert_eq!(
+            names
+                .iter()
+                .filter(|name| **name == "flowCompletionEvent")
+                .count(),
+            1,
+            "case {:?}: exactly one completion event, got {names:?}",
+            row.case
+        );
+
+        // What the entry node emitted: the document the invocation carried, under the
+        // output name the stored flow's connections name.
+        let entry = frames
+            .iter()
+            .find(|frame| frame.payload["trace"].get("nodeOutputTrace").is_some())
+            .unwrap_or_else(|| {
+                panic!(
+                    "case {:?}: expected a trace of what the input node emitted, got {names:?}",
+                    row.case
+                )
+            });
+        let entry = &entry.payload["trace"]["nodeOutputTrace"];
+        assert_eq!(
+            entry["nodeName"].as_str(),
+            Some("FlowInput"),
+            "case {:?}: expected the flow's own input node, got {entry:?}",
+            row.case
+        );
+        assert_eq!(
+            entry["fields"][0]["nodeOutputName"].as_str(),
+            Some("document"),
+            "case {:?}: expected the connection's own source output, got {entry:?}",
+            row.case
+        );
+        assert_eq!(
+            entry["fields"][0]["content"]["document"], document,
+            "case {:?}: expected the document the invocation carried, got {entry:?}",
+            row.case
+        );
+        assert!(
+            entry["timestamp"].as_str().is_some(),
+            "case {:?}: a trace's timestamp is a date-time string, got {entry:?}",
+            row.case
+        );
+
+        // What reached each output node: the same document, under that node's own input.
+        let arrived: Vec<String> = frames
+            .iter()
+            .filter_map(|frame| {
+                let trace = frame.payload["trace"].get("nodeInputTrace")?;
+                assert_eq!(
+                    trace["fields"][0]["nodeInputName"].as_str(),
+                    Some("document"),
+                    "case {:?}: expected the connection's own target input, got {trace:?}",
+                    row.case
+                );
+                assert_eq!(
+                    trace["fields"][0]["content"]["document"], document,
+                    "case {:?}: expected the document that reached the node, got {trace:?}",
+                    row.case
+                );
+                Some(trace["nodeName"].as_str().unwrap_or_default().to_string())
+            })
+            .collect();
+        assert_eq!(
+            arrived,
+            row.outputs,
+            "case {:?}: expected a trace of what reached each output node, got {names:?}",
+            row.case
+        );
+
+        // Not asked for: no trace at all, and the same outputs.
+        let untraced = emulator
+            .invoke_flow(&flow, &alias, flow_request("FlowInput", document.clone()))
+            .await;
+        let untraced = decode_frames(row.case, &untraced.body);
+        let untraced = frame_names(&untraced);
+        assert!(
+            !untraced.contains(&"flowTraceEvent"),
+            "case {:?}: a request that asked for no trace is served none, got {untraced:?}",
+            row.case
+        );
+    }
+}
+
+/// RULE: an identifier in ARN form names ONE resource in ONE place, so a flow or alias ARN
+/// of another partition, another Region or another account names no flow this call can run —
+/// the invocation delivers the modelled `resourceNotFoundException` inside its stream rather
+/// than reducing the ARN to a bare id that would resolve in the caller's own place. The
+/// caller's own ARN for the same flow and alias is served, which is what proves the refusals
+/// are about the place and not the id.
+#[tokio::test]
+async fn an_identifier_naming_another_place_runs_no_flow() {
+    let emulator = Emulator::new();
+    let (flow, flow_arn) = emulator
+        .create_flow("placed-flow", passthrough_definition())
+        .await;
+    emulator.prepare_flow("setup", &flow).await;
+    let (alias, alias_arn) = emulator.create_flow_alias("setup", &flow, "DRAFT").await;
+
+    // (case, flowIdentifier, flowAliasIdentifier, whether the invocation runs the flow).
+    // The forms are the ones the modelled `FlowIdentifier`/`FlowAliasIdentifier` patterns
+    // admit: the bare ids, and an ARN of any partition, Region and account.
+    let rows: Vec<(&str, String, String, bool)> = vec![
+        ("the bare ids", flow.clone(), alias.clone(), true),
+        (
+            "this account's own ARNs in the Region the request is signed for",
+            flow_arn.clone(),
+            alias_arn.clone(),
+            true,
+        ),
+        (
+            "a flow ARN of another account",
+            format!("arn:aws:bedrock:{REGION}:210987654321:flow/{flow}"),
+            alias.clone(),
+            false,
+        ),
+        (
+            "a flow ARN of another Region",
+            format!("arn:aws:bedrock:eu-central-1:{ACCOUNT}:flow/{flow}"),
+            alias.clone(),
+            false,
+        ),
+        (
+            "a flow ARN of another partition",
+            format!("arn:aws-cn:bedrock:cn-north-1:{ACCOUNT}:flow/{flow}"),
+            alias.clone(),
+            false,
+        ),
+        (
+            "an alias ARN of another account",
+            flow.clone(),
+            format!("arn:aws:bedrock:{REGION}:210987654321:flow/{flow}/alias/{alias}"),
+            false,
+        ),
+        (
+            "an alias ARN of another Region",
+            flow.clone(),
+            format!("arn:aws:bedrock:eu-central-1:{ACCOUNT}:flow/{flow}/alias/{alias}"),
+            false,
+        ),
+    ];
+
+    for (case, flow_identifier, alias_identifier, runs) in rows {
+        let reply = emulator
+            .invoke_flow(
+                &label(&flow_identifier),
+                &label(&alias_identifier),
+                flow_request("FlowInput", json!({ "data": "the pump is serviced" })),
+            )
+            .await;
+        assert_eq!(
+            reply.status,
+            200,
+            "case {case:?}: an invocation that has begun answers 200, got {} {:?}",
+            reply.status,
+            String::from_utf8_lossy(&reply.body)
+        );
+        let frames = decode_frames(case, &reply.body);
+        let expected: Vec<&str> = match runs {
+            true => vec!["flowOutputEvent", "flowCompletionEvent"],
+            false => vec!["resourceNotFoundException"],
+        };
+        assert_eq!(
+            frame_names(&frames),
+            expected,
+            "case {case:?} ({flow_identifier}, {alias_identifier}): expected {expected:?}"
         );
     }
 }
