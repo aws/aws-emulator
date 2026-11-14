@@ -3949,6 +3949,46 @@ impl ImportJobRecord {
     pub fn destination_type(&self) -> Option<&'static str> {
         import_destination_type(&self.destination)
     }
+
+    /// This job's position in a listing of the account's import jobs: the instant it was
+    /// created, then its id.
+    ///
+    /// The instant leads, so the listing is in creation order; the id breaks the tie, so
+    /// the order is total even for two jobs created in the same millisecond. The key is a
+    /// position rather than a record, which is what keeps a page token valid when the job
+    /// it names is no longer there — the same reading as the other job kind's
+    /// ([`ExportJobRecord::listing_key`]).
+    pub fn listing_key(&self) -> String {
+        let millis = self
+            .created_at
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        // Fixed-width hexadecimal, so comparing two keys as text orders them the way
+        // comparing the instants they carry would.
+        format!("{millis:032x}:{}", self.job_id)
+    }
+
+    /// The modelled `ImportJobSummary` view of this record at `now`, as `ListImportJobs`
+    /// reports it.
+    ///
+    /// Every member is read off the stored job — including the status, which is derived
+    /// from the instants its run's transitions fall due at ([`Self::status`]), so a
+    /// summary reports exactly what a read of the same job reports and nothing is written
+    /// because the job was listed.
+    pub fn summary(&self, now: SystemTime) -> crate::ops::types::ImportJobSummary {
+        crate::ops::types::ImportJobSummary {
+            job_id: Some(self.job_id.clone()),
+            // "The destination of the import job": what the create supplied, reported
+            // back as it was stored.
+            import_destination: Some(self.destination.clone()),
+            job_status: Some(self.status(now).to_string()),
+            created_timestamp: Some(::aws_smithy_types::DateTime::from(self.created_at)),
+            // What the job has really imported, counted on the record.
+            processed_records_count: Some(self.processed_records_count),
+            failed_records_count: Some(self.failed_records_count),
+        }
+    }
 }
 
 /// One accepted outbound message.
@@ -4520,6 +4560,9 @@ pub const DEDICATED_IPS_PAGE_TOKEN_TAG: &str = "sesv2:dedicated-ips:";
 
 /// The tag `ListExportJobs`'s own tokens carry.
 pub const EXPORT_JOBS_PAGE_TOKEN_TAG: &str = "sesv2:export-jobs:";
+
+/// The tag `ListImportJobs`'s own tokens carry.
+pub const IMPORT_JOBS_PAGE_TOKEN_TAG: &str = "sesv2:import-jobs:";
 
 /// The tag `ListRecommendations`'s own tokens carry.
 pub const RECOMMENDATIONS_PAGE_TOKEN_TAG: &str = "sesv2:recommendations:";

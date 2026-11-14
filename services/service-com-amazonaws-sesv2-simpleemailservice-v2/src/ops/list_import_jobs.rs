@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListImportJobs
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListImportJobs`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListImportJobs::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports the import jobs the account holds as summaries computed from the stored job
+//! records ([`crate::state::ImportJobRecord`]), narrowed by the request's
+//! `ImportDestinationType` and paged by `PageSize` with a `NextToken` of this listing's
+//! own making. This is the ONLY file to touch for this operation.
 //!
 //! ## Shape of an operation
 //!
@@ -149,18 +144,118 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListImportJobs` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListImportJobsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListImportJobs"))
+        // "Lists all of the import jobs": the listing covers the import jobs of the one
+        // emulated account, so no request metadata is needed — the same reading this
+        // service's other listings take.
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            // No store at all, which is not a modelled SES state: answer the scaffold's
+            // 501 rather than a throttle an SDK would retry forever.
+            return Err(crate::scaffolded::Scaffolded::not_implemented(
+                "ListImportJobs without the shared emulator state",
+            ));
+        };
+
+        // "The destination of the import job, which can be used to list import jobs that
+        // have a certain ImportDestinationType": a request that names one keeps only the
+        // jobs whose destination selects it, and a request that names none keeps every
+        // job. The member targets a modelled enum, so a value outside its value set was
+        // already refused at the request boundary and whatever arrives here is a modelled
+        // value — which may still be one no stored job carries, and then matches nothing.
+        let destination_type = input.import_destination_type;
+
+        // "Maximum number of import jobs to return at once": `PageSize` targets
+        // `MaxItems`, on which the model puts no bound, so only a positive count
+        // truncates a page; a non-positive one is read as no truncation, which keeps a
+        // caller that sends 0 from being stuck on an empty page forever. The same reading
+        // as this service's other listings.
+        let page_size = usize::try_from(input.page_size.unwrap_or_default())
+            .ok()
+            .filter(|size| *size > 0);
+
+        // The token is this listing's own: it names the position of the last job the
+        // previous page reported, so the next page resumes strictly after it. A token the
+        // caller made up, or one minted by another listing, decodes to nothing and is
+        // refused with the one input error this operation models rather than silently
+        // read as the start of the listing.
+        let resume_after = match input.next_token.as_deref() {
+            None => None,
+            Some(token) => Some(
+                crate::state::decode_tagged_page_token(
+                    crate::state::IMPORT_JOBS_PAGE_TOKEN_TAG,
+                    token,
+                )
+                .ok_or_else(|| bad_request(crate::state::invalid_next_token()))?,
+            ),
+        };
+
+        let now = ::std::time::SystemTime::now();
+        // Reporting only, and nothing is owed materialising for it: how far an import
+        // job's run has got is derived from the instants its transitions fall due at
+        // ([`crate::state::ImportJobRecord::status`]), so a listing reports what a read of
+        // the same job reports and leaves every later caller seeing exactly what it saw.
+        let store = state.lock();
+
+        // Each matching job carries its position in the listing, so the page is a window
+        // over the order rather than a lookup by key — which keeps a token valid even if
+        // the job it names is no longer stored. Only the page is projected into summaries.
+        let mut matching: Vec<(String, &crate::state::ImportJobRecord)> = store
+            .import_jobs
+            .values()
+            .filter(|record| {
+                destination_type
+                    .as_deref()
+                    .is_none_or(|wanted| record.destination_type() == Some(wanted))
+            })
+            .map(|record| (record.listing_key(), record))
+            .collect();
+        // Most recently created first: the order a caller walking its import jobs reads
+        // them in, and a stable one — a job created while a walk is in progress sorts
+        // ahead of every page that walk has left to read, so it cannot shift the jobs
+        // behind the token.
+        matching.sort_by(|left, right| right.0.cmp(&left.0));
+
+        let remaining = match resume_after.as_deref() {
+            None => &matching[..],
+            // The keys descend, so the positions at or after the one the token names are
+            // the prefix of the order and the rest is what the walk has left.
+            Some(last) => &matching[matching.partition_point(|(key, _)| key.as_str() >= last)..],
+        };
+        let page = match page_size {
+            Some(size) => &remaining[..size.min(remaining.len())],
+            None => remaining,
+        };
+
+        // A token only while jobs remain behind this page, so a walk terminates.
+        let next_token = (page.len() < remaining.len())
+            .then(|| page.last())
+            .flatten()
+            .map(|(key, _)| {
+                crate::state::encode_tagged_page_token(
+                    crate::state::IMPORT_JOBS_PAGE_TOKEN_TAG,
+                    key,
+                )
+            });
+
+        Ok(ListImportJobsOutput {
+            // Present even when empty: an account holding no import job that matches the
+            // request has an empty list, which is a different answer from an absent
+            // member.
+            import_jobs: Some(
+                page.iter()
+                    .map(|(_, record)| record.summary(now))
+                    .collect::<Vec<ImportJobSummary>>(),
+            ),
+            next_token,
+        })
     }
+}
+
+/// Refuse the request with this operation's input error — "the input you provided is
+/// invalid".
+fn bad_request(message: impl Into<String>) -> ListImportJobsError {
+    ListImportJobsErrorModeled::BadRequestException(BadRequestException {
+        message: Some(message.into()),
+    })
+    .into()
 }
