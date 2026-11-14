@@ -88,7 +88,12 @@ fn stack_set_view(stored: &StoredStackSet) -> StackSet {
         stack_set_id: Some(stored.stack_set_id.clone()),
         description: stored.description.clone(),
         status: Some(stored.status.clone()),
-        template_body: stored.template_body.clone(),
+        // CloudFormation holds a submitted template as ASCII, so the text this read serves
+        // carries one `?` per codepoint outside it (`crate::state::stored_template_body`).
+        template_body: stored
+            .template_body
+            .as_deref()
+            .map(crate::state::stored_template_body),
         parameters: crate::state::parameter_views(&stored.parameters),
         capabilities: crate::state::non_empty(stored.capabilities.clone()),
         tags: crate::state::tag_views(&stored.tags),

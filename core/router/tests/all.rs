@@ -1117,6 +1117,10 @@ mod cloudformation_provisions_elastic_beanstalk_resources;
 mod cloudformation_provisions_sqs_queue_policies;
 #[path = "all/cloudformation_provisions_sqs_queues.rs"]
 mod cloudformation_provisions_sqs_queues;
+// Declared beside the queue-provisioning suite: this one drives the whole scripted
+// deploy-wait-use-delete workflow over the ASSEMBLED emulator, which is what a waiter polls.
+#[path = "all/cloudformation_scripted_queue_deploy.rs"]
+mod cloudformation_scripted_queue_deploy;
 #[path = "all/cloudformation_imports_an_existing_queue.rs"]
 mod cloudformation_imports_an_existing_queue;
 #[path = "all/opensearchserverless_cloudformation_resources.rs"]

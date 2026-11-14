@@ -545,6 +545,8 @@ mod substitution_resource_attributes;
 mod superseded_failure_events;
 #[path = "all/tags_only_stack_updates.rs"]
 mod tags_only_stack_updates;
+#[path = "all/template_body_ascii_text.rs"]
+mod template_body_ascii_text;
 #[path = "all/template_by_reference.rs"]
 mod template_by_reference;
 #[path = "all/template_limits_and_declared_order.rs"]

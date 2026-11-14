@@ -420,7 +420,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // cannot apply has no processed stage — the condition `GetTemplate` answers
                 // 501 for, for the same reason: there is no processed document to report on.
                 match (stack.processed_stage_body(), &stack.template_body) {
-                    (Some(body), _) => body.to_string(),
+                    // The text a read of a STORED template serves is ASCII, exactly as
+                    // `GetTemplate` serves it (`crate::state::stored_template_body`), so the
+                    // description and the metadata summarised below are the stored
+                    // template's own text rather than the codepoints the request carried.
+                    (Some(body), _) => crate::state::stored_template_body(body),
                     (None, Some(_)) => {
                         let reason = stack
                             .processed_template
@@ -467,7 +471,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // A StackSet record carrying none has no template to summarise, and the
                 // refusal is worded for a StackSet rather than for a stack.
                 match &stack_set.template_body {
-                    Some(body) => body.clone(),
+                    // ...and so is a STACK SET's, which `DescribeStackSet` serves the same
+                    // way (`crate::state::stored_template_body`).
+                    Some(body) => crate::state::stored_template_body(body),
                     None => {
                         return Err(crate::scaffolded::Scaffolded::validation_error(
                             crate::state::stack_set_template_does_not_exist(name_or_id),

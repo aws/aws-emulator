@@ -641,10 +641,14 @@ fn template_cases() -> Vec<TemplateCase> {
             tags: kv(&[("env", "dev")]),
         },
         TemplateCase {
-            case: "unicode, quotes and angle brackets in the template",
+            // The XML escaping a body full of punctuation needs: quotes, an ampersand and
+            // angle brackets must survive the wire. The TEXT a body carries past ASCII is
+            // held as ASCII by the store (`template_body_ascii_text.rs` is that rule's
+            // suite), so every row here submits ASCII and reads back byte for byte.
+            case: "quotes and angle brackets in the template",
             stack_name: "escaped",
-            template: r#"{"Description":"café \"quoted\" & <angled>"}"#.to_string(),
-            description: Some("café \"quoted\" & <angled>"),
+            template: r#"{"Description":"cafe \"quoted\" & <angled>"}"#.to_string(),
+            description: Some("cafe \"quoted\" & <angled>"),
             parameters: vec![],
             tags: kv(&[("note", "a<b&c>d")]),
         },
@@ -753,7 +757,9 @@ async fn create_then_describe_and_get_template_round_trip_every_template_shape()
                 case.case
             );
 
-            // The template body is persisted verbatim: a byte-identical round trip.
+            // The template body is persisted as the store holds it — ASCII, one `?` per
+            // codepoint past it (`template_body_ascii_text.rs`) — and every row here submits
+            // ASCII, so the round trip is byte-identical.
             let (status, body) = get_template(&router, &identifier, None).await;
             assert_eq!(
                 status, 200,

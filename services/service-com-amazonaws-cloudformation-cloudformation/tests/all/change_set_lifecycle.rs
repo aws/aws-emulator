@@ -218,10 +218,14 @@ fn change_set_cases() -> Vec<ChangeSetCase> {
             added: vec![("Pad", "AWS::CloudFormation::WaitConditionHandle")],
         },
         ChangeSetCase {
-            case: "unicode, quotes and angle brackets in a resource property",
+            // The XML escaping a property full of punctuation needs: quotes, an ampersand
+            // and angle brackets must survive the wire. The text a body carries past ASCII is
+            // held as ASCII by the store (`template_body_ascii_text.rs`), so this row submits
+            // ASCII and reads back byte for byte.
+            case: "quotes and angle brackets in a resource property",
             stack_name: "cs-escaped",
             change_set_name: "cs-escaped-set",
-            template: r#"{"Resources":{"Topic":{"Type":"AWS::SNS::Topic","Properties":{"DisplayName":"café \"quoted\" & <angled>"}}}}"#
+            template: r#"{"Resources":{"Topic":{"Type":"AWS::SNS::Topic","Properties":{"DisplayName":"cafe \"quoted\" & <angled>"}}}}"#
                 .to_string(),
             added: vec![("Topic", "AWS::SNS::Topic")],
         },

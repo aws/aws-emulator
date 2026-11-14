@@ -916,9 +916,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // whatever the request restates: its resources do not carry the configuration its
         // template declares, so resubmitting that configuration is the RETRY of the work the
         // failure left outstanding ([`crate::state::status_preserved_a_failure`]).
+        // A body that differs from the stack's only in codepoints the template store cannot
+        // hold is the SAME template to CloudFormation: the text a read of the stored template
+        // serves is ASCII ([`crate::state::stored_template_body`]), so a client that
+        // resubmits what `GetTemplate` answered has submitted the template the stack already
+        // carries — which is this refusal and not an update.
         if !crate::state::status_preserved_a_failure(&previous.status)
             && !matches!(processing, crate::state::include::Processed::Failed(_))
-            && Some(&included_body) == previous.included_template_body.as_ref()
+            && previous
+                .included_template_body
+                .as_deref()
+                .is_some_and(|stored| {
+                    crate::state::ascii_text_eq(stored, &included_body)
+                })
             && parameters == previous.parameters
             && tags == previous.tags
             && notification_arns == previous.notification_arns

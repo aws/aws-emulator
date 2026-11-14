@@ -128,10 +128,13 @@ fn rows() -> Vec<Row> {
             resources: vec!["Topic"],
         },
         Row {
-            case: "unicode, quotes and angle brackets in a resource property",
+            // The XML escaping a property full of punctuation needs. The text a body carries
+            // past ASCII is held as ASCII by the store (`template_body_ascii_text.rs`), so
+            // this row submits ASCII and reads back byte for byte.
+            case: "quotes and angle brackets in a resource property",
             stack: "rev-escaped",
             change_set: "rev-escaped-set",
-            template: r#"{"Resources":{"Topic":{"Type":"AWS::SNS::Topic","Properties":{"DisplayName":"café \"quoted\" & <angled>"}}}}"#
+            template: r#"{"Resources":{"Topic":{"Type":"AWS::SNS::Topic","Properties":{"DisplayName":"cafe \"quoted\" & <angled>"}}}}"#
                 .to_string(),
             parameters: Vec::new(),
             resources: vec!["Topic"],

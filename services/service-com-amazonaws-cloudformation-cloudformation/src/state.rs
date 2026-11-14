@@ -449,7 +449,7 @@ pub mod stack_tags;
 /// How this service holds the FREE TEXT a caller hands it to store: as ASCII, so a codepoint
 /// outside ASCII reads back as one `?`.
 pub mod ascii_text;
-pub use ascii_text::ascii_text;
+pub use ascii_text::{ascii_text, ascii_text_eq, stored_template_body};
 
 /// The TIMELINE of one stack operation's walk over a stack's resources: when each resource
 /// was scheduled and when it finished, which is what the per-resource `StackEvent`s of that

@@ -905,8 +905,14 @@ impl StoredStack {
     /// The stack's `Description`: the template's own `Description`, which is where
     /// CloudFormation takes both `Stack$Description` and
     /// `StackSummary$TemplateDescription` from.
+    ///
+    /// It is TEXT out of the stored template, so it reads back the way the rest of that
+    /// template's text does: as ASCII, one `?` per codepoint outside it
+    /// ([`super::stored_template_body`]).
     pub fn description(&self) -> Option<String> {
-        self.template_description.clone()
+        self.template_description
+            .as_deref()
+            .map(super::stored_template_body)
     }
 
     /// Append a stack-level event. `LogicalResourceId` is the stack's name and

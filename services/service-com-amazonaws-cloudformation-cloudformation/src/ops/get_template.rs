@@ -266,7 +266,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 }
             };
             return Ok(GetTemplateOutput {
-                template_body: Some(template_body),
+                // CloudFormation holds a submitted template as ASCII, so the text this read
+                // serves carries one `?` per codepoint outside it
+                // (`crate::state::stored_template_body`).
+                template_body: Some(crate::state::stored_template_body(&template_body)),
                 stages_available: Some(stages_available),
             });
         }
@@ -355,7 +358,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         Ok(GetTemplateOutput {
-            template_body: Some(template_body),
+            // CloudFormation holds a submitted template as ASCII, so the text this read
+            // serves carries one `?` per codepoint outside it
+            // (`crate::state::stored_template_body`) — at either stage, since both are that
+            // one document.
+            template_body: Some(crate::state::stored_template_body(&template_body)),
             stages_available: Some(stages_available),
         })
     }
