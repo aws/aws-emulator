@@ -604,3 +604,8 @@ mod collection_page_boundaries;
 // before it, and that the record keeps it.
 #[path = "all/minted_identifier_independence.rs"]
 mod minted_identifier_independence;
+// Appended for the reason the note above gives: what a front api's PRIVATE proxy integration
+// serves — the backend's own status and body passed through whatever they are, behind the
+// backend's own `aws:SourceVpce` invoke gate.
+#[path = "all/private_proxy_backend_answer.rs"]
+mod private_proxy_backend_answer;
