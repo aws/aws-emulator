@@ -288,11 +288,17 @@ impl DbClusterParameterGroupRecord {
     /// runs with and `Source` `engine-default`: what a `Source` naming the engine reports,
     /// and the half of [`Self::every_parameter`] the group has set nothing for.
     pub fn published_defaults(&self) -> BTreeMap<String, Parameter> {
-        crate::ops::describe_engine_default_cluster_parameters::cluster_parameter_catalog(
+        // Each family publishes the cluster parameters its OWN engine release carries, out of
+        // the one catalog that serves every family of the engine
+        // ([`family_carries_parameter`]).
+        family_parameters(
             &self.family,
+            crate::ops::describe_engine_default_cluster_parameters::cluster_parameter_catalog(
+                &self.family,
+            )
+            .unwrap_or_default(),
         )
-        .unwrap_or_default()
-        .iter()
+        .into_iter()
         .map(|spec| {
             (
                 spec.name.to_string(),
@@ -731,6 +737,88 @@ pub fn published_spec_for_family(family: &str, spec: &ClusterParameterSpec) -> C
 /// The parameter RDS for PostgreSQL carries the TLS requirement of, which both the
 /// published catalog above and the engine's login gate are about.
 pub const POSTGRES_FORCE_SSL_PARAMETER: &str = "rds.force_ssl";
+
+/// Whether the engine release the DB parameter group family `family` names CARRIES the
+/// parameter `spec` publishes the record of.
+///
+/// A family is one release line of one engine (`mysql8.0`, `aurora-postgresql16`,
+/// `sqlserver-ee-15.0`), and a parameter exists in the engine from the release that
+/// introduced it until the release that removed it: the first is the fact a catalog entry's
+/// `Parameter$MinimumEngineVersion` states, "the earliest engine version to which the
+/// parameter can apply", and the second is the one its catalog publishes beside it
+/// (`crate::ops::describe_engine_default_parameters::parameter_removed_in`). So a parameter
+/// whose introducing release is NEWER than the line the family names, and one whose removal
+/// is at or BEFORE that line, are both outside that family's parameters: the family's engine
+/// release does not have them, and reporting one would publish a parameter a caller cannot
+/// set on a group of that family. One catalog per engine therefore serves every family of
+/// that engine, each family publishing the parameters its own release carries.
+///
+/// The comparison is over the components the FAMILY's version carries, because a family
+/// names a release LINE rather than one release: the `mysql8.0` family is every 8.0.x
+/// release, so a parameter introduced at 8.0.2 is one of its parameters and one dropped at
+/// 8.0.3 is not, while the `mysql5.7` family — an earlier line — carries the dropped one and
+/// none of the 8.0 additions.
+///
+/// Where a catalog publishes no such release the parameter is carried, since nothing is
+/// withheld on a guess: an entry that names no introducing release is one the engine has
+/// carried since before any version this service serves, a parameter no entry names a
+/// removal for has never been dropped, a family whose version this front door cannot read as
+/// a dotted release is compared against neither end, and neither is a family whose engine
+/// numbers its own releases independently of the catalog's
+/// (`crate::ops::describe_engine_default_parameters::family_version_is_in_catalog_numbering`),
+/// where the two numbers name releases of different engines and comparing them would answer
+/// by arithmetic rather than by anything published.
+pub fn family_carries_parameter(family: &str, spec: &ClusterParameterSpec) -> bool {
+    let Some(engine) = crate::ops::describe_engine_default_parameters::family_engine(family)
+    else {
+        return true;
+    };
+    if !crate::ops::describe_engine_default_parameters::family_version_is_in_catalog_numbering(
+        engine,
+    ) {
+        return true;
+    }
+    // A removal is a release of the ENGINE whose catalog the entry belongs to, so it is
+    // resolved for that engine and never for another's parameter of the same name.
+    let removed =
+        crate::ops::describe_engine_default_parameters::parameter_removed_in(engine, spec.name);
+    if spec.minimum_engine_version.is_empty() && removed.is_none() {
+        return true;
+    }
+    let Some(version) = crate::ops::describe_engine_default_parameters::family_version(family)
+    else {
+        return true;
+    };
+    // The release line the family names, as the number of components its own version
+    // carries: an engine release is compared against the family on those components alone.
+    let line = |release: &str| -> String {
+        release
+            .split('.')
+            .take(version.split('.').count())
+            .collect::<Vec<&str>>()
+            .join(".")
+    };
+    let precedes = ::service_common::rds_cluster_parameters::engine_version_precedes;
+    if !spec.minimum_engine_version.is_empty()
+        && precedes(version, &line(spec.minimum_engine_version))
+    {
+        return false;
+    }
+    !removed.is_some_and(|removed| !precedes(version, &line(removed)))
+}
+
+/// The entries of `catalog` the engine release `family` names carries, in the catalog's own
+/// order — the whole published list of that family, which is what every report over a
+/// family's parameters is a window onto ([`family_carries_parameter`]).
+pub fn family_parameters(
+    family: &str,
+    catalog: &'static [ClusterParameterSpec],
+) -> Vec<&'static ClusterParameterSpec> {
+    catalog
+        .iter()
+        .filter(|spec| family_carries_parameter(family, spec))
+        .collect()
+}
 
 /// The `Engine` value of Amazon RDS for PostgreSQL, as `CreateDBInstance$Engine` publishes
 /// it and as a DB parameter group family of that engine is named after

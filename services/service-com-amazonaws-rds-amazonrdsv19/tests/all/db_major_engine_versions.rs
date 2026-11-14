@@ -20,9 +20,12 @@
 //!    account mints, an engine of another control plane, and a major version no entry
 //!    carries).
 //! 3. A support lifecycle is published only for the open-source engines, with Amazon RDS
-//!    Extended Support only for the four that are offered it; the windows are whole UTC
-//!    days, standard support opens before it closes, and Extended Support opens the day
-//!    after standard support closes and runs the three years AWS offers it for.
+//!    Extended Support only for the four that are offered it; a window covers whole UTC
+//!    days — it opens at the first instant of its start day and closes at the LAST instant
+//!    of its end day — standard support opens before it closes, and Extended Support opens
+//!    at the first instant of the day after the day standard support closes on and runs the
+//!    three years AWS offers it for, except for the families whose published window AWS has
+//!    moved out, which are named and asserted as literal windows.
 //! 4. `MaxRecords` holds its published bounds, the `Marker` walks every entry exactly
 //!    once, and a `Marker` no prior page issued is refused.
 //! 5. The report is a READ: two identical calls answer identically.
@@ -69,8 +72,20 @@ const DAY: i64 = 24 * 60 * 60;
 
 /// The days in the three years Amazon RDS Extended Support runs for past the end of
 /// standard support: three calendar years are 1095 days, or 1096 when a 29 February falls
-/// inside them.
+/// inside them. Every family's window is that long, except the ones
+/// [`EXTENDED_PAST_THREE_YEARS`] names, whose published end date AWS has moved out.
 const EXTENDED_SUPPORT_DAYS: std::ops::RangeInclusive<i64> = 1095..=1096;
+
+/// The families whose published Extended Support window runs LONGER than the three years the
+/// offering's floor is, as `(Engine, MajorEngineVersion)`. Each one's two windows are
+/// asserted as literals in [`PUBLISHED_WINDOWS`], so the exception is pinned rather than
+/// merely tolerated.
+const EXTENDED_PAST_THREE_YEARS: [(&str, &str); 1] = [("aurora-mysql", "5.7")];
+
+/// The time of day the last instant of a published support day falls at: a window closes
+/// when the whole of its published end day is over, so its end bound is that day's last
+/// instant rather than the midnight that opens it.
+const END_OF_DAY: &str = "23:59:59.999Z";
 
 /// One reported `<SupportedEngineLifecycle>`.
 #[derive(Debug, Clone)]
@@ -399,18 +414,27 @@ async fn an_open_source_family_reports_its_support_lifecycles() {
         for window in &family.lifecycles {
             let start = instant(&case, "LifecycleSupportStartDate", &window.start);
             let end = instant(&case, "LifecycleSupportEndDate", &window.end);
-            // AWS publishes a support calendar in DAYS, so every bound of it is a whole
-            // UTC day.
-            for (member, value, secs) in [
-                ("LifecycleSupportStartDate", &window.start, start),
-                ("LifecycleSupportEndDate", &window.end, end),
-            ] {
-                assert_eq!(
-                    secs % DAY,
-                    0,
-                    "case {case:?}: {member} must be a whole UTC day, got {value:?}"
-                );
-            }
+            // AWS publishes a support calendar in DAYS, so a window covers whole UTC days:
+            // it opens at the first instant of its start day and closes at the last instant
+            // of its end day, which is what keeps the day a window closes on inside it.
+            assert_eq!(
+                start % DAY,
+                0,
+                "case {case:?}: LifecycleSupportStartDate must open a UTC day, got {:?}",
+                window.start
+            );
+            assert!(
+                window.end.ends_with(END_OF_DAY),
+                "case {case:?}: LifecycleSupportEndDate must be the last instant of its \
+                 published day (ending {END_OF_DAY}), got {:?}",
+                window.end
+            );
+            assert_eq!(
+                (end + 1) % DAY,
+                0,
+                "case {case:?}: LifecycleSupportEndDate must close a UTC day, got {:?}",
+                window.end
+            );
             assert!(
                 start < end,
                 "case {case:?}: the {} window must open before it closes, got {:?} and {:?}",
@@ -437,22 +461,47 @@ async fn an_open_source_family_reports_its_support_lifecycles() {
             let extended_start = instant(&case, "LifecycleSupportStartDate", &extended.start);
             assert_eq!(
                 extended_start,
-                standard_end + DAY,
-                "case {case:?}: Extended Support must open the day after standard \
-                 support closes, got {:?} against {:?}",
+                standard_end + 1,
+                "case {case:?}: Extended Support must open at the first instant of the day \
+                 after the day standard support closes on, got {:?} against {:?}",
                 extended.start,
                 standard.end
             );
             let extended_end = instant(&case, "LifecycleSupportEndDate", &extended.end);
             let days = (extended_end - standard_end) / DAY;
-            assert!(
-                EXTENDED_SUPPORT_DAYS.contains(&days),
-                "case {case:?}: Extended Support must run the three years past the end of \
-                 standard support ({EXTENDED_SUPPORT_DAYS:?} days), got {days} between \
-                 {:?} and {:?}",
-                standard.end,
-                extended.end
-            );
+            // A family whose published window AWS moved out is named in the exception table
+            // and asserted as a literal window; every other family's runs the three years
+            // the offering is published as.
+            let moved_out = EXTENDED_PAST_THREE_YEARS.contains(&(
+                family.engine.as_str(),
+                family.major_engine_version.as_str(),
+            ));
+            if moved_out {
+                assert!(
+                    days > *EXTENDED_SUPPORT_DAYS.end(),
+                    "case {case:?}: this family is named as one whose Extended Support window \
+                     AWS moved out, so it must run past {EXTENDED_SUPPORT_DAYS:?} days, got \
+                     {days} between {:?} and {:?}",
+                    standard.end,
+                    extended.end
+                );
+                assert!(
+                    PUBLISHED_WINDOWS.iter().any(|(engine, major, _, _, _)| {
+                        *engine == family.engine && *major == family.major_engine_version
+                    }),
+                    "case {case:?}: a family excepted from the three-year window must have \
+                     its published windows asserted as literals"
+                );
+            } else {
+                assert!(
+                    EXTENDED_SUPPORT_DAYS.contains(&days),
+                    "case {case:?}: Extended Support must run the three years past the end of \
+                     standard support ({EXTENDED_SUPPORT_DAYS:?} days), got {days} between \
+                     {:?} and {:?}",
+                    standard.end,
+                    extended.end
+                );
+            }
         }
     }
 }
@@ -517,6 +566,99 @@ async fn max_records_is_bounded_and_the_marker_resumes_the_report() {
         "case \"the paged report\": paging must visit every entry exactly once, in the \
          report's own order"
     );
+}
+
+/// One family's published support windows: the engine, its major version, the standard
+/// window's two bounds, and the Extended Support window's two bounds where that engine is
+/// offered it.
+type PublishedWindows = (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    Option<(&'static str, &'static str)>,
+);
+
+/// The windows this service publishes for four named families, written out as LITERALS from
+/// the published major version release calendars, so a drift in the calendar fails this test
+/// rather than moving with it.
+///
+/// The rows span the engines the lifecycles differ by: an Aurora family whose Extended
+/// Support runs past the three-year floor, an RDS family at the floor, the one engine
+/// offered no Extended Support at all, and a PostgreSQL family — including families no
+/// issue cited. Every bound is the instant its published DAY bounds: the first instant of a
+/// day a window opens on and the LAST instant of the day it closes on.
+const PUBLISHED_WINDOWS: [PublishedWindows; 4] = [
+    (
+        "aurora-mysql",
+        "5.7",
+        "2018-02-06T00:00:00Z",
+        "2024-10-31T23:59:59.999Z",
+        Some(("2024-11-01T00:00:00Z", "2029-06-30T23:59:59.999Z")),
+    ),
+    (
+        "mysql",
+        "8.0",
+        "2018-10-23T00:00:00Z",
+        "2026-07-31T23:59:59.999Z",
+        Some(("2026-08-01T00:00:00Z", "2029-07-31T23:59:59.999Z")),
+    ),
+    (
+        "mariadb",
+        "10.11",
+        "2023-05-24T00:00:00Z",
+        "2028-02-29T23:59:59.999Z",
+        None,
+    ),
+    (
+        "postgres",
+        "17",
+        "2024-11-14T00:00:00Z",
+        "2029-11-30T23:59:59.999Z",
+        Some(("2029-12-01T00:00:00Z", "2032-11-30T23:59:59.999Z")),
+    ),
+];
+
+#[tokio::test]
+async fn a_named_family_reports_its_published_support_windows() {
+    let router = emulator();
+
+    for (engine, major, standard_start, standard_end, extended) in PUBLISHED_WINDOWS {
+        let case = format!("{engine} {major}");
+        let (families, _) = describe(
+            &router,
+            &case,
+            &[
+                ("Engine", engine.to_string()),
+                ("MajorEngineVersion", major.to_string()),
+            ],
+        )
+        .await;
+        let family = match families.as_slice() {
+            [family] => family.clone(),
+            other => panic!("case {case:?}: expected exactly this family, got {other:?}"),
+        };
+        let reported: Vec<(&str, &str, &str)> = family
+            .lifecycles
+            .iter()
+            .map(|window| {
+                (
+                    window.name.as_str(),
+                    window.start.as_str(),
+                    window.end.as_str(),
+                )
+            })
+            .collect();
+        let mut expected: Vec<(&str, &str, &str)> =
+            vec![(STANDARD_SUPPORT, standard_start, standard_end)];
+        if let Some((start, end)) = extended {
+            expected.push((EXTENDED_SUPPORT, start, end));
+        }
+        assert_eq!(
+            reported, expected,
+            "case {case:?}: expected the published support windows, got {reported:?}"
+        );
+    }
 }
 
 #[tokio::test]

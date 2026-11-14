@@ -188,7 +188,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // configure against. Every published family names an engine this door serves, so the
         // resolution below succeeds; a value that somehow did not would publish nothing by
         // the same rule rather than borrow another engine's catalog.
-        let published = engine_default_parameters(&family).unwrap_or_default();
+        //
+        // One catalog serves every family of an engine, and each family publishes the
+        // parameters ITS OWN release carries: a parameter the engine introduced in a later
+        // release line than the family names is not one of that family's parameters
+        // (`crate::state::family_carries_parameter`).
+        let published = crate::state::family_parameters(
+            &family,
+            engine_default_parameters(&family).unwrap_or_default(),
+        );
 
         // `Filters`: "The only supported filter is parameter-name. The results list only
         // includes information about the parameters with these names." Every admitted
@@ -197,7 +205,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The catalog is kept in parameter-name order, so its own order is the report's
         // and a page is a window over it.
         let records: Vec<(String, Parameter)> = published
-            .iter()
+            .into_iter()
             .filter(|spec| {
                 filters
                     .iter()
@@ -499,6 +507,91 @@ pub(crate) fn versionless_family(family: &str) -> bool {
         .any(|known| known.eq_ignore_ascii_case(family))
 }
 
+/// The release that REMOVED a parameter from the engine whose catalog publishes it, or
+/// `None` for a parameter `engine` still carries.
+///
+/// The mirror of a catalog entry's `minimum_engine_version`: a parameter exists in the
+/// engine from the release that introduced it until the release that removed it, so a family
+/// naming a release line at or past the removal does not carry it any more than a family
+/// naming a line before the introduction does
+/// ([`crate::state::family_carries_parameter`], which reads both ends).
+///
+/// There is no wire member for a removal — `Parameter` publishes only the earliest version a
+/// parameter applies at — so it lives here as its own published column rather than on the
+/// shared catalog entry.
+///
+/// It is answered per ENGINE, because a release is a release OF an engine: a row names the
+/// catalog it belongs to ([`ParameterVocabulary`]) and answers only for the engines that
+/// share that catalog, so a parameter of another engine's catalog that happens to carry the
+/// same name is never withheld by it — those engines number their releases independently.
+///
+/// Source: the engines' own published parameter data, which states a removal per variable
+/// (the MySQL manual's "Server System Variables" gives each variable's "Removed" release).
+/// A parameter no entry here names is one no engine release this service serves has dropped.
+pub(crate) fn parameter_removed_in(engine: &str, name: &str) -> Option<&'static str> {
+    REMOVED_PARAMETERS
+        .iter()
+        .find(|(vocabulary, parameter, _)| {
+            *parameter == name && vocabulary.is_spoken_by(engine)
+        })
+        .map(|(_, _, release)| *release)
+}
+
+/// Which engines' catalog a published column belongs to: the vocabularies
+/// [`engine_default_parameters`] selects a catalog by, so a removal row is read for exactly
+/// the engines that share the table the parameter is an entry of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ParameterVocabulary {
+    /// The MySQL-compatible engines, which share [`MYSQL_PARAMETERS`] and the cluster-level
+    /// MySQL table: MySQL itself, Amazon RDS for MariaDB and Aurora MySQL. Whether a given
+    /// family's version can be COMPARED against this vocabulary's release columns is a
+    /// second question ([`family_version_is_in_catalog_numbering`]).
+    MysqlCompatible,
+}
+
+impl ParameterVocabulary {
+    /// Whether `engine` is one of the engines that share this vocabulary — the same reading
+    /// [`engine_default_parameters`] selects its catalog by, so the two cannot disagree
+    /// about which engines a published column is about.
+    fn is_spoken_by(self, engine: &str) -> bool {
+        match self {
+            Self::MysqlCompatible => engine.ends_with("mysql") || engine == "mariadb",
+        }
+    }
+}
+
+/// The parameters an engine of this service REMOVED, each with the catalog it is an entry of
+/// and the release that removed it; see [`parameter_removed_in`].
+const REMOVED_PARAMETERS: &[(ParameterVocabulary, &str, &str)] = &[
+    // MySQL deprecated the server variable that forced on-disk temporary tables inside its
+    // 8.0 line and dropped it in 8.4, so every family up to and including 8.0 carries it and
+    // the 8.4 line does not (the manual's "Server System Variables" states the release).
+    (ParameterVocabulary::MysqlCompatible, "big_tables", "8.4.0"),
+];
+
+/// Whether a DB parameter group family of `engine` names its version in the SAME release
+/// NUMBERING as the introduction and removal releases its catalog publishes.
+///
+/// A catalog's release columns are releases of the engine that catalog is the vocabulary of —
+/// the MySQL table's columns are MySQL releases — and a family of an engine that numbers its
+/// own releases against that engine's carries a comparable version: `mysql8.0` is MySQL's 8.0
+/// line, and `aurora-mysql8.0` names the MySQL release that engine is compatible with.
+///
+/// [`ENGINES_NUMBERED_INDEPENDENTLY`] are the engines where it does NOT: Amazon RDS for
+/// MariaDB runs the MySQL vocabulary but numbers its own releases (10.6, 11.4) against no
+/// MySQL release, so "introduced in MySQL 8.0.2" and "removed in MySQL 8.0.3" say nothing
+/// about a MariaDB family and comparing the two numbers would answer by arithmetic rather
+/// than by anything published. Such a family publishes no claim either way and carries the
+/// entry, which is the same reading every other unpublished column gets
+/// (`crate::state::family_carries_parameter`).
+pub(crate) fn family_version_is_in_catalog_numbering(engine: &str) -> bool {
+    !ENGINES_NUMBERED_INDEPENDENTLY.contains(&engine)
+}
+
+/// The engines that share another engine's parameter vocabulary while numbering their own
+/// releases independently of it; see [`family_version_is_in_catalog_numbering`].
+const ENGINES_NUMBERED_INDEPENDENTLY: [&str; 1] = ["mariadb"];
+
 /// One parameter of the catalog below, so each table reads as a table.
 ///
 /// Columns, in order: parameter name, apply type, data type, allowed values, default
@@ -574,16 +667,35 @@ const MYSQL_CHARACTER_SETS: &str = "big5,dec8,cp850,hp8,koi8r,latin1,latin2,swe7
 /// which is what AWS reports for it. MySQL's `back_log` is the one such entry here
 /// ("Default Value: -1 (autosized)", computed from the permitted connection count).
 ///
-/// `minimum_engine_version` is published only where the version a parameter was introduced
-/// in is the same for every engine that shares this catalog, and only where that version
-/// falls INSIDE the releases those engines run — the MySQL releases from 5.7 on, as the
-/// MySQL manual's "Server System Variables" states each variable's introduction release. An
-/// entry that names none — one the engine has carried since before any version this service
-/// serves — reports no `MinimumEngineVersion` rather than a guessed one.
+/// `minimum_engine_version` is the release of the engine's own version line that
+/// INTRODUCED the parameter, as the MySQL manual's "Server System Variables" states it per
+/// variable, published only where that release is the same for every engine that shares
+/// this catalog. It is reported as `Parameter$MinimumEngineVersion`, "the earliest engine
+/// version to which the parameter can apply", and it is also what decides which FAMILIES
+/// publish the entry at all: a family naming an earlier release line than the one the
+/// parameter arrived in does not carry it
+/// ([`crate::state::family_carries_parameter`]), so this one table holds the 5.7-era and
+/// the 8.0-era parameters together and each family reports its own. An entry that names
+/// no release — one the engine has carried since before any version this service serves —
+/// publishes no such claim: every family carries it and none reports a
+/// `MinimumEngineVersion` for it.
 ///
 /// The entries of every catalog here are in ascending parameter-name order, which is the
 /// order the report is paginated in.
 pub(crate) const MYSQL_PARAMETERS: &[crate::state::ClusterParameterSpec] = &[
+    parameter(
+        // Introduced in the 8.0 release line, so only a family of that line or a later one
+        // carries it ([`crate::state::family_carries_parameter`]).
+        "activate_all_roles_on_login",
+        crate::state::APPLY_TYPE_DYNAMIC,
+        "boolean",
+        "0,1",
+        "0",
+        true,
+        "8.0.2",
+        "Whether the server activates all roles granted to an account when a client \
+         authenticates as that account.",
+    ),
     parameter(
         "allow-suspicious-udfs",
         crate::state::APPLY_TYPE_STATIC,
@@ -690,6 +802,8 @@ pub(crate) const MYSQL_PARAMETERS: &[crate::state::ClusterParameterSpec] = &[
         "The MySQL installation base directory.",
     ),
     parameter(
+        // Deprecated inside the 8.0 line and dropped in 8.4, so the families up to 8.0 carry
+        // it and the later line does not ([`parameter_removed_in`]).
         "big_tables",
         crate::state::APPLY_TYPE_DYNAMIC,
         "boolean",
@@ -739,6 +853,18 @@ pub(crate) const MYSQL_PARAMETERS: &[crate::state::ClusterParameterSpec] = &[
         true,
         "",
         "What the server does when it cannot write to the binary log.",
+    ),
+    parameter(
+        // Introduced in the 8.0 release line; the seconds-based expiry replaced the
+        // days-based `expire_logs_days` there.
+        "binlog_expire_logs_seconds",
+        crate::state::APPLY_TYPE_DYNAMIC,
+        "integer",
+        "0-4294967295",
+        "2592000",
+        true,
+        "8.0.1",
+        "The number of seconds after which the server purges a binary log file.",
     ),
     parameter(
         "binlog_format",
@@ -804,6 +930,18 @@ pub(crate) const MYSQL_PARAMETERS: &[crate::state::ClusterParameterSpec] = &[
         "",
         "How much row image information is written to the binary log for row-based \
          logging.",
+    ),
+    parameter(
+        // Introduced in the 8.0 release line.
+        "binlog_row_metadata",
+        crate::state::APPLY_TYPE_DYNAMIC,
+        "string",
+        "FULL,MINIMAL",
+        "MINIMAL",
+        true,
+        "8.0.1",
+        "How much table metadata the server writes to the binary log for row-based \
+         events.",
     ),
     parameter(
         "binlog_rows_query_log_events",

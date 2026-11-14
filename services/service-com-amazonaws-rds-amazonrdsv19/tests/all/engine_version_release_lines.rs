@@ -187,7 +187,7 @@ const ANCHORS: &[Anchor] = &[
         engine_version: "15.00.4073.23.v1",
         parameter_group_family: "custom-sqlserver-ee-15.0",
         major_engine_version: "15.00",
-        description: "Microsoft SQL Server Enterprise Edition 15.00.4073.23.v1",
+        description: "SQL Server 2019 15.00.4073.23.v1",
         default_character_set: SQLSERVER_DEFAULT_COLLATION,
         // RDS Custom publishes no CloudWatch log export and has no option group, so it
         // names no exportable log type and no managed feature.
@@ -560,4 +560,64 @@ async fn each_anchored_build_is_published_with_the_members_its_engine_reports() 
             );
         }
     }
+}
+
+/// The Microsoft SQL Server release each engine major version belongs to, written from
+/// Microsoft's published SQL Server release history — the mapping the product's own name is
+/// read by. Every major version this service's catalogue carries is a row, including the
+/// ones no issue cited.
+const SQLSERVER_RELEASES: [(&str, &str); 4] = [
+    ("13.00", "2016"),
+    ("14.00", "2017"),
+    ("15.00", "2019"),
+    ("16.00", "2022"),
+];
+
+/// A Microsoft SQL Server version's `DBEngineVersionDescription` names the PRODUCT by its
+/// release year and then the build, while `DBEngineDescription` names the engine's edition:
+/// the product and the edition are different facts and a client reads both.
+///
+/// Asserted over every SQL Server entry of every SQL Server engine the catalogue publishes —
+/// the four editions, the two Developer Edition engines and the RDS Custom ones — so the rule
+/// is the engine's and not one entry's.
+#[tokio::test]
+async fn a_sqlserver_version_is_described_by_its_product_release() {
+    let router = emulator();
+
+    let mut checked = 0usize;
+    for version in walk_every_version(&router, "every engine version", 100).await {
+        if !version.engine.contains("sqlserver") {
+            continue;
+        }
+        let case = format!("{} {}", version.engine, version.engine_version);
+        let Some((_, year)) = SQLSERVER_RELEASES
+            .iter()
+            .find(|(major, _)| *major == version.major_engine_version)
+        else {
+            panic!(
+                "case {case:?}: this table must name the release of every published SQL \
+                 Server major version, and it does not name {:?}",
+                version.major_engine_version
+            );
+        };
+        let described = text(&version.scalars, "DBEngineVersionDescription");
+        assert_eq!(
+            described,
+            format!("SQL Server {year} {}", version.engine_version),
+            "case {case:?}: expected the product release and the build, got {described:?}"
+        );
+        // The EDITION is the engine's own description, not the version's — and for an RDS
+        // Custom engine it names that offering's edition.
+        let engine_described = text(&version.scalars, "DBEngineDescription");
+        assert!(
+            engine_described.contains("SQL Server") && engine_described.contains("Edition"),
+            "case {case:?}: the engine is described by its edition, got {engine_described:?}"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 20,
+        "case \"every SQL Server version\": the catalogue must publish SQL Server builds for \
+         this rule to cover, got {checked}"
+    );
 }

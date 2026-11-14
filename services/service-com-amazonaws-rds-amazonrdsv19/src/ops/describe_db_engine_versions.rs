@@ -3215,7 +3215,8 @@ fn reports_replication_log_capabilities(engine: &str) -> bool {
 ///
 /// Every other engine's version string names its own release (`8.0.39`,
 /// `19.0.0.0.ru-2024-10.rur-2024-10.r1`), so there the description is the product and
-/// that version.
+/// that version — except Microsoft SQL Server, whose product is named by its RELEASE YEAR
+/// ([`sqlserver_product_year`]).
 fn version_description(facts: &EngineFacts, engine_version: &str) -> String {
     if facts.engine == "aurora-postgresql" {
         return format!(
@@ -3230,8 +3231,64 @@ fn version_description(facts: &EngineFacts, engine_version: &str) -> String {
             return format!("Aurora (MySQL {community_release}) {aurora_release}");
         }
     }
+    if let Some(year) = sqlserver_product_year(facts.engine, engine_version) {
+        return format!("{SQLSERVER_PRODUCT} {year} {engine_version}");
+    }
     format!("{} {engine_version}", facts.product)
 }
+
+/// How Microsoft SQL Server names its product in a version description: the product, then
+/// the release year, then the version string.
+///
+/// The EDITION is not part of it — that is what `DBEngineDescription` carries (`facts`'
+/// product, "Microsoft SQL Server Standard Edition") — so two editions of one release are
+/// described by the same product and year and differ only in the version string.
+const SQLSERVER_PRODUCT: &str = "SQL Server";
+
+/// The release YEAR of the Microsoft SQL Server product a version of `engine` belongs to, or
+/// `None` for a version of another engine, or one whose major version names no SQL Server
+/// release this table covers.
+///
+/// Microsoft numbers the product by year and the engine by major version, and the two are
+/// one published mapping ([`SQLSERVER_RELEASE_YEARS`], from Microsoft's own SQL Server
+/// release history): the engine's `15.00` builds are SQL Server 2019 and its `16.00` builds
+/// SQL Server 2022, so a description built from the major version alone names the release a
+/// caller reads the product by.
+///
+/// Gated on the ENGINE, because the mapping is a fact about one product: a version of
+/// another engine that happens to start with the same number — and a custom engine version,
+/// whose string its caller chose — is described by the generic form instead. Every SQL
+/// Server engine this front door serves is covered, the Developer Edition and the RDS Custom
+/// ones included, since all of them run that product.
+fn sqlserver_product_year(engine: &str, engine_version: &str) -> Option<&'static str> {
+    if !engine.contains("sqlserver") {
+        return None;
+    }
+    SQLSERVER_RELEASE_YEARS
+        .iter()
+        .find(|(major, _)| {
+            engine_version
+                .strip_prefix(*major)
+                .is_some_and(|rest| rest.starts_with('.'))
+        })
+        .map(|(_, year)| *year)
+}
+
+/// The Microsoft SQL Server release each engine major version belongs to, as Microsoft's
+/// published SQL Server release history names them; see [`sqlserver_product_year`].
+///
+/// Every major version this service's engine-version catalogue carries has a row, and the
+/// releases past them are here too, so a build of a release the catalogue has not sampled
+/// yet is still described by its own product rather than by the engine's edition name.
+const SQLSERVER_RELEASE_YEARS: &[(&str, &str)] = &[
+    ("11.00", "2012"),
+    ("12.00", "2014"),
+    ("13.00", "2016"),
+    ("14.00", "2017"),
+    ("15.00", "2019"),
+    ("16.00", "2022"),
+    ("17.00", "2025"),
+];
 
 /// What separates the two releases an Aurora MySQL version string carries: the MySQL
 /// release it is compatible with, and the Aurora release itself.

@@ -14,6 +14,11 @@
 //! sample taken from the middle of it, and `EngineDefaults.Marker` is a position in that
 //! same order, from which the next page continues the sequence.
 //!
+//! A family is one RELEASE LINE of an engine, and it publishes the parameters that line
+//! carries: a parameter the engine introduced in a later line is not among the earlier
+//! family's defaults, so the head of the 8.0-line families opens with the parameter that
+//! line added and the 5.7-line ones open at the next published name.
+//!
 //! The expected rows below are LITERALS, written from the engines' own published parameter
 //! data (the MySQL manual's "Server System Variables", which states each variable's apply
 //! time, data type, domain, default and the release it was introduced in, and the Amazon RDS
@@ -38,21 +43,82 @@ const ACTION: &str = "DescribeEngineDefaultParameters";
 /// the window the head below is read through.
 const PAGE: usize = 20;
 
-/// The families that share the MySQL parameter vocabulary: the engine's own families, the
-/// MariaDB and Aurora MySQL engines that run the same vocabulary, and a second family of one
-/// engine — a family is one major version of an engine and the parameters belong to the
-/// ENGINE, so every row must publish the same head.
-const MYSQL_FAMILIES: [&str; 5] = [
-    "mysql5.7",
-    "mysql8.0",
-    "aurora-mysql5.7",
-    "aurora-mysql8.0",
-    "mariadb10.11",
+/// The families that share the MySQL parameter vocabulary, each with the release line it
+/// names: three lines of the engine itself, the Aurora MySQL engine that runs the same
+/// vocabulary, and the MariaDB engine that runs it under its own release numbering. A family
+/// publishes the parameters of the line it names, so the rows of one line publish the same
+/// head.
+const MYSQL_FAMILIES: [(&str, Line); 6] = [
+    ("mysql5.7", Line::Mysql5_7),
+    ("mysql8.0", Line::Mysql8_0),
+    ("mysql8.4", Line::Mysql8_4),
+    ("aurora-mysql5.7", Line::Mysql5_7),
+    ("aurora-mysql8.0", Line::Mysql8_0),
+    // MariaDB runs this vocabulary and numbers its OWN releases, so a MySQL release bound
+    // says nothing about it and it carries every entry of the table.
+    ("mariadb10.11", Line::Mariadb),
 ];
 
-/// The first page of the MySQL vocabulary's published defaults, in the ascending
-/// `ParameterName` order the report is paginated in.
-const HEAD: [&str; PAGE] = [
+/// The release line a family names, which is what decides the head it publishes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Line {
+    /// A family of MySQL's 5.7 line: it carries none of the parameters the engine introduced
+    /// in 8.0, and the one the engine dropped later is still in it.
+    Mysql5_7,
+    /// A family of MySQL's 8.0 line: it carries the 8.0 additions AND the parameter the
+    /// engine only dropped in a later line.
+    Mysql8_0,
+    /// A family of MySQL's 8.4 line: the additions, without the parameter that line dropped.
+    Mysql8_4,
+    /// A family of an engine that shares this vocabulary while numbering its own releases:
+    /// no MySQL release bound applies to it, so it carries every entry.
+    Mariadb,
+}
+
+/// The parameters the engine introduced in its 8.0 release line that fall inside the first
+/// page, each with the release that introduced it: the rows an 8.0-line family publishes and
+/// a 5.7-line family does not.
+const INTRODUCED_IN_8_0: [(&str, &str); 3] = [
+    ("activate_all_roles_on_login", "8.0.2"),
+    ("binlog_expire_logs_seconds", "8.0.1"),
+    ("binlog_row_metadata", "8.0.1"),
+];
+
+/// The parameters the engine DROPPED in its 8.4 release line, each with the release that
+/// dropped it: the rows every earlier family publishes and an 8.4-line family does not, the
+/// mirror of [`INTRODUCED_IN_8_0`].
+const REMOVED_IN_8_4: [(&str, &str); 1] = [("big_tables", "8.4.0")];
+
+/// The first page of the MySQL vocabulary's published defaults for a family of the 8.0 line,
+/// in the ascending `ParameterName` order the report is paginated in: every entry of the
+/// table's head, since that line is past the additions and before the removal.
+const HEAD_8_0: [&str; PAGE] = [
+    "activate_all_roles_on_login",
+    "allow-suspicious-udfs",
+    "auto_generate_certs",
+    "auto_increment_increment",
+    "auto_increment_offset",
+    "autocommit",
+    "automatic_sp_privileges",
+    "avoid_temporal_upgrade",
+    "back_log",
+    "basedir",
+    "big_tables",
+    "binlog_cache_size",
+    "binlog_checksum",
+    "binlog_direct_non_transactional_updates",
+    "binlog_error_action",
+    "binlog_expire_logs_seconds",
+    "binlog_format",
+    "binlog_group_commit_sync_delay",
+    "binlog_group_commit_sync_no_delay_count",
+    "binlog_max_flush_queue_time",
+];
+
+/// The same page for a family of the 5.7 line: the same published order with the parameters
+/// the engine had not introduced yet left out and the one it later dropped still in, so it
+/// reaches two names further.
+const HEAD_5_7: [&str; PAGE] = [
     "allow-suspicious-udfs",
     "auto_generate_certs",
     "auto_increment_increment",
@@ -75,15 +141,47 @@ const HEAD: [&str; PAGE] = [
     "binlog_row_image",
 ];
 
-/// The parameter that follows [`HEAD`], so the page after the first page's `Marker` is
-/// asserted to continue the one ordered sequence.
-const AFTER_HEAD: &str = "binlog_rows_query_log_events";
+/// The head a family of `line` publishes.
+///
+/// The 8.4 line publishes the 8.0 line's head with the parameter it DROPPED taken out, which
+/// pulls the next name onto the page; a family whose engine numbers its own releases carries
+/// every entry, which is the 8.0 head.
+fn head(line: Line) -> Vec<&'static str> {
+    match line {
+        Line::Mysql5_7 => HEAD_5_7.to_vec(),
+        Line::Mysql8_0 | Line::Mariadb => HEAD_8_0.to_vec(),
+        Line::Mysql8_4 => {
+            let (dropped, _) = REMOVED_IN_8_4[0];
+            let mut page: Vec<&str> = HEAD_8_0
+                .into_iter()
+                .filter(|name| *name != dropped)
+                .collect();
+            page.push(AFTER_HEAD_8_0);
+            page
+        }
+    }
+}
+
+/// The parameter that follows the 8.0 line's head, which is also the name the 8.4 line's
+/// removal pulls onto its own page.
+const AFTER_HEAD_8_0: &str = "binlog_order_commits";
+
+/// The parameter that follows the head of `line`, so the page after the first page's
+/// `Marker` is asserted to continue the one ordered sequence.
+fn after_head(line: Line) -> &'static str {
+    match line {
+        Line::Mysql5_7 => "binlog_rows_query_log_events",
+        Line::Mysql8_0 | Line::Mariadb => AFTER_HEAD_8_0,
+        Line::Mysql8_4 => "binlog_row_image",
+    }
+}
 
 /// The parameters of the first page the engine introduced INSIDE the releases these families
 /// run, each with the release that introduced it: the only rows of the page that report a
 /// `MinimumEngineVersion` at all, since "the earliest engine version to which the parameter
 /// can apply" is only a fact worth reporting where the engine did not always carry the
-/// parameter.
+/// parameter. The 8.0-line rows are in [`INTRODUCED_IN_8_0`], which a 5.7-line family does
+/// not carry at all.
 const INTRODUCED_IN: [(&str, &str); 3] = [
     ("auto_generate_certs", "5.7.5"),
     ("binlog_group_commit_sync_delay", "5.7.5"),
@@ -190,19 +288,20 @@ fn names(rows: &[Reported]) -> Vec<&str> {
     rows.iter().map(|row| row.name.as_str()).collect()
 }
 
-/// The first page of every MySQL-vocabulary family is the first parameters of that engine's
-/// published default set, in ascending name order.
+/// The first page of every MySQL-vocabulary family is the first parameters of the release
+/// line that family names, in ascending name order.
 #[tokio::test]
 async fn the_first_page_is_the_engines_first_published_defaults() {
     let router = emulator();
 
-    for family in MYSQL_FAMILIES {
+    for (family, line) in MYSQL_FAMILIES {
         let case = format!("family {family}");
         let (rows, marker) = page(&router, &case, family, None).await;
         assert_eq!(
             names(&rows),
-            HEAD.to_vec(),
-            "case {case:?}: expected the engine's first published defaults, got {:?}",
+            head(line),
+            "case {case:?}: expected the first published defaults of the {line:?} release \
+             line, got {:?}",
             names(&rows)
         );
         assert!(
@@ -216,7 +315,7 @@ async fn the_first_page_is_the_engines_first_published_defaults() {
         let (next, _) = page(&router, &case, family, marker.as_deref()).await;
         assert_eq!(
             names(&next).first().copied(),
-            Some(AFTER_HEAD),
+            Some(after_head(line)),
             "case {case:?}: the page after the Marker continues the published order, got {:?}",
             names(&next)
         );
@@ -231,11 +330,12 @@ async fn the_first_page_is_the_engines_first_published_defaults() {
         );
 
         // Every row of the page is the engine's own default, and only the parameters the
-        // engine introduced inside the releases these families run report the release that
-        // introduced them.
+        // engine introduced inside the releases this family's line runs report the release
+        // that introduced them.
         for row in &rows {
             let expected = INTRODUCED_IN
                 .iter()
+                .chain(INTRODUCED_IN_8_0.iter())
                 .find(|(name, _)| *name == row.name)
                 .map(|(_, version)| (*version).to_string());
             assert_eq!(
@@ -251,6 +351,30 @@ async fn the_first_page_is_the_engines_first_published_defaults() {
                 row.source
             );
         }
+
+        // A parameter the engine introduced in the 8.0 line is published by a family of
+        // that line and by no earlier one, and one it DROPPED there by every family but that
+        // line's: the family's own release decides both, and a family whose engine numbers
+        // its own releases carries them all.
+        let walked_names = walked.clone();
+        for (introduced, _) in INTRODUCED_IN_8_0 {
+            let carried = walked_names.contains(&introduced);
+            assert_eq!(
+                carried,
+                line != Line::Mysql5_7,
+                "case {case:?}: {introduced} arrived in the engine's 8.0 release line, so \
+                 only a family of that line or a later one publishes it, got {walked_names:?}"
+            );
+        }
+        for (removed, release) in REMOVED_IN_8_4 {
+            let carried = walked_names.contains(&removed);
+            assert_eq!(
+                carried,
+                line != Line::Mysql8_4,
+                "case {case:?}: {removed} was dropped from the engine at {release}, so only \
+                 a family outside that line publishes it, got {walked_names:?}"
+            );
+        }
     }
 }
 
@@ -261,14 +385,19 @@ async fn the_first_page_is_the_engines_first_published_defaults() {
 async fn each_published_parameter_reports_its_own_declared_record() {
     let router = emulator();
 
-    for family in MYSQL_FAMILIES {
+    for (family, _) in MYSQL_FAMILIES {
         let case = format!("family {family}");
-        let (rows, _) = page(&router, &case, family, None).await;
+        // The named rows fall inside the published head, which the 8.0 line's own
+        // additions push over one page boundary, so both pages of it are read.
+        let (first, marker) = page(&router, &case, family, None).await;
+        let (second, _) = page(&router, &case, family, marker.as_deref()).await;
+        let rows: Vec<Reported> = first.into_iter().chain(second).collect();
         for (name, apply_type, data_type, allowed_values, value, is_modifiable) in DECLARED {
             let row = rows
                 .iter()
                 .find(|row| row.name == name)
-                .unwrap_or_else(|| panic!("case {case:?}: expected {name} on the first page"));
+                .unwrap_or_else(|| panic!("case {case:?}: expected {name} in the published \
+                                           head"));
             let found = (
                 row.apply_type.as_deref(),
                 row.data_type.as_deref(),

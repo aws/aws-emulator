@@ -392,20 +392,23 @@ async fn a_cluster_family_reports_its_engines_published_cluster_parameters() {
         );
     }
 
-    // Two families of ONE engine publish the same catalog — the cluster parameters belong to
-    // the engine — while two different engines' catalogs differ.
+    // Two families of ONE engine publish that engine's cluster parameters, each the ones ITS
+    // OWN release line carries: the earlier line's list is a subset of the later line's.
+    // Two different engines' catalogs differ outright.
     let aurora_mysql = cluster_defaults_of(&router, "aurora-mysql8.0", "aurora-mysql8.0").await;
     let aurora_mysql_5_7 = cluster_defaults_of(&router, "aurora-mysql5.7", "aurora-mysql5.7").await;
     let aurora_postgresql =
         cluster_defaults_of(&router, "aurora-postgresql15", "aurora-postgresql15").await;
-    assert_eq!(
-        names(&aurora_mysql),
-        names(&aurora_mysql_5_7),
-        "case {:?}: two families of one engine publish one catalog",
-        "aurora-mysql8.0 against aurora-mysql5.7"
+    let later = names(&aurora_mysql);
+    let earlier = names(&aurora_mysql_5_7);
+    assert!(
+        earlier.iter().all(|name| later.contains(name)) && earlier.len() < later.len(),
+        "case {:?}: the earlier release line carries the later line's parameters except the \
+         ones the engine introduced in it, got {earlier:?} against {later:?}",
+        "aurora-mysql5.7 against aurora-mysql8.0"
     );
     assert_ne!(
-        names(&aurora_mysql),
+        later,
         names(&aurora_postgresql),
         "case {:?}: two engines publish different catalogs",
         "aurora-mysql8.0 against aurora-postgresql15"

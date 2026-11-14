@@ -25,7 +25,7 @@
 //! range with a negative bound, a single admitted value).
 
 use service_com_amazonaws_rds_amazonrdsv19::state::{
-    published_db_parameters, ClusterParameterSpec, APPLY_METHOD_PENDING_REBOOT,
+    family_parameters, published_db_parameters, ClusterParameterSpec, APPLY_METHOD_PENDING_REBOOT,
     APPLY_TYPE_DYNAMIC, APPLY_TYPE_STATIC, PARAMETER_SOURCE_ENGINE_DEFAULT, PARAMETER_SOURCE_USER,
 };
 use smithy_server_runtime::MultiServiceRouter;
@@ -218,8 +218,11 @@ async fn a_new_groups_parameter_report_publishes_each_parameters_declared_record
     let router = emulator();
 
     for (row, family) in FAMILIES.into_iter().enumerate() {
-        let catalog = published_db_parameters(family)
-            .unwrap_or_else(|| panic!("case {family:?}: this family must publish a catalogue"));
+        let catalog = family_parameters(
+            family,
+            published_db_parameters(family)
+                .unwrap_or_else(|| panic!("case {family:?}: this family must publish a catalogue")),
+        );
         let group = create_group(
             &router,
             family,
@@ -242,7 +245,7 @@ async fn a_new_groups_parameter_report_publishes_each_parameters_declared_record
              catalogue, in name order"
         );
 
-        for spec in catalog {
+        for spec in &catalog {
             let case = format!("{family} {}", spec.name);
             let entry = entry_for(&case, &parameters, spec.name);
             assert_eq!(

@@ -11,11 +11,12 @@ use super::*;
 /// it unchanged — a client that indexes this report positionally, or renders it as the
 /// ordered list it is, reads the source type the service names at that position. The
 /// source-type sequence below, and the category sequence of the entries the front door's
-/// own report is evidenced for (`db-snapshot`, `db-cluster`, `db-proxy`), are that
-/// published sequence; the remaining entries carry their categories in the order the
+/// own report is evidenced for (`db-snapshot`, `db-instance`, `db-cluster`, `db-proxy`), are
+/// that published sequence; the remaining entries carry their categories in the order the
 /// published event table lists them. It is NOT the order
 /// `DescribeEventCategoriesMessage$SourceType`'s prose happens to name the types in, and
-/// not an alphabetical sort of either list.
+/// not an alphabetical sort of either list — no entry here is sorted, and an entry that
+/// were would report a sequence the service never publishes.
 ///
 /// The SETS are the ones published in "Amazon RDS event categories and event messages"
 /// (Amazon RDS User Guide), one entry per source type this front door publishes a map for.
@@ -44,23 +45,27 @@ pub const EVENT_CATEGORIES: &[(&str, &[&str])] = &[
     ),
     ("db-parameter-group", &["configuration change"]),
     (
+        // The DB instance entry's own published sequence, which is NOT an alphabetical sort
+        // of its categories: the report publishes each source type's categories in the order
+        // that source type's own entry declares them, and this one declares them as the
+        // published report names them.
         "db-instance",
         &[
-            "availability",
-            "backtrack",
             "backup",
-            "configuration change",
-            "creation",
             "deletion",
-            "failover",
-            "failure",
+            "availability",
+            "creation",
             "low storage",
+            "restoration",
+            "configuration change",
+            "failover",
             "maintenance",
+            "failure",
             "notification",
             "read replica",
             "recovery",
-            "restoration",
             "security",
+            "backtrack",
             "security patching",
         ],
     ),

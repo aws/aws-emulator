@@ -181,9 +181,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .map_err(DescribeEngineDefaultClusterParametersError::invalid_parameter_value)?;
 
         // The catalog is kept in parameter-name order, so its own order is the report's and
-        // a page is a window over it.
-        let records: Vec<(String, Parameter)> = published
-            .iter()
+        // a page is a window over it. One catalog serves every family of an engine, and each
+        // family publishes the cluster parameters ITS OWN release carries
+        // (`crate::state::family_carries_parameter`).
+        let records: Vec<(String, Parameter)> = crate::state::family_parameters(&family, published)
+            .into_iter()
             .map(|spec| {
                 (
                     spec.name.to_string(),
@@ -298,25 +300,44 @@ fn cluster_engine_default_parameters(
 /// metadata above, each sourced `engine-default`, in parameter-name order, paginated as this
 /// operation documents.
 ///
-/// `minimum_engine_version` is published only where the version a parameter was introduced
-/// in is the same for every engine that shares this catalog; an entry that names none — one
-/// the engine has carried since before any version this service serves — reports no
-/// `MinimumEngineVersion` rather than a guessed one.
+/// `minimum_engine_version` is the release of the engine's own version line that
+/// introduced the parameter, published only where that release is the same for every engine
+/// that shares this catalog. It is reported as `Parameter$MinimumEngineVersion` and it
+/// decides which FAMILIES publish the entry: a family naming an earlier release line than
+/// the one the parameter arrived in does not carry it
+/// ([`crate::state::family_carries_parameter`]). An entry that names none — one the engine
+/// has carried since before any version this service serves — is carried by every family
+/// and reports no `MinimumEngineVersion`.
 ///
 /// The entries are in ascending parameter-name order, which is the order the report is
 /// paginated in. [`parameter`]'s columns are, in order: name, apply type, data type, allowed
 /// values, default value, modifiable, minimum engine version, description.
 pub(crate) const MYSQL_CLUSTER_PARAMETERS: &[crate::state::ClusterParameterSpec] = &[
     parameter(
+        // Introduced in the engine's 8.0 release line, so a family of an earlier line does
+        // not carry it ([`crate::state::family_carries_parameter`]).
         "activate_all_roles_on_login",
         crate::state::APPLY_TYPE_DYNAMIC,
         "boolean",
         "0,1",
         "0",
         true,
-        "",
+        "8.0.2",
         "Automatically set all granted roles as active after the user has authenticated \
          successfully.",
+    ),
+    parameter(
+        // Aurora's own binary-log read buffer, introduced in the 5.7-compatible release
+        // that added it; the version is written as that engine's own release string.
+        "aurora_binlog_read_buffer_size",
+        crate::state::APPLY_TYPE_DYNAMIC,
+        "integer",
+        "8192-536870912",
+        "5242880",
+        true,
+        "5.7.mysql_aurora.2.04.5",
+        "The size in bytes of the buffer a binary log dump thread reads binary log events \
+         into before sending them to a replica.",
     ),
     parameter(
         "binlog_format",

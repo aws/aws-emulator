@@ -27,7 +27,7 @@
 //! * pagination at the published page-size bounds and across the marker.
 
 use service_com_amazonaws_rds_amazonrdsv19::state::{
-    published_db_parameters, ClusterParameterSpec, APPLY_METHOD_IMMEDIATE,
+    family_parameters, published_db_parameters, ClusterParameterSpec, APPLY_METHOD_IMMEDIATE,
     APPLY_METHOD_PENDING_REBOOT, APPLY_TYPE_DYNAMIC,
     IMMEDIATE_APPLY_METHOD_FOR_A_STATIC_PARAMETER_MESSAGE, MAX_PARAMETERS_PER_GROUP,
     MAX_PARAMETERS_PER_MODIFY, MAX_RECORDS_RANGE, PARAMETER_SOURCE_ENGINE_DEFAULT,
@@ -208,7 +208,10 @@ async fn reported_value(
 async fn a_modified_parameter_is_reported_from_persisted_state() {
     let router = emulator();
     let family = "mysql8.0";
-    let catalog = published_db_parameters(family).expect("this family publishes a catalog");
+    let catalog = family_parameters(
+        family,
+        published_db_parameters(family).expect("this family publishes a catalog"),
+    );
     let spec = catalog
         .iter()
         .find(|spec| spec.name == "wait_timeout")

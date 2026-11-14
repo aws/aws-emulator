@@ -19,7 +19,8 @@
 //! parameters it sets and the ones it does not).
 
 use service_com_amazonaws_rds_amazonrdsv19::state::{
-    published_cluster_parameters, published_db_parameters, ClusterParameterSpec,
+    family_parameters, published_cluster_parameters, published_db_parameters,
+    ClusterParameterSpec,
     APPLY_METHOD_IMMEDIATE, APPLY_METHOD_PENDING_REBOOT, APPLY_TYPE_DYNAMIC,
     PARAMETER_SOURCE_ENGINE_DEFAULT, PARAMETER_SOURCE_USER,
 };
@@ -186,8 +187,11 @@ async fn a_db_parameter_groups_listing_reports_an_apply_method_for_every_paramet
     let router = emulator();
 
     for (row, family) in DB_FAMILIES.into_iter().enumerate() {
-        let catalog = published_db_parameters(family)
-            .unwrap_or_else(|| panic!("case {family:?}: this family must publish a catalog"));
+        let catalog = family_parameters(
+            family,
+            published_db_parameters(family)
+                .unwrap_or_else(|| panic!("case {family:?}: this family must publish a catalog")),
+        );
         let group = create_db_group(
             &router,
             family,
@@ -308,8 +312,11 @@ async fn a_cluster_parameter_groups_listing_reports_an_apply_method_for_every_pa
     let router = emulator();
 
     for (row, family) in CLUSTER_FAMILIES.into_iter().enumerate() {
-        let catalog = published_cluster_parameters(family)
-            .unwrap_or_else(|| panic!("case {family:?}: this family must publish a catalog"));
+        let catalog = family_parameters(
+            family,
+            published_cluster_parameters(family)
+                .unwrap_or_else(|| panic!("case {family:?}: this family must publish a catalog")),
+        );
         let group = create_cluster_group(
             &router,
             family,
@@ -424,23 +431,61 @@ async fn a_cluster_parameter_groups_listing_reports_an_apply_method_for_every_pa
 }
 
 // ---------------------------------------------------------------------------
-// Rule 2: the first cluster parameter the Aurora MySQL families publish
+// Rule 2: the first cluster parameter each Aurora MySQL family publishes
 // ---------------------------------------------------------------------------
 
-/// A DB cluster parameter group of an Aurora MySQL family reports, as the first row of its
-/// listing, the first cluster parameter that family publishes — the engine's
-/// `activate_all_roles_on_login` — with the whole published record, and carries the caller's
-/// value for it once one is set.
+/// One family's first published cluster parameter: the family, the parameter, its apply
+/// type, data type, published domain, default value and a value a caller may set.
+type FirstParameter = (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+);
+
+/// The first cluster parameter each Aurora MySQL family publishes.
 ///
-/// The expected record is written out as LITERALS so a drift in the catalog fails this test
-/// rather than moving with it: MySQL publishes the variable as a dynamic boolean, off by
-/// default, that a caller may change.
+/// The two families differ because a family publishes the parameters ITS OWN engine release
+/// carries: `activate_all_roles_on_login` arrived in the engine's 8.0 release line, so the
+/// 5.7-compatible family does not carry it and its listing begins at the Aurora parameter
+/// that follows it in name order.
+///
+/// Each record is written out as LITERALS so a drift in the catalog fails this test rather
+/// than moving with it.
+const FIRST_CLUSTER_PARAMETERS: [FirstParameter; 2] = [
+    (
+        "aurora-mysql8.0",
+        "activate_all_roles_on_login",
+        APPLY_TYPE_DYNAMIC,
+        "boolean",
+        "0,1",
+        "0",
+        "1",
+    ),
+    (
+        "aurora-mysql5.7",
+        "aurora_binlog_read_buffer_size",
+        APPLY_TYPE_DYNAMIC,
+        "integer",
+        "8192-536870912",
+        "5242880",
+        "8192",
+    ),
+];
+
+/// A DB cluster parameter group of an Aurora MySQL family reports, as the first row of its
+/// listing, the first cluster parameter that family publishes, with the whole published
+/// record — and carries the caller's value for it once one is set.
 #[tokio::test]
 async fn an_aurora_mysql_cluster_group_publishes_the_engines_first_cluster_parameter() {
     let router = emulator();
-    let first = "activate_all_roles_on_login";
 
-    for (row, family) in ["aurora-mysql8.0", "aurora-mysql5.7"].into_iter().enumerate() {
+    for (row, (family, first, apply_type, data_type, allowed_values, value, set_to)) in
+        FIRST_CLUSTER_PARAMETERS.into_iter().enumerate()
+    {
         let group = create_cluster_group(
             &router,
             family,
@@ -475,10 +520,10 @@ async fn an_aurora_mysql_cluster_group_publishes_the_engines_first_cluster_param
                 entry.apply_method.as_deref(),
             ),
             (
-                Some(APPLY_TYPE_DYNAMIC),
-                Some("boolean"),
-                Some("0,1"),
-                Some("0"),
+                Some(apply_type),
+                Some(data_type),
+                Some(allowed_values),
+                Some(value),
                 Some("true"),
                 Some(PARAMETER_SOURCE_ENGINE_DEFAULT),
                 Some(APPLY_METHOD_PENDING_REBOOT),
@@ -496,7 +541,7 @@ async fn an_aurora_mysql_cluster_group_publishes_the_engines_first_cluster_param
                 &[
                     ("DBClusterParameterGroupName", group.clone()),
                     ("Parameters.Parameter.1.ParameterName", first.to_string()),
-                    ("Parameters.Parameter.1.ParameterValue", "1".to_string()),
+                    ("Parameters.Parameter.1.ParameterValue", set_to.to_string()),
                 ],
             )
             .await,
@@ -515,7 +560,7 @@ async fn an_aurora_mysql_cluster_group_publishes_the_engines_first_cluster_param
         );
         assert_eq!(
             (text(&own, "ParameterName"), text(&own, "ParameterValue")),
-            (first.to_string(), "1".to_string()),
+            (first.to_string(), set_to.to_string()),
             "case {family:?}: expected the value the caller set for {first}, got {own}"
         );
     }

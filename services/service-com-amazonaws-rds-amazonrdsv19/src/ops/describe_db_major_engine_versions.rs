@@ -289,10 +289,37 @@ const EXTENDED_SUPPORT: &str = "open-source-rds-extended-support";
 
 /// Seconds in one day.
 ///
-/// The calendar below is written in whole days at midnight UTC, and Amazon RDS Extended
-/// Support picks a family up where standard support left it — so the extended window
-/// OPENS one day past the instant the standard window closes.
+/// The calendar below is written in whole calendar DAYS, and Amazon RDS Extended Support
+/// picks a family up where standard support left it — so the extended window opens at the
+/// first instant of the day AFTER the day the standard window closes on.
 const SECONDS_PER_DAY: i64 = 24 * 60 * 60;
+
+/// The first instant of the published calendar day `day` (`YYYY-MM-DD`), which is when a
+/// support window that OPENS on that day opens.
+fn day_opens(day: &str) -> ::aws_smithy_types::DateTime {
+    crate::state::catalog_timestamp(&format!("{day}T00:00:00Z"))
+}
+
+/// The LAST instant of the published calendar day `day`.
+///
+/// A support window is published as the day it CLOSES on, and that whole day is still
+/// inside the window — support ends when that day is over — so the reported bound is the
+/// day's last instant rather than the midnight that opens it. Reporting the opening
+/// midnight instead would close the window a whole day early and move every date-boundary
+/// comparison a caller makes against it.
+fn day_closes(day: &str) -> ::aws_smithy_types::DateTime {
+    crate::state::catalog_timestamp(&format!("{day}T{END_OF_DAY}"))
+}
+
+/// The time of day the last instant of a published support day falls at: the end of that
+/// UTC day, to the millisecond the modelled timestamp carries.
+const END_OF_DAY: &str = "23:59:59.999Z";
+
+/// The first instant of the day AFTER the published calendar day `day`, which is when the
+/// window that picks a family up from the one closing on `day` opens ([`SECONDS_PER_DAY`]).
+fn next_day_opens(day: &str) -> ::aws_smithy_types::DateTime {
+    ::aws_smithy_types::DateTime::from_secs(day_opens(day).secs() + SECONDS_PER_DAY)
+}
 
 /// Whether `engine` is one of the OPEN-SOURCE engines a support lifecycle is published
 /// for at all: `SupportedEngineLifecycle` "only returns information for the open source
@@ -341,13 +368,10 @@ fn lifecycles(engine: &str, major_engine_version: &str) -> Option<Vec<SupportedE
     let calendar = LIFECYCLE_CALENDAR
         .iter()
         .find(|row| row.engine == engine && row.major_engine_version == major_engine_version)?;
-    let standard_end = crate::state::catalog_timestamp(calendar.standard_support_end);
     let mut found = vec![SupportedEngineLifecycle {
         lifecycle_support_name: STANDARD_SUPPORT.to_string(),
-        lifecycle_support_start_date: crate::state::catalog_timestamp(
-            calendar.standard_support_start,
-        ),
-        lifecycle_support_end_date: standard_end,
+        lifecycle_support_start_date: day_opens(calendar.standard_support_start),
+        lifecycle_support_end_date: day_closes(calendar.standard_support_end),
     }];
     if let Some(extended_end) = calendar
         .extended_support_end
@@ -355,10 +379,8 @@ fn lifecycles(engine: &str, major_engine_version: &str) -> Option<Vec<SupportedE
     {
         found.push(SupportedEngineLifecycle {
             lifecycle_support_name: EXTENDED_SUPPORT.to_string(),
-            lifecycle_support_start_date: ::aws_smithy_types::DateTime::from_secs(
-                standard_end.secs() + SECONDS_PER_DAY,
-            ),
-            lifecycle_support_end_date: crate::state::catalog_timestamp(extended_end),
+            lifecycle_support_start_date: next_day_opens(calendar.standard_support_end),
+            lifecycle_support_end_date: day_closes(extended_end),
         });
     }
     Some(found)
@@ -371,14 +393,16 @@ struct MajorVersionLifecycle {
     engine: &'static str,
     /// The family's `MajorEngineVersion`, as the engine-version catalogue writes it.
     major_engine_version: &'static str,
-    /// The day the family was released on this service, which opens standard support, as
-    /// an ISO-8601 instant.
+    /// The calendar day (`YYYY-MM-DD`) the family was released on this service, which opens
+    /// standard support.
     standard_support_start: &'static str,
-    /// The day standard support for the family ends: the published date, aligned with the
-    /// community end of life of that major version.
+    /// The calendar day standard support for the family CLOSES on: the published date,
+    /// aligned with the community end of life of that major version. The window covers the
+    /// whole of that day ([`day_closes`]).
     standard_support_end: &'static str,
-    /// The day Amazon RDS Extended Support for the family ends, three years past the end
-    /// of standard support; `None` for a family offered no Extended Support.
+    /// The calendar day Amazon RDS Extended Support for the family closes on, at least the
+    /// three years AWS offers it for past the end of standard support; `None` for a family
+    /// offered no Extended Support.
     extended_support_end: Option<&'static str>,
 }
 
@@ -414,81 +438,80 @@ const NO_EXTENDED_SUPPORT: Option<&'static str> = None;
 /// PostgreSQL release calendars in the Amazon Aurora User Guide. Each publishes, per major
 /// version, the day it was released on the service, the day standard support for it ends
 /// and the day Amazon RDS Extended Support for it ends. AWS publishes DAYS there, not
-/// times of day, so every instant below is that day at midnight UTC.
+/// times of day, so every column below is a calendar day (`YYYY-MM-DD`) and the report
+/// projects it onto the instant that day bounds: the day a window opens contributes its
+/// FIRST instant and the day a window closes on its LAST ([`day_opens`], [`day_closes`]).
 ///
 /// Like the engine-version catalogue this report reads, it is NOT the real service's live
 /// calendar, which moves with every release. What a caller can rely on is that every
 /// open-source family that catalogue publishes has a row here, that standard support opens
-/// no later than it closes, that Extended Support opens the day AFTER standard support
-/// closes and runs the three years AWS offers it for, and that a family whose engine is
-/// offered no Extended Support carries the standard window alone.
+/// no later than it closes, that Extended Support opens the day AFTER the day standard
+/// support closes on and runs at least the three years AWS offers it for, and that a family
+/// whose engine is offered no Extended Support carries the standard window alone.
 ///
 /// Rows are grouped by engine and ascend by major version, as the calendars publish them.
 const LIFECYCLE_CALENDAR: &[MajorVersionLifecycle] = &[
     // --- Aurora MySQL -----------------------------------------------------
-    lifecycle(
-        "aurora-mysql",
-        "5.7",
-        "2017-10-24T00:00:00Z",
-        "2024-10-31T00:00:00Z",
-        Some("2027-10-31T00:00:00Z"),
-    ),
+    // Aurora MySQL 5.7 was released on this service with the 2.x release series (Aurora
+    // MySQL version 2, February 2018), and its Extended Support window is the published
+    // one for that family, which runs longer than the three years the offering's floor is.
+    lifecycle("aurora-mysql", "5.7", "2018-02-06", "2024-10-31", Some("2029-06-30")),
     lifecycle(
         "aurora-mysql",
         "8.0",
-        "2022-01-27T00:00:00Z",
-        "2026-10-31T00:00:00Z",
-        Some("2029-10-31T00:00:00Z"),
+        "2022-01-27",
+        "2026-10-31",
+        Some("2029-10-31"),
     ),
     // --- Aurora PostgreSQL ------------------------------------------------
     lifecycle(
         "aurora-postgresql",
         "11",
-        "2019-06-04T00:00:00Z",
-        "2024-02-29T00:00:00Z",
-        Some("2027-02-28T00:00:00Z"),
+        "2019-06-04",
+        "2024-02-29",
+        Some("2027-02-28"),
     ),
     lifecycle(
         "aurora-postgresql",
         "12",
-        "2020-09-17T00:00:00Z",
-        "2025-02-28T00:00:00Z",
-        Some("2028-02-28T00:00:00Z"),
+        "2020-09-17",
+        "2025-02-28",
+        Some("2028-02-28"),
     ),
     lifecycle(
         "aurora-postgresql",
         "13",
-        "2021-05-11T00:00:00Z",
-        "2026-02-28T00:00:00Z",
-        Some("2029-02-28T00:00:00Z"),
+        "2021-05-11",
+        "2026-02-28",
+        Some("2029-02-28"),
     ),
     lifecycle(
         "aurora-postgresql",
         "14",
-        "2022-05-26T00:00:00Z",
-        "2026-11-30T00:00:00Z",
-        Some("2029-11-30T00:00:00Z"),
+        "2022-05-26",
+        "2026-11-30",
+        Some("2029-11-30"),
     ),
     lifecycle(
         "aurora-postgresql",
         "15",
-        "2023-04-25T00:00:00Z",
-        "2027-11-30T00:00:00Z",
-        Some("2030-11-30T00:00:00Z"),
+        "2023-04-25",
+        "2027-11-30",
+        Some("2030-11-30"),
     ),
     lifecycle(
         "aurora-postgresql",
         "16",
-        "2024-02-13T00:00:00Z",
-        "2028-11-30T00:00:00Z",
-        Some("2031-11-30T00:00:00Z"),
+        "2024-02-13",
+        "2028-11-30",
+        Some("2031-11-30"),
     ),
     lifecycle(
         "aurora-postgresql",
         "17",
-        "2025-04-24T00:00:00Z",
-        "2029-11-30T00:00:00Z",
-        Some("2032-11-30T00:00:00Z"),
+        "2025-04-24",
+        "2029-11-30",
+        Some("2032-11-30"),
     ),
     // --- MariaDB ----------------------------------------------------------
     // Every MariaDB family carries the standard window alone; see
@@ -496,95 +519,95 @@ const LIFECYCLE_CALENDAR: &[MajorVersionLifecycle] = &[
     lifecycle(
         "mariadb",
         "10.5",
-        "2020-10-21T00:00:00Z",
-        "2025-06-30T00:00:00Z",
+        "2020-10-21",
+        "2025-06-30",
         NO_EXTENDED_SUPPORT,
     ),
     lifecycle(
         "mariadb",
         "10.6",
-        "2021-07-21T00:00:00Z",
-        "2026-07-31T00:00:00Z",
+        "2021-07-21",
+        "2026-07-31",
         NO_EXTENDED_SUPPORT,
     ),
     lifecycle(
         "mariadb",
         "10.11",
-        "2023-05-24T00:00:00Z",
-        "2028-02-29T00:00:00Z",
+        "2023-05-24",
+        "2028-02-29",
         NO_EXTENDED_SUPPORT,
     ),
     lifecycle(
         "mariadb",
         "11.4",
-        "2024-11-21T00:00:00Z",
-        "2029-05-31T00:00:00Z",
+        "2024-11-21",
+        "2029-05-31",
         NO_EXTENDED_SUPPORT,
     ),
     // --- MySQL ------------------------------------------------------------
     lifecycle(
         "mysql",
         "5.7",
-        "2016-02-22T00:00:00Z",
-        "2024-02-29T00:00:00Z",
-        Some("2027-02-28T00:00:00Z"),
+        "2016-02-22",
+        "2024-02-29",
+        Some("2027-02-28"),
     ),
     lifecycle(
         "mysql",
         "8.0",
-        "2018-10-23T00:00:00Z",
-        "2026-07-31T00:00:00Z",
-        Some("2029-07-31T00:00:00Z"),
+        "2018-10-23",
+        "2026-07-31",
+        Some("2029-07-31"),
     ),
     lifecycle(
         "mysql",
         "8.4",
-        "2025-02-26T00:00:00Z",
-        "2032-04-30T00:00:00Z",
-        Some("2035-04-30T00:00:00Z"),
+        "2025-02-26",
+        "2032-04-30",
+        Some("2035-04-30"),
     ),
     // --- PostgreSQL -------------------------------------------------------
     lifecycle(
         "postgres",
         "11",
-        "2018-11-13T00:00:00Z",
-        "2024-02-29T00:00:00Z",
-        Some("2027-02-28T00:00:00Z"),
+        "2018-11-13",
+        "2024-02-29",
+        Some("2027-02-28"),
     ),
     lifecycle(
         "postgres",
         "13",
-        "2020-11-10T00:00:00Z",
-        "2026-02-28T00:00:00Z",
-        Some("2029-02-28T00:00:00Z"),
+        "2020-11-10",
+        "2026-02-28",
+        Some("2029-02-28"),
     ),
     lifecycle(
         "postgres",
         "14",
-        "2021-11-03T00:00:00Z",
-        "2026-11-30T00:00:00Z",
-        Some("2029-11-30T00:00:00Z"),
+        "2021-11-03",
+        "2026-11-30",
+        Some("2029-11-30"),
     ),
     lifecycle(
         "postgres",
         "15",
-        "2023-02-09T00:00:00Z",
-        "2027-11-30T00:00:00Z",
-        Some("2030-11-30T00:00:00Z"),
+        "2023-02-09",
+        "2027-11-30",
+        Some("2030-11-30"),
     ),
     lifecycle(
         "postgres",
         "16",
-        "2023-11-09T00:00:00Z",
-        "2028-11-30T00:00:00Z",
-        Some("2031-11-30T00:00:00Z"),
+        "2023-11-09",
+        "2028-11-30",
+        Some("2031-11-30"),
     ),
     lifecycle(
         "postgres",
         "17",
-        "2024-11-14T00:00:00Z",
-        "2029-11-30T00:00:00Z",
-        Some("2032-11-30T00:00:00Z"),
+        "2024-11-14",
+        "2029-11-30",
+        Some("2032-11-30"),
     ),
     // PostgreSQL 18: standard support closes with the community end of life of that major
     // version (the PostgreSQL versioning policy retires a major version five years after
@@ -593,8 +616,8 @@ const LIFECYCLE_CALENDAR: &[MajorVersionLifecycle] = &[
     lifecycle(
         "postgres",
         "18",
-        "2025-11-20T00:00:00Z",
-        "2030-11-30T00:00:00Z",
-        Some("2033-11-30T00:00:00Z"),
+        "2025-11-20",
+        "2030-11-30",
+        Some("2033-11-30"),
     ),
 ];

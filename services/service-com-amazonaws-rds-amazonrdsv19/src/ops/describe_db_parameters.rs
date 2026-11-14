@@ -267,16 +267,21 @@ fn check_filter_names(filters: &[Filter]) -> Result<(), String> {
 fn published_defaults(
     group: &crate::state::DbParameterGroupRecord,
 ) -> BTreeMap<String, Parameter> {
-    crate::state::published_db_parameters(&group.family)
-        .unwrap_or_default()
-        .iter()
-        .map(|spec| {
-            (
-                spec.name.to_string(),
-                crate::state::group_default_parameter_to_wire(&group.family, spec),
-            )
-        })
-        .collect()
+    // Each family publishes the parameters its OWN engine release carries, out of the one
+    // catalog that serves every family of the engine
+    // (`crate::state::family_carries_parameter`).
+    crate::state::family_parameters(
+        &group.family,
+        crate::state::published_db_parameters(&group.family).unwrap_or_default(),
+    )
+    .into_iter()
+    .map(|spec| {
+        (
+            spec.name.to_string(),
+            crate::state::group_default_parameter_to_wire(&group.family, spec),
+        )
+    })
+    .collect()
 }
 
 /// Every parameter type of `group` at once, which is what a request naming no `Source`

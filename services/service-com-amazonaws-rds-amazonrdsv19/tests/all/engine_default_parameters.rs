@@ -453,22 +453,52 @@ async fn a_family_reports_its_engines_published_parameters() {
         );
     }
 
-    // Two families of ONE engine publish the same catalog — the parameters belong to the
-    // engine — while two different engines' catalogs differ.
+    // Two families of ONE engine publish that engine's parameters, each the ones ITS OWN
+    // release line carries: what only the later line publishes is what the engine
+    // introduced there, and the two lists agree on everything neither release boundary
+    // touches. Two different engines' catalogs differ outright.
     let mysql_8 = defaults_of(&router, "mysql8.0", "mysql8.0").await;
     let mysql_5_7 = defaults_of(&router, "mysql5.7", "mysql5.7").await;
     let postgres = defaults_of(&router, "postgres16", "postgres16").await;
     let names = |parameters: &[Reported]| -> Vec<String> {
         parameters.iter().map(|p| p.name.clone()).collect()
     };
-    assert_eq!(
-        names(&mysql_8),
-        names(&mysql_5_7),
-        "case {:?}: two families of one engine publish one catalog",
+    let later = names(&mysql_8);
+    let earlier = names(&mysql_5_7);
+    let shared = earlier.iter().filter(|name| later.contains(name)).count();
+    assert!(
+        shared * 2 > earlier.len(),
+        "case {:?}: two lines of one engine share that engine's vocabulary, got {earlier:?} \
+         against {later:?}",
+        "mysql5.7 against mysql8.0"
+    );
+    let only_later: Vec<&String> = later
+        .iter()
+        .filter(|name| !earlier.contains(name))
+        .collect();
+    assert!(
+        !only_later.is_empty(),
+        "case {:?}: the engine introduced parameters in its later release line, so the \
+         earlier family must not publish all of them, got {later:?}",
         "mysql8.0 against mysql5.7"
     );
+    for name in only_later {
+        let row = mysql_8
+            .iter()
+            .find(|p| &p.name == name)
+            .unwrap_or_else(|| panic!("case {name:?}: just read from this report"));
+        assert!(
+            row.minimum_engine_version
+                .as_deref()
+                .is_some_and(|version| version.starts_with("8.")),
+            "case {name:?}: a parameter only the later family publishes is one the engine \
+             introduced in that line, so it reports a MinimumEngineVersion inside it, got \
+             {:?}",
+            row.minimum_engine_version
+        );
+    }
     assert_ne!(
-        names(&mysql_8),
+        later,
         names(&postgres),
         "case {:?}: two engines publish different catalogs",
         "mysql8.0 against postgres16"
