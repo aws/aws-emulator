@@ -1366,7 +1366,7 @@ where
             // A served call is counted whatever it answered: "every request" includes the
             // refused ones, which are requests the API answered.
             if let Some(operation) = operation {
-                crate::state::usage::count_api_call(&*self.engine, &operation);
+                crate::state::usage::count_api_call(&*self.engine, &operation, ctx).await;
             }
             response
         })

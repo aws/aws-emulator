@@ -103,6 +103,8 @@ mod cloudformation_sfn_lambda_published_handles;
 // metric-stream export pipeline a stack deploys, which only moves data if CloudFormation,
 // IAM, CloudWatch, Firehose and Amazon S3 all agree, so no single crate's test target can
 // follow a published datapoint to the object it lands in.
+#[path = "all/cloudformation_metric_stream_estate_is_drainable.rs"]
+mod cloudformation_metric_stream_estate_is_drainable;
 #[path = "all/cloudformation_metric_stream_exports_to_s3.rs"]
 mod cloudformation_metric_stream_exports_to_s3;
 // Declared here, in this same head region, for the reason the entry above records: what

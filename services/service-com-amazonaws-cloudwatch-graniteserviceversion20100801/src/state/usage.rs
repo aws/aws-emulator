@@ -14,6 +14,11 @@
 //! `Resource` — carrying this service and the operation the request named, so a reader
 //! selects one operation's calls by naming its operation in `Resource`, and an operation
 //! nothing called in a window has no datapoint in it rather than a zero.
+//!
+//! A datapoint stored here is a metric update of this account like any other, so a running
+//! metric stream whose filters select it exports it ([`super::metric_stream_export`]): a stream
+//! streams "metrics from all metric namespaces in the account", so the namespace being one no
+//! caller may publish into does not keep its metrics out of a stream.
 
 use super::{
     ComAmazonawsCloudwatchGraniteserviceversion20100801State as State, MetricKey,
@@ -92,15 +97,63 @@ impl State {
 }
 
 /// Count one served call of `operation` into the usage telemetry held in `engine`'s store for
-/// this service.
+/// this service, and export the metric update that count IS.
 ///
 /// The seam the request path meters through ([`crate::service`]): it takes the store's lock
 /// for the append alone and answers nothing, because the count is published off the response —
 /// a call is answered whether or not its own usage datapoint could be stored.
-pub fn count_api_call<Eng: Send + Sync + 'static>(engine: &Eng, operation: &str) {
+///
+/// A stream "can automatically stream CloudWatch metrics to Amazon Web Services destinations"
+/// and the stream a caller creates streams "metrics from all metric namespaces in the account"
+/// — every namespace, or every one its filters leave in (`PutMetricStream`) — so this series is
+/// streamed like any other metric of the account: a datapoint stored HERE is a metric update,
+/// and a running stream selecting it is owed its record
+/// ([`super::metric_stream_export::export_published`], the one export path a caller's publish
+/// takes too). The export runs with the store released and reads what the store already holds,
+/// so metering a call writes nothing a later caller would not have seen — and a store that holds
+/// no stream at all is not asked to plan one.
+///
+/// What a metered call can cost is bounded before it is spent: this seam publishes ONE series
+/// over ONE period, so the planning scan is a single pass over that series' datapoints, itself
+/// capped at [`super::MAX_DATAPOINTS_PER_SERIES`] and taken once for the request however many
+/// streams select it; the records it can owe are capped at
+/// [`super::metric_stream_export::MAX_RECORDS_PER_REQUEST`], which is what bounds the in-process
+/// deliveries one metered call makes; and nothing is held while they are made.
+pub async fn count_api_call<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    operation: &str,
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+) {
     let Some(state) = super::service_state(engine) else {
         return;
     };
     let now = super::now_secs();
-    state.lock().count_api_call(operation, now);
+    // The count, and whether anything could stream it, under ONE hold of the store: a store
+    // holding no metric stream owes no record, so the call this meters costs the datapoint and
+    // nothing else — no series is built and no export is planned for it.
+    let streamed = {
+        let mut store = state.lock();
+        store.count_api_call(operation, now);
+        !store.metric_streams.is_empty()
+    };
+    if !streamed {
+        return;
+    }
+    // Which series and period this count publishes into, by the derivation an ingested batch's
+    // is read with ([`super::metric_stream_export::published_at`]), so one observation owes
+    // exactly the record a publish of the same datapoint would.
+    let published =
+        super::metric_stream_export::published_at(call_count_key(operation), now);
+    // BOXED: this seam is awaited on the answer path of every operation of this service
+    // ([`crate::service`]), and the export's own future is far larger than the count's. Holding
+    // it inline would grow the future of every served call by that much — including the calls
+    // one emulated service makes to another inside a handler, where those futures nest — so the
+    // export lives on the heap and the metering future stays small.
+    Box::pin(super::metric_stream_export::export_published(
+        engine,
+        ctx,
+        &super::request_region(ctx.parts()),
+        &published,
+    ))
+    .await;
 }

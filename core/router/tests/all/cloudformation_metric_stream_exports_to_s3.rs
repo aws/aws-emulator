@@ -45,13 +45,13 @@ use crate::query_wire::{element, elements, form_encode, outputs_of};
 
 /// The Region every call below is signed for, and so the Region the stack's resources, their
 /// ARNs and the exported records belong to.
-const REGION: &str = "us-east-1";
+pub(crate) const REGION: &str = "us-east-1";
 
 /// CloudWatch's `X-Amz-Target` prefix, from its model's service shape
 /// (`GraniteServiceVersion20100801`), and the signing name its credential scope carries
 /// (`sigv4Name: monitoring`).
-const CLOUDWATCH_TARGET_PREFIX: &str = "GraniteServiceVersion20100801";
-const CLOUDWATCH_SIGNING_NAME: &str = "monitoring";
+pub(crate) const CLOUDWATCH_TARGET_PREFIX: &str = "GraniteServiceVersion20100801";
+pub(crate) const CLOUDWATCH_SIGNING_NAME: &str = "monitoring";
 
 /// How often a deployment is asked whether it has settled, and how long it goes on being
 /// asked: a stack whose Firehose stream its owning service has not reported `ACTIVE` yet
@@ -119,7 +119,19 @@ struct Row {
     /// The `(namespace, metric name)` pairs a record must arrive for; every other published
     /// metric is one no record may arrive for.
     exported: &'static [(&'static str, &'static str)],
+    /// Whether this row's filters leave the account's OWN usage namespace in, so the
+    /// destination also holds records of the call count CloudWatch publishes about its own API
+    /// ([`USAGE_METRIC`]): a stream "from all metric namespaces in the account" streams that
+    /// namespace like any other, and a stream narrowed to another namespace by `IncludeFilters`
+    /// does not. How MANY such records arrive is not a row's to state — it is one per metered
+    /// call of the period — so only their presence or absence is asserted.
+    streams_usage: bool,
 }
+
+/// The series CloudWatch publishes about its own API: the `AWS/Usage` call count
+/// (`crate::…::state::usage`, the service's own metering), which a stream selecting that
+/// namespace streams.
+const USAGE_METRIC: (&str, &str) = ("AWS/Usage", "CallCount");
 
 /// The JSON template the first two rows share: the delivery role with the permissions the
 /// export and the delivery need, the destination bucket, the Firehose stream writing into it,
@@ -217,6 +229,9 @@ const ROWS: &[Row] = &[
             ("Custom/Carts", "Abandoned", &[2.0]),
         ],
         exported: &[("Custom/Orders", "Placed"), ("Custom/Carts", "Abandoned")],
+        // No filter at all: every namespace of the account is streamed, the reserved one its
+        // own usage metrics live in included.
+        streams_usage: true,
     },
     Row {
         case: "an UNNAMED json stream including one namespace narrowed to one metric name, \
@@ -253,6 +268,8 @@ const ROWS: &[Row] = &[
             ("Custom/Audit", "Events", &[1.0]),
         ],
         exported: &[("Custom/Billing", "Invoices")],
+        // `IncludeFilters` names one namespace, so nothing else is streamed.
+        streams_usage: false,
     },
     Row {
         case: "a yaml stream with short-form intrinsics excluding one namespace",
@@ -312,11 +329,18 @@ Outputs:
             ("Custom/Noise", "Chatter", &[8.0]),
         ],
         exported: &[("Custom/Fleet", "Trips")],
+        // `ExcludeFilters` names another namespace, so the usage namespace is still streamed.
+        streams_usage: true,
     },
 ];
 
 /// The emulator one row drives: the five services the flow spans, on ONE engine.
-fn emulator() -> MultiServiceRouter {
+///
+/// `pub(crate)` with the three helpers below it: the metric-stream estate suite
+/// (`crate::cloudformation_metric_stream_estate_is_drainable`) drives the same five services
+/// over the same wire, and one definition of the router and of the request builders is what
+/// keeps the two suites from drifting apart.
+pub(crate) fn emulator() -> MultiServiceRouter {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     // Signature verification is the emulator's concern, not any of these services'.
@@ -346,7 +370,7 @@ fn emulator() -> MultiServiceRouter {
 /// A SigV4 `Authorization` header whose credential scope names `signing_name` — the routing
 /// key the router claims a request by. Neither the key id nor the signature is a credential:
 /// this router runs with request authentication off, so nothing here is verified.
-fn authorization(signing_name: &str) -> String {
+pub(crate) fn authorization(signing_name: &str) -> String {
     format!(
         "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260101/{REGION}/{signing_name}/aws4_request, \
          SignedHeaders=host, Signature=not-verified"
@@ -354,7 +378,7 @@ fn authorization(signing_name: &str) -> String {
 }
 
 /// One request to the service `signing_name` serves; answers its status and body bytes.
-async fn send(
+pub(crate) async fn send(
     router: &MultiServiceRouter,
     signing_name: &str,
     method: &str,
@@ -381,7 +405,7 @@ async fn send(
 
 /// One CloudFormation action over its awsQuery wire. The form components are encoded by the
 /// test crate's one awsQuery encoder, so a template body full of `{`, `"` and `&` survives it.
-async fn cloudformation(
+pub(crate) async fn cloudformation(
     router: &MultiServiceRouter,
     action: &str,
     members: &[(&str, &str)],
@@ -537,22 +561,49 @@ async fn delivered(router: &MultiServiceRouter, row: &Row) -> (Vec<String>, Vec<
     (held, records)
 }
 
-/// The row's delivered records once at least `want` of them have arrived — or a failure naming
-/// the row once [`DELIVERY_DEADLINE`] has passed.
+/// What the row's destination holds at the END of the silence window, re-read throughout it.
+///
+/// The window is what gives a record the row's filters withhold time to arrive if the service
+/// wrongly exported one; it is spent RE-READING the destination rather than sleeping once, so the
+/// read the assertions judge is the latest one and nothing is asserted about how fast the host
+/// ran.
+async fn held_through_the_silence(
+    router: &MultiServiceRouter,
+    row: &Row,
+) -> (Vec<String>, Vec<Value>) {
+    let until = Instant::now() + SILENCE_WINDOW;
+    let mut answer = delivered(router, row).await;
+    loop {
+        if Instant::now() >= until {
+            return answer;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+        answer = delivered(router, row).await;
+    }
+}
+
+/// The row's delivered records once every metric in `want` has one — or a failure naming the
+/// row once [`DELIVERY_DEADLINE`] has passed.
+///
+/// The condition is the metrics rather than a COUNT: a destination also holds the records of
+/// the account's own usage series where the row's filters leave that namespace in
+/// ([`Row::streams_usage`]), so a count would be satisfied by records of a metric the row is
+/// not waiting for.
 async fn delivered_records(
     router: &MultiServiceRouter,
     row: &Row,
-    want: usize,
+    want: &BTreeSet<(String, String)>,
 ) -> (Vec<String>, Vec<Value>) {
     let deadline = Instant::now() + DELIVERY_DEADLINE;
     loop {
         let (held, records) = delivered(router, row).await;
-        if records.len() >= want {
+        let seen: BTreeSet<(String, String)> = records.iter().map(metric_of).collect();
+        if want.iter().all(|metric| seen.contains(metric)) {
             return (held, records);
         }
         assert!(
             Instant::now() < deadline,
-            "case {:?}: expected at least {want} exported record(s) in {}, got {records:?} \
+            "case {:?}: expected an exported record for each of {want:?} in {}, got {records:?} \
              under keys {held:?}",
             row.case,
             row.bucket
@@ -675,26 +726,39 @@ async fn a_deployed_metric_stream_exports_its_publishes_through_firehose_to_s3()
             .await;
         }
 
-        // What the destination holds once the records the row expects have arrived, read again
-        // after a silence as long as a delivery needs so a record the filters withhold cannot
-        // pass by being late.
-        delivered_records(&router, row, row.exported.len()).await;
-        tokio::time::sleep(SILENCE_WINDOW).await;
-        let (held, records) = delivered(&router, row).await;
-
-        let seen: BTreeSet<(String, String)> = records.iter().map(metric_of).collect();
-        let expected: BTreeSet<(String, String)> = row
+        // What the destination holds once the records the row expects have arrived, RE-READ for
+        // as long as a delivery needs so a record the filters withhold cannot pass by being
+        // late: the last read of that window is what the assertions below judge.
+        let published_metrics: BTreeSet<(String, String)> = row
             .exported
             .iter()
             .map(|(namespace, metric_name)| ((*namespace).to_string(), (*metric_name).to_string()))
             .collect();
+        delivered_records(&router, row, &published_metrics).await;
+        let (held, records) = held_through_the_silence(&router, row).await;
+
+        let seen: BTreeSet<(String, String)> = records.iter().map(metric_of).collect();
+        // Beside the row's own publishes, the destination holds the account's usage series
+        // wherever the row's filters leave that namespace in — a stream streams the metrics of
+        // every namespace its filters admit, whoever published them.
+        let mut expected = published_metrics.clone();
+        if row.streams_usage {
+            expected.insert((USAGE_METRIC.0.to_string(), USAGE_METRIC.1.to_string()));
+        }
         assert_eq!(
             seen, expected,
             "case {case:?}: expected a record for exactly {expected:?}, got {seen:?} in \
              {records:?}"
         );
+        // One record per selected metric of one period, counted over the metrics the row
+        // published: the usage series is counted per metered call rather than per period, so
+        // its records are left out of this count.
+        let published_records = records
+            .iter()
+            .filter(|record| published_metrics.contains(&metric_of(record)))
+            .count();
         assert_eq!(
-            records.len(),
+            published_records,
             row.exported.len(),
             "case {case:?}: one selected metric of one period owes one record, got {records:?}"
         );

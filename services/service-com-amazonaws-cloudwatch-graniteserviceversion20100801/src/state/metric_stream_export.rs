@@ -29,11 +29,14 @@
 //!   instant that period opens at.
 //! * IN WHICH FORM — the `OutputFormat` the stream carries ([`JSON_FORMAT`]).
 //!
-//! The export happens where the update does: `PutMetricData` stores the datapoints, so the
-//! records those datapoints make due are pushed from that call ([`export_published`]) and a
-//! consumer downstream of the delivery stream sees them without anybody calling CloudWatch
-//! again. The datapoints a record reports are only READ here — a record is a reading of what the
-//! store already holds — and what the export WRITES is its own metering: the stream's own series
+//! The export happens where the update does, whichever path RECORDS the update: `PutMetricData`
+//! stores a caller's datapoints, and the service's own API metering stores the call count it
+//! publishes about itself ([`super::usage`]) — "Stream metrics from all metric namespaces in the
+//! account" is every namespace the account holds metrics in, the reserved ones included — so the
+//! records either write makes due are pushed from that call ([`export_published`]) and a consumer
+//! downstream of the delivery stream sees them without anybody calling CloudWatch again. The
+//! datapoints a record reports are only READ here — a record is a reading of what the store
+//! already holds — and what the export WRITES is its own metering: the stream's own series
 //! counting the updates it streamed ([`metering`]).
 //!
 //! The delivery stream is a resource of another service, so a record reaches it the way any
@@ -131,7 +134,7 @@ const PUT_RECORD_ACTION: &str = "firehose:PutRecord";
 /// above the records any realistic publish owes (a handful of streams over the metrics of one
 /// batch); what it does not reach is not exported, exactly as a metric update AWS drops when a
 /// stream cannot keep up is not exported.
-const MAX_RECORDS_PER_REQUEST: usize = 500;
+pub const MAX_RECORDS_PER_REQUEST: usize = 500;
 
 /// The members of the `value` object a json record carries, as the statistics a stream
 /// always sends: "a metric stream always sends the `MAX`, `MIN`, `SUM`, and `SAMPLECOUNT`
@@ -185,6 +188,21 @@ pub fn published_series(
         series.period_starts.dedup();
     }
     published
+}
+
+/// The (series, period) pair ONE datapoint stored at `timestamp_secs` publishes into, as
+/// [`export_published`] takes them.
+///
+/// The same derivation [`published_series`] reads a batch with, for a caller that stored a
+/// single observation and holds no batch to hand over — the service's own API metering
+/// ([`super::usage`]) — so one observation owes exactly the record a publish of the same
+/// datapoint would.
+#[must_use]
+pub fn published_at(key: super::MetricKey, timestamp_secs: f64) -> Vec<PublishedSeries> {
+    vec![PublishedSeries {
+        key,
+        period_starts: vec![period_start(timestamp_secs)],
+    }]
 }
 
 /// The instant the [`EXPORT_PERIOD_SECS`] period holding `timestamp_secs` opens at.
@@ -281,6 +299,15 @@ struct PeriodGroup<'a> {
 /// The record budget is applied BEFORE any measuring: a stream collects at most as many
 /// (period, unit) groups as the budget still allows, so what the budget does not reach is never
 /// measured and never rendered.
+///
+/// The datapoints are grouped ONCE per published series, before any stream is looked at: which
+/// (period, unit) groups a series owes records for is a property of the series and of the
+/// periods this request published into, and of no stream — so the scan over a series' stored
+/// datapoints costs the request once however many streams select it, rather than once per
+/// stream. That is what bounds the work of a call made while the store holds many running
+/// streams: at most one pass per published series, each pass over at most that series' own
+/// datapoint cap ([`super::MAX_DATAPOINTS_PER_SERIES`]), and at most
+/// [`MAX_RECORDS_PER_REQUEST`] groups kept from it.
 fn planned(
     store: &super::ComAmazonawsCloudwatchGraniteserviceversion20100801State,
     region: &str,
@@ -288,6 +315,14 @@ fn planned(
 ) -> Vec<StreamExport> {
     let mut exports: Vec<StreamExport> = Vec::new();
     let mut budget = MAX_RECORDS_PER_REQUEST;
+    // One pass per published series, shared by every stream below.
+    let grouped_series: Vec<(&PublishedSeries, Vec<PeriodGroup<'_>>)> = published
+        .iter()
+        .filter_map(|series| {
+            let data = store.metrics.get(&series.key)?;
+            Some((series, grouped(series, data, MAX_RECORDS_PER_REQUEST)))
+        })
+        .collect();
     for (key, stored) in &store.metric_streams {
         if key.region != region {
             continue;
@@ -316,19 +351,16 @@ fn planned(
         // The groups this stream owes a record for, measured as they are collected; at most
         // `budget` of them, so the work is bounded by the budget rather than truncated after it.
         let mut measured: Vec<MeasuredPeriod> = Vec::new();
-        for series in published {
+        for (series, groups) in &grouped_series {
             if measured.len() >= budget {
                 break;
             }
             if !streams_metric(stream, &series.key) {
                 continue;
             }
-            let Some(data) = store.metrics.get(&series.key) else {
-                continue;
-            };
             let additional = additional_statistics(stream, &series.key);
-            for group in grouped(series, data, budget - measured.len()) {
-                measured.push(measured_period(&series.key, &additional, &group));
+            for group in groups.iter().take(budget - measured.len()) {
+                measured.push(measured_period(&series.key, &additional, group));
             }
         }
         // Oldest period first across every metric of the batch, so the records of one metric

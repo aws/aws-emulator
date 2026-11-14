@@ -274,6 +274,46 @@ impl Emulator {
         }
     }
 
+    /// Every exported record in `bucket`, in delivery order, once one has arrived for each of
+    /// `want` — or a failure naming `case` once [`DELIVERY_DEADLINE`] has passed.
+    ///
+    /// The condition is the METRICS rather than a count: a destination of a stream whose filters
+    /// admit the account's own usage namespace also holds the records of the call count this
+    /// service publishes about its API, so a count could be satisfied by records of a metric the
+    /// case is not waiting for.
+    async fn delivered_metrics(
+        &self,
+        case: &str,
+        bucket: &str,
+        want: &[(&str, &str)],
+    ) -> Vec<Value> {
+        let wanted: Vec<(String, String)> = want
+            .iter()
+            .map(|(namespace, metric_name)| {
+                ((*namespace).to_string(), (*metric_name).to_string())
+            })
+            .collect();
+        let deadline = Instant::now() + DELIVERY_DEADLINE;
+        loop {
+            let records: Vec<Value> = self
+                .delivered_objects(bucket)
+                .await
+                .into_iter()
+                .flatten()
+                .collect();
+            let arrived: Vec<(String, String)> = records.iter().map(metric_of).collect();
+            if wanted.iter().all(|metric| arrived.contains(metric)) {
+                return records;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "case {case:?}: expected an exported record for each of {wanted:?} in {bucket}, \
+                 got {records:?}"
+            );
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+    }
+
     /// Every exported record in `bucket` after [`SILENCE_WINDOW`], for a case asserting what
     /// was NOT exported.
     async fn records_after_the_silence_window(&self, bucket: &str) -> Vec<Value> {
@@ -570,7 +610,7 @@ async fn a_running_stream_exports_the_metric_updates_its_filters_select() {
             publish(&emulator, namespace, metric_name, *value, 1).await;
         }
         let records = emulator
-            .delivered_records(row.case, "selection-sink", row.exported.len())
+            .delivered_metrics(row.case, "selection-sink", &row.exported)
             .await;
         let arrived: Vec<(String, String)> = records.iter().map(metric_of).collect();
         for (namespace, metric_name) in &row.exported {

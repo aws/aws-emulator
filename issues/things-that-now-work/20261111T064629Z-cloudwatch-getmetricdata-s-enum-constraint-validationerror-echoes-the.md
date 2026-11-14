@@ -50,3 +50,26 @@ Cause 2:
 1. Deploy a CloudFormation stack with two AWS::CloudWatch::MetricStream resources (one IncludeFilters, one ExcludeFilters) targeting a Firehose delivery stream into an S3 bucket.
 2. GetMetricStream on each, then ListMetricStreams + GetMetricStream to select the exclude stream, then StopMetricStreams on both, then delete the stack.
 3. The sequence never completes; the run is killed at the 60 s budget with no answer.
+
+## Resolution
+
+Cause 1 — FIXED. The enum-constraint refusal states the member path and the admitted value
+set and withholds the submitted value for the enumerated type the scan direction is
+(`services/service-com-amazonaws-cloudwatch-graniteserviceversion20100801/src/service.rs`,
+`scalar_enum_refusal` / `VALUE_WITHHELD_ENUM_TYPES`, rendered through
+`services/common/src/validation_message.rs`); the check this issue is keyed on replays green,
+and the wording is pinned over a table of enumerated types, operations and depths by
+`services/service-com-amazonaws-cloudwatch-graniteserviceversion20100801/tests/all/enum_refusal_value_half.rs`.
+
+Cause 2 — the emulator-side defect behind it is FIXED: a running metric stream now exports
+every metric update the account's metric store records whose namespace its filters admit,
+whatever wrote it, instead of only the updates arriving through `PutMetricData` — the service's
+own API call count (`src/state/usage.rs`) is streamed like any other metric of the account, so
+an estate nothing publishes into no longer delivers nothing at all. Every call of the recorded
+lifecycle (deploy, the two reads, the paginated ListMetricStreams walk, StopMetricStreams,
+emptying the destination, deleting the stack) is driven end to end by
+`core/router/tests/all/cloudformation_metric_stream_estate_is_drainable.rs` and answers.
+STILL OPEN: the recorded check itself continues to exhaust its 60 s client-side budget inside
+its own drain loop; no call of the lifecycle was found that neither answers nor fails, and the
+residual gap is that budget against a destination whose first delivery is owed only once the
+delivery stream's configured buffering interval has passed.
