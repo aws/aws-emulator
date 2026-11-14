@@ -149,6 +149,8 @@ mod tagging_arn_qualifiers;
 mod tagging_resource_families;
 #[path = "all/transcription_job_absent_media_state.rs"]
 mod transcription_job_absent_media_state;
+#[path = "all/transcription_job_identified_language.rs"]
+mod transcription_job_identified_language;
 #[path = "all/transcription_job_language_identification.rs"]
 mod transcription_job_language_identification;
 #[path = "all/transcription_job_media_format.rs"]

@@ -188,6 +188,37 @@ pub(crate) async fn given_staged_media(emulator: &MultiServiceRouter) {
     }
 }
 
+/// The same staging, for an object that DECLARES the natural language of its content:
+/// `PutObject` with `Content-Language`, which [`given_object`] does not name.
+///
+/// The one thing the shared staging path cannot express, and the suite over the
+/// language a job identifies (`crate::transcription_job_identified_language`) needs it:
+/// a stored media object's own declaration of its language is the first evidence
+/// identification reads.
+pub(crate) async fn given_object_declaring_language(
+    emulator: &MultiServiceRouter,
+    bucket: &str,
+    key: &str,
+    bytes: &[u8],
+    content_language: &str,
+) {
+    given_object(emulator, bucket, key, bytes).await;
+    let request = http::Request::builder()
+        .method("PUT")
+        .uri(format!("https://s3.{REGION}.amazonaws.com/{bucket}/{key}"))
+        .header("host", format!("s3.{REGION}.amazonaws.com"))
+        .header("authorization", S3_AUTHORIZATION)
+        .header("content-language", content_language)
+        .body(bytes::Bytes::copy_from_slice(bytes))
+        .expect("the request builds");
+    let status = emulator.dispatch(request).await.status().as_u16();
+    assert_eq!(
+        status, 200,
+        "the object {bucket}/{key} must be stored declaring {content_language:?}, got HTTP \
+         {status}"
+    );
+}
+
 /// Which family a row drives, which is what decides the start request's own members and
 /// the operation that reads the job back.
 ///

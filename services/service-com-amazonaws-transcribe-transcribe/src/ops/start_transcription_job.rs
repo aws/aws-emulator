@@ -490,20 +490,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // refuses nothing). `Media$RedactedMediaFileUri` is not read here: it "is only
         // supported for Call Analytics (StartCallAnalyticsJob) transcription requests"
         // (model doc), so this family's input audio is `MediaFileUri` alone.
-        let media_verdict = crate::state::resolve_media_objects(
+        let media_resolution = crate::state::resolve_media_objects(
             ctx,
             &region,
             &[input.media.media_file_uri.as_deref().unwrap_or_default()],
         )
         .await;
-        if media_verdict == crate::state::MediaVerdict::NoSuchObject {
+        if media_resolution.verdict == crate::state::MediaVerdict::NoSuchObject {
             return Err(bad_request(crate::state::URI_NAMES_NO_OBJECT));
         }
         // What the clock owes this job instead of a transcript, judged once here from
         // the media the request pointed at: a job the service found nothing wrong with
         // completes (see [`crate::state::TranscriptionJobRecord::advance_clock`]).
         let failure_due = crate::state::media_failure_reason(
-            media_verdict,
+            media_resolution.verdict,
             input.media_format.as_deref(),
             &input.media,
         );
@@ -661,6 +661,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             identify_language: input.identify_language,
             identify_multiple_languages: input.identify_multiple_languages,
             language_options: input.language_options,
+            // What the stored media the job was pointed at evidences about the language
+            // of its audio, read off the object store's answer above: this is what
+            // automatic language identification reads when the job completes, so a job
+            // whose media evidences a language reports that language rather than one
+            // read off the request's option list (see
+            // [`crate::state::identified_language`]).
+            media_language: media_resolution.language,
             // What automatic language identification determined is part of
             // processing the media, so it is filled in when the job completes —
             // nothing is identified for a job that is still queued or in progress.

@@ -69,6 +69,12 @@ pub struct TranscriptionJobRecord {
     pub identify_language: Option<bool>,
     pub identify_multiple_languages: Option<bool>,
     pub language_options: Option<Vec<String>>,
+    /// The language the media this job was pointed at EVIDENCES, established from the
+    /// stored object when the job was started ([`media_language_evidence`]); `None`
+    /// where that object evidenced none, or where no object store answered for it.
+    /// What automatic language identification reads
+    /// ([`Self::materialise_identified_languages`]).
+    pub media_language: Option<String>,
     /// `IdentifiedLanguageScore`, the confidence the single language this job
     /// identified was reported with; `None` until a job that asked for
     /// single-language identification completes, and for a job that named its own
@@ -193,15 +199,19 @@ impl TranscriptionJobRecord {
     /// file" — one language, so it accompanies the singular member
     /// (`smithy_query(query="shape", shape="TranscriptionJob")`).
     ///
-    /// Both determinations are made from the request rather than from audio (see
-    /// [`identified_language`] and [`identified_languages`]), so they are a function
-    /// of the stored record and every later read of the job reports the same ones.
+    /// WHICH language each determination answers with follows from the MEDIA the job
+    /// was pointed at, narrowed to the options the request allowed (see
+    /// [`identified_language`] and [`identified_languages`]): the evidence was taken
+    /// from the stored object when the job was started ([`Self::media_language`]), so
+    /// both are a function of the stored record and every later read of the job reports
+    /// the same ones.
     pub(super) fn materialise_identified_languages(&mut self) {
+        let evidence = self.media_language.as_deref();
         if self.identify_multiple_languages == Some(true) {
-            let codes = identified_languages(self.language_options.as_deref());
+            let codes = identified_languages(self.language_options.as_deref(), evidence);
             self.language_codes = Some(codes);
         } else if self.identify_language == Some(true) {
-            let code = identified_language(self.language_options.as_deref());
+            let code = identified_language(self.language_options.as_deref(), evidence);
             self.language_code = Some(code);
             self.identified_language_score = Some(IDENTIFIED_LANGUAGE_SCORE);
         }
@@ -853,12 +863,14 @@ where
 /// The read is a `HeadObject`, "the same options as a GET operation on an object"
 /// without its body: what a start has to establish is that the media it was pointed at
 /// IS there, and nothing in this service transcribes audio, so no media file's bytes are
-/// ever fetched or held.
+/// ever fetched or held. What that answer says ABOUT the object is what the language the
+/// media evidences is read from ([`media_language_evidence`]), so a start that has to
+/// identify a language takes its evidence from the same read.
 pub async fn resolve_media_objects(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
     uris: &[&str],
-) -> MediaVerdict {
+) -> MediaResolution {
     use ::aws_smithy_types::error::metadata::ProvideErrorMetadata;
 
     // One client for the whole set: a family that names its input audio in two members
@@ -866,13 +878,14 @@ pub async fn resolve_media_objects(
     let client = s3_client(ctx, region);
     let mut asked = 0usize;
     let mut resolved = 0usize;
+    let mut language: Option<String> = None;
     for uri in uris {
         let Some((bucket, key)) = s3_object_address(uri) else {
             // A URI of the S3 scheme that addresses no object of it names no media file
             // at all ([`s3_uri_addresses_no_object`]), so the start is refused without
             // asking the store: there is no object for it to answer about.
             if s3_uri_addresses_no_object(uri) {
-                return MediaVerdict::NoSuchObject;
+                return MediaResolution::verdict(MediaVerdict::NoSuchObject);
             }
             continue;
         };
@@ -880,12 +893,21 @@ pub async fn resolve_media_objects(
         match client.head_object().bucket(bucket).key(key).send().await {
             // The object is there. Only its METADATA was asked for, never its bytes:
             // nothing in this service transcribes audio, so what the start needs to
-            // know is that the media it was pointed at exists.
-            Ok(_) => resolved += 1,
+            // know is that the media it was pointed at exists — and what that metadata
+            // says about the object is what identification reads.
+            Ok(head) => {
+                resolved += 1;
+                // The input audio is the FIRST media member the request named (the
+                // families that name two give the same audio in either), so the first
+                // object that resolved is the one a language is identified in.
+                if language.is_none() {
+                    language = media_language_evidence(head.content_language(), uri);
+                }
+            }
             Err(error) => {
                 if object_is_absent(&error) {
                     // S3 says the object is not there: the refusal is grounded.
-                    return MediaVerdict::NoSuchObject;
+                    return MediaResolution::verdict(MediaVerdict::NoSuchObject);
                 }
                 // Any other answer is not S3 reporting an absent object, so it refuses
                 // nothing — and it is worth a warning, because a deployment with no S3
@@ -906,10 +928,60 @@ pub async fn resolve_media_objects(
     // what judging the media it was given rests on: one object that resolved beside one
     // the store could not be asked about leaves the set unknown, whatever order they
     // were asked in.
-    if asked > 0 && resolved == asked {
-        MediaVerdict::Resolved
-    } else {
-        MediaVerdict::Unknown
+    MediaResolution {
+        verdict: if asked > 0 && resolved == asked {
+            MediaVerdict::Resolved
+        } else {
+            MediaVerdict::Unknown
+        },
+        // Evidence stands on the object it was read from: it was taken from an object
+        // the store ANSWERED for, so it says what that media is whatever the set's
+        // verdict is.
+        language,
+    }
+}
+
+/// What the object store's answer about a stored media object says about the LANGUAGE
+/// of the audio in it — `None` for media that evidences none.
+///
+/// Nothing decodes the audio (see this module's header: nothing is transcribed), so
+/// identification reads what the stored object itself states about its language, most
+/// authoritative first: the `Content-Language` the store holds for it
+/// ([`declared_language_tag`]), which is where stored content declares its natural
+/// language, and failing that the language tag its own address carries
+/// ([`address_language_tag`]) — the same kind of evidence this service reads the FORMAT
+/// of a stored media object from ([`media_format_of`]).
+///
+/// The result is a language TAG rather than a `LanguageCode`: which code a job reports
+/// for it also depends on what that job's request allowed identification to answer with
+/// ([`narrowed_identified_language`]), which is settled when the job finishes.
+pub fn media_language_evidence(content_language: Option<&str>, uri: &str) -> Option<String> {
+    declared_language_tag(content_language).or_else(|| address_language_tag(uri))
+}
+
+/// What resolving the media a start was pointed at against this emulator's own Amazon
+/// S3 established: whether those objects are there, and what the stored media evidences
+/// about the language of its audio.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaResolution {
+    /// Whether the object store answers for every object the request addressed
+    /// ([`MediaVerdict`]).
+    pub verdict: MediaVerdict,
+    /// The language tag the stored media evidences, for the families that IDENTIFY a
+    /// language rather than being told one ([`media_language_evidence`]); `None` where
+    /// the media evidenced none, or where no object of it resolved.
+    pub language: Option<String>,
+}
+
+impl MediaResolution {
+    /// A resolution carrying `verdict` and no language evidence: what a set holding an
+    /// object the store says is not there established, since nothing about that media
+    /// is to be read.
+    fn verdict(verdict: MediaVerdict) -> Self {
+        Self {
+            verdict,
+            language: None,
+        }
     }
 }
 
@@ -970,14 +1042,15 @@ pub const DEFAULT_IDENTIFIED_LANGUAGE: &str = "en-US";
 /// (`smithy_query(query="doc", shape="CallAnalyticsJob", member="IdentifiedLanguageScore")`,
 /// `smithy_query(query="doc", shape="TranscriptionJob", member="IdentifiedLanguageScore")`).
 ///
-/// This emulator's identification is not probabilistic — it reads the language off the
-/// request rather than weighing audio (see [`identified_language`]) — so what it
-/// reports is the top of that documented range, the certainty of a determination that
-/// had nothing to weigh, rather than an invented probability.
+/// This emulator's identification is not probabilistic — it reads the language the
+/// stored media EVIDENCES rather than weighing audio (see
+/// [`media_language_evidence`]) — so what it reports is the top of that documented
+/// range, the certainty of a determination that weighed nothing, rather than an
+/// invented probability.
 pub const IDENTIFIED_LANGUAGE_SCORE: f32 = 1.0;
 
 /// The single language a job whose language the service IDENTIFIED was transcribed
-/// in, narrowed to the options the request allowed.
+/// in: the language its MEDIA evidences, narrowed to the options the request allowed.
 ///
 /// Two families ask the service to identify one language: a Call Analytics job, which
 /// has no language member to name one with, and a transcription job started with
@@ -998,16 +1071,24 @@ pub const IDENTIFIED_LANGUAGE_SCORE: f32 = 1.0;
 /// (`smithy_query(query="shape", shape="CallAnalyticsJob")`) — however many options
 /// the request listed, or none.
 ///
-/// This emulator analyses no audio, so the determination is made from the request
-/// instead of from the call: the FIRST code `LanguageOptions` lists, since
+/// That determination is about the MEDIA: `media_language` is the language the stored
+/// object the job was pointed at evidenced when the job was started
+/// ([`media_language_evidence`]), and the answer is that language in the spelling
+/// identification was allowed to report it in ([`narrowed_identified_language`]), so
+/// two jobs differing only in their media can identify different languages. Media that
+/// evidenced nothing leaves identification with nothing to go on, and the answer is
+/// then drawn from the request alone: the FIRST code `LanguageOptions` lists, since
 /// identification may only answer with one of them, and
 /// [`DEFAULT_IDENTIFIED_LANGUAGE`] where the request narrowed the choice to nothing.
-/// It is a function of the request alone, so every read of a job reports the same
-/// language.
-pub fn identified_language(language_options: Option<&[String]>) -> String {
-    language_options
-        .and_then(<[String]>::first)
-        .cloned()
+/// Either way it is a function of the stored record, so every read of a job reports
+/// the same language.
+pub fn identified_language(
+    language_options: Option<&[String]>,
+    media_language: Option<&str>,
+) -> String {
+    media_language
+        .and_then(|tag| narrowed_identified_language(tag, language_options))
+        .or_else(|| language_options.and_then(<[String]>::first).cloned())
         .unwrap_or_else(|| DEFAULT_IDENTIFIED_LANGUAGE.to_string())
 }
 
@@ -1022,25 +1103,35 @@ pub fn identified_language(language_options: Option<&[String]>) -> String {
 /// finished job reports one `LanguageCodeItem` per language identified in the media
 /// (`smithy_query(query="shape", shape="LanguageCodeItem")`).
 ///
-/// This emulator weighs no audio, so the determination is made from the request, as
-/// the single-language one [`identified_language`] makes is: every code the options
-/// allowed, in the order the request listed them, since identification may answer
-/// with no other and the options are the caller's own statement of the "language
-/// codes that represent the languages you think may be present in your media" —
-/// reporting a SUBSET of them, which is what the real service's answer usually is,
-/// would take the audio that says which of them is actually spoken. Where the request
-/// narrowed the choice to nothing, the one [`DEFAULT_IDENTIFIED_LANGUAGE`] is the
-/// whole answer. It is a function of the request alone, so every read of a job reports
-/// the same languages in the same order.
+/// One entry per language the MEDIA evidences, as the singular determination
+/// [`identified_language`] makes is: media evidencing one language was identified as
+/// holding that one language, in the spelling identification was allowed to report it
+/// in ([`narrowed_identified_language`]), so two jobs differing only in their media can
+/// identify different languages. Where the stored media evidenced nothing, the
+/// determination falls back to the request: every code the options allowed, in the
+/// order the request listed them, since identification may answer with no other and
+/// the options are the caller's own statement of the "language codes that represent the
+/// languages you think may be present in your media" — reporting a SUBSET of them with
+/// nothing evidencing which would take the audio that says what is actually spoken.
+/// Where the request narrowed the choice to nothing either, the one
+/// [`DEFAULT_IDENTIFIED_LANGUAGE`] is the whole answer. Every form of the answer is a
+/// function of the stored record, so every read of a job reports the same languages in
+/// the same order.
 ///
 /// `DurationInSeconds` is "the total time, in seconds, each identified language is
 /// spoken in your media" — a measurement of the media itself, which nothing here
 /// reads (see the module header: nothing is transcribed) — so each entry leaves that
 /// optional member ABSENT rather than reporting a duration nothing timed.
-pub fn identified_languages(language_options: Option<&[String]>) -> Vec<LanguageCodeItem> {
+pub fn identified_languages(
+    language_options: Option<&[String]>,
+    media_language: Option<&str>,
+) -> Vec<LanguageCodeItem> {
+    let evidenced =
+        media_language.and_then(|tag| narrowed_identified_language(tag, language_options));
     let default = [DEFAULT_IDENTIFIED_LANGUAGE.to_string()];
-    let codes = match language_options {
-        Some(options) if !options.is_empty() => options,
+    let codes = match (evidenced.as_ref(), language_options) {
+        (Some(code), _) => std::slice::from_ref(code),
+        (None, Some(options)) if !options.is_empty() => options,
         _ => default.as_slice(),
     };
     codes
@@ -1109,6 +1200,10 @@ pub struct CallAnalyticsJobRecord {
     /// until the job completes, because identification is part of processing it
     /// ([`identified_language`]).
     pub language_code: Option<String>,
+    /// The language the media this job was pointed at EVIDENCES, established from the
+    /// stored object when the job was started ([`media_language_evidence`]); what
+    /// identification reads when the job completes.
+    pub media_language: Option<String>,
     /// `IdentifiedLanguageScore`, set with [`Self::language_code`]
     /// ([`IDENTIFIED_LANGUAGE_SCORE`]).
     pub identified_language_score: Option<f32>,
@@ -1173,6 +1268,7 @@ impl CallAnalyticsJobRecord {
         let settings = self.settings.as_ref();
         self.language_code = Some(identified_language(
             settings.and_then(|settings| settings.language_options.as_deref()),
+            self.media_language.as_deref(),
         ));
         self.identified_language_score = Some(IDENTIFIED_LANGUAGE_SCORE);
         self.media_format = determined_media_format(self.media_format.take(), &self.media);

@@ -167,6 +167,8 @@ use crate::ops::types::{
 };
 mod jobs;
 pub use jobs::*;
+mod language_identification;
+pub use language_identification::*;
 
 /// `TranscriptionJobStatus` values, from the model's enum
 /// (`smithy_query(query="shape", shape="TranscriptionJobStatus")`).

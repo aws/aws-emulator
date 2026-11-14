@@ -349,9 +349,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         .into_iter()
         .flatten()
         .collect();
-        if crate::state::resolve_media_objects(ctx, &region, &media_uris).await
-            == crate::state::MediaVerdict::NoSuchObject
-        {
+        let media_resolution = crate::state::resolve_media_objects(ctx, &region, &media_uris).await;
+        if media_resolution.verdict == crate::state::MediaVerdict::NoSuchObject {
             return Err(bad_request(crate::state::URI_NAMES_NO_OBJECT));
         }
 
@@ -490,6 +489,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // What the service determines about the call it is given is determined
             // when the job finishes, not when it is accepted.
             language_code: None,
+            // The language the stored call audio evidences, read off the object store's
+            // answer above: this family has no language member of its own, so this is
+            // what identification reads when the job completes (see
+            // [`crate::state::identified_language`]).
+            media_language: media_resolution.language,
             identified_language_score: None,
             media_format: None,
             media_sample_rate_hertz: None,

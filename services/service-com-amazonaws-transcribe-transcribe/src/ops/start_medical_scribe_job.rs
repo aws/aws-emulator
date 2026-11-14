@@ -359,13 +359,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // object that store says is not there is refused and no job record exists for a
         // media file nobody uploaded (see [`crate::state::resolve_media_objects`], which
         // also states why an answer that is not S3 reporting an absent object
-        // refuses nothing).
+        // refuses nothing). This family identifies no language — the model admits one
+        // `LanguageCode` for it — so nothing here reads what the media evidences about
+        // its language.
         if crate::state::resolve_media_objects(
             ctx,
             &region,
             &[input.media.media_file_uri.as_deref().unwrap_or_default()],
         )
         .await
+        .verdict
             == crate::state::MediaVerdict::NoSuchObject
         {
             return Err(bad_request(crate::state::URI_NAMES_NO_OBJECT));
