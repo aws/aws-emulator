@@ -95,6 +95,8 @@ mod feature_flag_attribute_constraints;
 mod feature_flag_metadata;
 #[path = "all/feature_flags_extension_association.rs"]
 mod feature_flags_extension_association;
+#[path = "all/final_bake_window_holds_the_deployment.rs"]
+mod final_bake_window_holds_the_deployment;
 #[path = "all/get_configuration.rs"]
 mod get_configuration;
 #[path = "all/hosted_configuration_version_content_reuse.rs"]
