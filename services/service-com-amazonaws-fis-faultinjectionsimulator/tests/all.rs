@@ -19,6 +19,10 @@ mod action_catalog;
 mod action_catalog_coverage;
 #[path = "all/action_order_is_acyclic.rs"]
 mod action_order_is_acyclic;
+// WHICH role's documents decide whether an action may be carried out, and WHAT in them
+// authorizes it: any one of the grants the action documents.
+#[path = "all/action_privileges_gate.rs"]
+mod action_privileges_gate;
 #[path = "all/control_plane_rules.rs"]
 mod control_plane_rules;
 #[path = "all/delete_target_account_configuration.rs"]

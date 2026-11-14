@@ -77,14 +77,17 @@
 //! Two things that run means here, and does NOT:
 //!
 //! * `completed` is the status of a RUN that elapsed, not a claim that an action's effect
-//!   was produced. What this service models is the experiment's own lifecycle, which is
-//!   FIS's record of the run; the effect of an action on another service (an
-//!   `aws:fis:inject-api-*` fault making the targeted role's calls to another service fail,
-//!   an instance stopping) happens in THAT service's responses, and this emulator does not
-//!   produce it. Nothing here reports such an effect as having happened: no injected fault
-//!   is announced, and an action's own `state` says where the RUN is and not that its effect
-//!   was produced — the action the run SKIPS reporting the decision the options made (see
-//!   `experiment_action` and [`ActionSkip`]).
+//!   was produced. The effect of an action on another service happens in THAT service's
+//!   responses, so what this service does for one is carry it out where that store lives:
+//!   `aws:ec2:reboot-instances` reboots the instances its target resolved to in the EC2
+//!   store of the same engine ([`action_execution`]), and an `aws:fis:inject-api-*` action
+//!   PUBLISHES the fault it is — the targeted roles, the service and operations it names,
+//!   the share and the span — into the registry the affected service reads, for as long as
+//!   the action runs and no longer ([`api_fault_injection`]). An action whose effect this
+//!   emulator cannot carry out has none carried out, and nothing here reports such an
+//!   effect as having happened: an action's own `state` says where the RUN is and not that
+//!   its effect was produced — the action the run SKIPS reporting the decision the options
+//!   made (see `experiment_action` and [`ActionSkip`]).
 //! * the time members `startTime` and `endTime` bound the run on the COMPRESSED clock
 //!   ([`RUN_CLOCK_SCALE`]), so the span between them is shorter than the duration the
 //!   actions name — which is reported back verbatim, exactly as the template stored it.

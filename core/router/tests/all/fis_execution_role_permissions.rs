@@ -62,11 +62,11 @@
 //!   in the shared engine. It opens no connection, spawns no process, reads no environment
 //!   and touches no file, and it does not reach the service an action's id names: a value
 //!   the caller put in a parameter (`alarmArns`, `service`, `operations`) is compared
-//!   against policy statements and never dialled. The experiment's run is the FIS record
-//!   of it and nothing else — the effect an action would have on another service (a
-//!   targeted role's calls failing, an instance stopping) is NOT produced by this emulator,
-//!   which `src/state.rs`'s module header states, so there is no delivery path here to
-//!   confine.
+//!   against policy statements and never dialled. What an action's effect on another
+//!   service is carried out through, where this emulator can carry one out, is that
+//!   service's own store in the same engine — never a connection out of it — and the gate
+//!   this suite drives decides whether the action runs at all, so there is no delivery path
+//!   here to confine.
 //! * NO CALLER PROGRAM IS EVALUATED. An `actionId` resolves through a fixed catalog
 //!   (`state::ACTION_CATALOG`, a constant table; an id it does not hold is decided by
 //!   nothing and failed for nothing) and its `parameters` are read for two documented
