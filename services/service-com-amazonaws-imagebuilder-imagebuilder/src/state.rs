@@ -114,6 +114,15 @@ pub use instance_profile::*;
 mod waiting_workflow_steps;
 pub use waiting_workflow_steps::*;
 
+/// The rules both kinds of recipe this service holds follow.
+mod recipes;
+pub use recipes::*;
+
+/// The container recipes this store holds, and the rules a container recipe follows on its
+/// own.
+mod container_recipe;
+pub use container_recipe::*;
+
 /// The refusal classes this service answers that its own model does not declare.
 mod recorded_refusals;
 pub use recorded_refusals::*;
@@ -598,6 +607,7 @@ pub const MAX_RESOURCE_POLICIES: usize = MAX_INFRASTRUCTURE_CONFIGURATIONS
     + MAX_DISTRIBUTION_CONFIGURATIONS
     + MAX_COMPONENTS
     + MAX_IMAGE_RECIPES
+    + MAX_CONTAINER_RECIPES
     + MAX_IMAGE_PIPELINES
     + MAX_IMAGES
     + MAX_WORKFLOWS;
@@ -1296,6 +1306,8 @@ pub enum TaggedResource {
     Component,
     /// An image recipe ([`IMAGE_RECIPE_ARN_PREFIX`]).
     ImageRecipe,
+    /// A container recipe ([`CONTAINER_RECIPE_ARN_PREFIX`]).
+    ContainerRecipe,
     /// An image pipeline ([`IMAGE_PIPELINE_ARN_PREFIX`]).
     ImagePipeline,
     /// One image build version ([`IMAGE_ARN_PREFIX`]).
@@ -1322,6 +1334,10 @@ pub struct ComAmazonawsImagebuilderImagebuilderState {
     /// normalized name and its version, so one key says which name+version pair is
     /// taken where.
     pub image_recipes: BTreeMap<String, ImageRecipeRecord>,
+    /// Every stored container recipe, keyed by its own ARN — which carries its Region, its
+    /// normalized name and its version, exactly as an image recipe's does, so one key says
+    /// which name+version pair is taken where.
+    pub container_recipes: BTreeMap<String, ContainerRecipeRecord>,
     /// Every stored image pipeline, keyed by its own ARN — which carries its Region and
     /// its normalized name, so one key says which pipeline name is taken where.
     pub image_pipelines: BTreeMap<String, ImagePipelineRecord>,
@@ -1924,7 +1940,11 @@ impl ComAmazonawsImagebuilderImagebuilderState {
         self.image_recipes
             .values()
             .filter(|record| {
-                reference.name == normalized_name(&record.name)
+                // A regional endpoint serves only its own Region's resources, so a recipe of
+                // another Region is reached by no reference of this one — whatever name and
+                // version it carries.
+                record.region == request_region
+                    && reference.name == normalized_name(&record.name)
                     && version_admits(&reference.version, &record.version)
             })
             .max_by_key(|record| parse_semantic_version(&record.version).unwrap_or_default())
@@ -1984,7 +2004,8 @@ impl ComAmazonawsImagebuilderImagebuilderState {
         self.resource_policies.get(arn).map(String::as_str)
     }
 
-    /// Apply `policy` to the resource `arn` names, replacing whatever policy it carried.
+    /// Apply `policy` to the resource `arn` names, replacing whatever policy it carried, and
+    /// answer whether it was applied.
     ///
     /// A policy write is a REPLACEMENT, not a merge: the document stored here is the
     /// document the matching read reports back. What is stored is this store's own
@@ -2050,6 +2071,9 @@ impl ComAmazonawsImagebuilderImagebuilderState {
         if self.image_recipe(arn, request_region).is_some() {
             return Some(TaggedResource::ImageRecipe);
         }
+        if self.container_recipe(arn, request_region).is_some() {
+            return Some(TaggedResource::ContainerRecipe);
+        }
         if self.image_pipeline(arn, request_region).is_some() {
             return Some(TaggedResource::ImagePipeline);
         }
@@ -2093,6 +2117,10 @@ impl ComAmazonawsImagebuilderImagebuilderState {
                 .image_recipes
                 .get(arn)
                 .and_then(|record| record.tags.clone()),
+            TaggedResource::ContainerRecipe => self
+                .container_recipes
+                .get(arn)
+                .and_then(|record| record.tags.clone()),
             TaggedResource::ImagePipeline => self
                 .image_pipelines
                 .get(arn)
@@ -2134,6 +2162,10 @@ impl ComAmazonawsImagebuilderImagebuilderState {
             TaggedResource::ImageRecipe => {
                 self.image_recipes.get_mut(arn).map(|record| &mut record.tags)
             }
+            TaggedResource::ContainerRecipe => self
+                .container_recipes
+                .get_mut(arn)
+                .map(|record| &mut record.tags),
             TaggedResource::ImagePipeline => self
                 .image_pipelines
                 .get_mut(arn)
@@ -3324,72 +3356,11 @@ pub fn image_recipe_request_fingerprint(input: &CreateImageRecipeInput) -> Strin
     fields.insert("amiTags", tag_map(input.ami_tags.as_ref()));
     fields.insert(
         "components",
-        input.components.as_ref().map_or_else(
-            || ABSENT.to_string(),
-            |components| {
-                group(
-                    &components
-                        .iter()
-                        .map(|configuration| {
-                            group(&[
-                                text(Some(configuration.component_arn.as_str())),
-                                configuration.parameters.as_ref().map_or_else(
-                                    || ABSENT.to_string(),
-                                    |parameters| {
-                                        group(
-                                            &parameters
-                                                .iter()
-                                                .map(|parameter| {
-                                                    group(&[
-                                                        text(Some(parameter.name.as_str())),
-                                                        list(Some(parameter.value.as_slice())),
-                                                    ])
-                                                })
-                                                .collect::<Vec<_>>(),
-                                        )
-                                    },
-                                ),
-                            ])
-                        })
-                        .collect::<Vec<_>>(),
-                )
-            },
-        ),
+        component_configurations_fingerprint(input.components.as_deref()),
     );
     fields.insert(
         "blockDeviceMappings",
-        input.block_device_mappings.as_ref().map_or_else(
-            || ABSENT.to_string(),
-            |mappings| {
-                group(
-                    &mappings
-                        .iter()
-                        .map(|mapping| {
-                            group(&[
-                                text(mapping.device_name.as_deref()),
-                                text(mapping.virtual_name.as_deref()),
-                                text(mapping.no_device.as_deref()),
-                                mapping.ebs.as_ref().map_or_else(
-                                    || ABSENT.to_string(),
-                                    |ebs| {
-                                        group(&[
-                                            flag(ebs.encrypted),
-                                            flag(ebs.delete_on_termination),
-                                            number(ebs.iops),
-                                            number(ebs.volume_size),
-                                            number(ebs.throughput),
-                                            text(ebs.kms_key_id.as_deref()),
-                                            text(ebs.snapshot_id.as_deref()),
-                                            text(ebs.volume_type.as_deref()),
-                                        ])
-                                    },
-                                ),
-                            ])
-                        })
-                        .collect::<Vec<_>>(),
-                )
-            },
-        ),
+        block_device_mappings_fingerprint(input.block_device_mappings.as_deref()),
     );
     fields.insert(
         "additionalInstanceConfiguration",
@@ -3578,6 +3549,88 @@ fn list(values: Option<&[String]>) -> String {
                 &values
                     .iter()
                     .map(|value| text(Some(value)))
+                    .collect::<Vec<_>>(),
+            )
+        },
+    )
+}
+
+/// The `components` member of a recipe create, as every recipe's fingerprint renders it: each
+/// configuration's reference beside the parameter settings it carries, in the order the
+/// request listed them.
+///
+/// One rendering for both kinds of recipe, since both carry the same modelled
+/// `ComponentConfigurationList`.
+fn component_configurations_fingerprint(
+    configurations: Option<&[ComponentConfiguration]>,
+) -> String {
+    configurations.map_or_else(
+        || ABSENT.to_string(),
+        |configurations| {
+            group(
+                &configurations
+                    .iter()
+                    .map(|configuration| {
+                        group(&[
+                            text(Some(configuration.component_arn.as_str())),
+                            configuration.parameters.as_ref().map_or_else(
+                                || ABSENT.to_string(),
+                                |parameters| {
+                                    group(
+                                        &parameters
+                                            .iter()
+                                            .map(|parameter| {
+                                                group(&[
+                                                    text(Some(parameter.name.as_str())),
+                                                    list(Some(parameter.value.as_slice())),
+                                                ])
+                                            })
+                                            .collect::<Vec<_>>(),
+                                    )
+                                },
+                            ),
+                        ])
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        },
+    )
+}
+
+/// The block device mappings one request named, as a fingerprint renders them.
+///
+/// One rendering for every member that carries the modelled `InstanceBlockDeviceMappings`:
+/// an image recipe's own `blockDeviceMappings`, and the ones inside a container recipe's
+/// `instanceConfiguration`.
+fn block_device_mappings_fingerprint(mappings: Option<&[InstanceBlockDeviceMapping]>) -> String {
+    mappings.map_or_else(
+        || ABSENT.to_string(),
+        |mappings| {
+            group(
+                &mappings
+                    .iter()
+                    .map(|mapping| {
+                        group(&[
+                            text(mapping.device_name.as_deref()),
+                            text(mapping.virtual_name.as_deref()),
+                            text(mapping.no_device.as_deref()),
+                            mapping.ebs.as_ref().map_or_else(
+                                || ABSENT.to_string(),
+                                |ebs| {
+                                    group(&[
+                                        flag(ebs.encrypted),
+                                        flag(ebs.delete_on_termination),
+                                        number(ebs.iops),
+                                        number(ebs.volume_size),
+                                        number(ebs.throughput),
+                                        text(ebs.kms_key_id.as_deref()),
+                                        text(ebs.snapshot_id.as_deref()),
+                                        text(ebs.volume_type.as_deref()),
+                                    ])
+                                },
+                            ),
+                        ])
+                    })
                     .collect::<Vec<_>>(),
             )
         },
@@ -4121,22 +4174,26 @@ pub fn component_uri_message() -> String {
 pub fn component_uri_not_found_message() -> String {
     ::service_common::validation_message::parameter_value_mismatch(
         COMPONENT_URI_MEMBER,
-        COMPONENT_URI_NOT_FOUND_REQUIREMENT,
+        URI_NOT_FOUND_REQUIREMENT,
     )
 }
 
 /// The requirement clause a `uri` the object store serves no object at is refused with.
-const COMPONENT_URI_NOT_FOUND_REQUIREMENT: &str = "Not Found";
+///
+/// One clause for every member of this service that names an object the create READS, since
+/// what each of them establishes is the same: the store serves nothing at the address the
+/// value carried.
+const URI_NOT_FOUND_REQUIREMENT: &str = "Not Found";
 
-/// Why a `CreateComponent` whose document this service could not read at all is answered
+/// Why a create whose document or template this service could not read at all is answered
 /// with a server-side failure.
 ///
-/// Nothing was established about the object the `uri` named — no object store answered the
+/// Nothing was established about the object the request named — no object store answered the
 /// read — so this is not a claim about the value the request carried, and the message is the
 /// one the modelled `ServiceException` states for its own class: "An internal server error
 /// occurred while Image Builder processed the request. Retrying the request may succeed."
 #[must_use]
-pub fn component_document_unreadable_message() -> String {
+pub fn internal_server_error_message() -> String {
     "An internal server error occurred while Image Builder processed the request. Retrying \
      the request may succeed."
         .to_string()
@@ -4166,11 +4223,12 @@ pub fn resource_dependency_message(arn: &str) -> String {
 /// Why a create whose components do not agree on one platform is refused.
 ///
 /// A recipe builds for ONE platform, which is the platform of the components it applies,
-/// so a list spanning two of them names no platform the recipe could report.
+/// so a list spanning two of them names no platform the recipe could report. One wording for
+/// both kinds of recipe, which share the rule.
 #[must_use]
 pub fn mixed_component_platforms_message(first: &str, second: &str) -> String {
     format!(
-        "The components of an image recipe must all target one platform; this request names both \
+        "The components of a recipe must all target one platform; this request names both \
          {first} and {second}."
     )
 }
@@ -4179,11 +4237,12 @@ pub fn mixed_component_platforms_message(first: &str, second: &str) -> String {
 ///
 /// The bound is the quota the modelled `components` member documents: "A recipe can
 /// contain a maximum of 20 build and test components in any combination, by default. This
-/// maximum is an adjustable quota."
+/// maximum is an adjustable quota." The member of a container recipe documents the same
+/// quota, so one wording serves both kinds of recipe.
 #[must_use]
 pub fn too_many_recipe_components_message(submitted: usize) -> String {
     format!(
-        "An image recipe can contain a maximum of {MAX_RECIPE_COMPONENTS} components; this request \
+        "A recipe can contain a maximum of {MAX_RECIPE_COMPONENTS} components; this request \
          names {submitted}."
     )
 }
@@ -4195,7 +4254,7 @@ pub fn too_many_recipe_components_message(submitted: usize) -> String {
 #[must_use]
 pub fn duplicate_recipe_component_message(name: &str) -> String {
     format!(
-        "The component {name} is named more than once; an image recipe can specify each component \
+        "The component {name} is named more than once; a recipe can specify each component \
          only once, regardless of version."
     )
 }

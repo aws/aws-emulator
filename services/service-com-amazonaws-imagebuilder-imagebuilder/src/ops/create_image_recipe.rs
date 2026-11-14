@@ -376,54 +376,33 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
-        // Every component the recipe includes has to BE a stored component, resolved the
-        // way every other component reference is — so a reference naming nothing, or a
-        // component of another Region, is reported MISSING rather than stored. "You can
-        // specify each component only once in a recipe, regardless of version", so a name
-        // named twice is refused too. The components a recipe includes "must all target one
-        // platform", so a list spanning two of them names no platform the recipe could
-        // report.
-        let mut components_target: Option<String> = None;
-        let mut included: ::std::collections::BTreeSet<String> = ::std::collections::BTreeSet::new();
-        for configuration in input.components.iter().flatten() {
-            let Some(component) =
-                store.resolve_component(&configuration.component_arn, &region)
-            else {
+        // Every component the recipe includes has to BE a stored component, each named only
+        // once, and the components of one recipe all target one platform — the rules both
+        // kinds of recipe follow, read in one place
+        // ([`crate::state::ComAmazonawsImagebuilderImagebuilderState::resolve_recipe_components`]).
+        // A reference naming nothing, or a component of another Region, is reported MISSING
+        // rather than stored; a list this service cannot accept is an invalid request.
+        let components_target = match store
+            .resolve_recipe_components(input.components.as_deref().unwrap_or_default(), &region)
+        {
+            crate::state::RecipeComponents::Target(target) => target,
+            crate::state::RecipeComponents::Missing(reference) => {
                 return Err(CreateImageRecipeErrorModeled::ResourceNotFoundException(
                     ResourceNotFoundException {
                         message: Some(crate::state::required_resource_not_found_message(
-                            &configuration.component_arn,
+                            &reference,
                         )),
                     },
                 )
-                .into());
-            };
-            if !included.insert(crate::state::normalized_name(&component.name)) {
+                .into())
+            }
+            crate::state::RecipeComponents::Refused(why) => {
                 return Err(CreateImageRecipeErrorModeled::InvalidRequestException(
-                    InvalidRequestException {
-                        message: Some(crate::state::duplicate_recipe_component_message(
-                            &component.name,
-                        )),
-                    },
+                    InvalidRequestException { message: Some(why) },
                 )
-                .into());
+                .into())
             }
-            match components_target.as_deref() {
-                None => components_target = Some(component.platform.clone()),
-                Some(named) if named == component.platform => {}
-                Some(named) => {
-                    return Err(CreateImageRecipeErrorModeled::InvalidRequestException(
-                        InvalidRequestException {
-                            message: Some(crate::state::mixed_component_platforms_message(
-                                named,
-                                &component.platform,
-                            )),
-                        },
-                    )
-                    .into())
-                }
-            }
-        }
+        };
 
         // The store is finite: a create that would take it past this emulator's own cap
         // is refused rather than growing it. Checked BEFORE the dry-run branch, so a dry

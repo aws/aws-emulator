@@ -350,17 +350,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The recipe reference is resolved the way every versioned reference of this
         // service is, so a pipeline may hold a wildcard version and each of its runs
         // builds the newest recipe that reference reaches. The platform the pipeline
-        // reports is "inherited from the recipe that the pipeline uses". A CONTAINER
-        // recipe is a resource this store does not hold at all, so such a reference names
-        // nothing — the answer any reference to a resource that was never created gets.
-        let platform = match (&input.image_recipe_arn, &input.container_recipe_arn) {
-            (Some(reference), _) => match store.resolve_image_recipe(reference, &region) {
-                Some(recipe) => Some(recipe.platform.clone()),
+        // reports is "inherited from the recipe that the pipeline uses", of EITHER kind
+        // ([`crate::state::ComAmazonawsImagebuilderImagebuilderState::resolve_built_recipe`]);
+        // a reference naming nothing stored is reported MISSING rather than stored.
+        let platform = match input
+            .image_recipe_arn
+            .as_deref()
+            .or(input.container_recipe_arn.as_deref())
+        {
+            Some(reference) => match store.resolve_built_recipe(reference, &region) {
+                Some(built) => Some(built.platform),
                 None => return Err(missing(reference)),
             },
-            (None, Some(reference)) => return Err(missing(reference)),
             // Refused above: exactly one of the two is named.
-            (None, None) => None,
+            None => None,
         };
 
         // A distribution configuration and a workflow are both resources of this service, so

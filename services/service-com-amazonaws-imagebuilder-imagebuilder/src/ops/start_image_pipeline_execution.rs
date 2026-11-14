@@ -226,14 +226,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The image a build produces takes its name and its three assigned version nodes
         // from the recipe the pipeline builds, and the reference is resolved AT THE START,
         // so a pipeline holding a wildcard version builds the newest recipe that
-        // reference reaches now. A recipe the reference no longer reaches — deleted, or a
-        // container recipe, which this store does not hold — leaves the run nothing to
-        // build, which is the missing resource it names.
+        // reference reaches now. A recipe the reference no longer reaches — deleted — leaves
+        // the run nothing to build, which is the missing resource it names.
         let reference = pipeline
             .image_recipe_arn
             .clone()
             .or_else(|| pipeline.container_recipe_arn.clone());
-        let pipeline_builds_a_container = pipeline.image_recipe_arn.is_none();
         // The build the pipeline queues is configured by the pipeline: the environment it
         // runs in, whether it collects the additional image metadata, the tests it runs,
         // the role its workflow actions run under, and the log group its image build logs
@@ -256,21 +254,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // enforced; a record naming neither has nothing for a run to build, so the
         // pipeline the request named is what it has no buildable resource under.
         let reference = reference.unwrap_or_else(|| input.image_pipeline_arn.clone());
-        let Some(recipe) = store.resolve_image_recipe(&reference, &region) else {
+        // What the build takes from the recipe, whichever of the two kinds the pipeline
+        // names: its name and version, the platform it builds for, the recipe the build
+        // records, and — "For an image recipe, this is always AMI" — the kind of image the
+        // recipe's own kind produces.
+        let Some(built) = store.resolve_built_recipe(&reference, &region) else {
             return Err(missing(&reference));
         };
-        let (name, version) = (recipe.name.clone(), recipe.version.clone());
-        let platform = Some(recipe.platform.clone());
-        // The reference is resolved AT THE START, so the build records the recipe version
-        // it actually built rather than the wildcard reference the pipeline holds.
-        let image_recipe_arn = Some(recipe.arn.clone());
-        // "For an image recipe, this is always AMI": which kind of recipe the pipeline
-        // builds decides what its images are.
-        let image_type = if pipeline_builds_a_container {
-            crate::state::IMAGE_TYPE_DOCKER
-        } else {
-            crate::state::IMAGE_TYPE_AMI
-        };
+        let (name, version) = (built.name, built.version);
+        let platform = Some(built.platform);
+        let image_recipe_arn = built.image_recipe_arn;
+        let image_type = built.image_type;
 
         // The store is finite: a run that would take it past this emulator's own cap is
         // refused rather than growing it, and nothing is queued.

@@ -1,15 +1,36 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateContainerRecipe
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateContainerRecipe`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateContainerRecipe::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Creates the container recipe this service's state then holds, so a later
+//! `GetContainerRecipe` reports what this request stored.
+//!
+//! The rules it follows, each from the modelled documentation quoted beside it:
+//!
+//! * the recipe carries its Dockerfile template as TEXT, and the request names it exactly
+//!   one way — "You must specify exactly one of the dockerfileTemplateData or
+//!   dockerfileTemplateUri properties" — where a location names an object of the emulator's
+//!   own Amazon S3 that is read ONCE, here: "Image Builder reads the object once, when it
+//!   creates the recipe, and stores its content in the recipe. Later changes to the S3
+//!   object don't affect the recipe";
+//! * `semanticVersion`'s three nodes are the caller's to ASSIGN, inside the documented
+//!   bound, so the `x` wildcard the version pattern admits for FILTERING is a value of that
+//!   parameter this service cannot accept;
+//! * every `componentArn` must name a stored component, each component named only once and
+//!   all of them targeting one platform, at most the documented 20 per recipe — the rules
+//!   both kinds of recipe follow
+//!   ([`crate::state::ComAmazonawsImagebuilderImagebuilderState::resolve_recipe_components`]);
+//! * the recipe is stored carrying the ONE platform it builds for, which "Container recipes
+//!   support only the Linux and Windows platforms" narrows
+//!   ([`crate::state::container_recipe_platform`]);
+//! * the ARN is derived from a NORMALIZED form of the name plus the version, so a second
+//!   create of one name+version pair is `ResourceAlreadyExistsException`, naming the recipe
+//!   that already carries that ARN;
+//! * `clientToken` is an idempotency token: a retry carrying it answers with the ORIGINAL
+//!   response, and the same token carrying different creation parameters is
+//!   `IdempotentParameterMismatchException`;
+//! * `dryRun` validates the request and then answers `DryRunOperationException`, having
+//!   stored nothing.
 //!
 //! ## Shape of an operation
 //!
@@ -161,6 +182,10 @@
 //!   endpoints and quotas.
 //! * `ServiceUnavailableException` (HTTP 503) — The service is unable to process your request
 //!   at this time.
+//! * `ResourceNotFoundException` (HTTP 404) — widened in through `extra_errors` (see below):
+//!   "At least one of the resources referenced by your request does not exist."
+//! * `InvalidParameterValueException` (HTTP 400) — widened in through `extra_errors` (see
+//!   below): "The value that you provided for the specified parameter is invalid."
 
 #[allow(unused_imports)]
 use super::types::*;
@@ -176,7 +201,21 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-imagebuilder-imagebuild
 // here — hence the `CreateContainerRecipeError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.imagebuilder#CreateContainerRecipe")]
+//
+// Two errors are widened in through `extra_errors`, for the reasons `CreateImageRecipe`
+// widens the same two: every `components[].componentArn` this create carries REFERENCES a
+// component that may not exist, and this SERVICE models `ResourceNotFoundException` (HTTP
+// 404, "At least one of the resources referenced by your request does not exist") for
+// exactly that case, so a reference that resolves to nothing is reported MISSING rather than
+// dressed up as an invalid request; and `InvalidParameterValueException` (HTTP 400, "The
+// value that you provided for the specified parameter is invalid.") is the class this
+// service refuses a parameter of a request with, which is what a `semanticVersion` outside
+// the bound its nodes are assignable in, a `platformOverride` a container recipe cannot
+// build for, and a `dockerfileTemplateUri` naming no readable object each are.
+#[smithy_macros::operation_error(
+    "com.amazonaws.imagebuilder#CreateContainerRecipe",
+    extra_errors = ["ResourceNotFoundException", "InvalidParameterValueException"]
+)]
 #[derive(Debug)]
 pub enum CreateContainerRecipeErrorModeled {
     CallRateLimitExceededException(CallRateLimitExceededException),
@@ -184,10 +223,12 @@ pub enum CreateContainerRecipeErrorModeled {
     DryRunOperationException(DryRunOperationException),
     ForbiddenException(ForbiddenException),
     IdempotentParameterMismatchException(IdempotentParameterMismatchException),
+    InvalidParameterValueException(InvalidParameterValueException),
     InvalidRequestException(InvalidRequestException),
     InvalidVersionNumberException(InvalidVersionNumberException),
     ResourceAlreadyExistsException(ResourceAlreadyExistsException),
     ResourceInUseException(ResourceInUseException),
+    ResourceNotFoundException(ResourceNotFoundException),
     ServiceException(ServiceException),
     ServiceQuotaExceededException(ServiceQuotaExceededException),
     ServiceUnavailableException(ServiceUnavailableException),
@@ -244,18 +285,358 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateContainerRecipe` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateContainerRecipeErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateContainerRecipe"))
+        // Every modelled constraint on this input — `name`'s pattern, the version pattern,
+        // the string lengths, the `ContainerType` and `Platform` enums, the list and map
+        // bounds — has been refused by the centralized walk before this body runs, so what
+        // is checked here is only what the model cannot say.
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            CreateContainerRecipeErrorModeled::ServiceException(ServiceException {
+                message: Some(crate::state::store_unavailable_message()),
+            })
+        })?;
+
+        let region = crate::state::request_region(ctx.parts());
+
+        // "You must specify exactly one of the dockerfileTemplateData or
+        // dockerfileTemplateUri properties" — a requirement over the two members together,
+        // so it is refused as this service refuses every parameter whose value it cannot
+        // accept, naming both.
+        let template_source = match (
+            input.dockerfile_template_data.as_deref(),
+            input.dockerfile_template_uri.as_deref(),
+        ) {
+            (Some(data), None) => TemplateSource::Inline(data),
+            (None, Some(uri)) => TemplateSource::Uri(uri),
+            _ => return Err(refused(crate::state::dockerfile_template_data_or_uri_message())),
+        };
+
+        // The modelled `WildcardVersionNumber` admits an `x` node, which is a FILTERING
+        // pattern: the three nodes of a version a create assigns are integers inside the
+        // documented bound, and nothing else.
+        if crate::state::parse_semantic_version(&input.semantic_version).is_none() {
+            return Err(refused(
+                crate::state::invalid_wildcard_semantic_version_message(
+                    crate::state::SEMANTIC_VERSION_MEMBER,
+                ),
+            ));
+        }
+
+        // "Container recipes support only the Linux and Windows platforms", which narrows
+        // the modelled `Platform` enum this member is validated against: the remaining value
+        // names a platform this resource cannot have.
+        if input
+            .platform_override
+            .as_deref()
+            .is_some_and(|named| !crate::state::CONTAINER_RECIPE_PLATFORMS.contains(&named))
+        {
+            return Err(refused(
+                crate::state::unsupported_container_platform_message(),
+            ));
+        }
+
+        // "A recipe can contain a maximum of 20 build and test components in any
+        // combination, by default." The modelled list carries no maximum of its own, so the
+        // documented quota is read here — BEFORE the store is reached, so the work one
+        // create spends resolving references is bounded by a constant.
+        let submitted_components = input.components.as_ref().map_or(0, Vec::len);
+        if submitted_components > crate::state::MAX_RECIPE_COMPONENTS {
+            return Err(
+                CreateContainerRecipeErrorModeled::ServiceQuotaExceededException(
+                    ServiceQuotaExceededException {
+                        message: Some(crate::state::too_many_recipe_components_message(
+                            submitted_components,
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        let fingerprint = crate::state::container_recipe_request_fingerprint(&input);
+        let arn = crate::state::container_recipe_arn(&region, &input.name, &input.semantic_version);
+
+        // "If you retry a request with the same client token, Image Builder returns the
+        // original response without running the operation again" — answered BEFORE the
+        // template object is read, so a retry carrying a token that already succeeded runs
+        // nothing and cannot be refused for an object that has since been removed. The check
+        // is repeated under the lock that writes, which is what settles a token two requests
+        // carry at once.
+        if let Some(answered) = answered_before(
+            &state.lock(),
+            &region,
+            &input.client_token,
+            &fingerprint,
+        ) {
+            return answered;
+        }
+
+        // The template the recipe will carry, whichever member named it. A location names an
+        // object of the emulator's own Amazon S3, fetched ONCE here: "Image Builder reads the
+        // object once, when it creates the recipe, and stores its content in the recipe."
+        let template = match template_source {
+            TemplateSource::Inline(data) => data.to_string(),
+            TemplateSource::Uri(uri) => template_object(ctx, &region, uri).await?,
+        };
+
+        // The component resolution, the uniqueness check and the insert happen under ONE
+        // lock, so concurrent creates are serialized: the first to take the lock stores the
+        // recipe and every other one sees it.
+        let mut store = state.lock();
+
+        // The token again, now under the lock that writes: a token this request did not see
+        // above because another request was carrying it at the same time is settled here.
+        if let Some(answered) =
+            answered_before(&store, &region, &input.client_token, &fingerprint)
+        {
+            return answered;
+        }
+
+        if store.container_recipes.contains_key(&arn) {
+            return Err(
+                CreateContainerRecipeErrorModeled::ResourceAlreadyExistsException(
+                    ResourceAlreadyExistsException {
+                        message: Some(crate::state::resource_already_exists_message(&arn)),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // Every component the recipe includes has to BE a stored component, each named only
+        // once, and all of them targeting one platform — the rules both kinds of recipe
+        // follow, read in one place.
+        let components_target = match store
+            .resolve_recipe_components(input.components.as_deref().unwrap_or_default(), &region)
+        {
+            crate::state::RecipeComponents::Target(target) => target,
+            crate::state::RecipeComponents::Missing(reference) => {
+                return Err(
+                    CreateContainerRecipeErrorModeled::ResourceNotFoundException(
+                        ResourceNotFoundException {
+                            message: Some(crate::state::required_resource_not_found_message(
+                                &reference,
+                            )),
+                        },
+                    )
+                    .into(),
+                )
+            }
+            crate::state::RecipeComponents::Refused(why) => {
+                return Err(CreateContainerRecipeErrorModeled::InvalidRequestException(
+                    InvalidRequestException { message: Some(why) },
+                )
+                .into())
+            }
+        };
+
+        // "Container recipes support only the Linux and Windows platforms", and a recipe's
+        // platform is the platform its components target, so a component set targeting the
+        // remaining value of the `Platform` enum names a platform this resource cannot have —
+        // refused like a `platformOverride` naming it, as the requirement over the components
+        // list that it is.
+        if let Some(named) = components_target
+            .as_deref()
+            .filter(|named| !crate::state::CONTAINER_RECIPE_PLATFORMS.contains(named))
+        {
+            return Err(CreateContainerRecipeErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    message: Some(
+                        crate::state::unsupported_container_component_platform_message(named),
+                    ),
+                },
+            )
+            .into());
+        }
+
+        // The store is finite: a create that would take it past this emulator's own cap is
+        // refused rather than growing it. Checked BEFORE the dry-run branch, so a dry run
+        // reports the same outcome the real create would have.
+        if store.container_recipe_store_is_full() {
+            return Err(
+                CreateContainerRecipeErrorModeled::ServiceQuotaExceededException(
+                    ServiceQuotaExceededException {
+                        message: Some(crate::state::container_recipe_store_full_message()),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // `dryRun`: "Validates the required permissions and request parameters without
+        // performing the operation. If validation succeeds, the operation returns a
+        // DryRunOperationException error response." Nothing has been written by here —
+        // including the request's receipt, so a dry run leaves the token free for the real
+        // request.
+        if input.dry_run {
+            return Err(
+                CreateContainerRecipeErrorModeled::DryRunOperationException(
+                    DryRunOperationException {
+                        message: Some(crate::state::dry_run_message()),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        let request_id = crate::state::new_request_id();
+        let client_token = input.client_token.clone();
+        // Every recipe builds for ONE platform, and every read of one reports it.
+        let platform = crate::state::container_recipe_platform(
+            input.platform_override.as_deref(),
+            components_target.as_deref(),
+            &input.parent_image,
+        );
+
+        store.insert_container_recipe(
+            crate::state::ContainerRecipeRecord {
+                arn: arn.clone(),
+                region,
+                name: input.name,
+                version: input.semantic_version,
+                description: input.description,
+                container_type: input.container_type,
+                platform,
+                owner: ::engine::EMULATOR_ACCOUNT_ID.to_string(),
+                // `imageOsVersionOverride` is part of the REQUEST and not of the resource:
+                // the modelled `ContainerRecipe` declares no member for it, and a build
+                // version reports no `osVersion` at all (nothing this store holds observes
+                // the operating system of a base image), so it is compared for idempotency
+                // and otherwise nothing reports it.
+                components: input.components.unwrap_or_default(),
+                instance_configuration: input.instance_configuration,
+                dockerfile_template_data: template,
+                kms_key_id: input.kms_key_id,
+                parent_image: input.parent_image,
+                working_directory: input.working_directory,
+                target_repository: input.target_repository,
+                tags: input.tags.map(crate::state::into_ordered_tags),
+                date_created: crate::state::iso8601(::std::time::SystemTime::now()),
+            },
+            &client_token,
+            fingerprint,
+            request_id.clone(),
+        );
+
+        Ok(answer(request_id, client_token, arn))
     }
+}
+
+/// Which of the two documented members named this recipe's Dockerfile template.
+enum TemplateSource<'request> {
+    /// `dockerfileTemplateData`: "The Dockerfile template used to build your image, as an
+    /// inline data blob."
+    Inline(&'request str),
+    /// `dockerfileTemplateUri`: "The Amazon S3 URI for the Dockerfile template that is used
+    /// to build your container image."
+    Uri(&'request str),
+}
+
+/// The answer a created recipe is reported by, which a retry of its request repeats verbatim.
+///
+/// `latestVersionReferences` is "a set of wildcard version ARNs that always reference the
+/// latest version of the resource", so it is derived from the recipe's own ARN
+/// ([`crate::state::latest_version_references`]) rather than held anywhere.
+fn answer(request_id: String, client_token: String, arn: String) -> CreateContainerRecipeOutput {
+    CreateContainerRecipeOutput {
+        latest_version_references: crate::state::latest_version_references(
+            &arn,
+            crate::state::CONTAINER_RECIPE_ARN_PREFIX,
+        ),
+        request_id: Some(request_id),
+        client_token: Some(client_token),
+        container_recipe_arn: Some(arn),
+    }
+}
+
+/// What this request has ALREADY been answered, when its `clientToken` names a create that
+/// succeeded: the original response, or the mismatch a token carrying different creation
+/// parameters earns. `None` when the token names nothing yet, which is the request's to run.
+fn answered_before(
+    store: &crate::state::ComAmazonawsImagebuilderImagebuilderState,
+    region: &str,
+    client_token: &str,
+    fingerprint: &str,
+) -> Option<Result<CreateContainerRecipeOutput, CreateContainerRecipeError>> {
+    let receipt = store.create_receipt(
+        crate::state::CREATE_CONTAINER_RECIPE_OPERATION,
+        region,
+        client_token,
+    )?;
+    if receipt.fingerprint != fingerprint {
+        return Some(Err(
+            CreateContainerRecipeErrorModeled::IdempotentParameterMismatchException(
+                IdempotentParameterMismatchException {
+                    message: Some(crate::state::idempotent_parameter_mismatch_message()),
+                },
+            )
+            .into(),
+        ));
+    }
+    // The ORIGINAL response, down to its `requestId` and the wildcard references the
+    // resource that request created is reached by.
+    Some(Ok(answer(
+        receipt.request_id.clone(),
+        receipt.client_token.clone(),
+        receipt.arn.clone(),
+    )))
+}
+
+/// The Dockerfile template the object a `dockerfileTemplateUri` names holds, read through the
+/// emulator's own Amazon S3 in `region`.
+///
+/// What the read established decides the answer, and the two kinds of failure are kept apart
+/// because they are different claims: the store ANSWERING that it serves no such object — or
+/// that the read is not permitted — is a fact about the value the request carried, so the
+/// create is refused as that parameter's value; nothing answering the read at all establishes
+/// nothing about the object, so the create reports a server-side failure instead.
+async fn template_object(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    uri: &str,
+) -> Result<String, CreateContainerRecipeError> {
+    // "This must be an S3 URL (s3://bucket/key)": a value that is not one addresses no
+    // object, so nothing is asked of the store.
+    let Some((bucket, key)) = crate::state::parse_s3_uri(uri) else {
+        return Err(refused(crate::state::dockerfile_template_uri_message()));
+    };
+    let read = ::service_common::s3_object_read::read_object(
+        ctx.callback(),
+        region,
+        bucket,
+        key,
+        None,
+        crate::state::MAX_DOCKERFILE_TEMPLATE_BYTES,
+    )
+    .await;
+    match read {
+        ::service_common::s3_object_read::ObjectRead::Served(bytes) => String::from_utf8(bytes)
+            // A Dockerfile template is TEXT, so bytes that are not text are not one.
+            .map_err(|_| refused(crate::state::dockerfile_template_object_message())),
+        ::service_common::s3_object_read::ObjectRead::Absent
+        | ::service_common::s3_object_read::ObjectRead::Denied => Err(refused(
+            crate::state::dockerfile_template_uri_not_found_message(),
+        )),
+        // There is an object store and no template can be taken from this object: it holds
+        // more than a template may, or the store answered something else about it.
+        ::service_common::s3_object_read::ObjectRead::Unreadable => {
+            Err(refused(crate::state::dockerfile_template_object_message()))
+        }
+        ::service_common::s3_object_read::ObjectRead::Unanswered => Err(
+            CreateContainerRecipeErrorModeled::ServiceException(ServiceException {
+                message: Some(crate::state::internal_server_error_message()),
+            })
+            .into(),
+        ),
+    }
+}
+
+/// The refusal this service states for a parameter of this request whose value it cannot
+/// accept: its one modelled class for that, over the sentence `message` states.
+fn refused(message: String) -> CreateContainerRecipeError {
+    CreateContainerRecipeErrorModeled::InvalidParameterValueException(
+        InvalidParameterValueException {
+            message: Some(message),
+        },
+    )
+    .into()
 }

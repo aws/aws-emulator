@@ -212,9 +212,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // A component a stored recipe still includes is not removed: a recipe of EITHER
+        // kind reaches it, so both stores are asked.
         if store
             .recipe_depending_on_component(&input.component_build_version_arn)
             .is_some()
+            || store
+                .container_recipe_depending_on_component(&input.component_build_version_arn)
+                .is_some()
         {
             return Err(DeleteComponentErrorModeled::ResourceDependencyException(
                 ResourceDependencyException {

@@ -403,9 +403,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     crate::state::DocumentObject::Unestablished => {
                         return Err(CreateComponentErrorModeled::ServiceException(
                             ServiceException {
-                                message: Some(
-                                    crate::state::component_document_unreadable_message(),
-                                ),
+                                message: Some(crate::state::internal_server_error_message()),
                             },
                         )
                         .into())

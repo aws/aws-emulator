@@ -378,7 +378,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::DocumentObject::Unestablished => {
                     return Err(ImportComponentErrorModeled::ServiceException(
                         ServiceException {
-                            message: Some(crate::state::component_document_unreadable_message()),
+                            message: Some(crate::state::internal_server_error_message()),
                         },
                     )
                     .into())
@@ -400,7 +400,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // not be rendered at all, which is a server-side failure rather than a claim
             // about a value the request carried.
             ImportComponentErrorModeled::ServiceException(ServiceException {
-                message: Some(crate::state::component_document_unreadable_message()),
+                message: Some(crate::state::internal_server_error_message()),
             })
         })?;
 

@@ -293,22 +293,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // The image a build produces takes its name and its three assigned version nodes
         // from the recipe it builds, and the reference is resolved AT THE START, so a
-        // wildcard version builds the newest recipe that reference reaches now.
-        let (name, version, platform, image_recipe_arn) = match named_recipe {
-            NamedRecipe::Image(reference) => match store.resolve_image_recipe(reference, &region) {
-                Some(recipe) => (
-                    recipe.name.clone(),
-                    recipe.version.clone(),
-                    Some(recipe.platform.clone()),
-                    Some(recipe.arn.clone()),
-                ),
-                None => return Err(missing(reference)),
-            },
-            // A CONTAINER recipe is a resource this store does not hold at all, so such a
-            // reference names nothing — the answer any reference to a resource that was
-            // never created gets.
-            NamedRecipe::Container(reference) => return Err(missing(reference)),
+        // wildcard version builds the newest recipe that reference reaches now. A recipe of
+        // EITHER kind is resolved by the one reading of what a build takes from a recipe
+        // ([`crate::state::ComAmazonawsImagebuilderImagebuilderState::resolve_built_recipe`]),
+        // whose own kind decides the kind of image the build produces; a reference naming
+        // nothing stored is reported MISSING rather than built from.
+        let Some(built) = store.resolve_built_recipe(named_recipe, &region) else {
+            return Err(missing(named_recipe));
         };
+        let crate::state::BuiltRecipe {
+            name,
+            version,
+            platform,
+            image_recipe_arn,
+            image_type,
+        } = built;
+        let platform = Some(platform);
 
         // A distribution configuration and a workflow are both resources of this service, so
         // a reference to either has to name a stored resource of this Region. A workflow
@@ -404,9 +404,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 logging_configuration: input.logging_configuration,
                 platform,
                 // "For an image recipe, this is always AMI": the kind of recipe a build
-                // builds decides what kind of image it produces, and a build reaching here
-                // built an image recipe.
-                image_type: Some(crate::state::IMAGE_TYPE_AMI.to_string()),
+                // builds decides what kind of image it produces, which is what the resolved
+                // recipe reports.
+                image_type: Some(image_type.to_string()),
                 // "USER_INITIATED" is the build type of a build request a caller made by
                 // hand, which is exactly what this operation serves.
                 build_type: Some(crate::state::BUILD_TYPE_USER_INITIATED.to_string()),
@@ -451,15 +451,7 @@ fn answer(request_id: String, client_token: String, arn: String) -> CreateImageO
     }
 }
 
-/// The ONE recipe a create names, of the two kinds a recipe may be.
-enum NamedRecipe<'a> {
-    /// An image recipe, which an image build distributes an AMI from.
-    Image(&'a str),
-    /// A container recipe, which an image build pushes a container image from.
-    Container(&'a str),
-}
-
-/// The one recipe `input` names, or the refusal a request naming neither or both earns.
+/// The ONE recipe `input` names, or the refusal a request naming neither or both earns.
 ///
 /// "You must specify exactly one recipe for your image, using either a containerRecipeArn
 /// or an imageRecipeArn", which each of the two members repeats as "You must specify either
@@ -468,10 +460,15 @@ enum NamedRecipe<'a> {
 /// request naming NONE of the group is missing a required parameter
 /// ([`crate::state::MISSING_PARAMETERS_CODE`]), and one naming BOTH carries a combination
 /// that cannot hold together.
-fn named_recipe(input: &CreateImageInput) -> Result<NamedRecipe<'_>, CreateImageError> {
+///
+/// WHICH kind of recipe the one reference names is the ARN's own to say, so the reference
+/// alone is handed back: each member's modelled pattern pins the resource kind its value may
+/// carry (`ImageRecipeArn` admits only `image-recipe/`, `ContainerRecipeArn` only
+/// `container-recipe/`), and the centralized walk has refused a value outside it before this
+/// runs.
+fn named_recipe(input: &CreateImageInput) -> Result<&str, CreateImageError> {
     match (&input.image_recipe_arn, &input.container_recipe_arn) {
-        (Some(reference), None) => Ok(NamedRecipe::Image(reference)),
-        (None, Some(reference)) => Ok(NamedRecipe::Container(reference)),
+        (Some(reference), None) | (None, Some(reference)) => Ok(reference),
         (None, None) => Err(crate::scaffolded::Scaffolded::unmodeled(
             crate::state::MISSING_PARAMETERS_CODE,
             crate::state::MISSING_PARAMETERS_STATUS,
