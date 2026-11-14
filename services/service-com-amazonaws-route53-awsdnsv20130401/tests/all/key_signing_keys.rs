@@ -54,7 +54,18 @@ const COORDINATE_PAIR_OCTETS: usize = 64;
 
 /// A router with Route 53 and KMS mounted on ONE shared engine — the assembly the
 /// rule needs, since the public half a KSK publishes is KMS's own state.
-fn emulator() -> MultiServiceRouter {
+///
+/// `pub(crate)` so the sibling suite over the rest of a key's lifecycle drives
+/// the same assembly rather than growing a second copy of it.
+pub(crate) fn emulator() -> MultiServiceRouter {
+    emulator_with_store().0
+}
+
+/// That same assembly, PLUS the engine handle.
+///
+/// A test that has to put a key into a status no implemented operation reaches
+/// needs the store as well; everything else takes [`emulator`] above.
+pub(crate) fn emulator_with_store() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     // In-process tests sign with a placeholder credential; signature
@@ -64,9 +75,9 @@ fn emulator() -> MultiServiceRouter {
         service_com_amazonaws_route53_awsdnsv20130401::EmulatedService::new(Arc::clone(&engine)),
     );
     router.register_service(
-        service_com_amazonaws_kms_trentservice::EmulatedService::new(engine),
+        service_com_amazonaws_kms_trentservice::EmulatedService::new(Arc::clone(&engine)),
     );
-    router
+    (router, engine)
 }
 
 /// Call one KMS operation and return its status and JSON body. KMS speaks
@@ -99,7 +110,7 @@ async fn kms_call(router: &MultiServiceRouter, operation: &str, body: &Value) ->
 }
 
 /// Make one KMS key of `key_spec` under `key_usage` and return its key ARN.
-async fn create_kms_key(
+pub(crate) async fn create_kms_key(
     router: &MultiServiceRouter,
     case: &str,
     key_spec: &str,
@@ -123,7 +134,7 @@ async fn create_kms_key(
 }
 
 /// A customer managed key configured as a KSK's key must be.
-async fn create_signing_kms_key(router: &MultiServiceRouter, case: &str) -> String {
+pub(crate) async fn create_signing_kms_key(router: &MultiServiceRouter, case: &str) -> String {
     create_kms_key(router, case, SIGNING_KEY_SPEC, SIGNING_KEY_USAGE).await
 }
 
@@ -170,7 +181,7 @@ fn create_ksk_body(
 }
 
 /// Create one key-signing key and return the reply.
-async fn create_ksk(
+pub(crate) async fn create_ksk(
     router: &MultiServiceRouter,
     hosted_zone_id: &str,
     name: &str,
@@ -193,7 +204,7 @@ async fn create_ksk(
 }
 
 /// Create one key-signing key, requiring the call to be served.
-async fn create_ksk_ok(
+pub(crate) async fn create_ksk_ok(
     router: &MultiServiceRouter,
     case: &str,
     hosted_zone_id: &str,
@@ -216,10 +227,10 @@ const CREATED_KEY: &str = "KeySigningKey";
 
 /// Where a DNSSEC read reports a key: `GetDNSSECResponse$KeySigningKeys` is a
 /// list, so each key travels as one `member` of it.
-const REPORTED_KEY: &str = "member";
+pub(crate) const REPORTED_KEY: &str = "member";
 
 /// The text of one element of a reply, or a panic naming the case.
-fn member<'a>(case: &str, reply: &'a Reply, path: &str) -> &'a str {
+pub(crate) fn member<'a>(case: &str, reply: &'a Reply, path: &str) -> &'a str {
     reply.first(path).unwrap_or_else(|| {
         panic!(
             "case {case:?}: the reply must carry {path}, got body {}",
@@ -259,7 +270,7 @@ const PERSISTED_MEMBERS: &[&str] = &[
 ];
 
 /// How many key-signing keys `GetDNSSEC` reports for a zone.
-async fn ksk_count(router: &MultiServiceRouter, zone_id: &str) -> usize {
+pub(crate) async fn ksk_count(router: &MultiServiceRouter, zone_id: &str) -> usize {
     get_dnssec(router, zone_id)
         .await
         .all(&format!("{REPORTED_KEY}/Name"))
@@ -267,7 +278,10 @@ async fn ksk_count(router: &MultiServiceRouter, zone_id: &str) -> usize {
 }
 
 /// Assert the `ChangeInfo` a create answered is a change a caller can poll.
-fn assert_polls_a_change(case: &str, reply: &Reply) {
+///
+/// `pub(crate)` so the sibling suite over the rest of a key's lifecycle checks
+/// the change ITS operation answers by the same rule.
+pub(crate) fn assert_polls_a_change(case: &str, reply: &Reply) {
     let id = member(case, reply, "ChangeInfo/Id");
     let bare = id.strip_prefix("/change/").unwrap_or_else(|| {
         panic!("case {case:?}: a change id is reported behind /change/, got {id:?}")

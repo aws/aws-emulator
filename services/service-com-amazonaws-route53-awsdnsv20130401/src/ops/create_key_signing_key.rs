@@ -127,12 +127,6 @@ fn names_a_key_signing_key(name: &str) -> bool {
 const INVALID_KEY_SIGNING_KEY_NAME_MESSAGE: &str =
     "The key-signing key (KSK) name that you specified isn't a valid name.";
 
-/// The refusal of an ARN this emulator cannot sign a zone with, in
-/// `InvalidKMSArn`'s own wording: "The KeyManagementServiceArn that you specified
-/// isn't valid to use with DNSSEC signing."
-const INVALID_KMS_ARN_MESSAGE: &str =
-    "The KeyManagementServiceArn that you specified isn't valid to use with DNSSEC signing.";
-
 /// The refusal of a second key-signing key over a name or a customer managed key
 /// the zone already holds one for, in `KeySigningKeyAlreadyExists`'s own wording:
 /// "You've already created a key-signing key (KSK) with this name or with the
@@ -282,9 +276,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &zone_name,
         )
         .ok_or_else(|| {
-            CreateKeySigningKeyErrorModeled::InvalidKMSArn(InvalidKMSArn {
-                message: Some(INVALID_KMS_ARN_MESSAGE.to_string()),
-            })
+            // Worded once for the whole service, from the ARN the request sent:
+            // the refusal names the key it rejected rather than restating what
+            // the error class means.
+            CreateKeySigningKeyErrorModeled::InvalidKMSArn(signing_key::invalid_kms_arn(
+                &input.key_management_service_arn,
+            ))
         })?;
 
         let created = ::aws_smithy_types::DateTime::from_millis(now_millis());

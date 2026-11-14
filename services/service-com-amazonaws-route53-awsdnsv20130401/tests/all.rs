@@ -120,6 +120,11 @@ mod hosted_zones_by_vpc;
 // persists and what it refuses.
 #[path = "all/key_signing_keys.rs"]
 mod key_signing_keys;
+// Declared beside the key-signing key suite: this one is the rest of a key's
+// lifecycle — the delete, what it is refused for and the wording of those
+// refusals.
+#[path = "all/key_signing_key_deletion.rs"]
+mod key_signing_key_deletion;
 // Declared beside the listing suites: this one is the page size every
 // `maxitems`-paged listing reports, across all of them at once.
 #[path = "all/listing_page_size_echo.rs"]

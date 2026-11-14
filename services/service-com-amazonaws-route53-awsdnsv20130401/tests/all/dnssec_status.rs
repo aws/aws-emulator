@@ -85,7 +85,9 @@ pub(crate) async fn enable_dnssec(router: &MultiServiceRouter, zone_id: &str) ->
 }
 
 /// `DisableHostedZoneDNSSEC` for one hosted zone.
-async fn disable_dnssec(router: &MultiServiceRouter, zone_id: &str) -> Reply {
+///
+/// `pub(crate)` for the same reason [`get_dnssec`] is.
+pub(crate) async fn disable_dnssec(router: &MultiServiceRouter, zone_id: &str) -> Reply {
     call(
         router,
         "POST",

@@ -1060,6 +1060,20 @@ impl StoredZone {
             .any(|ksk| ksk.status.as_deref() == Some(SIGNING_KEY_STATUS_ACTIVE))
     }
 
+    /// Whether the key-signing key `name` is the ONLY key in `ACTIVE` status
+    /// this zone holds — the key a signing zone has nothing to sign with
+    /// without, which is what `KeySigningKeyInUse` ("it's the only KSK for a
+    /// currently-enabled DNSSEC") reports on. `false` for a name the zone holds
+    /// no key for, and for a key that is not ACTIVE itself.
+    pub fn is_only_active_key_signing_key(&self, name: &str) -> bool {
+        let mut active = self
+            .key_signing_keys
+            .iter()
+            .filter(|(_, ksk)| ksk.status.as_deref() == Some(SIGNING_KEY_STATUS_ACTIVE))
+            .map(|(held, _)| held.as_str());
+        active.next() == Some(name) && active.next().is_none()
+    }
+
     /// Whether one of this zone's key-signing keys is in `INTERNAL_FAILURE`,
     /// the status that has to be corrected "before you can continue to work
     /// with DNSSEC signing" (`KeySigningKey$Status`).

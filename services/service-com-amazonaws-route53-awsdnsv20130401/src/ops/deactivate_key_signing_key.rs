@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeactivateKeySigningKey
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DeactivateKeySigningKey`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DeactivateKeySigningKey::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -83,6 +74,27 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+use crate::state::signing_key;
+use crate::state::{normalize_zone_id, now_millis, SIGNING_KEY_STATUS_INACTIVE};
+
+/// The refusal of the deactivation of the last key a signing zone has to sign
+/// with, in the words `KeySigningKeyInUse` states the condition in: "The
+/// key-signing key (KSK) that you specified can't be deactivated because it's
+/// the only KSK for a currently-enabled DNSSEC. Disable DNSSEC signing, or add
+/// or enable another KSK."
+///
+/// REQUEST-DERIVED: it quotes the `Name` the request addressed and states what
+/// is true of THAT key — that it is the zone's only available ACTIVE key — so a
+/// caller driving several keys learns which one the zone still needs.
+fn key_signing_key_in_use(name: &str) -> KeySigningKeyInUse {
+    KeySigningKeyInUse {
+        message: Some(format!(
+            "Key Signing Key with name '{name}' is the only available ACTIVE key for the hosted \
+             zone."
+        )),
+    }
+}
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -155,20 +167,81 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        ctx: &smithy_server_runtime::OperationContext<'_>,
+        _ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DeactivateKeySigningKey` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DeactivateKeySigningKeyErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DeactivateKeySigningKey"))
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            // Unreachable under the router, which always mounts this service on
+            // the shared `InMemoryEngine`.
+            DeactivateKeySigningKeyErrorModeled::InvalidInput(InvalidInput {
+                message: Some("the Route 53 emulator's state store is unavailable".to_string()),
+            })
+        })?;
+
+        // The caller may pass the bare id or the `/hostedzone/`-prefixed `Id` a
+        // HostedZone handed it back; both name the same zone.
+        let zone_id = normalize_zone_id(&input.hosted_zone_id);
+        let mut store = state.lock();
+        // A key is addressed by `(HostedZoneId, Name)` and the keys are held ON
+        // the zone, so a zone this store does not hold holds no key of that name
+        // either: this operation models no zone-level error, so an address that
+        // resolves to nothing is a key that does not exist.
+        let zone = store.zones.get_mut(zone_id).ok_or_else(|| {
+            DeactivateKeySigningKeyErrorModeled::NoSuchKeySigningKey(
+                signing_key::no_such_key_signing_key(&input.name),
+            )
+        })?;
+        if !zone.key_signing_keys.contains_key(&input.name) {
+            return Err(DeactivateKeySigningKeyErrorModeled::NoSuchKeySigningKey(
+                signing_key::no_such_key_signing_key(&input.name),
+            )
+            .into());
+        }
+
+        // A zone Route 53 is signing has to keep a key to sign with, so the one
+        // ACTIVE key of a signing zone cannot be taken out of use: "Disable
+        // DNSSEC signing, or add or enable another KSK" first. A zone that is
+        // not signing has no such key, so every one of its keys may be
+        // deactivated.
+        if zone.dnssec_signing_enabled && zone.is_only_active_key_signing_key(&input.name) {
+            return Err(DeactivateKeySigningKeyErrorModeled::KeySigningKeyInUse(
+                key_signing_key_in_use(&input.name),
+            )
+            .into());
+        }
+
+        // "This operation changes the KSK status to INACTIVE", so what the call
+        // promises is the END state: a key already INACTIVE stays INACTIVE and
+        // the call is served, and a key left in a status a failed request
+        // produced is deactivated too — that is the correction
+        // `KeySigningKey$Status` points at ("you may need to activate or
+        // deactivate the KSK").
+        let key = match zone.key_signing_keys.get_mut(&input.name) {
+            Some(key) => key,
+            // Unreachable: the key was found present above, under this lock.
+            None => {
+                return Err(DeactivateKeySigningKeyErrorModeled::NoSuchKeySigningKey(
+                    signing_key::no_such_key_signing_key(&input.name),
+                )
+                .into())
+            }
+        };
+        let changed = key.status.as_deref() != Some(SIGNING_KEY_STATUS_INACTIVE);
+        key.status = Some(SIGNING_KEY_STATUS_INACTIVE.to_string());
+        // "The status message provided for the following key-signing key (KSK)
+        // statuses: ACTION_NEEDED or INTERNAL_FAILURE"
+        // (`KeySigningKey$StatusMessage`) — INACTIVE is neither, so a key this
+        // call moves has no status message to report.
+        key.status_message = None;
+        if changed {
+            key.last_modified_date = Some(::aws_smithy_types::DateTime::from_millis(now_millis()));
+        }
+        // Taking the key out of use is a change to the zone's records, so it
+        // propagates like any other: the caller polls the returned change
+        // through GetChange.
+        let change = store.submit_change(None);
+
+        Ok(DeactivateKeySigningKeyOutput {
+            change_info: change.to_change_info(),
+        })
     }
 }

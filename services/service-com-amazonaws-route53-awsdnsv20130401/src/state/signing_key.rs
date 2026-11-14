@@ -25,6 +25,49 @@
 
 use ::service_com_amazonaws_kms_trentservice as kms;
 
+use crate::ops::types::shared_types::{InvalidKMSArn, NoSuchKeySigningKey};
+
+/// The modelled `InvalidKMSArn` (HTTP 400) for a `KeyManagementServiceArn` this
+/// service cannot sign a zone with.
+///
+/// The ONE place this service words that refusal, so every operation that
+/// resolves a customer managed key answers an unusable one identically. The
+/// message is REQUEST-DERIVED: it quotes the ARN that arrived and then states
+/// what to check about that key — whether it still exists, and whether its
+/// configuration and key policy meet this service's DNSSEC requirements —
+/// because the conditions behind the refusal (a deleted key, a key of another
+/// spec or usage, a disabled key, a key policy that withholds the signing
+/// permissions) are all facts of the key the caller named and are not
+/// distinguishable from one another by the caller without being told which key
+/// was rejected.
+pub fn invalid_kms_arn(kms_arn: &str) -> InvalidKMSArn {
+    InvalidKMSArn {
+        message: Some(format!(
+            "The customer managed key with ARN '{kms_arn}' could not be used by Route 53 DNSSEC. \
+             Check to make sure that the customer managed key has not been deleted. Otherwise, \
+             review its configurations and key policy, to make sure it is in compliance with \
+             Route 53 DNSSEC requirements."
+        )),
+    }
+}
+
+/// The modelled `NoSuchKeySigningKey` (HTTP 404) for a name that names no
+/// key-signing key of the addressed hosted zone.
+///
+/// The ONE place this service words that refusal, so every key-addressed
+/// operation — the activate, the deactivate and the delete, each of which
+/// addresses a key by `(HostedZoneId, Name)` — answers a key it does not hold
+/// identically. REQUEST-DERIVED: it quotes the `Name` the request asked about,
+/// which is the half of the address a caller driving several keys cannot infer
+/// from the error class alone.
+pub fn no_such_key_signing_key(name: &str) -> NoSuchKeySigningKey {
+    NoSuchKeySigningKey {
+        message: Some(format!(
+            "The Key Signing Key with name '{name}', could not be found."
+        )),
+    }
+}
+
 /// The refusal of a key-signing key status that is not one this API accepts, in
 /// `InvalidKeySigningKeyStatus`'s own wording: "The key-signing key (KSK) status
 /// isn't valid or another KSK has the status INTERNAL_FAILURE."
