@@ -71,6 +71,9 @@ mod fifo_pairing_and_subscribe_conflicts;
 #[path = "all/fifo_topic_deduplication_attribute.rs"]
 mod fifo_topic_deduplication_attribute;
 
+#[path = "all/firehose_subscription_delivery.rs"]
+mod firehose_subscription_delivery;
+
 #[path = "all/filter_policy_delivery.rs"]
 mod filter_policy_delivery;
 

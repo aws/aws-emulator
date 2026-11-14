@@ -451,7 +451,7 @@ async fn subscription_attributes_are_projected_from_the_persisted_subscription()
                         document
                             .pointer(&format!("/healthyRetryPolicy/{member}"))
                             .is_some(),
-                        "case {case:?}: {name} must read back with {member} filled in, \
+                        "case {case:?}: {name} must read back stating {member}, \
                          got {document}"
                     );
                 }

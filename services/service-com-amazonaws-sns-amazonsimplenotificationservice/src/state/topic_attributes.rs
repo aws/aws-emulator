@@ -14,8 +14,8 @@
 //! both calls therefore state the same sentence for the same condition.
 
 use super::{
-    delivery_policy_refusal, flag_attribute_value, json_object, TopicRecord,
-    ARCHIVE_POLICY_ATTRIBUTE, CONTENT_BASED_DEDUPLICATION_ATTRIBUTE,
+    delivery_policy_refusal, flag_attribute_refusal, flag_attribute_value, json_object,
+    AttributeMember, TopicRecord, ARCHIVE_POLICY_ATTRIBUTE, CONTENT_BASED_DEDUPLICATION_ATTRIBUTE,
     DEFAULT_MAXIMUM_MESSAGE_SIZE, DELIVERY_POLICY_ATTRIBUTE, DISPLAY_NAME_ATTRIBUTE,
     FEEDBACK_ROLE_ARN_SUFFIX, FIFO_THROUGHPUT_SCOPE_ATTRIBUTE, FIFO_TOPIC_ATTRIBUTE,
     KMS_MASTER_KEY_ID_ATTRIBUTE, MAXIMUM_MESSAGE_SIZE_ATTRIBUTE, MAX_MAXIMUM_MESSAGE_SIZE,
@@ -200,11 +200,14 @@ fn value_refusal(name: &str, value: &str, subject: TopicSubject<'_>) -> Option<S
         FIFO_THROUGHPUT_SCOPE_ATTRIBUTE => (!FIFO_THROUGHPUT_SCOPE_VALUES.contains(&value))
             .then(|| format!("Invalid parameter: Invalid {name}: {value}")),
         // The two flag-valued attributes: a word, in either case, because SNS carries
-        // every attribute value as a string.
+        // every attribute value as a string. The sentence is the one every flag-valued
+        // attribute of either record kind is refused with
+        // ([`super::flag_attribute_refusal`]); a topic's write names the attribute
+        // directly, whichever call carried it, so it takes no member frame.
         FIFO_TOPIC_ATTRIBUTE | CONTENT_BASED_DEDUPLICATION_ATTRIBUTE => {
-            flag_attribute_value(value).is_none().then(|| {
-                format!("Invalid parameter: {name}: Invalid value [{value}]. Must be true or false.")
-            })
+            flag_attribute_value(value)
+                .is_none()
+                .then(|| flag_attribute_refusal(name, value, AttributeMember::Named))
         }
         name if name.ends_with(SAMPLE_RATE_SUFFIX) => match value.parse::<i64>() {
             Ok(rate) if (MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&rate) => None,

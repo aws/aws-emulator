@@ -58,7 +58,11 @@ mod arn_references;
 /// The order SNS reports one subscription's attributes in, and the map key that carries
 /// it.
 mod subscription_attribute_order;
+/// The document a subscription's `DeliveryPolicy` is STORED as: the caller's own document
+/// expanded to the whole shape, with the members it did not supply as the nulls they are.
+mod stored_delivery_policy;
 pub use arn_references::*;
+pub use stored_delivery_policy::*;
 pub use subscription_attribute_order::*;
 pub use tags::*;
 /// How a message published under a `MessageStructure` is read, and which text of it one
@@ -1078,7 +1082,12 @@ pub struct ConfiguredHttpPolicy {
     pub other: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
-#[derive(Debug, Default, serde::Deserialize)]
+/// A retry policy as a CALLER wrote it: every member optional.
+///
+/// It is `Serialize` as well, because the document a subscription's `DeliveryPolicy` is
+/// STORED as states exactly these members with exactly these names — what the caller
+/// supplied, and `null` for what it did not ([`stored_delivery_policy`]).
+#[derive(Debug, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ConfiguredRetryPolicy {
     pub min_delay_target: Option<i64>,
@@ -1092,7 +1101,9 @@ pub struct ConfiguredRetryPolicy {
     pub other: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
-#[derive(Debug, Default, serde::Deserialize)]
+/// A request policy as a CALLER wrote it, `Serialize` for the reason
+/// [`ConfiguredRetryPolicy`] is.
+#[derive(Debug, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ConfiguredRequestPolicy {
     pub header_content_type: Option<String>,
@@ -1391,22 +1402,6 @@ pub fn subscription_delivery_policy_refusal(value: &str) -> Option<String> {
     }
 }
 
-/// The document a subscription's `DeliveryPolicy` is STORED and reported as: what the
-/// caller wrote, laid over the account system defaults, so a read reports the retry
-/// policy whole however few of its members the caller named.
-///
-/// A value the parse cannot read is returned unchanged — the write path refuses one
-/// first ([`subscription_delivery_policy_refusal`]), so this is only the fallback that
-/// keeps a caller's bytes rather than dropping them.
-pub fn normalized_subscription_delivery_policy(value: &str) -> String {
-    let Ok(configured) = serde_json::from_str::<ConfiguredSubscriptionDeliveryPolicy>(value) else {
-        return value.to_string();
-    };
-    let mut normalized = SubscriptionDeliveryPolicy::system_default();
-    configured.overlay(&mut normalized);
-    serde_json::to_string(&normalized).unwrap_or_else(|_| value.to_string())
-}
-
 /// One subscription of one topic, as `Subscribe` minted it.
 #[derive(Debug, Clone)]
 pub struct SubscriptionRecord {
@@ -1618,17 +1613,26 @@ pub fn flag_attribute_enabled(value: &str) -> bool {
 ///
 /// The rejected value is echoed because SNS's own sentence echoes it — it is the only
 /// place the service states WHICH value it would not take, and it is what the caller has
-/// to change. Everything around it is fixed text. Recorded evidence: a
-/// `RawMessageDelivery` of `yes` answers `400 InvalidParameter` with exactly `Invalid
-/// parameter: Attributes Reason: RawMessageDelivery: Invalid value [yes]. Must be true or
-/// false.`
+/// to change. Everything around it is fixed text.
+///
+/// The sentence is framed by the MEMBER the attribute arrived in, like every other
+/// refusal of an attribute's value ([`AttributeMember::refusal`]): a request that carried
+/// it in an `Attributes` MAP is told which member it has to change, and one that was given
+/// the attribute BY NAME needs no such frame. Recorded evidence: a `RawMessageDelivery` of
+/// `yes` answers `400 InvalidParameter` with `Invalid parameter: Attributes Reason:
+/// RawMessageDelivery: Invalid value [yes]. Must be true or false.` through `Subscribe`,
+/// and with `Invalid parameter: RawMessageDelivery: Invalid value [yes]. Must be true or
+/// false.` through `SetSubscriptionAttributes`.
 ///
 /// ONE sentence for every attribute whose value is a flag, so the refusal does not depend
-/// on which flag, or which call, carried the value.
-pub fn flag_attribute_refusal(name: &str, value: &str) -> String {
-    format!(
-        "Invalid parameter: {ATTRIBUTES_MEMBER} Reason: {name}: Invalid value [{value}]. \
-         Must be {RAW_MESSAGE_DELIVERY_ENABLED} or {RAW_MESSAGE_DELIVERY_DISABLED}."
+/// on which flag, or which record kind, carried the value.
+pub fn flag_attribute_refusal(name: &str, value: &str, member: AttributeMember) -> String {
+    member.refusal(
+        name,
+        &format!(
+            "Invalid value [{value}]. Must be {RAW_MESSAGE_DELIVERY_ENABLED} or \
+             {RAW_MESSAGE_DELIVERY_DISABLED}."
+        ),
     )
 }
 
@@ -2029,7 +2033,7 @@ pub fn subscription_attribute_refusal(
         // string (see [`attribute_flag`]), in either case.
         RAW_MESSAGE_DELIVERY_ATTRIBUTE => flag_attribute_value(value)
             .is_none()
-            .then(|| flag_attribute_refusal(name, value)),
+            .then(|| flag_attribute_refusal(name, value, member)),
         FILTER_POLICY_SCOPE_ATTRIBUTE => {
             (!FILTER_POLICY_SCOPES.contains(&value)).then(|| filter_policy_scope_refusal(value))
         }

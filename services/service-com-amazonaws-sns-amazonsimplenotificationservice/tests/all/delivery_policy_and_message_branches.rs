@@ -107,8 +107,9 @@ fn document(case: &str, name: &str, value: &str) -> Value {
     })
 }
 
-/// Assert that `reported` states the whole retry policy: every member the caller named
-/// with the value it named, and every other at the account system default.
+/// Assert that `reported` states the whole retry policy with the account system defaults
+/// filled in: every member the caller named with the value it named, and every other at the
+/// default. That is the EFFECTIVE policy's rule — the one a delivery is actually run under.
 fn assert_normalized(case: &str, name: &str, configured: &Value, reported: &Value) {
     for (member, default) in RETRY_DEFAULTS {
         let pointer = format!("/healthyRetryPolicy/{member}");
@@ -137,12 +138,45 @@ fn assert_normalized(case: &str, name: &str, configured: &Value, reported: &Valu
     );
 }
 
+/// Assert that `reported` is the document as STORED: every member of the shape present,
+/// each one carrying what the caller supplied for it and `null` where it supplied none.
+///
+/// The stored document is what the SUBSCRIPTION holds, so it states no account default: a
+/// member nobody set has no value on the subscription.
+fn assert_stored(case: &str, name: &str, configured: &Value, reported: &Value) {
+    let members: Vec<&str> = RETRY_DEFAULTS
+        .iter()
+        .map(|(member, _)| *member)
+        .chain(std::iter::once(DEFAULT_BACKOFF_FUNCTION_MEMBER))
+        .collect();
+    if configured.get("healthyRetryPolicy").is_none() {
+        assert_eq!(
+            reported.get("healthyRetryPolicy"),
+            Some(&Value::Null),
+            "case {case:?}: {name} must state a retry section the caller did not supply as \
+             null, got {reported}"
+        );
+        return;
+    }
+    for member in members {
+        let pointer = format!("/healthyRetryPolicy/{member}");
+        let expected = configured.pointer(&pointer).unwrap_or(&Value::Null);
+        let actual = reported.pointer(&pointer);
+        assert_eq!(
+            actual,
+            Some(expected),
+            "case {case:?}: {name} must state {member} as {expected}, got {reported}"
+        );
+    }
+}
+
 /// The member of a retry policy that names its backoff function.
 const DEFAULT_BACKOFF_FUNCTION_MEMBER: &str = "backoffFunction";
 
 /// A `DeliveryPolicy` is accepted on a subscription of ANY delivery protocol, written by
-/// either call that writes a subscription attribute, and reads back with its retry policy
-/// stated whole — as does the `EffectiveDeliveryPolicy` computed from it.
+/// either call that writes a subscription attribute, and reads back as the whole document
+/// with the members nobody supplied stated as null — while the `EffectiveDeliveryPolicy`
+/// computed from it states the account system defaults in their place.
 #[tokio::test]
 async fn a_subscription_delivery_policy_is_accepted_on_every_protocol_and_reads_back_whole() {
     let sns = Sns::new();
@@ -189,7 +223,7 @@ async fn a_subscription_delivery_policy_is_accepted_on_every_protocol_and_reads_
                 .cloned()
                 .unwrap_or_else(|| panic!("case {case:?}: no DeliveryPolicy in {held:?}"));
             let stored = document(&case, "DeliveryPolicy", &stored);
-            assert_normalized(&case, "DeliveryPolicy", &configured, &stored);
+            assert_stored(&case, "DeliveryPolicy", &configured, &stored);
             // A member the document names that is not a retry policy is kept as written.
             if let Some(throttle) = configured.get("throttlePolicy") {
                 assert_eq!(

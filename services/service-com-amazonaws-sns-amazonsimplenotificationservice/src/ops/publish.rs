@@ -170,6 +170,13 @@ mod function_delivery;
 #[path = "publish/queue_encryption.rs"]
 mod queue_encryption;
 
+/// The `firehose`-protocol half of the same fan-out, declared with a `#[path]` for the
+/// reason [`function_delivery`] is: a subscribed DELIVERY STREAM is addressed by another
+/// service's API and the put is made under the subscription's own role, so it is one concern
+/// of its own rather than more branches in this file.
+#[path = "publish/stream_delivery.rs"]
+mod stream_delivery;
+
 /// Refuse the request with `InvalidParameterException`, the error SNS uses for a
 /// parameter that "does not comply with the associated constraints".
 fn invalid_parameter(message: String) -> PublishError {
@@ -604,6 +611,8 @@ pub struct Deliveries {
     queues: Vec<QueueDelivery>,
     /// The invocations owed to the functions subscribed over the `lambda` protocol.
     functions: Vec<function_delivery::FunctionDelivery>,
+    /// The records owed to the delivery streams subscribed over the `firehose` protocol.
+    streams: Vec<stream_delivery::StreamDelivery>,
 }
 
 impl Deliveries {
@@ -615,6 +624,7 @@ impl Deliveries {
     pub(crate) fn absorb(&mut self, other: Self) {
         self.queues.extend(other.queues);
         self.functions.extend(other.functions);
+        self.streams.extend(other.streams);
     }
 }
 
@@ -845,6 +855,7 @@ pub(crate) fn subscription_deliveries(
     // case it is the branch that structure names for that protocol.
     let queue_body: ::std::cell::OnceCell<String> = ::std::cell::OnceCell::new();
     let function_body: ::std::cell::OnceCell<String> = ::std::cell::OnceCell::new();
+    let stream_body: ::std::cell::OnceCell<String> = ::std::cell::OnceCell::new();
     let mut raw_body: Option<::std::sync::Arc<str>> = None;
     let mut deliveries = Deliveries::default();
     // The digest of the published body the delivery-status records report, taken at most once
@@ -917,8 +928,26 @@ pub(crate) fn subscription_deliveries(
                 }
                 deliveries.functions.push(delivery);
             }
-            // Every other protocol (`http`, `email`, `firehose`, …) needs its own delivery
-            // path, which is not implemented here.
+            stream_delivery::FIREHOSE_PROTOCOL => {
+                let protocol_body = stream_body
+                    .get_or_init(|| protocol_body(published, stream_delivery::FIREHOSE_PROTOCOL));
+                let Some(delivery) = stream_delivery::StreamDelivery::of(
+                    subscription,
+                    published,
+                    protocol_body,
+                    logged,
+                    &signer,
+                ) else {
+                    continue;
+                };
+                if !budget.charge(delivery.record_len()) {
+                    report_exhausted_budget(&subscription.arn);
+                    return deliveries;
+                }
+                deliveries.streams.push(delivery);
+            }
+            // Every other protocol (`http`, `email`, `application`, …) needs its own
+            // delivery path, which is not implemented here.
             _ => continue,
         }
     }
@@ -1120,7 +1149,9 @@ impl QueueTarget {
 /// [`resource_policy_allows`]. That document is read once per endpoint per request, because
 /// one publish may owe several messages to the same endpoint — so the reads this adds are
 /// bounded by the same [`MAX_DELIVERIES_PER_REQUEST`] the deliveries are, and so are the
-/// per-request tables they are remembered in.
+/// per-request tables they are remembered in. A Firehose delivery stream carries no policy
+/// of its own, so there the gate is the subscription's `SubscriptionRoleArn` instead, asked
+/// of IAM the same number of times ([`stream_delivery`]).
 ///
 /// A delivery that could NOT be made to a subscription carrying a `RedrivePolicy` is written
 /// to the queue that policy names instead: "sends undeliverable messages to the specified
@@ -1152,9 +1183,56 @@ pub(crate) async fn deliver_to_endpoints<Eng: Send + Sync + 'static>(
     // per-delivery schedule is bounded, their PRODUCT with the fan-out is not.
     let mut waiting = RetryBudget::new();
     let mut queues = Queues::new(ctx, queue_encryption::kms_state(engine));
-    for delivery in &deliveries.queues {
+    if !deliveries.queues.is_empty() {
+        // BOXED, for the reason the legs below are.
+        Box::pin(deliver_to_queues(
+            ctx,
+            &deliveries.queues,
+            &mut queues,
+            &mut waiting,
+        ))
+        .await;
+    }
+    if !deliveries.functions.is_empty() {
+        // BOXED, for the reason the streams leg below is.
+        Box::pin(deliver_to_functions(
+            ctx,
+            &deliveries.functions,
+            &mut queues,
+            &mut waiting,
+        ))
+        .await;
+    }
+    if deliveries.streams.is_empty() {
+        return;
+    }
+    // BOXED: each endpoint kind's leg composes the SDK futures of another service's client,
+    // and this operation's own future is nested once per in-process hop a request makes
+    // through the emulator, so the legs are kept OFF this future and on the heap. Without
+    // it, one future carrying every leg's SDK machinery at once grows the frame of every
+    // nested dispatch.
+    Box::pin(deliver_to_streams(
+        ctx,
+        &deliveries.streams,
+        &mut queues,
+        &mut waiting,
+    ))
+    .await;
+}
+
+/// Hand each message this publish owes to the queue its subscription names, and park the
+/// ones no queue took in that subscription's dead-letter queue.
+///
+/// Its own function so [`deliver_to_endpoints`] can hold it on the HEAP: see the call site.
+async fn deliver_to_queues(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    messages: &[QueueDelivery],
+    queues: &mut Queues<'_, '_>,
+    waiting: &mut RetryBudget,
+) {
+    for delivery in messages {
         let attempted = queues
-            .hand_over(&delivery.target, delivery, &mut waiting)
+            .hand_over(&delivery.target, delivery, waiting)
             .await;
         delivery
             .record_status(ctx, attempted.taken(), &attempted.answered)
@@ -1165,14 +1243,23 @@ pub(crate) async fn deliver_to_endpoints<Eng: Send + Sync + 'static>(
         let Some(dead_letter) = delivery.dead_letter.as_ref() else {
             continue;
         };
-        park_in_dead_letter(&mut queues, dead_letter, delivery, &mut waiting).await;
+        park_in_dead_letter(queues, dead_letter, delivery, waiting).await;
     }
-    if deliveries.functions.is_empty() {
-        return;
-    }
+}
+
+/// Invoke each function this publish owes an event to, and park the messages no invocation
+/// carried in that subscription's dead-letter queue.
+///
+/// Its own function so [`deliver_to_endpoints`] can hold it on the HEAP: see the call site.
+async fn deliver_to_functions(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    invocations: &[function_delivery::FunctionDelivery],
+    queues: &mut Queues<'_, '_>,
+    waiting: &mut RetryBudget,
+) {
     let mut functions = function_delivery::Functions::new(ctx);
-    for delivery in &deliveries.functions {
-        let attempted = functions.invoke(delivery, &mut waiting).await;
+    for delivery in invocations {
+        let attempted = functions.invoke(delivery, waiting).await;
         delivery
             .record_status(ctx, attempted.taken(), &attempted.answered)
             .await;
@@ -1182,7 +1269,33 @@ pub(crate) async fn deliver_to_endpoints<Eng: Send + Sync + 'static>(
         let Some(parked) = delivery.dead_letter_copy() else {
             continue;
         };
-        park_in_dead_letter(&mut queues, &parked.target, &parked, &mut waiting).await;
+        park_in_dead_letter(queues, &parked.target, &parked, waiting).await;
+    }
+}
+
+/// Put each record this publish owes into the delivery stream its subscription names, and
+/// park the ones no stream took in that subscription's dead-letter queue.
+///
+/// Its own function so [`deliver_to_endpoints`] can hold it on the HEAP: see the call site.
+async fn deliver_to_streams(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    streams: &[stream_delivery::StreamDelivery],
+    queues: &mut Queues<'_, '_>,
+    waiting: &mut RetryBudget,
+) {
+    let mut puts = stream_delivery::Streams::new(ctx);
+    for delivery in streams {
+        let attempted = puts.put(delivery, waiting).await;
+        delivery
+            .record_status(ctx, attempted.taken(), &attempted.answered)
+            .await;
+        if attempted.taken() {
+            continue;
+        }
+        let Some(parked) = delivery.dead_letter_copy() else {
+            continue;
+        };
+        park_in_dead_letter(queues, &parked.target, &parked, waiting).await;
     }
 }
 

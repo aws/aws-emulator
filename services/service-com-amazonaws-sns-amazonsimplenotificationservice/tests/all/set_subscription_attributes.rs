@@ -40,23 +40,20 @@ const REDRIVE_POLICY: &str = r#"{"deadLetterTargetArn":"arn:aws:sqs:us-east-1:00
 /// the subscription's delivery policy".
 const DELIVERY_POLICY: &str = r#"{"healthyRetryPolicy":{"numRetries":7}}"#;
 
-/// The same policy as SNS reports it BACK: the retry members the caller did not name
-/// filled from the account system defaults (numRetries 3, minDelayTarget and
-/// maxDelayTarget 20, backoffFunction linear — SNS Developer Guide, "Amazon SNS message
-/// delivery retries"), beside the members of the document a subscription has no value
-/// for.
+/// The same policy as SNS reports it BACK: the whole shape of the document, with the
+/// member the caller named kept and every member it did not supply stated as the `null` it
+/// is — the account system defaults belong to the `EffectiveDeliveryPolicy`, not to what
+/// the subscription holds.
 const NORMALIZED_DELIVERY_POLICY: &str = r#"{"healthyRetryPolicy":{
-    "minDelayTarget":20,"maxDelayTarget":20,"numRetries":7,"numMaxDelayRetries":0,
-    "numNoDelayRetries":0,"numMinDelayRetries":0,"backoffFunction":"linear"},
+    "minDelayTarget":null,"maxDelayTarget":null,"numRetries":7,"numMaxDelayRetries":null,
+    "numNoDelayRetries":null,"numMinDelayRetries":null,"backoffFunction":null},
     "sicklyRetryPolicy":null,"throttlePolicy":null,"requestPolicy":null,
     "guaranteed":false}"#;
 
 /// A delivery policy that names no retry member at all, and the document it reads back
-/// as: the member it does name is kept and the retry policy is the defaults whole.
+/// as: the section it does name is kept and every other section is `null`.
 const THROTTLE_DELIVERY_POLICY: &str = r#"{"throttlePolicy":{"maxReceivesPerSecond":2}}"#;
-const NORMALIZED_THROTTLE_DELIVERY_POLICY: &str = r#"{"healthyRetryPolicy":{
-    "minDelayTarget":20,"maxDelayTarget":20,"numRetries":3,"numMaxDelayRetries":0,
-    "numNoDelayRetries":0,"numMinDelayRetries":0,"backoffFunction":"linear"},
+const NORMALIZED_THROTTLE_DELIVERY_POLICY: &str = r#"{"healthyRetryPolicy":null,
     "sicklyRetryPolicy":null,"throttlePolicy":{"maxReceivesPerSecond":2},
     "requestPolicy":null,"guaranteed":false}"#;
 
@@ -259,7 +256,8 @@ async fn setting_a_documented_subscription_attribute_persists_and_round_trips() 
             "MessageAttributes",
         ),
         // A delivery policy is a document every subscription carries, whatever it
-        // delivers over, and it reads back with its retry members filled in.
+        // delivers over, and it reads back as the whole shape with the members nobody
+        // supplied nulled.
         (
             "a delivery policy on an https subscription",
             "https",

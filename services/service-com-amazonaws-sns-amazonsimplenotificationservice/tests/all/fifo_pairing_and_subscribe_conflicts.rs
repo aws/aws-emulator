@@ -207,7 +207,9 @@ async fn a_fifo_queue_subscribes_only_to_a_fifo_topic() {
 }
 
 /// A flag-valued attribute takes the two words in any case and nothing else, and the
-/// refusal names the attribute and echoes the value it rejected.
+/// refusal names the attribute and echoes the value it rejected — framed by the member the
+/// value arrived in: the `Attributes` map of `Subscribe`, or the attribute name
+/// `SetSubscriptionAttributes` was given.
 #[tokio::test]
 async fn a_flag_attribute_refusal_echoes_the_value_it_rejected() {
     let sns = Sns::new();
@@ -220,10 +222,13 @@ async fn a_flag_attribute_refusal_echoes_the_value_it_rejected() {
         let case = format!("RawMessageDelivery of {value:?}");
         let topic = sns.topic(&format!("flag-value-{index:02}")).await;
         let queue = format!("arn:aws:sqs:us-east-1:000000000000:flag-value-{index:02}");
-        let expected = format!(
-            "Invalid parameter: Attributes Reason: RawMessageDelivery: Invalid value \
-             [{value}]. Must be true or false."
-        );
+        let reason = format!("RawMessageDelivery: Invalid value [{value}]. Must be true or false.");
+        // `Subscribe` read the value out of its `Attributes` map, so the sentence names
+        // that member before the attribute.
+        let expected = format!("Invalid parameter: Attributes Reason: {reason}");
+        // `SetSubscriptionAttributes` was given the attribute BY NAME, so the name is the
+        // whole input and the sentence carries no member frame.
+        let expected_by_name = format!("Invalid parameter: {reason}");
 
         let answer = subscribe(
             &sns,
@@ -255,7 +260,8 @@ async fn a_flag_attribute_refusal_echoes_the_value_it_rejected() {
             "case {case:?}: the refused Subscribe must leave the topic with no subscriber"
         );
 
-        // `SetSubscriptionAttributes` refuses the same value with the same sentence.
+        // `SetSubscriptionAttributes` refuses the same value, stating the same condition
+        // under its own member.
         let accepted = subscribe(&sns, &topic, "sqs", &queue, &[("RawMessageDelivery", "true")])
             .await;
         assert_eq!(
@@ -281,8 +287,9 @@ async fn a_flag_attribute_refusal_echoes_the_value_it_rejected() {
         );
         assert_eq!(
             written.element("Message").unwrap_or_default(),
-            expected,
-            "case {case:?}: SetSubscriptionAttributes must state the same sentence, got {}",
+            expected_by_name,
+            "case {case:?}: SetSubscriptionAttributes must state the condition under the \
+             attribute it was given, got {}",
             written.body
         );
         // And the accepted word reads back in its canonical form, so the refusal above is

@@ -59,6 +59,10 @@ aws-sdk-sqs = { version = "1", default-features = false }
 # asynchronously and whose resource-based policy it reads first
 # (`ops::publish::function_delivery`).
 aws-sdk-lambda = { version = "1", default-features = false }
+# The AWS SDK for Amazon Data Firehose, over the same in-process callback: a subscription
+# whose protocol is `firehose` has a delivery stream for an endpoint, which `Publish` puts
+# one record per published message into (`ops::publish::stream_delivery`).
+aws-sdk-firehose = { version = "=1.126.0", default-features = false }
 # The AWS SDK for CloudWatch Logs, over the same callback: a topic carrying
 # `<Protocol>{Success,Failure}FeedbackRoleArn` writes one delivery-status record per
 # delivery into `sns/<region>/<account-id>/<topic-name>` (`state::delivery_status`).
@@ -91,6 +95,12 @@ time = { version = "0.3", default-features = false, features = ["std"] }
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
+# Amazon Data Firehose and Amazon S3 are mounted beside SNS on one engine in the
+# firehose-subscription delivery tests, because a `firehose` subscription's endpoint is a
+# delivery stream and what that stream was given is read where a client reads it: in the
+# objects its destination bucket holds.
+service-com-amazonaws-firehose-firehose-20150804 = { workspace = true }
+service-com-amazonaws-s3-amazons3 = { workspace = true }
 # SQS is mounted beside SNS on one engine in the subscription-delivery tests, because an
 # `sqs` subscription's endpoint is a queue and a delivery is asserted where a client sees
 # it: on the queue.
