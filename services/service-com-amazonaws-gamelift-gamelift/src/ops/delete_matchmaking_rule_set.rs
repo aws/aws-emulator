@@ -175,8 +175,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // its ARN, the two forms the modelled `MatchmakingRuleSetName` accepts for the one
         // resource. A name that resolves to no stored rule set is the modelled
         // `NotFoundException` ("the resource was either not created yet or deleted"),
-        // carrying the one text this service's rule-set lookup failure reads as, and nothing
-        // is removed.
+        // carrying the text THIS operation words a missing rule set with
+        // ([`crate::state::matchmaking_rule_set_not_found_message`]), and nothing is removed.
         let Some(name) = state.resolve_rule_set_name(&input.name) else {
             return Err(
                 DeleteMatchmakingRuleSetErrorModeled::NotFoundException(NotFoundException {

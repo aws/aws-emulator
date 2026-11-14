@@ -2439,3 +2439,17 @@ mod cloudformation_drift_detection_status_change_events;
 // pipeline's exports before and after an update rewrites its filter — spans
 // CloudFormation, IAM, CloudWatch, Firehose and Amazon S3 at once, so no single service
 // crate's test target can deploy the pipeline and then read the objects it delivered.)
+// (`cloudformation_provisions_cloudfront_resources`, `cloudformation_monitored_alb_search_estate`,
+// `cloudformation_domain_endpoint_outputs`, `cloudformation_stack_clock` and
+// `elbv2_lambda_target_published_address` are each declared ONCE, in a span above this one:
+// two `mod` items for one name is a redefinition that compiles neither, and branches landing
+// at once each re-appended the same lines here.)
+// above: a module may be declared only once.
+// `cloudwatch_alarm_ssm_ops_item_action` is declared ONCE, in the head region above: the
+// own test target can drive the transition and then read what it opened.
+// `zz_probe` is declared ONCE, in the span above: a module may be declared only once.
+// `cloudformation_metric_stream_estate_is_drainable` is declared ONCE, in the span above: a
+// module may be declared only once.
+// (`cloudformation_provisions_cloudfront_resources`, `cloudformation_monitored_alb_search_estate`
+// and `cloudformation_domain_endpoint_outputs` are each declared ONCE, in a span above this
+// one: a module declared twice in this file loads the same suite twice, which compiles

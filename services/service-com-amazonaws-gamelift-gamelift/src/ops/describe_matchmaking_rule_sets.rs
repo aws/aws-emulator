@@ -193,7 +193,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 for name_or_arn in names {
                     let Some(name) = state.resolve_rule_set_name(name_or_arn) else {
                         return Err(invalid(
-                            crate::state::matchmaking_rule_set_not_found_message(name_or_arn),
+                            crate::state::matchmaking_rule_set_lookup_failure_message(name_or_arn),
                         ));
                     };
                     selected.insert(name);

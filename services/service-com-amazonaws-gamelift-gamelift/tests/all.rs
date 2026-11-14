@@ -47,6 +47,8 @@ mod game_session_queues;
 mod hosting_loop;
 #[path = "all/locations.rs"]
 mod locations;
+#[path = "all/managed_location_catalog.rs"]
+mod managed_location_catalog;
 #[path = "all/matchmaking.rs"]
 mod matchmaking;
 #[path = "all/matchmaking_backfill_mode.rs"]

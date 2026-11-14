@@ -349,7 +349,7 @@ async fn a_rule_set_nothing_references_is_not_refused_as_in_use() {
             (
                 400,
                 "NotFoundException",
-                format!("Failed to find rule set: {selector}").as_str()
+                format!("Matchmaking rule set {selector} not found").as_str()
             ),
             "case {selector:?}: a rule set that is gone is not-found, not in use, got {status} \
              {code} {message:?}"

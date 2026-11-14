@@ -1375,12 +1375,14 @@ async fn deleting_a_matchmaking_rule_set_removes_the_one_it_resolves_to() {
                 label,
             )
             .await;
+            // The delete words the same missing rule set its own way, in the
+            // `NotFoundException` it declares.
             assert_refused(
                 &gamelift,
                 "DeleteMatchmakingRuleSet",
                 json!({"Name": &probe}),
                 "NotFoundException",
-                &format!("Failed to find rule set: {probe}"),
+                &format!("Matchmaking rule set {probe} not found"),
                 label,
             )
             .await;

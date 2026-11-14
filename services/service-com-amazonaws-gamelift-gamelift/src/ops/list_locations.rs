@@ -3,8 +3,9 @@
 //! @op ListLocations
 //!
 //! Reports the locations this store can host game servers in: the custom locations
-//! `CreateLocation` persisted, and the Amazon Web Services Regions the store knows —
-//! narrowed by `Filters` to either kind, and paged.
+//! `CreateLocation` persisted, and the Amazon Web Services locations the service publishes
+//! (Regions and their Local Zones, each carrying the UDP ping beacon a player device
+//! measures latency against) — narrowed by `Filters` to either kind, and paged.
 //!
 //! ## Shape of an operation
 //!
@@ -190,7 +191,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 state
                     .aws_locations(&region)
                     .iter()
-                    .map(|location| crate::state::aws_location_model(location)),
+                    .map(|location| crate::state::managed_location_model(location)),
             );
         }
         if filters.contains(CUSTOM_LOCATION_FILTER) {

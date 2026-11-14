@@ -15,6 +15,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 
+pub mod managed_locations;
+
+pub use managed_locations::*;
+
 use crate::ops::types::{
     Alias, AnywhereConfiguration, Build, CertificateConfiguration, Compute, DesiredPlayerSession,
     FilterConfiguration, FleetAttributes, GameProperty, GameSession, GameSessionPlacement,
@@ -659,8 +663,8 @@ pub fn repeated_tag_key_message(key: &str) -> String {
 /// reads the same way whichever of them was called.
 ///
 /// The ARN the CALLER supplied is the sentence's one variable part, and the sentence is
-/// the shape this service answers a missing resource in elsewhere
-/// ([`matchmaking_rule_set_not_found_message`]).
+/// the shape this service answers a failed lookup in elsewhere
+/// ([`matchmaking_rule_set_lookup_failure_message`]).
 pub fn tagged_resource_not_found_message(resource_arn: &str) -> String {
     format!("Failed to find resource: {resource_arn}")
 }
@@ -1579,26 +1583,17 @@ pub struct CustomLocationRecord {
 impl CustomLocationRecord {
     /// This custom location as the modelled `LocationModel`.
     ///
-    /// `PingBeacon` is "information about the UDP ping beacon for this location", a fixed
-    /// UDP endpoint a player device measures latency against. This emulator serves no UDP
-    /// endpoint, so a location reports no beacon rather than an address nothing listens
-    /// on.
+    /// A `PingBeacon` is a fixed endpoint of "an Amazon GameLift Servers hosting
+    /// location" — published for the locations the service itself operates
+    /// ([`managed_locations`]). A custom location is the caller's own hardware, which the
+    /// service operates no beacon for, so the member is absent rather than carrying an
+    /// address nothing answers on.
     pub fn to_modelled(&self) -> LocationModel {
         LocationModel {
             location_name: Some(self.location_name.clone()),
             location_arn: Some(self.location_arn.clone()),
             ping_beacon: None,
         }
-    }
-}
-
-/// An Amazon Web Services location as `ListLocations` reports it: a Region this store
-/// hosts in, which carries no ARN — an ARN is assigned to "a custom location resource".
-pub fn aws_location_model(location: &str) -> LocationModel {
-    LocationModel {
-        location_name: Some(location.to_string()),
-        location_arn: None,
-        ping_beacon: None,
     }
 }
 
@@ -1951,17 +1946,35 @@ pub fn remove_build_files<Eng: Send + Sync + 'static>(
     store.remove_object(bucket, key);
 }
 
-/// What the service answers when no rule set is stored under the
-/// `MatchmakingRuleSetName` an operation was asked to resolve — the one text the service's
-/// rule-set lookup failure reads as, shared by every operation that names ONE rule set, so
-/// the same missing rule set reads the same way whichever of them was called. The modelled
-/// error CLASS it is carried in is each operation's own (`smithy_query`).
+/// What `DeleteMatchmakingRuleSet` answers when no rule set is stored under the
+/// `MatchmakingRuleSetName` it was asked to delete — the message of the modelled
+/// `NotFoundException` ("the requested resource was not found. The resource was either not
+/// created yet or deleted").
+///
+/// Fixed text `"Matchmaking rule set "` and `" not found"`, with no trailing period: the
+/// service words the same missing rule set differently per operation — the lookup this
+/// delete performs reads as the resource kind followed by the identifier and the verdict,
+/// while `DescribeMatchmakingRuleSets` reads as
+/// [`matchmaking_rule_set_lookup_failure_message`] and the matchmaking-configuration
+/// operations as `RuleSet with name <name> does not exist` — so each caller words its own
+/// refusal and none of them is a blanket text.
 ///
 /// The identifier the CALLER supplied is the sentence's one variable part: either of the
 /// two forms the member accepts (`^([a-zA-Z0-9-\.]*|arn:.*:matchmakingruleset\/[a-zA-Z0-9-
 /// \.]*)$`) selects the same rule set, so the refusal states what was asked for rather
 /// than anything the service resolved it to.
 pub fn matchmaking_rule_set_not_found_message(name_or_arn: &str) -> String {
+    format!("Matchmaking rule set {name_or_arn} not found")
+}
+
+/// What `DescribeMatchmakingRuleSets` answers when one of the `Names` it was asked to
+/// retrieve details for is stored under no rule set — the message of the modelled
+/// `InvalidRequestException` it declares for a name that resolves to nothing.
+///
+/// Fixed text `"Failed to find rule set: "` and the identifier the CALLER supplied, which
+/// is the sentence's one variable part, for the same reason as in
+/// [`matchmaking_rule_set_not_found_message`].
+pub fn matchmaking_rule_set_lookup_failure_message(name_or_arn: &str) -> String {
     format!("Failed to find rule set: {name_or_arn}")
 }
 
@@ -1976,7 +1989,7 @@ pub fn matchmaking_rule_set_not_found_message(name_or_arn: &str) -> String {
 /// (`RuleSet with name <name> does not exist`), for the resource this one names.
 ///
 /// The identifier the CALLER supplied is the sentence's one variable part, for the same
-/// reason as in [`matchmaking_rule_set_not_found_message`].
+/// reason as in [`matchmaking_rule_set_lookup_failure_message`].
 pub fn matchmaking_configuration_not_found_message(name_or_arn: &str) -> String {
     format!("Configuration with name {name_or_arn} does not exist")
 }
@@ -3182,24 +3195,37 @@ impl ComAmazonawsGameliftGameliftState {
         locations
     }
 
-    /// Every Amazon Web Services location this store hosts in, in name order.
+    /// Every Amazon Web Services location this store hosts in, the published catalog
+    /// first.
     ///
     /// `ListLocations` "lists all custom and Amazon Web Services locations where Amazon
-    /// GameLift Servers can host game servers". The Amazon Web Services ones are not
-    /// resources a caller creates, so they are the Regions this store KNOWS: the Region
-    /// the request is served in, plus every location a stored fleet deploys to that is
-    /// not a custom one.
+    /// GameLift Servers can host game servers", so the Amazon Web Services ones are not
+    /// resources a caller creates but the service's own published set of hosting
+    /// locations: [`MANAGED_LOCATIONS`], in its order, followed — in name order — by any
+    /// further location this store knows and that table does not carry, namely the Region
+    /// the request is served in and every location a stored fleet deploys to that is not a
+    /// custom one.
     pub fn aws_locations(&self, request_region: &str) -> Vec<String> {
-        let mut locations: HashSet<String> = self
+        let mut locations: Vec<String> = MANAGED_LOCATIONS
+            .iter()
+            .map(|(location, _)| (*location).to_string())
+            .collect();
+        let held: HashSet<&str> = MANAGED_LOCATIONS
+            .iter()
+            .map(|(location, _)| *location)
+            .collect();
+        let mut extra: Vec<String> = self
             .fleets
             .values()
             .flat_map(|fleet| fleet.locations.iter())
             .map(|location| location.location.clone())
-            .filter(|location| !is_custom_location(location))
+            .chain(::std::iter::once(request_region.to_string()))
+            .filter(|location| !is_custom_location(location) && !held.contains(location.as_str()))
+            .collect::<HashSet<String>>()
+            .into_iter()
             .collect();
-        locations.insert(request_region.to_string());
-        let mut locations: Vec<String> = locations.into_iter().collect();
-        locations.sort();
+        extra.sort();
+        locations.extend(extra);
         locations
     }
 
