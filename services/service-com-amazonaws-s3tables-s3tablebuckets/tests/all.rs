@@ -27,6 +27,8 @@ mod iceberg_rest_catalog;
 mod invalid_input_refusals;
 #[path = "all/list_namespaces.rs"]
 mod list_namespaces;
+#[path = "all/list_tables_summary_members.rs"]
+mod list_tables_summary_members;
 #[path = "all/metrics_configuration_not_found_message.rs"]
 mod metrics_configuration_not_found_message;
 #[path = "all/namespace_and_table_lifecycle.rs"]

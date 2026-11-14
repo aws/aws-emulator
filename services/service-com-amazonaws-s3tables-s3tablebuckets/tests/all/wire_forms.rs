@@ -387,18 +387,19 @@ async fn every_minted_identifier_is_a_canonical_uuid() {
                 "case {case:?}: table {table:?}: the listing row's tableARN differs from the \
                  describe's"
             );
-            assert_eq!(
-                row.get("namespaceId").and_then(Value::as_str),
-                Some(namespace_id.as_str()),
-                "case {case:?}: table {table:?}: the listing row reports a different \
-                 namespaceId: {row:?}"
-            );
-            assert_eq!(
-                row.get("tableBucketId").and_then(Value::as_str),
-                Some(bucket_id.as_str()),
-                "case {case:?}: table {table:?}: the listing row reports a different \
-                 tableBucketId: {row:?}"
-            );
+            // A `ListTables` row reports the table's OWN identity, so neither container
+            // id travels in it — the member set of a summary row is pinned by
+            // `list_tables_summary_members.rs`; what this suite pins here is that the
+            // ids this service mints are reported by the reads of the resources they
+            // identify.
+            for container_id in ["namespaceId", "tableBucketId"] {
+                assert!(
+                    row.get(container_id).is_none(),
+                    "case {case:?}: table {table:?}: the listing row carries \
+                     {container_id}, which only the reads of the namespace and the \
+                     table bucket report: {row:?}"
+                );
+            }
         }
     }
 }

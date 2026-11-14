@@ -624,18 +624,25 @@ async fn list_tables_reports_the_stored_order_filtered_and_paged() {
         let read = emulator
             .get_table(REGION, &bucket_arn, namespace, name)
             .await;
-        for member in [
-            "tableARN",
-            "type",
-            "namespaceId",
-            "tableBucketId",
-            "createdAt",
-            "modifiedAt",
-        ] {
+        for member in ["tableARN", "type", "createdAt", "modifiedAt"] {
             assert_eq!(
                 summary.get(member),
                 read.body.get(member),
                 "case {namespace:?}/{name:?}: the summary's {member} must be the stored one"
+            );
+        }
+        // A summary reports the table's own record; the ids of the namespace and the
+        // table bucket it sits in are reported by the reads of those resources, which
+        // is what `list_tables_summary_members.rs` pins for every listing.
+        for container_id in ["namespaceId", "tableBucketId"] {
+            assert!(
+                summary.get(container_id).is_none(),
+                "case {namespace:?}/{name:?}: the summary carries {container_id}: {summary}"
+            );
+            assert!(
+                read.body.get(container_id).is_some(),
+                "case {namespace:?}/{name:?}: GetTable must report {container_id}: {body}",
+                body = read.body
             );
         }
     }

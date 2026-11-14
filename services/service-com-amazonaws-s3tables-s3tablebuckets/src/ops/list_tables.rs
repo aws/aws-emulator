@@ -236,9 +236,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                             table_arn: table.table_arn.clone(),
                             created_at: ::aws_smithy_types::DateTime::from(table.created_at),
                             modified_at: ::aws_smithy_types::DateTime::from(table.modified_at),
+                            // Reported only for a table a service manages, so a
+                            // table a caller created carries no such member.
                             managed_by_service: table.managed_by_service.clone(),
-                            namespace_id: Some(table.namespace_id.clone()),
-                            table_bucket_id: Some(table.table_bucket_id.clone()),
+                            // A listing row reports the LISTED table's own
+                            // identity — where it sits (`namespace`), what it is
+                            // called, its type and its ARN — and its two
+                            // instants. The ids of the enclosing namespace and
+                            // table bucket are reported by the reads of those
+                            // resources (`GetTable`, `GetNamespace`,
+                            // `GetTableBucket`), not by a table summary, so
+                            // these two optional members are absent from the
+                            // body rather than filled in from the record's
+                            // container.
+                            namespace_id: None,
+                            table_bucket_id: None,
                         },
                     )
                 })
