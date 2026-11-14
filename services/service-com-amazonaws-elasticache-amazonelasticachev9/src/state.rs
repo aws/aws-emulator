@@ -190,6 +190,7 @@ mod cache_data_plane;
 mod replication_groups;
 mod shard_configuration;
 mod engine_versions;
+mod rbac_engine_versions;
 mod serverless_caches;
 mod migrations;
 mod network_types;
@@ -199,6 +200,7 @@ pub use snapshots::*;
 pub use migrations::*;
 pub use serverless_caches::*;
 pub use engine_versions::*;
+pub use rbac_engine_versions::*;
 pub use replication_groups::*;
 pub use shard_configuration::*;
 pub use cache_clusters::*;
@@ -2709,15 +2711,21 @@ pub fn user_id_rejection(user_id: &str) -> Option<String> {
         .then(|| format!("User id length must be less than {MAX_USER_ID_LEN}."))
 }
 
-/// `User$MinimumEngineVersion` of a user that authenticates with a password or
-/// without one: "The minimum engine version required, which is Redis OSS 6.0" —
-/// the version RBAC itself arrived in.
+/// The engine version RBAC itself arrived in: "The minimum engine version
+/// required, which is Redis OSS 6.0" (`User$MinimumEngineVersion`).
+///
+/// This is the FEATURE's floor, stated on the Redis OSS version line; what a
+/// record reports is the oldest version ITS engine publishes at or above the
+/// floor — see [`rbac_minimum_engine_version`].
 pub const USER_MIN_ENGINE_VERSION: &str = "6.0";
 
-/// `User$MinimumEngineVersion` of a user that authenticates with IAM:
+/// The engine version IAM authentication for an RBAC user arrived in:
 /// `InputAuthenticationType` accepts `iam`, and ElastiCache supports IAM
-/// authentication for RBAC users only from Redis OSS 7.0 onwards, so such a user
-/// cannot be attached to a cache running an older engine.
+/// authentication only from Redis OSS 7.0 onwards, so a user that authenticates
+/// that way cannot be attached to a cache running an older engine.
+///
+/// A feature floor on the same line as [`USER_MIN_ENGINE_VERSION`], read the
+/// same way.
 pub const USER_MIN_ENGINE_VERSION_IAM: &str = "7.0";
 
 /// `AuthenticationType`'s values (`smithy_query(query="shape",
@@ -3500,8 +3508,14 @@ impl AuthenticationRecord {
         }
     }
 
-    /// The `MinimumEngineVersion` a user authenticating this way requires.
-    pub fn minimum_engine_version(&self) -> &'static str {
+    /// The engine version FLOOR authenticating this way requires: IAM
+    /// authentication arrived after RBAC itself, so a user that authenticates
+    /// with it needs the later feature's floor, and one that authenticates with
+    /// a password or without one needs only RBAC's.
+    ///
+    /// A floor is not yet a version an engine publishes; what the record reports
+    /// is [`rbac_minimum_engine_version`] of its engine and this floor.
+    pub fn engine_version_floor(&self) -> &'static str {
         if self.r#type == authentication_type::IAM {
             USER_MIN_ENGINE_VERSION_IAM
         } else {
@@ -3727,6 +3741,18 @@ pub struct UserRecord {
 }
 
 impl UserRecord {
+    /// `User$MinimumEngineVersion`: the lowest engine version that supports this
+    /// user's access configuration.
+    ///
+    /// RBAC is an engine feature, so the floor is the one the user's own engine
+    /// publishes — the oldest version of it at or above the floor of the latest
+    /// feature the configuration uses, which is RBAC itself for a password or
+    /// passwordless user and IAM authentication for one that authenticates that
+    /// way. See [`rbac_minimum_engine_version`].
+    pub fn minimum_engine_version(&self) -> &'static str {
+        rbac_minimum_engine_version(&self.engine, self.authentication.engine_version_floor())
+    }
+
     /// The user as the API reports it — `CreateUser`'s output shape is the `User`
     /// shape, so this is also what `DescribeUsers` answers with.
     pub fn to_modeled(&self) -> CreateUserOutput {
@@ -3735,9 +3761,7 @@ impl UserRecord {
             user_name: Some(self.user_name.clone()),
             status: Some(self.status.clone()),
             engine: Some(self.engine.clone()),
-            minimum_engine_version: Some(
-                self.authentication.minimum_engine_version().to_string(),
-            ),
+            minimum_engine_version: Some(self.minimum_engine_version().to_string()),
             access_string: Some(self.access_string.clone()),
             // "Returns a list of the user group IDs the user belongs to":
             // membership is held by the user GROUPS that list the user, so it is
@@ -3771,7 +3795,7 @@ impl UserRecord {
             "Engine" => Some(self.engine.as_str()),
             "Status" => Some(self.status.as_str()),
             "AccessString" => Some(self.access_string.as_str()),
-            "MinimumEngineVersion" => Some(self.authentication.minimum_engine_version()),
+            "MinimumEngineVersion" => Some(self.minimum_engine_version()),
             "ARN" => Some(self.arn.as_str()),
             _ => None,
         }
@@ -4493,6 +4517,18 @@ impl UserGroupRecord {
         self.user_ids.retain(|member| !removed.contains(member));
     }
 
+    /// `UserGroup$MinimumEngineVersion`: the lowest engine version that supports
+    /// this group.
+    ///
+    /// A user group is an RBAC resource of one engine, so its floor is the
+    /// oldest version that engine publishes at or above RBAC's own floor — the
+    /// group itself uses no later feature, and the extra floor a member that
+    /// authenticates with IAM needs is reported on that user's record. See
+    /// [`rbac_minimum_engine_version`].
+    pub fn minimum_engine_version(&self) -> &'static str {
+        rbac_minimum_engine_version(&self.engine, USER_MIN_ENGINE_VERSION)
+    }
+
     /// True while the clock still owes this group a membership change, which is
     /// what `UserGroup$PendingChanges` reports.
     pub fn has_pending_changes(&self) -> bool {
@@ -4506,7 +4542,7 @@ impl UserGroupRecord {
             status: Some(self.status.clone()),
             engine: Some(self.engine.clone()),
             user_ids: Some(self.user_ids.clone()),
-            minimum_engine_version: Some(USER_MIN_ENGINE_VERSION.to_string()),
+            minimum_engine_version: Some(self.minimum_engine_version().to_string()),
             // "Returns the updates being applied to the user group": reported
             // only while `ModifyUserGroup` has left one outstanding, so a group
             // with nothing pending reports no `PendingChanges` at all.

@@ -135,7 +135,9 @@ fn create_cases() -> [UserCase; 9] {
             access_string: "on ~app:* -@all +@read",
             authentication_type: "password",
             password_count: Some("1"),
-            minimum_engine_version: "6.0",
+            // Valkey's first ElastiCache line is 7.2, so a user listed for it
+            // cannot run on an older engine version.
+            minimum_engine_version: "7.2",
         },
         UserCase {
             case: "two passwords",
@@ -190,7 +192,7 @@ fn create_cases() -> [UserCase; 9] {
             // what the user reports back (`AuthenticationType`).
             authentication_type: "no-password",
             password_count: None,
-            minimum_engine_version: "6.0",
+            minimum_engine_version: "7.2",
         },
         UserCase {
             case: "AuthenticationMode iam",
@@ -252,7 +254,7 @@ fn create_cases() -> [UserCase; 9] {
             access_string: "on ~* &* +@all nopass",
             authentication_type: "no-password",
             password_count: None,
-            minimum_engine_version: "6.0",
+            minimum_engine_version: "7.2",
         },
         UserCase {
             case: "a selector and the selector keyword",
@@ -274,7 +276,7 @@ fn create_cases() -> [UserCase; 9] {
             access_string: "on ~* resetchannels -@all clearselectors (+get ~key1)",
             authentication_type: "no-password",
             password_count: None,
-            minimum_engine_version: "6.0",
+            minimum_engine_version: "7.2",
         },
     ]
 }
@@ -930,6 +932,17 @@ async fn describe_reports_every_stored_user_and_the_built_in_one() {
             &[
                 ("Filters.member.1.Name", "MinimumEngineVersion"),
                 ("Filters.member.1.Values.member.1", "6.0"),
+            ][..],
+            // RBAC's own floor is a version Redis OSS publishes, so only the
+            // users listed for it report it.
+            vec!["alpha-user", state::DEFAULT_USER_ID, "gamma-user"],
+        ),
+        (
+            "MinimumEngineVersion over both engines' floors",
+            &[
+                ("Filters.member.1.Name", "MinimumEngineVersion"),
+                ("Filters.member.1.Values.member.1", "6.0"),
+                ("Filters.member.1.Values.member.2", "7.2"),
             ][..],
             vec![
                 "alpha-user",

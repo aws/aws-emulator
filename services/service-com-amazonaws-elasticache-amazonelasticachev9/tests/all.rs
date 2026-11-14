@@ -279,3 +279,8 @@ mod serverless_usage_limit_envelope;
 // name.
 #[path = "all/serverless_cache_snapshot_not_found_sentence.rs"]
 mod serverless_cache_snapshot_not_found_sentence;
+// Appended for the same reason: the suite about the engine-version FLOOR an RBAC
+// record reports (`User` and `UserGroup`'s `MinimumEngineVersion`).
+#[path = "all/rbac_minimum_engine_version.rs"]
+mod rbac_minimum_engine_version;
+
