@@ -1,15 +1,23 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListBillingViewSegments
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListBillingViewSegments`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListBillingViewSegments::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports the persisted segment timeline of one billing view —
+//! `ComAmazonawsBillingAwsbillingState::billing_view_segments` — over the
+//! period the request asks about, which defaults to the current UTC calendar
+//! month. Each reported segment is one record of that timeline, its period
+//! clipped to the requested one, carrying the billing domain and the account
+//! relationships that held over it; a view whose relationships changed
+//! mid-period therefore answers with several segments, and a hidden record is
+//! omitted, so the answer can cover less than the requested period.
+//! The segments are ordered oldest first and paginated with `maxResults` and an
+//! opaque `nextToken` that resumes after the last segment the previous page
+//! returned.
+//! The `arn` names a resource, so it is resolved first: one outside the
+//! caller's account is an `AccessDeniedException` (403), one this account
+//! stores no view under a `ResourceNotFoundException` (404), and one naming a
+//! view that is not the account's PRIMARY view a `ValidationException` (400) —
+//! the modeled `arn` "must reference a primary billing view". A request that
+//! names no ARN is answered for the caller's own PRIMARY view.
 //!
 //! ## Shape of an operation
 //!
@@ -143,6 +151,156 @@ pub struct ListBillingViewSegments<Eng> {
     engine: ::std::sync::Arc<Eng>,
 }
 
+/// The page size a request that names no `maxResults` gets, from the modeled
+/// member: "The number of entries a paginated response contains. Valid values
+/// range from 1 to 100. The default is 100."
+const DEFAULT_MAX_RESULTS: usize = 100;
+
+/// The smallest page the same member admits (its modelled `range` minimum).
+const MIN_MAX_RESULTS: usize = 1;
+
+/// Refuse a request member as invalid, in the modeled `ValidationException`
+/// shape (HTTP 400) this operation declares.
+fn invalid_field(member: &str, why: &str) -> ListBillingViewSegmentsError {
+    ListBillingViewSegmentsErrorModeled::ValidationException(ValidationException {
+        message: format!("{member}: {why}"),
+        reason: crate::state::VALIDATION_REASON_FIELD.to_string(),
+        field_list: Some(vec![ValidationExceptionField {
+            name: member.to_string(),
+            message: why.to_string(),
+        }]),
+    })
+    .into()
+}
+
+/// The server-side failure this operation answers when the store cannot be
+/// reached, or when the clock cannot be placed on the civil calendar the
+/// default period comes from.
+fn unavailable(why: &str) -> ListBillingViewSegmentsError {
+    ListBillingViewSegmentsErrorModeled::InternalServerException(InternalServerException {
+        message: why.to_string(),
+    })
+    .into()
+}
+
+/// The key a `nextToken` resumes after, or a `ValidationException` when the
+/// token is not one this service issued. The token format and the refusal's
+/// wording live in `crate::state`, shared with every other paginated read.
+fn decode_page_token(token: &str) -> Result<String, ListBillingViewSegmentsError> {
+    crate::state::decode_page_token(token).ok_or_else(|| {
+        ListBillingViewSegmentsErrorModeled::ValidationException(ValidationException {
+            message: crate::state::PAGE_TOKEN_REFUSAL.to_string(),
+            reason: crate::state::VALIDATION_REASON_CANNOT_PARSE.to_string(),
+            field_list: Some(vec![ValidationExceptionField {
+                name: "nextToken".to_string(),
+                message: crate::state::PAGE_TOKEN_FIELD_REFUSAL.to_string(),
+            }]),
+        })
+        .into()
+    })
+}
+
+/// The half-open period the request asks about, in seconds since the epoch.
+///
+/// A bound the request omits comes from the current billing period — "the
+/// current billing period, which is the calendar month in UTC" — read off the
+/// civil calendar, so a request that carries neither bound is answered for the
+/// whole of this month and one that carries a single bound keeps the month's
+/// other end.
+fn requested_period(
+    input: &ListBillingViewSegmentsInput,
+    now: ::std::time::SystemTime,
+) -> Result<(f64, f64), ListBillingViewSegmentsError> {
+    let (month_begin, month_end) = crate::state::billing_period(now)
+        .and_then(|(year, month)| crate::state::calendar_month_period(year, month))
+        .ok_or_else(|| unavailable("the current billing period cannot be determined"))?;
+    let requested = input.time_range.as_ref();
+    let begin = requested
+        .and_then(|range| range.begin_date_inclusive.as_ref())
+        .map_or_else(
+            || crate::state::date_time_secs(&month_begin),
+            crate::state::date_time_secs,
+        );
+    let end = requested
+        .and_then(|range| range.end_date_exclusive.as_ref())
+        .map_or_else(
+            || crate::state::date_time_secs(&month_end),
+            crate::state::date_time_secs,
+        );
+    // A bound that is not a finite instant names no period at all: the
+    // comparisons below are all false against it, so it would answer an empty
+    // page rather than refusing a range nothing can be read over.
+    if !begin.is_finite() || !end.is_finite() {
+        return Err(invalid_field(
+            "timeRange",
+            "beginDateInclusive and endDateExclusive must each be an instant",
+        ));
+    }
+    // The period is half-open, so a range whose end does not come after its
+    // begin selects no instant at all: that is a request a caller cannot have
+    // meant, refused rather than answered with an empty page.
+    if begin >= end {
+        return Err(invalid_field(
+            "timeRange",
+            "beginDateInclusive must be earlier than endDateExclusive",
+        ));
+    }
+    Ok((begin, end))
+}
+
+/// The billing view this request is about: the one its `arn` names, or the
+/// caller's own PRIMARY view when it names none.
+///
+/// The modeled `arn` "must reference a primary billing view. Custom billing
+/// views aren't supported", so a resolved view of any other `BillingViewType`
+/// makes the request invalid rather than answering with another view's
+/// timeline.
+fn resolve_view<'state>(
+    input: &ListBillingViewSegmentsInput,
+    state: &'state crate::state::ComAmazonawsBillingAwsbillingState,
+) -> Result<&'state crate::state::BillingView, ListBillingViewSegmentsError> {
+    let view = match &input.arn {
+        Some(arn) => state.billing_views.get(arn).ok_or_else(|| {
+            ListBillingViewSegmentsErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: format!("Billing view {arn} does not exist"),
+                    resource_id: arn.clone(),
+                    resource_type: crate::state::BILLING_VIEW_RESOURCE_TYPE.to_string(),
+                },
+            )
+        })?,
+        // Every account has a PRIMARY billing view, so its absence is not a
+        // caller's mistake but a store this emulator cannot answer from.
+        None => state
+            .billing_views
+            .values()
+            .find(|view| {
+                view.billing_view_type == crate::state::BILLING_VIEW_TYPE_PRIMARY
+                    && view.owner_account_id == crate::state::caller_account_id()
+            })
+            .ok_or_else(|| unavailable("the caller's PRIMARY billing view is unavailable"))?,
+    };
+    if view.billing_view_type != crate::state::BILLING_VIEW_TYPE_PRIMARY {
+        return Err(ListBillingViewSegmentsErrorModeled::ValidationException(
+            ValidationException {
+                message: "The ARN must reference a primary billing view. Custom billing views \
+                          aren't supported."
+                    .to_string(),
+                reason: crate::state::VALIDATION_REASON_FIELD.to_string(),
+                field_list: Some(vec![ValidationExceptionField {
+                    name: "arn".to_string(),
+                    message: format!(
+                        "{} does not reference a primary billing view.",
+                        view.arn
+                    ),
+                }]),
+            },
+        )
+        .into());
+    }
+    Ok(view)
+}
+
 impl<Eng> ListBillingViewSegments<Eng> {
     /// Construct the operation from the shared engine. INFALLIBLE — the engine is a
     /// construction-time dependency, so engine access is guaranteed by the time any
@@ -169,18 +327,120 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListBillingViewSegments` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListBillingViewSegmentsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListBillingViewSegments"))
+        // Every modeled constraint (`maxResults` 1..100, the `arn` and
+        // `nextToken` patterns, the `nextToken` length) is refused by the
+        // boundary validator before this runs.
+        // The account boundary is enforced BEFORE any existence lookup, so this
+        // service never reveals whether a view exists in another account: a
+        // well-formed ARN whose embedded account id is not the caller's own is
+        // refused with the modeled `AccessDeniedException` (403) whatever is
+        // stored. It is decided first, outside the store's lock, because it
+        // needs no billing state and resolving the caller's identity for the
+        // refusal reaches another service's store.
+        if let Some(arn) = &input.arn {
+            if !crate::state::is_caller_account_arn(arn) {
+                return Err(ListBillingViewSegmentsErrorModeled::AccessDeniedException(
+                    crate::state::cross_account_access_denied(
+                        Self::NAME,
+                        arn,
+                        &*self.engine,
+                        ctx,
+                    ),
+                )
+                .into());
+            }
+        }
+        let (begin_secs, end_secs) =
+            requested_period(&input, ::std::time::SystemTime::now())?;
+        let resume_after = match input.next_token.as_deref() {
+            Some(token) => Some(decode_page_token(token)?),
+            None => None,
+        };
+
+        let state = crate::state::service_state(&*self.engine)
+            .ok_or_else(|| unavailable("the billing view store is unavailable"))?;
+        let state = state.lock();
+
+        let view = resolve_view(&input, &state)?;
+        // A view whose health status is not HEALTHY is one no operation may act
+        // on — the modeled `BillingViewHealthStatusException` this operation
+        // declares — so its timeline is refused rather than reported.
+        if !view.is_healthy() {
+            return Err(
+                ListBillingViewSegmentsErrorModeled::BillingViewHealthStatusException(
+                    crate::state::billing_view_not_healthy(
+                        &view.arn,
+                        &view.health_status_code,
+                        "list its segments",
+                    ),
+                )
+                .into(),
+            );
+        }
+
+        // The view's timeline, oldest first: the stored segments that overlap
+        // the requested period and are not hidden. The page resumes strictly
+        // after the key of the last segment the previous page returned, so a
+        // segment recorded between pages cannot make the walk skip or repeat
+        // another one.
+        let mut matched: Vec<(&String, &crate::state::BillingViewSegment)> = state
+            .billing_view_segments_of(&view.arn)
+            .filter(|(key, _)| {
+                resume_after
+                    .as_deref()
+                    .is_none_or(|after| key.as_str() > after)
+            })
+            .filter(|(_, segment)| {
+                !segment.hidden && segment.overlaps(begin_secs, end_secs)
+            })
+            .collect();
+
+        // `maxResults` is modelled 1..100 and refused outside it before this
+        // handler runs; the page size is held inside those bounds here as well,
+        // so no answer can carry more entries than the surface states whatever
+        // reaches the member.
+        let limit = input
+            .max_results
+            .and_then(|max| usize::try_from(max).ok())
+            .unwrap_or(DEFAULT_MAX_RESULTS)
+            .clamp(MIN_MAX_RESULTS, DEFAULT_MAX_RESULTS);
+        let next_token = if matched.len() > limit {
+            matched.truncate(limit);
+            matched.last().map(|(key, _)| crate::state::encode_page_token(key))
+        } else {
+            None
+        };
+
+        Ok(ListBillingViewSegmentsOutput {
+            items: matched
+                .into_iter()
+                .map(|(_, segment)| {
+                    // "Each segment covers a portion of the requested time
+                    // period": a stored period wider than the requested one is
+                    // reported clipped to what the caller asked about.
+                    let (segment_begin, segment_end) =
+                        segment.clipped(begin_secs, end_secs);
+                    BillingViewSegmentsListElement {
+                        domain: Some(segment.domain.clone()),
+                        time_range: Some(BillingViewSegmentTimeRange {
+                            begin_date_inclusive: Some(crate::state::timestamp_at_secs(
+                                segment_begin,
+                            )),
+                            end_date_exclusive: Some(crate::state::timestamp_at_secs(
+                                segment_end,
+                            )),
+                        }),
+                        billing_transfer_account_id: segment
+                            .billing_transfer_account_id
+                            .clone(),
+                        management_account_id: segment.management_account_id.clone(),
+                        billing_group_primary_account_id: segment
+                            .billing_group_primary_account_id
+                            .clone(),
+                    }
+                })
+                .collect(),
+            next_token,
+        })
     }
 }

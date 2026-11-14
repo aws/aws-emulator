@@ -23,6 +23,8 @@ mod billing_view_active_time_range;
 mod billing_view_delete_cascade;
 #[path = "all/billing_view_health_gate.rs"]
 mod billing_view_health_gate;
+#[path = "all/billing_view_segments.rs"]
+mod billing_view_segments;
 #[path = "all/billing_view_wire_fidelity.rs"]
 mod billing_view_wire_fidelity;
 #[path = "all/billing_views.rs"]

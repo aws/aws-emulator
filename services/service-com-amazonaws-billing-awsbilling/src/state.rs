@@ -6,7 +6,11 @@
 //! implemented lifecycle operations (Create/Get/List/Update/DeleteBillingView)
 //! computes its answer from [`ComAmazonawsBillingAwsbillingState::billing_views`],
 //! which is keyed by the view's ARN and ordered, so a list and its pagination are
-//! deterministic.
+//! deterministic. Each view also has a **segment timeline** in
+//! [`ComAmazonawsBillingAwsbillingState::billing_view_segments`] — the periods
+//! over which its billing domain and account relationships did not change,
+//! which `ListBillingViewSegments` reports; see the `billing_view_segments`
+//! module below.
 //!
 //! Its second resource is the account's **billing preferences**:
 //! `UpdateBillingPreferences` writes [`ComAmazonawsBillingAwsbillingState::billing_preferences`]
@@ -73,6 +77,11 @@ pub use enterprise_support::*;
 mod money;
 
 pub use money::*;
+
+/// The billing-view segment timeline `ListBillingViewSegments` reports.
+mod billing_view_segments;
+
+pub use billing_view_segments::*;
 
 /// When each account of the billing family was linked and subscribed to
 /// Enterprise Support, which `ListEnterpriseSupportLinkedAccountCharges`
@@ -633,6 +642,18 @@ pub struct ComAmazonawsBillingAwsbillingState {
     /// Every persisted billing view, keyed and ordered by ARN. Bounded by
     /// [`MAX_BILLING_VIEWS`].
     pub billing_views: BTreeMap<String, BillingView>,
+    /// Every billing view's segment timeline, keyed and ordered by
+    /// [`BillingViewSegment::key`] — the view's ARN, then the instant the
+    /// segment began — so one view's segments are a contiguous range walked
+    /// oldest first and `ListBillingViewSegments`' page boundaries are stable.
+    /// Bounded by [`BillingViewSegment::MAX_RESIDENT`].
+    ///
+    /// Seeded with the one open-ended segment of the account's default PRIMARY
+    /// view: its relationships have not changed, so its whole history is one
+    /// segment. A relationship change is recorded by closing the segment in
+    /// effect and opening another at the instant it changed, which is what makes
+    /// one request answer with several segments.
+    pub billing_view_segments: BTreeMap<String, BillingViewSegment>,
     /// Every persisted credit allocation, keyed and ordered by
     /// [`CreditAllocation::key`] so `GetCreditAllocationHistory`'s page
     /// boundaries are stable. Bounded by [`CreditAllocation::MAX_RESIDENT`].
@@ -755,6 +776,15 @@ impl Default for ComAmazonawsBillingAwsbillingState {
             tags: BTreeMap::new(),
             resource_policy: None,
         };
+        // The default view's domain is the account's own final charges: the
+        // account belongs to no organization, no billing group and no billing
+        // transfer by default (see `organization_management_account_id`), so the
+        // segment carries no account relationship and is bounded on neither
+        // side — nothing has changed over the account's whole history.
+        let primary_segment =
+            BillingViewSegment::in_effect(&primary.arn, BILLING_DOMAIN_BILLABLE);
+        let mut billing_view_segments = BTreeMap::new();
+        billing_view_segments.insert(primary_segment.key(), primary_segment);
         let mut billing_views = BTreeMap::new();
         billing_views.insert(primary.arn.clone(), primary);
         // The emulator serves one account, and it is the management account of
@@ -767,6 +797,7 @@ impl Default for ComAmazonawsBillingAwsbillingState {
         );
         Self {
             billing_views,
+            billing_view_segments,
             // No credit has been applied to a bill yet, so the account has no
             // allocation history: AWS documents no credit every account owns
             // by default, the way it documents the PRIMARY billing view.
@@ -883,6 +914,38 @@ impl ComAmazonawsBillingAwsbillingState {
         }
         self.credit_allocations.insert(key, allocation);
         true
+    }
+
+    /// Persist one billing-view segment under its [`BillingViewSegment::key`],
+    /// replacing a record of the same view that began at the same instant
+    /// rather than duplicating it.
+    ///
+    /// Answers `false` without writing when the timeline is already at
+    /// [`BillingViewSegment::MAX_RESIDENT`], so the caller refuses rather than
+    /// growing the store without a bound.
+    pub fn record_billing_view_segment(&mut self, segment: BillingViewSegment) -> bool {
+        let key = segment.key();
+        if !self.billing_view_segments.contains_key(&key)
+            && self.billing_view_segments.len() >= BillingViewSegment::MAX_RESIDENT
+        {
+            return false;
+        }
+        self.billing_view_segments.insert(key, segment);
+        true
+    }
+
+    /// The segments of the billing view `arn`, oldest first, each beside the
+    /// key it is stored under — the page boundary a `nextToken` resumes after.
+    ///
+    /// A view with no recorded timeline has no segments, which is the empty
+    /// walk rather than a missing resource: whether the view EXISTS is decided
+    /// from `billing_views`.
+    pub fn billing_view_segments_of(
+        &self,
+        arn: &str,
+    ) -> impl Iterator<Item = (&String, &BillingViewSegment)> {
+        let (low, high) = BillingViewSegment::arn_key_bounds(arn);
+        self.billing_view_segments.range(low..high)
     }
 
     /// Whether `needle` is `start` itself or is reachable from `start` by
