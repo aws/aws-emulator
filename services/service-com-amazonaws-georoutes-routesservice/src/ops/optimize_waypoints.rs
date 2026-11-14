@@ -357,6 +357,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
             None => state::now(),
         };
+        // Every time the answer reports is the request's own departure moved forward, so it
+        // is reported at the offset the request stated that departure at; a departure taken
+        // from this service's clock was stated at none and is reported in UTC.
+        let clock_offset = state::UtcOffset::stated_in(input.departure_time.as_deref());
 
         let submitted = input.waypoints.as_deref().unwrap_or_default();
 
@@ -653,7 +657,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         optimized.push(WaypointOptimizationOptimizedWaypoint {
             arrival_time: None,
             cluster_index: clusters.get(&sequence[0].id).copied(),
-            departure_time: state::format_timestamp(clock)
+            departure_time: clock_offset
+                .timestamp(clock)
                 .ok_or_else(|| internal("the departure time is not representable"))?,
             id: sequence[0].id.clone(),
             position: state::position_to_vec(sequence[0].position),
@@ -687,11 +692,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 wait_duration,
             });
             optimized.push(WaypointOptimizationOptimizedWaypoint {
-                arrival_time: state::format_timestamp(arrival),
+                arrival_time: clock_offset.timestamp(arrival),
                 // The cluster this stop was assigned to, for a request that asked for
                 // clustering; a stop of a request that did not asks for no index.
                 cluster_index: clusters.get(&to.id).copied(),
-                departure_time: state::format_timestamp(departure_from_to)
+                departure_time: clock_offset
+                    .timestamp(departure_from_to)
                     .ok_or_else(|| internal("a departure time is not representable"))?,
                 id: to.id.clone(),
                 position: state::position_to_vec(to.position),

@@ -963,8 +963,8 @@ async fn a_request_that_does_not_name_one_anchor_and_one_threshold_type_is_refus
 }
 
 /// The times the answer reports are the ones the request pinned the calculation to, and only
-/// for the anchor they belong to: a departure for an origin-based request that asked for one,
-/// an arrival for a destination-based request that asked for one.
+/// for the anchor they belong to: the departure of an origin-based request, and an arrival
+/// for a destination-based request that asked for one.
 #[tokio::test]
 async fn the_answer_reports_the_time_the_request_pinned_the_calculation_to() {
     let router = routes_service();
@@ -973,7 +973,7 @@ async fn the_answer_reports_the_time_the_request_pinned_the_calculation_to() {
     // case, the members the request adds to an isoline around an anchor, the departure the
     // answer must report, the arrival it must report.
     type Case = (&'static str, Value, Option<&'static str>, Option<&'static str>);
-    let cases: [Case; 5] = [
+    let cases: [Case; 4] = [
         (
             "an origin and a departure time",
             json!({ "Origin": GOOD, "DepartureTime": departure }),
@@ -995,12 +995,6 @@ async fn the_answer_reports_the_time_the_request_pinned_the_calculation_to() {
         (
             "a destination and a departure time",
             json!({ "Destination": GOOD, "DepartureTime": departure }),
-            None,
-            None,
-        ),
-        (
-            "an origin and no time at all",
-            json!({ "Origin": GOOD }),
             None,
             None,
         ),
@@ -1033,24 +1027,46 @@ async fn the_answer_reports_the_time_the_request_pinned_the_calculation_to() {
         );
     }
 
-    // `DepartNow` asks for the current time, so the departure reported is an instant of the
-    // form the model's pattern admits rather than one the request named.
-    let body = json!({
-        "Origin": GOOD,
-        "Thresholds": { "Time": [600] },
-        "DepartNow": true,
-        "IsolineGranularity": fewest_points(),
-    });
-    let (status, answer, _) = post(&router, ISOLINES, &body).await;
-    assert_eq!(
-        status, 200,
-        "case \"depart now\": expected 200, got {status} with {answer:?}"
-    );
-    let reported = answer["DepartureTime"]
-        .as_str()
-        .unwrap_or_else(|| panic!("case \"depart now\": a departure was asked for, got {answer:?}"));
-    assert!(
-        reported.len() == 20 && reported.ends_with('Z'),
-        "case \"depart now\": expected an ISO-8601 instant, got {reported:?}"
-    );
+    // An isoline is "the area reachable within a given threshold" at a DEPARTURE instant,
+    // so an origin-based request is anchored at one however it asked: `DepartNow` and a
+    // request that names no time at all are both answered with the instant the area was
+    // computed for, in the UTC form the model's pattern admits. The instant comes off this
+    // service's clock, so what is pinned here is the FORM, never one run's value.
+    for (case, body) in [
+        (
+            "depart now",
+            json!({
+                "Origin": GOOD,
+                "Thresholds": { "Time": [600] },
+                "DepartNow": true,
+                "IsolineGranularity": fewest_points(),
+            }),
+        ),
+        (
+            "an origin and no time at all",
+            json!({
+                "Origin": GOOD,
+                "Thresholds": { "Time": [600] },
+                "IsolineGranularity": fewest_points(),
+            }),
+        ),
+    ] {
+        let (status, answer, _) = post(&router, ISOLINES, &body).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected 200, got {status} with {answer:?}"
+        );
+        let reported = answer["DepartureTime"]
+            .as_str()
+            .unwrap_or_else(|| panic!("case {case:?}: the departure the area was computed for is reported, got {answer:?}"));
+        assert!(
+            reported.len() == 20 && reported.ends_with('Z'),
+            "case {case:?}: expected an ISO-8601 instant, got {reported:?}"
+        );
+        assert!(
+            answer["ArrivalTime"].is_null(),
+            "case {case:?}: the request named no arrival, so none is reported, got {:?}",
+            answer["ArrivalTime"]
+        );
+    }
 }

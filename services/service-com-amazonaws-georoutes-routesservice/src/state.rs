@@ -48,7 +48,6 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::SystemTime;
 
-use aws_smithy_types::date_time::Format;
 use aws_smithy_types::DateTime;
 use country_boundaries::{CountryBoundaries, LatLon, BOUNDARIES_ODBL_360X180};
 
@@ -192,18 +191,18 @@ pub const DEFAULT_GEOMETRY_FORMAT: &str = "FlexiblePolyline";
 /// enumerates no values, and recorded behavior is a tier token shared by the Location
 /// Service APIs — the sibling places service reports the same `Core` tier
 /// (`PRICING_BUCKET_CORE` in `service-com-amazonaws-geoplaces-placesservice`). So the
-/// bucket names the TIER the call is charged in and never the request class: the route,
-/// matrix and isoline queries are charged in this base tier.
+/// bucket names the TIER the call is charged in and never the request class: the route and
+/// matrix queries are charged in this base tier.
 pub const PRICING_BUCKET_CORE: &str = "Core";
 
 /// The higher pricing TIER a geo-routes query is charged in.
 ///
 /// Which tier a query falls in is a property of the OPERATION that serves it and not of
-/// the request: recorded behavior answers every waypoint-optimization and every
-/// road-snapping query with this tier, however the request varies, and the route, matrix
-/// and isoline queries with [`PRICING_BUCKET_CORE`]. The two are the tokens recorded
-/// behavior carries; the model enumerates none, so nothing beyond the per-operation tier
-/// is read off a request.
+/// the request: recorded behavior answers every isoline, every waypoint-optimization and
+/// every road-snapping query with this tier, however the request varies, and the route and
+/// matrix queries with [`PRICING_BUCKET_CORE`]. The two are the tokens recorded behavior
+/// carries; the model enumerates none, so nothing beyond the per-operation tier is read off
+/// a request.
 pub const PRICING_BUCKET_ADVANCED: &str = "Advanced";
 
 /// Precision of the Flexible Polyline encoding: 6 decimal digits, the default of the
@@ -831,7 +830,7 @@ impl Default for ComAmazonawsGeoroutesRoutesserviceState {
             travel_mode_speeds,
             routing_objective_factors,
             pricing_buckets: HashMap::from([
-                ("CalculateIsolines", PRICING_BUCKET_CORE.to_string()),
+                ("CalculateIsolines", PRICING_BUCKET_ADVANCED.to_string()),
                 ("CalculateRouteMatrix", PRICING_BUCKET_CORE.to_string()),
                 ("CalculateRoutes", PRICING_BUCKET_CORE.to_string()),
                 ("OptimizeWaypoints", PRICING_BUCKET_ADVANCED.to_string()),
@@ -1909,18 +1908,80 @@ pub fn now() -> Instant {
 }
 
 /// An RFC 3339 timestamp as the model's `TimestampWithTimezoneOffset` carries it, or a
-/// message naming the member — the pattern admits a leap second this parser does not.
+/// message naming the member.
+///
+/// Both forms the pattern admits name an instant and both are accepted: a UTC instant, and
+/// a LOCAL time with an explicit UTC offset, which names the instant its local time is that
+/// offset ahead of.
 pub fn parse_timestamp(member: &str, value: &str) -> Result<Instant, String> {
-    Instant::from_str(value, Format::DateTime).map_err(|_| {
+    let parsed = ::chrono::DateTime::parse_from_rfc3339(value).map_err(|_| {
         format!("{member} must be a timestamp of the form YYYY-MM-DDThh:mm:ss.sssZ or YYYY-MM-DDThh:mm:ss.sss+hh:mm; got {value}")
-    })
+    })?;
+    Ok(Instant::from_secs_and_nanos(
+        parsed.timestamp(),
+        parsed.timestamp_subsec_nanos().min(999_999_999),
+    ))
 }
 
-/// `instant` as a `TimestampWithTimezoneOffset`, truncated to whole seconds (the
+/// `instant` as a `TimestampWithTimezoneOffset` in UTC, truncated to whole seconds (the
 /// durations this service computes are whole seconds). `None` only for an instant the
 /// format cannot carry.
+///
+/// A time the REQUEST stated goes through [`UtcOffset`] instead, so it is reported the way
+/// the request stated it.
 pub fn format_timestamp(instant: Instant) -> Option<String> {
-    Instant::from_secs(instant.secs()).fmt(Format::DateTime).ok()
+    UtcOffset::UTC.timestamp(instant)
+}
+
+/// How a reported timestamp is stated: at a fixed UTC offset, or in UTC with the format's
+/// `Z` designator.
+///
+/// `TimestampWithTimezoneOffset` carries either a UTC instant or a local time with an
+/// explicit offset — "Time format: `YYYY-MM-DDThh:mm:ss.sssZ |
+/// YYYY-MM-DDThh:mm:ss.sss+hh:mm`" — and the times these operations report are the times
+/// the REQUEST pinned the calculation to. So a reported timestamp is stated the way the
+/// request stated its own: a caller that pinned a local departure reads that same local
+/// time back, rather than the same instant re-expressed in UTC, and can tell which time
+/// zone the answer describes. An instant that came from this service's clock was stated
+/// nowhere, so it is reported in UTC.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UtcOffset(Option<::chrono::FixedOffset>);
+
+impl UtcOffset {
+    /// UTC, written with the format's `Z` designator: what an instant this service read off
+    /// its own clock is reported at.
+    pub const UTC: Self = Self(None);
+
+    /// How the request stated `timestamp`: at the UTC offset it carries, or in UTC for a
+    /// value written with the `Z` designator and for a request that named no timestamp at
+    /// all.
+    pub fn stated_in(timestamp: Option<&str>) -> Self {
+        let Some(value) = timestamp else {
+            return Self::UTC;
+        };
+        if value.ends_with('Z') || value.ends_with('z') {
+            return Self::UTC;
+        }
+        Self(
+            ::chrono::DateTime::parse_from_rfc3339(value)
+                .ok()
+                .map(|parsed| *parsed.offset()),
+        )
+    }
+
+    /// `instant` as a `TimestampWithTimezoneOffset` stated this way: the same instant,
+    /// written as the local time of this offset and labelled with it, or in UTC with the
+    /// `Z` designator. Truncated to whole seconds, the resolution of every duration this
+    /// service computes. `None` only for an instant the format cannot carry.
+    pub fn timestamp(self, instant: Instant) -> Option<String> {
+        let utc = ::chrono::DateTime::from_timestamp(instant.secs(), 0)?;
+        Some(match self.0 {
+            None => utc.to_rfc3339_opts(::chrono::SecondsFormat::Secs, true),
+            Some(offset) => utc
+                .with_timezone(&offset)
+                .to_rfc3339_opts(::chrono::SecondsFormat::Secs, false),
+        })
+    }
 }
 
 /// `instant` moved by `seconds`, which may be negative.

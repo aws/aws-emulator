@@ -23,6 +23,8 @@ mod modelled_constraint_refusals;
 mod probe;
 #[path = "all/refusal_wording.rs"]
 mod refusal_wording;
+#[path = "all/reported_time_offsets.rs"]
+mod reported_time_offsets;
 #[path = "all/response_detail.rs"]
 mod response_detail;
 #[path = "all/route_matrix_boundary.rs"]

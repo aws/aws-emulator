@@ -456,9 +456,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             (None, matched_position)
         };
         Ok(CalculateIsolinesOutput {
-            // "Returned only if the Destination and ArrivalTime attributes were provided in
-            // the request", and the departure likewise only for a request that gave an
-            // `Origin` and asked for a departure time (`DepartureTime` or `DepartNow`).
+            // The arrival is "returned only if the Destination and ArrivalTime attributes
+            // were provided in the request". The departure is reported for every
+            // origin-anchored request: it is "time of departure from the origin, used for
+            // traffic calculations", so it is the instant the area was computed for, which
+            // is the current one for a request that named no time.
             arrival_time: timing.reported_arrival(anchor.outward)?,
             departure_time: timing.reported_departure(anchor.outward)?,
             isoline_geometry_format: geometry_format,
@@ -527,21 +529,25 @@ const THRESHOLDS_MEMBER: &str = "Thresholds";
 /// the whole set it must pick exactly one of.
 const THRESHOLD_KINDS: [&str; 3] = ["Consumption", "Distance", "Time"];
 
-/// Which clock the request pinned the calculation to.
+/// Which instant the calculation is anchored at, and the UTC offset the request stated it
+/// at — the offset the answer reports that same instant back at.
 #[derive(Debug, Clone, Copy)]
 enum Timing {
-    /// No time at all: the request named none, so the answer reports none.
-    Unspecified,
-    /// A departure: `DepartureTime`, or the current instant for `DepartNow`.
-    Departure(Instant),
+    /// A departure: the `DepartureTime` the request named, or the current instant for
+    /// `DepartNow` and for a request that named no time at all.
+    Departure(Instant, state::UtcOffset),
     /// An arrival: `ArrivalTime`.
-    Arrival(Instant),
+    Arrival(Instant, state::UtcOffset),
 }
 
 impl Timing {
-    /// The clock a request pinned. `DepartureTime`, `ArrivalTime` and `DepartNow` each pin
-    /// it and each "cannot be used together with" the others, so naming more than one is
-    /// contradictory and refused.
+    /// The instant a request anchored the calculation at. `DepartureTime`, `ArrivalTime`
+    /// and `DepartNow` each pin it and each "cannot be used together with" the others, so
+    /// naming more than one is contradictory and refused.
+    ///
+    /// A request that names NONE of them is anchored at the current instant: reachability
+    /// is computed for a departure time, and the one a request that asks for no other
+    /// departs at is now — which is exactly what `DepartNow` asks for explicitly.
     fn resolve(input: &CalculateIsolinesInput) -> Result<Self, CalculateIsolinesError> {
         let depart_now = input.depart_now == Some(true);
         let named = usize::from(input.departure_time.is_some())
@@ -558,25 +564,32 @@ impl Timing {
             return Ok(Self::Departure(
                 state::parse_timestamp("DepartureTime", departure)
                     .map_err(|message| invalid("DepartureTime", message))?,
+                state::UtcOffset::stated_in(Some(departure)),
             ));
         }
         if let Some(arrival) = &input.arrival_time {
             return Ok(Self::Arrival(
                 state::parse_timestamp("ArrivalTime", arrival).map_err(|message| invalid("ArrivalTime", message))?,
+                state::UtcOffset::stated_in(Some(arrival)),
             ));
         }
-        if depart_now {
-            return Ok(Self::Departure(state::now()));
-        }
-        Ok(Self::Unspecified)
+        // The instant comes from this service's clock rather than from the request, so
+        // there is no offset it was stated at and it is reported in UTC.
+        Ok(Self::Departure(state::now(), state::UtcOffset::UTC))
     }
 
-    /// The departure time the answer reports: the instant the request departs at, for a
-    /// request that gave an `Origin` and asked for one.
+    /// The departure time the answer reports: the instant the calculation departs the
+    /// origin at, at the offset the request stated it at.
+    ///
+    /// An origin-anchored request that pinned no instant of its own still departs at one —
+    /// the current one, which is what `DepartNow` asks for explicitly — so a departure is
+    /// reported for every such request. A request anchored at a destination departs from no
+    /// one place, and one that pinned an ARRIVAL is reporting that arrival instead.
     fn reported_departure(self, outward: bool) -> Result<Option<String>, CalculateIsolinesError> {
         match self {
-            Self::Departure(instant) if outward => Ok(Some(
-                state::format_timestamp(instant)
+            Self::Departure(instant, offset) if outward => Ok(Some(
+                offset
+                    .timestamp(instant)
                     .ok_or_else(|| internal("the departure time is not representable"))?,
             )),
             _ => Ok(None),
@@ -584,11 +597,14 @@ impl Timing {
     }
 
     /// The arrival time the answer reports: the instant the request arrives by, for a
-    /// request that gave a `Destination` and asked for one.
+    /// request that gave a `Destination` and asked for one, at the offset the request
+    /// stated it at.
     fn reported_arrival(self, outward: bool) -> Result<Option<String>, CalculateIsolinesError> {
         match self {
-            Self::Arrival(instant) if !outward => Ok(Some(
-                state::format_timestamp(instant).ok_or_else(|| internal("the arrival time is not representable"))?,
+            Self::Arrival(instant, offset) if !outward => Ok(Some(
+                offset
+                    .timestamp(instant)
+                    .ok_or_else(|| internal("the arrival time is not representable"))?,
             )),
             _ => Ok(None),
         }

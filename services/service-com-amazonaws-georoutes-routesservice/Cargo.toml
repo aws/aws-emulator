@@ -34,6 +34,10 @@ service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
 # model where a road network exists (land) and where none does (open water). The crate is
 # Apache-2.0; the boundary data it embeds is ODbL, whose attribution terms are its own.
 country-boundaries = "1.2"
+# RFC 3339 timestamps, in both forms the model's `TimestampWithTimezoneOffset` carries: a
+# UTC instant and a local time with an explicit UTC offset. The crate parses and formats
+# both, so neither is hand-rolled here.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

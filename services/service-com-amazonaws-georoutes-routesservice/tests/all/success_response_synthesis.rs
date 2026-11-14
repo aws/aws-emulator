@@ -29,6 +29,9 @@ use crate::routing::{
     great_circle_m, int, position, post, routes_service, MATRIX, OPTIMIZE, ROUTES, SNAP,
 };
 
+/// The path `CalculateIsolines` is bound to.
+const ISOLINES: &str = "/v2/isolines";
+
 /// Spacing of the synthetic road grid, in degrees, as documented on `ROAD_SPACING_DEG` in
 /// `src/state.rs`.
 const ROAD_SPACING_DEG: f64 = 0.0005;
@@ -52,13 +55,18 @@ fn at_network_precision(value: f64) -> bool {
     (value * scale).round() / scale == value
 }
 
+/// The farthest a match may move a position inside the network's coverage, in metres: half
+/// the grid spacing, in the one axis the match moves it along, at the most metres a degree
+/// of this grid is worth anywhere on Earth (~111.3 km per degree at the equator).
+const MAX_MATCH_OFFSET_M: f64 = ROAD_SPACING_DEG / 2.0 * 111_320.0;
+
 // ---------------------------------------------------------------------------
 // The pricing tier of an operation
 // ---------------------------------------------------------------------------
 
 /// `PricingBucket` ("the pricing bucket for which the query is charged at", `@required`
 /// and bound to `x-amz-geo-pricing-bucket`) names the tier the OPERATION is charged in:
-/// the route, matrix and isoline queries in the base tier, the waypoint-optimization and
+/// the route and matrix queries in the base tier, the isoline, waypoint-optimization and
 /// road-snapping queries in the advanced one. The model enumerates no values, so the two
 /// tokens come from recorded behavior; what this table pins is that each operation
 /// reports ITS OWN tier and reports it for every request it serves.
@@ -76,7 +84,7 @@ async fn each_operation_is_charged_in_its_own_pricing_tier() {
 
     // Rows: every implemented operation, twice, with requests differing in what the
     // response varies over (travel mode, waypoints, matrix size, radius, geometry format).
-    let cases: [(&str, &str, &str, Value); 8] = [
+    let cases: [(&str, &str, &str, Value); 10] = [
         ("a direct route", ROUTES, core, json!({ "Origin": near, "Destination": far })),
         (
             "a walking route through a waypoint",
@@ -136,6 +144,27 @@ async fn each_operation_is_charged_in_its_own_pricing_tier() {
                 "OptimizeSequencingFor": "ShortestRoute",
             }),
         ),
+        (
+            "an isoline bounded by a distance",
+            ISOLINES,
+            advanced,
+            json!({
+                "Origin": near,
+                "Thresholds": { "Distance": [2_000] },
+                "IsolineGranularity": { "MaxPoints": 31 },
+            }),
+        ),
+        (
+            "isolines bounded by two walking times, towards a destination",
+            ISOLINES,
+            advanced,
+            json!({
+                "Destination": far,
+                "Thresholds": { "Time": [300, 600] },
+                "TravelMode": "Pedestrian",
+                "IsolineGranularity": { "MaxPoints": 31 },
+            }),
+        ),
     ];
 
     assert_ne!(
@@ -161,9 +190,14 @@ async fn each_operation_is_charged_in_its_own_pricing_tier() {
 /// and lies on a road of it; a position the CALLER supplied is echoed exactly as it was
 /// submitted, however many digits it carried.
 ///
+/// A matched position is the submitted one moved onto the network, so it "may differ from
+/// the requested" position — and does differ whenever the submitted position lay on no road
+/// of the network, by no more than the farthest a position inside the network's coverage can
+/// be from the nearest road.
+///
 /// Rows span the precision of the submitted coordinates (4 to 7 decimals, and coordinates
-/// already on a road line), both hemispheres and both signs of longitude, and the two
-/// operations that report a matched position beside the submitted one.
+/// already on a road line), both hemispheres and both signs of longitude, and the three
+/// operations that report a matched position for a position the request supplied.
 #[tokio::test]
 async fn a_position_of_the_network_is_reported_at_the_networks_precision() {
     let router = routes_service();
@@ -248,6 +282,57 @@ async fn a_position_of_the_network_is_reported_at_the_networks_precision() {
                 reported.iter().copied().any(on_a_road_line),
                 "case {case:?}: Position lies on a road of the network, got {reported:?}"
             );
+        }
+
+        // An isoline is grown from the anchor matched onto the network, and reports that
+        // matched point for whichever of `Origin` and `Destination` the request set: "the
+        // actual point on the road network used for calculations, which may differ from the
+        // requested origin if Origin was not directly on a road".
+        for (member, reported_member, submitted) in [
+            ("Origin", "SnappedOrigin", first),
+            ("Destination", "SnappedDestination", second),
+        ] {
+            let case = &format!("{case} / an isoline from {member}");
+            let (status, answer, _) = post(
+                &router,
+                ISOLINES,
+                &json!({
+                    member: submitted,
+                    "Thresholds": { "Distance": [1_000] },
+                    "IsolineGranularity": { "MaxPoints": 31 },
+                }),
+            )
+            .await;
+            assert_eq!(status, 200, "case {case:?}: expected 200, got {status} with {answer:?}");
+            let matched = position(&answer[reported_member], case);
+            assert!(
+                matched.iter().copied().all(at_network_precision),
+                "case {case:?}: {reported_member} is read off the network, so it carries the \
+                 network's precision, got {matched:?}"
+            );
+            assert!(
+                matched.iter().copied().any(on_a_road_line),
+                "case {case:?}: {reported_member} lies on a road of the network, got {matched:?}"
+            );
+            let offset_m = great_circle_m(submitted, matched);
+            assert!(
+                offset_m <= MAX_MATCH_OFFSET_M,
+                "case {case:?}: the anchor is matched onto a road near it, so the match moved it \
+                 at most {MAX_MATCH_OFFSET_M} m, got {offset_m} m to {matched:?}"
+            );
+            if submitted.iter().copied().any(on_a_road_line) {
+                assert_eq!(
+                    matched, submitted,
+                    "case {case:?}: the submitted position is already on a road, so the point \
+                     used for calculations is that position, got {matched:?}"
+                );
+            } else {
+                assert_ne!(
+                    matched, submitted,
+                    "case {case:?}: the submitted position lies on no road, so the point used for \
+                     calculations differs from it, got {matched:?}"
+                );
+            }
         }
     }
 }

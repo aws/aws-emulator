@@ -13871,6 +13871,7 @@ dependencies = [
  "aws-smithy-schema 0.2.1",
  "aws-smithy-types",
  "bytes",
+ "chrono",
  "country-boundaries",
  "hex",
  "http",

@@ -638,6 +638,9 @@ struct Rendering<'a> {
     travel_mode: TravelMode,
     geometry_format: &'a str,
     anchor: Anchor,
+    /// The UTC offset the request stated the time it pinned the route at, which is the
+    /// offset every time of the answer is reported at.
+    clock_offset: state::UtcOffset,
     /// Whether the route violates an avoidance the request asked for.
     violated_avoidance: bool,
     /// What the leg's travel steps are rendered with.
@@ -865,7 +868,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         }
 
-        let anchor = self.anchor(&input)?;
+        let (anchor, clock_offset) = self.anchor(&input)?;
 
         // The requested sequence: origin, every waypoint, destination.
         let mut sequence = vec![SequencePoint {
@@ -949,6 +952,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     travel_mode,
                     geometry_format: &geometry_format,
                     anchor,
+                    clock_offset,
                     violated_avoidance,
                     steps: StepRendering {
                         detail: step_detail,
@@ -981,10 +985,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 }
 
 impl<Eng> CalculateRoutes<Eng> {
-    /// Where the route's clock is pinned. `DepartureTime`, `ArrivalTime` and `DepartNow`
+    /// Where the route's clock is pinned, and the UTC offset the request stated it at.
+    /// `DepartureTime`, `ArrivalTime` and `DepartNow`
     /// each pin it, so naming more than one is contradictory and refused; naming none
     /// departs now, which is what the service does for a request that gives no time.
-    fn anchor(&self, input: &CalculateRoutesInput) -> Result<Anchor, CalculateRoutesError> {
+    fn anchor(&self, input: &CalculateRoutesInput) -> Result<(Anchor, state::UtcOffset), CalculateRoutesError> {
         let depart_now = input.depart_now == Some(true);
         let named = usize::from(input.departure_time.is_some())
             + usize::from(input.arrival_time.is_some())
@@ -997,17 +1002,25 @@ impl<Eng> CalculateRoutes<Eng> {
             ));
         }
         if let Some(departure) = &input.departure_time {
-            return Ok(Anchor::Departure(
-                state::parse_timestamp("DepartureTime", departure)
-                    .map_err(|message| invalid("DepartureTime", message))?,
+            return Ok((
+                Anchor::Departure(
+                    state::parse_timestamp("DepartureTime", departure)
+                        .map_err(|message| invalid("DepartureTime", message))?,
+                ),
+                state::UtcOffset::stated_in(Some(departure)),
             ));
         }
         if let Some(arrival) = &input.arrival_time {
-            return Ok(Anchor::Arrival(
-                state::parse_timestamp("ArrivalTime", arrival).map_err(|message| invalid("ArrivalTime", message))?,
+            return Ok((
+                Anchor::Arrival(
+                    state::parse_timestamp("ArrivalTime", arrival).map_err(|message| invalid("ArrivalTime", message))?,
+                ),
+                state::UtcOffset::stated_in(Some(arrival)),
             ));
         }
-        Ok(Anchor::Departure(state::now()))
+        // The instant comes from this service's clock rather than from the request, so
+        // there is no offset it was stated at and it is reported in UTC.
+        Ok((Anchor::Departure(state::now()), state::UtcOffset::UTC))
     }
 
     /// One `Route` of the answer, with its legs, labels and summary.
@@ -1076,10 +1089,14 @@ impl<Eng> CalculateRoutes<Eng> {
         let violated_avoidance = rendering.violated_avoidance;
         let geometry = leg_geometry(&state::path_positions(&leg.path), rendering.geometry_format)?;
         let leg_type = LegType::for_mode(travel_mode);
-        let departure_time =
-            state::format_timestamp(departure).ok_or_else(|| internal("the leg departure time is not representable"))?;
-        let arrival_time =
-            state::format_timestamp(arrival).ok_or_else(|| internal("the leg arrival time is not representable"))?;
+        let departure_time = rendering
+            .clock_offset
+            .timestamp(departure)
+            .ok_or_else(|| internal("the leg departure time is not representable"))?;
+        let arrival_time = rendering
+            .clock_offset
+            .timestamp(arrival)
+            .ok_or_else(|| internal("the leg arrival time is not representable"))?;
 
         let mut route_leg = RouteLeg {
             geometry,
