@@ -26,9 +26,16 @@
 //! row is probed twice — with the grant in place, and again once it has been removed the way
 //! that kind of grant is removed — so a refusal that arrives while the grant is in force
 //! fails here just as a write that is still served after the grant is gone does.
+//!
+//! Every wait here is for a CONDITION and never for a span: the domain publishing an
+//! endpoint, the stack reaching `CREATE_COMPLETE`, the function reaching `Active`, and Lambda
+//! having room to serve a probe's invocation at all. Each is looked at again until it holds
+//! or a generous deadline passes, so what the rows assert — which writes the domain admits
+//! and which it refuses — cannot be decided by how fast or how loaded this host happens to
+//! be.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use serde_json::{json, Value};
@@ -55,9 +62,11 @@ const INDEX: &str = "grants";
 const OTHER_INDEX: &str = "elsewhere";
 
 /// How often to look while waiting for work the clock owes — the domain coming up, the
-/// stack reaching `CREATE_COMPLETE` — and how many looks to take. The spans are those
-/// services' own, so nothing here sleeps for a fixed span expecting work to be done, and the
-/// deadline is generous so a loaded host cannot decide the outcome.
+/// stack reaching `CREATE_COMPLETE`, the function reaching `Active` — and how many looks to
+/// take. [`LOOK`] is also the span between a probe's looks, which is bounded by a deadline of
+/// its own ([`SERVED_DEADLINE`]). The spans waited on are those services' own, so nothing
+/// here sleeps for a fixed span expecting work to be done, and every deadline is generous so
+/// a loaded host cannot decide the outcome.
 const LOOK: Duration = Duration::from_millis(100);
 const LOOKS: usize = 1_800;
 
@@ -389,6 +398,7 @@ async fn deployed_function(router: &MultiServiceRouter, endpoint: &str) {
         "setup: CreateStack must be accepted, got {status} with {created}"
     );
     let mut described = String::new();
+    let mut deployed = false;
     for _ in 0..LOOKS {
         let (_, body) = query(
             router,
@@ -400,41 +410,121 @@ async fn deployed_function(router: &MultiServiceRouter, endpoint: &str) {
         .await;
         described = body;
         if opt_element(&described, "StackStatus").as_deref() == Some(CREATE_COMPLETE) {
+            deployed = true;
+            break;
+        }
+        tokio::time::sleep(LOOK).await;
+    }
+    assert!(
+        deployed,
+        "setup: the function's stack must reach {CREATE_COMPLETE}, got {described}"
+    );
+    activated_function(router).await;
+}
+
+/// The `State` a function has to be in to take an invocation: the model documents the
+/// provisioning window a newly created function passes through first on `CreateFunction`
+/// ("During this time, you can't invoke or modify the function"), and `Invoke` answers
+/// `ResourceConflictException` for a call that arrives inside it.
+const STATE_ACTIVE: &str = "Active";
+
+/// Wait until Lambda reports the deployed function as [`STATE_ACTIVE`], which is the
+/// condition a probe's invocation really needs rather than the one the stack's own status
+/// states: the stack is complete once CloudFormation has created the function, while the
+/// function's own provisioning is settled by a span of its service's clock. Waiting for the
+/// function's state here is what keeps the first probe from racing that span, whichever of
+/// the two spans this host happens to finish first.
+async fn activated_function(router: &MultiServiceRouter) {
+    let mut read = (0, Value::Null);
+    for _ in 0..LOOKS {
+        let (status, _, answered) = lambda(
+            router,
+            "GET",
+            &format!("/2015-03-31/functions/{FUNCTION}/configuration"),
+            &[],
+        )
+        .await;
+        read = (status, answered);
+        if read.1["State"].as_str() == Some(STATE_ACTIVE) {
             return;
         }
         tokio::time::sleep(LOOK).await;
     }
-    panic!("setup: the function's stack must reach {CREATE_COMPLETE}, got {described}");
+    let (status, answered) = read;
+    panic!(
+        "setup: the deployed function must reach {STATE_ACTIVE}, last read answered {status} \
+         with {answered}"
+    );
 }
 
-/// Invoke the function once and answer what the handler reported: the status the domain gave
-/// its signed write, and the whole payload for a failure message.
+/// The statuses Lambda answers an invocation it has NOT served with, each of which says "not
+/// now" and carries no decision about the write: the throughput limit of the account's
+/// concurrent executions was reached (`TooManyRequestsException`, `@httpError(429)`), or the
+/// function is not `Active` yet (`ResourceConflictException`, `@httpError(409)`, the window
+/// `CreateFunction` documents).
+///
+/// Whether one arrives is decided by what the rest of this process is running at that instant
+/// and by nothing a row varies, so a probe LOOKS AGAIN on one — the condition it is waiting
+/// for is its invocation being served — instead of reading an authorization decision out of a
+/// run that never happened. Nothing is tolerated by looking again: a refusal that still
+/// stands at the deadline fails the row, carrying the status and the payload it answered
+/// with. Every OTHER answer fails the row at once, the status Lambda gives a run it could not
+/// drive and a handler the sandbox stopped included: those are defects of what is under test
+/// rather than a service with no room right now.
+const UNSERVED: &[u16] = &[409, 429];
+
+/// How long a probe waits for Lambda to serve its invocation: the same generous span the
+/// status polls here take ([`LOOK`] over [`LOOKS`] looks), read as a DEADLINE rather than as
+/// a number of looks, because one look of this wait is a whole invocation and not a cheap
+/// read — so the span this states is the span it takes.
+const SERVED_DEADLINE: Duration = Duration::from_secs(180);
+
+/// Invoke the function and answer what the handler reported: the status the domain gave its
+/// signed write, and the whole payload for a failure message.
+///
+/// Looks again, every [`LOOK`] until [`SERVED_DEADLINE`] passes, for as long as Lambda has
+/// not served the invocation ([`UNSERVED`]) — so what this answers is always a decision the
+/// domain took about a handler that ran, on a loaded host as on an idle one. Every other
+/// answer is asserted on exactly as it was: a handler that raised, or a status the domain
+/// never gives, fails the row it belongs to.
 async fn probed_write(router: &MultiServiceRouter, case: &str, document_id: &str) -> (u64, Value) {
     let event = json!({
         "index": INDEX,
         "document": {"id": document_id, "case": case},
     });
-    let (status, headers, payload) = lambda(
-        router,
-        "POST",
-        &format!("/2015-03-31/functions/{FUNCTION}/invocations"),
-        event.to_string().as_bytes(),
-    )
-    .await;
-    assert_eq!(
-        status, 200,
-        "case {case:?}: the invocation must be served, got {status} with {payload}"
-    );
-    let faulted = headers
-        .get("x-amz-function-error")
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string);
-    assert_eq!(
-        faulted, None,
-        "case {case:?}: the handler must run to the end, got {faulted:?} with {payload}"
-    );
-    let answered = payload["status"].as_u64().unwrap_or_default();
-    (answered, payload)
+    let deadline = Instant::now() + SERVED_DEADLINE;
+    loop {
+        let (status, headers, payload) = lambda(
+            router,
+            "POST",
+            &format!("/2015-03-31/functions/{FUNCTION}/invocations"),
+            event.to_string().as_bytes(),
+        )
+        .await;
+        if UNSERVED.contains(&status) {
+            assert!(
+                Instant::now() < deadline,
+                "case {case:?}: Lambda must serve this probe's invocation, last answered \
+                 {status} with {payload}"
+            );
+            tokio::time::sleep(LOOK).await;
+            continue;
+        }
+        assert_eq!(
+            status, 200,
+            "case {case:?}: the invocation must be served, got {status} with {payload}"
+        );
+        let faulted = headers
+            .get("x-amz-function-error")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        assert_eq!(
+            faulted, None,
+            "case {case:?}: the handler must run to the end, got {faulted:?} with {payload}"
+        );
+        let answered = payload["status"].as_u64().unwrap_or_default();
+        return (answered, payload);
+    }
 }
 
 /// WHERE one row's grant lives, which is one of the two axes a row varies.
