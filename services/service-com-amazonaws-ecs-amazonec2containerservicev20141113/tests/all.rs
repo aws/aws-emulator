@@ -27,6 +27,8 @@ mod awsvpc_configuration_store;
 mod awsvpc_interface_subnet_and_identity;
 #[path = "all/capacity_provider_in_use.rs"]
 mod capacity_provider_in_use;
+#[path = "all/capacity_provider_service_describe_polls.rs"]
+mod capacity_provider_service_describe_polls;
 #[path = "all/capacity_provider_surface.rs"]
 mod capacity_provider_surface;
 #[path = "all/capacity_providers.rs"]
