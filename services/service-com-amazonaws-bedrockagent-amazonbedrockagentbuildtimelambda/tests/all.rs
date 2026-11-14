@@ -27,6 +27,8 @@ mod delete_removes_the_resource;
 mod enum_value_set_order;
 #[path = "all/flow_alias_deployment.rs"]
 mod flow_alias_deployment;
+#[path = "all/flow_alias_updates.rs"]
+mod flow_alias_updates;
 #[path = "all/flow_definition_validation.rs"]
 mod flow_definition_validation;
 #[path = "all/flow_deletion_cascade.rs"]

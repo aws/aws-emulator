@@ -1,16 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op UpdateFlowAlias
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `UpdateFlowAlias`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`UpdateFlowAlias::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
-//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -179,18 +169,119 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `UpdateFlowAlias` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(UpdateFlowAliasErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("UpdateFlowAlias"))
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(UpdateFlowAliasErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: Some("the bedrock-agent store is unavailable".to_string()),
+                },
+            )
+            .into());
+        };
+
+        // The modelled `FlowIdentifier` admits a flow ARN or a bare flow id and
+        // nothing else. The boundary validator lets other values through — the
+        // pattern's top-level alternation leaves the second branch anchored only
+        // at its end — so an identifier of neither form is refused here as the
+        // bad request it is, rather than reported as a missing flow.
+        let Some(flow_id) = crate::state::flow_id_from_identifier(&input.flow_identifier) else {
+            return Err(UpdateFlowAliasErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(crate::state::flow_identifier_pattern_message(
+                        &input.flow_identifier,
+                    )),
+                    field_list: None,
+                },
+            )
+            .into());
+        };
+
+        // The modelled `FlowAliasIdentifier` admits an alias ARN or a bare alias
+        // id, and its pattern has the same unanchored alternation, so a value of
+        // neither form is likewise refused here as a bad request.
+        let Some((arn_flow_id, alias_id)) =
+            crate::state::flow_alias_from_identifier(&input.alias_identifier)
+        else {
+            return Err(UpdateFlowAliasErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(crate::state::flow_alias_identifier_pattern_message(
+                        &input.alias_identifier,
+                    )),
+                    field_list: None,
+                },
+            )
+            .into());
+        };
+
+        let now = ::std::time::SystemTime::now();
+        let mut state = state.lock();
+        state.materialise_due_transitions(now);
+
+        if !state.flows.contains_key(flow_id) {
+            return Err(UpdateFlowAliasErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: Some(crate::state::flow_not_found_message(Self::NAME)),
+                },
+            )
+            .into());
+        }
+
+        // The alias is the resource this operation addresses, so it is resolved
+        // before the members the request carries are looked at: there is nothing
+        // to update until it resolves. An alias ARN naming another flow than the
+        // one addressed names an alias this flow does not hold, which is a
+        // missing resource rather than a bad request.
+        let aliased_flow_matches = arn_flow_id.is_none_or(|from_arn| from_arn == flow_id);
+        if !aliased_flow_matches || state.flow_alias_of(flow_id, alias_id).is_none() {
+            return Err(UpdateFlowAliasErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: Some(crate::state::flow_alias_not_found_message(Self::NAME)),
+                },
+            )
+            .into());
+        }
+
+        // An alias ROUTES to a version of the flow it belongs to, so every
+        // version the new routing configuration names must be one that flow
+        // holds: its DRAFT version, or a number `CreateFlowVersion` has cut and
+        // nothing has deleted. A reference to anything else resolves to no flow
+        // version, which is the modelled 404 — and the stored alias keeps the
+        // routing it had, because nothing is written for a refused update.
+        if input.routing_configuration.iter().any(|entry| {
+            entry
+                .flow_version
+                .as_deref()
+                .is_none_or(|version| !state.flow_version_exists(flow_id, version))
+        }) {
+            return Err(UpdateFlowAliasErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: Some(crate::state::flow_version_not_found_message(Self::NAME)),
+                },
+            )
+            .into());
+        }
+
+        let Some(record) = state.flow_alias_of_mut(flow_id, alias_id) else {
+            return Err(UpdateFlowAliasErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: Some(crate::state::flow_alias_not_found_message(Self::NAME)),
+                },
+            )
+            .into());
+        };
+
+        // The update REPLACES the alias's mutable members: this operation's own
+        // contract is to "include both fields that you want to keep and ones
+        // that you want to change", so a member the request leaves out is left
+        // out of the alias too. The identity members (`id`, `arn`, the flow it
+        // belongs to) and `createdAt` are not the request's to set.
+        record.name = input.name;
+        record.description = input.description;
+        record.routing_configuration = input.routing_configuration;
+        record.concurrency_configuration = input.concurrency_configuration;
+        // The resource changed at this instant, so this is its last-updated one.
+        record.updated_at = now;
+
+        Ok(record.to_update_output())
     }
 }

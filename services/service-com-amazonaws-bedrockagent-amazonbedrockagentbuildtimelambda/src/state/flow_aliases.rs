@@ -15,7 +15,7 @@ use super::*;
 
 use crate::ops::types::{
     CreateFlowAliasOutput, FlowAliasConcurrencyConfiguration, FlowAliasRoutingConfigurationListItem,
-    FlowAliasSummary, GetFlowAliasOutput,
+    FlowAliasSummary, GetFlowAliasOutput, UpdateFlowAliasOutput,
 };
 
 /// The most flow aliases one `ListFlowAliases` page can carry: the response
@@ -78,6 +78,24 @@ impl FlowAliasRecord {
     /// one comes from the stored record.
     pub fn to_get_output(&self) -> GetFlowAliasOutput {
         GetFlowAliasOutput {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            routing_configuration: self.routing_configuration.clone(),
+            concurrency_configuration: self.concurrency_configuration.clone(),
+            flow_id: self.flow_id.clone(),
+            id: self.alias_id.clone(),
+            arn: self.arn.clone(),
+            created_at: to_date_time(self.created_at),
+            updated_at: to_date_time(self.updated_at),
+        }
+    }
+
+    /// This record as the `UpdateFlowAlias` response. `UpdateFlowAliasResponse`
+    /// carries the same members as `CreateFlowAliasResponse`, and like it every
+    /// one comes from the stored record — so the answer to an update is the
+    /// alias as it now stands, not the request that changed it.
+    pub fn to_update_output(&self) -> UpdateFlowAliasOutput {
+        UpdateFlowAliasOutput {
             name: self.name.clone(),
             description: self.description.clone(),
             routing_configuration: self.routing_configuration.clone(),
@@ -245,6 +263,18 @@ impl ComAmazonawsBedrockagentAmazonbedrockagentbuildtimelambdaState {
     pub fn flow_alias_of(&self, flow_id: &str, alias_id: &str) -> Option<&FlowAliasRecord> {
         self.flow_aliases
             .get(&(flow_id.to_string(), alias_id.to_string()))
+    }
+
+    /// The stored alias `alias_id` names on `flow_id`, to be CHANGED in place:
+    /// the same lookup as [`Self::flow_alias_of`], so an update writes to the
+    /// one record every reader reports.
+    pub fn flow_alias_of_mut(
+        &mut self,
+        flow_id: &str,
+        alias_id: &str,
+    ) -> Option<&mut FlowAliasRecord> {
+        self.flow_aliases
+            .get_mut(&(flow_id.to_string(), alias_id.to_string()))
     }
 
     /// How many aliases this flow already holds, the count the per-flow bound is
