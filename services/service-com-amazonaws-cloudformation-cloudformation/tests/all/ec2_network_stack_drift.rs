@@ -168,7 +168,11 @@ async fn deploy_the_network(case: &str, router: &MultiServiceRouter, stack: &str
 }
 
 /// The physical resource id the stack publishes for one of its logical resources.
-async fn physical_id(
+///
+/// `pub(crate)`: a sibling suite that drives the SAME deployed network through its teardown
+/// reads a resource's published id the same way, so it reads this one rather than carrying a
+/// second copy of it.
+pub(crate) async fn physical_id(
     case: &str,
     router: &MultiServiceRouter,
     stack: &str,
@@ -221,7 +225,10 @@ async fn subnet_attribute(
 }
 
 /// Set one boolean attribute of one subnet outside the stack, the way an operator does.
-async fn modify_subnet_attribute(
+///
+/// `pub(crate)`: shared with the sibling suite that makes the same out-of-band change before
+/// a teardown.
+pub(crate) async fn modify_subnet_attribute(
     case: &str,
     router: &MultiServiceRouter,
     subnet_id: &str,
@@ -246,7 +253,11 @@ async fn modify_subnet_attribute(
 /// One drift detection over a stack, polled through its own status read until it is no longer
 /// in progress: the `DetectionStatus`, the `StackDriftStatus` and the
 /// `DriftedStackResourceCount` it settled on.
-async fn settled_detection(
+///
+/// `pub(crate)`: the ONE drift-detection poll of this crate's suites, so a sibling suite that
+/// detects drift before tearing a stack down waits for the same condition here rather than
+/// carrying a second copy of the loop.
+pub(crate) async fn settled_detection(
     case: &str,
     router: &MultiServiceRouter,
     stack: &str,
@@ -290,18 +301,20 @@ async fn settled_detection(
 
 /// One difference a report carries: the path, the expected value, the actual value and the
 /// kind of difference.
-type Difference = (String, String, String, String);
+pub(crate) type Difference = (String, String, String, String);
 
 /// What one resource's record in a drift report says: its physical id, its drift status and
 /// the differences it carries.
-struct ReportedDrift {
-    physical_resource_id: String,
-    status: String,
-    differences: Vec<Difference>,
+pub(crate) struct ReportedDrift {
+    pub(crate) physical_resource_id: String,
+    pub(crate) status: String,
+    pub(crate) differences: Vec<Difference>,
 }
 
 /// `DescribeStackResourceDrifts` for one stack, as the record of each logical id it reports.
-async fn drift_report(
+///
+/// `pub(crate)`: shared with the sibling suite that reads the same report before a teardown.
+pub(crate) async fn drift_report(
     case: &str,
     router: &MultiServiceRouter,
     stack: &str,
@@ -344,7 +357,7 @@ async fn drift_report(
 }
 
 /// The record one logical id carries in a report.
-fn record_of<'report>(
+pub(crate) fn record_of<'report>(
     case: &str,
     report: &'report [(String, ReportedDrift)],
     logical_id: &str,
@@ -361,7 +374,10 @@ fn record_of<'report>(
 
 /// The template body the stack holds, which is the side of a template diff CloudFormation
 /// owns.
-async fn held_template(case: &str, router: &MultiServiceRouter, stack: &str) -> String {
+///
+/// `pub(crate)`: shared with the sibling suite that asserts the same side is unmoved by what
+/// happens to the resources.
+pub(crate) async fn held_template(case: &str, router: &MultiServiceRouter, stack: &str) -> String {
     let (status, body) = call(router, "GetTemplate", &[member("StackName", stack)]).await;
     assert_eq!(
         status, 200,

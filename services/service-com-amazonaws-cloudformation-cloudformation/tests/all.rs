@@ -339,6 +339,8 @@ mod provisioned_resources;
 mod public_extension_arn_versions;
 #[path = "all/public_extension_arns.rs"]
 mod public_extension_arns;
+#[path = "all/public_vpc_app_teardown.rs"]
+mod public_vpc_app_teardown;
 #[path = "all/publish_type.rs"]
 mod publish_type;
 #[path = "all/publish_type_publisher_preflight.rs"]
