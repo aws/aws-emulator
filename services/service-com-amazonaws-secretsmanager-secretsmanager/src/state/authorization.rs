@@ -149,6 +149,16 @@ pub const ACTION_PREFIX: &str = "secretsmanager";
 /// secret:<name>-<six characters>` (`::service_common::arn::SECRETS_MANAGER_SECRET`).
 const SECRET_RESOURCE_TYPE: &str = "secret";
 
+/// The reason clause a refusal states when an explicit `Deny` in the ADDRESSED SECRET's own
+/// resource-based policy refuses the call: a fact about that document, so the sentence names
+/// it rather than the action.
+///
+/// Stated once because two gates word it: a signed request of this service ([`decide`]) and a
+/// retrieval another service makes on a role's behalf
+/// ([`crate::state::secret_retrieval`]).
+pub(crate) const RESOURCE_POLICY_EXPLICIT_DENY: &str =
+    "with an explicit deny in a resource-based policy";
+
 /// Authorize this request, where `operation` is the operation's own name
 /// ([`smithy_server_runtime::Operation::NAME`]) and `resource` the ARN the request NAMES.
 ///
@@ -260,7 +270,7 @@ fn decide<Eng: Send + Sync + 'static>(
     if resource_policy.is_some_and(|document| {
         iam::resource_decision(document, &denying) == Decision::Denied
     }) {
-        return Err(refusal("with an explicit deny in a resource-based policy"));
+        return Err(refusal(RESOURCE_POLICY_EXPLICIT_DENY));
     }
     // What the SCOPE this credential was minted with says, through the tree's one reading of
     // a resolved scope ([`sts_store::ScopingPolicies::decision`]): a credential no mint

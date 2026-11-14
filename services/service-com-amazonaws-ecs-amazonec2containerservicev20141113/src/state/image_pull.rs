@@ -56,6 +56,13 @@
 //! carries its pull instants is not pulled again, so a later placement by another call
 //! re-decides nothing and imports nothing twice.
 //!
+//! The pass that attempts it settles the OTHER execution resource the agent retrieves in
+//! that same step, as that same role: the `secrets` the revision references
+//! ([`super::container_secrets`]). The agent's own account of a failure here —
+//! "unable to pull secrets or registry auth: execution resource retrieval failed" — names
+//! them together because it is one step, so one verdict is recorded for the task and either
+//! half can be what fails its launch.
+//!
 //! LOCK ORDER: the cross-service reads here take the Amazon EC2 store's lock and then the
 //! Amazon ECR store's (which takes the IAM store's), each holding no other while it does,
 //! and hand back owned values — so they are called with NO guard of this service's store
@@ -132,6 +139,11 @@ pub struct TaskLaunch {
     /// ([`TaskRecord::execution_role_arn`]), and `None` for a task whose revision and
     /// overrides name none.
     pub execution_role_arn: Option<String>,
+    /// The values the agent fetches for the task's containers before any of them starts —
+    /// the `secrets` its revision references ([`super::container_secrets`]) — which are
+    /// retrieved as that same execution role, in the same step as the registry
+    /// authentication this fetch takes.
+    pub secrets: Vec<ContainerSecret>,
 }
 
 /// The `stoppedReason` of a task whose containers could not be launched because an image
@@ -227,6 +239,16 @@ pub fn evaluate_image_pulls<Eng: Send + Sync + 'static>(engine: &Eng) {
     for (launch, failure) in launches.iter().zip(failures.iter_mut()) {
         if failure.1.is_none() {
             failure.1 = unservable_image(engine, launch, now);
+        }
+    }
+    // The SECRETS the agent fetches for the task's containers, in the same step and as the
+    // same role: "unable to pull secrets or registry auth" is one resource-retrieval step of
+    // the agent's, so a task that cannot retrieve one of its secrets fails to start exactly
+    // as one that cannot fetch an image does ([`super::container_secrets`]). Decided after
+    // the images, with no lock held: the verdict is the owning service's.
+    for (launch, failure) in launches.iter().zip(failures.iter_mut()) {
+        if failure.1.is_none() {
+            failure.1 = unretrievable_secret(engine, launch);
         }
     }
     state.lock().record_image_pulls(&failures, now);
@@ -487,6 +509,7 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
                     .filter_map(|container| container.image.clone())
                     .collect(),
                 execution_role_arn: task.execution_role_arn.clone(),
+                secrets: self.launched_task_secrets(task),
             })
             .collect()
     }

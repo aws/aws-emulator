@@ -55,6 +55,8 @@ mod container_instances;
 mod container_reservation_refusals;
 #[path = "all/container_runtime.rs"]
 mod container_runtime;
+#[path = "all/container_secret_injection.rs"]
+mod container_secret_injection;
 #[path = "all/continue_service_deployment_validation.rs"]
 mod continue_service_deployment_validation;
 #[path = "all/daemon_reference_family_refusals.rs"]

@@ -20,6 +20,12 @@
 //! entry point is what would run, and this emulator holds no image, so no output and no
 //! exit code is invented for it.
 //!
+//! What the program SEES is its definition's environment with the launch's own overrides
+//! applied, and then the values the agent fetched for it — a container definition's
+//! `secrets` ([`super::container_secrets`]), read before the program starts, as the task's
+//! execution role. A container whose secrets cannot be read starts no program at all, so it
+//! reports no exit code: nothing ran to produce one.
+//!
 //! # Who starts and ends a run
 //!
 //! Runs are RECONCILED from the task map, never started by whoever happened to call:
@@ -141,6 +147,11 @@ pub struct ContainerLaunch {
     /// Where its output is delivered, and `None` for a container whose `logConfiguration`
     /// describes no `awslogs` delivery.
     log_target: Option<AwsLogsTarget>,
+    /// The values the agent fetches for it before its program starts — the `secrets` its
+    /// definition names — each read as the task's execution role and exposed to the program
+    /// as the environment variable its entry spells
+    /// ([`super::container_secrets::fetched_environment`]).
+    secrets: Vec<ContainerSecret>,
     /// The signals it answers.
     signals: Arc<ContainerSignals>,
 }
@@ -294,6 +305,10 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
                     program,
                     environment,
                     log_target,
+                    // The values the agent fetches for this container, read where the run
+                    // is performed: reading one is a call to the service that holds it,
+                    // which this pass cannot make under the store's lock.
+                    secrets: container_environment_secrets(&definition, name),
                     signals,
                 });
             }
@@ -451,13 +466,24 @@ async fn run_container(
     callback: ::smithy_server_runtime::EmbeddedEmulator,
     launch: ContainerLaunch,
 ) {
+    // The values the agent fetches for the container, before anything of it runs: a secret
+    // it could not retrieve starts NO program, so the container reports no exit code —
+    // nothing ran to produce one ([`super::container_secrets::fetched_environment`]).
+    let Some(environment) =
+        fetched_environment(&callback, &launch.environment, &launch.secrets).await
+    else {
+        state
+            .lock()
+            .record_container_outcome(&launch.container_arn, ContainerOutcome::Abandoned);
+        return;
+    };
     let output = Arc::new(ContainerOutput::new(&callback, launch.log_target));
     // The stream the driver delivers to exists before the container writes its first line,
     // which is the order the driver itself does it in.
     output.open().await;
     let deadline = Instant::now() + CONTAINER_RUN_LIFETIME;
     let mut shell = ContainerShell::new(
-        launch.environment,
+        environment,
         Arc::clone(&output),
         Arc::clone(&launch.signals),
         deadline,

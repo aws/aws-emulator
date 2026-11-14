@@ -70,6 +70,14 @@ service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true 
 # resource, held in its own store in the shared engine, so this is a cross-service READ
 # rather than a copy kept here. No cycle: that crate does not depend on this one.
 service-com-amazonaws-autoscaling-autoscaling-2011-01-01 = { workspace = true }
+# The AWS Secrets Manager service, for the launch decision a container's `secrets` entries
+# turn on: whether the task's EXECUTION role may retrieve the secret a `valueFrom` names, and
+# whether that account holds a value to retrieve at all, which decides whether the task's
+# containers can be launched (`crate::state::container_secrets`). The secret, the policies on
+# it and its deletion state are that service's own records, held in its own store in the
+# shared engine, so the decision is answered by the service that owns them rather than by a
+# copy kept here. No cycle: that crate does not depend on this one.
+service-com-amazonaws-secretsmanager-secretsmanager = { workspace = true }
 # `eventbridge_client`: the ONE in-process EventBridge client an emulated service publishes
 # an event through, so this crate configures no second copy of that hop. `iam_trust_policy`:
 # the tree's ONE reading of a role's trust document, which the execution-role assume above is
@@ -86,6 +94,11 @@ aws-sdk-eventbridge = { version = "1", default-features = false }
 # group it names, through that service's own API (`state::container_logs`), so what a client
 # reads back with `GetLogEvents` is what the log service stored.
 aws-sdk-cloudwatchlogs = { version = "1", default-features = false }
+# The AWS SDK for Secrets Manager, driven over the same in-process callback: a container's
+# `secrets` entry is read through that service's own `GetSecretValue` before the container's
+# program starts (`state::container_secrets`), so the value injected into a container is the
+# one a client reads back from the service that holds it.
+aws-sdk-secretsmanager = { version = "1", default-features = false }
 # `brush-parser`: the POSIX/bash TOKENIZER AND GRAMMAR a container's `command` is read with
 # (`state::container_shell`). The PARSER only: it is a library that computes over data in
 # process — it builds a syntax tree and runs nothing, opens nothing and reaches nothing — so

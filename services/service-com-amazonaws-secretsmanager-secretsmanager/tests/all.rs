@@ -73,6 +73,8 @@ mod secret_resource_policy_reported_form;
 mod secret_resource_policy_targeting;
 #[path = "all/secret_restore.rs"]
 mod secret_restore;
+#[path = "all/secret_retrieval_for_a_role.rs"]
+mod secret_retrieval_for_a_role;
 #[path = "all/secret_rotation.rs"]
 mod secret_rotation;
 #[path = "all/secret_rotation_cancel.rs"]

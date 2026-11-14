@@ -302,6 +302,12 @@ pub use container_credentials::*;
 mod container_runtime;
 pub use container_runtime::*;
 
+/// The values the agent FETCHES for a container before it exists — a container definition's
+/// `secrets` — read as the task's execution role: the stop a launch whose role may not read
+/// one earns, and the environment a container that may read them runs with.
+mod container_secrets;
+pub use container_secrets::*;
+
 /// The container HEALTH CHECK: the probe a container definition declares, what running it
 /// makes of `healthStatus`, and the containers whose start waits on it.
 mod container_health;

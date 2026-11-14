@@ -45,6 +45,11 @@ pub mod authorization;
 /// gate above decides a statement's `Condition` against.
 pub mod condition_keys;
 
+/// Serving the retrieval of a secret another AWS service makes on a ROLE's behalf, for the
+/// workload that service runs: the same gate, asked about that role rather than about a
+/// signed request's caller.
+pub mod secret_retrieval;
+
 /// Rotating a secret: whether this service may invoke the rotation function, and the four
 /// steps it drives that function through once a rotation has started.
 pub mod rotation;
