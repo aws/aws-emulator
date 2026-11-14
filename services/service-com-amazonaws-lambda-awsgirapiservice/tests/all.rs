@@ -437,6 +437,8 @@ mod provisioned_concurrency;
 mod provisioned_concurrency_resolution;
 #[path = "all/published_function_arn.rs"]
 mod published_function_arn;
+#[path = "all/python_host_surface_isolation.rs"]
+mod python_host_surface_isolation;
 #[path = "all/python_runtime_os_surface.rs"]
 mod python_runtime_os_surface;
 #[path = "all/python_sandbox_bound_isolation.rs"]

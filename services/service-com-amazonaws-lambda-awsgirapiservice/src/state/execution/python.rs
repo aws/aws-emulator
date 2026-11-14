@@ -2798,19 +2798,35 @@ mod tests {
     /// looked for while the handler's module is being imported between two allocations that
     /// TOGETHER pass the run's ceiling — a run that must still be stopped, because the
     /// ceiling is measured from the one baseline the host took.
+    ///
+    /// EVERY run here is judged against a clock whose span this host's own speed cannot
+    /// spend ([`super::super::run_clock`]), the row that reads the surface included: what
+    /// each row comes to is then the run's own doing, and a host slow enough to spend a span
+    /// of its own time while the interpreter is standing up answers none of them with the
+    /// deadline instead.
     #[test]
     fn no_guest_code_can_begin_its_own_invoke_phase() {
         // The names the host module really carries, read from inside a run: a surface this
         // small is the whole of what a guest can call, and none of these is a phase or a
         // bound. A name added to it has to be added here too, which is the point.
-        let listed = ran(
+        //
+        // The run is judged against a clock that does not advance, like the rows below: this
+        // row is about the SURFACE and not about a span of time, so no deadline may answer
+        // it — the step budget and the response cap are the only bounds it leaves reachable,
+        // and neither is a reading of how fast this host happens to be running.
+        let surface = "the host surface a run can call";
+        let listed = ran_against(
             "def handler(event, context):\n    \
                  host = __import__('_lambda_host')\n    \
                  return sorted(n for n in dir(host) if not n.startswith('_'))\n",
             "lambda_function.handler",
             None,
+            &BTreeMap::new(),
+            budget(),
+            &Clock::still(),
+            surface,
         );
-        let reachable = returned(&listed, "the host surface a run can call");
+        let reachable = returned(&listed, surface);
         let expected = ::serde_json::json!([
             "aws",
             "db_auth_token",
