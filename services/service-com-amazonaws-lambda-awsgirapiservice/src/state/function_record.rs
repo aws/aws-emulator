@@ -70,6 +70,16 @@ pub struct FunctionRecord {
     pub last_update_due: Option<SystemTime>,
     /// When the move to [`STATE_ACTIVE`] becomes due.
     pub active_due: SystemTime,
+    /// The `NetworkInterfaceId` of each elastic network interface Lambda stands up in the
+    /// account's EC2 inventory for this function's VPC attachment — "Lambda creates an
+    /// elastic network interface for each subnet in your function's VPC configuration" — in
+    /// the order of the subnets they sit in; empty for a function attached to no VPC.
+    ///
+    /// It is a FUNCTION-level holding rather than a version-specific one: the interfaces carry
+    /// the traffic of the function, so every qualifier of it reaches the VPC through the same
+    /// ones, and they are given back when the attachment is removed or the function is deleted
+    /// ([`crate::state::vpc_interfaces`]).
+    pub vpc_network_interface_ids: Vec<String>,
     /// Function-level tags, as supplied.
     pub tags: BTreeMap<String, String>,
     /// The reserved concurrency, when `PutFunctionConcurrency` has set one.
@@ -845,12 +855,14 @@ impl FunctionRecord {
                 size: config.ephemeral_storage_mb,
             }),
             // `VpcConfig` goes in and `VpcConfigResponse` comes out: the two differ only
-            // by the `VpcId` of the VPC the subnets belong to, which lives in EC2. This
-            // emulator resolves no EC2 state, so it reports no id it did not look up.
+            // by the `VpcId` of the VPC the subnets belong to, which lives in EC2 and is
+            // resolved against that inventory by the write that applied the configuration
+            // (`crate::state::vpc_interfaces`), so what is reported here is an id that was
+            // looked up rather than one the request carried.
             vpc_config: config.vpc_config.as_ref().map(|vpc| VpcConfigResponse {
                 subnet_ids: vpc.subnet_ids.clone(),
                 security_group_ids: vpc.security_group_ids.clone(),
-                vpc_id: None,
+                vpc_id: config.vpc_id.clone(),
                 ipv6_allowed_for_dual_stack: vpc.ipv6_allowed_for_dual_stack,
             }),
             dead_letter_config: config.dead_letter_config.clone(),

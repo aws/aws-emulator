@@ -201,7 +201,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             || crate::state::parse_function_reference(&input.function_name)
                 .is_some_and(|reference| reference.qualifier.is_some());
 
-        if qualified {
+        // The interfaces the function's VPC attachment holds, taken out of the account's EC2
+        // inventory once this service's own store has been written; empty for everything but
+        // a delete of the whole function.
+        let released: Vec<String> = if qualified {
             // "To delete a specific function version, use the Qualifier parameter" — and
             // the unpublished version is not one: it exists for as long as the function
             // does, so only deleting the function itself removes it.
@@ -246,10 +249,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into());
             }
             record.versions.remove(&number);
+            Vec::new()
         } else {
             // "Otherwise, all versions and aliases are deleted" — the whole record goes.
-            store.functions.remove(&name);
-        }
+            // The elastic network interfaces Lambda stood up for the function's VPC
+            // attachment go with it: they carry the function's traffic, so they do not
+            // outlive it, and the subnet and security groups they held a place in can be
+            // deleted once they are gone (see [`crate::state::vpc_interfaces`]).
+            store
+                .functions
+                .remove(&name)
+                .map(|removed| removed.vpc_network_interface_ids)
+                .unwrap_or_default()
+        };
+
+        drop(store);
+        crate::state::release_function_interfaces(&*self.engine, &released);
 
         // `StatusCode` is this operation's `@httpResponseCode`, and a successful delete
         // carries no body.

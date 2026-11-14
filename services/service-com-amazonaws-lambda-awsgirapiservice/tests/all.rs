@@ -493,6 +493,8 @@ mod update_window_outlasts_its_call;
 mod version_delete_alias_reference;
 #[path = "all/version_publishing.rs"]
 mod version_publishing;
+#[path = "all/vpc_attachment_interfaces.rs"]
+mod vpc_attachment_interfaces;
 #[path = "all/vpc_config_execution_role_permissions.rs"]
 mod vpc_config_execution_role_permissions;
 #[path = "all/async_invocation_delivery.rs"]

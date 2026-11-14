@@ -274,6 +274,16 @@ pub use event_source_resource_policy::SourcePolicies;
 pub mod vpc_attachment_authorization;
 pub use vpc_attachment_authorization::unattachable_vpc_config;
 
+/// The attachment itself — the elastic network interfaces Lambda stands up in the account's
+/// EC2 inventory for a function's configured subnets, and the VPC those subnets resolve to —
+/// lives in [`vpc_interfaces`], beside the authorization above that gates it, and is
+/// re-exported for the same reason: a handler names it as `crate::state::…`.
+pub mod vpc_interfaces;
+pub use vpc_interfaces::{
+    place_function_interfaces, reconcile_function_interfaces, release_function_interfaces,
+    VpcAttachment,
+};
+
 /// Following a container-image package's reference into the Amazon ECR registry — whether
 /// it names an image at all, whether that registry lets this service pull it, and which
 /// image bytes the function is frozen to — lives in [`image_source`], reached through the
@@ -1142,6 +1152,12 @@ pub struct FunctionConfig {
     pub revision_id: String,
     /// The VPC the function is attached to, when the caller named one.
     pub vpc_config: Option<VpcConfig>,
+    /// `VpcConfigResponse$VpcId`: the VPC the subnets of [`Self::vpc_config`] belong to,
+    /// resolved against the account's EC2 inventory by the write that applied the
+    /// configuration ([`crate::state::vpc_interfaces`]). `None` for a function attached to no
+    /// VPC, and for subnets this emulator's EC2 holds no record of — a reported id is one
+    /// that was looked up.
+    pub vpc_id: Option<String>,
     /// The dead-letter queue for failed asynchronous invocations, when the caller named
     /// one.
     pub dead_letter_config: Option<DeadLetterConfig>,

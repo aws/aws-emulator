@@ -44,6 +44,12 @@ service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
 # needs that service's state TYPE.
 service-com-amazonaws-kinesis-kinesis-20131202 = { workspace = true }
 service-com-amazonaws-dynamodb-dynamodb-20120810 = { workspace = true }
+# Attaching a function to a VPC IS an elastic network interface per configured subnet, and
+# those interfaces are the ACCOUNT's own EC2 records (`state::vpc_interfaces`): they are
+# written into, and taken back out of, the Amazon EC2 emulator's inventory over the shared
+# engine — which needs that service's state TYPE — so the subnets they sit in resolve to the
+# VPC the function reports and a client reading `DescribeNetworkInterfaces` sees them.
+service-com-amazonaws-ec2-amazonec2 = { workspace = true }
 # A container-image package names an image in the Amazon ECR registry, and Lambda follows
 # that reference when the package is stored (`state::image_source`): the registry's own
 # image and tag records are reached through the shared engine, which needs the owning
@@ -238,6 +244,11 @@ libc = "0.2"
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
+# The VPC, subnets and security groups a function's attachment is asserted against are
+# created through Amazon EC2's OWN API in the VPC-attachment tests, and the interfaces
+# Lambda stood up are read back through its `DescribeNetworkInterfaces`: this is the client
+# that builds, signs and parses those `awsQuery` calls over the in-process callback.
+aws-sdk-ec2 = { version = "1", default-features = false }
 # The key service a durable function's `DurableConfig` names a key in, mounted beside
 # lambda so a key really is disabled when the test says it is.
 service-com-amazonaws-kms-trentservice = { workspace = true }

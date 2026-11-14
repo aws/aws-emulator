@@ -673,6 +673,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             },
         };
 
+        // "Environment variables that are accessible from function code during execution",
+        // under the same quota every operation that accepts a set of them applies. Resolved
+        // HERE, with every other refusal, so that nothing below it can turn the request away.
+        let environment = crate::state::environment_variables(input.environment.as_ref())
+            .map_err(invalid_parameter)?;
+
+        // "To connect a function to a VPC, Lambda creates an elastic network interface for
+        // each subnet in your function's VPC configuration": the attachment IS those
+        // interfaces, so they are stood up in the account's own EC2 inventory — the one
+        // `DescribeNetworkInterfaces` answers from, where they hold a place in the subnets and
+        // the security groups they carry — and the VPC those subnets belong to is what the
+        // configuration reports as `VpcId`. Nothing is placed, and no id is reported, that was
+        // not resolved against that inventory (see [`crate::state::vpc_interfaces`]). Done
+        // after EVERY refusal above, so a request that is turned away stands nothing up: no
+        // path from here to the stored function answers anything but success.
+        let attachment = crate::state::place_function_interfaces(
+            &*self.engine,
+            &region,
+            &reference.name,
+            input.vpc_config.as_ref(),
+        );
+
         let config = crate::state::FunctionConfig {
             name: reference.name.clone(),
             role: input.role.clone(),
@@ -687,8 +709,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             architectures: input.architectures.clone().unwrap_or_else(|| {
                 vec![crate::state::DEFAULT_ARCHITECTURE.to_string()]
             }),
-            environment: crate::state::environment_variables(input.environment.as_ref())
-                .map_err(invalid_parameter)?,
+            environment,
             layers,
             ephemeral_storage_mb: input
                 .ephemeral_storage
@@ -707,6 +728,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             last_modified: crate::state::iso8601(now),
             revision_id: crate::state::mint_revision_id(),
             vpc_config: input.vpc_config.clone(),
+            vpc_id: attachment.vpc_id,
             dead_letter_config: input.dead_letter_config.clone(),
             file_system_configs: input.file_system_configs.clone().unwrap_or_default(),
             image_config: input.image_config.clone(),
@@ -742,6 +764,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // Nothing is being updated on a function that is still being created.
             last_update_due: None,
             active_due: now + crate::state::ACTIVATION_DELAY,
+            // The interfaces the attachment above stood up, which this function holds until
+            // the attachment is removed or the function is deleted.
+            vpc_network_interface_ids: attachment.network_interface_ids,
             tags: input
                 .tags
                 .clone()
@@ -801,6 +826,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let reported_version = if input.publish {
             let config = record.config.clone();
             let Some(version_number) = record.publish_next_version(config, now) else {
+                // Nothing is stored, so the interfaces the attachment stood up above belong
+                // to no function and are given back: a refused create leaves no interface
+                // holding a place in a subnet (see [`crate::state::vpc_interfaces`]).
+                let placed = ::std::mem::take(&mut record.vpc_network_interface_ids);
+                crate::state::release_function_interfaces(&*self.engine, &placed);
                 return Err(CreateFunctionErrorModeled::ServiceException(ServiceException {
                     r#type: None,
                     message: Some(

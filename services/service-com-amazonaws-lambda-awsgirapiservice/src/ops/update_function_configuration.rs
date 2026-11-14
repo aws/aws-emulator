@@ -660,6 +660,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
+        // The attachment a configuration this request installs ASKS FOR, stood up in the
+        // account's own EC2 inventory: "Lambda creates an elastic network interface for each
+        // subnet in your function's VPC configuration", so the configuration it reports is
+        // reconciled with the interfaces the function already holds — a subnet it keeps keeps
+        // its interface, one it has left gives it back, one it has just been attached to gets
+        // its own, and a configuration naming no subnet gives all of them back. The VPC those
+        // subnets belong to is what `VpcId` reports, resolved against that inventory rather
+        // than taken from the request (see [`crate::state::vpc_interfaces`]).
+        let mut resolved_vpc_id = None;
+        if input.vpc_config.is_some() {
+            let attachment = crate::state::reconcile_function_interfaces(
+                &*self.engine,
+                &region,
+                &record.config.name,
+                input.vpc_config.as_ref(),
+                &record.vpc_network_interface_ids,
+            );
+            record.vpc_network_interface_ids = attachment.network_interface_ids;
+            resolved_vpc_id = attachment.vpc_id;
+        }
+
         // Every member the request carries replaces the stored value, and every member
         // it omits leaves the stored value alone.
         let config = &mut record.config;
@@ -700,6 +721,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         if let Some(vpc_config) = input.vpc_config {
             config.vpc_config = Some(vpc_config);
+            config.vpc_id = resolved_vpc_id;
         }
         if let Some(dead_letter_config) = input.dead_letter_config {
             config.dead_letter_config = Some(dead_letter_config);
