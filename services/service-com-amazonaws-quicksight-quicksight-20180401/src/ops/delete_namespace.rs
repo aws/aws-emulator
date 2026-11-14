@@ -215,6 +215,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // assets — dashboards, analyses, datasets and data sources — are not: they
         // belong to the account, and their own delete operations are what removes them.
         store.remove_groups_in(&input.aws_account_id, &input.namespace);
+        store.remove_users_in(&input.aws_account_id, &input.namespace);
 
         Ok(DeleteNamespaceOutput {
             request_id: Some(request_id),

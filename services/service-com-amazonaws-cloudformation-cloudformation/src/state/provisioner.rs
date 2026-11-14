@@ -1206,6 +1206,10 @@ impl Provisioner {
             Self::AutoScalingGroup => {
                 create_auto_scaling_group(ctx, region, resource, propagated).await
             }
+            // Boxed, as the deeper arms of this match are: a bucket's create sends the
+            // declared access controls and notification configuration after the create,
+            // so this arm's own future is one of the largest here and a stack it shares
+            // with the provisioning walk above it is the scarce resource.
             Self::S3Bucket => Box::pin(create_bucket(ctx, region, resource, propagated)).await,
             // `AWS::S3::BucketPolicy` publishes `Bucket` and `PolicyDocument` and no
             // `Tags`: a bucket's policy is no taggable resource, so no tags are

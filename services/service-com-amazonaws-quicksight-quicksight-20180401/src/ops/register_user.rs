@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op RegisterUser
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `RegisterUser`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`RegisterUser::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Registers one user of QuickSight's identity path.
+//!
+//! A user belongs to one namespace of one account and its `UserName` identifies it
+//! there, so this call persists it under `(AwsAccountId, Namespace, UserName)` — and
+//! every later user read answers from that record. The name a user is known by is the
+//! one the request names for a user QuickSight manages itself, and the one derived from
+//! the IAM principal for a user that federates through IAM: a role registers one user
+//! per session name, which is what `SessionName` is for.
 //!
 //! ## Shape of an operation
 //!
@@ -212,25 +212,393 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     const NAME: &'static str = "RegisterUser";
     const INPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::REGISTER_USER_INPUT_SCHEMA;
     const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::REGISTER_USER_OUTPUT_SCHEMA;
-    const SUCCESS_STATUS: u16 = 200u16;
+    // The service reports a registered user with the HTTP status its response's
+    // `@httpResponseCode`-bound `Status` member carries, which the handler sets below.
+    // This constant is only the fallback the framework uses when no such member does.
+    const SUCCESS_STATUS: u16 = 201u16;
 
     async fn handle(
         &self,
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `RegisterUser` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(RegisterUserErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("RegisterUser"))
+        let request_id = crate::state::next_request_id();
+        let region = crate::state::request_region(ctx.parts());
+
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(RegisterUserErrorModeled::InternalFailureException(
+                InternalFailureException {
+                    message: Some("the QuickSight store is unavailable".to_string()),
+                    request_id: Some(request_id),
+                },
+            )
+            .into());
+        };
+
+        // The name this user is known by inside its namespace, and the external login
+        // provider it federates through: both are decided by the identity type, so they
+        // are read off the request before anything is stored.
+        refuse_members_of_the_iam_identity_path(&input, &request_id)?;
+        let user_name = user_name_for(&input, &request_id)?;
+        let external_login_federation_provider_url =
+            external_login_provider_url(&input, &request_id)?;
+        // A role the service does not currently register users with assigns nothing, so
+        // the registration is refused rather than storing a user nobody can be.
+        if crate::state::UNAVAILABLE_USER_ROLES.contains(&input.user_role.as_str()) {
+            return Err(invalid_parameter(
+                format!(
+                    "UserRole {} isn't currently available for use.",
+                    input.user_role
+                ),
+                &request_id,
+            ));
+        }
+        // The user is reached at the email address the registration gives, and an
+        // invitation is sent to it, so a value that is not an email address is not a
+        // value this parameter takes. The form is the tree's one reading of an address.
+        if !::service_common::email_address::is_email_address(&input.email) {
+            return Err(invalid_parameter(
+                format!("Email {} is not a valid email address.", input.email),
+                &request_id,
+            ));
+        }
+
+        let arn = crate::state::user_arn(
+            &region,
+            &input.aws_account_id,
+            &input.namespace,
+            &user_name,
+        );
+
+        let mut store = state.lock();
+
+        // A user belongs to a namespace: one the account does not hold is no place to
+        // register a user in, and one that is still being created or already being
+        // deleted is not a place a user can be put either — a namespace's users are
+        // deleted with it, so a user registered into a dying namespace would be gone
+        // with it.
+        let now = std::time::SystemTime::now();
+        match store.namespace_status(&input.aws_account_id, &input.namespace, now) {
+            Some(crate::state::NAMESPACE_STATUS_CREATED) => {}
+            Some(status) => {
+                return Err(RegisterUserErrorModeled::ResourceUnavailableException(
+                    ResourceUnavailableException {
+                        message: Some(format!(
+                            "Namespace {} is in {status} status.",
+                            input.namespace
+                        )),
+                        resource_type: Some(
+                            crate::state::EXCEPTION_RESOURCE_TYPE_NAMESPACE.to_string(),
+                        ),
+                        request_id: Some(request_id),
+                    },
+                )
+                .into());
+            }
+            None => {
+                return Err(RegisterUserErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: Some(format!(
+                            "Namespace {} not found in account {}.",
+                            input.namespace, input.aws_account_id
+                        )),
+                        resource_type: Some(
+                            crate::state::EXCEPTION_RESOURCE_TYPE_NAMESPACE.to_string(),
+                        ),
+                        request_id: Some(request_id),
+                    },
+                )
+                .into());
+            }
+        }
+
+        // A user QuickSight manages itself exists only in an account that manages
+        // identities of its own: the account's authentication method decides where its
+        // users come from, and one that takes them from Amazon Web Services identities,
+        // an Active Directory or IAM Identity Center holds no QuickSight identity store
+        // to register this user in.
+        if input.identity_type == crate::state::IDENTITY_TYPE_QUICKSIGHT
+            && !store.manages_quicksight_users(&input.aws_account_id)
+        {
+            return Err(RegisterUserErrorModeled::AccessDeniedException(
+                crate::state::access_denied(&request_id),
+            )
+            .into());
+        }
+
+        let key = (
+            input.aws_account_id.clone(),
+            input.namespace.clone(),
+            user_name.clone(),
+        );
+        // The name identifies the user inside its namespace, so a name already in use
+        // there belongs to the user holding it.
+        if store.users.contains_key(&key) {
+            return Err(RegisterUserErrorModeled::ResourceExistsException(
+                ResourceExistsException {
+                    message: Some(crate::state::user_exists_message(
+                        &user_name,
+                        &input.aws_account_id,
+                    )),
+                    resource_type: Some(crate::state::EXCEPTION_RESOURCE_TYPE_USER.to_string()),
+                    request_id: Some(request_id),
+                },
+            )
+            .into());
+        }
+
+        // Every part of the store key comes from the request — the account id and the
+        // namespace are both `@httpLabel`s the caller chooses — so the total-records
+        // ceiling is what bounds this process and the per-namespace one is the allowance
+        // one namespace's identities have.
+        if store.users.len() >= crate::state::MAX_USERS {
+            return Err(RegisterUserErrorModeled::LimitExceededException(
+                LimitExceededException {
+                    message: Some(format!(
+                        "This QuickSight emulator holds the maximum of {} users.",
+                        crate::state::MAX_USERS
+                    )),
+                    resource_type: Some(crate::state::EXCEPTION_RESOURCE_TYPE_USER.to_string()),
+                    request_id: Some(request_id),
+                },
+            )
+            .into());
+        }
+        if store.user_count(&input.aws_account_id, &input.namespace)
+            >= crate::state::MAX_USERS_PER_NAMESPACE
+        {
+            return Err(RegisterUserErrorModeled::LimitExceededException(
+                LimitExceededException {
+                    message: Some(format!(
+                        "The namespace already holds the maximum of {} users.",
+                        crate::state::MAX_USERS_PER_NAMESPACE
+                    )),
+                    resource_type: Some(crate::state::EXCEPTION_RESOURCE_TYPE_USER.to_string()),
+                    request_id: Some(request_id),
+                },
+            )
+            .into());
+        }
+
+        let record = crate::state::UserRecord {
+            arn,
+            user_name: user_name.clone(),
+            email: input.email,
+            role: input.user_role,
+            // A user QuickSight manages itself is inactive until it signs in and
+            // provides a password, which is what the invitation below is for; a user
+            // backed by an identity outside QuickSight is active as registered.
+            active: input.identity_type != crate::state::IDENTITY_TYPE_QUICKSIGHT,
+            identity_type: input.identity_type,
+            principal_id: crate::state::next_user_principal_id(),
+            custom_permissions_name: input.custom_permissions_name,
+            external_login_federation_provider_type: input.external_login_federation_provider_type,
+            external_login_federation_provider_url,
+            external_login_id: input.external_login_id,
+            tags: input.tags.unwrap_or_default(),
+        };
+        // The registration URL is reported only for a user QuickSight manages itself:
+        // one federating through an outside identity signs in there instead.
+        let user_invitation_url = (!record.active)
+            .then(|| crate::state::user_invitation_url(ctx, &input.namespace, &user_name));
+        // The response reports the user that was just stored, so a caller sees exactly
+        // what the next read will answer with.
+        let user = record.to_user();
+        store.users.insert(key, record);
+
+        Ok(RegisterUserOutput {
+            user: Some(user),
+            user_invitation_url,
+            request_id: Some(request_id),
+            // `Status` is this response's `@httpResponseCode` member, so it IS the
+            // call's HTTP status: the user was created by this call.
+            status: 201,
+        })
     }
+}
+
+/// The name the registered user is known by inside its namespace.
+///
+/// A user QuickSight manages itself is named by the request (`UserName` "is required if
+/// you are registering a user that will be managed in Quick Sight"); a user that
+/// federates through IAM is named after the IAM principal the request names, so that
+/// name comes from `IamArn` and the session name under it.
+///
+/// `UserName` is therefore NOT a fallback for an IAM registration, and one carried
+/// beside `IamArn` is tolerated rather than refused: it is the member the registration
+/// of a QuickSight-managed user names its user with, and naming it alongside an IAM
+/// principal asks for the same user the principal already names rather than for a second
+/// one — where every member [`refuse_members_of_the_iam_identity_path`] refuses describes
+/// an IAM principal the registration is not of, and so asks for something the stored user
+/// could not carry.
+fn user_name_for(input: &RegisterUserInput, request_id: &str) -> Result<String, RegisterUserError> {
+    if input.identity_type == crate::state::IDENTITY_TYPE_IAM {
+        let iam_arn = input
+            .iam_arn
+            .as_deref()
+            .map(str::trim)
+            .filter(|iam_arn| !iam_arn.is_empty())
+            .ok_or_else(|| {
+                invalid_parameter(
+                    format!(
+                        "IamArn is required when IdentityType is {}.",
+                        crate::state::IDENTITY_TYPE_IAM
+                    ),
+                    request_id,
+                )
+            })?;
+        return Ok(crate::state::iam_user_name(
+            iam_arn,
+            input.session_name.as_deref(),
+        ));
+    }
+
+    input
+        .user_name
+        .as_deref()
+        .map(str::to_string)
+        .ok_or_else(|| {
+            invalid_parameter(
+                format!(
+                    "UserName is required when IdentityType is {}.",
+                    input.identity_type
+                ),
+                request_id,
+            )
+        })
+}
+
+/// Refuses a registration that carries a member of the IAM identity path without being
+/// a registration of an IAM identity.
+///
+/// `IamArn` is "the ARN of the IAM user or role that you are registering", `SessionName`
+/// is "only when you register one or more users using an assumed IAM role", and the
+/// external login members name the provider that "provides identity to let a user
+/// federate into Quick Sight with an associated Identity and Access Management (IAM)
+/// role" — each of them describes the IAM principal behind the user, so a registration
+/// of any other identity type names none of them rather than having one quietly
+/// dropped.
+fn refuse_members_of_the_iam_identity_path(
+    input: &RegisterUserInput,
+    request_id: &str,
+) -> Result<(), RegisterUserError> {
+    if input.identity_type == crate::state::IDENTITY_TYPE_IAM {
+        return Ok(());
+    }
+    let named = [
+        ("IamArn", input.iam_arn.as_deref()),
+        ("SessionName", input.session_name.as_deref()),
+        (
+            "ExternalLoginFederationProviderType",
+            input.external_login_federation_provider_type.as_deref(),
+        ),
+        (
+            "CustomFederationProviderUrl",
+            input.custom_federation_provider_url.as_deref(),
+        ),
+        ("ExternalLoginId", input.external_login_id.as_deref()),
+    ]
+    .into_iter()
+    .find(|(_, value)| value.is_some_and(|value| !value.trim().is_empty()));
+
+    match named {
+        Some((member, _)) => Err(invalid_parameter(
+            format!(
+                "{member} is only used when IdentityType is {}.",
+                crate::state::IDENTITY_TYPE_IAM
+            ),
+            request_id,
+        )),
+        None => Ok(()),
+    }
+}
+
+/// The URL of the external login provider the registered user federates through, or
+/// `None` when the request names no provider.
+///
+/// The provider type fixes that URL for Amazon Cognito ("The provider URL is
+/// cognito-identity.amazonaws.com"), and a custom OpenID Connect provider carries its
+/// own in `CustomFederationProviderUrl` — a parameter "only needed when the external
+/// provider is custom", so naming it for any other provider is refused rather than
+/// quietly dropped.
+///
+/// A member is NAMED when it carries something other than whitespace, the same reading
+/// [`refuse_members_of_the_iam_identity_path`] makes, so one rule decides it everywhere.
+fn external_login_provider_url(
+    input: &RegisterUserInput,
+    request_id: &str,
+) -> Result<Option<String>, RegisterUserError> {
+    let custom_url = input
+        .custom_federation_provider_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty());
+    let Some(provider_type) = input
+        .external_login_federation_provider_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|provider_type| !provider_type.is_empty())
+    else {
+        if custom_url.is_some() {
+            return Err(invalid_parameter(
+                custom_federation_provider_url_message(),
+                request_id,
+            ));
+        }
+        return Ok(None);
+    };
+
+    match provider_type {
+        crate::state::EXTERNAL_LOGIN_PROVIDER_COGNITO => {
+            if custom_url.is_some() {
+                return Err(invalid_parameter(
+                    custom_federation_provider_url_message(),
+                    request_id,
+                ));
+            }
+            Ok(Some(
+                crate::state::COGNITO_FEDERATION_PROVIDER_URL.to_string(),
+            ))
+        }
+        crate::state::EXTERNAL_LOGIN_PROVIDER_CUSTOM_OIDC => match custom_url {
+            Some(url) => Ok(Some(url.to_string())),
+            None => Err(invalid_parameter(
+                format!(
+                    "CustomFederationProviderUrl is required when \
+                     ExternalLoginFederationProviderType is {}.",
+                    crate::state::EXTERNAL_LOGIN_PROVIDER_CUSTOM_OIDC
+                ),
+                request_id,
+            )),
+        },
+        other => Err(invalid_parameter(
+            format!(
+                "ExternalLoginFederationProviderType {other} is not supported. Supported \
+                 types are {} and {}.",
+                crate::state::EXTERNAL_LOGIN_PROVIDER_COGNITO,
+                crate::state::EXTERNAL_LOGIN_PROVIDER_CUSTOM_OIDC
+            ),
+            request_id,
+        )),
+    }
+}
+
+/// The refusal a `CustomFederationProviderUrl` named for anything but a custom OpenID
+/// Connect provider reads: that parameter belongs to that provider type alone.
+fn custom_federation_provider_url_message() -> String {
+    format!(
+        "CustomFederationProviderUrl is only used when ExternalLoginFederationProviderType \
+         is {}.",
+        crate::state::EXTERNAL_LOGIN_PROVIDER_CUSTOM_OIDC
+    )
+}
+
+/// One modelled `InvalidParameterValueException`: the refusal a request whose parameters
+/// do not go together carries.
+fn invalid_parameter(message: String, request_id: &str) -> RegisterUserError {
+    RegisterUserErrorModeled::InvalidParameterValueException(InvalidParameterValueException {
+        message: Some(message),
+        request_id: Some(request_id.to_string()),
+    })
+    .into()
 }

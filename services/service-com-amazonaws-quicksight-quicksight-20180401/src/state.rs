@@ -10,9 +10,16 @@
 //! The wording of the conflict and not-found refusals those handlers raise is one
 //! concern of its own, so it lives in [`refusals`] and is re-exported from here.
 
+mod authorization;
+/// The impl block in this module adds the account's identity-store reading to the state
+/// struct, so it exports no name of its own and needs no re-export.
+mod identity_store;
 mod refusals;
+mod users;
 
+pub use authorization::*;
 pub use refusals::*;
+pub use users::*;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,8 +28,10 @@ use std::time::{Duration, SystemTime};
 use ::aws_smithy_types::DateTime;
 
 use crate::ops::types::{
-    AccountInfo, ColumnGroup, ColumnLevelPermissionRule, CustomInstructions,
+    AccessDeniedException, AccountInfo, ColumnGroup, ColumnLevelPermissionRule,
+    CustomInstructions,
     DataPrepConfiguration, DataSet, DataSetSummary, DataSetUsageConfiguration, DataSource,
+    User,
     DataSourceErrorInfo, DataSourceParameters, DatasetParameter, FieldFolder, Folder, Group,
     IAMPolicyAssignment, InputColumn, LogicalTable, NamespaceInfoV2, OutputColumn,
     PerformanceConfiguration, PhysicalTable, RefreshFrequency, RefreshSchedule,
@@ -78,6 +87,13 @@ pub struct ComAmazonawsQuicksightQuicksight20180401State {
     /// account can each hold a group of the same name, and neither is reached from
     /// the other.
     pub groups: HashMap<(String, String, String), GroupRecord>,
+    /// Users by `(AwsAccountId, Namespace, UserName)`.
+    ///
+    /// A user belongs to one namespace and its name identifies it inside that
+    /// namespace, so the namespace is part of its key — the same identity a group has:
+    /// two namespaces of the same account can each hold a user of the same name, and
+    /// neither is reached from the other.
+    pub users: HashMap<(String, String, String), UserRecord>,
     /// The sign-up details `CreateAccountSubscription` stored, by `AwsAccountId`.
     ///
     /// An account with no entry here is still a QuickSight account — see
@@ -414,10 +430,22 @@ pub const ACCOUNT_SUBSCRIPTION_STATUS_CREATED: &str = "ACCOUNT_CREATED";
 /// Enterprise-edition features, and operations over them are part of this service.
 pub const DEFAULT_EDITION: &str = "ENTERPRISE";
 
-/// The authentication type reported for an account that never chose one: the method
-/// whose callers are the Amazon Web Services identities this emulator authenticates
-/// (model enum `com.amazonaws.quicksight#AuthenticationMethodOption`).
-pub const DEFAULT_AUTHENTICATION_METHOD: &str = "IAM_AND_QUICKSIGHT";
+/// The authentication type reported for an account that never chose one.
+///
+/// A QuickSight account subscribed with no identity store of its own — its callers are
+/// the Amazon Web Services identities this emulator authenticates, and nothing else — is
+/// what an account that never signed up through this service reports, so the identities
+/// it manages are those alone until a sign-up chooses otherwise (model enum
+/// `com.amazonaws.quicksight#AuthenticationMethodOption`).
+pub const DEFAULT_AUTHENTICATION_METHOD: &str = AUTHENTICATION_METHOD_IAM_ONLY;
+
+/// The `AuthenticationMethodOption` that authenticates callers through Amazon Web
+/// Services identities alone, so the account holds no QuickSight identity store.
+pub const AUTHENTICATION_METHOD_IAM_ONLY: &str = "IAM_ONLY";
+
+/// The `AuthenticationMethodOption` whose account manages QuickSight identities of its
+/// own beside the Amazon Web Services ones.
+pub const AUTHENTICATION_METHOD_IAM_AND_QUICKSIGHT: &str = "IAM_AND_QUICKSIGHT";
 
 /// The `AuthenticationMethodOption` values whose accounts are authenticated through
 /// IAM, which is what `SignupResponse$IAMUser` reports.
@@ -468,7 +496,7 @@ impl ComAmazonawsQuicksightQuicksight20180401State {
     /// Materialises the namespace deletions the clock has already made due: each one
     /// was owed at the same instant whether or not anybody called, so a handler that
     /// takes the store may drop the records they left behind — and, with each namespace,
-    /// whatever groups it still held.
+    /// whatever groups and users it still held.
     pub fn settle_namespace_deletions(&mut self, now: SystemTime) {
         let gone: Vec<(String, String)> = self
             .namespaces
@@ -480,6 +508,7 @@ impl ComAmazonawsQuicksightQuicksight20180401State {
             self.namespaces
                 .remove(&(aws_account_id.clone(), namespace.clone()));
             self.remove_groups_in(&aws_account_id, &namespace);
+            self.remove_users_in(&aws_account_id, &namespace);
         }
     }
 
@@ -520,6 +549,25 @@ impl ComAmazonawsQuicksightQuicksight20180401State {
     /// the stored one a create put there, or the namespace every account already has.
     pub fn namespace_exists(&self, aws_account_id: &str, name: &str, now: SystemTime) -> bool {
         self.namespace_at(aws_account_id, name, now).is_some() || name == DEFAULT_NAMESPACE
+    }
+
+    /// The `NamespaceStatus` `(aws_account_id, name)` reports as of `now`, or `None`
+    /// when the account holds no such namespace.
+    ///
+    /// The namespace every account already has was minted by no create, so it is always
+    /// in the terminal status; a stored one reports whichever stage the clock has
+    /// brought it to.
+    pub fn namespace_status(
+        &self,
+        aws_account_id: &str,
+        name: &str,
+        now: SystemTime,
+    ) -> Option<&'static str> {
+        match self.namespace_at(aws_account_id, name, now) {
+            Some(record) => Some(record.status_at(now)),
+            None if name == DEFAULT_NAMESPACE => Some(NAMESPACE_STATUS_CREATED),
+            None => None,
+        }
     }
 
     /// Removes the groups `(aws_account_id, namespace)` holds, answering how many went:

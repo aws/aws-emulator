@@ -10,7 +10,7 @@
 //! * a resource addressed by an ARN (a folder, a data source, a data set, a theme)
 //!   is named by that ARN — `"<Kind> <arn> already exists"` for a conflict and
 //!   `"<Kind> <arn> is not found"` for a miss, neither ending in a period;
-//! * a group, which QuickSight's identity path serves, is named by its name
+//! * a group or a user, which QuickSight's identity path serves, is named by its name
 //!   together with the account it belongs to.
 //!
 //! A refusal about an allowance names the resource whose allowance ran out, and
@@ -94,4 +94,22 @@ pub fn group_exists_message(group_name: &str, aws_account_id: &str) -> String {
     format!(
         "Group {group_name} already exists. AWS account id: {aws_account_id}, groupName: {group_name}. "
     )
+}
+
+/// The conflict `RegisterUser` reports for a user name its namespace already holds.
+///
+/// A user is a resource of the same identity path a group is, so it is named the same
+/// way: the user name in the sentence, then the account it belongs to and that name as
+/// labelled fields, ending in a period and a space.
+pub fn user_exists_message(user_name: &str, aws_account_id: &str) -> String {
+    format!(
+        "User {user_name} already exists. AWS account id: {aws_account_id}, userName: {user_name}. "
+    )
+}
+
+/// The miss a user operation reports for a `UserName` the namespace holds no user
+/// under — the same text whether the call reads, updates or deletes, and the same
+/// template the group reads answer a group nobody holds with.
+pub fn user_not_found_message(user_name: &str, namespace: &str, aws_account_id: &str) -> String {
+    format!("User {user_name} not found in namespace {namespace} in account {aws_account_id}.")
 }

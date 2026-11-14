@@ -8,6 +8,10 @@ build = "build.rs"
 
 [dependencies]
 engine = { workspace = true }
+# `email_address`: the tree's one reading of a caller-supplied email address, which
+# `RegisterUser` reads `Email` against; `arn`: its one reading of an ARN, which names the
+# IAM principal a federated user is registered for.
+service-common = { path = "../common" }
 smithy-macros = { workspace = true }
 aws-smithy-schema = { workspace = true }
 aws-smithy-schema-server = { workspace = true }

@@ -31,8 +31,10 @@ const ACCOUNT_CREATED: &str = "ACCOUNT_CREATED";
 /// The edition an account that never chose one reports.
 const DEFAULT_EDITION: &str = "ENTERPRISE";
 
-/// The authentication type an account that never chose one reports.
-const DEFAULT_AUTHENTICATION_TYPE: &str = "IAM_AND_QUICKSIGHT";
+/// The authentication type an account that never chose one reports: a QuickSight
+/// subscription with no identity store of its own, so its users are the Amazon Web
+/// Services identities alone until a sign-up chooses otherwise.
+const DEFAULT_AUTHENTICATION_TYPE: &str = "IAM_ONLY";
 
 /// One sign-up and what the account must report afterwards.
 struct SignupCase {

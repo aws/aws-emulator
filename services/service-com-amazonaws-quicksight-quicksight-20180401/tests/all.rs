@@ -47,6 +47,8 @@ mod theme_alias_lifecycle;
 mod theme_lifecycle;
 #[path = "all/topic_lifecycle.rs"]
 mod topic_lifecycle;
+#[path = "all/user_lifecycle.rs"]
+mod user_lifecycle;
 #[path = "all/folder_lifecycle.rs"]
 mod folder_lifecycle;
 #[path = "all/group_lifecycle.rs"]
