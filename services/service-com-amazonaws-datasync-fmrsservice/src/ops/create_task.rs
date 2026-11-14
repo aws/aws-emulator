@@ -206,6 +206,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             input.options.as_ref(),
         );
 
+        // Every bucket access role this request names is one DataSync has to take ON to do
+        // the work the member configures, so each is resolved before anything is stored —
+        // the same pre-flight `CreateLocationS3` makes for the role its location names.
+        if let Some(refusal) = crate::state::bucket_access_role::unassumable_role_refusal(
+            ctx.callback(),
+            &region,
+            &crate::state::bucket_access_role::task_configuration_roles(
+                input.manifest_config.as_ref(),
+                input.task_report_config.as_ref(),
+            ),
+        )
+        .await
+        {
+            return Err(CreateTaskErrorModeled::InvalidRequestException(refusal).into());
+        }
+
         let mut store = state.lock();
         store.advance_clock(now);
 
@@ -234,7 +250,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // members must name two locations; and the options in effect must not name a
         // combination this service refuses, whichever half of it the request spelled.
         if input.source_location_arn == input.destination_location_arn {
-            let code = Some(crate::state::INVALID_PARAMETER_CODE.to_string());
+            let code = Some(crate::state::DEST_LOC_SAME_AS_SRC_LOC_CODE.to_string());
             return Err(CreateTaskErrorModeled::InvalidRequestException(
                 InvalidRequestException {
                     message: Some("Destination location cannot be same as source location.".to_string()),

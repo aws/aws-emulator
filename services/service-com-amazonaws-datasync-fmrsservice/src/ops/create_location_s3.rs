@@ -187,6 +187,43 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .clone()
             .unwrap_or_else(|| default_storage_class(&input.s3_bucket_arn).to_string());
 
+        // The pre-flight DataSync performs before it stores a location: it takes ON the
+        // bucket access role the request named (`sts:AssumeRole` against that role's trust
+        // policy), and only then acts under it to list the bucket. A role this service
+        // cannot assume is refused here rather than discovered when a task execution first
+        // needs the bucket, and the listing half
+        // ([`crate::state::transfer::bucket_listing_withheld`]) is asked after it, because
+        // a role that cannot be taken on at all says nothing about what it may read.
+        if let Some(refusal) = crate::state::bucket_access_role::unassumable_role_refusal(
+            ctx.callback(),
+            &region,
+            &[&input.s3_config.bucket_access_role_arn],
+        )
+        .await
+        {
+            return Err(CreateLocationS3ErrorModeled::InvalidRequestException(refusal).into());
+        }
+
+        // Next, the bucket itself: the location is a transfer endpoint ON a bucket, so a
+        // bucket the object store reports is not there is one no transfer could read or
+        // write, and the create is refused before anything is stored. The object store
+        // answers the question ([`crate::state::transfer::bucket_is_absent`]) and an
+        // answer it did not give establishes nothing.
+        if crate::state::transfer::bucket_is_absent(ctx.callback(), &region, &input.s3_bucket_arn)
+            .await
+        {
+            return Err(CreateLocationS3ErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    message: Some(format!(
+                        "Datasync bucket access test failed: no such bucket {bucket} exists."
+                    )),
+                    error_code: None,
+                    datasync_error_code: None,
+                },
+            )
+            .into());
+        }
+
         // The access test DataSync performs before it stores a location: it acts under
         // the bucket access role the request named and lists the bucket, so a role whose
         // policies do not allow that listing is refused here rather than discovered when

@@ -165,6 +165,43 @@ pub async fn bucket_listing_withheld(
     .await
 }
 
+/// Whether Amazon S3 ANSWERED that it holds no bucket under the name `bucket_arn`
+/// addresses.
+///
+/// The other half of the pre-flight `CreateLocationS3` makes before it stores a location:
+/// the location is a transfer endpoint on a bucket, so a bucket the object store reports
+/// is not there is one no transfer could ever read or write, and the create is refused.
+/// It is asked with `HeadBucket`, the operation Amazon S3 documents for exactly this
+/// ("You can use this operation to determine if a bucket exists"), through the one shared
+/// construction of the hop ([`service_common::s3_client`]).
+///
+/// Asked only of an `S3BucketArn` that names a BUCKET (`arn:<partition>:s3:::<bucket>`):
+/// the member's other two forms address an S3 access point, which is a resource of its
+/// own that this reading says nothing about. `false` — refuse nothing — for every answer
+/// that is NOT the object store reporting the bucket absent, for the reason the module
+/// docs give: an answer this emulator could not read, and any failure of the hop at all,
+/// including an emulator with no object store mounted.
+pub async fn bucket_is_absent(
+    callback: &EmbeddedEmulator,
+    region: &str,
+    bucket_arn: &str,
+) -> bool {
+    let Some(bucket) = super::s3_plain_bucket_name(bucket_arn) else {
+        return false;
+    };
+    let answer = ::service_common::s3_client::s3_client(callback, region)
+        .head_bucket()
+        .bucket(bucket)
+        .send()
+        .await;
+    match answer {
+        Ok(_) => false,
+        Err(error) => error.as_service_error().is_some_and(
+            ::aws_sdk_s3::operation::head_bucket::HeadBucketError::is_not_found,
+        ),
+    }
+}
+
 /// One side of a transfer between Amazon S3 locations, as a phase addresses it.
 #[derive(Debug, Clone)]
 pub struct S3Endpoint {

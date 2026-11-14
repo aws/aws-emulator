@@ -1080,8 +1080,8 @@ async fn concurrent_observers_see_the_steps_in_order() {
 /// that listing.
 ///
 /// The rows span a role that allows the bucket, one whose policy names a different
-/// bucket, one holding no policy at all, and a role this account's IAM has no record of,
-/// which establishes nothing either way.
+/// bucket, one holding no policy at all, and a role of ANOTHER account, which this
+/// emulator's IAM is not asked about and so establishes nothing either way.
 #[tokio::test]
 async fn create_location_s3_proves_the_bucket_access_role_can_list_the_bucket() {
     let aws = Aws::new();
@@ -1091,18 +1091,17 @@ async fn create_location_s3_proves_the_bucket_access_role_can_list_the_bucket() 
     }
     // The policy names ONLY these two buckets.
     let role_arn = aws.create_role(&["readable", "second-readable"]).await;
-    let unknown_role = format!(
-        "arn:aws:iam::{account}:role/never-created",
-        account = engine::emulator_account_id()
-    );
+    // A role of another account: neither the assume pre-flight nor the listing test asks
+    // this emulator's IAM about it, so neither can establish anything about it.
+    let unanswered_role = "arn:aws:iam::210987654321:role/another-accounts-role".to_string();
 
     struct Row {
         case: &'static str,
         bucket: &'static str,
         /// Whether the role's inline policy is removed before the call.
         without_policy: bool,
-        /// Whether a role IAM has no record of is used instead.
-        unknown_role: bool,
+        /// Whether a role of another account is used instead.
+        unanswered_role: bool,
         accepted: bool,
     }
 
@@ -1111,35 +1110,35 @@ async fn create_location_s3_proves_the_bucket_access_role_can_list_the_bucket() 
             case: "the policy names this bucket",
             bucket: "readable",
             without_policy: false,
-            unknown_role: false,
+            unanswered_role: false,
             accepted: true,
         },
         Row {
             case: "the policy names another bucket",
             bucket: "unreadable",
             without_policy: false,
-            unknown_role: false,
+            unanswered_role: false,
             accepted: false,
         },
         Row {
             case: "the policy names this bucket too",
             bucket: "second-readable",
             without_policy: false,
-            unknown_role: false,
+            unanswered_role: false,
             accepted: true,
         },
         Row {
-            case: "a role IAM has no record of",
+            case: "a role of another account",
             bucket: "unreadable",
             without_policy: false,
-            unknown_role: true,
+            unanswered_role: true,
             accepted: true,
         },
         Row {
             case: "the role has no policy at all",
             bucket: "readable",
             without_policy: true,
-            unknown_role: false,
+            unanswered_role: false,
             accepted: false,
         },
     ];
@@ -1149,8 +1148,8 @@ async fn create_location_s3_proves_the_bucket_access_role_can_list_the_bucket() 
         if row.without_policy {
             aws.delete_role_policy().await;
         }
-        let used_role = if row.unknown_role {
-            unknown_role.clone()
+        let used_role = if row.unanswered_role {
+            unanswered_role.clone()
         } else {
             role_arn.clone()
         };

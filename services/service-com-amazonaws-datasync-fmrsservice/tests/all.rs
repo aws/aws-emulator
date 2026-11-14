@@ -17,8 +17,12 @@ mod azure_blob_credentials;
 mod azure_blob_location;
 #[path = "all/bounded_stores.rs"]
 mod bounded_stores;
+#[path = "all/bucket_access_role_assume.rs"]
+mod bucket_access_role_assume;
 #[path = "all/efs_location.rs"]
 mod efs_location;
+#[path = "all/location_bucket_preflight.rs"]
+mod location_bucket_preflight;
 #[path = "all/location_deletion.rs"]
 mod location_deletion;
 #[path = "all/location_listing.rs"]
@@ -29,5 +33,7 @@ mod object_storage_location;
 mod s3_transfer_execution;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
+#[path = "all/task_refusal_classes.rs"]
+mod task_refusal_classes;
 #[path = "all/transfer_task_lifecycle.rs"]
 mod transfer_task_lifecycle;

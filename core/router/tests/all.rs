@@ -2265,3 +2265,17 @@ mod route53_health_check_string_match;
 // module may be declared only once, and two branches landing at once appended it here as
 // (`cloudformation_metric_stream_filter_update` is declared ONCE, in the sorted head region
 // (`https_front_door_concurrent_pooled_producer` is declared ONCE, further up this tail: a
+// `cloudformation_provisions_cloudfront_resources` is declared ONCE, in the head region
+// above beside the other `cloudformation_…` suites: two `mod` items for one name is a
+// redefinition that compiles neither.
+// are declared once, in the span above: a module may be declared only once.)
+// (`apigateway_sns_service_integration` is declared ONCE, in the sorted head region above:
+// (`cloudwatch_alarm_ssm_ops_item_action` is declared ONCE, in the head region above: the
+// work item an alarm's Systems Manager OpsItem action opens has to be read where a client
+// reads it — through OpsCenter's own query — so neither CloudWatch's nor Systems Manager's
+// own test target can drive the transition and then read what it opened.)
+// (`cloudformation_metric_stream_estate_is_drainable` is declared ONCE, further up this
+// (`codebuild_s3_build_output` is declared ONCE, in the span above: a module may be declared
+// only once.)
+// (`lambda_signed_write_to_an_aoss_collection_endpoint` is declared ONCE, further up this
+// (`cloudformation_domain_endpoint_is_dialled_by_consumers` is declared ONCE, in the span

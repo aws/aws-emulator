@@ -13,6 +13,9 @@
 //! * the WORK each phase of a task execution does, and what it established
 //!   ([`transfer`]): the objects the two locations hold, the bytes moved between them
 //!   and the per-phase outcome every observer of an execution reads.
+//! * whether this service can assume a bucket access role a request names
+//!   ([`bucket_access_role`]), which every operation that takes one resolves before it
+//!   writes anything.
 //! * the modelled defaults ([`default_options`]) and the per-execution overlay
 //!   ([`overlay_options`]) that `CreateTask`, `StartTaskExecution` and the two
 //!   `Describe*` operations must agree on.
@@ -26,6 +29,7 @@
 //! Resource ids are minted from monotonic counters held here, so every ARN this
 //! service hands out is also stored here and can be resolved again.
 
+pub mod bucket_access_role;
 pub mod listing;
 pub mod transfer;
 
@@ -1030,6 +1034,15 @@ pub const LOCATION_NOT_FOUND_CODE: &str = "LocationNotFound";
 /// class of this service.
 pub const INVALID_PARAMETER_CODE: &str = "InvalidParameter";
 
+/// The class discriminator DataSync reports for a task whose two `LocationArn` members
+/// name the SAME location.
+///
+/// A task copies one location onto another, so the degenerate pair breaks a rule of its
+/// own rather than being a bad parameter value: the refusal names that rule, and a caller
+/// branching on it reads the discriminator in both code members like every other refusal
+/// class of this service.
+pub const DEST_LOC_SAME_AS_SRC_LOC_CODE: &str = "DestLocSameAsSrcLoc";
+
 /// Why resolving a `LocationArn` against this service's state refused the request.
 ///
 /// Carries what the modelled client error reports: the message, and the class
@@ -1200,6 +1213,22 @@ pub fn s3_bucket_name(bucket_arn: &str) -> String {
         .next_back()
         .unwrap_or(resource)
         .to_string()
+}
+
+/// The same member narrowed to the form that names a BUCKET: the bucket name of an
+/// `arn:<partition>:s3:::<bucket>`, and `None` for either access-point form, which names a
+/// resource of its own rather than a bucket.
+///
+/// The one reading of that distinction, for a caller that has to ask the object store about
+/// the bucket itself ([`transfer::bucket_is_absent`]): a bucket ARN is the form carrying
+/// neither a Region nor an account, whose whole resource is the name
+/// [`s3_bucket_name`] reports.
+pub fn s3_plain_bucket_name(bucket_arn: &str) -> Option<&str> {
+    let arn = ::service_common::arn::parse_of(bucket_arn, "s3")?;
+    if !arn.region.is_empty() || !arn.account.is_empty() {
+        return None;
+    }
+    (!arn.resource.is_empty() && !arn.resource.contains(['/', ':'])).then_some(arn.resource)
 }
 
 /// A pair of `Options` members whose values are each legal on its own and which

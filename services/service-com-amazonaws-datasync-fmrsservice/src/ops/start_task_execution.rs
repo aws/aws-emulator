@@ -185,6 +185,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let now = ::std::time::SystemTime::now();
+        // Every bucket access role THIS request names is one DataSync has to take on for
+        // the run it configures, so each is resolved before the execution is minted, the
+        // same pre-flight `CreateTask` makes for the roles a task's own configuration
+        // names.
+        if let Some(refusal) = crate::state::bucket_access_role::unassumable_role_refusal(
+            ctx.callback(),
+            &crate::state::request_region(ctx),
+            &crate::state::bucket_access_role::task_configuration_roles(
+                input.manifest_config.as_ref(),
+                input.task_report_config.as_ref(),
+            ),
+        )
+        .await
+        {
+            return Err(StartTaskExecutionErrorModeled::InvalidRequestException(refusal).into());
+        }
         // A task is only free to start a run once the run it is already on has finished,
         // which is work the clock owes: the phases of every execution it has made due run
         // before this request reads any task's status.
