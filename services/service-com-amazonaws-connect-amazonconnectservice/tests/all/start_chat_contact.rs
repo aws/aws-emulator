@@ -899,3 +899,147 @@ async fn a_request_that_breaks_a_rule_starts_no_chat() {
         answer.body
     );
 }
+
+/// One chat this suite started, and what the participant service must serve for it alone.
+struct OwnChat {
+    case: &'static str,
+    instance_id: String,
+    contact_id: String,
+    participant_id: String,
+    connection_token: String,
+    display_name: &'static str,
+    message: &'static str,
+}
+
+#[tokio::test]
+async fn every_started_chat_is_its_own_session() {
+    let chat = Chat::new();
+    let (first_instance, first_flow) = chat.instance("chat-isolation-one").await;
+    let (second_instance, second_flow) = chat.instance("chat-isolation-two").await;
+
+    // (case, the instance the chat is started on, that instance's flow, the display name,
+    // the one message this chat alone carries). The rows differ along what the rule
+    // generalises over: how many chats one instance holds, whether two chats sit on one
+    // instance or on different ones, and whether two chats share a display name — "the
+    // participantId for a chat participant is the same throughout the chat lifecycle"
+    // (`StartChatContactResponse$ParticipantId`), so it belongs to ONE chat and to no
+    // other.
+    let rows: [(&str, &str, &str, &'static str, &'static str); 5] = [
+        (
+            "the first chat of an instance",
+            first_instance.as_str(),
+            first_flow.as_str(),
+            "Customer Pat",
+            "said in the first chat",
+        ),
+        (
+            "a second chat of that instance",
+            first_instance.as_str(),
+            first_flow.as_str(),
+            "Customer Quinn",
+            "said in the second chat",
+        ),
+        (
+            "a third chat under a display name already in use",
+            first_instance.as_str(),
+            first_flow.as_str(),
+            "Customer Pat",
+            "said in the third chat",
+        ),
+        (
+            "the first chat of another instance",
+            second_instance.as_str(),
+            second_flow.as_str(),
+            "Customer Pat",
+            "said in the fourth chat",
+        ),
+        (
+            "a second chat of that other instance",
+            second_instance.as_str(),
+            second_flow.as_str(),
+            "Ана Иванова 🙂",
+            "said in the fifth chat",
+        ),
+    ];
+
+    let mut minted: BTreeSet<String> = BTreeSet::new();
+    let mut own_chats: Vec<OwnChat> = Vec::new();
+    for (case, instance_id, flow_id, display_name, message) in rows {
+        let answer = chat
+            .start_chat(start_body(instance_id, flow_id, display_name))
+            .await;
+        let (contact_id, participant_id, participant_token) = started(&answer);
+        for (member, value) in [
+            ("ContactId", &contact_id),
+            ("ParticipantId", &participant_id),
+            ("ParticipantToken", &participant_token),
+        ] {
+            assert!(
+                minted.insert(value.clone()),
+                "case {case:?}: {member} {value:?} was already minted for another chat"
+            );
+        }
+        let connection_token = chat.connection_token(&participant_token).await;
+        let sent = chat.send_message(&connection_token, message).await;
+        assert_eq!(
+            sent.status, 200,
+            "case {case:?}: SendMessage got {}",
+            sent.body
+        );
+        own_chats.push(OwnChat {
+            case,
+            instance_id: instance_id.to_string(),
+            contact_id,
+            participant_id,
+            connection_token,
+            display_name,
+            message,
+        });
+    }
+
+    // Each chat's token reaches that chat's transcript and nothing of any other chat's,
+    // attributed to the participant and display name THAT start minted.
+    for own in &own_chats {
+        let transcript = chat.transcript(&own.connection_token).await;
+        let reported: Vec<(&str, &str, &str, &str)> = transcript
+            .iter()
+            .map(|item| {
+                (
+                    item["Content"].as_str().unwrap_or_default(),
+                    item["ContactId"].as_str().unwrap_or_default(),
+                    item["ParticipantId"].as_str().unwrap_or_default(),
+                    item["DisplayName"].as_str().unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            reported,
+            vec![(
+                own.message,
+                own.contact_id.as_str(),
+                own.participant_id.as_str(),
+                own.display_name
+            )],
+            "case {:?}: expected this chat's own message alone in its transcript, got \
+             {transcript:?}",
+            own.case
+        );
+    }
+
+    // And the control-plane half holds each chat on the instance it was started on alone.
+    let store = connect_state::service_state(chat.engine()).expect("the Amazon Connect store");
+    let state = store.lock();
+    for own in &own_chats {
+        for (instance_id, instance) in &state.instances {
+            let holds = instance.chat_contacts.contains_key(&own.contact_id);
+            assert_eq!(
+                holds,
+                instance_id == &own.instance_id,
+                "case {:?}: expected the chat recorded on instance {:?} alone, instance \
+                 {instance_id:?} holds it = {holds}",
+                own.case,
+                own.instance_id
+            );
+        }
+    }
+}
