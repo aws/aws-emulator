@@ -1,15 +1,32 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op GetEnterpriseSupportContractDetails
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `GetEnterpriseSupportContractDetails`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`GetEnterpriseSupportContractDetails::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! IMPLEMENTED: this operation REPORTS the Enterprise Support contract
+//! persisted in
+//! [`crate::state::ComAmazonawsBillingAwsbillingState::enterprise_support_contract`]
+//! as it stood for the requested billing month, and the accounts of
+//! [`crate::state::ComAmazonawsBillingAwsbillingState::consolidated_billing_family`]
+//! that contract covers.
+//!
+//! It is a REPORTING operation (`@readonly`): it reads the store and writes
+//! nothing, so a caller cannot change another caller's answer by reading. For
+//! the requested month it reports the pricing plans the contract was billed
+//! under in that month's billing period — and so whether the contract was
+//! active in it at all — the method that distributes the total Support charge
+//! across the covered accounts and each charged payer account's pre-configured
+//! share of it, how Reserved Instance and Savings Plans fees are treated in the
+//! charge calculation, and the month's own proration instant and additional
+//! charges.
+//!
+//! NOTE: nothing in this emulator writes a month's proration or additional
+//! charges yet — they come from a billing run, and the emulator performs none.
+//! So on a running emulator this reports the contract with no additional
+//! charges until an operation that bills usage exists; the suite at
+//! `tests/all/enterprise_support_contract_details.rs` persists them through
+//! `EnterpriseSupportContract::record_additional_support_charge` and its
+//! siblings to exercise the reporting, activity and refusal rules. Nothing here
+//! synthesises a record.
 //!
 //! ## Shape of an operation
 //!
@@ -117,6 +134,13 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+// The billing-month arithmetic and the contract projections this handler shares
+// with the service's other read of the Enterprise Support profile.
+use crate::state::{
+    additional_charge_list, month_index, month_period, parse_month, pricing_plan, timestamp,
+    SUPPORT_TREATMENT_AMORTIZED, SUPPORT_TREATMENT_AMORTIZED_CUSTOM,
+};
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -172,6 +196,36 @@ impl<Eng> GetEnterpriseSupportContractDetails<Eng> {
     }
 }
 
+/// Refuse a request member as invalid, in the modeled `ValidationException`
+/// shape (HTTP 400) this operation declares.
+///
+/// `constraint` continues the sentence the member name starts, so the refusal
+/// names the member and the constraint the request broke without echoing the
+/// offending value back — the form this service's other reads of a billing
+/// month use.
+fn invalid_field(member: &str, constraint: &str) -> GetEnterpriseSupportContractDetailsError {
+    GetEnterpriseSupportContractDetailsErrorModeled::ValidationException(ValidationException {
+        message: format!("InvalidArgument: {member} (DetailedCode={member} {constraint})"),
+        reason: crate::state::VALIDATION_REASON_FIELD.to_string(),
+        field_list: Some(vec![ValidationExceptionField {
+            name: member.to_string(),
+            message: format!("Member {constraint}"),
+        }]),
+    })
+    .into()
+}
+
+/// Report a failure of this emulator itself, in the modeled
+/// `InternalServerException` shape (HTTP 500) this operation declares.
+fn unavailable(what: &str) -> GetEnterpriseSupportContractDetailsError {
+    GetEnterpriseSupportContractDetailsErrorModeled::InternalServerException(
+        InternalServerException {
+            message: format!("{what} is unavailable"),
+        },
+    )
+    .into()
+}
+
 impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_runtime::Operation
     for GetEnterpriseSupportContractDetails<Eng>
 {
@@ -189,18 +243,102 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `GetEnterpriseSupportContractDetails` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(GetEnterpriseSupportContractDetailsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("GetEnterpriseSupportContractDetails"))
+        // The modeled `billingMonth` pattern is refused by the boundary
+        // validator before this runs; what is checked here is which months the
+        // operation documents an answer for, and whether the caller is the
+        // payer account whose Support profile this contract is about.
+        let state = crate::state::service_state(&*self.engine)
+            .ok_or_else(|| unavailable("the Enterprise Support contract store"))?;
+        // A reporting operation: the guard is only read through, so two callers
+        // reading the same month see the same answer.
+        let state = state.lock();
+
+        // The contract covers the consolidated billing family, and its data is
+        // the account that pays for that family's to read, so a caller that
+        // pays for nobody is refused rather than answered with another
+        // profile's contract.
+        if !state.is_billing_family_management_account(crate::state::caller_account_id()) {
+            return Err(
+                GetEnterpriseSupportContractDetailsErrorModeled::AccessDeniedException(
+                    crate::state::enterprise_support_access_denied(Self::NAME, &*self.engine, ctx),
+                )
+                .into(),
+            );
+        }
+
+        let requested = parse_month(&input.billing_month)
+            .ok_or_else(|| invalid_field("billingMonth", "must name a calendar month"))?;
+        let current = crate::state::billing_period(::std::time::SystemTime::now())
+            .ok_or_else(|| unavailable("the current billing month"))?;
+        // The `EnterpriseSupportBillingMonth` doc: "This must be a month in the
+        // past." The current month's billing period has not closed and a later
+        // one has not begun, so the contract as billed for either is not a
+        // thing the service reports.
+        if month_index(requested) >= month_index(current) {
+            return Err(invalid_field("billingMonth", "must be a month in the past"));
+        }
+        let (period_start, period_end) = month_period(&input.billing_month)
+            .ok_or_else(|| unavailable("the requested billing period"))?;
+
+        let contract = &state.enterprise_support_contract;
+        // "The pricing plans associated with this Enterprise Support contract":
+        // the plans the contract was billed under across the requested month's
+        // billing period, earliest in effect first — so a plan that took effect
+        // part way through the month is reported beside the one it replaced.
+        let plans = contract.pricing_plans_for_period(
+            crate::state::date_time_secs(&period_start),
+            crate::state::date_time_secs(&period_end),
+        );
+        // What the billing run recorded for this month, when it recorded
+        // anything: a month nothing has been billed for has no proration
+        // instant and no additional charges.
+        let month = contract.month_details(&input.billing_month);
+
+        Ok(GetEnterpriseSupportContractDetailsOutput {
+            // "When true, the Enterprise Support contract is active. When
+            // false, the Enterprise Support Contract is inactive": a contract
+            // is active in a billing month when it was billed under a pricing
+            // plan in that month, and inactive in a month no plan of it was in
+            // effect for.
+            is_contract_active: Some(!plans.is_empty()),
+            support_allocation_method: contract.allocation_method.clone(),
+            support_reserved_instance_treatment_method: Some(
+                contract.reserved_instance_treatment_method.clone(),
+            ),
+            // "When supportReservedInstanceTreatmentMethod = AmortizedCustom,
+            // only amortized fees for Reserved Instances purchased on or after
+            // this date are included in the calculation. This field is Null for
+            // all other treatment methods."
+            support_reserved_instance_amortization_start_date: contract
+                .reserved_instance_amortization_start_date
+                .filter(|_| {
+                    contract.reserved_instance_treatment_method
+                        == SUPPORT_TREATMENT_AMORTIZED_CUSTOM
+                })
+                .map(timestamp),
+            support_savings_plans_treatment_method: Some(
+                contract.savings_plans_treatment_method.clone(),
+            ),
+            // "This is applicable when supportSavingsPlansTreatmentMethod =
+            // Amortized and is Null for all other methods."
+            support_savings_plans_amortization_start_date: contract
+                .savings_plans_amortization_start_date
+                .filter(|_| contract.savings_plans_treatment_method == SUPPORT_TREATMENT_AMORTIZED)
+                .map(timestamp),
+            // "The start date for accounts subscribed or unsubscribed to
+            // Support billing during the billing month" — the month's own
+            // proration instant, absent in a month no subscription changed in.
+            support_prorate_start_date: month
+                .and_then(|month| month.prorate_start_date)
+                .map(timestamp),
+            contract_payer_account_ids: state.enterprise_support_contract_accounts(),
+            charged_payer_account_ids: state.enterprise_support_charged_accounts(),
+            additional_support_charge: month
+                .and_then(|month| additional_charge_list(&month.additional_charges)),
+            additional_support_eligible_usage_spend: month.and_then(|month| {
+                additional_charge_list(&month.additional_eligible_usage_spend)
+            }),
+            pricing_plans: plans.into_iter().map(pricing_plan).collect(),
+        })
     }
 }

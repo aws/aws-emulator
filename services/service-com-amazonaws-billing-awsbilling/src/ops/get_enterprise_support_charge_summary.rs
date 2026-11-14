@@ -123,8 +123,8 @@ use super::types::*;
 // other charge report — amounts in minor units
 // (`crate::state::MINOR_UNITS_PER_UNIT`) and rates in basis points.
 use crate::state::{
-    amount, effective_rate_basis_points, month_index, month_period, parse_month, rate_decimal,
-    timestamp, EnterpriseSupportCharge, EnterpriseSupportPricingPlan,
+    amount, effective_rate_basis_points, month_index, month_period, parse_month, pricing_plan,
+    rate_decimal, EnterpriseSupportCharge,
 };
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
@@ -212,42 +212,6 @@ fn unavailable(what: &str) -> GetEnterpriseSupportChargeSummaryError {
     .into()
 }
 
-/// The stored pricing plan as the modeled `PricingPlan` reports it.
-///
-/// Every amount comes from the plan's own stored amount and every rate from its
-/// own stored rate, so the plan a response reports is the one the charge beside
-/// it was computed by. The plan models no incremental `increment`, so the two
-/// members that describe one are absent rather than invented.
-fn pricing_plan(plan: &EnterpriseSupportPricingPlan) -> PricingPlan {
-    PricingPlan {
-        pricing_plan_id: Some(plan.pricing_plan_id.clone()),
-        name: Some(plan.name.clone()),
-        description: plan.description.clone(),
-        start_date: Some(timestamp(plan.start_date)),
-        end_date: plan.end_date.map(timestamp),
-        plan_discount_percent: Some(rate_decimal(plan.plan_discount_basis_points)),
-        discount_applies_to_minimum_charge: Some(plan.discount_applies_to_minimum_charge),
-        minimum_charge: Some(amount(plan.minimum_charge_minor)),
-        tiered: Some(plan.tiered.to_string()),
-        tiers: plan
-            .tiers
-            .iter()
-            .map(|tier| PricingPlanTier {
-                tier_minimum: amount(tier.tier_minimum_minor),
-                tier_maximum: tier.tier_maximum_minor.map(amount),
-                base_charge: amount(tier.base_charge_minor),
-                additional_percentage_of_aggregate_charges: rate_decimal(
-                    tier.additional_rate_basis_points,
-                ),
-                aggregate_charges_adjustment: amount(tier.aggregate_charges_adjustment_minor),
-                incremental: tier.incremental,
-                increment: None,
-                increment_charge: None,
-            })
-            .collect(),
-    }
-}
-
 impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_runtime::Operation
     for GetEnterpriseSupportChargeSummary<Eng>
 {
@@ -285,16 +249,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if payer_account_id != caller_account_id {
             return Err(
                 GetEnterpriseSupportChargeSummaryErrorModeled::AccessDeniedException(
-                    AccessDeniedException {
-                        message: format!(
-                            "User: {} is not authorized to perform: {}:{} because only the \
-                             payer account of the Enterprise Support profile may view its \
-                             Enterprise Support data",
-                            crate::state::caller_identity_arn(&*self.engine, ctx),
-                            crate::state::BILLING_SERVICE_CODE,
-                            Self::NAME,
-                        ),
-                    },
+                    crate::state::enterprise_support_access_denied(
+                        Self::NAME,
+                        &*self.engine,
+                        ctx,
+                    ),
                 )
                 .into(),
             );
