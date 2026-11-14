@@ -32,14 +32,16 @@
 //! machine.
 //!
 //! What this module does instead is narrower than a shell by construction, and it is not an
-//! implementation of the shell LANGUAGE: there is no evaluator for the language's constructs
-//! here, and none is approximated. It PERFORMS a fixed catalog of session-local utilities
-//! ([`BUILT_IN_COMMANDS`]) over the real grammar's tree, beside the programs the caller's
-//! own environment declares it provides ([`EnvironmentPrograms`]), and every other command,
-//! and every command FORM and expansion it does not perform, fails closed with the status a
-//! shell answers for a command it cannot run ([`Statuses::could_not_run`]). There is
-//! therefore no language subset to keep in step with a specification: a command either names
-//! one of those, or it did not run.
+//! implementation of the shell LANGUAGE: there is no evaluator for the language's values or
+//! its expansions beyond the forms named here, and none is approximated. It PERFORMS a fixed
+//! catalog of session-local utilities ([`BUILT_IN_COMMANDS`]) over the real grammar's tree,
+//! beside the programs the caller's own environment declares it provides
+//! ([`EnvironmentPrograms`]) — and, for a session that works over a tree, the grammar's
+//! control flow around those same commands — and every other command, and every command FORM
+//! and expansion it does not perform, fails closed with the status a shell answers for a
+//! command it cannot run ([`Statuses::could_not_run`]). There is therefore no language subset
+//! to keep in step with a specification: a command either names one of those, or it did not
+//! run.
 //!
 //! # What a session provides
 //!
@@ -59,6 +61,23 @@
 //! ([`Bounds::files`], [`Bounds::file_bytes`], [`Bounds::tree_bytes`]); no host file is
 //! opened, created or read.
 //!
+//! A caller whose environment HAS storage of its own — a build container's source directory,
+//! which the service seeds and then takes the produced files back out of — declares that
+//! ([`ShellSession::with_file_utilities`]), and the file utilities ([`VOLUME_COMMANDS`]) are
+//! then commands the session performs over that same tree. It is still the one tree above:
+//! a path is a key, nothing holds a directory entry, and nothing reaches a host path.
+//!
+//! # The forms a session that works over a tree performs
+//!
+//! A program written against storage is written as a SCRIPT, so a session that was given a
+//! tree — a machine's ([`ShellSession::in_volume`]) or its own working one — also performs
+//! the grammar's own control flow over the commands inside it: `if`/`elif`/`else`, `while`,
+//! `until` and `for`, and a brace group. Each of those runs the same catalog this module
+//! performs and needs no primitive beyond it, each command inside spends the same budget
+//! ([`Bounds::commands`]), and that budget is what ends a loop with no end of its own. A
+//! subshell, a `case` clause, a function definition and a compound command carrying
+//! redirections of its own are forms no session performs.
+//!
 //! # A session that runs in a MACHINE's tree
 //!
 //! One kind of caller-supplied program is the program of a MACHINE the emulator holds — an
@@ -74,7 +93,7 @@
 //! * the redirections that reach the tree's other descriptors: standard error to a file or a
 //!   device, and standard input from one;
 //! * arithmetic expansion ([`super::posix_shell_arithmetic`]), which is how such a program
-//!   computes what it writes.
+//!   computes what it writes — performed by every session that works over a tree.
 //!
 //! None of that reaches a host path, a process or a socket: the tree is in memory, every
 //! entry of it was put there by the service that owns the machine, and a path it does not
@@ -203,15 +222,17 @@ pub trait EnvironmentPrograms: ::std::fmt::Debug + Send + Sync {
     fn run(&self, name: &str, arguments: &[String]) -> Option<ProgramOutcome>;
 }
 
-/// The commands a session given a MACHINE's tree provides on top of
-/// [`BUILT_IN_COMMANDS`], as their names.
+/// The commands a session whose tree is a MACHINE's — or its own WORKING tree
+/// ([`ShellSession::with_file_utilities`]) — provides on top of [`BUILT_IN_COMMANDS`], as
+/// their names.
 ///
-/// Each one's whole effect is inside the session and the tree it was handed: `printf` writes
+/// Each one's whole effect is inside the session and the tree it works over: `printf` writes
 /// one line of output, `mkdir`, `touch` and `rm` change the tree, `test` (and its `[`
 /// spelling) answers a question about it, and `sh -c` performs a program in this same
-/// session, which is how a machine's init system runs one line. A session that was given no
-/// machine's tree provides none of them: a directory, a removal and a nested program are what
-/// a machine's own storage has, and its own tree is the files its redirections left.
+/// session, which is how a machine's init system runs one line. A session given neither tree
+/// provides none of them: a directory, a removal and a nested program are what an
+/// environment with storage of its own has, and such a session's tree is only the files its
+/// redirections left.
 pub const VOLUME_COMMANDS: &[&str] =
     &["printf", "mkdir", "touch", "rm", "test", "[", "sh", "bash"];
 
@@ -472,6 +493,10 @@ pub struct ShellSession {
     /// The files this session's own tree holds, keyed by the path a redirection named — the
     /// tree of a session that was given no machine's.
     files: BTreeMap<String, String>,
+    /// Set for a session whose own tree is the WORKING tree of the environment its program
+    /// runs in ([`Self::with_file_utilities`]), which is what makes the file utilities
+    /// ([`VOLUME_COMMANDS`]) commands this session performs over that tree.
+    working_tree: bool,
     /// How many bytes that tree comes to, kept as it is written.
     tree_bytes: usize,
     /// Set when a write to the file a redirection named did not happen, which is what makes
@@ -504,6 +529,7 @@ impl ShellSession {
             substitutions_left: config.bounds.substitutions,
             nested_programs: 0,
             files: BTreeMap::new(),
+            working_tree: false,
             tree_bytes: 0,
             redirect_failed: false,
             config,
@@ -552,6 +578,59 @@ impl ShellSession {
     #[must_use]
     pub fn into_volume(self) -> Option<ShellVolume> {
         self.volume
+    }
+
+    /// This session with its OWN tree declared the WORKING tree of the environment the
+    /// program runs in, so the file utilities ([`VOLUME_COMMANDS`]) are commands it performs
+    /// over that tree.
+    ///
+    /// What a caller declares with this is that its environment HAS storage of its own — a
+    /// build container's source directory, say — rather than only the files a redirection
+    /// leaves behind. That tree keys a file by the whole path the program named and holds no
+    /// directory entry of its own, so a directory of it exists exactly as long as a file
+    /// under it does: `mkdir` has nothing to make and answers success (it fails only where a
+    /// FILE already holds that path), `test -d` answers for a path some file lies under, and
+    /// a write never needs the directory above it to have been made first. The forms that
+    /// reach a MACHINE's other descriptors are not these: they stay a session given a
+    /// machine's tree ([`Self::in_volume`]).
+    #[must_use]
+    pub fn with_file_utilities(mut self) -> Self {
+        self.working_tree = true;
+        self
+    }
+
+    /// Put `contents` at `path` in the tree this session reads and writes, the way the
+    /// environment seeds a file its program is to find there — a source archive the build
+    /// unpacked, a cached path it restored.
+    ///
+    /// `false` is a seed that did not happen, under [`Self::write_path`]'s rule: a path the
+    /// tree does not accept, or a write past one of the tree's bounds.
+    pub fn put_file(&mut self, path: &str, contents: &str) -> bool {
+        self.write_path(path, contents, false)
+    }
+
+    /// The files the tree this session works over holds, as `(path, contents)` in path
+    /// order — what the caller takes back out of a finished run: the files a build's
+    /// commands produced, which are what its artifacts and its cache are selected from.
+    #[must_use]
+    pub fn tree_files(&self) -> Vec<(&str, &str)> {
+        match &self.volume {
+            Some(volume) => volume.stored_files().collect(),
+            None => self
+                .files
+                .iter()
+                .map(|(path, contents)| (path.as_str(), contents.as_str()))
+                .collect(),
+        }
+    }
+
+    /// Forget that a program ended this session with `exit`, so the next line runs.
+    ///
+    /// For a caller that hands this session SEVERAL programs over one tree — a phase's
+    /// command list and then the block that runs after it — where an `exit` ends the program
+    /// that performed it and not the ones the caller runs next.
+    pub fn clear_exit(&mut self) {
+        self.exit_status = None;
     }
 
     /// The tree this session runs in, for a caller reading what the program has written to
@@ -678,15 +757,165 @@ impl ShellSession {
 
     /// Perform one command of a pipeline.
     ///
-    /// A SIMPLE command is the form this session performs. Every other form a shell grammar
-    /// admits — a compound command, a function definition, an extended test — is one this
-    /// session does not perform, and a command that did not run answers as one that could
-    /// not be run rather than as one that succeeded.
+    /// A SIMPLE command is the form every session performs. The grammar's COMPOUND
+    /// commands — the control flow a program is written with — are performed over this
+    /// same catalog by a session that works over a tree ([`Self::run_compound`]), because
+    /// they need no primitive beyond the commands inside them. Every other form a shell
+    /// grammar admits — a function definition, an extended test, a compound command
+    /// carrying redirections of its own — is one this session does not perform, and a
+    /// command that did not run answers as one that could not be run rather than as one
+    /// that succeeded.
+    ///
+    /// EVERY command spends one of [`Bounds::commands`] here, whatever form it takes and
+    /// whether or not this session performs it: that budget is latched, so it is what ends
+    /// a loop with no end of its own, and a form that answered without running would
+    /// otherwise let a loop iterate for nothing.
     fn run_command(&mut self, command: &::brush_parser::ast::Command) -> i32 {
+        if self.commands_left == 0 {
+            return self.config.statuses.could_not_run;
+        }
+        self.commands_left = self.commands_left.saturating_sub(1);
         match command {
             ::brush_parser::ast::Command::Simple(simple) => self.run_simple_command(simple),
+            ::brush_parser::ast::Command::Compound(compound, redirections)
+                if redirections.is_none() && self.works_over_a_tree() =>
+            {
+                self.run_compound(compound)
+            }
             _ => self.config.statuses.could_not_run,
         }
+    }
+
+    /// Whether this session works over a TREE — a machine's ([`Self::in_volume`]) or its
+    /// own working one ([`Self::with_file_utilities`]) — which is what makes its caller's
+    /// program a script of an environment with storage rather than one command line.
+    fn works_over_a_tree(&self) -> bool {
+        self.volume.is_some() || self.working_tree
+    }
+
+    /// Perform a COMPOUND command: the control flow the grammar reads, over the commands
+    /// inside it.
+    ///
+    /// `if`/`elif`/`else` runs the branch whose condition answered success, `while` and
+    /// `until` repeat their body while their condition answers success (or failure), and a
+    /// brace group runs its list in this session. Every command inside — this compound
+    /// command itself included ([`Self::run_command`]) — spends the session's own command
+    /// budget, which is what bounds a loop: each iteration performs at least its condition,
+    /// so once the budget is gone the loop answers as a command that could not run rather
+    /// than iterating again.
+    ///
+    /// Every other compound form is one this session does not perform: a subshell and a
+    /// `case` clause need an environment of their own or a pattern evaluation this session
+    /// has none of, so they answer as a command that could not be run.
+    fn run_compound(&mut self, compound: &::brush_parser::ast::CompoundCommand) -> i32 {
+        use ::brush_parser::ast::CompoundCommand as Compound;
+        match compound {
+            Compound::BraceGroup(group) => self.run_compound_list(&group.list),
+            Compound::IfClause(clause) => self.run_if_clause(clause),
+            Compound::WhileClause(clause) => self.run_while_clause(clause, true),
+            Compound::UntilClause(clause) => self.run_while_clause(clause, false),
+            Compound::ForClause(clause) => self.run_for_clause(clause),
+            _ => self.config.statuses.could_not_run,
+        }
+    }
+
+    /// Perform a list of and-or lists — the body of a compound command — and answer the
+    /// status of the last one that ran.
+    fn run_compound_list(&mut self, list: &::brush_parser::ast::CompoundList) -> i32 {
+        let mut status = self.config.statuses.success;
+        for item in &list.0 {
+            status = self.run_and_or_list(&item.0);
+            if self.exit_status.is_some() {
+                return status;
+            }
+        }
+        status
+    }
+
+    /// `if LIST; then LIST; elif LIST; then LIST; else LIST; fi`: the branch whose
+    /// condition answered success, and success for an `if` no branch of which ran, which is
+    /// the status POSIX gives it ("exit status of zero if no condition is true").
+    fn run_if_clause(&mut self, clause: &::brush_parser::ast::IfClauseCommand) -> i32 {
+        let condition = self.run_compound_list(&clause.condition);
+        if self.exit_status.is_some() {
+            return condition;
+        }
+        if condition == self.config.statuses.success {
+            return self.run_compound_list(&clause.then);
+        }
+        for otherwise in clause.elses.iter().flatten() {
+            match otherwise.condition.as_ref() {
+                // An `elif`, which is its own condition and its own branch.
+                Some(condition) => {
+                    let answered = self.run_compound_list(condition);
+                    if self.exit_status.is_some() {
+                        return answered;
+                    }
+                    if answered == self.config.statuses.success {
+                        return self.run_compound_list(&otherwise.body);
+                    }
+                }
+                // The `else` branch, which runs when no condition before it did.
+                None => return self.run_compound_list(&otherwise.body),
+            }
+        }
+        self.config.statuses.success
+    }
+
+    /// `while LIST; do LIST; done`, and `until`, which is the same with the condition read
+    /// the other way round. The status is the last body that ran, and success for a loop
+    /// whose body never did.
+    fn run_while_clause(
+        &mut self,
+        clause: &::brush_parser::ast::WhileOrUntilClauseCommand,
+        while_success: bool,
+    ) -> i32 {
+        let mut status = self.config.statuses.success;
+        loop {
+            // The budget is what ends a loop that has no end of its own, and a loop cut
+            // off by it did not run to its own end: it answers as a command that could
+            // not run rather than as the body that last succeeded.
+            if self.commands_left == 0 {
+                return self.config.statuses.could_not_run;
+            }
+            let condition = self.run_compound_list(&clause.0);
+            if self.exit_status.is_some() {
+                return condition;
+            }
+            if (condition == self.config.statuses.success) != while_success {
+                return status;
+            }
+            status = self.run_compound_list(&clause.1.list);
+            if self.exit_status.is_some() {
+                return status;
+            }
+        }
+    }
+
+    /// `for NAME in WORD…; do LIST; done`: the body once per word, with the loop's variable
+    /// holding that word. A `for` with no word list at all iterates over nothing here —
+    /// there are no positional parameters for it to take.
+    fn run_for_clause(&mut self, clause: &::brush_parser::ast::ForClauseCommand) -> i32 {
+        let mut status = self.config.statuses.success;
+        let Some(values) = clause.values.as_ref() else {
+            return status;
+        };
+        for word in values {
+            let Some(value) = self.expand_word(&word.value) else {
+                return self.config.statuses.could_not_run;
+            };
+            if !self.set_variable(clause.variable_name.clone(), value) {
+                return self.config.statuses.could_not_run;
+            }
+            if self.commands_left == 0 {
+                return self.config.statuses.could_not_run;
+            }
+            status = self.run_compound_list(&clause.body.list);
+            if self.exit_status.is_some() {
+                return status;
+            }
+        }
+        status
     }
 
     /// Perform a simple command: its variable assignments and its redirections, then the
@@ -711,13 +940,8 @@ impl ShellSession {
     /// shell opens it before it resolves the command at all: a command this session has no
     /// utility for leaves the file it redirected to behind, empty.
     fn run_simple_command(&mut self, simple: &::brush_parser::ast::SimpleCommand) -> i32 {
-        // The command budget is LATCHED, and it is spent per COMMAND rather than per line:
-        // once it is gone no further command of any line is performed, however many a single
-        // line carries.
-        if self.commands_left == 0 {
-            return self.config.statuses.could_not_run;
-        }
-        self.commands_left = self.commands_left.saturating_sub(1);
+        // The command budget was spent for this command by [`Self::run_command`], which
+        // spends it for every form.
         // The status of a command with no command name is the status of the last command
         // substitution ITS OWN words performed, so what an earlier command's words
         // substituted is not read here.
@@ -906,6 +1130,72 @@ impl ShellSession {
         self.tree_bytes = would_hold;
         self.files.insert(path, whole);
         true
+    }
+
+    /// Whether the tree this session works over holds anything at `path` — a file, a
+    /// directory, or (in a machine's tree) a device.
+    fn tree_holds(&self, path: &str) -> bool {
+        match &self.volume {
+            Some(volume) => volume.exists(path),
+            None => self.tree_holds_file(path) || self.tree_holds_directory(path),
+        }
+    }
+
+    /// Whether `path` is a FILE of the tree this session works over.
+    fn tree_holds_file(&self, path: &str) -> bool {
+        match &self.volume {
+            Some(volume) => volume.is_file(path),
+            None => file_path(path).is_some_and(|path| self.files.contains_key(&path)),
+        }
+    }
+
+    /// Whether `path` is a DIRECTORY of the tree this session works over.
+    ///
+    /// A session's own tree keys a file by its whole path and holds no directory entry, so a
+    /// directory of it is a path some file lies under — which is also as long as it exists
+    /// for: removing the last file under it leaves no directory behind.
+    fn tree_holds_directory(&self, path: &str) -> bool {
+        match &self.volume {
+            Some(volume) => volume.is_directory(path),
+            None => file_path(path).is_some_and(|path| {
+                let under = format!("{path}/");
+                !self.files.contains_key(&path)
+                    && self.files.keys().any(|held| held.starts_with(&under))
+            }),
+        }
+    }
+
+    /// Make `path` a directory of the tree this session works over, with every directory
+    /// above it, answering whether the tree now has it.
+    ///
+    /// In a session's own tree there is nothing to make: a path is a key, so a file may be
+    /// written under `path` whether or not anything made it first, and the only answer that
+    /// is not success is a FILE already holding that path.
+    fn tree_make_directories(&mut self, path: &str) -> bool {
+        match self.volume.as_mut() {
+            Some(volume) => volume.make_directories(path),
+            None => !self.tree_holds_file(path),
+        }
+    }
+
+    /// Remove the file at `path` from the tree this session works over, answering whether
+    /// there was one to remove.
+    fn tree_remove_file(&mut self, path: &str) -> bool {
+        if let Some(volume) = self.volume.as_mut() {
+            return volume.remove_file(path);
+        }
+        let Some(path) = file_path(path) else {
+            return false;
+        };
+        match self.files.remove(&path) {
+            Some(contents) => {
+                self.tree_bytes = self
+                    .tree_bytes
+                    .saturating_sub(contents.len().saturating_add(path.len()));
+                true
+            }
+            None => false,
+        }
     }
 
     /// Perform the program the ENVIRONMENT this session runs in provides for `name`, when it
@@ -1113,7 +1403,7 @@ impl ShellSession {
         // The catalogs are what this session provides: a command outside them needs a
         // program, which is the environment's to provide and not the shell's.
         if !BUILT_IN_COMMANDS.contains(&name) {
-            if self.volume.is_some() && VOLUME_COMMANDS.contains(&name) {
+            if (self.volume.is_some() || self.working_tree) && VOLUME_COMMANDS.contains(&name) {
                 return self.run_volume_command(name, arguments, redirections);
             }
             return self.run_environment_program(name, arguments, redirections);
@@ -1175,8 +1465,9 @@ impl ShellSession {
         }
     }
 
-    /// Perform one of the commands a session given a MACHINE's tree provides
-    /// ([`VOLUME_COMMANDS`]), over that tree and nothing else.
+    /// Perform one of the commands a session working over a TREE provides
+    /// ([`VOLUME_COMMANDS`]) — a machine's ([`Self::in_volume`]) or its own working one
+    /// ([`Self::with_file_utilities`]) — over that tree and nothing else.
     ///
     /// `printf` writes its format with its arguments substituted. `mkdir` makes a
     /// directory (`-p` makes the ones above it too), `touch` makes an empty file where the
@@ -1276,11 +1567,13 @@ impl ShellSession {
     fn run_mkdir(&mut self, arguments: &[String], redirections: &Redirections) -> i32 {
         let parents = arguments.iter().any(|argument| argument == "-p");
         let mut status = self.config.statuses.success;
-        for path in arguments.iter().filter(|argument| !argument.starts_with('-')) {
-            let Some(volume) = self.volume.as_mut() else {
-                return self.config.statuses.could_not_run;
-            };
-            if volume.is_directory(path) {
+        for path in arguments
+            .iter()
+            .filter(|argument| !argument.starts_with('-'))
+            .cloned()
+            .collect::<Vec<String>>()
+        {
+            if self.tree_holds_directory(&path) {
                 if !parents {
                     let _ = self.write_stderr(
                         &format!("mkdir: cannot create directory '{path}': File exists\n"),
@@ -1291,11 +1584,13 @@ impl ShellSession {
                 continue;
             }
             // Without `-p` a machine makes ONE directory, so the one above it has to be
-            // there already.
-            let has_parent = path
-                .rsplit_once('/')
-                .is_none_or(|(parent, _)| volume.is_directory(if parent.is_empty() { "/" } else { parent }));
-            if (!parents && !has_parent) || !volume.make_directories(path) {
+            // there already. A tree that holds no directory entry of its own has every
+            // path above it already ([`Self::tree_holds_directory`]).
+            let has_parent = self.volume.is_none()
+                || path.rsplit_once('/').is_none_or(|(parent, _)| {
+                    self.tree_holds_directory(if parent.is_empty() { "/" } else { parent })
+                });
+            if (!parents && !has_parent) || !self.tree_make_directories(&path) {
                 let _ = self.write_stderr(
                     &format!("mkdir: cannot create directory '{path}': No such file or directory\n"),
                     redirections,
@@ -1310,14 +1605,16 @@ impl ShellSession {
     /// holds one — this session keeps no modification time to move.
     fn run_touch(&mut self, arguments: &[String], redirections: &Redirections) -> i32 {
         let mut status = self.config.statuses.success;
-        for path in arguments.iter().filter(|argument| !argument.starts_with('-')) {
-            let Some(volume) = self.volume.as_mut() else {
-                return self.config.statuses.could_not_run;
-            };
-            if volume.exists(path) {
+        for path in arguments
+            .iter()
+            .filter(|argument| !argument.starts_with('-'))
+            .cloned()
+            .collect::<Vec<String>>()
+        {
+            if self.tree_holds(&path) {
                 continue;
             }
-            if !volume.write(path, "", false) {
+            if !self.write_path(&path, "", false) {
                 let _ = self.write_stderr(
                     &format!("touch: cannot touch '{path}': No such file or directory\n"),
                     redirections,
@@ -1336,11 +1633,13 @@ impl ShellSession {
             .iter()
             .any(|argument| argument.starts_with('-') && argument.contains('f'));
         let mut status = self.config.statuses.success;
-        for path in arguments.iter().filter(|argument| !argument.starts_with('-')) {
-            let Some(volume) = self.volume.as_mut() else {
-                return self.config.statuses.could_not_run;
-            };
-            if volume.is_directory(path) {
+        for path in arguments
+            .iter()
+            .filter(|argument| !argument.starts_with('-'))
+            .cloned()
+            .collect::<Vec<String>>()
+        {
+            if self.tree_holds_directory(&path) {
                 let _ = self.write_stderr(
                     &format!("rm: cannot remove '{path}': Is a directory\n"),
                     redirections,
@@ -1348,7 +1647,7 @@ impl ShellSession {
                 status = self.config.statuses.failure;
                 continue;
             }
-            if !volume.remove_file(path) && !forced {
+            if !self.tree_remove_file(&path) && !forced {
                 let _ = self.write_stderr(
                     &format!("rm: cannot remove '{path}': No such file or directory\n"),
                     redirections,
@@ -1396,16 +1695,15 @@ impl ShellSession {
     /// [`Self::run_test`]'s reading of the question, or `None` for a form it does not
     /// answer.
     fn test_answer(&self, arguments: &[String]) -> Option<bool> {
-        let volume = self.volume.as_ref()?;
         match arguments {
             [] => Some(false),
             [value] => Some(!value.is_empty()),
             [operator, value] => match operator.as_str() {
-                "-e" => Some(volume.exists(value)),
-                "-f" => Some(volume.is_file(value)),
-                "-d" => Some(volume.is_directory(value)),
-                "-s" => Some(volume.read(value).is_some_and(|held| !held.is_empty())),
-                "-r" | "-w" => Some(volume.exists(value)),
+                "-e" => Some(self.tree_holds(value)),
+                "-f" => Some(self.tree_holds_file(value)),
+                "-d" => Some(self.tree_holds_directory(value)),
+                "-s" => Some(self.read_path(value).is_some_and(|held| !held.is_empty())),
+                "-r" | "-w" => Some(self.tree_holds(value)),
                 "-z" => Some(value.is_empty()),
                 "-n" => Some(!value.is_empty()),
                 _ => None,
@@ -1603,7 +1901,9 @@ impl ShellSession {
     /// only to the line it came from), one that does not parse, one this module does not
     /// evaluate, or one whose arithmetic has no answer (a division by zero, an overflow).
     fn expand_arithmetic(&mut self, text: &str) -> Option<String> {
-        self.volume.as_ref()?;
+        if !self.works_over_a_tree() {
+            return None;
+        }
         let resolved = self.expand_word(text).unwrap_or_else(|| text.to_string());
         // The expansion above can have MATERIALISED text far longer and far more deeply
         // nested than the line itself — a variable's value expands inside the expression —
@@ -2713,5 +3013,247 @@ mod tests {
                 held.output()
             );
         }
+    }
+
+    /// A session whose own tree is the WORKING tree of its environment, which is what a
+    /// caller holding storage of its own hands its program.
+    fn working_tree_session() -> ShellSession {
+        session().with_file_utilities()
+    }
+
+    /// RULE: a session working over its own WORKING tree performs the file utilities over
+    /// that tree — where a path is a key, so a directory of it exists exactly as long as a
+    /// file under it does — and the arithmetic its program computes with.
+    ///
+    /// The rows differ along what the rule generalises over: which utility is named, whether
+    /// the tree already holds the path, how the path is spelled, and what the arithmetic
+    /// comes to.
+    #[test]
+    fn a_session_over_a_working_tree_performs_the_file_utilities() {
+        let statuses = Statuses::default();
+        // (case, the line, the status it answers)
+        let rows: [(&str, &str, i32); 12] = [
+            ("a formatted line", "printf '%s' value", statuses.success),
+            ("a directory, which the tree needs none of", "mkdir -p dist", statuses.success),
+            ("a file written under it", "echo built > dist/app.txt", statuses.success),
+            ("the file read back", "cat dist/app.txt", statuses.success),
+            ("a question about that file", "test -f dist/app.txt", statuses.success),
+            (
+                "a question about the directory above it",
+                "test -d dist",
+                statuses.success,
+            ),
+            ("a question about a path nothing wrote", "test -f missing.txt", statuses.failure),
+            ("the file touched again", "touch dist/app.txt", statuses.success),
+            ("the file removed", "rm dist/app.txt", statuses.success),
+            ("the same file removed twice", "rm dist/app.txt", statuses.failure),
+            ("a removal that passes over it", "rm -f dist/app.txt", statuses.success),
+            ("a nested program", "sh -c 'echo inside'", statuses.success),
+        ];
+        let mut held = working_tree_session();
+        for (case, line, expected) in rows {
+            let status = held.run(line);
+            assert_eq!(
+                status, expected,
+                "case {case:?}: expected the status {expected}, got {status}"
+            );
+        }
+        let mut computing = working_tree_session();
+        assert_eq!(
+            computing.run("export SEED=6"),
+            statuses.success,
+            "case \"the value the arithmetic reads\": the assignment must be performed"
+        );
+        assert_eq!(
+            computing.run("export RESULT=\"$(( SEED * 7 + 3 ))\""),
+            statuses.success,
+            "case \"the arithmetic\": a session over a working tree performs the expansion"
+        );
+        assert_eq!(
+            computing.variable("RESULT"),
+            Some("45"),
+            "case \"the arithmetic\": expected what the expression comes to, got {:?}",
+            computing.variable("RESULT")
+        );
+    }
+
+    /// RULE: the environment SEEDS the files its program is to find in the working tree, and
+    /// takes back out what the program left there — which is how a service hands a run its
+    /// input and keeps its output.
+    #[test]
+    fn the_working_trees_files_go_in_and_come_back_out() {
+        let mut held = working_tree_session();
+        assert!(
+            held.put_file("payload.txt", "SEEDED"),
+            "the tree must take the file the environment seeded"
+        );
+        assert_eq!(
+            held.run("export READ=\"$(cat payload.txt)\""),
+            Statuses::default().success,
+            "the program must read the seeded file"
+        );
+        assert_eq!(
+            held.variable("READ"),
+            Some("SEEDED"),
+            "expected the seeded bytes, got {:?}",
+            held.variable("READ")
+        );
+        held.run("echo produced > out.txt");
+        let files = held.tree_files();
+        assert_eq!(
+            files,
+            [("out.txt", "produced\n"), ("payload.txt", "SEEDED")],
+            "expected the seeded file and the one the program wrote, got {files:?}"
+        );
+    }
+
+    /// RULE: a session working over a tree performs the grammar's own control flow around the
+    /// commands inside it — `if`/`elif`/`else`, `while`, `until`, `for` and a brace group —
+    /// and the forms that need an environment of their own are still ones it does not
+    /// perform. A session with no tree performs none of them.
+    ///
+    /// The rows differ along what the rule generalises over: the form, whether its condition
+    /// holds, how many times a body runs, and whether a command inside it failed.
+    #[test]
+    fn a_session_over_a_tree_performs_the_grammars_control_flow() {
+        let statuses = Statuses::default();
+        // (case, the program, the status it answers, what it left in STATE)
+        let rows: [(&str, &str, i32, &str); 9] = [
+            ("an if that holds", "if true; then export STATE=then; fi", statuses.success, "then"),
+            (
+                "an if that does not, with an else",
+                "if false; then export STATE=then; else export STATE=else; fi",
+                statuses.success,
+                "else",
+            ),
+            (
+                "an elif",
+                "if false; then export STATE=then; elif true; then export STATE=elif; fi",
+                statuses.success,
+                "elif",
+            ),
+            (
+                "an if no branch of which runs",
+                "if false; then export STATE=then; fi",
+                statuses.success,
+                "",
+            ),
+            (
+                "a while loop",
+                "export STATE=0; while [ $STATE -lt 3 ]; do export STATE=\"$(( STATE + 1 ))\"; done",
+                statuses.success,
+                "3",
+            ),
+            (
+                "an until loop",
+                "export STATE=0; until [ $STATE -ge 2 ]; do export STATE=\"$(( STATE + 1 ))\"; done",
+                statuses.success,
+                "2",
+            ),
+            (
+                "a for loop over its words",
+                "for WORD in a b c; do export STATE=\"$WORD\"; done",
+                statuses.success,
+                "c",
+            ),
+            ("a brace group", "{ export STATE=grouped; }", statuses.success, "grouped"),
+            (
+                "a command inside that failed",
+                "if true; then export STATE=entered; false; fi",
+                statuses.failure,
+                "entered",
+            ),
+        ];
+        for (case, program, expected, state) in rows {
+            let mut held = working_tree_session();
+            let status = held.run(program);
+            assert_eq!(
+                status, expected,
+                "case {case:?}: expected the status {expected}, got {status}"
+            );
+            assert_eq!(
+                held.variable("STATE").unwrap_or_default(),
+                state,
+                "case {case:?}: expected STATE {state:?}, got {:?}",
+                held.variable("STATE")
+            );
+            // The same program in a session with no tree of its own performs nothing.
+            let mut without = session();
+            assert_eq!(
+                without.run(program),
+                statuses.could_not_run,
+                "case {case:?}: a session with no tree must perform no compound command"
+            );
+        }
+        // A loop with no end of its own ends, whatever its condition and its body are made
+        // of: every command spends one of the session's budget, a form this session does not
+        // perform included, so no iteration is free.
+        // (case, the program)
+        let endless = [
+            ("built from simple commands", "while true; do : ; done"),
+            ("a condition and a body of subshells", "until ( : ); do ( : ); done"),
+            (
+                "a condition this session does not perform",
+                "until case x in esac; do ( : ); done",
+            ),
+            (
+                "a condition that is itself a loop",
+                "while for i; do :; done; do ( : ); done",
+            ),
+            (
+                "a condition no branch of which runs",
+                "while if false; then :; fi; do ( : ); done",
+            ),
+        ];
+        for (case, program) in endless {
+            let mut held = ShellSession::new(
+                BTreeMap::new(),
+                SessionConfig {
+                    bounds: Bounds {
+                        commands: 16,
+                        ..Bounds::default()
+                    },
+                    ..SessionConfig::default()
+                },
+            )
+            .with_file_utilities();
+            assert_eq!(
+                held.run(program),
+                statuses.could_not_run,
+                "case {case:?}: expected the budget to end the loop"
+            );
+        }
+    }
+
+    /// RULE: the status an `exit` ended a program with is what the session reports until the
+    /// caller that hands this session SEVERAL programs over one tree says the next one
+    /// starts, and the commands of that next program are then performed.
+    #[test]
+    fn a_cleared_exit_lets_the_next_program_run() {
+        let mut held = working_tree_session();
+        held.run("exit 7");
+        assert_eq!(
+            held.exit_status(),
+            Some(7),
+            "the program ended with the status it named"
+        );
+        held.clear_exit();
+        assert_eq!(
+            held.exit_status(),
+            None,
+            "the session no longer carries the status the ended program left"
+        );
+        held.run("export AFTER=performed");
+        assert_eq!(
+            held.variable("AFTER"),
+            Some("performed"),
+            "the next program runs, got {:?}",
+            held.variable("AFTER")
+        );
+        assert_eq!(
+            held.exit_status(),
+            None,
+            "a program that ended no session leaves no status behind"
+        );
     }
 }

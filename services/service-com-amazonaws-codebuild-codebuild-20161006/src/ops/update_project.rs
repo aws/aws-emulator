@@ -244,8 +244,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let created_millis = stored.created_millis;
         let stored_modified_millis = stored.last_modified_millis;
         // An update replaces the project's settings, not the state of its build cache:
-        // the instant `InvalidateProjectCache` last reset that cache stays as it was.
+        // the instant `InvalidateProjectCache` last reset that cache, and the instant a
+        // build of it last saved one, both stay as they were.
         let cache_invalidated_millis = stored.cache_invalidated_millis;
+        let cache_saved_millis = stored.cache_saved_millis;
         apply_update(&mut project, input);
 
         // The RESULTING configuration, not the request alone, is what has to be a valid
@@ -370,6 +372,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 created_millis,
                 last_modified_millis,
                 cache_invalidated_millis,
+                cache_saved_millis,
             },
         );
         drop(guard);

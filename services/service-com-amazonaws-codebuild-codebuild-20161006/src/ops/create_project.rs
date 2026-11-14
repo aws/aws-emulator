@@ -432,8 +432,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 created_millis: now,
                 last_modified_millis: now,
                 // Nothing has been cached for a project that has never built, so there
-                // is no reset instant to report until `InvalidateProjectCache` makes one.
+                // is no reset instant to report until `InvalidateProjectCache` makes one,
+                // and no saved cache for a build of it to restore.
                 cache_invalidated_millis: None,
+                cache_saved_millis: None,
             },
         );
         // The lock is dropped before the audit record is written, so a log consumer

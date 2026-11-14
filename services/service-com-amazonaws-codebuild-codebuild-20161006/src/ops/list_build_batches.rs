@@ -144,7 +144,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 "ListBuildBatches (this engine carries no CodeBuild state)",
             ));
         };
-        let _ = ctx;
 
         // `BuildBatchFilter$status`: "The status of the batch builds to retrieve. Only
         // batch builds that have this status will be retrieved." A filter carrying no
@@ -157,8 +156,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .and_then(|filter| filter.status.as_deref());
 
         // Every batch build of every project, oldest first. Each record is read past
-        // the transition the clock already owes it, so the status filtered on here is
-        // the one `BatchGetBuildBatches` reports for the same batch build.
+        // the transition the clock already owes it — the runs its builds owe performed
+        // first, from here, where the object store those runs reach can be reached — so
+        // the status filtered on here is the one `BatchGetBuildBatches` reports for the
+        // same batch build.
+        crate::state::settle_due_builds(
+            ctx.callback(),
+            &state,
+            &crate::state::request_region(ctx.parts()),
+        )
+        .await;
         let mut ids = state
             .lock()
             .build_batch_ids_by_start(crate::state::now_millis(), wanted_status);

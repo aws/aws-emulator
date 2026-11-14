@@ -136,8 +136,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         };
 
-        let _ = ctx;
-        let now = crate::state::now_millis();
+        // A build the clock already finished keeps the outcome it reached, so the runs it
+        // owes are performed before this call decides anything — from here, where the
+        // object store those runs reach can be reached.
+        crate::state::settle_due_builds(
+            ctx.callback(),
+            &state,
+            &crate::state::request_region(ctx.parts()),
+        )
+        .await;
         let mut guard = state.lock();
 
         let Some(stored) = guard.builds.get_mut(&input.id) else {
@@ -153,8 +160,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         // A build the clock already finished keeps the outcome it reached: stopping
-        // is only possible while it is still in progress.
-        stored.settle(now);
+        // is only possible while it is still in progress, and the run the clock owed it
+        // was performed above.
+        let now = crate::state::now_millis();
         if !stored.build.build_complete {
             stored.build.build_status = Some("STOPPED".to_string());
             stored.build.current_phase = Some("COMPLETED".to_string());

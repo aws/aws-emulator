@@ -1133,6 +1133,7 @@ async fn list_projects_orders_by_each_sort_by_criterion() {
                     created_millis: created,
                     last_modified_millis: last_modified,
                     cache_invalidated_millis: None,
+                    cache_saved_millis: None,
                 },
             );
         }
@@ -1302,6 +1303,9 @@ async fn each_per_request_store_is_bounded_at_its_growth_site() {
                     },
                     start_millis: index,
                     settle_due_millis: index,
+                    artifacts: None,
+                    secondary_artifacts: Vec::new(),
+                    run_claimed: false,
                 },
             );
         }
@@ -1384,6 +1388,7 @@ async fn each_per_request_store_is_bounded_at_its_growth_site() {
                     created_millis: 0,
                     last_modified_millis: 0,
                     cache_invalidated_millis: None,
+                    cache_saved_millis: None,
                 },
             );
         }

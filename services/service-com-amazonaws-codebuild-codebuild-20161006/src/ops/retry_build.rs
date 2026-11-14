@@ -173,7 +173,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // ONE critical section: reading the build to retry, allocating the new
         // build's number, linking the two and recording the token have to be atomic
         // with respect to each other, and none of the work between them is
-        // caller-sized.
+        // caller-sized. The runs the clock owes are performed BEFORE it, from here,
+        // where the object store those runs reach can be reached, so the record this
+        // retry is derived from is the one the clock already owes.
+        crate::state::settle_due_builds(ctx.callback(), &state, &region).await;
         let mut guard = state.lock();
 
         // A build id is `<projectName>:<uuid>`, so it names the PROJECT the build
@@ -194,9 +197,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The retried build is read through `settled_build`, so the record this
         // retry is derived from is the one the clock already owes — a build whose
         // span has elapsed is reported, and copied, as finished.
-        let Some(retried) = guard
+        let Some((retried, retried_artifacts, retried_secondary_artifacts)) = guard
             .settled_build(&build_id, now)
-            .map(|stored| stored.build.clone())
+            .map(|stored| {
+                (
+                    stored.build.clone(),
+                    stored.artifacts.clone(),
+                    stored.secondary_artifacts.clone(),
+                )
+            })
         else {
             return Err(RetryBuildErrorModeled::ResourceNotFoundException(
                 ResourceNotFoundException {
@@ -336,6 +345,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 build: build.clone(),
                 start_millis: now,
                 settle_due_millis: now + crate::state::BUILD_SETTLE_MILLIS,
+                // A retry "restarts a build", so it uploads to the destinations the
+                // build it retries was started with, exactly as it runs that build's
+                // source and specification again.
+                artifacts: retried_artifacts,
+                secondary_artifacts: retried_secondary_artifacts,
+                run_claimed: false,
             },
         );
         if let Some(key) = token_key {

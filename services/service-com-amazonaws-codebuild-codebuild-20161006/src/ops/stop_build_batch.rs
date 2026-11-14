@@ -136,6 +136,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         };
 
+        // The runs the clock owes are performed first, from here, where the object store
+        // they reach can be reached (`crate::state::build_run::settle_due_builds`).
+        crate::state::settle_due_builds(
+            ctx.callback(),
+            &state,
+            &crate::state::request_region(ctx.parts()),
+        )
+        .await;
         let now = crate::state::now_millis();
         let mut guard = state.lock();
 

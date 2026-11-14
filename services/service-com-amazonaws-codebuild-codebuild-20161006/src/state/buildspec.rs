@@ -9,9 +9,19 @@
 //! every phase exited zero, and `FAILED` when one did not. `FAULT` is CodeBuild's
 //! build-SYSTEM failure, so it is not what a build whose own commands failed reports.
 //! Each phase's `phaseStatus` is the same answer for that phase's commands, and a phase
-//! whose failure aborts the build is the last phase the build reports — the phases after
-//! it never ran, so none is reported. A phase whose `on-failure` is `CONTINUE` does not
-//! abort, however many phases have already failed.
+//! whose failure aborts the build is the last COMMAND phase the build reports — the phases
+//! after it never ran, so none is reported. A phase whose `on-failure` is `CONTINUE` does
+//! not abort, however many phases have already failed. A phase's `finally` block runs
+//! after its commands whatever they answered, and an `exit` that ended the commands block
+//! does not end it.
+//!
+//! A build that ran its commands then does its own finishing work whether they succeeded
+//! or failed: what it produced is put where its artifacts say and the build reports an
+//! `UPLOAD_ARTIFACTS` phase for it, so a FAILED build uploads what it did produce exactly
+//! as a successful one does. That transfer is the object store's half of the run and is
+//! performed by [`super::build_run`], which calls [`run_commands`] and then
+//! [`finish_build`] with what the transfer answered: this module decides nothing about
+//! where an artifact went.
 //!
 //! The buildspec is YAML, read through the one bounded parse this crate reads a
 //! buildspec with ([`super::batchspec::buildspec_document`]), and its command lines are
@@ -23,7 +33,8 @@
 //! CodeBuild's `YAML_FILE_ERROR` classification for a buildspec there was none of to parse.
 //! A build whose runtime selection the environment cannot satisfy has none either, and that
 //! same phase reports what CodeBuild states about the selection
-//! ([`runtime_install_context`]).
+//! ([`runtime_install_context`]) — as does a build whose own SOURCE could not be obtained
+//! ([`BuildSeed::source_failure`]).
 
 use std::collections::BTreeMap;
 
@@ -84,19 +95,6 @@ const UNREADABLE_YAML_MESSAGE: &str = "Unable to parse YAML file";
 /// The `PhaseContext$statusCode` a phase whose command failed reports.
 const COMMAND_EXECUTION_ERROR: &str = "COMMAND_EXECUTION_ERROR";
 
-/// The `PhaseContext$statusCode` CodeBuild reports when the fault is the build's own
-/// declaration rather than a command's — which is how it reports an artifact upload that
-/// found nothing to upload.
-const CLIENT_ERROR: &str = "CLIENT_ERROR";
-
-/// What CodeBuild states when a build whose artifacts have a destination runs a buildspec
-/// that names no artifact file to put there.
-const NO_ARTIFACT_FILES_MESSAGE: &str = "No artifact files specified";
-
-/// What CodeBuild states when the artifact paths a buildspec names match nothing to
-/// upload at the build's destination.
-const NO_MATCHING_ARTIFACT_PATHS_MESSAGE: &str = "No matching artifact paths found";
-
 /// What CodeBuild states as the reason a phase's command failed: the command it ran and
 /// the status that command exited with.
 fn command_failure_message(command: &str, status: i32) -> String {
@@ -121,12 +119,35 @@ const RUNTIME_VERSIONS_KEY: &str = "runtime-versions";
 const INSTALL_PHASE_KEY: &str = "install";
 /// See [`PHASES_KEY`]: "on-failure … ABORT … CONTINUE".
 const ON_FAILURE_KEY: &str = "on-failure";
+/// See [`PHASES_KEY`]: a phase's `finally` block, whose "commands … are run after commands
+/// in the commands block" and "are run even if a command in the commands block fails".
+const FINALLY_KEY: &str = "finally";
 /// The buildspec's `artifacts` key, whose `files` are "the locations … that contain the
 /// build output artifacts".
 const ARTIFACTS_KEY: &str = "artifacts";
+/// See [`ARTIFACTS_KEY`]: "the locations of the build output artifacts in the build
+/// environment".
+const FILES_KEY: &str = "files";
+/// See [`ARTIFACTS_KEY`]: the "directory, relative to the original build location, that
+/// CodeBuild uses to determine which files … to include in the build output artifact".
+const BASE_DIRECTORY_KEY: &str = "base-directory";
+/// See [`ARTIFACTS_KEY`]: "if set to yes … the build artifact's paths are discarded and all
+/// files are placed in the root".
+const DISCARD_PATHS_KEY: &str = "discard-paths";
+/// See [`ARTIFACTS_KEY`]: the artifacts "identified by an artifact identifier" each of the
+/// build's secondary destinations takes its files from.
+const SECONDARY_ARTIFACTS_KEY: &str = "secondary-artifacts";
+/// The buildspec's `cache` key, whose `paths` are "the locations … that CodeBuild uses to
+/// upload and download the cache".
+const CACHE_KEY: &str = "cache";
+/// See [`CACHE_KEY`].
+const PATHS_KEY: &str = "paths";
 /// The `on-failure` value that lets the build go on to the next phase; the other,
 /// `ABORT`, is the default and ends the build.
 const ON_FAILURE_CONTINUE: &str = "CONTINUE";
+/// The value a buildspec's boolean members are declared ON with, beside YAML's own `true`
+/// — `discard-paths: yes`, as the buildspec reference writes it.
+const YES: &str = "yes";
 
 /// The `EnvironmentVariable$type` whose value IS the value the build sees. The other
 /// two name a parameter or a secret the build would resolve through another service,
@@ -146,9 +167,15 @@ pub struct Buildspec {
     pub runtime_versions: Vec<(String, String)>,
     /// The phases that declare commands, in the order they run.
     pub phases: Vec<DeclaredPhase>,
-    /// Whether the buildspec declares an `artifacts` section at all, which is what says
-    /// WHICH files the build's artifacts are.
-    pub declares_artifacts: bool,
+    /// The `artifacts` section, which is what says WHICH files of the build's working tree
+    /// the declared artifact is made of — `None` when the buildspec declares none at all.
+    pub artifacts: Option<ArtifactDeclaration>,
+    /// The `artifacts/secondary-artifacts` sections, by the artifact identifier each is
+    /// declared under, which is what addresses one of the build's secondary destinations.
+    pub secondary_artifacts: BTreeMap<String, ArtifactDeclaration>,
+    /// The `cache/paths` the buildspec declares, which is what a build carries over into
+    /// the next build of the same project.
+    pub cache_paths: Vec<String>,
 }
 
 /// One phase of a buildspec: the `BuildPhaseType` it is reported as, the command lines
@@ -159,9 +186,27 @@ pub struct DeclaredPhase {
     pub phase_type: &'static str,
     /// The command lines this phase declares, in declaration order.
     pub commands: Vec<String>,
+    /// The command lines the phase's `finally` block declares, in declaration order:
+    /// "the commands in a finally block are run even if a command in the commands block
+    /// fails".
+    pub finally: Vec<String>,
     /// Whether a failing command ends the build — `on-failure: ABORT`, the default,
     /// against `CONTINUE`, which goes on to the next phase.
     pub abort_on_failure: bool,
+}
+
+/// What one of a build's artifact destinations is made of, as the buildspec declares it:
+/// which files of the working tree, and under which path each is stored.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ArtifactDeclaration {
+    /// The `files` patterns, in declaration order.
+    pub files: Vec<String>,
+    /// The `base-directory` the patterns are matched under, and which is itself not part
+    /// of the artifact — `None` when the patterns are matched from the build's own root.
+    pub base_directory: Option<String>,
+    /// Whether `discard-paths` asks for every matched file to be stored at the root of the
+    /// artifact rather than under the path it was produced at.
+    pub discard_paths: bool,
 }
 
 /// Read `buildspec` as the phases a build runs, or WHY it could not be read: what the
@@ -175,9 +220,38 @@ pub fn read_buildspec(buildspec: &str) -> Result<Buildspec, UnreadableBuildspec>
     let document = buildspec_document(buildspec)?;
     let root = document.as_hash().ok_or(UnreadableBuildspec::NotRead)?;
     let mut read = Buildspec {
-        declares_artifacts: mapping_get(root, ARTIFACTS_KEY).is_some(),
+        artifacts: mapping_get(root, ARTIFACTS_KEY)
+            .and_then(::yaml_rust2::Yaml::as_hash)
+            .map(read_artifacts),
         ..Buildspec::default()
     };
+    // A buildspec that declares an `artifacts` section this reading finds no mapping in
+    // still declares one: what it names is read as nothing rather than as absent.
+    if read.artifacts.is_none() && mapping_get(root, ARTIFACTS_KEY).is_some() {
+        read.artifacts = Some(ArtifactDeclaration::default());
+    }
+    if let Some(artifacts) = mapping_get(root, ARTIFACTS_KEY).and_then(::yaml_rust2::Yaml::as_hash)
+    {
+        if let Some(secondary) =
+            mapping_get(artifacts, SECONDARY_ARTIFACTS_KEY).and_then(::yaml_rust2::Yaml::as_hash)
+        {
+            for (identifier, declared) in secondary {
+                let Some(identifier) = identifier.as_str() else {
+                    continue;
+                };
+                let Some(declared) = declared.as_hash() else {
+                    continue;
+                };
+                read.secondary_artifacts
+                    .insert(identifier.to_string(), read_artifacts(declared));
+            }
+        }
+    }
+    if let Some(cache) = mapping_get(root, CACHE_KEY).and_then(::yaml_rust2::Yaml::as_hash) {
+        if let Some(paths) = mapping_get(cache, PATHS_KEY).and_then(::yaml_rust2::Yaml::as_vec) {
+            read.cache_paths = paths.iter().filter_map(scalar_string).collect();
+        }
+    }
     if let Some(env) = mapping_get(root, ENV_KEY).and_then(::yaml_rust2::Yaml::as_hash) {
         if let Some(variables) =
             mapping_get(env, VARIABLES_KEY).and_then(::yaml_rust2::Yaml::as_hash)
@@ -222,11 +296,50 @@ pub fn read_buildspec(buildspec: &str) -> Result<Buildspec, UnreadableBuildspec>
             read.phases.push(DeclaredPhase {
                 phase_type,
                 commands,
+                finally: mapping_get(phase, FINALLY_KEY)
+                    .and_then(::yaml_rust2::Yaml::as_vec)
+                    .map(|listed| listed.iter().filter_map(scalar_string).collect())
+                    .unwrap_or_default(),
                 abort_on_failure,
             });
         }
     }
     Ok(read)
+}
+
+/// One `artifacts` (or `secondary-artifacts/<identifier>`) section, as the files it names
+/// and where they are stored.
+fn read_artifacts(declared: &::yaml_rust2::yaml::Hash) -> ArtifactDeclaration {
+    ArtifactDeclaration {
+        files: mapping_get(declared, FILES_KEY)
+            .and_then(::yaml_rust2::Yaml::as_vec)
+            .map(|listed| listed.iter().filter_map(scalar_string).collect())
+            // A single scalar is one pattern: `files: out.txt` names the same one file
+            // `files: [out.txt]` does.
+            .or_else(|| {
+                mapping_get(declared, FILES_KEY)
+                    .and_then(scalar_string)
+                    .map(|only| vec![only])
+            })
+            .unwrap_or_default(),
+        base_directory: mapping_get(declared, BASE_DIRECTORY_KEY)
+            .and_then(scalar_string)
+            .map(|directory| directory.trim().trim_matches('/').to_string())
+            .filter(|directory| !directory.is_empty()),
+        discard_paths: declared_on(mapping_get(declared, DISCARD_PATHS_KEY)),
+    }
+}
+
+/// Whether a buildspec member that takes a yes/no answer is ON: `true` as YAML reads it,
+/// or the `yes` the buildspec reference writes those members with.
+fn declared_on(declared: Option<&::yaml_rust2::Yaml>) -> bool {
+    match declared {
+        Some(::yaml_rust2::Yaml::Boolean(answer)) => *answer,
+        Some(other) => scalar_string(other).is_some_and(|written| {
+            written.eq_ignore_ascii_case(YES) || written.eq_ignore_ascii_case("true")
+        }),
+        None => false,
+    }
 }
 
 /// What the source-download phase reports about a buildspec it could not read.
@@ -283,13 +396,61 @@ pub struct BuildRun {
     pub exported_variables: Option<Vec<ExportedEnvironmentVariable>>,
 }
 
-/// Run `build`'s buildspec and answer what it did.
+/// What the build environment already holds when the build's phases run, and why the
+/// source it would have run on could not be obtained.
+///
+/// A build's INPUT is the environment's to put there before the first command runs: the
+/// source archive the build downloaded and the paths it restored from its cache are files
+/// the commands then read. A source the environment could not obtain leaves the build
+/// nothing to run at all, and what the phase that fetches it reports is why
+/// ([`BuildSeed::source_failure`]).
+#[derive(Debug, Default, Clone)]
+pub struct BuildSeed {
+    /// The files the environment holds, as `(path, contents)`.
+    pub files: Vec<(String, String)>,
+    /// What the source-download phase reports instead of running the build — `None` when
+    /// there was a source to obtain, or none to obtain at all.
+    pub source_failure: Option<PhaseContext>,
+}
+
+/// What running one build's COMMANDS answered, before what they produced is put where the
+/// build's artifacts say.
+///
+/// The run and the transfer are two steps because they answer to different things: what
+/// the commands did is the build environment's answer, and where their output went is the
+/// object store's ([`finish_build`] joins them into the phases the build reports).
+#[derive(Debug, Clone)]
+pub struct CommandRun {
+    /// Whether any phase that ran failed.
+    pub failed: bool,
+    /// The phases the build reports so far, in the order it reached them.
+    pub phases: Vec<BuildPhase>,
+    /// Whether the build got far enough to have output to put anywhere. A build whose
+    /// specification could not be read, or whose runtimes could not be installed, never
+    /// reached its own finishing work, so it reports no upload phase at all.
+    pub reached_output: bool,
+    /// The buildspec it ran, which is what declares WHICH files its artifacts and its
+    /// cache are made of — `None` for a build that never got one.
+    pub spec: Option<Buildspec>,
+    /// The files the build's working tree holds now, as `(path, contents)` in path order.
+    pub produced: Vec<(String, String)>,
+    /// See [`BuildRun::exported_variables`].
+    pub exported_variables: Option<Vec<ExportedEnvironmentVariable>>,
+}
+
+/// Run `build`'s buildspec over the environment `seed` describes and answer what its
+/// commands did.
 ///
 /// `start_millis` is the instant the build was submitted and `due_millis` the instant the
 /// clock owed its terminal transition at, so the queue closes at `due_millis` and every
 /// phase that then ran is reported inside the same instant: this session runs the whole
 /// buildspec at once rather than over wall-clock time.
-pub fn run_build(build: &Build, start_millis: i64, due_millis: i64) -> BuildRun {
+pub fn run_commands(
+    build: &Build,
+    start_millis: i64,
+    due_millis: i64,
+    seed: BuildSeed,
+) -> CommandRun {
     let mut phases = vec![
         finished_phase(
             PHASE_SUBMITTED,
@@ -328,12 +489,17 @@ pub fn run_build(build: &Build, start_millis: i64, due_millis: i64) -> BuildRun 
             read_buildspec(buildspec).map_err(|unreadable| unreadable_context(&unreadable))
         }
     };
+    // Whatever the specification says, a build whose own SOURCE could not be obtained has
+    // nothing to run: that is the work of the same phase, and it is reported first.
+    let read = match seed.source_failure {
+        Some(failure) => Err(failure),
+        None => read,
+    };
     let read = match read {
         Ok(read) => read,
         Err(context) => {
-            // The specification the build would run could not be read, so no phase of
-            // it ran: the build fails where CodeBuild reports a buildspec it cannot
-            // read.
+            // The build could not be prepared from its source and its specification, so
+            // no phase of it ran: it fails where CodeBuild reports that.
             phases.push(finished_phase(
                 PHASE_DOWNLOAD_SOURCE,
                 BUILD_STATUS_FAILED,
@@ -341,10 +507,12 @@ pub fn run_build(build: &Build, start_millis: i64, due_millis: i64) -> BuildRun 
                 due_millis,
                 Some(vec![context]),
             ));
-            phases.push(open_phase(PHASE_COMPLETED, due_millis));
-            return BuildRun {
-                status: BUILD_STATUS_FAILED.to_string(),
+            return CommandRun {
+                failed: true,
                 phases,
+                reached_output: false,
+                spec: None,
+                produced: Vec::new(),
                 exported_variables: None,
             };
         }
@@ -363,15 +531,18 @@ pub fn run_build(build: &Build, start_millis: i64, due_millis: i64) -> BuildRun 
                 due_millis,
                 Some(vec![runtime_install_context(&failure)]),
             ));
-            phases.push(open_phase(PHASE_COMPLETED, due_millis));
-            return BuildRun {
-                status: BUILD_STATUS_FAILED.to_string(),
+            return CommandRun {
+                failed: true,
                 phases,
+                reached_output: false,
+                spec: None,
+                produced: Vec::new(),
                 exported_variables: None,
             };
         }
     };
-    // The buildspec was obtained and read, which is the work of this phase.
+    // The buildspec was obtained and read, and the source it runs on is in the working
+    // tree, which is the work of this phase.
     phases.push(finished_phase(
         PHASE_DOWNLOAD_SOURCE,
         BUILD_STATUS_SUCCEEDED,
@@ -381,8 +552,17 @@ pub fn run_build(build: &Build, start_millis: i64, due_millis: i64) -> BuildRun 
     ));
 
     let mut shell = BuildShell::new(session_variables(build, &read, start_millis), installed);
+    for (path, contents) in &seed.files {
+        // A file the environment could not hold is one the commands will not find: the
+        // tree's own bounds are what refuse it, and nothing claims it is there.
+        if !shell.put_file(path, contents) {
+            ::tracing::debug!(
+                %path,
+                "a build's working tree could not hold a file the environment seeded"
+            );
+        }
+    }
     let mut failed = false;
-    let mut aborted = false;
     for declared in &read.phases {
         let outcome = run_phase(&mut shell, declared);
         let phase_failed = outcome.is_some();
@@ -402,7 +582,6 @@ pub fn run_build(build: &Build, start_millis: i64, due_millis: i64) -> BuildRun 
         // reports none of the ones after it; `on-failure: CONTINUE` goes on to the next
         // phase, however many phases have already failed.
         if phase_failed && declared.abort_on_failure {
-            aborted = true;
             break;
         }
         // `exit` ended the build's session: a non-zero status already failed the phase
@@ -413,12 +592,51 @@ pub fn run_build(build: &Build, start_millis: i64, due_millis: i64) -> BuildRun 
         }
     }
 
-    if !aborted {
-        // The build's own finishing work: putting the artifact files where the build's
-        // artifacts say, and ending the session.
-        let upload = upload_artifacts_phase(build, &read, due_millis);
-        failed |= upload.phase_status.as_deref() == Some(BUILD_STATUS_FAILED);
-        phases.push(upload);
+    CommandRun {
+        failed,
+        phases,
+        // A build that ran its commands has output to put where its artifacts say, whether
+        // those commands succeeded or not: CodeBuild uploads what the build produced for a
+        // FAILED build exactly as for one that succeeded.
+        reached_output: true,
+        produced: shell
+            .files()
+            .into_iter()
+            .map(|(path, contents)| (path.to_string(), contents.to_string()))
+            .collect(),
+        exported_variables: exported_variables(&shell, &read),
+        spec: Some(read),
+    }
+}
+
+/// The phases a build ENDS with, once what it produced has been put where its artifacts
+/// say: the build's own finishing work, and the terminal marker phase.
+///
+/// `upload` is what the transfer answered — `None` for one that put the build's output
+/// where it belongs (which includes a build with nothing to put anywhere), and the context
+/// CodeBuild reports for one that could not.
+pub fn finish_build(run: CommandRun, upload: Option<PhaseContext>, due_millis: i64) -> BuildRun {
+    let CommandRun {
+        mut failed,
+        mut phases,
+        reached_output,
+        exported_variables,
+        ..
+    } = run;
+    if reached_output {
+        let upload_failed = upload.is_some();
+        failed |= upload_failed;
+        phases.push(finished_phase(
+            PHASE_UPLOAD_ARTIFACTS,
+            if upload_failed {
+                BUILD_STATUS_FAILED
+            } else {
+                BUILD_STATUS_SUCCEEDED
+            },
+            due_millis,
+            due_millis,
+            upload.map(|context| vec![context]),
+        ));
         phases.push(finished_phase(
             PHASE_FINALIZING,
             BUILD_STATUS_SUCCEEDED,
@@ -435,56 +653,8 @@ pub fn run_build(build: &Build, start_millis: i64, due_millis: i64) -> BuildRun 
             BUILD_STATUS_SUCCEEDED.to_string()
         },
         phases,
-        exported_variables: exported_variables(&shell, &read),
+        exported_variables,
     }
-}
-
-/// The `UPLOAD_ARTIFACTS` phase of a build that got through its commands: putting the
-/// files the buildspec's `artifacts` section names where the build's `artifacts` say.
-///
-/// A build whose artifacts name no destination has nothing to put anywhere, so the phase
-/// is the whole of its own work and succeeds — which is every build whose artifacts
-/// CodePipeline manages and every build that produces none, the two types whose
-/// `location` the model documents as ignored.
-///
-/// A build that DOES name a destination bucket would have to PUT its artifact objects
-/// into that bucket, and this build environment puts none there — the files its commands
-/// wrote are its own session's ([`super::build_shell`]) and are not uploaded anywhere —
-/// so no upload is claimed: the phase ends in the client error CodeBuild reports for an
-/// upload that found nothing to put at its destination, which is the buildspec naming no
-/// artifact file at all, or no file arriving for the paths it named. Nothing reports an
-/// upload that did not happen.
-fn upload_artifacts_phase(build: &Build, read: &Buildspec, due_millis: i64) -> BuildPhase {
-    let destination = build
-        .artifacts
-        .as_ref()
-        .and_then(|artifacts| artifacts.location.as_deref())
-        .unwrap_or_default()
-        .trim();
-    if destination.is_empty() {
-        return finished_phase(
-            PHASE_UPLOAD_ARTIFACTS,
-            BUILD_STATUS_SUCCEEDED,
-            due_millis,
-            due_millis,
-            None,
-        );
-    }
-    let message = if read.declares_artifacts {
-        NO_MATCHING_ARTIFACT_PATHS_MESSAGE
-    } else {
-        NO_ARTIFACT_FILES_MESSAGE
-    };
-    finished_phase(
-        PHASE_UPLOAD_ARTIFACTS,
-        BUILD_STATUS_FAILED,
-        due_millis,
-        due_millis,
-        Some(vec![PhaseContext {
-            status_code: Some(CLIENT_ERROR.to_string()),
-            message: Some(message.to_string()),
-        }]),
-    )
 }
 
 /// Run one phase's command lines in `shell`, and answer the context of the first command
@@ -492,9 +662,26 @@ fn upload_artifacts_phase(build: &Build, read: &Buildspec, due_millis: i64) -> B
 /// having succeeded.
 ///
 /// A phase stops at its first failing command ("CodeBuild runs each command, one at a
-/// time, in the order listed"), and at an `exit` that ended the session.
+/// time, in the order listed"), and at an `exit` that ended the session. Its `finally`
+/// block then runs whatever the commands block answered — "the commands in a finally block
+/// are run even if a command in the commands block fails" — as the program it is, so an
+/// `exit` that ended the commands block does not end it too.
 fn run_phase(shell: &mut BuildShell, declared: &DeclaredPhase) -> Option<PhaseContext> {
-    for command in &declared.commands {
+    let failure = run_command_block(shell, &declared.commands);
+    if declared.finally.is_empty() {
+        return failure;
+    }
+    shell.clear_exit();
+    let finally_failure = run_command_block(shell, &declared.finally);
+    // The phase failed if either block failed, and what it reports is the FIRST failure:
+    // the command a client has to fix is the one that failed first.
+    failure.or(finally_failure)
+}
+
+/// Run one block of command lines in `shell` — a phase's `commands` or its `finally` — and
+/// answer the context of the first command that failed.
+fn run_command_block(shell: &mut BuildShell, commands: &[String]) -> Option<PhaseContext> {
+    for command in commands {
         let status = shell.run(command);
         if status != 0 {
             return Some(PhaseContext {

@@ -34,22 +34,20 @@ fn command_failure(command: &str, status: i32) -> Value {
 /// (`buildspec_file_tree.rs` covers those), so a redirection that READS a path is still a
 /// form this environment does not perform.
 ///
-/// One row per containment the shell states: a compound command, a function definition, an
-/// input redirection, a redirection of another descriptor, an arithmetic expansion, a tilde
-/// prefix and an appending assignment. (A command SUBSTITUTION is performed — in this
-/// session, over the same catalog — and what it answers is `command_substitution.rs`'s
-/// subject.)
+/// One row per containment the shell states: a function definition, an input redirection, a
+/// redirection of another descriptor, a subshell, a tilde prefix and an appending
+/// assignment. (A command SUBSTITUTION is performed — in this session, over the same
+/// catalog — and what it answers is `command_substitution.rs`'s subject; the control flow a
+/// buildspec's commands are written with, and the arithmetic they compute with, are
+/// `buildspec_control_flow.rs`'s.)
 #[tokio::test]
 async fn a_command_form_this_environment_does_not_perform_is_refused() {
     let router = emulator();
     // (case, the command line the build phase runs)
     let rows = [
-        ("a compound command", "if true; then echo yes; fi"),
-        ("a loop", "while true; do echo again; done"),
         ("a function definition", "run() { echo hi; }"),
         ("a redirection reading a file", "echo marker < /etc/hostname"),
         ("a redirection of another descriptor", "echo marker 2> errors.txt"),
-        ("an arithmetic expansion", "echo $((1 + 1))"),
         ("a tilde prefix", "echo ~/build"),
         ("an appending assignment", "PATH+=/opt/bin"),
         ("a subshell", "(echo inside)"),

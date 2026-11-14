@@ -47,21 +47,36 @@ use crate::ops::types::{
 mod arn_fields;
 /// Where a build's output artifacts go, and whether that destination exists.
 mod artifacts;
+/// Which files of a build's working tree its artifacts are made of, and where in the
+/// account's object store those objects go.
+mod artifact_upload;
 /// Which builds the `batch` section of a buildspec declares a batch build is made of.
 mod batchspec;
+/// The cache one project carries from one of its builds into the next.
+mod build_cache;
+/// Running the builds the clock owes a run, where the object store can be reached.
+mod build_run;
 /// What ONE command line of a buildspec does, in the build environment's shell — the
 /// shared bounded session, configured as a build's.
 mod build_shell;
+/// The source archive a build downloads and runs on.
+mod build_source;
 /// The phases a buildspec declares, and what running them answered.
 mod buildspec;
 /// The SHAPE of the identifiers the operations that take one as a plain string accept.
 mod identifiers;
 /// The runtimes a build environment has, and the ones a build's buildspec installs.
 mod runtime_versions;
+/// The ZIP archive a build's input and its output travel in.
+mod source_archive;
 
 pub use arn_fields::*;
+pub use artifact_upload::*;
 pub use artifacts::*;
 pub use batchspec::*;
+pub use build_cache::*;
+pub use build_run::*;
+pub use build_source::*;
 pub use buildspec::*;
 pub use identifiers::*;
 pub use runtime_versions::*;
@@ -983,12 +998,13 @@ pub struct StoredProject {
     /// discarded by that call; it is not part of the modelled [`Project`], because
     /// CodeBuild reports no member for it.
     ///
-    /// Nothing READS it yet, and no response can: the one thing that would consult it is
-    /// a build restoring the project's cache, and a build's session here keeps no cache
-    /// (see [`buildspec::run_build`]). It is kept because it is the state the reset
-    /// produces — a test reads it through the store the handler writes — rather than
-    /// because a reader exists for it today.
+    /// What reads it is a build restoring this project's cache: a build started after the
+    /// reset restores nothing that was cached before it ([`build_cache`]).
     pub cache_invalidated_millis: Option<i64>,
+    /// Epoch millis this project's cache was last SAVED at — `None` until a build of it
+    /// has saved one. Read beside [`Self::cache_invalidated_millis`], which is what tells
+    /// a cache a later build may restore from one the reset discarded.
+    pub cache_saved_millis: Option<i64>,
 }
 
 /// A persisted build: the modelled [`Build`] plus the instant at which the clock
@@ -1002,6 +1018,21 @@ pub struct StoredBuild {
     pub start_millis: i64,
     /// Epoch millis at which this build's terminal transition became due.
     pub settle_due_millis: i64,
+    /// The output-artifact destinations this build RUNS WITH, as the project's artifacts
+    /// and this start's overrides resolved them.
+    ///
+    /// Kept beside the modelled record because the destination's TYPE is what says whether
+    /// a build uploads anything at all ([`artifact_upload::destination_of`]) and the
+    /// [`BuildArtifacts`] a build reports carries no type: "If `type` is set to `S3`, this
+    /// is the name of the output bucket", and for the other two types the location "is
+    /// ignored if specified", so the same location means different things.
+    pub artifacts: Option<ProjectArtifacts>,
+    /// The same for each of the build's secondary output artifacts, in the order it runs
+    /// with them.
+    pub secondary_artifacts: Vec<ProjectArtifacts>,
+    /// Set once this build's run has been CLAIMED by the operation that is performing it
+    /// ([`build_run::settle_due_builds`]), so two calls that arrive together run it once.
+    pub run_claimed: bool,
 }
 
 /// A persisted compute fleet: the modelled [`Fleet`] plus the instants its
@@ -2070,15 +2101,96 @@ impl ComAmazonawsCodebuildCodebuild20161006State {
         Some(stored)
     }
 
-    /// Read a build, first materialising the transition the clock already owes
-    /// it. This is the only write a reporting operation makes: the move out of
-    /// `IN_PROGRESS` was due at `settle_due_millis` whether or not anybody
-    /// called, and it is computed from the stored instants, so repeating it
-    /// changes nothing.
+    /// Read a build as it stands.
+    ///
+    /// It makes no write: the transition out of `IN_PROGRESS` is the RUN of the build's
+    /// buildspec, which is performed by the operation that reads it
+    /// ([`build_run::settle_due_builds`], called before this one takes the lock) rather
+    /// than here — a run reads a caller-supplied specification and puts the build's output
+    /// in the object store, and neither can happen inside a critical section every other
+    /// request of this service shares.
     pub fn settled_build(&mut self, id: &str, now_millis: i64) -> Option<&StoredBuild> {
-        let stored = self.builds.get_mut(id)?;
-        stored.settle(now_millis);
-        Some(stored)
+        let _ = now_millis;
+        self.builds.get(id)
+    }
+
+    /// Claim every build whose run the clock owes, for the operation that is about to
+    /// perform those runs ([`build_run::settle_due_builds`]).
+    ///
+    /// A claimed build is marked as claimed under this one lock, so a run is performed
+    /// once however many calls arrive together: the others see a build that is still
+    /// `IN_PROGRESS`, which is what it is until its run has happened.
+    pub fn claim_due_build_runs(&mut self, now_millis: i64) -> Vec<build_run::ClaimedRun> {
+        // Which caches may be restored is a question about the PROJECT — a cache reset
+        // after the last save discarded it — and it is answered before the builds are
+        // taken mutably.
+        let cache_restorable: BTreeMap<String, bool> = self
+            .projects
+            .iter()
+            .map(|(name, stored)| {
+                let restorable = match (stored.cache_invalidated_millis, stored.cache_saved_millis)
+                {
+                    (Some(reset), Some(saved)) => saved >= reset,
+                    (Some(_), None) => false,
+                    _ => true,
+                };
+                (name.clone(), restorable)
+            })
+            .collect();
+        let mut claimed = Vec::new();
+        for (id, stored) in self.builds.iter_mut() {
+            let due = !stored.build.build_complete
+                && now_millis >= stored.settle_due_millis
+                && !stored.run_claimed;
+            if !due {
+                continue;
+            }
+            stored.run_claimed = true;
+            // A build is keyed by `<projectName>:<uuid>`, so the project it belongs to is
+            // known from the key even for a record that states none.
+            let project_name = stored
+                .build
+                .project_name
+                .clone()
+                .or_else(|| project_name_from_resource_id(id).map(str::to_string))
+                .unwrap_or_default();
+            claimed.push(build_run::ClaimedRun {
+                id: id.clone(),
+                build: stored.build.clone(),
+                project_name: project_name.clone(),
+                artifacts: stored.artifacts.clone(),
+                secondary_artifacts: stored.secondary_artifacts.clone(),
+                start_millis: stored.start_millis,
+                due_millis: stored.settle_due_millis,
+                cache_restorable: cache_restorable
+                    .get(&project_name)
+                    .copied()
+                    .unwrap_or(true),
+            });
+        }
+        claimed
+    }
+
+    /// Record what one claimed run answered ([`StoredBuild::record_run`]), and the instant
+    /// the cache it saved was written at, which is what a later build restores against the
+    /// project's last cache reset.
+    pub fn record_build_run(
+        &mut self,
+        claimed: &build_run::ClaimedRun,
+        recorded: build_run::RecordedRun,
+    ) {
+        if let Some(stored) = self.builds.get_mut(&claimed.id) {
+            stored.record_run(
+                recorded.run,
+                recorded.artifacts,
+                &recorded.secondary_artifacts,
+            );
+        }
+        if let Some(saved) = recorded.cache_saved_millis {
+            if let Some(project) = self.projects.get_mut(&claimed.project_name) {
+                project.cache_saved_millis = Some(saved);
+            }
+        }
     }
 
     /// Read a batch build, first materialising the transition the clock already
@@ -2566,23 +2678,44 @@ impl StoredFleet {
 }
 
 impl StoredBuild {
-    /// Materialise this build's terminal state once its due instant has passed.
+    /// Record what running this build answered: the status and phases it ended with, the
+    /// variables it exported, and what it reports for the artifacts it put at their
+    /// destinations.
     ///
-    /// Idempotent and purely a function of the stored instants and of the build's own
-    /// record: a build that is already complete, or whose span has not elapsed, is left
-    /// alone, and the status it takes is what RUNNING its buildspec answered
-    /// ([`buildspec::run_build`]) rather than a status fixed here.
-    pub fn settle(&mut self, now_millis: i64) {
-        if self.build.build_complete || now_millis < self.settle_due_millis {
+    /// The ONE place a finished build's record is written. A build's run is performed by
+    /// the operation that read it ([`build_run::settle_due_builds`]) and never under this
+    /// store's lock: the run reads a caller-supplied buildspec and puts the build's output
+    /// in the object store, and neither belongs in a critical section every other request
+    /// of this service shares.
+    ///
+    /// Idempotent: a build that is already complete keeps the outcome it reached, so a run
+    /// recorded for a build something else has meanwhile finished — a `StopBuild` that
+    /// stopped it — changes nothing.
+    pub fn record_run(
+        &mut self,
+        run: BuildRun,
+        artifacts: Option<BuildArtifacts>,
+        secondary_artifacts: &[(String, BuildArtifacts)],
+    ) {
+        if self.build.build_complete {
             return;
         }
-        let run = buildspec::run_build(&self.build, self.start_millis, self.settle_due_millis);
         self.build.build_status = Some(run.status);
         self.build.current_phase = Some("COMPLETED".to_string());
         self.build.build_complete = true;
         self.build.end_time = Some(datetime(self.settle_due_millis));
         self.build.phases = Some(run.phases);
         self.build.exported_environment_variables = run.exported_variables;
+        if let Some(artifacts) = artifacts {
+            self.build.artifacts = Some(artifacts);
+        }
+        for (identifier, uploaded) in secondary_artifacts {
+            for reported in self.build.secondary_artifacts.iter_mut().flatten() {
+                if reported.artifact_identifier.as_deref() == Some(identifier.as_str()) {
+                    *reported = uploaded.clone();
+                }
+            }
+        }
     }
 }
 

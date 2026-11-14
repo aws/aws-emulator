@@ -27,6 +27,13 @@
 //! writes into the session's own working tree, which the commands after it read, and which
 //! is what [`BuildShell`] exposes.
 //!
+//! That working tree is the build environment's own storage — the source directory a build
+//! runs in — so the session is given the file utilities over it
+//! ([`::service_common::posix_shell_session::ShellSession::with_file_utilities`]): the
+//! service SEEDS it with the files the build is to find there (a source archive it
+//! downloaded, a path it restored from the cache) and takes back out what the commands
+//! produced, which is what the build's artifacts and its cache are selected from.
+//!
 //! The commands the build ENVIRONMENT provides beyond the shell's own utilities are the
 //! programs of the runtimes this build installed ([`super::runtime_versions`]), which the
 //! session asks for a command its catalog does not name.
@@ -53,8 +60,29 @@ impl BuildShell {
                 // The shared statuses and bounds, and no output: see this module's header.
                 ::service_common::posix_shell_session::SessionConfig::default(),
                 Box::new(installed),
-            ),
+            )
+            // The build environment has a working directory of its own, so the file
+            // utilities are commands this session performs over it.
+            .with_file_utilities(),
         }
+    }
+
+    /// Seed a file the build is to find in its working tree, answering whether the tree
+    /// took it — what an unpacked source archive and a restored cache path arrive through.
+    pub(super) fn put_file(&mut self, path: &str, contents: &str) -> bool {
+        self.session.put_file(path, contents)
+    }
+
+    /// The files this build's working tree holds, in path order: what its commands
+    /// produced, which is what its artifacts and its cache are selected from.
+    pub(super) fn files(&self) -> Vec<(&str, &str)> {
+        self.session.tree_files()
+    }
+
+    /// Forget an `exit` that ended one of this build's command blocks, so the block the
+    /// build runs next — a phase's `finally` block — runs as the program it is.
+    pub(super) fn clear_exit(&mut self) {
+        self.session.clear_exit();
     }
 
     /// The value this session holds for `name`, or `None` when it holds none.

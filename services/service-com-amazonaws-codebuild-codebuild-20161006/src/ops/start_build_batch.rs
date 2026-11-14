@@ -472,8 +472,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     .or(project.secondary_source_versions)
                     .unwrap_or_default(),
             ),
-            artifacts: configured_artifacts.map(crate::state::batch_artifacts_of),
-            secondary_artifacts: configured_secondary_artifacts.map(|list| {
+            artifacts: configured_artifacts
+                .clone()
+                .map(crate::state::batch_artifacts_of),
+            secondary_artifacts: configured_secondary_artifacts.clone().map(|list| {
                 list.into_iter()
                     .map(crate::state::batch_artifacts_of)
                     .collect()
@@ -645,6 +647,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     settle_due_millis: now
                         + crate::state::BUILD_SETTLE_MILLIS
                             * i64::try_from(level.saturating_add(1)).unwrap_or(1),
+                    // Every build of the batch uploads to the destination the batch
+                    // resolved, which is the one its own group's resolved artifacts are
+                    // then read from.
+                    artifacts: configured_artifacts.clone(),
+                    secondary_artifacts: configured_secondary_artifacts
+                        .clone()
+                        .unwrap_or_default(),
+                    run_claimed: false,
                 },
             ));
         }

@@ -138,6 +138,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         let region = crate::state::request_region(ctx.parts());
         let now = crate::state::now_millis();
+        // The builds of a batch are what its own status is decided from, so the runs the
+        // clock owes them are performed before this read reports anything — from here,
+        // where the object store those runs reach can be reached
+        // (`crate::state::build_run::settle_due_builds`).
+        crate::state::settle_due_builds(ctx.callback(), &state, &region).await;
         let mut guard = state.lock();
         let mut build_batches = Vec::new();
         let mut not_found = Vec::new();

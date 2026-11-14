@@ -421,6 +421,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .logs_config_override
             .clone()
             .or_else(|| project.logs_config.clone());
+        // The artifacts destinations this build RUNS WITH, resolved the same way: the
+        // override when the request carries one, and the project's own otherwise. The
+        // build's own record reports them as `BuildArtifacts`, which states no type, so
+        // the resolved `ProjectArtifacts` are what the run is given (`StoredBuild`).
+        let artifacts_destination = input
+            .artifacts_override
+            .clone()
+            .or_else(|| project.artifacts.clone());
+        let secondary_destinations: Option<Vec<ProjectArtifacts>> = input
+            .secondary_artifacts_override
+            .clone()
+            .or_else(|| project.secondary_artifacts.clone());
 
         let mut build = Build {
             // id, arn and buildNumber are filled in by the WRITE PASS below: the
@@ -458,20 +470,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     .or(project.secondary_source_versions)
                     .unwrap_or_default(),
             ),
-            artifacts: input
-                .artifacts_override
+            artifacts: artifacts_destination
                 .clone()
-                .or_else(|| project.artifacts.clone())
                 .map(crate::state::build_artifacts_of),
-            secondary_artifacts: input
-                .secondary_artifacts_override
-                .clone()
-                .or(project.secondary_artifacts)
-                .map(|list| {
-                    list.into_iter()
-                        .map(crate::state::build_artifacts_of)
-                        .collect()
-                }),
+            secondary_artifacts: secondary_destinations.as_ref().map(|list| {
+                list.iter()
+                    .cloned()
+                    .map(crate::state::build_artifacts_of)
+                    .collect()
+            }),
             cache: Some(crate::state::effective_cache(
                 input.cache_override.clone().or(project.cache),
             )),
@@ -567,6 +574,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 build: build.clone(),
                 start_millis: now,
                 settle_due_millis: now + crate::state::BUILD_SETTLE_MILLIS,
+                // The destinations this build UPLOADS to, kept as the artifacts they were
+                // resolved from: the type is what says whether there is a destination at
+                // all, and the `BuildArtifacts` the record reports carries none.
+                artifacts: artifacts_destination.clone(),
+                secondary_artifacts: secondary_destinations.clone().unwrap_or_default(),
+                run_claimed: false,
             },
         );
         if let Some(key) = token_key {

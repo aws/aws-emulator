@@ -501,6 +501,9 @@ async fn the_builds_of_a_deleted_batch_build_are_deleted_with_it() {
                         },
                         start_millis: started,
                         settle_due_millis: started,
+                        artifacts: None,
+                        secondary_artifacts: Vec::new(),
+                        run_claimed: false,
                     },
                 );
             }

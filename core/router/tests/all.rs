@@ -228,6 +228,10 @@ mod codebuild_service_role_trust;
 mod appstream_app_block_builder_role_trust;
 #[path = "all/codebuild_artifacts_override_bucket.rs"]
 mod codebuild_artifacts_override_bucket;
+// What a build PUTS in, and READS out of, the account's object store: the artifact objects
+// it uploads, the cache it carries between builds, and the source archive it runs on.
+#[path = "all/codebuild_s3_build_output.rs"]
+mod codebuild_s3_build_output;
 #[path = "all/cloudformation_ec2_cdk_vpc_estate.rs"]
 mod cloudformation_ec2_cdk_vpc_estate;
 #[path = "all/greengrass_deployment_iot_job.rs"]

@@ -134,7 +134,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 "BatchGetBuilds (this engine carries no CodeBuild state)",
             ));
         };
-        let _ = ctx;
 
         // Every id has to ADDRESS a build — the `<projectName>:<uuid>` form every build
         // of this service is keyed by, or the ARN whose resource segment is such an id.
@@ -156,6 +155,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let now = crate::state::now_millis();
+        // The runs the clock owes are performed BEFORE this read reports anything: a
+        // build whose source, cache or artifacts live in the account's object store is
+        // run from here, where that store can be reached, because nothing under the state
+        // lock can reach it (`crate::state::build_run::settle_due_builds`). Like the
+        // settle below it was owed at its due instant whether or not anybody called.
+        crate::state::settle_due_builds(
+            ctx.callback(),
+            &state,
+            &crate::state::request_region(ctx.parts()),
+        )
+        .await;
         let mut guard = state.lock();
         let mut builds = Vec::new();
         let mut not_found = Vec::new();

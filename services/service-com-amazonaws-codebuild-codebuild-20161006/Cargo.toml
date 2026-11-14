@@ -44,6 +44,18 @@ aws-sdk-s3 = { version = "1", default-features = false }
 # DATA-FORMAT PARSER, not an execution substrate: no `unsafe`, no C, no build script).
 # The text it is handed is bounded first — see `crate::state`'s batchspec reading.
 yaml-rust2 = { version = "0.10", default-features = false }
+# `zip`: a build's S3 source is "a ZIP file that contains the source code", and the
+# artifacts whose packaging is ZIP — and the cache a project carries between builds — are
+# the same form, so this is the codec for both directions. A DATA-FORMAT codec, with only
+# the deflate method linked.
+zip = { version = "9", default-features = false, features = ["deflate"] }
+# `globset`: a buildspec's `artifacts/files` and `cache/paths` are glob patterns matched
+# against the files a build produced; globset is the pure-Rust glob matcher this
+# workspace already matches caller-supplied patterns with.
+globset = "0.4"
+# `md-5`: the checksums a build reports for an artifact whose packaging is ZIP are of the
+# archive's own bytes (`BuildArtifacts$md5sum`, `$sha256sum`).
+md-5 = "0.10"
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

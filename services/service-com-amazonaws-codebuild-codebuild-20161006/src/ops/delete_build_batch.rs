@@ -138,6 +138,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         };
 
+        // The runs the clock owes this batch's builds are performed first, from here,
+        // where the object store they reach can be reached: a batch whose builds have all
+        // finished is a batch this delete may remove.
+        crate::state::settle_due_builds(
+            ctx.callback(),
+            &state,
+            &crate::state::request_region(ctx.parts()),
+        )
+        .await;
         let now = crate::state::now_millis();
         let mut guard = state.lock();
 
