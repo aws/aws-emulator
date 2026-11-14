@@ -109,6 +109,8 @@ mod rate_based_window_recovery;
 mod referenced_resource_deletes;
 #[path = "all/refusal_classes.rs"]
 mod refusal_classes;
+#[path = "all/refusal_precedence.rs"]
+mod refusal_precedence;
 #[path = "all/regex_pattern_set_lifecycle.rs"]
 mod regex_pattern_set_lifecycle;
 #[path = "all/regex_pattern_set_listing.rs"]

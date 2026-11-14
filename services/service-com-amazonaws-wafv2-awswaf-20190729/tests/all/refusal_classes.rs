@@ -14,9 +14,11 @@
 //! 2. A managed rule group is identified by its `(VendorName, Name)` pair alone, so
 //!    a pair that resolves to nothing is refused with the nonexistent-item class
 //!    whose sentence names that pair.
-//! 3. An ARN member WAF cannot USE — malformed, of the wrong kind, or naming nothing
-//!    in the namespace asked about — is the invalid-parameter refusal with `Field`
-//!    RESOURCE_ARN, answered before the request's other members are judged.
+//! 3. An ARN member WAF cannot READ as the kind of ARN the member takes — malformed,
+//!    or of the wrong kind — is the invalid-parameter refusal with `Field`
+//!    RESOURCE_ARN, answered before the request's other members are judged; an ARN
+//!    that is well formed and only fails to RESOLVE is judged against the store, so
+//!    it comes after the target the request acts on.
 //! 4. A regular expression a save would store has to be one WAF can inspect with:
 //!    it must parse AND its match must be able to consume something, so a pattern
 //!    that matches the empty string is refused as badly formatted.
@@ -360,21 +362,23 @@ async fn a_managed_rule_group_that_resolves_to_nothing_is_named_in_the_refusal()
     }
 }
 
-/// Rule 3: an `AssociatedRuleGroupArn` WAF cannot use is the invalid-parameter
-/// refusal naming the ARN, and it is answered before the lock token and before the
-/// managed rule set the put targets are judged.
+/// Rule 3: an `AssociatedRuleGroupArn` WAF cannot READ as a rule-group ARN is the
+/// invalid-parameter refusal naming the ARN, and it is answered before the lock token
+/// and before the managed rule set the put targets are judged.
 ///
-/// The rows differ in HOW the ARN fails — not an ARN at all, another service's ARN, a
-/// wafv2 ARN of another resource kind, and a well-formed rule-group ARN naming
-/// nothing — and each is sent with a lock token that is not even `LockToken`-shaped
-/// and against a set no account holds, so what the refusal reports is the ARN rather
-/// than either of those.
+/// The rows differ in HOW the ARN fails to be one — not an ARN at all, another
+/// service's ARN, a wafv2 ARN of another resource kind — and each is sent with a lock
+/// token that is not even `LockToken`-shaped and against a set no account holds, so
+/// what the refusal reports is the ARN rather than either of those. Each of those
+/// faults is in the REQUEST, which is why it is reported ahead of both: an ARN that is
+/// well formed and only fails to RESOLVE is a different judgement, made against the
+/// store and so after the target the put acts on
+/// (`crate::refusal_precedence`).
 #[tokio::test]
 async fn an_arn_the_put_cannot_use_is_refused_before_anything_else() {
     let waf = Waf::new();
     let (_group_id, group_arn, _group_lock) =
         create_rule_group(&waf, SCOPE_REGIONAL, "vendor-group", 100, json!([])).await;
-    let absent_group = format!("{group_arn}-never-minted");
     let ip_set_kind = group_arn.replace("/rulegroup/", "/ipset/");
 
     for (case, arn) in [
@@ -389,7 +393,6 @@ async fn an_arn_the_put_cannot_use_is_refused_before_anything_else() {
             "arn:aws:s3:::aws-waf-logs-bucket".to_string(),
         ),
         ("a wafv2 ARN of another kind", ip_set_kind),
-        ("a rule-group ARN naming nothing", absent_group),
     ] {
         let body = waf
             .call_from(

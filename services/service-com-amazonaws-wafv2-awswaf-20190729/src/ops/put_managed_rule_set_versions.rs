@@ -15,6 +15,11 @@
 //! runs every modelled constraint BEFORE any handler, so a token left there is
 //! reported instead of the reference.
 //!
+//! RESOLVING a reference against the store, on the other hand, waits for the TARGET:
+//! the managed rule set `(Scope, Name, Id)` names is looked up first, so a request
+//! against a set that does not exist is `WAFNonexistentItemException` whatever its
+//! `VersionsToPublish` entries reference.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -232,20 +237,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(crate::scaffolded::Scaffolded::validation(envelope));
         }
 
-        // WAF RESOLVES the ARNs the request carries first, before it judges any other
-        // member and before it resolves the set the put targets. Each entry of
-        // `VersionsToPublish` names "the Amazon Resource Name (ARN) of the vendor's
-        // rule group that's used in the published managed rule group version"
-        // (`VersionToPublish$AssociatedRuleGroupArn`), and a value WAF cannot USE
-        // there — not an ARN, another service's ARN, a wafv2 ARN of a kind that is
-        // not a rule group, or a well-formed rule-group ARN naming no rule group of
-        // this scope — is the modelled `WAFInvalidParameterException`: "Your request
-        // references an ARN that is malformed, or corresponds to a resource with
-        // which [it] can't be [used]", from that error's own doc, carrying `Field`
+        // WAF judges the ARNs the request carries before it judges the request's other
+        // members. Each entry of `VersionsToPublish` names "the Amazon Resource Name
+        // (ARN) of the vendor's rule group that's used in the published managed rule
+        // group version" (`VersionToPublish$AssociatedRuleGroupArn`), and a value WAF
+        // cannot USE there — not an ARN, another service's ARN, a wafv2 ARN of a kind
+        // that is not a rule group, or a well-formed rule-group ARN naming no rule
+        // group of this scope — is the modelled `WAFInvalidParameterException`: "Your
+        // request references an ARN that is malformed, or corresponds to a resource
+        // with which [it] can't be [used]", from that error's own doc, carrying `Field`
         // RESOURCE_ARN, the rejected ARN as `Parameter` and
         // `crate::state::ARN_NOT_VALID_REASON` as `Reason` — the one sentence that
         // class carries for both halves of it, because the `Parameter` member already
-        // says which ARN. The syntax half needs no state and is judged here:
+        // says which ARN. The SYNTAX half needs no state, so it is judged here, with
+        // the request's other request-only judgements; the half that RESOLVES the ARN
+        // against the store waits for the target the put acts on, below.
         if let Some(arn) = unacceptable_rule_group_reference(&input) {
             return Err(
                 PutManagedRuleSetVersionsErrorModeled::WAFInvalidParameterException(
@@ -253,6 +259,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
                 .into(),
             );
+        }
+
+        // Only then the optimistic-lock token's own modelled constraints, which this
+        // operation took over from the boundary so they run AFTER the references
+        // above (`skip_validation` on `PutManagedRuleSetVersionsInput`). Still a
+        // judgement about the REQUEST, so it is taken before the store is read at all.
+        let violations = crate::state::validate_members(&[(
+            &crate::state::M_LOCK_TOKEN,
+            crate::state::ConstrainedValue::Text(&input.lock_token),
+        )]);
+        if !violations.is_empty() {
+            return Err(crate::scaffolded::Scaffolded::validation(
+                crate::state::constraint_envelope(&violations),
+            ));
         }
 
         let Some(state) = crate::state::service_state(&*self.engine) else {
@@ -264,6 +284,33 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
         let mut state = state.lock();
+
+        // The TARGET of the put is the managed rule set `(Scope, Name, Id)` names, and
+        // it is resolved BEFORE anything the request REFERENCES is resolved against the
+        // store: an identity no managed rule set of this account carries names a
+        // resource that doesn't exist, whatever else the request says, so a publisher
+        // is told to create the set rather than that its body is malformed. Nothing is
+        // published under it either way. (The reference's own SYNTAX is judged above,
+        // out of the request alone and so before the store is read at all; it is only
+        // RESOLVING a reference that has to wait for the target.)
+        if state
+            .managed_rule_set(&input.scope, &input.name, &input.id)
+            .is_none()
+        {
+            crate::state::audit(
+                "PutManagedRuleSetVersions",
+                &input.scope,
+                &input.name,
+                &input.id,
+                "WAFNonexistentItemException",
+            );
+            return Err(
+                PutManagedRuleSetVersionsErrorModeled::WAFNonexistentItemException(
+                    crate::state::nonexistent_item_exception(),
+                )
+                .into(),
+            );
+        }
 
         // … and the resolution half against the store: every rule group a published
         // version is defined by has to exist IN THIS SCOPE, because a version offered
@@ -296,42 +343,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 );
             };
             published_capacities.insert(arn, entry.rule_group.capacity);
-        }
-
-        // Only then the optimistic-lock token's own modelled constraints, which this
-        // operation took over from the boundary so they run AFTER the references
-        // above (`skip_validation` on `PutManagedRuleSetVersionsInput`).
-        let violations = crate::state::validate_members(&[(
-            &crate::state::M_LOCK_TOKEN,
-            crate::state::ConstrainedValue::Text(&input.lock_token),
-        )]);
-        if !violations.is_empty() {
-            return Err(crate::scaffolded::Scaffolded::validation(
-                crate::state::constraint_envelope(&violations),
-            ));
-        }
-
-        // The TARGET of the put is the managed rule set `(Scope, Name, Id)` names: an
-        // identity no managed rule set of this account carries names a resource that
-        // doesn't exist, whatever else the request says, and nothing is published
-        // under it.
-        if state
-            .managed_rule_set(&input.scope, &input.name, &input.id)
-            .is_none()
-        {
-            crate::state::audit(
-                "PutManagedRuleSetVersions",
-                &input.scope,
-                &input.name,
-                &input.id,
-                "WAFNonexistentItemException",
-            );
-            return Err(
-                PutManagedRuleSetVersionsErrorModeled::WAFNonexistentItemException(
-                    crate::state::nonexistent_item_exception(),
-                )
-                .into(),
-            );
         }
 
         let now = ::aws_smithy_types::DateTime::from_millis(crate::state::now_millis());

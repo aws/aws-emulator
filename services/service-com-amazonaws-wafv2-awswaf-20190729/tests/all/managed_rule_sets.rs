@@ -56,7 +56,10 @@ const RULE_GROUP_CAPACITIES: [i64; 2] = [50, 120];
 ///
 /// The one thing these suites cannot do over the wire: no operation in this model
 /// creates a managed rule set.
-fn provision_managed_rule_set(
+///
+/// Shared with the sibling suites that need a set that EXISTS (see
+/// `crate::refusal_precedence`) rather than copied into each one.
+pub(crate) fn provision_managed_rule_set(
     engine: &engine::InMemoryEngine,
     scope: &str,
     name: &str,

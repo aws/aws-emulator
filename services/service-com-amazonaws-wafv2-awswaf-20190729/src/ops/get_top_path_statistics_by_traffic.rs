@@ -224,25 +224,37 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A read: `ctx` carries the request's own metadata (the endpoint region the
         // scope is judged against) and nothing here writes to the store.
 
-        // The request's own members first, so a bad one is refused whether or not
-        // the ARN it carries names a stored web ACL.
+        // This request names its target by ARN, and a wafv2 resource ARN carries the
+        // namespace the resource lives in (`crate::state::arn_scope`): the leading
+        // segment of its resource part is what a `Scope` names. So the ARN is judged
+        // FIRST, and against the scope the request asks about — an ARN that is no web
+        // ACL ARN at all (malformed, or naming a resource of another kind) and one
+        // whose namespace is not the one `Scope` names are the same thing to this
+        // request, an ARN WAF cannot use for it, and both are the parameter failure the
+        // model names rather than a missing resource: `Field` RESOURCE_ARN, `Parameter`
+        // the ARN exactly as supplied and `Reason`
+        // `crate::state::ARN_NOT_VALID_REASON`. It precedes the scope precondition
+        // below because the pairing is what the request got wrong — a caller told its
+        // SCOPE is wrong would retry under the other namespace, where the web ACL this
+        // ARN names does not live either.
+        let arn = input.web_acl_arn.as_str();
+        if crate::state::arn_resource_kind(arn) != Some(crate::state::WEB_ACL_ARN_KIND)
+            || crate::state::arn_scope(arn) != Some(input.scope.as_str())
+        {
+            return Err(
+                GetTopPathStatisticsByTrafficErrorModeled::WAFInvalidParameterException(
+                    crate::state::invalid_arn_exception(arn),
+                )
+                .into(),
+            );
+        }
+        // Then the namespace against the endpoint this request reached: an unknown
+        // value, and the global scope at an endpoint that does not serve it, are the
+        // same bad parameter (`crate::service::requests::validate_scope`).
         if let Err(refusal) = crate::service::requests::validate_scope(&input.scope, ctx.parts()) {
             return Err(
                 GetTopPathStatisticsByTrafficErrorModeled::WAFInvalidParameterException(refusal)
                     .into(),
-            );
-        }
-        // `WebAclArn` names a web ACL, so an ARN of another shape — malformed, or
-        // well formed but naming a resource of another kind — is the parameter
-        // failure the model names, not a missing resource.
-        if crate::state::arn_resource_kind(&input.web_acl_arn)
-            != Some(crate::state::WEB_ACL_ARN_KIND)
-        {
-            return Err(
-                GetTopPathStatisticsByTrafficErrorModeled::WAFInvalidParameterException(
-                    crate::state::invalid_arn_exception(&input.web_acl_arn),
-                )
-                .into(),
             );
         }
 

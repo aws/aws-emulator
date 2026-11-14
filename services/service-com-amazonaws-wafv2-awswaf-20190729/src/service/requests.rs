@@ -61,9 +61,33 @@ pub fn validate_scope(
     scope: &str,
     parts: &::http::request::Parts,
 ) -> Result<(), WAFInvalidParameterException> {
-    let served_here =
-        scope != SCOPE_CLOUDFRONT || request_region(parts) == CLOUDFRONT_SCOPE_REGION;
-    if !is_known_scope(scope) || !served_here {
+    // A value the enum does not declare never reaches a handler — the framework
+    // refuses it at the request boundary, in the request validator's own envelope —
+    // so this branch states that invariant for a handler reached any other way
+    // rather than guarding a case a request can still bring in.
+    if !is_known_scope(scope) {
+        return Err(invalid_scope_exception(scope));
+    }
+    scope_served_here(scope, parts)
+}
+
+/// The ENDPOINT half of [`validate_scope`]: `Ok(())` unless `scope` names a
+/// namespace the endpoint this request reached cannot act in.
+///
+/// Separated from the value half because the two are judged at different points of a
+/// request's life. Whether a value IS a scope is a modelled constraint on the
+/// `Scope` member, which the request boundary refuses before any handler and states
+/// in the request validator's own envelope; whether the namespace it names is served
+/// HERE is WAF's own precondition, which no model expresses and which WAF takes
+/// before it reports any other member's constraint
+/// ([`crate::service::scope_gate`]). A caller that sent a scope the enum does not
+/// declare has a malformed request; one that sent a declared scope to the wrong
+/// endpoint has a well-formed request this endpoint cannot serve.
+pub fn scope_served_here(
+    scope: &str,
+    parts: &::http::request::Parts,
+) -> Result<(), WAFInvalidParameterException> {
+    if scope == SCOPE_CLOUDFRONT && request_region(parts) != CLOUDFRONT_SCOPE_REGION {
         return Err(invalid_scope_exception(scope));
     }
     Ok(())

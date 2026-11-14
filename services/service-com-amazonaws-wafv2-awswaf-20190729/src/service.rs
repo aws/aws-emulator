@@ -65,10 +65,14 @@ pub mod metrics;
 /// The judgement every operation makes about the request itself, before it resolves
 /// anything the request names: the `Scope` against the endpoint it was signed for.
 pub mod requests;
+/// Where the `Scope` precondition is judged: ahead of the request boundary's own
+/// refusals, which is the order WAF takes the two in.
+pub mod scope_gate;
 pub mod sqli;
 
+use scope_gate::ScopeGate;
 use smithy_server_runtime::{
-    http, ErasedOperation, Refusal, Refused, Service,
+    http, ErasedOperation, Operation, OperationRoutingTable, Refusal, Refused, Service,
 };
 use std::sync::Arc;
 
@@ -79,6 +83,51 @@ use std::sync::Arc;
 /// router builds one shared engine and hands it to `new`.
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
     entry: crate::ServiceDefinition<Eng>,
+    /// Every operation whose `Scope` RESOLVES a namespace, each the same operation the
+    /// generated table holds and built from the same shared engine, wrapped in
+    /// [`ScopeGate`] so that namespace is judged before the request boundary refuses
+    /// anything else about the request. Keyed by the routing key the protocol resolves
+    /// — the key the generated table uses — so a wrapped operation cannot be filed
+    /// under a key no request resolves.
+    gated: OperationRoutingTable,
+}
+
+/// Wire one `crate::ops::<module>::<Operation>` per line into `table`, each wrapped in
+/// [`ScopeGate`] over its `Scope` member and keyed by its operation shape name — the
+/// routing key `ServerProtocol::routing_key` resolves and the generated table is keyed
+/// by.
+///
+/// For the operations whose model marks `Scope` `@required`, so the input carries it
+/// outright.
+macro_rules! gate_required_scope {
+    ($table:expr, $engine:expr, $($module:ident :: $operation:ident),+ $(,)?) => {
+        $(
+            $table.add_operation(
+                <crate::ops::$module::$operation<Eng> as Operation>::NAME,
+                ::std::boxed::Box::new(ScopeGate::over(
+                    crate::ops::$module::$operation::new(Arc::clone(&$engine)),
+                    |input| Some(input.scope.as_str()),
+                )) as ::std::boxed::Box<dyn ErasedOperation>,
+            );
+        )+
+    };
+}
+
+/// [`gate_required_scope`] for the operations whose `Scope` is optional because the
+/// request may address its target by ARN instead, which carries the namespace itself:
+/// a request that names no scope names no namespace for the gate to judge.
+macro_rules! gate_optional_scope {
+    ($table:expr, $engine:expr, $($module:ident :: $operation:ident),+ $(,)?) => {
+        $(
+            $table.add_operation(
+                <crate::ops::$module::$operation<Eng> as Operation>::NAME,
+                ::std::boxed::Box::new(ScopeGate::over(
+                    crate::ops::$module::$operation::new(Arc::clone(&$engine)),
+                    |input| input.scope.as_deref(),
+                )) as ::std::boxed::Box<dyn ErasedOperation>,
+            );
+        )+
+    };
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -86,8 +135,59 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// generated [`ServiceDefinition`], which constructs each operation from it; the
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
+        let mut gated = OperationRoutingTable::new();
+        // Every operation that RESOLVES something in the namespace its `Scope` names —
+        // the whole set, not a family of it, because the precondition is the same
+        // judgement about the same member whichever operation was called. The two
+        // operations that take a `Scope` and are NOT here are named in
+        // [`scope_gate`]'s own docs: `CreateWebACL`, which mints into a namespace
+        // rather than resolving in one, and `GetTopPathStatisticsByTraffic`, whose
+        // target is an ARN judged against the scope ahead of this precondition.
+        gate_required_scope!(
+            gated,
+            engine,
+            check_capacity::CheckCapacity,
+            create_api_key::CreateAPIKey,
+            create_ip_set::CreateIPSet,
+            create_regex_pattern_set::CreateRegexPatternSet,
+            create_rule_group::CreateRuleGroup,
+            delete_api_key::DeleteAPIKey,
+            delete_ip_set::DeleteIPSet,
+            delete_regex_pattern_set::DeleteRegexPatternSet,
+            delete_rule_group::DeleteRuleGroup,
+            delete_web_acl::DeleteWebACL,
+            describe_all_managed_products::DescribeAllManagedProducts,
+            describe_managed_products_by_vendor::DescribeManagedProductsByVendor,
+            describe_managed_rule_group::DescribeManagedRuleGroup,
+            get_decrypted_api_key::GetDecryptedAPIKey,
+            get_ip_set::GetIPSet,
+            get_managed_rule_set::GetManagedRuleSet,
+            get_rate_based_statement_managed_keys::GetRateBasedStatementManagedKeys,
+            get_regex_pattern_set::GetRegexPatternSet,
+            get_revenue_statistics_summary::GetRevenueStatisticsSummary,
+            get_revenue_statistics_time_series::GetRevenueStatisticsTimeSeries,
+            get_sampled_requests::GetSampledRequests,
+            list_api_keys::ListAPIKeys,
+            list_available_managed_rule_group_versions::ListAvailableManagedRuleGroupVersions,
+            list_available_managed_rule_groups::ListAvailableManagedRuleGroups,
+            list_ip_sets::ListIPSets,
+            list_logging_configurations::ListLoggingConfigurations,
+            list_managed_rule_sets::ListManagedRuleSets,
+            list_regex_pattern_sets::ListRegexPatternSets,
+            list_rule_groups::ListRuleGroups,
+            list_settlement_records::ListSettlementRecords,
+            list_web_ac_ls::ListWebACLs,
+            put_managed_rule_set_versions::PutManagedRuleSetVersions,
+            update_ip_set::UpdateIPSet,
+            update_managed_rule_set_version_expiry_date::UpdateManagedRuleSetVersionExpiryDate,
+            update_regex_pattern_set::UpdateRegexPatternSet,
+            update_rule_group::UpdateRuleGroup,
+            update_web_acl::UpdateWebACL,
+        );
+        gate_optional_scope!(gated, engine, get_rule_group::GetRuleGroup, get_web_acl::GetWebACL,);
         Self {
             entry: crate::ServiceDefinition::new(engine),
+            gated,
         }
     }
 }
@@ -114,12 +214,14 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         &self,
         req: &aws_smithy_runtime_api::http::Request,
     ) -> Option<&dyn ErasedOperation> {
-        // Return `Some(op)` to serve a request the model's routing key cannot name
-        // correctly; `None` (the default) lets the generated routing table resolve
-        // it. `req` is the whole request, so a decision that depends on the body —
-        // the `Action` form field on a query protocol, say — is reachable here.
-        let _ = req;
-        None
+        // NOT a re-route: the key is the one the generated table's own protocol
+        // resolves, and the operation it names is the one served — wrapped in
+        // [`ScopeGate`], so the namespace the request asks about is judged before the
+        // request boundary refuses anything else about it. An operation the model names
+        // and that table does not resolves to `None` here and is served by the
+        // generated table unchanged.
+        let key = self.entry.protocol().routing_key(req).ok()?;
+        self.gated.get(key)
     }
 
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {

@@ -710,9 +710,15 @@ async fn a_bot_filtered_cloudfront_view_is_refused_as_a_pricing_plan_feature() {
     );
 }
 
-/// An ARN WAF will not accept as a web ACL ARN at all is refused; an ARN that is
-/// well formed but names no web ACL in the namespace asked about simply selects no
-/// recorded request, which is an empty result.
+/// An ARN WAF will not accept as a web ACL ARN of the namespace asked about is
+/// refused; an ARN that is well formed, of that namespace, and names no web ACL in it
+/// simply selects no recorded request, which is an empty result.
+///
+/// The refused rows differ in HOW the ARN is not one: no ARN at all, a wafv2 ARN of
+/// another resource kind, and a web ACL ARN of the OTHER namespace — the last one
+/// because a wafv2 ARN carries its namespace in its resource part, so an ARN of the
+/// regional namespace is not an ARN this request can use when it asks about the
+/// global one.
 ///
 /// The second half is what separates a traffic QUERY from a resource read: "the
 /// total number of requests that match the query criteria within the specified time
@@ -723,6 +729,8 @@ async fn an_arn_waf_cannot_read_as_a_web_acl_arn_is_refused_and_one_naming_nothi
     let waf = Waf::new();
     let (_id, regional_arn, _lock) =
         create_web_acl(&waf, SCOPE_REGIONAL, "addressed-acl", json!([])).await;
+    let (_global_id, global_arn, _global_lock) =
+        create_web_acl(&waf, SCOPE_CLOUDFRONT, "addressed-acl", json!([])).await;
     let (_ip_set_id, ip_set_arn, _ip_set_lock) =
         create_ip_set(&waf, SCOPE_REGIONAL, "addressed-ip-set").await;
     // A well-formed web ACL ARN naming an id nothing was created under.
@@ -734,28 +742,41 @@ async fn an_arn_waf_cannot_read_as_a_web_acl_arn_is_refused_and_one_naming_nothi
             "arn:aws:wafv2:not-an-arn-at-all".to_string(),
             SCOPE_REGIONAL,
         ),
-        ("an ARN of another resource kind", ip_set_arn, SCOPE_REGIONAL),
-    ] {
-        waf.refused(
-            OPERATION,
-            request(&arn, scope, window(0, 3_600), 50, 10),
-            "WAFInvalidParameterException",
-            case,
-        )
-        .await;
-    }
-
-    // No traffic was recorded for either of these, so each answers the empty result
-    // rather than a refusal: one ARN names no web ACL at all, the other names one
-    // in the OTHER namespace.
-    for (case, arn, scope) in [
-        ("a web ACL ARN naming nothing", unknown_arn, SCOPE_REGIONAL),
+        (
+            "an ARN of another resource kind",
+            ip_set_arn,
+            SCOPE_REGIONAL,
+        ),
         (
             "a REGIONAL web ACL asked for in the CLOUDFRONT namespace",
-            regional_arn,
+            regional_arn.clone(),
             SCOPE_CLOUDFRONT,
         ),
+        (
+            "a CLOUDFRONT web ACL asked for in the REGIONAL namespace",
+            global_arn,
+            SCOPE_REGIONAL,
+        ),
     ] {
+        let body = waf
+            .refused(
+                OPERATION,
+                request(&arn, scope, window(0, 3_600), 50, 10),
+                "WAFInvalidParameterException",
+                case,
+            )
+            .await;
+        assert_eq!(
+            (body["Field"].as_str(), body["Parameter"].as_str()),
+            (Some("RESOURCE_ARN"), Some(arn.as_str())),
+            "case {case:?}: the refusal must name the ARN it rejected, got {body}"
+        );
+    }
+
+    // No traffic was recorded for this one, and the ARN is of the namespace asked
+    // about, so it answers the empty result rather than a refusal: it names no web
+    // ACL at all.
+    for (case, arn, scope) in [("a web ACL ARN naming nothing", unknown_arn, SCOPE_REGIONAL)] {
         let answer = waf
             .ok(OPERATION, request(&arn, scope, window(0, 3_600), 50, 10))
             .await;
