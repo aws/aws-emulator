@@ -592,6 +592,11 @@ mod stage_authorizer_deny_blocks_the_backend;
 // document class that refused the call.
 #[path = "all/stage_invoke_denial_sentence.rs"]
 mod stage_invoke_denial_sentence;
+// Appended for the reason the note above gives: the BOUNDARIES of a `position`/`limit`
+// collection — the answer a collection that holds nothing makes, and the page a limited
+// read of the documentation-part collection is cut at.
+#[path = "all/collection_page_boundaries.rs"]
+mod collection_page_boundaries;
 // Appended for the reason the note above gives: WHERE a minted identifier comes from — that
 // each one is drawn for the record it names rather than from the count of records created
 // before it, and that the record keeps it.

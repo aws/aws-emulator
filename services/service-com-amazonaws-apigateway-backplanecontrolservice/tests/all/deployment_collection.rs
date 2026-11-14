@@ -202,7 +202,7 @@ async fn get_deployments_pages_through_creation_order_on_position_and_limit() {
     }
 
     // With no `limit` the default page size (25) covers all seven, so the one page is the
-    // whole collection and the cursor it carries names that page's last deployment.
+    // whole collection and the collection carries on nowhere: no cursor.
     let all = get_deployments(&gateway, &api, "").await;
     assert_eq!(
         reported_ids(&all.body, "GetDeployments(no limit)"),
@@ -212,9 +212,9 @@ async fn get_deployments_pages_through_creation_order_on_position_and_limit() {
     );
     assert_eq!(
         all.body["position"].as_str(),
-        created.last().map(String::as_str),
-        "case GetDeployments(no limit): the page reports the cursor of its last element, got \
-         {:?}",
+        None,
+        "case GetDeployments(no limit): a page that holds the whole collection reports no \
+         cursor, got {:?}",
         all.body["position"]
     );
 
@@ -258,8 +258,8 @@ async fn get_deployments_pages_through_creation_order_on_position_and_limit() {
         );
     }
 
-    // A cursor is the id of the last deployment already handed out, so a page requested
-    // at one lists the tail PAST that deployment.
+    // A cursor is the id of the first deployment the previous page did NOT hand out, so a
+    // page requested at one lists the collection FROM that deployment on.
     for (index, cursor) in created.iter().enumerate() {
         let case = format!("position={cursor}");
         let answer = get_deployments(&gateway, &api, &format!("?position={cursor}")).await;
@@ -270,8 +270,8 @@ async fn get_deployments_pages_through_creation_order_on_position_and_limit() {
         );
         assert_eq!(
             reported_ids(&answer.body, &case),
-            created[index + 1..].to_vec(),
-            "case {case}: expected the tail of creation order, got {:?}",
+            created[index..].to_vec(),
+            "case {case}: expected the collection from the cursor on, got {:?}",
             answer.body
         );
     }

@@ -137,9 +137,9 @@ async fn get_models_reports_exactly_the_stored_models_in_creation_order() {
         let (items, next) =
             listed_models(&gateway, &api, &format!("limit={MAX_PAGE_LIMIT}"), &case).await;
         assert_eq!(
-            next.as_deref(),
-            names.last().map(String::as_str),
-            "case {case}: the page reports the cursor of its last element, got {next:?}"
+            next, None,
+            "case {case}: a page that holds the whole collection reports no cursor, got \
+             {next:?}"
         );
         let listed: Vec<String> = items
             .iter()
@@ -395,8 +395,9 @@ async fn a_position_naming_nothing_in_this_apis_sequence_is_refused() {
     }
     assert_eq!(
         cursors.len(),
-        names.len(),
-        "case collecting the cursors: expected the cursor of every element, got {cursors:?}"
+        names.len().saturating_sub(1),
+        "case collecting the cursors: expected one cursor for every element the walk \
+         carried on at, got {cursors:?}"
     );
     for (index, cursor) in cursors.iter().enumerate() {
         let case = format!("GetModels(position={cursor})");
@@ -406,10 +407,12 @@ async fn a_position_naming_nothing_in_this_apis_sequence_is_refused() {
             .iter()
             .map(|item| string_member(item, "name", &case))
             .collect();
+        // The cursor a one-item page handed back names the element AFTER the one it
+        // reported, and a page resumes AT its cursor.
         assert_eq!(
             listed,
             names[index + 1..].to_vec(),
-            "case {case}: the page resumes after the cursor, expected {:?}, got {listed:?}",
+            "case {case}: the page resumes at the cursor, expected {:?}, got {listed:?}",
             &names[index + 1..]
         );
     }

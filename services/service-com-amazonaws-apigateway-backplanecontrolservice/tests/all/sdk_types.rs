@@ -308,9 +308,9 @@ async fn a_page_of_sdk_types_is_the_slice_the_position_and_limit_name() {
             .chain(ids.iter().map(|id| Some(*id)))
             .enumerate()
         {
-            // No cursor starts at the first id; a cursor is the id of the last entry
-            // already handed out, so its page resumes AFTER that entry.
-            let start = index;
+            // No cursor starts at the first id; a cursor is the id of the first entry
+            // the previous page did NOT hand out, so its page resumes AT that entry.
+            let start = index.saturating_sub(1);
             let expected: Vec<&str> = ids.iter().skip(start).take(effective).copied().collect();
             let query = match cursor {
                 None => format!("limit={limit}"),
@@ -343,8 +343,8 @@ async fn a_page_of_sdk_types_is_the_slice_the_position_and_limit_name() {
     );
 
     // Walking the catalog one page at a time with the caller's own cursor reassembles the
-    // catalog's order past the first entry, with no entry listed twice: a page resumes
-    // after the cursor it is given.
+    // catalog's order from each cursor on, with no entry listed twice: a page resumes AT
+    // the cursor it is given.
     let mut seen: Vec<String> = Vec::new();
     for chunk in ids.chunks(2) {
         let query = format!("limit=2&position={}", chunk[0]);
@@ -359,7 +359,7 @@ async fn a_page_of_sdk_types_is_the_slice_the_position_and_limit_name() {
                 .iter()
                 .position(|id| *id == chunk[0])
                 .expect("the chunk's first id is the catalog's");
-            ids.iter().skip(at + 1).take(2).map(|id| (*id).to_string())
+            ids.iter().skip(at).take(2).map(|id| (*id).to_string())
         })
         .collect();
     assert_eq!(

@@ -509,9 +509,9 @@ async fn get_domain_names_pages_through_creation_order_on_position_and_limit() {
     );
     assert_eq!(
         all.body["position"].as_str(),
-        created.last().map(String::as_str),
-        "case GetDomainNames(no limit): the page reports the cursor of its last element, got \
-         {:?}",
+        None,
+        "case GetDomainNames(no limit): a page that holds the whole collection reports no \
+         cursor, got {:?}",
         all.body["position"]
     );
 
@@ -524,10 +524,10 @@ async fn get_domain_names_pages_through_creation_order_on_position_and_limit() {
             .chain(created.iter().map(Some))
             .enumerate()
         {
-            // No cursor starts at the first record; a cursor is the key of the last
-            // record already handed out, so its page resumes AFTER that one. A
-            // non-private record's key is its domain name.
-            let start = index;
+            // No cursor starts at the first record; a cursor is the key of the first
+            // record the previous page did NOT hand out, so its page resumes AT that one.
+            // A non-private record's key is its domain name.
+            let start = index.saturating_sub(1);
             let expected: Vec<String> = created.iter().skip(start).take(effective).cloned().collect();
             let query = match cursor {
                 None => format!("limit={limit}"),
@@ -645,11 +645,10 @@ async fn the_resource_owner_filter_selects_whose_domain_names_a_page_reports() {
             "case {case}: expected {expected:?}, got {:?}",
             answer.body
         );
-        assert_eq!(
-            answer.body["position"].as_str(),
-            expected.last().map(String::as_str),
-            "case {case}: a page reports the cursor of its last element, and a page that \
-             holds none reports no cursor, got {:?}",
+        assert!(
+            answer.body["position"].is_null(),
+            "case {case}: a page the collection holds nothing after reports no cursor, got \
+             {:?}",
             answer.body["position"]
         );
     }

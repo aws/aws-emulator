@@ -168,7 +168,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .collect();
         Ok(Paged::new(
             GetVpcLinksOutput {
-                items: Some(items),
+                items: page.reported_items(items),
                 position: page.next_position.clone(),
             },
             page.echoed_limit(),

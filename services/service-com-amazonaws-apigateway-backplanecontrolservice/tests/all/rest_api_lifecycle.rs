@@ -336,13 +336,17 @@ pub(crate) fn string_member(body: &Value, member: &str, case: &str) -> String {
 }
 
 /// The elements on one page of a paginated collection. The member's `jsonName` is
-/// `item`, and it is always reported — a collection that holds no element and a page
-/// requested past the last element are each the empty page.
+/// `item`, and a collection that holds no element at all leaves it unset — so no element
+/// is reported as no element, whether the member is absent (the empty collection) or
+/// present and empty (the page past the last element of a collection that holds some).
 pub(crate) fn page_items(body: &Value, case: &str) -> Vec<Value> {
-    body["item"]
-        .as_array()
-        .unwrap_or_else(|| panic!("case {case}: expected an item array, got {body:?}"))
-        .clone()
+    match body.get("item") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(item) => item
+            .as_array()
+            .unwrap_or_else(|| panic!("case {case}: expected an item array, got {body:?}"))
+            .clone(),
+    }
 }
 
 /// `body` with `members` dropped, for comparing two reads of ONE record that may
@@ -626,8 +630,9 @@ async fn get_rest_apis_pages_through_creation_order_on_position_and_limit() {
     );
     assert_eq!(
         all.body["position"].as_str(),
-        created.last().map(String::as_str),
-        "case GetRestApis(no limit): the page reports the cursor of its last element, got {:?}",
+        None,
+        "case GetRestApis(no limit): a page that holds the whole collection reports no \
+         cursor, got {:?}",
         all.body["position"]
     );
 

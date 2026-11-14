@@ -306,11 +306,17 @@ async fn a_locations_valid_fields_are_defaulted_when_the_request_sets_none() {
         created.push(id);
     }
 
-    // Every created part is listed, in creation order.
-    let listed = listed_ids(&gateway, &api, "", "GetDocumentationParts, no filter").await;
+    // Every created part is listed. The collection's own order is the ADDRESS of the
+    // entity each part documents (`collection_page_envelope` pins that order), not the
+    // order the parts were created in, so what is compared here is which parts the API
+    // holds.
+    let mut expected = created.clone();
+    expected.sort();
+    let mut listed = listed_ids(&gateway, &api, "", "GetDocumentationParts, no filter").await;
+    listed.sort();
     assert_eq!(
-        listed, created,
-        "case GetDocumentationParts, no filter: expected {created:?}, got {listed:?}"
+        listed, expected,
+        "case GetDocumentationParts, no filter: expected {expected:?}, got {listed:?}"
     );
 }
 
@@ -515,11 +521,11 @@ async fn get_documentation_parts_narrows_the_collection_by_every_filter() {
     }
 
     // Each row is a query and the indices of the collection it must report, in the order
-    // the collection reports them — the order of the API entities documented, which is
-    // not the order these rows were created in: one filter, each filter's other value, a
-    // conjunction of filters, and a query that matches nothing.
+    // the collection reports them — the order of the ADDRESSES of the API entities
+    // documented, which is not the order these rows were created in: one filter, each
+    // filter's other value, a conjunction of filters, and a query that matches nothing.
     let rows: &[(&str, &[usize])] = &[
-        ("", &[3, 4, 0, 1, 2]),
+        ("", &[0, 1, 3, 2, 4]),
         ("type=METHOD", &[0, 1]),
         ("type=QUERY_PARAMETER", &[2]),
         ("type=RESOURCE", &[4]),
@@ -530,7 +536,7 @@ async fn get_documentation_parts_narrows_the_collection_by_every_filter() {
         ("path=/pets", &[0, 1, 2]),
         ("path=/owners", &[4]),
         ("path=/nothing", &[]),
-        ("locationStatus=DOCUMENTED", &[4, 0, 1, 2]),
+        ("locationStatus=DOCUMENTED", &[0, 1, 2, 4]),
         ("locationStatus=UNDOCUMENTED", &[3]),
         ("type=METHOD&path=/pets", &[0, 1]),
         ("type=METHOD&path=/pets&locationStatus=DOCUMENTED", &[0, 1]),
@@ -549,7 +555,7 @@ async fn get_documentation_parts_narrows_the_collection_by_every_filter() {
 
     // Reading does not change what a later caller sees: the same query answers the same
     // collection.
-    let whole: Vec<String> = [3, 4, 0, 1, 2].iter().map(|at| ids[*at].clone()).collect();
+    let whole: Vec<String> = [0, 1, 3, 2, 4].iter().map(|at| ids[*at].clone()).collect();
     let again = listed_ids(&gateway, &api, "", "GetDocumentationParts, read twice").await;
     assert_eq!(
         again, whole,

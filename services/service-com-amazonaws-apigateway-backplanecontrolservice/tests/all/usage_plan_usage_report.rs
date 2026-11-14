@@ -656,21 +656,11 @@ async fn the_report_is_paged_over_the_keys_it_is_indexed_by() {
         "case {case}: expected the keys in the order they were added, got {walked:?}"
     );
 
-    // The page after the last holds nothing, which is where a walk ends.
-    let cursor = position.unwrap_or_else(|| panic!("case {case}: expected a cursor"));
-    let end = get_usage(
-        &gateway,
-        &plan,
-        &from,
-        &from,
-        &format!("&limit=1&position={cursor}"),
-    )
-    .await;
+    // The page that reported the last indexed key is where the walk ENDS: it hands back no
+    // cursor, so a client looping "while a cursor is reported" stops there.
     assert_eq!(
-        indexed_keys(&end.body, case),
-        Vec::<String>::new(),
-        "case {case}: expected the final page to hold nothing, got {:?}",
-        end.body
+        position, None,
+        "case {case}: expected no cursor after the last indexed key, got {position:?}"
     );
 
     // A cursor the service never issued is refused rather than served an arbitrary page.

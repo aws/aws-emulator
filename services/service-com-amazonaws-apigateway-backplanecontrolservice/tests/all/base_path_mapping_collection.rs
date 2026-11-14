@@ -95,10 +95,15 @@ async fn get_base_path_mappings_pages_through_creation_order_on_position_and_lim
     let domain_name = "collection.example.com";
     created_domain(&gateway, domain_name, json!({})).await;
 
-    // A domain name that carries no mapping reports an EMPTY page rather than a refusal or
-    // an absent `items`: "the current page of elements from this collection" is an answer a
-    // client can read.
+    // A domain name that carries no mapping reports NO page member rather than a refusal
+    // or an empty list: there is no collection to report a page of, and `{}` is the whole
+    // answer a client reads.
     let empty = page_of(&gateway, domain_name, "", "the empty collection").await;
+    assert_eq!(
+        empty.get("item"),
+        None,
+        "case the empty collection: expected no page member, got {empty:?}"
+    );
     assert_eq!(
         listed_base_paths(&empty, "the empty collection"),
         Vec::<String>::new(),
@@ -172,9 +177,9 @@ async fn get_base_path_mappings_pages_through_creation_order_on_position_and_lim
     );
     assert_eq!(
         all["position"].as_str(),
-        created.last().map(String::as_str),
-        "case GetBasePathMappings(no limit): the page reports the cursor of its last element, \
-         got {:?}",
+        None,
+        "case GetBasePathMappings(no limit): a page that holds the whole collection reports \
+         no cursor, got {:?}",
         all["position"]
     );
 
@@ -206,10 +211,10 @@ async fn get_base_path_mappings_pages_through_creation_order_on_position_and_lim
             .chain(created.iter().map(Some))
             .enumerate()
         {
-            // No cursor starts at the first record; a cursor is the base path of the last
-            // record already handed out — the key a mapping is stored and addressed under
-            // — so its page resumes AFTER that record.
-            let start = index;
+            // No cursor starts at the first record; a cursor is the base path of the
+            // first record the previous page did NOT hand out — the key a mapping is
+            // stored and addressed under — so its page resumes AT that record.
+            let start = index.saturating_sub(1);
             let expected: Vec<String> = created
                 .iter()
                 .skip(start)
@@ -227,10 +232,11 @@ async fn get_base_path_mappings_pages_through_creation_order_on_position_and_lim
                 expected,
                 "case {case}: expected the page {expected:?}, got {body:?}"
             );
-            // The cursor a page hands back names the LAST record on that page, and a page
-            // that holds no record hands back none: that is where the collection ends.
+            // The cursor a page hands back names the first record it did NOT report, and
+            // a page the collection holds nothing after hands back none: that is where the
+            // collection ends.
             let consumed = start.saturating_add(expected.len());
-            let handed_back = (consumed > start).then(|| created[consumed - 1].as_str());
+            let handed_back = created.get(consumed).map(String::as_str);
             assert_eq!(
                 body["position"].as_str(),
                 handed_back,

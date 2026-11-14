@@ -179,7 +179,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .ok_or_else(crate::state::state_unavailable)?;
         Ok(Paged::new(
             GetModelsOutput {
-                items: Some(items),
+                items: page.reported_items(items),
                 position: page.next_position.clone(),
             },
             page.echoed_limit(),

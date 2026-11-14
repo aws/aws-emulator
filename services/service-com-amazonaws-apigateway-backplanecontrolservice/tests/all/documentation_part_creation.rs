@@ -197,16 +197,25 @@ async fn a_documentation_part_belongs_to_the_api_the_request_names() {
         }
     }
 
-    // Each API reports exactly its own parts, in creation order.
-    let listed = listed_ids(&gateway, &first, "the first api's collection").await;
+    // Each API reports exactly its own parts. The collection's own order is the ADDRESS
+    // of the entity each part documents (`collection_page_envelope` pins that order), not
+    // the order the parts were created in, so what is compared here is which parts each
+    // API holds.
+    let mut expected = first_ids.clone();
+    expected.sort();
+    let mut listed = listed_ids(&gateway, &first, "the first api's collection").await;
+    listed.sort();
     assert_eq!(
-        listed, first_ids,
-        "case the first api's collection: expected {first_ids:?}, got {listed:?}"
+        listed, expected,
+        "case the first api's collection: expected {expected:?}, got {listed:?}"
     );
-    let listed = listed_ids(&gateway, &second, "the second api's collection").await;
+    let mut expected = second_ids.clone();
+    expected.sort();
+    let mut listed = listed_ids(&gateway, &second, "the second api's collection").await;
+    listed.sort();
     assert_eq!(
-        listed, second_ids,
-        "case the second api's collection: expected {second_ids:?}, got {listed:?}"
+        listed, expected,
+        "case the second api's collection: expected {expected:?}, got {listed:?}"
     );
 
     // A part is addressed through its OWN api: the other api does not hold it, however

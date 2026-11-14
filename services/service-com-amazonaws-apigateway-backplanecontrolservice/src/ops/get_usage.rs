@@ -244,6 +244,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // key are the same interval in the same spelling.
                 start_date: Some(crate::state::usage_date_string(from)),
                 end_date: Some(crate::state::usage_date_string(through)),
+                // The report's index of keys, written whether or not it indexes anything:
+                // `Usage$items` is the map the days are reported UNDER, not a page of a
+                // collection, so a plan whose keys sent nothing over the interval is
+                // reported as the empty index rather than no index at all.
                 items: Some(items),
                 position: page.next_position.clone(),
             },

@@ -119,9 +119,9 @@ async fn get_authorizers_reports_exactly_the_stored_authorizers_in_creation_orde
         )
         .await;
         assert_eq!(
-            next.as_deref(),
-            ids.last().map(String::as_str),
-            "case {case}: the page reports the cursor of its last element, got {next:?}"
+            next, None,
+            "case {case}: a page that holds the whole collection reports no cursor, got \
+             {next:?}"
         );
         let listed: Vec<String> = items
             .iter()
@@ -299,7 +299,7 @@ async fn a_position_naming_nothing_in_this_apis_sequence_is_refused() {
         );
     }
 
-    // A cursor this API's own sequence carries is served, and resumes the page AFTER it.
+    // A cursor this API's own sequence carries is served, and resumes the page AT it.
     for (index, id) in ids.iter().enumerate() {
         let case = format!("GetAuthorizers(position={id})");
         let (items, _) =
@@ -310,9 +310,9 @@ async fn a_position_naming_nothing_in_this_apis_sequence_is_refused() {
             .collect();
         assert_eq!(
             listed,
-            ids[index + 1..].to_vec(),
-            "case {case}: the page resumes after the cursor, expected {:?}, got {listed:?}",
-            &ids[index + 1..]
+            ids[index..].to_vec(),
+            "case {case}: the page resumes at the cursor, expected {:?}, got {listed:?}",
+            &ids[index..]
         );
     }
 

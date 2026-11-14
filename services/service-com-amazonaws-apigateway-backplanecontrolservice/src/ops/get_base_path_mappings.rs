@@ -189,7 +189,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // Always reported, and empty for a domain name that carries no mapping:
                 // "the current page of elements from this collection" is an answer a
                 // client can read.
-                items: Some(items),
+                // A domain name that carries no mapping has no collection to report, so
+                // the member is left unset rather than written as the empty list; see
+                // `crate::state::Page::reported_items`.
+                items: page.reported_items(items),
                 position: page.next_position.clone(),
             },
             page.echoed_limit(),

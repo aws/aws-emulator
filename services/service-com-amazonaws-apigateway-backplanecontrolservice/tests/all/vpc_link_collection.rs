@@ -277,15 +277,15 @@ async fn get_vpc_links_pages_through_creation_order_on_position_and_limit() {
         );
     }
 
-    // Crossed with every cursor the sequence holds: a page resumes AFTER the cursor it is
-    // given — the cursor a page hands back is the LAST id on that page — so the page is
-    // the tail of the sequence past that id, and a cursor is handed back only while the
+    // Crossed with every cursor the sequence holds: a page resumes AT the cursor it is
+    // given — the cursor a page hands back is the first id the page did NOT report — so
+    // the page is the sequence from that id on, and a cursor is handed back only while the
     // sequence holds more.
     for (index, cursor) in created.iter().enumerate() {
         let case = format!("GetVpcLinks(position={cursor}, limit=2)");
         let body = listed(&gateway, &format!("position={cursor}&limit=2")).await;
         let page = listed_ids(&body, &case);
-        let start = index + 1;
+        let start = index;
         let end = (start + 2).min(total);
         assert_eq!(
             page,
@@ -293,7 +293,7 @@ async fn get_vpc_links_pages_through_creation_order_on_position_and_limit() {
             "case {case}: expected {:?}, got {page:?}",
             &created[start..end]
         );
-        let next = (end > start).then(|| created[end - 1].clone());
+        let next = created.get(end).cloned();
         assert_eq!(
             body["position"].as_str().map(str::to_owned),
             next,

@@ -12,15 +12,17 @@
 //!
 //! The rules these cases assert, each over a SET of inputs rather than one call:
 //!
-//! * a page reports the cursor of its LAST element, and the page that follows resumes
-//!   after that element, so a cursor names a point the caller has already been handed
-//!   rather than one it has not seen yet;
-//! * a page that holds elements echoes the page size the request asked for, and nothing
-//!   when the request asked for none;
-//! * the page BEYOND the last element of a collection is the empty page — a 200 with no
-//!   element and no cursor — and so is the page of a collection that holds nothing;
-//! * the documentation-part collection is ordered by the API ENTITY each part documents
-//!   and cursored by that entity's location.
+//! * a page reports the cursor the collection CARRIES ON AT — the first element the page
+//!   did not report — and the page that follows begins at that element, so a walk hands
+//!   back every element exactly once;
+//! * a page the collection holds nothing after reports no cursor, which is what ends a
+//!   walk, and no echoed page size either; a page it does hold something after echoes the
+//!   page size the request asked for, and nothing when the request asked for none;
+//! * a collection that holds no element leaves the member that reports the page UNSET,
+//!   while the page past the last element of a collection that does hold elements is the
+//!   present-but-empty page;
+//! * the documentation-part collection is ordered by the ADDRESS of the API entity each
+//!   part documents, which is the address its cursor spells.
 //!
 //! The rows span four collections of three different cursor kinds — a minted resource id
 //! (`GetRestApis`, `GetApiKeys`), a caller-chosen name (`GetModels`) and a composite
@@ -28,8 +30,6 @@
 //! publishes, each published bound and one past each.
 
 use serde_json::{json, Value};
-use service_com_amazonaws_apigateway_backplanecontrolservice::ops::get_documentation_parts::DOCUMENTATION_PART_TYPE_ORDER;
-use service_com_amazonaws_apigateway_backplanecontrolservice::ops::types::DOCUMENTATION_PART_TYPE_VALUES;
 use service_com_amazonaws_apigateway_backplanecontrolservice::state::{
     DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT,
 };
@@ -209,7 +209,7 @@ fn page_sizes() -> Vec<i64> {
 }
 
 #[tokio::test]
-async fn a_page_reports_the_cursor_of_its_last_element_and_echoes_the_requested_size() {
+async fn a_page_reports_the_cursor_the_collection_carries_on_at_and_echoes_the_size_beside_it() {
     // Five elements: more than the smallest page size by several, so a page is cut inside
     // the collection for the smaller sizes and holds the whole of it for the larger ones.
     const COUNT: usize = 5;
@@ -232,45 +232,35 @@ async fn a_page_reports_the_cursor_of_its_last_element_and_echoes_the_requested_
                 let answer = page(&gateway, &listing, &query, &case).await;
                 let items = page_items(&answer.body, &case);
                 let reported = answer.body["position"].as_str().map(str::to_owned);
-                if items.is_empty() {
-                    // The page past the last element holds nothing, and a page that holds
-                    // nothing was cut at no element: no cursor, and no size echoed.
-                    assert_eq!(
-                        reported, None,
-                        "case {case}: round {round} holds no element, so it reports no \
-                         cursor, got {:?}",
-                        answer.body["position"]
-                    );
-                    assert!(
-                        answer.body["limit"].is_null(),
-                        "case {case}: round {round} holds no element, so it echoes no page \
-                         size, got {:?}",
-                        answer.body["limit"]
-                    );
-                    break;
-                }
                 assert!(
                     items.len() <= effective,
                     "case {case}: round {round} holds at most {effective} element(s), got {}",
                     items.len()
                 );
-                assert_eq!(
-                    answer.body["limit"].as_i64(),
-                    Some(size),
-                    "case {case}: round {round} echoes the page size the request asked \
-                     for, got {:?}",
-                    answer.body["limit"]
-                );
                 let taken = items.len();
-                let expected = &listing.cursors[walked.len()..walked.len() + taken];
+                walked.extend(listing.cursors[walked.len()..walked.len() + taken].to_vec());
+                // The cursor is where the collection CARRIES ON: the first element this
+                // page did not report, and nothing once the walk reached the end.
                 assert_eq!(
                     reported.as_deref(),
-                    expected.last().map(String::as_str),
-                    "case {case}: round {round} reports the cursor of its LAST element, \
-                     got {reported:?}"
+                    listing.cursors.get(walked.len()).map(String::as_str),
+                    "case {case}: round {round} reports the cursor it carries on at, got \
+                     {reported:?}"
                 );
-                walked.extend(expected.iter().cloned());
-                cursor = reported;
+                // The echoed page size travels with that cursor: a page the collection
+                // carries on after states what the caller asked of it, and the page that
+                // ends the collection echoes nothing.
+                assert_eq!(
+                    answer.body["limit"].as_i64(),
+                    reported.as_ref().map(|_| size),
+                    "case {case}: round {round} echoes the page size beside the cursor, \
+                     got {:?} for {reported:?}",
+                    answer.body["limit"]
+                );
+                match reported {
+                    None => break,
+                    Some(position) => cursor = Some(position),
+                }
             }
             assert_eq!(
                 walked, listing.cursors,
@@ -302,30 +292,29 @@ async fn a_listing_that_asks_for_no_page_size_is_told_none() {
 }
 
 #[tokio::test]
-async fn the_empty_page_is_reported_as_the_empty_page_whether_the_collection_holds_anything() {
+async fn a_collection_that_holds_nothing_leaves_the_page_member_unset() {
     for collection in COLLECTIONS {
         let gateway = Gateway::new();
 
-        // A collection that holds NOTHING answers the empty page: the member that reports
-        // the page is there, with no element in it, rather than left out for a client to
-        // tell apart from a page it could not read.
+        // A collection that holds NO element has no page of elements to report, so the
+        // member is left out of the answer rather than written as the empty list.
         let empty = stand_up(&gateway, collection, 0).await;
         let case = format!("{collection}(the empty collection)");
         let answer = page(&gateway, &empty, "", &case).await;
         assert_eq!(
             answer.body.get("item"),
-            Some(&Value::Array(Vec::new())),
-            "case {case}: a collection with no element reports the empty page, got {:?}",
+            None,
+            "case {case}: a collection with no element reports no page member, got {:?}",
             answer.body
         );
         assert!(
             answer.body["position"].is_null(),
-            "case {case}: a page that holds no element reports no cursor, got {:?}",
+            "case {case}: a collection with no element reports no cursor, got {:?}",
             answer.body["position"]
         );
 
-        // A collection that HOLDS elements, walked to its end, answers that same empty
-        // page — the 200 a client that walked to the end is served, not a refusal.
+        // A collection that HOLDS elements, walked to its last one, ends the walk there:
+        // the last page reports the last element and no cursor at all.
         let gateway = Gateway::new();
         let listing = stand_up(&gateway, collection, 3).await;
         let last = listing
@@ -336,14 +325,48 @@ async fn the_empty_page_is_reported_as_the_empty_page_whether_the_collection_hol
         let case = format!("{collection}(position={last})");
         let answer = page(&gateway, &listing, &format!("position={last}&limit=2"), &case).await;
         assert_eq!(
-            answer.body.get("item"),
-            Some(&Value::Array(Vec::new())),
-            "case {case}: the page past the last element holds nothing, got {:?}",
+            page_items(&answer.body, &case).len(),
+            1,
+            "case {case}: the page beginning at the last element holds it alone, got {:?}",
             answer.body
         );
         assert!(
             answer.body["position"].is_null(),
-            "case {case}: the page past the last element reports no cursor, got {:?}",
+            "case {case}: the page that ends the collection reports no cursor, got {:?}",
+            answer.body["position"]
+        );
+        assert!(
+            answer.body["limit"].is_null(),
+            "case {case}: the page that ends the collection echoes no page size, got {:?}",
+            answer.body["limit"]
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_page_past_the_last_documentation_part_is_the_present_but_empty_page() {
+    // The documentation-part cursor is a POINT in the collection's order rather than a
+    // record of it, so a caller can ask for the window past the last part — and a
+    // collection that holds parts reports that window as the page it is: present, and
+    // empty.
+    let gateway = Gateway::new();
+    let listing = stand_up(&gateway, "GetDocumentationParts", 3).await;
+    for cursor in [
+        // Past every part of this API by name, and past every entity type there is.
+        "QUERY_PARAMETER:zzz:/items:GET:",
+        "ZZZ::::",
+    ] {
+        let case = format!("GetDocumentationParts(position={cursor})");
+        let answer = page(&gateway, &listing, &format!("position={cursor}"), &case).await;
+        assert_eq!(
+            answer.body.get("item"),
+            Some(&Value::Array(Vec::new())),
+            "case {case}: the page past the last part holds nothing, got {:?}",
+            answer.body
+        );
+        assert!(
+            answer.body["position"].is_null(),
+            "case {case}: the page past the last part reports no cursor, got {:?}",
             answer.body["position"]
         );
     }
@@ -355,7 +378,7 @@ async fn documentation_parts_are_ordered_by_the_entity_each_documents_and_cursor
     // names a location can name — created in an order that is NOT the order the
     // collection reports them in, so what is asserted is the order itself.
     //
-    // The second column is the cursor the part is reported with: the location's five
+    // The second column is the cursor the part's own address spells: the location's five
     // members — type, name, path, method, status code — joined by `:`, with an empty
     // segment for every member the entity type leaves unset. The first two rows are the
     // two forms API Gateway's own walks hand back for a resource and for a model.
@@ -398,18 +421,17 @@ async fn documentation_parts_are_ordered_by_the_entity_each_documents_and_cursor
         ),
     ];
 
-    // The order the collection reports them in: the entity types in the order the model
-    // declares `DocumentationPartType`'s values in — the API itself, then the entities
-    // declared on it, then a resource, then a method on it, then the parts of that
-    // method's request and response — and within one type the entity's own address.
+    // The order the collection reports them in: the ADDRESS of the entity each part
+    // documents, segment by segment — the entity type, then the entity's name, path,
+    // method and status code — which is the order of the cursors themselves.
     let expected: &[&str] = &[
         "API::::",
         "AUTHORIZER:guard:::",
-        "MODEL:Widget:::",
-        "RESOURCE::/widgets::",
         "METHOD::/widgets:GET:",
         "METHOD::/widgets:POST:",
+        "MODEL:Widget:::",
         "QUERY_PARAMETER:page:/widgets:GET:",
+        "RESOURCE::/widgets::",
         "RESPONSE::/widgets:GET:200",
         "RESPONSE_HEADER:X-Trace:/widgets:GET:404",
     ];
@@ -430,8 +452,9 @@ async fn documentation_parts_are_ordered_by_the_entity_each_documents_and_cursor
         .await;
     }
 
-    // Walked one part at a time, every page's cursor IS the location of the part it
-    // reported, and the walk reports the collection in the order above exactly once.
+    // Walked one part at a time, every page reports the part the walk is at and the
+    // cursor of the part it carries on at, and the walk reports the collection in the
+    // order above exactly once.
     let mut walked: Vec<String> = Vec::new();
     let mut cursor: Option<String> = None;
     for round in 0..=collection.len() {
@@ -440,9 +463,7 @@ async fn documentation_parts_are_ordered_by_the_entity_each_documents_and_cursor
             Some(position) => format!("limit=1&position={position}"),
         };
         let case = format!("GetDocumentationParts(round {round})");
-        let answer = gateway
-            .call("GET", &format!("{uri}?{query}"), None)
-            .await;
+        let answer = gateway.call("GET", &format!("{uri}?{query}"), None).await;
         assert_eq!(
             answer.status, 200,
             "case {case}: expected 200, got {} with {:?}",
@@ -450,68 +471,38 @@ async fn documentation_parts_are_ordered_by_the_entity_each_documents_and_cursor
         );
         let items = page_items(&answer.body, &case);
         let reported = answer.body["position"].as_str().map(str::to_owned);
-        if items.is_empty() {
-            assert_eq!(
-                reported, None,
-                "case {case}: the page past the last part reports no cursor, got \
-                 {reported:?}"
-            );
-            break;
-        }
-        // The part on the page is the one the cursor names: each part was created with
-        // its own location cursor as its content map's description, so the page's content
-        // and the cursor it reports are checked against each other.
+        assert_eq!(
+            items.len(),
+            1,
+            "case {case}: a page of one holds the part the walk is at, got {:?}",
+            answer.body
+        );
+        // Each part was created with its own location cursor as its content map's
+        // description, so the part on the page names the address it sorts at.
         let properties = string_member(&items[0], "properties", &case);
         let content: Value = serde_json::from_str(&properties).unwrap_or_else(|error| {
             panic!("case {case}: expected a content map, got {error} for {properties}")
         });
+        walked.push(
+            content["description"]
+                .as_str()
+                .unwrap_or_else(|| panic!("case {case}: expected a description, got {content:?}"))
+                .to_string(),
+        );
         assert_eq!(
             reported.as_deref(),
-            content["description"].as_str(),
-            "case {case}: the cursor a page reports is the location of the part it \
-             reported, got {reported:?} for {properties}"
+            expected.get(walked.len()).copied(),
+            "case {case}: the cursor a page reports is the location of the part it carries \
+             on at, got {reported:?}"
         );
-        walked.push(reported.clone().unwrap_or_default());
-        cursor = reported;
+        match reported {
+            None => break,
+            Some(position) => cursor = Some(position),
+        }
     }
     assert_eq!(
         walked, expected,
-        "case GetDocumentationParts: expected the parts in the order of the entities they \
-         document, got {walked:?}"
-    );
-
-    // A cursor is a point in that order, so one no part sits at — here a text that names
-    // no entity type at all, which sorts past every declared one — ends the walk with the
-    // empty page rather than a refusal.
-    let case = "GetDocumentationParts(position=zzz)";
-    let answer = gateway
-        .call("GET", &format!("{uri}?position=zzz"), None)
-        .await;
-    assert_eq!(
-        answer.status, 200,
-        "case {case}: expected 200, got {} with {:?}",
-        answer.status, answer.body
-    );
-    assert!(
-        page_items(&answer.body, case).is_empty(),
-        "case {case}: expected the empty page, got {:?}",
-        answer.body
-    );
-}
-
-#[tokio::test]
-async fn the_documentation_part_type_order_holds_exactly_the_modelled_types() {
-    // The order a documentation-part listing reports the types in is the order the MODEL
-    // declares them in, so it holds the same values as the modelled value set — no type
-    // left out of the ordering (which would sort it after every declared one) and none
-    // invented.
-    let mut ordered: Vec<&str> = DOCUMENTATION_PART_TYPE_ORDER.to_vec();
-    ordered.sort_unstable();
-    let mut modelled: Vec<&str> = DOCUMENTATION_PART_TYPE_VALUES.to_vec();
-    modelled.sort_unstable();
-    assert_eq!(
-        ordered, modelled,
-        "case the documentation-part type order: expected exactly the modelled types \
-         {modelled:?}, got {ordered:?}"
+        "case GetDocumentationParts: expected the parts in the order of the addresses of \
+         the entities they document, got {walked:?}"
     );
 }

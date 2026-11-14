@@ -232,7 +232,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // is absent rather than an empty list some earlier import's diagnostics
                 // would have to fill.
                 warnings: None,
-                items: Some(items),
+                items: page.reported_items(items),
                 position: page.next_position.clone(),
             },
             page.echoed_limit(),

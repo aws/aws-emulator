@@ -558,9 +558,9 @@ async fn the_collection_is_reported_in_creation_order_one_page_at_a_time() {
         all.body
     );
     assert!(
-        all.body["position"].is_string(),
-        "case GetDomainNameAccessAssociations(no limit): the page reports the cursor of its \
-         last element, got {:?}",
+        all.body["position"].is_null(),
+        "case GetDomainNameAccessAssociations(no limit): a page that holds the whole \
+         collection reports no cursor, got {:?}",
         all.body["position"]
     );
 
@@ -678,11 +678,10 @@ async fn the_resource_owner_filter_selects_by_owner() {
             "case {case}: expected {expected:?}, got {:?}",
             answer.body
         );
-        assert_eq!(
+        assert!(
             answer.body["position"].is_null(),
-            expected.is_empty(),
-            "case {case}: a page reports the cursor of its last element, and a page that \
-             holds none reports no cursor, got {:?}",
+            "case {case}: a page the collection holds nothing after reports no cursor, got \
+             {:?}",
             answer.body["position"]
         );
     }

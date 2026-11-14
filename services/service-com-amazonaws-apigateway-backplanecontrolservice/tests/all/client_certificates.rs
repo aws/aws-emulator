@@ -726,19 +726,21 @@ async fn the_collection_is_listed_in_generation_order_one_page_at_a_time() {
                 "case {case}: a page must hold at most {size} elements, got {}",
                 items.len()
             );
-            if items.is_empty() {
-                break;
-            }
+            assert!(
+                !items.is_empty(),
+                "case {case}: a page of a collection that holds elements holds some, got \
+                 {:?}",
+                page.body
+            );
             for item in &items {
                 walked.push(string_member(item, "clientCertificateId", &case));
             }
-            position = page.body["position"].as_str().map(str::to_owned);
-            assert!(
-                position.is_some(),
-                "case {case}: a page holding elements reports the cursor to resume after, \
-                 got {:?}",
-                page.body
-            );
+            // The cursor a page reports is where the collection carries on, and a page
+            // the collection holds nothing after reports none: that is what ends the walk.
+            match page.body["position"].as_str() {
+                None => break,
+                Some(cursor) => position = Some(cursor.to_owned()),
+            }
         }
         assert_eq!(
             walked, generated_ids,

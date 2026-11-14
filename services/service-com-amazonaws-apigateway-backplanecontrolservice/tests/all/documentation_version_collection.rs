@@ -196,8 +196,8 @@ async fn get_documentation_versions_pages_through_creation_order_on_position_and
     );
     assert_eq!(
         all.body["position"].as_str(),
-        created.last().map(String::as_str),
-        "case no limit: the page reports the cursor of its last element, got {:?}",
+        None,
+        "case no limit: a page that holds the whole collection reports no cursor, got {:?}",
         all.body["position"]
     );
 
@@ -245,8 +245,8 @@ async fn get_documentation_versions_pages_through_creation_order_on_position_and
         );
     }
 
-    // A cursor is the identifier of the last snapshot already handed out, so a page
-    // requested at one lists the rest of creation order PAST that snapshot.
+    // A cursor is the identifier of the first snapshot the previous page did NOT hand
+    // out, so a page requested at one lists creation order FROM that snapshot on.
     for (index, cursor) in created.iter().enumerate() {
         let case = format!("position={cursor}");
         let answer = get_versions(&gateway, &api, &format!("?position={cursor}")).await;
@@ -257,8 +257,8 @@ async fn get_documentation_versions_pages_through_creation_order_on_position_and
         );
         assert_eq!(
             reported_versions(&answer.body, &case),
-            created[index + 1..].to_vec(),
-            "case {case}: expected the tail of creation order, got {:?}",
+            created[index..].to_vec(),
+            "case {case}: expected creation order from the cursor on, got {:?}",
             answer.body
         );
     }
@@ -300,8 +300,9 @@ async fn a_collection_past_the_default_page_size_is_cut_at_that_default() {
     );
     assert_eq!(
         first.body["position"].as_str(),
-        Some(created[24].as_str()),
-        "case default page: expected the 25th identifier as the cursor of the page, got {:?}",
+        Some(created[25].as_str()),
+        "case default page: expected the 26th identifier — the one the page did not report \
+         — as the cursor of the page, got {:?}",
         first.body["position"]
     );
 
@@ -319,8 +320,9 @@ async fn a_collection_past_the_default_page_size_is_cut_at_that_default() {
     );
     assert_eq!(
         second.body["position"].as_str(),
-        created.last().map(String::as_str),
-        "case default page, second: the page reports the cursor of its last element, got {:?}",
+        None,
+        "case default page, second: the page that ends the collection reports no cursor, \
+         got {:?}",
         second.body["position"]
     );
 }

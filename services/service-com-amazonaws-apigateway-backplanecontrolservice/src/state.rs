@@ -2725,12 +2725,15 @@ pub fn stored_map<V>(
 pub struct Page {
     /// The cursors on this page, in the sequence's own order.
     pub ids: Vec<String>,
-    /// The `position` this answer reports: the cursor of the LAST element on this page,
-    /// which the next page resumes AFTER. Absent for a page that holds no element, which
-    /// is where a walk of the collection ends.
+    /// The `position` this answer reports: the cursor of the first element AFTER this
+    /// page, which is where the next page RESUMES. Absent once nothing follows the page,
+    /// and that absence is what ends a walk of the collection.
     pub next_position: Option<String>,
     /// The page size the REQUEST asked for; see [`Page::echoed_limit`].
     requested_limit: Option<i32>,
+    /// Whether the sequence this page was cut out of holds no element at all; see
+    /// [`Page::reported_items`].
+    sequence_empty: bool,
 }
 
 impl Page {
@@ -2747,31 +2750,49 @@ impl Page {
         let end = start.saturating_add(window).min(ordered.len());
         let ids = ordered[start..end].to_vec();
         Self {
-            // The cursor a client sends back is the LAST element it was handed, and the
-            // page that follows begins after it — so the cursor reported here is the end
-            // of THIS page, whether or not the sequence holds more, and the page that
-            // holds nothing is what tells a caller the collection has ended.
-            next_position: ids.last().cloned(),
+            // The cursor a client sends back names where to CARRY ON, so it is the first
+            // element the page did not report and the page that follows begins AT it. A
+            // page the sequence holds nothing after reports no cursor at all, which is
+            // what tells a caller the collection has ended.
+            next_position: ordered.get(end).cloned(),
             ids,
             requested_limit: limit,
+            sequence_empty: ordered.is_empty(),
         }
     }
 
-    /// The page size this answer echoes: the one the REQUEST asked for, for a page that
-    /// holds elements — the member states what the caller asked of the collection, so a
-    /// request that asked for no size is told none. A page that holds nothing limited
-    /// nothing, and reports neither a size nor a cursor.
+    /// The page size this answer echoes: the one the REQUEST asked for, for a page the
+    /// collection carries on after — the member states what the caller asked of a
+    /// collection it has not finished walking, so a request that asked for no size is
+    /// told none. The page that ends the collection paged nothing further, and reports
+    /// neither a size nor a cursor.
     pub fn echoed_limit(&self) -> Option<i32> {
-        self.requested_limit.filter(|_| !self.ids.is_empty())
+        self.requested_limit.filter(|_| self.next_position.is_some())
+    }
+
+    /// The page of elements as the answer's collection member REPORTS it: absent when
+    /// the collection being listed holds no element at all, so a listing of nothing is
+    /// not a present-but-empty page.
+    ///
+    /// The empty page of a collection that does hold elements — the window a caller that
+    /// walked to the end asks for — stays present and empty: it reports a page of a
+    /// collection, and that page is empty. One copy for every `position`/`limit`
+    /// collection, so two listings cannot disagree about what an empty one looks like.
+    pub fn reported_items<Element>(&self, items: Vec<Element>) -> Option<Vec<Element>> {
+        if self.sequence_empty {
+            None
+        } else {
+            Some(items)
+        }
     }
 }
 
 /// Cut the page a caller asked for out of `ordered`, a stable sequence of cursors.
 ///
-/// `position` is the cursor of the last element the caller was already handed, so the
-/// page begins AFTER it; `None` begins at the first element. The sequence's order is its
-/// own (creation order, for the collections of this service whose cursor is a minted
-/// id), so a cursor is resolved by naming an element of it.
+/// `position` is the cursor the collection carries on AT — the first element the previous
+/// page did not report — so the page begins at it; `None` begins at the first element.
+/// The sequence's order is its own (creation order, for the collections of this service
+/// whose cursor is a minted id), so a cursor is resolved by naming an element of it.
 ///
 /// `Err` carries [`INVALID_POSITION`] for an unresolvable cursor: a `position` naming no
 /// element of the sequence, which the caller must be told about rather than served an
@@ -2786,7 +2807,6 @@ pub fn page_of(
         Some(cursor) => ordered
             .iter()
             .position(|id| id == cursor)
-            .map(|at| at.saturating_add(1))
             .ok_or_else(|| INVALID_POSITION.to_string())?,
     };
     Ok(Page::cut(ordered, start, limit))
