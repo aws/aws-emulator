@@ -31,7 +31,9 @@
 //! published catalog names the version the parameter was introduced in, and is ABSENT — not
 //! empty — where it names none.
 
-use service_com_amazonaws_rds_amazonrdsv19::state::{encode_marker, invalid_marker_message};
+use service_com_amazonaws_rds_amazonrdsv19::state::{
+    encode_marker, invalid_marker_message, invalid_parameter_marker_message,
+};
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::db_instances::{call, emulator, expect_error, expect_ok, optional_text, texts};
@@ -56,6 +58,9 @@ struct Report {
     action: &'static str,
     params: Vec<(String, String)>,
     key_element: &'static str,
+    /// Whether this report is one of the PARAMETER reports, whose invalid-marker refusal
+    /// echoes the token the request carried instead of answering the fixed sentence.
+    echoes_the_marker: bool,
 }
 
 /// One call of `report`, at `page_size`, resuming from `marker` when there is one: the keys
@@ -200,18 +205,21 @@ async fn seeded() -> (MultiServiceRouter, Vec<Report>) {
             action: "DescribeDBParameters",
             params: vec![("DBParameterGroupName".to_string(), group.clone())],
             key_element: "ParameterName",
+            echoes_the_marker: true,
         },
         Report {
             case: "the account's stored parameter groups",
             action: "DescribeDBParameterGroups",
             params: Vec::new(),
             key_element: "DBParameterGroupName",
+            echoes_the_marker: false,
         },
         Report {
             case: "a family's published engine defaults",
             action: "DescribeEngineDefaultParameters",
             params: vec![("DBParameterGroupFamily".to_string(), "mysql8.0".to_string())],
             key_element: "ParameterName",
+            echoes_the_marker: true,
         },
     ];
     (router, reports)
@@ -411,10 +419,15 @@ async fn only_a_token_this_codec_could_not_have_produced_is_refused() {
                 INVALID_PARAMETER_VALUE,
             );
             let message = optional_text(&body, "Message");
+            let expected = if report.echoes_the_marker {
+                invalid_parameter_marker_message(token)
+            } else {
+                invalid_marker_message()
+            };
             assert_eq!(
                 message,
-                Some(invalid_marker_message(token)),
-                "case {case:?}: expected the refusal to echo the token it could not place, \
+                Some(expected.clone()),
+                "case {case:?}: expected {expected:?} for a token it could not place, \
                  got {message:?}"
             );
         }

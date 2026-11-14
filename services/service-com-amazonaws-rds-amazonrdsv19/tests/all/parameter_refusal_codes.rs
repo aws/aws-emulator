@@ -17,8 +17,9 @@
 //! 2. The members RDS words by their SUBJECT carry exactly `Invalid <subject>:  <value>`,
 //!    with the value from the request and no reason — so one text answers whichever of the
 //!    member's constraints the value broke.
-//! 3. A `Marker` no prior page issued is refused in the fixed text RDS answers it with,
-//!    the same on every paginated report, because one shared paginator serves them all.
+//! 3. A `Marker` no prior page issued is refused in the fixed text RDS answers it with —
+//!    the sentence that reflects nothing of the request back, which is what every report
+//!    here answers with.
 //! 4. A value that broke a constraint the MODEL declares — refused by the boundary
 //!    validator, before any handler runs — carries that SAME `InvalidParameterValue` code,
 //!    so one class of refusal has one code whichever layer found it. The table spans the
@@ -388,8 +389,8 @@ async fn an_identifier_refusal_is_worded_by_the_subject_its_member_carries() {
     }
 }
 
-/// A `Marker` no prior page issued is refused in one wording, identically on every
-/// paginated report: the fixed text echoing the token the request carried.
+/// A `Marker` no prior page issued is refused in one wording, identically on every one of
+/// these paginated reports: the fixed sentence, which reflects no part of the request back.
 #[tokio::test]
 async fn an_unissued_marker_is_refused_in_one_fixed_text_on_every_report() {
     let router = emulator();
@@ -409,7 +410,7 @@ async fn an_unissued_marker_is_refused_in_one_fixed_text_on_every_report() {
             );
             assert_eq!(
                 text(&body, "Message"),
-                invalid_marker_message(marker),
+                invalid_marker_message(),
                 "case {case:?}: expected the service's own marker refusal, got {:?}",
                 text(&body, "Message")
             );
@@ -634,7 +635,7 @@ async fn a_value_outside_a_modelled_constraint_carries_the_same_invalid_paramete
     );
     assert_eq!(
         text(&body, "Message"),
-        invalid_marker_message(&"m".repeat(MAX_MARKER_LEN)),
+        invalid_marker_message(),
         "case \"the longest Marker the member admits\": expected the paginator's own refusal, \
          got {body}"
     );

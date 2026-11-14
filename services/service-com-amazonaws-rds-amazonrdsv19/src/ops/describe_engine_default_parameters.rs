@@ -212,8 +212,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .collect();
 
         // A `Marker` is placed in the report's own order and the page resumes BEYOND it; a
-        // token this codec could not have produced is refused: see `crate::state::paginate`.
-        let page = crate::state::paginate(records, input.marker.as_deref(), page_size)
+        // token this codec could not have produced is refused. This is a PARAMETER report,
+        // whose refusal echoes the token the request carried, so it pages through
+        // `crate::state::paginate_parameters`.
+        let page = crate::state::paginate_parameters(records, input.marker.as_deref(), page_size)
             .map_err(DescribeEngineDefaultParametersError::invalid_parameter_value)?;
         Ok(DescribeEngineDefaultParametersOutput {
             engine_defaults: Some(EngineDefaults {

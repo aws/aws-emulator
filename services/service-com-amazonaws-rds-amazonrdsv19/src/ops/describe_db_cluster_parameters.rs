@@ -215,8 +215,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             },
         };
 
-        let page = crate::state::paginate(parameters, input.marker.as_deref(), page_size)
-            .map_err(DescribeDBClusterParametersError::invalid_parameter_value)?;
+        // A PARAMETER report: a token this codec could not have produced is refused with
+        // the wording those reports echo the token in, see
+        // `crate::state::paginate_parameters`.
+        let page =
+            crate::state::paginate_parameters(parameters, input.marker.as_deref(), page_size)
+                .map_err(DescribeDBClusterParametersError::invalid_parameter_value)?;
         Ok(DescribeDBClusterParametersOutput {
             parameters: Some(page.items),
             marker: page.next_marker,

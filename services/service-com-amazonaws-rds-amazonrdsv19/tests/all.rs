@@ -217,6 +217,8 @@ mod instance_configuration_guards;
 mod instance_placement_and_backup_not_found_sentences;
 #[path = "all/integration_deletion.rs"]
 mod integration_deletion;
+#[path = "all/invalid_marker_refusal_wording.rs"]
+mod invalid_marker_refusal_wording;
 #[path = "all/lifecycle_poll_loops.rs"]
 mod lifecycle_poll_loops;
 #[path = "all/maintenance_action_resource_guard.rs"]

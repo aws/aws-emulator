@@ -27,7 +27,9 @@
 //!   `InvalidParameterCombination` (400) for a request that names no database with one fixed
 //!   sentence that names the two KINDS of database rather than the two members.
 //! * Every paginated report answers `InvalidParameterValue` (400) for a `Marker` this
-//!   service's codec could not have produced, ECHOING the token the request carried.
+//!   service's codec could not have produced, in the wording its own class of report uses:
+//!   the parameter reports ECHO the token the request carried, every other report answers
+//!   the fixed sentence that reflects nothing back.
 //!
 //! Each table spans what the rule generalises over: which status blocks the instance call
 //! (still coming up, stopping, stopped, starting) across engine families and instance
@@ -44,7 +46,8 @@
 
 use service_com_amazonaws_rds_amazonrdsv19::state::{
     create_db_snapshot_instance_state_message, failover_needs_two_instances_message,
-    invalid_marker_message, parameter_has_pending_changes_message,
+    invalid_marker_message, invalid_parameter_marker_message,
+    parameter_has_pending_changes_message,
     reboot_db_instance_state_message, start_db_instance_state_message,
     stop_db_instance_state_message, DB_INSTANCE_STATUS_STARTING, DB_INSTANCE_STATUS_STOPPED,
     DB_INSTANCE_STATUS_STOPPING, MIN_FAILOVER_DB_CLUSTER_INSTANCES,
@@ -760,19 +763,20 @@ async fn the_proxy_target_calls_refuse_a_request_naming_no_database_in_one_fixed
 // The marker every paginated report refuses
 // ---------------------------------------------------------------------------
 
-/// The reports this table drives, each `@paginated` on `Marker`. The first is the one a DB
-/// parameter group's own report serves; the rest need no resource to refuse a marker, which
-/// is what shows the wording belongs to the paginator and not to one handler.
-const MARKER_REPORTS: [&str; 5] = [
-    "DescribeDBParameters",
-    "DescribeDBInstances",
-    "DescribeDBClusters",
-    "DescribeDBParameterGroups",
-    "DescribeOptionGroups",
+/// The reports this table drives, each `@paginated` on `Marker`, paired with the refusal
+/// wording its own class answers a token with. The first is the PARAMETER report a DB
+/// parameter group serves, whose refusal echoes the token; the rest need no resource to
+/// refuse a marker and answer the fixed sentence.
+const MARKER_REPORTS: [(&str, bool); 5] = [
+    ("DescribeDBParameters", true),
+    ("DescribeDBInstances", false),
+    ("DescribeDBClusters", false),
+    ("DescribeDBParameterGroups", false),
+    ("DescribeOptionGroups", false),
 ];
 
 #[tokio::test]
-async fn an_unissued_marker_is_echoed_back_by_every_paginated_report() {
+async fn an_unissued_marker_is_refused_in_its_own_reports_wording() {
     let router = emulator();
     // A family with no published catalog, so the group's report holds exactly what the group
     // holds — and nothing yet.
@@ -794,7 +798,7 @@ async fn an_unissued_marker_is_echoed_back_by_every_paginated_report() {
     ];
 
     for (case, marker) in &markers {
-        for report in MARKER_REPORTS {
+        for (report, echoes) in MARKER_REPORTS {
             let case = format!("{report} resumed from {case}");
             let response = if report == "DescribeDBParameters" {
                 describe_db_parameters(&router, &group, &[("Marker", marker.clone())]).await
@@ -803,11 +807,14 @@ async fn an_unissued_marker_is_echoed_back_by_every_paginated_report() {
             };
             let body = expect_error(&case, response, 400, INVALID_PARAMETER_VALUE);
             let message = text(&body, "Message");
+            let expected = if echoes {
+                invalid_parameter_marker_message(marker)
+            } else {
+                invalid_marker_message()
+            };
             assert_eq!(
-                message,
-                invalid_marker_message(marker),
-                "case {case:?}: expected the refusal to echo the rejected marker, got \
-                 {message:?}"
+                message, expected,
+                "case {case:?}: expected {expected:?}, got {message:?}"
             );
         }
     }

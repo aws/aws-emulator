@@ -3900,10 +3900,26 @@ pub fn decode_marker(marker: &str) -> Option<String> {
 
 /// The refusal Amazon RDS answers a `Marker` it cannot place in the report with.
 ///
-/// The one variable part is the token the REQUEST carried, echoed verbatim so a caller
-/// looping over pages can see which of the markers it holds was rejected; the rest is fixed
-/// text naming the two ways to ask again.
-pub fn invalid_marker_message(marker: &str) -> String {
+/// Entirely FIXED text, with no variable part at all: the token the request carried is NOT
+/// reflected back, and the sentence names the two ways to ask again. This is the wording
+/// every report of this front door answers with, bar the parameter reports, whose own
+/// wording is [`invalid_parameter_marker_message`] — the refusal sentence belongs to the
+/// report that rejected the token, not to the paginator.
+pub fn invalid_marker_message() -> String {
+    "Invalid marker. Please use the marker returned from a prior request or omit the marker \
+     parameter."
+        .to_string()
+}
+
+/// The refusal the PARAMETER reports — the ones whose paginated items are a parameter list
+/// (`DescribeDBParameters`, `DescribeDBClusterParameters` and the two engine-default
+/// reports) — answer a `Marker` they cannot place with.
+///
+/// Those reports word it with one variable part: the token the REQUEST carried, echoed
+/// verbatim so a caller looping over a group's parameters can see which of the markers it
+/// holds was rejected. The article differs from [`invalid_marker_message`]'s too, which is
+/// why one shared sentence cannot serve both classes of report.
+pub fn invalid_parameter_marker_message(marker: &str) -> String {
     format!(
         "Invalid marker: {marker}. Please use the marker returned from the prior request or \
          omit the marker parameter."
@@ -3923,18 +3939,39 @@ pub fn invalid_marker_message(marker: &str) -> String {
 ///
 /// A token this front door's codec could not have produced is REFUSED (the returned message
 /// is what the caller refuses the request with): it names no position at all, and
-/// resynchronising it to the first page would report a page the caller cannot place.
+/// resynchronising it to the first page would report a page the caller cannot place. The
+/// refusal carries [`invalid_marker_message`], the wording of every report bar the parameter
+/// ones, which page through [`paginate_parameters`] instead.
 pub fn paginate<T>(
     records: Vec<(String, T)>,
     marker: Option<&str>,
     page_size: usize,
 ) -> Result<Page<T>, String> {
+    paginate_refusing_with(records, marker, page_size, |_| invalid_marker_message())
+}
+
+/// [`paginate`], for the PARAMETER reports: the page is cut the same way, and a token this
+/// codec could not have produced is refused with those reports' own wording
+/// ([`invalid_parameter_marker_message`]), which echoes the token the request carried.
+pub fn paginate_parameters<T>(
+    records: Vec<(String, T)>,
+    marker: Option<&str>,
+    page_size: usize,
+) -> Result<Page<T>, String> {
+    paginate_refusing_with(records, marker, page_size, invalid_parameter_marker_message)
+}
+
+/// The page cut both paginators share: `refuse` is the rejecting report's own invalid-marker
+/// sentence, which is the only thing that differs between them.
+fn paginate_refusing_with<T>(
+    records: Vec<(String, T)>,
+    marker: Option<&str>,
+    page_size: usize,
+    refuse: fn(&str) -> String,
+) -> Result<Page<T>, String> {
     let start = match marker {
         None => 0,
-        // The wording Amazon RDS answers a marker it cannot place with: it echoes the token
-        // the request carried and tells the caller the two ways to ask again.
-        Some(marker) => resume_after(&records, marker)
-            .ok_or_else(|| invalid_marker_message(marker))?,
+        Some(marker) => resume_after(&records, marker).ok_or_else(|| refuse(marker))?,
     };
     let end = start.saturating_add(page_size).min(records.len());
     let next_marker = (end < records.len())

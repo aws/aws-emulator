@@ -303,7 +303,7 @@ async fn a_marker_is_an_opaque_token_the_service_issued_and_accepts_back() {
             );
             assert_eq!(
                 text(&body, "Message"),
-                invalid_marker_message(unissued),
+                invalid_marker_message(),
                 "case {refused:?}: a token no page issued is refused in the service's own \
                  wording"
             );
