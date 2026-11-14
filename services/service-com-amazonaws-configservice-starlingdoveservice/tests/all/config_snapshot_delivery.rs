@@ -222,7 +222,12 @@ async fn delivered_body(case: &str, emulator: &Emulator, bucket: &str, key: &str
 }
 
 /// The gzip-framed body of a delivered snapshot, gunzipped and parsed.
-fn gunzipped_snapshot(case: &str, body: &[u8]) -> Value {
+///
+/// `pub(crate)`: the stack-provisioned suite
+/// (`cloudformation_provisioned_snapshot_delivery`) reads a delivered snapshot the same
+/// way, and both modules compile into this crate's one test binary, so there is ONE
+/// decoder for both.
+pub(crate) fn gunzipped_snapshot(case: &str, body: &[u8]) -> Value {
     assert!(
         body.starts_with(&[0x1f, 0x8b]),
         "case {case:?}: a delivered snapshot is gzip-framed, got {:?}",

@@ -113,6 +113,11 @@ service-com-amazonaws-sns-amazonsimplenotificationservice = { workspace = true }
 # role: Config assumes that role to deliver, and the question is put to IAM itself, so
 # without IAM mounted there is nothing to answer it.
 service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
+# CloudFormation is mounted beside Config where the suite PROVISIONS the delivery pipeline
+# the way a client does — a stack declaring the delivery bucket, its Config bucket policy
+# and the recorder's role — so the bucket, the policy and the role the delivery is judged
+# against are the ones a stack really created rather than ones the suite wrote by hand.
+service-com-amazonaws-cloudformation-cloudformation = { workspace = true }
 # Systems Manager is mounted beside Config where the suite is about a remediation
 # configuration's TARGET: the document the configuration names exists only if Systems
 # Manager's own registry holds it, so without SSM mounted there is nothing to ask.

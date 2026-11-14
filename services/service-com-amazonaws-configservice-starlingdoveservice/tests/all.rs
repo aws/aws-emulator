@@ -191,6 +191,10 @@ mod delivery_channel_bucket_policy;
 // the next one that lands.
 #[path = "all/snapshot_delivery_bucket_policy.rs"]
 mod snapshot_delivery_bucket_policy;
+// Declared beside the two snapshot-delivery suites it is the stack-provisioned leg of,
+// rather than appended at the tail, for the same reason.
+#[path = "all/cloudformation_provisioned_snapshot_delivery.rs"]
+mod cloudformation_provisioned_snapshot_delivery;
 #[path = "all/delivery_channel_recorder_role.rs"]
 mod delivery_channel_recorder_role;
 #[path = "all/validation_clause_quotes_the_submitted_value.rs"]

@@ -11829,6 +11829,7 @@ dependencies = [
  "rand 0.9.5",
  "regex",
  "serde_json",
+ "service-com-amazonaws-cloudformation-cloudformation",
  "service-com-amazonaws-eventbridge-awsevents",
  "service-com-amazonaws-iam-awsidentitymanagementv20100508",
  "service-com-amazonaws-lambda-awsgirapiservice",
