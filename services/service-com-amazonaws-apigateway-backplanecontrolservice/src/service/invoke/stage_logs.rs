@@ -54,12 +54,58 @@
 //! the trace is worded exactly as `TestInvokeMethod` words the log of a simulated
 //! invocation: one vocabulary, so a developer reading a stage's execution log and one
 //! reading a test invocation's see the same steps.
+//!
+//! The trace is the steps the stage TOOK, so a request it could not serve through the
+//! method's integration — a configuration this api cannot be performed through, a grant the
+//! backend does not carry — carries the step that stopped it: the configuration error that
+//! was found and the gateway response the request was then answered through ([`Unperformed`]).
+//! A developer reads that line to tell a backend that answered badly from one that was never
+//! reached at all, and a status alone does not say which.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
 use super::{RtRequest, RtResponse};
 use smithy_server_runtime::OperationContext;
+
+/// What serving ONE request left for the logs the stage delivers once it has been answered.
+///
+/// Filled by the serving path as it decides the request and read here, because neither half
+/// of it can be recovered from the response: the values an AUTHORIZATION published are not in
+/// the body, and a refusal's own gateway response type is not either.
+#[derive(Debug, Default)]
+pub(super) struct Recorded {
+    /// What this request's own AUTHORIZATION published about the caller — a custom
+    /// authorizer's `principalId` and context values, a user pool's claims — each under the
+    /// `$context` member path a reference reads it by, which a record's format may name as
+    /// `$context.authorizer.<member>`; empty for a request no authorizer decided.
+    pub(super) authorized: BTreeMap<String, String>,
+    /// The configuration error that stopped the method's integration, for a request the
+    /// stage could not serve through it; `None` for every request whose integration was
+    /// performed, cached or never reached.
+    pub(super) unperformed: Option<Unperformed>,
+}
+
+/// An integration the stage could not perform, as the execution log records it.
+#[derive(Debug)]
+pub(super) struct Unperformed {
+    /// Why it could not be performed, in one sentence: `UnservedIntegration`'s own reason,
+    /// which states the configuration and never a backend answer.
+    reason: String,
+    /// The `GatewayResponseType` the request was answered through, which is what names the
+    /// CLASS of the configuration error to a developer reading the trace.
+    response_type: &'static str,
+}
+
+impl Recorded {
+    /// Record that `unserved` is what stopped this request's integration.
+    pub(super) fn stopped_by(&mut self, unserved: &super::UnservedIntegration) {
+        self.unperformed = Some(Unperformed {
+            reason: unserved.reason.clone(),
+            response_type: unserved.refusal.response_type(),
+        });
+    }
+}
 
 /// The prefix API Gateway publishes every stage's execution log group under:
 /// `API-Gateway-Execution-Logs_{rest-api-id}/{stage-name}`.
@@ -130,10 +176,9 @@ impl Planned {
 /// `latency` is how long the whole invoke took, which is what `$context.responseLatency`
 /// ("the response latency in ms") reports.
 ///
-/// `authorized` is what this request's own AUTHORIZATION published about the caller — a
-/// custom authorizer's `principalId` and context values, a user pool's claims — each under the
-/// `$context` member path a reference reads it by, which the record's format may name as
-/// `$context.authorizer.<member>`; it is empty for a request no authorizer decided.
+/// `recorded` is what serving this request left for its logs: what its own AUTHORIZATION
+/// published about the caller, and the configuration error that stopped its integration where
+/// one did ([`Recorded`]).
 ///
 /// Nothing here can fail the request: the stage has already answered, so a delivery that
 /// could not be made is traced by `service_common` and nothing else.
@@ -144,9 +189,9 @@ pub(super) async fn delivered<Eng: Send + Sync + 'static>(
     request_id: &str,
     response: &RtResponse,
     latency: Duration,
-    authorized: &BTreeMap<String, String>,
+    recorded: &Recorded,
 ) {
-    let planned = planned(engine, req, request_id, response, latency, authorized);
+    let planned = planned(engine, req, request_id, response, latency, recorded);
     let Some(planned) = planned.filter(|planned| !planned.is_empty()) else {
         return;
     };
@@ -185,7 +230,7 @@ fn planned<Eng: Send + Sync + 'static>(
     request_id: &str,
     response: &RtResponse,
     latency: Duration,
-    authorized: &BTreeMap<String, String>,
+    recorded: &Recorded,
 ) -> Option<Planned> {
     let state = crate::state::service_state(engine)?;
     let store = state.lock();
@@ -223,7 +268,12 @@ fn planned<Eng: Send + Sync + 'static>(
     // from an API Gateway Lambda authorizer function", which is an access-log variable of its
     // own, and a user pool's claims are read as `$context.authorizer.claims.<name>`. A
     // request no authorizer decided publishes nothing, so such a reference stays unresolved.
-    context.extend(authorized.iter().map(|(member, value)| (member.clone(), value.clone())));
+    context.extend(
+        recorded
+            .authorized
+            .iter()
+            .map(|(member, value)| (member.clone(), value.clone())),
+    );
     answered_context(&mut context, response, latency);
 
     let access = stage
@@ -261,6 +311,7 @@ fn planned<Eng: Send + Sync + 'static>(
                         .and_then(|resource| resource.methods.get(verb))
                         .and_then(|method| method.integration.as_ref())
                         .and_then(|integration| integration.r#type.as_deref()),
+                    recorded.unperformed.as_ref(),
                     settings.data_trace_enabled,
                 ),
             )
@@ -326,10 +377,20 @@ fn answered_context(
 /// took them, worded as `TestInvokeMethod` words the log of a simulated invocation.
 ///
 /// One log EVENT per step, because that is how CloudWatch Logs holds a multi-line trace: a
-/// client filtering the group for one step finds the event that step is.
+/// client filtering the group for one step finds the event that step is. Every one of them
+/// NAMES the request it is about, in the form API Gateway prefixes a record of a stage's
+/// execution log with — the request's own id in parentheses ([`about_request`]) — because one
+/// group holds the records of every request the stage served and a client reading it has
+/// nothing else to separate two traces by.
 ///
 /// `data_trace` adds the payloads of the call to the trace; without it the trace names their
 /// sizes, exactly as a simulated invocation's log does ([`payload_line`]).
+///
+/// `unperformed` is the configuration error that stopped the integration, for a request the
+/// stage could not serve through it: it is recorded where the integration's own step belongs —
+/// after the type that was to answer and before what the caller was answered with — in the
+/// two sentences a simulated invocation's log words that outcome with.
+#[allow(clippy::too_many_arguments)]
 fn trace(
     req: &RtRequest,
     response: &RtResponse,
@@ -337,11 +398,12 @@ fn trace(
     verb: &str,
     resource_path: &str,
     integration_type: Option<&str>,
+    unperformed: Option<&Unperformed>,
     data_trace: bool,
 ) -> Vec<String> {
     let request_body = req.body().bytes().unwrap_or_default();
     let response_body = response.body().bytes().unwrap_or_default();
-    vec![
+    let mut lines = vec![
         format!("Execution log for request {request_id}"),
         format!("Starting execution for request: {request_id}"),
         format!("HTTP Method: {verb}, Resource Path: {resource_path}"),
@@ -358,16 +420,38 @@ fn trace(
             "Integration type: {}",
             integration_type.unwrap_or("none")
         ),
-        payload_line(
-            "Method response body after transformations",
-            response_body,
-            data_trace,
-        ),
-        format!(
-            "Method completed with status: {}",
-            response.status().as_u16()
-        ),
-    ]
+    ];
+    if let Some(unperformed) = unperformed {
+        lines.push(format!(
+            "Execution failed due to configuration error: {}",
+            unperformed.reason
+        ));
+        lines.push(format!(
+            "Answered through this API's {} gateway response",
+            unperformed.response_type
+        ));
+    }
+    lines.push(payload_line(
+        "Method response body after transformations",
+        response_body,
+        data_trace,
+    ));
+    lines.push(format!(
+        "Method completed with status: {}",
+        response.status().as_u16()
+    ));
+    lines
+        .into_iter()
+        .map(|line| about_request(request_id, &line))
+        .collect()
+}
+
+/// One record of a stage's execution log, naming the request it is about: API Gateway writes
+/// each line of a request's trace prefixed with that request's own id in parentheses, which is
+/// the id the response reported in its own header — so a client holding a response can find
+/// exactly the records of the request it holds in a group that carries every request's.
+fn about_request(request_id: &str, line: &str) -> String {
+    format!("({request_id}) {line}")
 }
 
 /// Emulator resource guard, NOT an AWS limit: the most bytes of one payload a traced line

@@ -2100,3 +2100,9 @@ mod dynamodb_write_capacity_metrics_drive_the_alarm_chain;
 // Declared here, in this appended tail: whether a stack-deployed metric-stream estate can be
 // drained spans CloudFormation and the services the estate is built from, so no single
 // service crate's test target can deploy it and then drain it.
+// at the top of this file: the entry was appended here as well while two branches were
+// landing at once, which declared it a second time and compiled neither.)
+// (`zz_probe` is declared ONCE, further up this tail: the entry was appended here as well
+// while two branches were landing at once, which declared it a second time and compiled
+// the entry was appended here as well while two branches were landing at once, which declared
+// it a second time and compiled neither.)

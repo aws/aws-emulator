@@ -274,6 +274,13 @@ pub(crate) async fn invoke(
     .await
 }
 
+/// One record of a stage's execution log as the group holds it: API Gateway prefixes each
+/// line of a request's trace with that request's own id in parentheses, so one group can
+/// hold the traces of every request the stage served.
+pub(crate) fn traced_line(request_id: &str, line: &str) -> String {
+    format!("({request_id}) {line}")
+}
+
 /// The ARN of the log group `name`, as a stage's `destinationArn` names one.
 fn group_arn(name: &str) -> String {
     format!(
@@ -804,7 +811,10 @@ async fn the_method_settings_in_force_gate_the_execution_log() {
             .unwrap_or_else(|| panic!("case {case:?}: the response named no request id"));
 
         let records = delivered(&router, &group).await.unwrap_or_default();
-        let opened = format!("Execution log for request {request_id}");
+        let opened = traced_line(
+            &request_id,
+            &format!("Execution log for request {request_id}"),
+        );
         if !level.traced {
             assert!(
                 !records.contains(&opened),
@@ -829,14 +839,19 @@ async fn the_method_settings_in_force_gate_the_execution_log() {
             let rest = &records[opened_at..];
             let end = rest
                 .iter()
-                .position(|record| record.starts_with("Method completed with status: "))
+                .position(|record| {
+                    record.starts_with(&traced_line(
+                        &request_id,
+                        "Method completed with status: ",
+                    ))
+                })
                 .map_or(rest.len(), |at| at + 1);
             rest[..end].to_vec()
         };
         for expected in [
-            "HTTP Method: GET, Resource Path: /echo".to_string(),
-            "Integration type: AWS_PROXY".to_string(),
-            "Method completed with status: 200".to_string(),
+            traced_line(&request_id, "HTTP Method: GET, Resource Path: /echo"),
+            traced_line(&request_id, "Integration type: AWS_PROXY"),
+            traced_line(&request_id, "Method completed with status: 200"),
         ] {
             assert!(
                 trace.contains(&expected),
@@ -847,10 +862,16 @@ async fn the_method_settings_in_force_gate_the_execution_log() {
         // The payload lines: the bytes of the call where data tracing is on, and their
         // sizes where it is off, which is the control that setting exists for.
         let served = r#"{"seen": "traced"}"#;
-        let with_data = format!("Method response body after transformations: {served}");
-        let without_data = format!(
-            "Method response body after transformations: {} byte(s)",
-            served.len()
+        let with_data = traced_line(
+            &request_id,
+            &format!("Method response body after transformations: {served}"),
+        );
+        let without_data = traced_line(
+            &request_id,
+            &format!(
+                "Method response body after transformations: {} byte(s)",
+                served.len()
+            ),
         );
         let (present, absent) = if level.payloads {
             (with_data, without_data)
@@ -863,10 +884,18 @@ async fn the_method_settings_in_force_gate_the_execution_log() {
              got {trace:?}"
         );
         // One request is one trace: the group holds as many opening lines as requests that
-        // were traced.
+        // were traced. Anchored at the record's own start — every record opens with the
+        // `(<request id>) ` naming the request it is about — so a record that merely embeds
+        // the phrase is not counted as a trace of its own.
         let opened_count = records
             .iter()
-            .filter(|record| record.starts_with("Execution log for request "))
+            .filter(|record| {
+                record
+                    .split_once(") ")
+                    .is_some_and(|(id, line)| {
+                        id.starts_with('(') && line.starts_with("Execution log for request ")
+                    })
+            })
             .count();
         assert_eq!(
             opened_count, traced,

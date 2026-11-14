@@ -35,6 +35,12 @@ mod http_proxy_function_url;
 mod proxy_event_repeated_names;
 #[path = "all/test_invoke_method_lambda_permission.rs"]
 mod test_invoke_method_lambda_permission;
+// Declared here, at the head, for the reason the entry at the top of this file records: which
+// STAGE of one deployment the integration's function admits, and what the stage's execution
+// log records about a request it refused, spans API Gateway, AWS Lambda and Amazon CloudWatch
+// Logs at once.
+#[path = "all/stage_scoped_lambda_permission.rs"]
+mod stage_scoped_lambda_permission;
 // Declared here, at the head, for the reason the entry at the top of this file records: what
 // a simulated invocation of a method whose integration `uri` names a function, version or
 // alias that resolves to nothing is answered — and logged — with spans API Gateway, AWS

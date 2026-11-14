@@ -26,7 +26,8 @@
 //! two parameter names) and what does not (its SigV4 credential, in both the header and the
 //! presigned-query form), the private connection the integration is carried over (none, one
 //! this account does not hold, one still provisioning, one provisioned) and a chain that
-//! leads back to itself.
+//! leads back to itself — through the stored `uri`, and through the address a mapped path
+//! parameter expands it to.
 
 use serde_json::{json, Value};
 
@@ -697,6 +698,79 @@ async fn a_chain_of_passed_through_integrations_is_bounded() {
     let served = invoke_front(&gateway, &api, &[]).await;
     assert_served(
         "an integration naming its own stage",
+        &served,
+        &Expect::NotPerformed,
+    );
+}
+
+/// The same bound holds for a loop made by the ADDRESS the request is passed on at rather
+/// than by the stored spelling: the `uri` names a host outside this emulator and carries a
+/// `{proxy}` placeholder, and the value the integration maps onto it — a header the CALLER
+/// sent — expands the address onto this plane's own announced path-style address for the
+/// api's own stage. Such a request is served by RE-ENTERING this plane, which is what carries
+/// the hop count, so the chain is bounded and answered through the api's gateway response
+/// instead of leaving as an onward request that comes back in through the claim with the
+/// count reset.
+#[tokio::test]
+async fn a_chain_whose_loop_is_made_by_an_expanded_path_parameter_is_bounded() {
+    let gateway = Gateway::new();
+    let other = backend(&gateway).await;
+    let (api, root) = create_api(&gateway, "passed-through-expanded-loop").await;
+    put_method(
+        &gateway,
+        &api,
+        &root,
+        "GET",
+        json!({
+            "authorizationType": "NONE",
+            "requestParameters": { "method.request.header.x-loop-to": false },
+        }),
+    )
+    .await;
+    put_integration(
+        &gateway,
+        &api,
+        &root,
+        "GET",
+        json!({
+            "type": "HTTP_PROXY",
+            "httpMethod": "GET",
+            // A host nothing in this emulator serves, so the STORED spelling names no
+            // endpoint of this plane at all.
+            "uri": "https://backend.example.com/{proxy}",
+            "requestParameters": {
+                "integration.request.path.proxy": "method.request.header.x-loop-to",
+            },
+        }),
+    )
+    .await;
+    deploy(&gateway, &api, FRONT_STAGE).await;
+
+    // 1. The path-style address this emulator announces ANOTHER api's stage at: not a loop, so
+    //    the re-entry SERVES it and that api's own answer comes back. This is what tells "the
+    //    expanded address was served by this plane" from "every expansion is refused".
+    let served = invoke_front(
+        &gateway,
+        &api,
+        &[(
+            "x-loop-to",
+            &format!("_aws/execute-api/{other}/{BACKEND_STAGE}/{BACKEND_PATH}"),
+        )],
+    )
+    .await;
+    assert_served(
+        "an expanded address naming another api's stage of this plane",
+        &served,
+        &Expect::PassedThrough,
+    );
+
+    // 2. The same expansion naming the api's OWN stage, which is the loop: every hop finds
+    //    this same integration again, so the chain reaches the bound and is answered through
+    //    the gateway response.
+    let loop_to = format!("_aws/execute-api/{api}/{FRONT_STAGE}/");
+    let served = invoke_front(&gateway, &api, &[("x-loop-to", &loop_to)]).await;
+    assert_served(
+        "an expanded address naming this plane's own stage",
         &served,
         &Expect::NotPerformed,
     );

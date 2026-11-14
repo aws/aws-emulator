@@ -54,7 +54,7 @@ use crate::proxy_binary_media_types::{
 use crate::rest_api_lifecycle::{
     assert_failure, create_api, gateway_with_iam_logs_and_lambda, resource_under, Gateway,
 };
-use crate::stage_access_logging::{delivered, invoke};
+use crate::stage_access_logging::{delivered, invoke, traced_line};
 use crate::stage_lifecycle::get_stage;
 
 /// How long ONE call of the sequence is given to answer before the case fails.
@@ -485,7 +485,10 @@ async fn the_account_role_sequence_answers_every_call_and_makes_each_outcome_obs
         // 7. And the group API Gateway publishes for the stage holds the trace of exactly
         //    those requests the setting in force writes one for.
         let events = execution_log(&gateway, &api).await;
-        let opened = format!("Execution log for request {request_id}");
+        let opened = traced_line(
+            &request_id,
+            &format!("Execution log for request {request_id}"),
+        );
         assert_eq!(
             events.contains(&opened),
             row.traces_the_served_request,
@@ -494,19 +497,28 @@ async fn the_account_role_sequence_answers_every_call_and_makes_each_outcome_obs
         );
         if row.traces_the_served_request {
             let body_line = if row.payloads {
-                format!(
-                    "Method response body after transformations: {}",
-                    served.text()
+                traced_line(
+                    &request_id,
+                    &format!(
+                        "Method response body after transformations: {}",
+                        served.text()
+                    ),
                 )
             } else {
-                format!(
-                    "Method response body after transformations: {} byte(s)",
-                    served.text().len()
+                traced_line(
+                    &request_id,
+                    &format!(
+                        "Method response body after transformations: {} byte(s)",
+                        served.text().len()
+                    ),
                 )
             };
             for expected in [
-                format!("HTTP Method: {}, Resource Path: /{RESOURCE}", row.verb),
-                "Method completed with status: 200".to_string(),
+                traced_line(
+                    &request_id,
+                    &format!("HTTP Method: {}, Resource Path: /{RESOURCE}", row.verb),
+                ),
+                traced_line(&request_id, "Method completed with status: 200"),
                 body_line,
             ] {
                 assert!(
@@ -543,7 +555,10 @@ async fn the_account_role_sequence_answers_every_call_and_makes_each_outcome_obs
             .clone()
             .unwrap_or_else(|| panic!("case {case:?}: the refusal named no request id"));
         let events = execution_log(&gateway, &api).await;
-        let opened = format!("Execution log for request {unmatched_id}");
+        let opened = traced_line(
+            &unmatched_id,
+            &format!("Execution log for request {unmatched_id}"),
+        );
         assert_eq!(
             events.contains(&opened),
             row.traces_an_unmatched_request,

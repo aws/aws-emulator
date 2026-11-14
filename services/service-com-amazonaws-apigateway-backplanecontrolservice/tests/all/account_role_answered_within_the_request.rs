@@ -51,7 +51,7 @@ use crate::rest_api_lifecycle::{
     assert_failure, create_api, gateway_with_iam_and_logs, resource_under, string_member, Answer,
     Gateway,
 };
-use crate::stage_access_logging::{delivered, invoke};
+use crate::stage_access_logging::{delivered, invoke, traced_line};
 
 /// How long a synchronous control-plane call is given to answer before the case fails.
 ///
@@ -379,9 +379,15 @@ async fn the_refused_role_leaves_no_trace_and_the_accepted_one_carries_the_execu
          event at all"
     );
     for expected in [
-        format!("Execution log for request {request_id}"),
-        format!("HTTP Method: GET, Resource Path: /{RESOURCE}"),
-        "Method completed with status: 200".to_string(),
+        traced_line(
+            &request_id,
+            &format!("Execution log for request {request_id}"),
+        ),
+        traced_line(
+            &request_id,
+            &format!("HTTP Method: GET, Resource Path: /{RESOURCE}"),
+        ),
+        traced_line(&request_id, "Method completed with status: 200"),
     ] {
         assert!(
             events.contains(&expected),

@@ -1378,12 +1378,15 @@ pub async fn serve<Eng: Send + Sync + 'static>(
     // latency of answering this request: the clock starts before anything is resolved and is
     // read once the response has been computed.
     let started = ::std::time::Instant::now();
-    // What this request's own AUTHORIZATION published about the caller — a custom authorizer's
-    // values and principal, a user pool's claims — filled by the resolution below. The STAGE's
-    // access-log record is rendered from the call's `$context` values, and these are part of
-    // them (`$context.authorizer.principalId` is an access-log variable of its own), so they
-    // are carried out to the delivery rather than reaching the integration alone.
-    let mut authorized: BTreeMap<String, String> = BTreeMap::new();
+    // What serving this request leaves for the logs the stage delivers afterwards, filled by
+    // the resolution below: what this request's own AUTHORIZATION published about the caller —
+    // a custom authorizer's values and principal, a user pool's claims — and the configuration
+    // error that stopped its integration where one did. Neither is recoverable from the
+    // response, and the STAGE's own records are rendered from both (`$context.authorizer.*` is
+    // an access-log variable of its own, and the execution log records the step that stopped
+    // the request), so they are carried out to the delivery rather than reaching the
+    // integration alone ([`stage_logs`]).
+    let mut recorded = stage_logs::Recorded::default();
     let served = ::service_common::query_error_envelope::with_stated_request_id_header(
         // The documented payload limit is the ENDPOINT's, and it is answered HERE, before
         // anything the api's own records decide: not the stage, the route, the
@@ -1404,7 +1407,7 @@ pub async fn serve<Eng: Send + Sync + 'static>(
             None => compression::compressed(
                 engine,
                 req,
-                serve_resolved(engine, req, ctx, 0, &request_id, &mut authorized, None).await,
+                serve_resolved(engine, req, ctx, 0, &request_id, &mut recorded, None).await,
             ),
         },
         &request_id,
@@ -1420,7 +1423,7 @@ pub async fn serve<Eng: Send + Sync + 'static>(
         &request_id,
         &served,
         started.elapsed(),
-        &authorized,
+        &recorded,
     )
     .await;
     served
@@ -1448,7 +1451,7 @@ fn serve_resolved<'a, 'c: 'a, Eng: Send + Sync + 'static>(
     ctx: &'a OperationContext<'c>,
     hop: u8,
     request_id: &'a str,
-    authorized: &'a mut BTreeMap<String, String>,
+    recorded: &'a mut stage_logs::Recorded,
     delivered_through: Option<&'a str>,
 ) -> BoxFuture<'a, RtResponse> {
     Box::pin(async move {
@@ -1458,7 +1461,7 @@ fn serve_resolved<'a, 'c: 'a, Eng: Send + Sync + 'static>(
             ctx,
             hop,
             request_id,
-            authorized,
+            recorded,
             delivered_through,
         )
         .await
@@ -1473,7 +1476,7 @@ async fn serving<Eng: Send + Sync + 'static>(
     ctx: &OperationContext<'_>,
     hop: u8,
     request_id: &str,
-    authorized: &mut BTreeMap<String, String>,
+    recorded: &mut stage_logs::Recorded,
     delivered_through: Option<&str>,
 ) -> RtResponse {
     let Some(state) = crate::state::service_state(engine) else {
@@ -1763,7 +1766,7 @@ async fn serving<Eng: Send + Sync + 'static>(
             // STAGE's own access-log record is rendered from those same values, so what the
             // authorization published is handed back to the funnel that delivers it
             // ([`stage_logs`]) rather than being left to the integration alone.
-            *authorized = published.clone();
+            recorded.authorized = published.clone();
             call.inputs.context.extend(published);
 
             // The api's own RESOURCE POLICY, which "applies to this RestApi regardless of the
@@ -1896,6 +1899,10 @@ async fn serving<Eng: Send + Sync + 'static>(
                             reason = %unserved.reason,
                             "the stage cannot serve this call through the method's integration"
                         );
+                        // The step that stopped this request, for the stage's own execution
+                        // log: an integration that was never performed is what a developer
+                        // reading the trace has to be told about ([`stage_logs`]).
+                        recorded.stopped_by(&unserved);
                         break 'planned Planned::answered(refusal_response(
                             Some(api),
                             unserved.refusal,
@@ -2015,8 +2022,12 @@ async fn serving<Eng: Send + Sync + 'static>(
 
     // Every outcome an integration this call cannot be performed through earns is rendered
     // the same way: through the api's own gateway response for the refusal, so the records
-    // are read again — briefly, and only to render it.
-    let refuse = |unserved: UnservedIntegration| -> RtResponse {
+    // are read again — briefly, and only to render it. The refusal is RECORDED as it is
+    // rendered, because the stage's execution log names the step that stopped the request
+    // and no reader of the response could recover it ([`stage_logs`]).
+    let refuse = |unserved: UnservedIntegration,
+                  recorded: &mut stage_logs::Recorded|
+     -> RtResponse {
         tracing::warn!(
             api_id = %integration.api_id,
             stage = %integration.stage,
@@ -2025,6 +2036,7 @@ async fn serving<Eng: Send + Sync + 'static>(
             reason = %unserved.reason,
             "the stage cannot serve this call through the method's integration"
         );
+        recorded.stopped_by(&unserved);
         let store = state.lock();
         let api = resolve(&store, &addressed).map(|resolved| resolved.api);
         refusal_response(api, unserved.refusal)
@@ -2043,20 +2055,24 @@ async fn serving<Eng: Send + Sync + 'static>(
         });
     let served = if let Some(passed_on) = passed_on {
         if let Some(reason) = integration.unusable_connection.clone() {
-            return refuse(UnservedIntegration {
-                refusal: API_CONFIGURATION_ERROR,
-                reason,
-            });
+            return refuse(
+                UnservedIntegration {
+                    refusal: API_CONFIGURATION_ERROR,
+                    reason,
+                },
+                recorded,
+            );
         }
         match passed_on {
-            PassedThrough::Unserved(unserved) => return refuse(unserved),
+            PassedThrough::Unserved(unserved) => return refuse(unserved, recorded),
             PassedThrough::Request(onward) => {
                 // The onward request is a request of its own at another endpoint, so it is
                 // answered under its own id, as AWS names each request it processes by one.
                 let onward_id = ::service_common::query_error_envelope::new_request_id();
                 // A request of its own: what the endpoint it reaches publishes about ITS
-                // own authorization belongs to that request, not to this one's record.
-                let mut onward_authorized = BTreeMap::new();
+                // own authorization, and the configuration error that stopped its own
+                // integration, belong to that request and not to this one's record.
+                let mut onward_recorded = stage_logs::Recorded::default();
                 // The VPC ENDPOINT that onward request ARRIVES through, asked for only now
                 // that there IS one to serve, and with no lock of this service held because
                 // it asks the two services that own those records ([`private_delivery`]):
@@ -2079,7 +2095,7 @@ async fn serving<Eng: Send + Sync + 'static>(
                     ctx,
                     hop + 1,
                     &onward_id,
-                    &mut onward_authorized,
+                    &mut onward_recorded,
                     delivered_through.as_deref(),
                 )
                 .await
@@ -2089,7 +2105,7 @@ async fn serving<Eng: Send + Sync + 'static>(
             // method response.
             PassedThrough::Onward(onward) => match onward_endpoint::answered(ctx, *onward).await {
                 Ok(answered) => answered,
-                Err(unserved) => return refuse(unserved),
+                Err(unserved) => return refuse(unserved, recorded),
             },
         }
     } else {
@@ -2102,7 +2118,7 @@ async fn serving<Eng: Send + Sync + 'static>(
         .await
         {
             Ok(served) => served_response(served),
-            Err(unserved) => return refuse(unserved),
+            Err(unserved) => return refuse(unserved, recorded),
         }
     };
 
@@ -3252,22 +3268,10 @@ fn passed_through(
         }));
     }
     let uri = integration.uri.as_deref().unwrap_or_default();
-    // The endpoint the request is passed on to. A `uri` with no authority at all addresses
-    // nothing, so nothing is passed on for it; an endpoint that is a stage of THIS plane is
-    // served by re-entering it, and any other is reached over the in-process transport.
-    //
-    // A stage of this plane is named in EITHER of the two addressings this plane publishes
-    // for one: the `execute-api` endpoint host AWS gives it, and the prefixed path-style
-    // address this emulator announces it at ([`announced_address`],
-    // `/_aws/execute-api/{api-id}/{stage}/…`) — which is the invoke URL a client of an
-    // emulator holds, and so the one an integration naming a stage of this plane carries.
-    // Both re-enter this plane's own serving rather than crossing the transport to come
-    // back in through the claim, which is what lets what THIS plane did with the request —
-    // the endpoint it delivered it through — travel with it as an argument rather than on
-    // the wire.
-    let host = authority_of(uri)?;
-    let within_this_plane =
-        endpoint_labels(host).is_some() || split_execute_api_prefix(path_of(uri)).is_some();
+    // A `uri` with no authority at all addresses nothing, so nothing is passed on for it.
+    // Asked here, before any mapping is read: an integration naming no endpoint is one this
+    // plane passes no request through, whatever its parameters map.
+    authority_of(uri)?;
 
     // What `requestParameters` maps onto the integration request, read BEFORE anything is
     // built from it: the PATH parameters decide the address itself, so the mappings are
@@ -3323,6 +3327,34 @@ fn passed_through(
                 .to_string(),
         }));
     }
+    // The endpoint the request is passed on to, read off the ADDRESS it is passed on at and
+    // not off the stored spelling: a `{name}` placeholder is filled from a value the CALLER
+    // controls ([`mapped_request_parameter`]), so the two can name different endpoints, and
+    // what decides this is the address the request is actually made at.
+    //
+    // An endpoint that is a stage of THIS plane is served by re-entering it, and any other is
+    // reached over the in-process transport. A stage of this plane is named in EITHER of the
+    // two addressings this plane publishes for one: the `execute-api` endpoint host AWS gives
+    // it, and the prefixed path-style address this emulator announces it at
+    // ([`announced_address`], `/_aws/execute-api/{api-id}/{stage}/…`) — which is the invoke
+    // URL a client of an emulator holds, and so the one an integration naming a stage of this
+    // plane carries. Both re-enter this plane's own serving rather than crossing the transport
+    // to come back in through the claim: re-entry is what carries `hop`, the count this
+    // function is bounded by, and what lets what THIS plane did with the request — the
+    // endpoint it delivered it through — travel with it as an argument rather than on the
+    // wire. Deciding that on the stored spelling would let an expansion that resolves onto
+    // this plane's own address leave as an onward request and arrive back through the claim
+    // with the count reset, which is a chain nothing then bounds.
+    let Some(host) = authority_of(&addressed) else {
+        return Some(PassedThrough::Unserved(UnservedIntegration {
+            refusal: API_CONFIGURATION_ERROR,
+            reason: "the integration's uri names no endpoint once its path parameters are \
+                     applied, so there is no address to pass the request on to"
+                .to_string(),
+        }));
+    };
+    let within_this_plane = endpoint_labels(host).is_some()
+        || split_execute_api_prefix(path_of(&addressed)).is_some();
     let mut passed = RtRequest::new(SdkBody::from(request_payload(req)));
     if passed
         .set_uri(onward_uri(&addressed, req.uri(), &mapped.querystring).as_str())
