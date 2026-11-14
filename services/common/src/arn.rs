@@ -357,6 +357,17 @@ const IDENTITY_RESOURCES: &[(&str, &str, usize)] = &[
 /// is what an identity ARN's account field holds.
 const ACCOUNT_ID_DIGITS: usize = 12;
 
+/// Whether `value` is an AWS ACCOUNT ID: exactly [`ACCOUNT_ID_DIGITS`] decimal digits.
+///
+/// The one reading of that form, for the account field of an ARN ([`is_iam_principal_arn`])
+/// and for a member that carries an account id on its own — a policy's account principal
+/// ([`super::iam_policy_principals`]), a registry or owner id — so no two callers disagree
+/// about what an account id is.
+#[must_use]
+pub fn is_account_id(value: &str) -> bool {
+    value.len() == ACCOUNT_ID_DIGITS && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
 /// Whether `value` is the ARN of an AWS IAM PRINCIPAL — an identity a policy can grant to.
 ///
 /// For a member a model documents as the ARN of a user or a role, or as a resource-based
@@ -382,8 +393,7 @@ pub fn is_iam_principal_arn(value: &str) -> bool {
         return false;
     };
     let global = arn.region.is_empty();
-    let owned_by_an_account = arn.account.len() == ACCOUNT_ID_DIGITS
-        && arn.account.bytes().all(|byte| byte.is_ascii_digit());
+    let owned_by_an_account = is_account_id(arn.account);
     let names_one_identity = !arn.resource.contains(['*', '?', ':']);
     global
         && owned_by_an_account

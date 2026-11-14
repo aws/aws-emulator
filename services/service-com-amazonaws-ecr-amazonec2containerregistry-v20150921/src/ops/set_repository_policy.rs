@@ -10,7 +10,10 @@
 //! `GetRepositoryPolicy` reads it back and `DeleteRepositoryPolicy` removes it. Unlike a
 //! REGISTRY policy, a repository policy may grant to every principal (that is how a
 //! repository is shared publicly), so this operation adds no principal rule of its own;
-//! what it does add is the lock-out rule the `force` flag exists for.
+//! what it does add are the two rules a REPOSITORY policy carries — this document is
+//! attached to one repository, which is the resource its statements apply to, so a
+//! statement naming a resource of its own is refused, and the lock-out rule the `force`
+//! flag exists for.
 //!
 //! ## Shape of an operation
 //!
@@ -263,6 +266,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             crate::state::REPOSITORY_POLICY_CONSTRAINT,
             &input.policy_text,
             |statement| {
+                // A repository policy applies to the repository it is attached to, so a
+                // statement naming resources of its own is not one ECR will hold — the one
+                // scope rule's repository half (`crate::state::RESOURCE_ELEMENTS`).
+                if crate::state::statement_carries_a_resource_element(statement) {
+                    return Err(crate::state::invalid_document(
+                        crate::state::POLICY_TEXT_PARAMETER,
+                        crate::state::REPOSITORY_POLICY_CONSTRAINT,
+                    ));
+                }
                 // "If the policy you are attempting to set on a repository policy would
                 // prevent you from setting another policy in the future, you must force
                 // the SetRepositoryPolicy operation. This is intended to prevent

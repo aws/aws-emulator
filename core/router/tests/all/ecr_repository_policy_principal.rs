@@ -201,6 +201,12 @@ struct PrincipalCase {
     case: &'static str,
     principal: Value,
     accepted: bool,
+    /// The `Principal` element the STORED document names, where ECR respells it: a whole
+    /// account named by its bare id is held as that account's root ARN, the other spelling
+    /// of the same principal (the ECR crate's own
+    /// `policy_document_account_principal` suite pins that rule). `None` for a row stored
+    /// exactly as it was submitted.
+    stored_principal: Option<Value>,
 }
 
 fn principal_cases() -> Vec<PrincipalCase> {
@@ -208,6 +214,12 @@ fn principal_cases() -> Vec<PrincipalCase> {
         case,
         principal,
         accepted,
+        stored_principal: None,
+    };
+    // The same row, with the principal the stored document names.
+    let stored = |mut row: PrincipalCase, principal: Value| {
+        row.stored_principal = Some(principal);
+        row
     };
     vec![
         row(
@@ -252,10 +264,9 @@ fn principal_cases() -> Vec<PrincipalCase> {
             json!({"AWS": iam_arn(ACCOUNT, "root")}),
             true,
         ),
-        row(
-            "this account by id",
-            json!({"AWS": ACCOUNT}),
-            true,
+        stored(
+            row("this account by id", json!({"AWS": ACCOUNT}), true),
+            json!({"AWS": iam_arn(ACCOUNT, "root")}),
         ),
         row(
             // Another account's IAM is not this emulator's to ask, so nothing is known
@@ -369,7 +380,13 @@ async fn a_repository_policy_is_stored_only_when_iam_resolves_every_identity_it_
                 "case {:?} ({}): the policy must be stored, got {status} ({body})",
                 row.case, row.principal
             );
-            document.clone()
+            // The document ECR holds names the principal in the spelling the store writes,
+            // which differs from the submitted one only where the row says so.
+            policy(
+                row.stored_principal
+                    .clone()
+                    .unwrap_or_else(|| row.principal.clone()),
+            )
         } else {
             assert_eq!(
                 (status, error_code(&body).as_str()),

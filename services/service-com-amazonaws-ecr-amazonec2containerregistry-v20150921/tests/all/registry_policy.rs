@@ -94,7 +94,7 @@ fn accepted_documents() -> Vec<(&'static str, String)> {
         ),
         (
             "no Version element, which a policy need not declare",
-            r#"{"Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::123456789012:root"},"Action":"ecr:ReplicateImage"}]}"#
+            r#"{"Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::123456789012:root"},"Action":"ecr:ReplicateImage","Resource":"*"}]}"#
                 .to_string(),
         ),
         (

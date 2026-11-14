@@ -434,6 +434,10 @@ pub mod iam_client;
 /// API takes one as a string and has to decide whether to accept it — so two services
 /// handed the same document cannot disagree about whether it is a policy at all.
 pub mod iam_policy;
+/// The ONE reading of the FORMS a resource-based policy names a principal in — the principal
+/// types the language defines and what a value of each may be — for every service that
+/// decides whether a submitted policy document names principals at all.
+pub mod iam_policy_principals;
 /// The ONE rendering of an IAM resource-based policy document a service stores and reports
 /// back — the whitespace between its JSON tokens dropped and a one-element string array
 /// written as the string it names — so no two services report one policy's bytes

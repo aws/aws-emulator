@@ -143,35 +143,44 @@ fn the_identities_a_document_grants_to_are_read_out_of_every_principal_form() {
     }
 }
 
-/// The principal forms a `SetRepositoryPolicy` carries, including identities of this
-/// account that were never created: with no IAM mounted there is nothing to ask, so each
-/// one is STORED rather than refused on an assumption.
-fn principal_forms() -> Vec<(&'static str, Value)> {
+/// The principal forms a `SetRepositoryPolicy` carries, each with the principal the stored
+/// document names once ECR has written it: identities of this account that were never
+/// created included, because with no IAM mounted there is nothing to ask, so each one is
+/// STORED rather than refused on an assumption. A whole ACCOUNT named by its bare id is the
+/// one form a policy store respells — as that account's root ARN, the other spelling of the
+/// same principal (`policy_document_account_principal.rs` pins that rule).
+fn principal_forms() -> Vec<(&'static str, Value, Value)> {
+    // The form a stored document reports, where it is the submitted form itself.
+    let kept = |case: &'static str, principal: Value| (case, principal.clone(), principal);
     vec![
-        ("every principal", json!("*")),
-        ("every principal, as a typed object", json!({"AWS": "*"})),
-        (
+        kept("every principal", json!("*")),
+        kept("every principal, as a typed object", json!({"AWS": "*"})),
+        kept(
             "a role of this account that was never created",
             json!({"AWS": iam_arn(REGISTRY_ID, "role/ghost-role")}),
         ),
-        (
+        kept(
             "a user of this account that was never created",
             json!({"AWS": iam_arn(REGISTRY_ID, "user/ghost-user")}),
         ),
-        (
+        kept(
             "this account's root",
             json!({"AWS": iam_arn(REGISTRY_ID, "root")}),
         ),
-        ("this account by id", json!({"AWS": REGISTRY_ID})),
         (
+            "this account by id",
+            json!({"AWS": REGISTRY_ID}),
+            json!({"AWS": iam_arn(REGISTRY_ID, "root")}),
+        ),
+        kept(
             "another account's role",
             json!({"AWS": iam_arn(OTHER_ACCOUNT, "role/ghost-role")}),
         ),
-        (
+        kept(
             "a service principal",
             json!({"Service": "replication.ecr.amazonaws.com"}),
         ),
-        (
+        kept(
             "a list of identities of this account",
             json!({"AWS": [
                 iam_arn(REGISTRY_ID, "role/ghost-role"),
@@ -185,11 +194,14 @@ fn principal_forms() -> Vec<(&'static str, Value)> {
 async fn with_no_iam_to_ask_every_principal_is_stored_as_submitted() {
     let router = crate::wire::emulator();
 
-    for (index, (case, principal)) in principal_forms().into_iter().enumerate() {
+    for (index, (case, principal, stored_principal)) in
+        principal_forms().into_iter().enumerate()
+    {
         let name = format!("ungrounded-principal-{index}");
         ok(&router, case, "CreateRepository", &json!({"repositoryName": name})).await;
 
         let document = policy(principal);
+        let stored = policy(stored_principal);
         let set = ok(
             &router,
             case,
@@ -199,7 +211,7 @@ async fn with_no_iam_to_ask_every_principal_is_stored_as_submitted() {
         .await;
         assert_eq!(
             document_content(set["policyText"].as_str().unwrap_or_default()),
-            document_content(&document),
+            document_content(&stored),
             "case {case:?}: the set must report the document it stored, got {:?}",
             set["policyText"]
         );
@@ -214,8 +226,8 @@ async fn with_no_iam_to_ask_every_principal_is_stored_as_submitted() {
         .await;
         assert_eq!(
             document_content(got["policyText"].as_str().unwrap_or_default()),
-            document_content(&document),
-            "case {case:?}: the repository must hold the submitted document, got {:?}",
+            document_content(&stored),
+            "case {case:?}: the repository must hold the stored document, got {:?}",
             got["policyText"]
         );
     }

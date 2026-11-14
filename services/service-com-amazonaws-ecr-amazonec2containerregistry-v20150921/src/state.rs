@@ -3618,7 +3618,11 @@ pub const REPOSITORY_POLICY_CONSTRAINT: &str = "Invalid repository policy provid
 /// required and holds either one statement object or a non-empty array of them; and
 /// every statement carries an `Effect` of [`POLICY_EFFECTS`], at least one action
 /// (`Action` or `NotAction`) and — because this is a RESOURCE-based policy, which
-/// states who the permission is granted to — a `Principal`.
+/// states who the permission is granted to — a `Principal` whose every value is in one of
+/// the forms the policy language defines for its principal type
+/// ([`::service_common::iam_policy_principals::unreadable_principal`]): a document naming
+/// something that is no principal grants to nobody, so it is not a policy this service can
+/// hold.
 ///
 /// `check_statement` is called with each statement object once it satisfies that
 /// grammar, so a service that adds its own rule about what a policy may say (see
@@ -3675,6 +3679,12 @@ pub fn validate_resource_policy(
             .get("Principal")
             .filter(|principal| names_values(principal))
             .ok_or_else(refuse)?;
+        // A principal element names IDENTITIES, so its values are read against the forms
+        // the policy language defines per principal type: a value in none of them denotes
+        // no identity, and a document granting to no identity is one ECR will not accept.
+        if ::service_common::iam_policy_principals::unreadable_principal(entry).is_some() {
+            return Err(refuse());
+        }
         check_statement(entry)?;
     }
     Ok(())
@@ -3753,16 +3763,37 @@ pub async fn unresolved_policy_principal(
 
 /// An attached IAM policy document as ECR REPORTS one: the canonical IAM-policy rendering
 /// ([`::service_common::iam_policy::canonical_document`]), which is the pretty-printed
-/// layout every policy ECR echoes back comes in, whatever layout the caller submitted.
+/// layout every policy ECR echoes back comes in, whatever layout the caller submitted, with
+/// an account principal written in the one spelling a policy store holds it in — that
+/// account's ROOT ARN ([`::service_common::iam_policy_principals::account_root_principal`]).
 ///
 /// The layout is the tree's ONE policy rendering, shared with every other service that
 /// re-serializes an attached document, so two services handed the same policy report it
 /// identically; `text` that is not well-formed JSON comes back as it came, because this is a
 /// rendering and the policy grammar ([`validate_resource_policy`]) is what refuses an
 /// unusable document.
+///
+/// The policy language lets a statement name a whole account by its bare account id, and
+/// that id and the account's root ARN name the same principal — so the document ECR holds
+/// carries the root ARN whichever of the two was submitted, and a client comparing the
+/// document it reads against the one it sent sees one spelling rather than rewriting the
+/// policy forever. Only an account id is rewritten: every other value of the element — the
+/// wildcard, an identity's ARN, a root ARN already — is the caller's own and comes back as
+/// it was written, which is what keeps this rendering a fixed point.
 pub fn canonical_policy_document(text: &str) -> String {
-    ::service_common::iam_policy::canonical_document(text)
+    let rendered = ::service_common::iam_policy::canonical_document(text);
+    ::service_common::iam_policy_rendering::rewritten_values(
+        &rendered,
+        &::service_common::iam_policy_rendering::ElementValues {
+            element: AWS_PRINCIPAL_TYPE,
+            written_as: &::service_common::iam_policy_principals::account_root_principal,
+        },
+    )
 }
+
+/// The principal type whose values name an AWS account or one of its identities: the one
+/// whose account values [`canonical_policy_document`] writes as root ARNs.
+const AWS_PRINCIPAL_TYPE: &str = "AWS";
 
 /// Whether a policy element names at least one value: a non-empty string, a non-empty
 /// array of strings, or — as `Principal` is written — an object mapping a principal
@@ -3790,23 +3821,66 @@ pub fn policy_values(element: &serde_json::Value) -> Vec<&str> {
     }
 }
 
+/// The elements a statement names the RESOURCES it applies to with: the ones it covers and
+/// their complement.
+///
+/// The two halves of ONE rule read them, and which half holds is decided by the document's
+/// SCOPE. A REPOSITORY policy is attached to one repository, which is the resource every
+/// statement of it applies to — which is why ECR's own repository-policy examples name none
+/// — so a statement that carries either element at all describes a scope that document
+/// cannot have ([`statement_carries_a_resource_element`], read by
+/// `ops::set_repository_policy`). The REGISTRY policy is attached to no repository, so each
+/// of its statements must name the repositories it covers
+/// ([`statement_names_resources`], read by [`validate_registry_policy`]); ECR's own
+/// registry-policy examples name them by ARN, and a statement naming none applies to
+/// nothing.
+pub const RESOURCE_ELEMENTS: [&str; 2] = ["Resource", "NotResource"];
+
+/// Whether `statement` carries a resource element at all, however it is written — the half
+/// of the scope rule a REPOSITORY policy is read under (see [`RESOURCE_ELEMENTS`]).
+pub fn statement_carries_a_resource_element(
+    statement: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    RESOURCE_ELEMENTS
+        .iter()
+        .any(|element| statement.contains_key(*element))
+}
+
+/// Whether `statement` names at least one resource — the half of the scope rule the REGISTRY
+/// policy is read under (see [`RESOURCE_ELEMENTS`]). An element naming no value (an empty
+/// string, an empty list) names no resource.
+pub fn statement_names_resources(
+    statement: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    RESOURCE_ELEMENTS
+        .iter()
+        .any(|element| statement.get(*element).is_some_and(names_values))
+}
+
 /// Validate a registry permissions policy document: the resource-policy grammar of
-/// [`validate_resource_policy`], plus the one rule a REGISTRY policy adds — it grants to
+/// [`validate_resource_policy`], plus the two rules a REGISTRY policy adds — it grants to
 /// other accounts, so every statement must name the identities it grants to and may not
-/// open the registry to every principal with the `*` wildcard. Either way the refusal
-/// states [`REGISTRY_POLICY_CONSTRAINT`]: both are documents ECR will not accept as this
-/// registry's policy.
+/// open the registry to every principal with the `*` wildcard, and every statement must name
+/// the RESOURCES it applies to ([`statement_names_resources`]). Either way the refusal
+/// states [`REGISTRY_POLICY_CONSTRAINT`]: all of them are documents ECR will not accept as
+/// this registry's policy.
 pub fn validate_registry_policy(text: &str) -> Result<(), Fault> {
     validate_resource_policy(REGISTRY_POLICY_CONSTRAINT, text, |statement| {
+        let refuse = || {
+            Err(invalid_document(
+                POLICY_TEXT_PARAMETER,
+                REGISTRY_POLICY_CONSTRAINT,
+            ))
+        };
         // The grammar above guarantees the statement carries a `Principal`.
         let grants_to_everyone = statement
             .get("Principal")
             .is_some_and(|principal| policy_values(principal).contains(&"*"));
         if grants_to_everyone {
-            return Err(invalid_document(
-                POLICY_TEXT_PARAMETER,
-                REGISTRY_POLICY_CONSTRAINT,
-            ));
+            return refuse();
+        }
+        if !statement_names_resources(statement) {
+            return refuse();
         }
         Ok(())
     })

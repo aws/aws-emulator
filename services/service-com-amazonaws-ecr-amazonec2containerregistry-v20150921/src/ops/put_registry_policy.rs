@@ -9,7 +9,10 @@
 //! ([`crate::state::canonical_policy_document`]), so `GetRegistryPolicy` reads back the
 //! same document this call answered with and a later put replaces it. A document that is
 //! not a usable registry policy is refused with `InvalidParameterException` and nothing
-//! is stored.
+//! is stored — which, beside the policy grammar, covers the two rules a REGISTRY policy
+//! carries ([`crate::state::validate_registry_policy`]): it may not open the registry to
+//! every principal, and — being attached to no repository — each of its statements must
+//! name the resources it applies to.
 //!
 //! ## Shape of an operation
 //!

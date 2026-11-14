@@ -208,12 +208,19 @@ async fn a_refused_registry_policy_document_states_the_parameter_and_the_constra
     let router = emulator();
     let expected = clause(POLICY_TEXT, REGISTRY_POLICY);
 
-    // The grammar rows, plus the one rule a REGISTRY policy adds: it may not grant to
-    // every principal.
+    // The grammar rows, plus the two rules a REGISTRY policy adds: it may not grant to
+    // every principal, and — because it is attached to no repository — every statement
+    // must name the resources it applies to.
     let wildcard_principal = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":"*","Action":"ecr:ReplicateImage","Resource":"*"}]}"#;
+    let no_resource = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::210987654321:root"},"Action":"ecr:ReplicateImage"}]}"#;
+    let empty_resource = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::210987654321:root"},"Action":"ecr:ReplicateImage","Resource":[]}]}"#;
     let cases: Vec<(&str, &str)> = refused_policy_documents()
         .into_iter()
-        .chain([("a wildcard principal", wildcard_principal)])
+        .chain([
+            ("a wildcard principal", wildcard_principal),
+            ("a statement naming no resources", no_resource),
+            ("a statement whose Resource list is empty", empty_resource),
+        ])
         .collect();
 
     for (case, document) in cases {
@@ -292,10 +299,27 @@ async fn a_refused_repository_policy_document_states_the_parameter_and_the_const
         );
     }
 
+    // The grammar rows above, plus the one rule a REPOSITORY policy adds: it is attached
+    // to the repository its statements apply to, so a statement may name no resource of
+    // its own.
+    let names_a_resource = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::210987654321:root"},"Action":"ecr:BatchGetImage","Resource":"*"}]}"#;
+    let message = refusal_message(
+        &router,
+        "a statement naming a resource of its own",
+        "SetRepositoryPolicy",
+        &json!({"repositoryName": name, "policyText": names_a_resource}),
+    )
+    .await;
+    assert_eq!(
+        message, expected,
+        "case \"a statement naming a resource of its own\": expected the clause \
+         {expected:?}, got {message:?}"
+    );
+
     // The positive control, read back through `GetRepositoryPolicy`: the refusals above
     // are about wording, not about which documents are accepted. As above, it is the
     // document's content that must survive, not the caller's own formatting.
-    let accepted = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::210987654321:root"},"Action":"ecr:BatchGetImage","Resource":"*"}]}"#;
+    let accepted = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::210987654321:root"},"Action":"ecr:BatchGetImage"}]}"#;
     let set = ok(
         &router,
         "the positive control",

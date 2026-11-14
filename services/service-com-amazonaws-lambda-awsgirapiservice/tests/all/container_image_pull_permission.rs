@@ -21,11 +21,13 @@
 //!
 //! The rows span what the rule generalises over: which pull action a policy denies and how
 //! it spells it (one action, both, a wildcard), which principal it denies (this service, a
-//! wildcard, another service), how it scopes the deny (no `Resource`, this repository's ARN,
-//! another repository's ARN), whether an `Allow` stands beside the deny, the endpoint the
+//! wildcard, another service), whether the statement carries a `Sid`, whether an `Allow`
+//! stands beside the deny, the endpoint the
 //! client is configured with (an AWS service host, a loopback literal with a port, a
 //! loopback name), and the write that stores the package (`CreateFunction` and
-//! `UpdateFunctionCode`).
+//! `UpdateFunctionCode`). No row scopes its deny with a `Resource` element: a repository
+//! policy is attached to the repository its statements apply to, so Amazon ECR refuses a
+//! document that names a resource of its own.
 //!
 //! ECR is mounted BESIDE Lambda on one engine, and every image here is pushed through ECR's
 //! own `CreateRepository`/`PutImage` with the policy applied through its own
@@ -39,7 +41,7 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::function_lifecycle::{function_arn, make_activation_due, ACCOUNT, REGION, ROLE};
+use crate::function_lifecycle::{function_arn, make_activation_due, REGION, ROLE};
 use crate::function_url_data_plane::{send, Answer};
 
 /// The service hosts an SDK that resolves AWS's own hostnames is configured with.
@@ -278,12 +280,6 @@ async fn set_repository_policy(
     );
 }
 
-/// The ARN of a repository of this account's registry in the Region the suite signs for,
-/// which is the resource a repository policy's `Resource` element names.
-fn repository_arn(name: &str) -> String {
-    format!("arn:aws:ecr:{REGION}:{ACCOUNT}:repository/{name}")
-}
-
 /// A `CreateFunction` request body for an image package.
 fn image_create(name: &str, image_uri: &str) -> Value {
     json!({
@@ -352,8 +348,13 @@ struct PolicyCase {
     denied: bool,
 }
 
-/// The policy table, built per repository because two rows scope their deny to an ARN.
-fn policy_cases(repository: &str, other_repository: &str) -> Vec<PolicyCase> {
+/// The policy table.
+fn policy_cases() -> Vec<PolicyCase> {
+    // A repository policy is attached to the repository its statements apply to, so it names
+    // no resource of its own and Amazon ECR refuses a document that does (pinned by the ECR
+    // crate's `policy_document_scope` suite) — which is why no row below scopes its deny by a
+    // `Resource` element. A deny reaches THIS pull exactly when it is attached to THIS
+    // repository, and each row gets its own repository.
     vec![
         PolicyCase {
             case: "no repository policy at all",
@@ -421,30 +422,17 @@ fn policy_cases(repository: &str, other_repository: &str) -> Vec<PolicyCase> {
             denied: true,
         },
         PolicyCase {
-            case: "a deny scoped to this repository's own ARN",
+            case: "a deny carrying a Sid, which names the statement and nothing else",
             policy: Some(json!({
                 "Version": "2012-10-17",
                 "Statement": [{
+                    "Sid": "DenyThisServiceThePull",
                     "Effect": "Deny",
                     "Principal": { "Service": LAMBDA_PRINCIPAL },
                     "Action": [MANIFEST_ACTION, LAYER_ACTION],
-                    "Resource": repository_arn(repository),
                 }],
             })),
             denied: true,
-        },
-        PolicyCase {
-            case: "a deny scoped to ANOTHER repository's ARN, which this pull is not about",
-            policy: Some(json!({
-                "Version": "2012-10-17",
-                "Statement": [{
-                    "Effect": "Deny",
-                    "Principal": { "Service": LAMBDA_PRINCIPAL },
-                    "Action": [MANIFEST_ACTION, LAYER_ACTION],
-                    "Resource": repository_arn(other_repository),
-                }],
-            })),
-            denied: false,
         },
         PolicyCase {
             case: "a deny aimed at the wildcard principal, which covers this service too",
@@ -513,19 +501,10 @@ async fn a_repository_policy_may_deny_this_service_the_image_pull() {
     let engine = Arc::new(engine::InMemoryEngine::new());
     let router = emulator(&engine);
 
-    // The repository the ARN-scoped rows point AWAY from, so a deny naming it says nothing
-    // about the image each row really pulls.
-    push_image(&router, ECR_HOST, "elsewhere", "v1").await;
-
-    let row_count = policy_cases("probe", "elsewhere").len();
-    for index in 0..row_count {
-        // Each row gets its own repository, and its policy is built naming THAT one, so the
-        // ARN-scoped rows are scoped to the image the row really pulls.
+    let rows = policy_cases();
+    for (index, row) in rows.into_iter().enumerate() {
+        // Each row gets its own repository, which is what a deny of it reaches.
         let repository = format!("policy-{index}");
-        let row = policy_cases(&repository, "elsewhere")
-            .into_iter()
-            .nth(index)
-            .expect("the table is built the same way every time");
         let pushed = push_image(&router, ECR_HOST, &repository, "v1").await;
         if let Some(policy) = &row.policy {
             set_repository_policy(&router, ECR_HOST, &repository, policy).await;

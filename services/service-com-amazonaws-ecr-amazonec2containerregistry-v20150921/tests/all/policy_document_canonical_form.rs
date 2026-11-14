@@ -13,10 +13,12 @@
 //! through the registry triple (`PutRegistryPolicy`, `GetRegistryPolicy`,
 //! `DeleteRegistryPolicy`) and the repository triple (`SetRepositoryPolicy`,
 //! `GetRepositoryPolicy`, `DeleteRepositoryPolicy`) — the six operations that report a
-//! `policyText`. The rows differ along what the rule generalises over: the arity of a
-//! value list (none, one, two), the element type of a list (strings against statement
-//! objects), the nesting depth, the member order, the submitted whitespace, the character
-//! set and the escapes.
+//! `policyText`. Each scope has its own table, because each admits its own documents: a
+//! registry policy names the resources its statements apply to and a repository policy
+//! names none (`policy_document_scope.rs`). The rows differ along what the rendering rule
+//! generalises over: the arity of a value list (none, one, two), the element type of a list
+//! (strings against statement objects), the nesting depth, the member order, the submitted
+//! whitespace, the character set and the escapes.
 
 use serde_json::{json, Value};
 
@@ -33,12 +35,17 @@ pub struct Document {
     pub reported: &'static str,
 }
 
-/// A document whose `Action` and `Resource` are written as ONE-VALUE LISTS: the IAM
-/// policy language documents both as "a string or an array of strings", so a list of one
-/// is reported as that string.
+/// A repository-policy document whose `Action` and principal list are written as ONE-VALUE
+/// LISTS: the IAM policy language documents both as "a string or an array of strings", so a
+/// list of one is reported as that string.
+///
+/// No row of [`documents`] names a RESOURCE: a repository policy is attached to one
+/// repository, which is the resource its statements apply to, so ECR refuses a statement
+/// that names resources of its own (`policy_document_scope.rs` pins that refusal). The
+/// registry policy is the document that names them, and [`registry_documents`] is its table.
 const ONE_VALUE_LISTS: Document = Document {
-    case: "one-value Action and Resource lists",
-    submitted: r#"{"Version": "2012-10-17", "Statement": [{"Sid": "AllowCrossAccountPull", "Effect": "Allow", "Principal": {"AWS": ["arn:aws:iam::123456789012:root"]}, "Action": ["ecr:ReplicateImage"], "Resource": ["arn:aws:ecr:eu-west-1:000000000000:repository/*"]}]}"#,
+    case: "one-value Action and principal lists",
+    submitted: r#"{"Version": "2012-10-17", "Statement": [{"Sid": "AllowCrossAccountPull", "Effect": "Allow", "Principal": {"AWS": ["arn:aws:iam::123456789012:root"]}, "Action": ["ecr:BatchGetImage"]}]}"#,
     reported: r#"{
   "Version" : "2012-10-17",
   "Statement" : [ {
@@ -47,21 +54,21 @@ const ONE_VALUE_LISTS: Document = Document {
     "Principal" : {
       "AWS" : "arn:aws:iam::123456789012:root"
     },
-    "Action" : "ecr:ReplicateImage",
-    "Resource" : "arn:aws:ecr:eu-west-1:000000000000:repository/*"
+    "Action" : "ecr:BatchGetImage"
   } ]
 }"#,
 };
 
-/// The documents a client can submit, and the canonical rendering each comes back in.
+/// The documents a client can submit as a REPOSITORY policy, and the canonical rendering
+/// each comes back in.
 pub fn documents() -> Vec<Document> {
     vec![
         ONE_VALUE_LISTS,
         Document {
             // The same document with its one-value lists written as the scalars they
             // mean: the two submissions are reported identically.
-            case: "scalar Action and Resource",
-            submitted: r#"{"Version":"2012-10-17","Statement":[{"Sid":"AllowCrossAccountPull","Effect":"Allow","Principal":{"AWS":"arn:aws:iam::123456789012:root"},"Action":"ecr:ReplicateImage","Resource":"arn:aws:ecr:eu-west-1:000000000000:repository/*"}]}"#,
+            case: "scalar Action and principal",
+            submitted: r#"{"Version":"2012-10-17","Statement":[{"Sid":"AllowCrossAccountPull","Effect":"Allow","Principal":{"AWS":"arn:aws:iam::123456789012:root"},"Action":"ecr:BatchGetImage"}]}"#,
             reported: ONE_VALUE_LISTS.reported,
         },
         Document {
@@ -161,7 +168,7 @@ pub fn documents() -> Vec<Document> {
             // written with. An empty list and an empty object are written `[ ]` and
             // `{ }`.
             case: "conditions, non-string values and empty elements",
-            submitted: r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":["arn:aws:iam::123456789012:root"]},"Action":"ecr:ReplicateImage","Resource":[],"Condition":{"NumericLessThan":{"aws:MultiFactorAuthAge":3600},"Bool":{"aws:SecureTransport":true},"StringEquals":{"aws:PrincipalOrgID":["o-abc123"],"aws:RequestTag/team":["red","blue"]},"Null":{}}}]}"#,
+            submitted: r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":["arn:aws:iam::123456789012:root"]},"Action":"ecr:ReplicateImage","Condition":{"NumericLessThan":{"aws:MultiFactorAuthAge":3600},"Bool":{"aws:SecureTransport":true},"StringEquals":{"aws:PrincipalOrgID":["o-abc123"],"aws:RequestTag/team":["red","blue"],"aws:RequestTag/wave":[]},"Null":{}}}]}"#,
             reported: r#"{
   "Version" : "2012-10-17",
   "Statement" : [ {
@@ -170,7 +177,6 @@ pub fn documents() -> Vec<Document> {
       "AWS" : "arn:aws:iam::123456789012:root"
     },
     "Action" : "ecr:ReplicateImage",
-    "Resource" : [ ],
     "Condition" : {
       "NumericLessThan" : {
         "aws:MultiFactorAuthAge" : 3600
@@ -180,10 +186,80 @@ pub fn documents() -> Vec<Document> {
       },
       "StringEquals" : {
         "aws:PrincipalOrgID" : "o-abc123",
-        "aws:RequestTag/team" : [ "red", "blue" ]
+        "aws:RequestTag/team" : [ "red", "blue" ],
+        "aws:RequestTag/wave" : [ ]
       },
       "Null" : { }
     }
+  } ]
+}"#,
+        },
+    ]
+}
+
+/// A REGISTRY-policy document whose `Action` and `Resource` are written as one-value lists.
+///
+/// Every row of [`registry_documents`] names the resources its statements apply to: a
+/// registry policy is not attached to a repository, so ECR refuses a statement that names
+/// none (`policy_document_scope.rs` pins that refusal).
+const REGISTRY_ONE_VALUE_LISTS: Document = Document {
+    case: "one-value Action and Resource lists",
+    submitted: r#"{"Version": "2012-10-17", "Statement": [{"Sid": "AllowCrossAccountPull", "Effect": "Allow", "Principal": {"AWS": ["arn:aws:iam::123456789012:root"]}, "Action": ["ecr:ReplicateImage"], "Resource": ["arn:aws:ecr:eu-west-1:000000000000:repository/*"]}]}"#,
+    reported: r#"{
+  "Version" : "2012-10-17",
+  "Statement" : [ {
+    "Sid" : "AllowCrossAccountPull",
+    "Effect" : "Allow",
+    "Principal" : {
+      "AWS" : "arn:aws:iam::123456789012:root"
+    },
+    "Action" : "ecr:ReplicateImage",
+    "Resource" : "arn:aws:ecr:eu-west-1:000000000000:repository/*"
+  } ]
+}"#,
+};
+
+/// The documents a client can submit as the REGISTRY policy, and the canonical rendering
+/// each comes back in. The rendering rule is the same one [`documents`] spans, read over the
+/// elements only a registry policy carries: the resources a statement applies to, named by
+/// ARN or by the wildcard, in a list of one, in a list of several, and by the complement
+/// element.
+pub fn registry_documents() -> Vec<Document> {
+    vec![
+        REGISTRY_ONE_VALUE_LISTS,
+        Document {
+            // The same document with its one-value lists written as the scalars they
+            // mean: the two submissions are reported identically.
+            case: "scalar Action and Resource",
+            submitted: r#"{"Version":"2012-10-17","Statement":[{"Sid":"AllowCrossAccountPull","Effect":"Allow","Principal":{"AWS":"arn:aws:iam::123456789012:root"},"Action":"ecr:ReplicateImage","Resource":"arn:aws:ecr:eu-west-1:000000000000:repository/*"}]}"#,
+            reported: REGISTRY_ONE_VALUE_LISTS.reported,
+        },
+        Document {
+            case: "a document already in the canonical rendering",
+            submitted: REGISTRY_ONE_VALUE_LISTS.reported,
+            reported: REGISTRY_ONE_VALUE_LISTS.reported,
+        },
+        Document {
+            case: "two statements, a two-value principal list and the complement elements",
+            submitted: r#"{"Version":"2012-10-17","Statement":[{"Sid":"One","Effect":"Allow","Principal":{"AWS":["arn:aws:iam::123456789012:root","arn:aws:iam::123456789012:role/replicator"]},"Action":["ecr:ReplicateImage","ecr:BatchImportUpstreamImage"],"Resource":"*"},{"Sid":"Two","Effect":"Deny","Principal":{"AWS":["arn:aws:iam::999988887777:root"]},"NotAction":["ecr:ReplicateImage"],"NotResource":["arn:aws:ecr:eu-west-1:000000000000:repository/shared/*"]}]}"#,
+            reported: r#"{
+  "Version" : "2012-10-17",
+  "Statement" : [ {
+    "Sid" : "One",
+    "Effect" : "Allow",
+    "Principal" : {
+      "AWS" : [ "arn:aws:iam::123456789012:root", "arn:aws:iam::123456789012:role/replicator" ]
+    },
+    "Action" : [ "ecr:ReplicateImage", "ecr:BatchImportUpstreamImage" ],
+    "Resource" : "*"
+  }, {
+    "Sid" : "Two",
+    "Effect" : "Deny",
+    "Principal" : {
+      "AWS" : "arn:aws:iam::999988887777:root"
+    },
+    "NotAction" : "ecr:ReplicateImage",
+    "NotResource" : "arn:aws:ecr:eu-west-1:000000000000:repository/shared/*"
   } ]
 }"#,
         },
@@ -232,7 +308,7 @@ fn reported_text(body: &Value) -> &str {
 async fn the_registry_policy_is_reported_in_canonical_form_by_all_three_operations() {
     let router = emulator();
 
-    for document in documents() {
+    for document in registry_documents() {
         let case = document.case;
         let put = ok(
             &router,
@@ -384,7 +460,8 @@ async fn the_rendering_does_not_depend_on_the_submitted_layout() {
         "            \"Action\": [\n",
         "                \"ecr:ReplicateImage\",\n",
         "                \"ecr:BatchImportUpstreamImage\"\n",
-        "            ]\n",
+        "            ],\n",
+        "            \"Resource\": \"*\"\n",
         "        }\n",
         "    ]\n",
         "}",
@@ -394,18 +471,19 @@ async fn the_rendering_does_not_depend_on_the_submitted_layout() {
         "{\t\"Version\"\t:\t\"2012-10-17\",\n",
         "\t\"Statement\"\t:\t[\t{\t\"Sid\"\t:\t\"Layout\",\n",
         "\"Effect\":\"Allow\",\"Principal\"\t:\t{\t\"AWS\"\t:\t\"arn:aws:iam::123456789012:root\"\t},\n",
-        "\"Action\"\t:\t[\t\"ecr:ReplicateImage\",\t\"ecr:BatchImportUpstreamImage\"\t]\t}\t]\t}",
+        "\"Action\"\t:\t[\t\"ecr:ReplicateImage\",\t\"ecr:BatchImportUpstreamImage\"\t],\n",
+        "\"Resource\"\t:\t\"*\"\t}\t]\t}",
     ]
     .concat();
     let layouts = [
         (
             "no whitespace",
-            r#"{"Version":"2012-10-17","Statement":[{"Sid":"Layout","Effect":"Allow","Principal":{"AWS":"arn:aws:iam::123456789012:root"},"Action":["ecr:ReplicateImage","ecr:BatchImportUpstreamImage"]}]}"#
+            r#"{"Version":"2012-10-17","Statement":[{"Sid":"Layout","Effect":"Allow","Principal":{"AWS":"arn:aws:iam::123456789012:root"},"Action":["ecr:ReplicateImage","ecr:BatchImportUpstreamImage"],"Resource":"*"}]}"#
                 .to_string(),
         ),
         (
             "a space after each separator",
-            r#"{"Version": "2012-10-17", "Statement": [{"Sid": "Layout", "Effect": "Allow", "Principal": {"AWS": "arn:aws:iam::123456789012:root"}, "Action": ["ecr:ReplicateImage", "ecr:BatchImportUpstreamImage"]}]}"#
+            r#"{"Version": "2012-10-17", "Statement": [{"Sid": "Layout", "Effect": "Allow", "Principal": {"AWS": "arn:aws:iam::123456789012:root"}, "Action": ["ecr:ReplicateImage", "ecr:BatchImportUpstreamImage"], "Resource": "*"}]}"#
                 .to_string(),
         ),
         ("indented four spaces", indented_four_spaces),
@@ -420,7 +498,8 @@ async fn the_rendering_does_not_depend_on_the_submitted_layout() {
     "Principal" : {
       "AWS" : "arn:aws:iam::123456789012:root"
     },
-    "Action" : [ "ecr:ReplicateImage", "ecr:BatchImportUpstreamImage" ]
+    "Action" : [ "ecr:ReplicateImage", "ecr:BatchImportUpstreamImage" ],
+    "Resource" : "*"
   } ]
 }"#;
 
@@ -442,12 +521,14 @@ async fn the_rendering_does_not_depend_on_the_submitted_layout() {
 }
 
 /// Every key and every value of the submitted document survives the rendering, and the
-/// rendering invents none: the reported text is the caller's own document, re-indented.
+/// rendering invents none: the reported text is the caller's own document, re-indented —
+/// for both documents this service stores, each read over the table of documents its own
+/// scope admits.
 #[tokio::test]
 async fn the_rendering_keeps_every_key_and_value_of_the_submitted_document() {
     let router = emulator();
 
-    for document in documents() {
+    for document in registry_documents() {
         let case = document.case;
         let put = ok(
             &router,
@@ -460,7 +541,35 @@ async fn the_rendering_keeps_every_key_and_value_of_the_submitted_document() {
         assert_eq!(
             document_content(reported),
             document_content(document.submitted),
-            "case {case:?}: the reported document must hold the submitted content, got {:?}",
+            "case {case:?}: the reported registry document must hold the submitted content, \
+             got {:?}",
+            document_content(reported)
+        );
+    }
+
+    for (index, document) in documents().into_iter().enumerate() {
+        let case = document.case;
+        let name = format!("content-kept-{index}");
+        ok(
+            &router,
+            case,
+            "CreateRepository",
+            &json!({"repositoryName": name}),
+        )
+        .await;
+        let set = ok(
+            &router,
+            case,
+            "SetRepositoryPolicy",
+            &json!({"repositoryName": name, "policyText": document.submitted}),
+        )
+        .await;
+        let reported = reported_text(&set);
+        assert_eq!(
+            document_content(reported),
+            document_content(document.submitted),
+            "case {case:?}: the reported repository document must hold the submitted content, \
+             got {:?}",
             document_content(reported)
         );
     }

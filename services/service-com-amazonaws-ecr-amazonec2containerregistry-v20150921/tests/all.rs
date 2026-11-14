@@ -69,10 +69,16 @@ mod manifest_media_type_negotiation;
 mod paginated_read_scoping;
 #[path = "all/parameter_constraint_clauses.rs"]
 mod parameter_constraint_clauses;
+#[path = "all/policy_document_account_principal.rs"]
+mod policy_document_account_principal;
 #[path = "all/policy_document_canonical_form.rs"]
 mod policy_document_canonical_form;
+#[path = "all/policy_document_principal_forms.rs"]
+mod policy_document_principal_forms;
 #[path = "all/policy_document_refusal_messages.rs"]
 mod policy_document_refusal_messages;
+#[path = "all/policy_document_scope.rs"]
+mod policy_document_scope;
 #[path = "all/pull_through_cache_rule_deletion.rs"]
 mod pull_through_cache_rule_deletion;
 #[path = "all/pull_through_cache_rule_validation.rs"]

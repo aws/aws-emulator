@@ -326,7 +326,9 @@ async fn a_task_pulls_its_ecr_image_as_its_execution_role_and_then_settles() {
                     "Effect": "Allow",
                     "Principal": { "AWS": token_only },
                     "Action": "ecr:BatchGetImage",
-                    "Resource": "*",
+                    // A repository policy is attached to the repository its statements
+                    // apply to, so it names no resource of its own — Amazon ECR refuses a
+                    // repository policy that does.
                 }],
             }).to_string(),
         }),
@@ -364,7 +366,6 @@ async fn a_task_pulls_its_ecr_image_as_its_execution_role_and_then_settles() {
                     "Effect": "Deny",
                     "Principal": "*",
                     "Action": "ecr:BatchGetImage",
-                    "Resource": "*",
                 }],
             }).to_string(),
         }),
