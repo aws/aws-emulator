@@ -597,9 +597,10 @@ async fn a_check_of_a_type_drift_detection_is_not_supported_for_is_refused() {
         concat!(
             "Resources:\n",
             "  Signal:\n",
-            "    Type: AWS::CloudWatch::Alarm\n",
+            "    Type: AWS::CloudWatch::CompositeAlarm\n",
             "    Properties:\n",
             "      AlarmName: detect-one-unsupported-signal\n",
+            "      AlarmRule: ALARM(detect-one-unsupported-other)\n",
             "  Escalation:\n",
             "    Type: AWS::Bedrock::Agent\n",
             "    Properties:\n",
@@ -611,9 +612,9 @@ async fn a_check_of_a_type_drift_detection_is_not_supported_for_is_refused() {
 
     for (case, logical_id, resource_type) in [
         (
-            "an alarm, which no owning service here reports",
+            "a composite alarm, which no owning service here reports",
             "Signal",
-            "AWS::CloudWatch::Alarm",
+            "AWS::CloudWatch::CompositeAlarm",
         ),
         (
             "an agent, which nothing here provisions",

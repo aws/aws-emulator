@@ -93,10 +93,12 @@ fn table() -> Vec<SchemaCase> {
             type_name: "AWS::ApiGateway::RestApi",
             properties: vec!["/properties/RestApiId", "/properties/RootResourceId"],
         },
-        // A single published property.
+        // Two published properties, the second of which a table has only where its own
+        // declaration enables a stream ("You must specify the StreamSpecification property
+        // to use this attribute") — the type publishes both names either way.
         SchemaCase {
             type_name: "AWS::DynamoDB::Table",
-            properties: vec!["/properties/Arn"],
+            properties: vec!["/properties/Arn", "/properties/StreamArn"],
         },
         // Three, one of which is the queue's URL rather than an ARN or a name.
         SchemaCase {

@@ -44,6 +44,9 @@ fn computed_attributes(resource_type: &str) -> BTreeMap<String, String> {
             // the two values that type publishes.
             "Type": "String",
             "Value": "a-value",
+            // The stream an `AWS::DynamoDB::Table` enables, which is what makes that type
+            // publish its `StreamArn`.
+            "StreamSpecification": { "StreamViewType": "NEW_AND_OLD_IMAGES" },
             "LoadBalancerArn": format!(
                 "arn:{PARTITION}:elasticloadbalancing:us-east-1:000000000000:\
                      loadbalancer/app/a-name/0123456789abcdef"

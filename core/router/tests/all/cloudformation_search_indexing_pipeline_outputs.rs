@@ -71,9 +71,9 @@ const GENERATED_ID_HEX_DIGITS: usize = 12;
 /// the role's name nor anything a template could state.
 const ROLE_ID_PREFIX: &str = "AROA";
 
-/// The emulator with the five services this suite exercises, mounted on ONE engine exactly as
+/// The emulator with the services this suite exercises, mounted on ONE engine exactly as
 /// `core/router/src/lib.rs` mounts them: the stack really creates its domain, its bucket, its
-/// role, its function and its log group in the services that own them.
+/// role, its function, its log group and its alarm in the services that own them.
 fn build_router() -> MultiServiceRouter {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
@@ -104,6 +104,14 @@ fn build_router() -> MultiServiceRouter {
         service_com_amazonaws_cloudwatchlogs_logs_20140328::EmulatedService::new(Arc::clone(
             &engine,
         )),
+    );
+    // Amazon CloudWatch, for the `AWS::CloudWatch::Alarm` the template declares: a stack
+    // really puts the alarm there, so that service has to be mounted beside CloudFormation
+    // too or the create is refused and the stack fails.
+    router.register_service(
+        service_com_amazonaws_cloudwatch_graniteserviceversion20100801::EmulatedService::new(
+            Arc::clone(&engine),
+        ),
     );
     router.register_service(
         service_com_amazonaws_iam_awsidentitymanagementv20100508::EmulatedService::new(engine),
@@ -576,6 +584,13 @@ fn is_generated(value: &str, stack: &str, logical_id: &str) -> bool {
         })
 }
 
+/// Every `ResourceStatusReason` the stack has recorded, so a deployment that did not reach
+/// the status the rule states reports WHY rather than only that it did not.
+async fn stack_failure_reasons(router: &MultiServiceRouter, stack: &str) -> Vec<String> {
+    let (_, events) = cloudformation(router, "DescribeStackEvents", &[("StackName", stack)]).await;
+    elements(&events, "ResourceStatusReason")
+}
+
 #[tokio::test]
 async fn every_output_of_a_deployed_pipeline_carries_the_value_its_service_reports() {
     let router = build_router();
@@ -609,7 +624,8 @@ async fn every_output_of_a_deployed_pipeline_carries_the_value_its_service_repor
             xml_text(&body, "StackStatus"),
             "CREATE_COMPLETE",
             "case {label:?}: the stack must reach CREATE_COMPLETE before its outputs are \
-             read, got {body}"
+             read, got {body} because {:?}",
+            stack_failure_reasons(&router, case.stack).await
         );
         let outputs = reported_outputs(&body);
 

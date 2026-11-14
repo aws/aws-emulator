@@ -489,7 +489,8 @@ use super::template::{
     COGNITO_USER_POOL_GROUP, DEFAULT_SCHEDULE_GROUP, EC2_LAUNCH_TEMPLATE, EC2_SECURITY_GROUP,
     EC2_SUBNET,
     EC2_VOLUME, EC2_VPC,
-    ECR_PUBLIC_REPOSITORY, ECR_REPOSITORY, ECS_CLUSTER, EKS_ACCESS_ENTRY, EKS_CLUSTER,
+    ECR_PUBLIC_REPOSITORY, ECR_REPOSITORY, ECS_CLUSTER, ECS_SERVICE, EKS_ACCESS_ENTRY,
+    EKS_CLUSTER,
     EKS_POD_IDENTITY_ASSOCIATION,
     EMR_CLUSTER, EVENTS_RULE, FIREHOSE_DELIVERY_STREAM, FIS_EXPERIMENT_TEMPLATE,
     ELASTIC_BEANSTALK_APPLICATION, ELASTIC_BEANSTALK_APPLICATION_VERSION,
@@ -627,6 +628,12 @@ pub(super) enum Provisioner {
     KinesisStream,
     CloudWatchMetricStream,
     CloudWatchDashboard,
+    /// `AWS::CloudWatch::Alarm`: the alarm Amazon CloudWatch's own `PutMetricAlarm` creates
+    /// under the name the stack decided — the name this type's `Ref` returns and the handle
+    /// every CloudWatch call about an alarm takes — and `DeleteAlarms` removes. That one
+    /// call is documented "Creates or updates an alarm", so it is this type's update as
+    /// well as its create ([`cloudwatch_alarms`]).
+    CloudWatchAlarm,
     EcrPublicRepository,
     /// `AWS::ECR::Repository`: a repository of the PRIVATE Amazon ECR registry — a
     /// different service from the public one above — which `CreateRepository` creates
@@ -703,6 +710,11 @@ pub(super) enum Provisioner {
     /// CodeBuild read and every `StartBuild` resolves.
     CodeBuildProject,
     EcsCluster,
+    /// `AWS::ECS::Service`: the service Amazon ECS's own `CreateService` creates on the
+    /// cluster the declaration names, `UpdateService` changes and `DeleteService` removes.
+    /// "Ref returns the Amazon Resource Name (ARN)" of the service, which that create
+    /// answers and every call about the service takes ([`ecs_services`]).
+    EcsService,
     SqsQueue,
     /// `AWS::SQS::QueuePolicy` and `AWS::SQS::QueueInlinePolicy`, which are not resources
     /// of Amazon SQS's own: each is the `Policy` ATTRIBUTE of the queues it names, so both
@@ -998,6 +1010,7 @@ pub(super) fn provisioner_for(resource_type: &str) -> Option<Provisioner> {
         FIREHOSE_DELIVERY_STREAM => Some(Provisioner::FirehoseDeliveryStream),
         KINESIS_STREAM => Some(Provisioner::KinesisStream),
         CLOUDWATCH_METRIC_STREAM => Some(Provisioner::CloudWatchMetricStream),
+        cloudwatch_alarms::CLOUDWATCH_ALARM => Some(Provisioner::CloudWatchAlarm),
         CLOUDWATCH_DASHBOARD => Some(Provisioner::CloudWatchDashboard),
         ECR_PUBLIC_REPOSITORY => Some(Provisioner::EcrPublicRepository),
         ECR_REPOSITORY => Some(Provisioner::EcrRepository),
@@ -1026,6 +1039,7 @@ pub(super) fn provisioner_for(resource_type: &str) -> Option<Provisioner> {
         CODEBUILD_REPORT_GROUP => Some(Provisioner::CodeBuildReportGroup),
         CODEBUILD_PROJECT => Some(Provisioner::CodeBuildProject),
         ECS_CLUSTER => Some(Provisioner::EcsCluster),
+        ECS_SERVICE => Some(Provisioner::EcsService),
         SQS_QUEUE => Some(Provisioner::SqsQueue),
         SQS_QUEUE_POLICY | SQS_QUEUE_INLINE_POLICY => Some(Provisioner::SqsQueuePolicy),
         SAGEMAKER_MODEL_PACKAGE_GROUP => Some(Provisioner::SageMakerModelPackageGroup),
@@ -1189,6 +1203,10 @@ impl Provisioner {
             Self::CloudWatchDashboard => {
                 put_dashboard(ctx, region, resource, propagated).await
             }
+            // `AWS::CloudWatch::Alarm` publishes no `Tags` property at all — CloudWatch holds
+            // an alarm's tags through its own tagging calls and `PutMetricAlarm` takes a
+            // `Tags` member the type does not declare — so no tags are propagated to one.
+            Self::CloudWatchAlarm => put_metric_alarm(ctx, region, resource, propagated).await,
             Self::EmrCluster => run_job_flow(ctx, region, resource, propagated).await,
             Self::EcrPublicRepository => {
                 create_public_repository(ctx, region, resource, propagated).await
@@ -1244,6 +1262,14 @@ impl Provisioner {
                 create_custom_action_type(ctx, region, resource, propagated).await
             }
             Self::EcsCluster => create_cluster(ctx, region, resource, propagated).await,
+            // `AWS::ECS::Service` publishes `Tags`, which `CreateService` takes as its own
+            // `tags` list, so a service a stack creates carries the tags CloudFormation gives
+            // it beside the ones the declaration asks for.
+            // BOXED, for the reason the other heavy arms of this match are: the call's future
+            // is the owning service's whole handler, which schedules the service's tasks.
+            Self::EcsService => {
+                Box::pin(create_ecs_service(ctx, region, resource, propagated)).await
+            }
             Self::SqsQueue => create_queue(ctx, region, resource, propagated).await,
             // Neither policy type publishes a `Tags` property — a policy is an attribute of
             // the queues it names, and those carry the tags — so no tags are propagated to
@@ -1770,6 +1796,12 @@ impl Provisioner {
                 // `CreatePipeline` runs.
                 | Self::CodePipelineCustomActionType
                 | Self::EcsCluster
+                // Amazon ECS refuses a tag key in the reserved namespace on every call that
+                // takes tags — `CreateService`'s own `tags` list as much as `CreateCluster`'s
+                // and `TagResource`, in the one check that crate's tag validation makes ("Tag
+                // key must not start with aws:") — so a service carries the stack's own tags
+                // without the three.
+                | Self::EcsService
                 | Self::EcrPublicRepository
                 // Amazon ECR refuses a tag key in the reserved namespace on every call
                 // that takes tags — `CreateRepository`'s `tags` and `TagResource` alike —
@@ -2458,6 +2490,18 @@ impl Provisioner {
             // Braket minted, taking the limit's amount and its period — every property of
             // the type except the device it caps, which replaces the resource instead — so a
             // changed declaration of either reaches the limit the stack created.
+            // Amazon ECS's own `UpdateService` "modifies the parameters of a service", so a
+            // changed declaration of a member it takes is applied to the service the stack
+            // created rather than replacing it.
+            Self::EcsService => Box::pin(update_ecs_service(ctx, region, resource, declared))
+                .await
+                .map(Some),
+            // CloudWatch's own `PutMetricAlarm` is documented "Creates or updates an alarm",
+            // so a changed declaration reaches that service as the configuration the
+            // template now declares, under the name the alarm was created with.
+            Self::CloudWatchAlarm => update_metric_alarm(ctx, region, resource, declared)
+                .await
+                .map(Some),
             Self::BraketSpendingLimit => update_braket_spending_limit(ctx, region, resource, declared)
                 .await
                 .map(Some),
@@ -3107,6 +3151,14 @@ impl Provisioner {
             Self::BedrockAgentCoreWorkloadIdentity => {
                 delete_workload_identity(ctx, region, physical_resource_id).await
             }
+            // The delete addresses the alarm by the name it was created under, which is this
+            // resource's physical id.
+            Self::CloudWatchAlarm => {
+                delete_metric_alarm(ctx, region, physical_resource_id).await
+            }
+            // The delete addresses the service by its own name inside the cluster it runs
+            // on, which is what the ARN that is this resource's physical id carries.
+            Self::EcsService => Box::pin(delete_ecs_service(ctx, region, resource)).await,
             // The delete addresses the spending limit by the ARN Amazon Braket minted for
             // it, which is this resource's physical id.
             Self::BraketSpendingLimit => {
@@ -3179,6 +3231,14 @@ impl Provisioner {
             Self::CloudWatchDashboard => {
                 describe_dashboard(ctx, region, physical_resource_id).await
             }
+            // CloudWatch's own read of the alarm the stack created, by the name it was
+            // created under.
+            Self::CloudWatchAlarm => {
+                describe_metric_alarm(ctx, region, physical_resource_id).await
+            }
+            // Amazon ECS's own read of the service the stack created, by its name inside the
+            // cluster it runs on.
+            Self::EcsService => Box::pin(describe_ecs_service(ctx, region, resource)).await,
             Self::EcrPublicRepository => {
                 describe_public_repository(ctx, region, physical_resource_id).await
             }
@@ -3648,6 +3708,12 @@ impl Provisioner {
 // of an arm uses.
 mod tests;
 mod config_recording;
+/// The Amazon CloudWatch alarm arms: visible to the rest of this service's state because
+/// the type's own NAME lives here, beside the arms that provision it.
+pub(in crate::state) mod cloudwatch_alarms;
+/// The Amazon ECS SERVICE arms, beside the cluster arms [`application_services`] holds for
+/// the same owning service.
+mod ecs_services;
 mod event_pipes;
 mod bedrock_guardrails;
 mod bedrock_knowledge_bases;
@@ -3689,6 +3755,8 @@ use s3_table_buckets::*;
 use platform_services::*;
 use route53_policies::*;
 pub(crate) use application_services::*;
+use cloudwatch_alarms::*;
+use ecs_services::*;
 use config_recording::*;
 use bedrock_guardrails::*;
 use bedrock_knowledge_bases::*;

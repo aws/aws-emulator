@@ -129,7 +129,6 @@ const CREATE_MEMBERS: &[&str] = &[
     "LocalSecondaryIndexes",
     "OnDemandThroughput",
     "ProvisionedThroughput",
-    "StreamSpecification",
     "TableClass",
     "WarmThroughput",
 ];
@@ -147,10 +146,24 @@ const UPDATE_MEMBERS: &[&str] = &[
     "DeletionProtectionEnabled",
     "OnDemandThroughput",
     "ProvisionedThroughput",
-    "StreamSpecification",
     "TableClass",
     "WarmThroughput",
 ];
+
+/// The property carrying the table's stream configuration, whose required flag the type does
+/// not publish at all ([`stream_specification`]). A member of both `CreateTable` and
+/// `UpdateTable` under this same name, which is why it is applied beside
+/// [`CREATE_MEMBERS`]/[`UPDATE_MEMBERS`] rather than inside them.
+const STREAM_SPECIFICATION_PROPERTY: &str = "StreamSpecification";
+
+/// The flag the API's own `StreamSpecification` requires, which no property of the type
+/// carries: "Indicates whether DynamoDB Streams is enabled (true) or disabled (false) on the
+/// table" (`StreamSpecification$StreamEnabled`, `@required`).
+const STREAM_ENABLED_MEMBER: &str = "StreamEnabled";
+
+/// The member both sides spell the same way: what is written to the stream for each modified
+/// item.
+const STREAM_VIEW_TYPE_MEMBER: &str = "StreamViewType";
 
 /// The member `CreateTable` and `UpdateTable` answer the table's description under.
 const TABLE_DESCRIPTION_MEMBER: &str = "TableDescription";
@@ -202,6 +215,9 @@ pub(super) async fn create(
         if let Some(value) = declared_in(&resource.properties, member) {
             request.insert((*member).to_string(), value.clone());
         }
+    }
+    if let Some(specification) = stream_specification(&resource.properties) {
+        request.insert(STREAM_SPECIFICATION_PROPERTY.to_string(), specification);
     }
     if let Some(specification) = sse_specification(&resource.properties) {
         request.insert(SSE_SPECIFICATION_PROPERTY.to_string(), specification);
@@ -343,6 +359,20 @@ pub(super) async fn update(
             return Ok(None);
         };
         request.insert((*member).to_string(), value.clone());
+    }
+    // The stream configuration travels as the API's own `StreamSpecification`, whose required
+    // flag the type does not publish ([`stream_specification`]). It is a member `UpdateTable`
+    // takes, so a declaration that changes it has an in-place path; a declaration that DROPPED
+    // it has none here, for the reason the loop above gives for every other dropped member.
+    let stream_in_force = declared_in(&resource.properties, STREAM_SPECIFICATION_PROPERTY);
+    let stream_declared = declared_in(declared, STREAM_SPECIFICATION_PROPERTY);
+    if stream_declared != stream_in_force {
+        match stream_specification(declared) {
+            Some(specification) => {
+                request.insert(STREAM_SPECIFICATION_PROPERTY.to_string(), specification);
+            }
+            None => return Ok(None),
+        }
     }
     if changed_outside_update_members(&resource.properties, declared) {
         return Ok(None);
@@ -559,6 +589,35 @@ fn declared_in<'p>(properties: &'p Value, property: &str) -> Option<&'p Value> {
         .filter(|value| !value.is_null())
 }
 
+/// The API's `StreamSpecification` for the property the template declares, or `None` where it
+/// declares none.
+///
+/// The type publishes `StreamViewType` and a `ResourcePolicy` for the stream, and no flag of
+/// its own: declaring the property IS asking for a stream, while the API's own structure
+/// REQUIRES `StreamEnabled` ("Member must not be null" is how `CreateTable` refuses a request
+/// that leaves it out). So the flag the declaration means — enabled — is what CloudFormation
+/// supplies, a declaration that states the flag itself keeps the value it states, and the view
+/// type travels as written for DynamoDB to judge against its own enum.
+fn stream_specification(properties: &Value) -> Option<Value> {
+    let declared = declared_in(properties, STREAM_SPECIFICATION_PROPERTY)?;
+    let Value::Object(members) = declared else {
+        // Not an object: handed over as written, for DynamoDB to judge.
+        return Some(declared.clone());
+    };
+    let mut specification = Map::new();
+    specification.insert(
+        STREAM_ENABLED_MEMBER.to_string(),
+        members
+            .get(STREAM_ENABLED_MEMBER)
+            .cloned()
+            .unwrap_or(Value::Bool(true)),
+    );
+    if let Some(view_type) = members.get(STREAM_VIEW_TYPE_MEMBER) {
+        specification.insert(STREAM_VIEW_TYPE_MEMBER.to_string(), view_type.clone());
+    }
+    Some(Value::Object(specification))
+}
+
 /// The API's `SSESpecification` for the property the template declares, or `None` where it
 /// declares none.
 ///
@@ -648,6 +707,9 @@ fn changed_outside_update_members(in_force: &Value, declared: &Value) -> bool {
         // A setting DynamoDB applies through a call of its own has an in-place path of its
         // own ([`settings`]), so a change to one is not a change `UpdateTable` had to carry.
         .filter(|property| !settings::is_a_setting(property))
+        // The stream configuration IS a member `UpdateTable` takes — under the API's own
+        // spelling of it ([`stream_specification`]) — so [`update`] carries a change to it.
+        .filter(|property| *property != STREAM_SPECIFICATION_PROPERTY)
         .any(|property| declared_in(declared, property) != declared_in(in_force, property))
 }
 
@@ -676,6 +738,24 @@ fn refuse_unapplied_properties(properties: &Value, resource_type: &str) -> Resul
             ),
         });
     }
+    // The stream's own resource-based policy is a sub-resource of the STREAM rather than a
+    // member of either table call, so a declaration asking for one asks for something this
+    // arm does not put: refused, for the reason every unapplied property above is. The two
+    // members the API's own structure carries are applied ([`stream_specification`]).
+    if let Some(Value::Object(stream)) = declared_in(properties, STREAM_SPECIFICATION_PROPERTY) {
+        for member in stream.keys() {
+            if member == STREAM_VIEW_TYPE_MEMBER || member == STREAM_ENABLED_MEMBER {
+                continue;
+            }
+            return Err(Refusal {
+                code: "NotImplemented".to_string(),
+                message: format!(
+                    "this emulator does not apply the \
+                     {STREAM_SPECIFICATION_PROPERTY}.{member} property of {resource_type}"
+                ),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -684,6 +764,7 @@ fn refuse_unapplied_properties(properties: &Value, resource_type: &str) -> Resul
 /// one of the settings DynamoDB applies through a call of its own ([`settings`]).
 fn applies(name: &str) -> bool {
     CREATE_MEMBERS.contains(&name)
+        || name == STREAM_SPECIFICATION_PROPERTY
         || settings::is_a_setting(name)
         || [
             TABLE_NAME_PROPERTY,

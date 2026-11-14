@@ -292,9 +292,10 @@ fn drift_cases() -> Vec<DriftCase> {
             template: concat!(
                 "Resources:\n",
                 "  Signal:\n",
-                "    Type: AWS::CloudWatch::Alarm\n",
+                "    Type: AWS::CloudWatch::CompositeAlarm\n",
                 "    Properties:\n",
                 "      AlarmName: drift-unprovisioned-signal\n",
+                "      AlarmRule: ALARM(drift-unprovisioned-other)\n",
             )
             .to_string(),
             tamper: Tamper::Nothing,
@@ -315,7 +316,7 @@ fn drift_cases() -> Vec<DriftCase> {
                         "Type": "AWS::S3::Bucket",
                         "Properties": {"BucketName": "drift-mixed-kept"}
                     },
-                    "Signal": {"Type": "AWS::CloudWatch::Alarm"}
+                    "Signal": {"Type": "AWS::CloudWatch::CompositeAlarm"}
                 }
             })
             .to_string(),

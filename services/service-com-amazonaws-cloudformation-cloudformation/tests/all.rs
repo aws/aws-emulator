@@ -83,8 +83,8 @@ mod change_set_status_refusals;
 mod client_request_tokens;
 #[path = "all/cloudformation_ec2_instance_rollback.rs"]
 mod cloudformation_ec2_instance_rollback;
-#[path = "all/cognito_principal_tag_identity.rs"]
-mod cognito_principal_tag_identity;
+#[path = "all/cloudwatch_alarm_and_ecs_service_resources.rs"]
+mod cloudwatch_alarm_and_ecs_service_resources;
 #[path = "all/cognito_resource_types.rs"]
 mod cognito_resource_types;
 #[path = "all/cognito_user_pool_return_values.rs"]
@@ -427,6 +427,8 @@ mod scan_and_registry_reads;
 mod scan_hook_and_progress_refusal_wording;
 #[path = "all/scratch.rs"]
 mod scratch;
+#[path = "all/scratch_diag.rs"]
+mod scratch_diag;
 #[path = "all/scratch_probe.rs"]
 mod scratch_probe;
 #[path = "all/search_indexing_pipeline_outputs.rs"]
@@ -647,3 +649,5 @@ mod elbv2_rule_priority_collision_update;
 mod monitored_registrations;
 #[path = "all/stack_declared_resource_policy.rs"]
 mod stack_declared_resource_policy;
+#[path = "all/cognito_principal_tag_identity.rs"]
+mod cognito_principal_tag_identity;

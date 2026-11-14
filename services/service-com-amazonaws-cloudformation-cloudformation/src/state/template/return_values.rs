@@ -516,12 +516,36 @@ pub(super) fn return_values(
             );
             (name.to_string(), attributes)
         }
-        // "Ref returns the table name"; Fn::GetAtt: Arn.
+        // "Ref returns the table name"; Fn::GetAtt: Arn, StreamArn. The stream's own ARN
+        // nests inside the table's (`table/<name>/stream/<label>`) and its LABEL is "a
+        // timestamp, in ISO 8601 format" the owning service writes when it creates the stream
+        // — which no naming rule could compute — so what the rules give the resource is the
+        // stand-in form of it, and the table's own create re-points the attribute at the ARN
+        // Amazon DynamoDB answered ([`crate::state::provisioning`] re-points every attribute
+        // the owning service reports differently). The attribute is published ONLY for a
+        // table whose declaration enables a stream ("You must specify the StreamSpecification
+        // property to use this attribute"): a table with no stream has no stream ARN, and a
+        // declaration reading one reads an attribute that resource does not have.
         "AWS::DynamoDB::Table" => {
             attributes.insert(
                 "Arn".to_string(),
                 ::emulator_server::emulator_arn("dynamodb", region, &format!("table/{name}")),
             );
+            if stream_is_enabled(properties.get(DYNAMODB_STREAM_SPECIFICATION)) {
+                let label = service_assigned_label(
+                    DYNAMODB_STREAM_LABEL_SALT,
+                    name,
+                    DYNAMODB_STREAM_LABEL_DIGITS,
+                );
+                attributes.insert(
+                    "StreamArn".to_string(),
+                    ::emulator_server::emulator_arn(
+                        "dynamodb",
+                        region,
+                        &format!("table/{name}/stream/{label}"),
+                    ),
+                );
+            }
             (name.to_string(), attributes)
         }
         // "Ref returns the function name"; Fn::GetAtt: Arn.
@@ -2030,7 +2054,7 @@ pub fn published_attribute_names(resource_type: &str) -> &'static [&'static str]
         S3TABLES_TABLE_BUCKET => &[S3TABLES_TABLE_BUCKET_ARN_ATTRIBUTE],
         S3VECTORS_VECTOR_BUCKET => &["VectorBucketArn"],
         S3VECTORS_INDEX => &["IndexArn"],
-        "AWS::DynamoDB::Table" => &["Arn"],
+        "AWS::DynamoDB::Table" => &["Arn", "StreamArn"],
         "AWS::Lambda::Function" => &["Arn"],
         // "Fn::GetAtt … FunctionArn: the ARN of the version. Version: the version number."
         LAMBDA_VERSION => &["FunctionArn", "Version"],
@@ -3043,6 +3067,41 @@ pub const SAGEMAKER_MODEL_PACKAGE_GROUP: &str = "AWS::SageMaker::ModelPackageGro
 /// `cloudFormationName: CloudWatch`). This is the type `super::provisioning` creates in
 /// CloudWatch itself, through that service's own `PutMetricStream`.
 pub const CLOUDWATCH_METRIC_STREAM: &str = "AWS::CloudWatch::MetricStream";
+
+/// The `AWS::DynamoDB::Table` property that enables the table's stream, whose presence is
+/// what says the table publishes a `StreamArn` at all ("You must specify the
+/// StreamSpecification property to use this attribute").
+const DYNAMODB_STREAM_SPECIFICATION: &str = "StreamSpecification";
+
+/// The salt and length of the stand-in LABEL a declared stream's ARN carries until the
+/// table's own create answers the one Amazon DynamoDB minted
+/// (`TableDescription$LatestStreamLabel`, "a timestamp, in ISO 8601 format").
+const DYNAMODB_STREAM_LABEL_SALT: &str = "dynamodb/stream-label";
+const DYNAMODB_STREAM_LABEL_DIGITS: usize = 16;
+
+/// The flag the API's own `StreamSpecification` carries, which a template may state beside
+/// the view type: "indicates whether DynamoDB Streams is enabled (true) or disabled (false)
+/// on the table".
+const DYNAMODB_STREAM_ENABLED: &str = "StreamEnabled";
+
+/// Whether a declared `StreamSpecification` enables a stream — which is what decides whether
+/// the table publishes a `StreamArn` at all.
+///
+/// A declaration that states the property asks for a stream, and one that states the flag
+/// keeps what it states: a specification turning the stream OFF leaves the table with no
+/// stream, and so with no stream ARN for anything to read. The flag is read as the TEXT it
+/// resolved to ([`crate::state::scalar_text`], this service's one reading of a scalar
+/// property), so a template that writes it as the string a YAML or an intrinsic can yield is
+/// read the same way as one that writes the JSON boolean.
+fn stream_is_enabled(declared: Option<&Value>) -> bool {
+    let Some(declared) = declared.filter(|value| !value.is_null()) else {
+        return false;
+    };
+    declared
+        .get(DYNAMODB_STREAM_ENABLED)
+        .and_then(crate::state::scalar_text)
+        .is_none_or(|enabled| !enabled.eq_ignore_ascii_case("false"))
+}
 
 /// An Amazon CloudWatch dashboard's resource type. This is the type `super::provisioning`
 /// creates in CloudWatch itself, through that service's own `PutDashboard`.
@@ -4716,7 +4775,11 @@ pub(super) fn ec2_network_identity(
 }
 
 /// The `AWS::ECS::Service` resource type: a service running on an ECS cluster.
-pub(super) const ECS_SERVICE: &str = "AWS::ECS::Service";
+///
+/// `pub(crate)` because the type's own NAME is read outside this module as well as in it: the
+/// provisioner that CREATES the service in Amazon ECS keys its catalogue entry by it
+/// ([`crate::state::provisioner::ecs_services`]).
+pub(crate) const ECS_SERVICE: &str = "AWS::ECS::Service";
 
 /// The two AWS Lambda types whose published identifier is the FUNCTION's ARN with a
 /// qualifier: a published version's carries the version number, an alias's the alias name.

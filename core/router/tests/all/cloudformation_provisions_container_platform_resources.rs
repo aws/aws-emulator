@@ -41,6 +41,16 @@ const ACCOUNT_ID: &str = "000000000000";
 /// due.
 const PAST_THE_SPAN: Duration = Duration::from_millis(900);
 
+/// How long between two readings of a stack that is still being created, and how many
+/// readings before a wait gives up: a generous deadline, because what is waited for is the
+/// owning services' own creation spans rather than anything this suite times.
+const LOOK_AGAIN: Duration = Duration::from_millis(25);
+const LOOKS: usize = 1_200;
+
+/// The `StackStatus` a create reports while it is still running, which is the CONDITION
+/// [`stack_once_settled`] waits out.
+const CREATE_IN_PROGRESS: &str = "CREATE_IN_PROGRESS";
+
 /// The emulator with the services this suite exercises, mounted on ONE engine exactly
 /// as `core/router/src/lib.rs` mounts them. Request authentication is off, as in every
 /// other suite here; the in-process callback CloudFormation makes signs its request
@@ -226,6 +236,25 @@ async fn describe_stack(router: &MultiServiceRouter, case: &str, stack_name: &st
         "case {case:?}: expected HTTP 200 from DescribeStacks, got {status} with body {body}"
     );
     body
+}
+
+/// The same stack once its create has SETTLED: `DescribeStacks` read again until the status is
+/// no longer [`CREATE_IN_PROGRESS`], or until the deadline passes.
+///
+/// Waits for the CONDITION rather than for a span of the clock — what the create waits on is
+/// the owning services' own spans, which is not something this suite can time — and answers
+/// the LAST body read either way, so the assertions on it report what CloudFormation really
+/// said rather than how fast the host ran.
+async fn stack_once_settled(router: &MultiServiceRouter, case: &str, stack_name: &str) -> String {
+    let mut last = describe_stack(router, case, stack_name).await;
+    for _ in 0..LOOKS {
+        if xml_text(&last, "StackStatus").as_deref() != Some(CREATE_IN_PROGRESS) {
+            return last;
+        }
+        tokio::time::sleep(LOOK_AGAIN).await;
+        last = describe_stack(router, case, stack_name).await;
+    }
+    last
 }
 
 /// One row of the table: a template, and the output key carrying the cluster's name.
@@ -526,11 +555,20 @@ async fn an_ecs_services_reported_arn_carries_the_cluster_the_stack_created() {
         "    Type: AWS::ECS::Cluster\n",
         "    Properties:\n",
         "      ClusterName: checkout-cluster\n",
+        "  AppTask:\n",
+        "    Type: AWS::ECS::TaskDefinition\n",
+        "    Properties:\n",
+        "      Family: checkout-task\n",
+        "      ContainerDefinitions:\n",
+        "        - Name: app\n",
+        "          Image: public.ecr.aws/nginx/nginx:latest\n",
+        "          Memory: 256\n",
         "  AppService:\n",
         "    Type: AWS::ECS::Service\n",
         "    Properties:\n",
         "      ServiceName: checkout-service\n",
         "      Cluster: !Ref AppCluster\n",
+        "      TaskDefinition: !Ref AppTask\n",
         "      DesiredCount: 1\n",
         "Outputs:\n",
         "  ClusterName:\n",
@@ -541,8 +579,7 @@ async fn an_ecs_services_reported_arn_carries_the_cluster_the_stack_created() {
         "    Value: !GetAtt AppService.Name\n",
     );
     create_stack(&router, case, "checkout-stack", template).await;
-    tokio::time::sleep(PAST_THE_SPAN).await;
-    let described = describe_stack(&router, case, "checkout-stack").await;
+    let described = stack_once_settled(&router, case, "checkout-stack").await;
     assert_eq!(
         xml_text(&described, "StackStatus").as_deref(),
         Some("CREATE_COMPLETE"),

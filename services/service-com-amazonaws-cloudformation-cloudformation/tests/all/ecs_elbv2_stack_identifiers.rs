@@ -520,7 +520,11 @@ Outputs:
     Type: String
     Default: web-cluster
 Resources:
-{NETWORK}  LogGroup:
+{NETWORK}  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref ClusterName
+  LogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/ecs/${{App}}"
@@ -567,10 +571,12 @@ Resources:
           TargetGroupArn: !Ref Tg
   Service:
     Type: AWS::ECS::Service
+    DependsOn: Listener
     Properties:
       ServiceName: !Ref App
-      Cluster: !Ref ClusterName
+      Cluster: !Ref Cluster
       TaskDefinition: !Ref Task
+      DesiredCount: 1
       LoadBalancers:
         - ContainerName: app
           ContainerPort: 80

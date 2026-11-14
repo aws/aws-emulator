@@ -1899,10 +1899,6 @@ mod apigateway_sns_service_integration;
 // crate's test target can drive it.
 #[path = "all/lambda_signed_write_to_an_aoss_collection_endpoint.rs"]
 mod lambda_signed_write_to_an_aoss_collection_endpoint;
-// Declared here, in this same head region, for the reason the entry above records: which app
-// client's token a COGNITO_USER_POOLS authorizer admits spans Amazon Cognito user pools (which
-// mints the tokens) and API Gateway's execute-api data plane (which reads them), so neither
-// crate's own test target can mint a pool token and then present it to a deployed method.
 // (`apigateway_cognito_authorizer_app_client_audience` is declared at line 30, in the sorted
 // block above: a module may be declared only once, and two branches landing at once declared
 // it twice.)
@@ -1929,7 +1925,6 @@ mod zz_probe;
 // cluster and then read the alarm's state.
 #[path = "all/redshift_health_alarms_evaluate.rs"]
 mod redshift_health_alarms_evaluate;
-// are declared in the head region above: a module may be declared only once.)
 // stack-deployed metric-stream pipeline exports before and after an update rewrites its filter
 // spans CloudFormation, IAM, CloudWatch, Firehose and Amazon S3 at once, so no single service
 // crate's test target can deploy the pipeline and then read the objects it delivered.
@@ -1990,3 +1985,6 @@ mod cognito_rules_role_mapping;
 // crate's own test target can ask it.
 #[path = "all/iam_secretsmanager_denial_envelope_by_protocol.rs"]
 mod iam_secretsmanager_denial_envelope_by_protocol;
+// (`apigateway_cognito_authorizer_app_client_audience` is declared in the head region above:
+// a module may be declared only once.)
+// (`zz_probe` is declared further up this tail already: a module may be declared only once.)
