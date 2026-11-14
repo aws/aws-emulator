@@ -153,6 +153,42 @@ pub(crate) async fn create_startable(
     body["ApplicationDetail"].clone()
 }
 
+/// The ARN of an application this service stored in the default test region, the value a
+/// caller reads off `ApplicationDetail$ApplicationARN` and hands to a tagging call.
+pub(crate) fn application_arn(name: &str) -> String {
+    format!("arn:aws:kinesisanalytics:us-east-1:{ACCOUNT}:application/{name}")
+}
+
+/// `ListTagsForResource` for one ARN, as `(http status, body)`.
+pub(crate) async fn list_tags(router: &MultiServiceRouter, resource_arn: &str) -> (u16, Value) {
+    call(
+        router,
+        "ListTagsForResource",
+        &json!({"ResourceARN": resource_arn}),
+    )
+    .await
+}
+
+/// The tags an application carries, as a `(key, value)` table read through
+/// `ListTagsForResource` in the order the service reports them. Shared plumbing, so no two
+/// suites that read one application's tags back can drift on where a tag carries its key.
+pub(crate) async fn tags_of(router: &MultiServiceRouter, name: &str) -> Vec<(String, String)> {
+    let arn = application_arn(name);
+    let (status, body) = list_tags(router, &arn).await;
+    assert_eq!(status, 200, "case {name:?}: ListTagsForResource got {body}");
+    body["Tags"]
+        .as_array()
+        .unwrap_or_else(|| panic!("case {name:?}: expected a Tags member, got {body}"))
+        .iter()
+        .map(|tag| {
+            (
+                tag["Key"].as_str().unwrap_or_default().to_string(),
+                tag["Value"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect()
+}
+
 /// Every `SnapshotName` `ListApplicationSnapshots` reports for one application, in the
 /// order it reports them, asserting the call succeeded. Shared plumbing, so no two suites
 /// that read one application's snapshots back can drift on where a summary carries its

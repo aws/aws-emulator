@@ -22,50 +22,9 @@
 use serde_json::{json, Value};
 
 use crate::harness::{
-    call, create, create_startable, error_code, error_message, router, SETTLE_WAIT,
+    application_arn, call, create, create_startable, error_code, error_message, router, tags_of,
+    SETTLE_WAIT,
 };
-
-/// The ARN of an application this service stored in the default test region, the value a
-/// caller reads off `ApplicationDetail$ApplicationARN` and hands to a tagging call.
-fn application_arn(name: &str) -> String {
-    format!("arn:aws:kinesisanalytics:us-east-1:000000000000:application/{name}")
-}
-
-/// `ListTagsForResource` for one ARN, as `(http status, body)`.
-async fn list_tags(
-    router: &smithy_server_runtime::MultiServiceRouter,
-    resource_arn: &str,
-) -> (u16, Value) {
-    call(
-        router,
-        "ListTagsForResource",
-        &json!({"ResourceARN": resource_arn}),
-    )
-    .await
-}
-
-/// The tags an application carries, as a sorted `(key, value)` table read through
-/// `ListTagsForResource`.
-async fn tags_of(
-    router: &smithy_server_runtime::MultiServiceRouter,
-    name: &str,
-) -> Vec<(String, String)> {
-    let arn = application_arn(name);
-    let (status, body) = list_tags(router, &arn).await;
-    assert_eq!(status, 200, "case {name:?}: ListTagsForResource got {body}");
-    let listed = body["Tags"]
-        .as_array()
-        .unwrap_or_else(|| panic!("case {name:?}: expected a Tags member, got {body}"))
-        .iter()
-        .map(|tag| {
-            (
-                tag["Key"].as_str().unwrap_or_default().to_string(),
-                tag["Value"].as_str().unwrap_or_default().to_string(),
-            )
-        })
-        .collect::<Vec<_>>();
-    listed
-}
 
 // ---------------------------------------------------------------------------
 // Tags

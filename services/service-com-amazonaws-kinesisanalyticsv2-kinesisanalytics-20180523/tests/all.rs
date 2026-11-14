@@ -25,6 +25,8 @@ mod conditional_token_identity;
 mod error_envelope_wording;
 #[path = "all/harness.rs"]
 mod harness;
+#[path = "all/list_tags_for_resource_reads.rs"]
+mod list_tags_for_resource_reads;
 #[path = "all/modeled_client_errors.rs"]
 mod modeled_client_errors;
 #[path = "all/ops_name_bindings.rs"]
