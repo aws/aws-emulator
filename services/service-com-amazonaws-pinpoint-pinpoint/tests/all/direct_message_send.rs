@@ -436,9 +436,9 @@ async fn the_baidu_channels_state_transitions_change_the_same_sends_outcome() {
     let (status, deleted) = emulator.delete_baidu_channel(&app).await;
     assert_eq!(status, 200, "DeleteBaiduChannel: expected 200, got {deleted:?}");
     assert_eq!(
-        deleted["Enabled"].as_bool(),
-        Some(false),
-        "a deleted channel is reported disabled, got {deleted:?}"
+        (deleted["IsArchived"].as_bool(), deleted["Enabled"].as_bool()),
+        (Some(true), Some(true)),
+        "a deleted channel is reported archived, carrying the Enabled state it was stored with, got {deleted:?}"
     );
     let (status, missing) = emulator.get_baidu_channel(&app).await;
     assert_eq!(

@@ -174,7 +174,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         let Some(channel) = app.channels.get(crate::state::CHANNEL_TYPE_BAIDU) else {
             return Err(GetBaiduChannelErrorModeled::NotFoundException(NotFoundException {
-                message: Some("Resource not found".to_string()),
+                // The application is there, so what is missing is the CHANNEL on it:
+                // the text names the channel and the application it has to be enabled
+                // on, rather than the application-level class.
+                message: Some(crate::state::channel_not_found_message(
+                    crate::state::CHANNEL_TYPE_BAIDU,
+                    &application_id,
+                )),
                 request_id: None,
             })
             .into());

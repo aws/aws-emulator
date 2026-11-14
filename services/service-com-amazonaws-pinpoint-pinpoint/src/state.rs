@@ -91,6 +91,32 @@ const MINTED_ID_LEN: usize = 32;
 /// value is BAIDU".
 pub const CHANNEL_TYPE_BAIDU: &str = "BAIDU";
 
+/// The deprecated `Id` of a channel: the segment that names the channel in its own
+/// resource URI, `/v1/apps/{ApplicationId}/channels/<id>` — `baidu` for the Baidu
+/// channel, `gcm` for the GCM one, `apns_sandbox` for the APNs sandbox one — which is
+/// the `ChannelType` value lowercased.
+///
+/// `BaiduChannelResponse$Id` is "(Deprecated) An identifier for the Baidu channel":
+/// an identifier of the CHANNEL, not of the application, which the response carries
+/// separately as `ApplicationId`.
+pub fn channel_id(channel_type: &str) -> String {
+    channel_type.to_ascii_lowercase()
+}
+
+/// The service's text for a request that names a channel an existing application has
+/// not enabled — the `NotFoundException` message a channel's Get or Delete answers
+/// with, and the per-destination `StatusMessage` a direct send reports for such a
+/// destination.
+///
+/// It classifies the missing resource as a channel, says what to do about it, and
+/// names the application the channel has to be enabled on, which is what separates it
+/// from the application-level "not found" text.
+pub fn channel_not_found_message(channel_type: &str, application_id: &str) -> String {
+    format!(
+        "{channel_type} channel not found. Please enable the {channel_type} channel for this application {application_id}."
+    )
+}
+
 /// A stored Pinpoint application (a "project").
 #[derive(Debug, Clone, Default)]
 pub struct App {
@@ -159,7 +185,6 @@ impl App {
                 ..Channel::default()
             });
         channel.enabled = enabled;
-        channel.has_credential = credential.is_some();
         channel.credential = credential;
         channel.last_modified_date = now;
         channel.version = channel.version.saturating_add(1);
@@ -189,7 +214,8 @@ pub struct Channel {
     /// The credential the channel's response member carries, when the caller supplied
     /// one (the API key, client id or equivalent the channel is modelled with).
     pub credential: Option<String>,
-    pub has_credential: bool,
+    /// Set when the channel is deleted: deleting a channel archives it, and the
+    /// settings the delete answers with report that.
     pub is_archived: bool,
     /// ISO 8601, set once when the channel is first configured.
     pub creation_date: String,
@@ -201,6 +227,14 @@ pub struct Channel {
 }
 
 impl Channel {
+    /// Whether the channel currently holds a credential to communicate with, which is
+    /// what its response's `HasCredential` member reports: a configured channel holds
+    /// the one its Update was given, and a channel whose settings have been deleted —
+    /// and so archived — holds none any more, whatever it was configured with.
+    pub fn holds_credential(&self) -> bool {
+        self.credential.is_some() && !self.is_archived
+    }
+
     /// The modelled `BaiduChannelResponse` view of this stored channel. Every
     /// operation that returns the Baidu channel builds it here, so UpdateBaiduChannel,
     /// GetBaiduChannel and DeleteBaiduChannel cannot describe the same channel
@@ -211,10 +245,8 @@ impl Channel {
             creation_date: Some(self.creation_date.clone()),
             credential: self.credential.clone().unwrap_or_default(),
             enabled: Some(self.enabled),
-            has_credential: Some(self.has_credential),
-            // `Id` is "(Deprecated) An identifier for the Baidu channel": a channel is
-            // a singleton of its application, so the application's own id names it.
-            id: Some(self.application_id.clone()),
+            has_credential: Some(self.holds_credential()),
+            id: Some(channel_id(&self.channel_type)),
             is_archived: Some(self.is_archived),
             last_modified_by: self.last_modified_by.clone(),
             last_modified_date: Some(self.last_modified_date.clone()),

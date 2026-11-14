@@ -13,6 +13,8 @@
 // is what points it into `tests/all/`.
 #[path = "all/app_endpoint_lifecycle.rs"]
 mod app_endpoint_lifecycle;
+#[path = "all/channel_responses.rs"]
+mod channel_responses;
 #[path = "all/direct_message_send.rs"]
 mod direct_message_send;
 #[path = "all/state_roundtrip.rs"]

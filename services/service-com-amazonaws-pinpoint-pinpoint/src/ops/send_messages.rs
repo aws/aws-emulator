@@ -543,7 +543,7 @@ impl Target {
             return Verdict::new(
                 DELIVERY_PERMANENT_FAILURE,
                 STATUS_NOT_FOUND,
-                format!("The {channel} channel is not enabled for this application"),
+                crate::state::channel_not_found_message(channel, &app.id),
             );
         }
         if !carries_message_for(channel, configuration) {

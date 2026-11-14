@@ -172,16 +172,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         let Some(mut deleted) = app.channels.remove(crate::state::CHANNEL_TYPE_BAIDU) else {
             return Err(DeleteBaiduChannelErrorModeled::NotFoundException(NotFoundException {
-                message: Some("Resource not found".to_string()),
+                // The application is there, so what is missing is the CHANNEL on it:
+                // the text names the channel and the application it has to be enabled
+                // on, rather than the application-level class.
+                message: Some(crate::state::channel_not_found_message(
+                    crate::state::CHANNEL_TYPE_BAIDU,
+                    &application_id,
+                )),
                 request_id: None,
             })
             .into());
         };
 
-        // The settings are gone from the store, so what comes back describes a channel
-        // that is no longer enabled: the response is the deleted settings, and a later
-        // GetBaiduChannel finds nothing.
-        deleted.enabled = false;
+        // Deleting a channel ARCHIVES it: the settings are gone from the store, so a
+        // later GetBaiduChannel finds nothing, and what comes back describes the
+        // channel as it stood at deletion — its stored `Enabled` state, not a flipped
+        // one — now archived and holding no credential to communicate with.
+        deleted.is_archived = true;
         deleted.last_modified_date = crate::state::now_iso8601();
 
         Ok(DeleteBaiduChannelOutput {
