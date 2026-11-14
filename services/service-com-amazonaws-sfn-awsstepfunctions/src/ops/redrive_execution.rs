@@ -348,7 +348,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 &self.engine,
                 &region,
                 &context.role_arn,
-                &context.state_machine_name,
                 unassumable,
             );
             // This attempt CONTINUES the execution, so each Distributed Map state it

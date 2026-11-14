@@ -481,10 +481,10 @@ async fn a_tasks_call_is_made_only_when_the_execution_role_allows_it() {
             cause.contains("states:StartExecution"),
             "case {case:?}: expected the cause to name the action, got {cause:?}"
         );
-        // The principal is the SESSION of the role the call was made as, named after the
-        // state machine the work is for — not the role's own IAM ARN.
+        // The principal is the SESSION of the role the call was made as, under the name
+        // the assume gave it — not the role's own IAM ARN.
         let principal =
-            crate::task_refusal_session_principal::session_principal(&role_arn, &machine_name);
+            crate::task_refusal_session_principal::session_principal(&role_arn, &cause);
         assert!(
             cause.contains(&principal),
             "case {case:?}: expected the cause to name the principal {principal}, got {cause:?}"

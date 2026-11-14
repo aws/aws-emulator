@@ -210,13 +210,13 @@ async fn a_refused_task_reports_the_invoked_services_own_status() {
         // identifier is one run's own value, so only everything around it is asserted:
         // the service, the status it answers an unauthorized call with, the code it names
         // the class by, and the tail an SDK closes such a message with.
-        let principal = session_principal(&role_arn, &machine_name);
+        let cause = string(&described, "cause");
+        let principal = session_principal(&role_arn, &cause);
         let expected = format!(
             "User: {principal} is not authorized to perform: {} on resource: {} {} (Service: {}; \
              Status Code: {}; Error Code: {}; ",
             row.action, row.target, row.because, row.sdk_client, row.status, row.code
         );
-        let cause = string(&described, "cause");
         assert!(
             cause.starts_with(&expected) && cause.ends_with("Proxy: null)"),
             "case {case:?}: expected the cause to open {expected:?} and close \"Proxy: null)\", \

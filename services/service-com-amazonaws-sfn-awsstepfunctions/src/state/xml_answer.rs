@@ -20,7 +20,10 @@ pub struct Element {
     /// The element's LOCAL name — the part after any namespace prefix — because an
     /// answer may carry a prefix and the member it stands for is the same either way.
     pub name: String,
-    /// The character data directly inside the element, with the XML escaping undone.
+    /// The character data directly inside the element, with the XML escaping undone and
+    /// the document's own indentation around it dropped ([`close`]) — the whitespace
+    /// INSIDE it is the answer's own and is kept, including the whitespace beside an
+    /// entity reference, which the parser reports as an event of its own.
     pub text: String,
     /// The elements nested inside it, in document order.
     pub children: Vec<Element>,
@@ -65,8 +68,13 @@ const MAX_ELEMENTS: usize = 100_000;
 pub fn read(xml: &[u8]) -> Result<Element, String> {
     use ::quick_xml::events::Event;
 
+    // Every text event is read as the document wrote it: trimming each event on its own
+    // would drop the whitespace that stands beside an ENTITY REFERENCE, which the parser
+    // reports as an event of its own, so a sentence carrying an escaped character would
+    // lose the spaces around it. The indentation a pretty-printed document puts around an
+    // element's text is dropped once the element is complete ([`close`]) instead.
     let mut reader = ::quick_xml::Reader::from_reader(xml);
-    reader.config_mut().trim_text(true);
+    reader.config_mut().trim_text(false);
     let mut open: Vec<Element> = Vec::new();
     let mut root: Option<Element> = None;
     let mut elements = 0usize;
@@ -146,7 +154,15 @@ pub fn read(xml: &[u8]) -> Result<Element, String> {
 
 /// Place a finished element: inside the element that encloses it, else as the
 /// document's root.
-fn close(element: Element, open: &mut [Element], root: &mut Option<Element>) {
+///
+/// The text it accumulated is trimmed HERE, once, rather than event by event: that drops
+/// the indentation a pretty-printed document writes around an element's character data
+/// (and leaves an element whose text is only that indentation carrying none) while
+/// keeping every space inside the data itself.
+fn close(mut element: Element, open: &mut [Element], root: &mut Option<Element>) {
+    if element.text.trim().len() != element.text.len() {
+        element.text = element.text.trim().to_string();
+    }
     match open.last_mut() {
         Some(parent) => parent.children.push(element),
         None => *root = Some(element),
@@ -287,6 +303,42 @@ mod tests {
             Some("The specified key does not exist."),
             "the message is the document's own, got {document:?}"
         );
+    }
+
+    #[test]
+    fn an_elements_text_keeps_the_whitespace_beside_an_escaped_character() {
+        // (case, the document, the text the element carries)
+        let rows: &[(&str, &[u8], &str)] = &[
+            (
+                "an escaped apostrophe mid-sentence",
+                b"<Message>Could not cast message attribute &apos;count&apos; value to \
+                  number.</Message>",
+                "Could not cast message attribute 'count' value to number.",
+            ),
+            (
+                "the same character by its code point",
+                b"<Message>attribute &#39;a b&#39; is invalid</Message>",
+                "attribute 'a b' is invalid",
+            ),
+            (
+                "an escaped ampersand and angle bracket",
+                b"<Message>a &amp; b &lt; c</Message>",
+                "a & b < c",
+            ),
+            (
+                "the indentation around character data is not part of it",
+                b"<Message>\n            a plain sentence\n        </Message>",
+                "a plain sentence",
+            ),
+        ];
+        for (case, xml, expected) in rows {
+            let element = read(xml).expect("the document reads");
+            assert_eq!(
+                element.text, *expected,
+                "case {case:?}: expected {expected:?}, got {:?}",
+                element.text
+            );
+        }
     }
 
     #[test]

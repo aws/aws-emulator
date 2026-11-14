@@ -36,7 +36,7 @@ use service_com_amazonaws_glue_awsglue::state::{
 };
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::job_runs::emulator_with_engine;
+use crate::job_runs::{emulator_with_engine, RUN_AT_REST_DEADLINE, RUN_POLL_INTERVAL};
 use crate::wire::{call, call_in_region, error_code, error_message, ok, REGION};
 
 /// A second Region's endpoint, so a row can assert the key a workflow is addressed by.
@@ -602,8 +602,29 @@ async fn listing_runs_reports_the_state_the_clock_owes_and_changes_nothing_else(
     // Once the clock owes the transition, the listing reports it — and keeps reporting the
     // same thing, so the listing materialises what was due rather than moving a run because
     // it was read.
-    set_due_instant(&engine, name, SystemTime::UNIX_EPOCH);
-    let settled = ok(&router, "GetWorkflowRuns", &json!({ "Name": name })).await;
+    //
+    // The condition is POLLED for, with the owed instants made due through the store on
+    // every turn rather than slept out: a listing performs the script an action's run is
+    // still owed and only then stamps when that run rests, so the instant to push past can
+    // be the one the previous listing made due. The two constants are the crate's own
+    // ([`crate::job_runs::RUN_AT_REST_DEADLINE`]).
+    let deadline = SystemTime::now() + RUN_AT_REST_DEADLINE;
+    let settled = loop {
+        set_due_instant(&engine, name, SystemTime::UNIX_EPOCH);
+        let read = ok(&router, "GetWorkflowRuns", &json!({ "Name": name })).await;
+        let running = listed_runs(&read)
+            .iter()
+            .any(|run| run["Status"].as_str() == Some(WORKFLOW_RUN_STATUS_RUNNING));
+        if !running {
+            break read;
+        }
+        assert!(
+            SystemTime::now() < deadline,
+            "case \"the transition fell due\": every run of {name:?} must come to rest, and \
+             the listing reports {read}"
+        );
+        ::tokio::time::sleep(RUN_POLL_INTERVAL).await;
+    };
     let again = ok(&router, "GetWorkflowRuns", &json!({ "Name": name })).await;
     assert_eq!(
         settled, again,

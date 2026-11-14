@@ -38,7 +38,9 @@ use service_com_amazonaws_glue_awsglue::state::{
 };
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::job_runs::{already_past, emulator_with_engine, far_future};
+use crate::job_runs::{
+    already_past, emulator_with_engine, far_future, RUN_AT_REST_DEADLINE, RUN_POLL_INTERVAL,
+};
 use crate::wire::{call, error_code, error_message, ok, REGION};
 
 /// The role ARN the job every trigger action below runs is registered with.
@@ -519,8 +521,26 @@ async fn the_owed_status_falls_due_on_the_clock() {
         }
 
         // Past it, the next read reports the status the clock had already reached.
-        set_due_instant(&engine, &workflow, already_past());
-        let settled = get_run(&router, &workflow, &run_id).await;
+        //
+        // The condition is POLLED for, with the owed instants made due through the store on
+        // every turn rather than slept out: a read performs the script an action's run is
+        // still owed and only then stamps when that run rests, so the instant to push past
+        // can be the one the previous read made due. The two constants are the crate's own
+        // ([`crate::job_runs::RUN_AT_REST_DEADLINE`]).
+        let deadline = SystemTime::now() + RUN_AT_REST_DEADLINE;
+        let settled = loop {
+            set_due_instant(&engine, &workflow, already_past());
+            let read = get_run(&router, &workflow, &run_id).await;
+            if read.get("Status").and_then(Value::as_str) != Some(WORKFLOW_RUN_STATUS_RUNNING) {
+                break read;
+            }
+            assert!(
+                SystemTime::now() < deadline,
+                "case {case}: run {run_id:?} of workflow {workflow:?} must come to rest, and \
+                 it reports {read}"
+            );
+            ::tokio::time::sleep(RUN_POLL_INTERVAL).await;
+        };
         let status = settled.get("Status").and_then(Value::as_str).unwrap_or("");
         assert!(
             TERMINAL_WORKFLOW_RUN_STATUSES.contains(&status),

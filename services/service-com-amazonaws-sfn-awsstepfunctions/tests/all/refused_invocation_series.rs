@@ -577,10 +577,10 @@ async fn a_refused_attempt_is_counted_as_a_started_and_failed_invocation() {
                 "case {case:?}: expected the refusal to end the execution, got {described}"
             );
             let cause = string(&described, "cause");
-            // The principal is the SESSION of the role the call was made as, named after
-            // the state machine the work is for.
+            // The principal is the SESSION of the role the call was made as, under the
+            // name the assume gave it.
             let principal =
-                crate::task_refusal_session_principal::session_principal(&role, &name);
+                crate::task_refusal_session_principal::session_principal(&role, &cause);
             for fragment in [REFUSED_TEXT, function.as_str(), principal.as_str()] {
                 assert!(
                     cause.contains(fragment),

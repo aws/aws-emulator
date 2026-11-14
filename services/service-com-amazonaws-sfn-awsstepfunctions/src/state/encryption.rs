@@ -205,12 +205,6 @@ impl KeyUse {
             context: HashMap::from([(entry.to_string(), resource_arn.to_string())]),
         }
     }
-
-    /// The name of the resource this use is for, which is the LAST field of its ARN:
-    /// what the session Step Functions assumes the execution role for is named after.
-    fn resource_name(&self) -> &str {
-        self.resource.rsplit(':').next().unwrap_or_default()
-    }
 }
 
 /// Why a state machine's customer managed key cannot be used for a call, in the
@@ -959,7 +953,7 @@ fn role_key_denied<Eng: Send + Sync + 'static>(
             None,
         )
         .err()
-        .map(|why| KeyRefusal::AccessDenied(relayed(&reported_as_session(&why, role_arn, used))))
+        .map(|why| KeyRefusal::AccessDenied(relayed(&reported_as_session(&why, role_arn))))
     })
 }
 
@@ -968,16 +962,18 @@ fn role_key_denied<Eng: Send + Sync + 'static>(
 ///
 /// The service does not hold the role: it ASSUMES it for the resource's work, so the
 /// identity a refusal about that use names is a session of the role — the spelling
-/// `sts:AssumeRole` reports — and the session is named after the resource the work is
-/// for. The DECISION stays the role's: the statements that grant to an assumed-role
+/// `sts:AssumeRole` reports — under the name that assume gave it
+/// ([`super::task_authorization::new_session_name`]). The DECISION stays the role's: the
+/// statements that grant to an assumed-role
 /// session name the role, and `aws:PrincipalArn` of such a request is the role's ARN, so
 /// only the sentence is re-spelled and nothing the decision reads is.
 ///
 /// The principal is the sentence's FIRST variable part, so the first occurrence of the
 /// role's ARN is the one re-spelled; a sentence that does not name the role (or an ARN
 /// that names no session) is relayed as KMS worded it.
-fn reported_as_session(why: &str, role_arn: &str, used: &KeyUse) -> String {
-    match super::task_authorization::assumed_role_session(role_arn, used.resource_name()) {
+fn reported_as_session(why: &str, role_arn: &str) -> String {
+    let session = super::task_authorization::new_session_name();
+    match super::task_authorization::assumed_role_session(role_arn, &session) {
         Some(session) => why.replacen(role_arn, &session, 1),
         None => why.to_string(),
     }

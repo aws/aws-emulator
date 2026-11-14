@@ -259,16 +259,19 @@ fn attribute_value_refusal(
 /// The message a `Number` attribute whose value is not a number of the supported
 /// precision and scale is refused with, or `None` when the value is one.
 ///
-/// Each sentence names the attribute, the value in brackets and the bound it crossed —
-/// the precision in digits, the scale in powers of ten — because the value is what the
-/// publisher has to change. The two bounds are independent: the PRECISION is how many
-/// significant digits the value carries ("a number can have up to 38 digits of
-/// precision"), and the SCALE is where its decimal point falls among them, so a value
-/// can cross either without crossing the other.
+/// A value SNS cannot read as a number at all is refused for the CAST it could not make,
+/// naming the attribute whose value it was and nothing else: the value is the caller's
+/// own and the sentence does not echo it back. The two BOUNDS are refused by sentences
+/// that do name the value in brackets, beside the bound it crossed — the precision in
+/// digits, the scale in powers of ten — because there the value is a number and what the
+/// publisher has to change is its size. The two bounds are independent: the PRECISION is
+/// how many significant digits the value carries ("a number can have up to 38 digits of
+/// precision"), and the SCALE is where its decimal point falls among them, so a value can
+/// cross either without crossing the other.
 fn number_value_refusal(name: &str, text: &str) -> Option<String> {
     let Some(number) = DecimalNumber::read(text) else {
         return Some(format!(
-            "Message attribute '{name}' number value [{text}] is not a number."
+            "Could not cast message attribute '{name}' value to number."
         ));
     };
     if number.precision > MAX_NUMBER_PRECISION {

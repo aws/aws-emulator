@@ -434,14 +434,14 @@ fn count(events: &[Value], kind: &str) -> usize {
 /// What the `cause` of a failure of `source` must carry: the run's own error document for
 /// a handler that raised — the class it raised and the message it built from this
 /// execution's input — and the refusal the invoked service answers an unauthorized call
-/// with, naming the SESSION of the role it was attempted as and the function it was over,
-/// for a call the policies refused.
+/// with, naming the SESSION of the role `role_arn` it was attempted as and the function it
+/// was over, for a call the policies refused.
 fn assert_cause(
     source: Source,
     cause: &str,
     order: u64,
     function: &str,
-    principal: &str,
+    role_arn: &str,
     case: &str,
 ) {
     match source {
@@ -465,7 +465,11 @@ fn assert_cause(
             );
         }
         Source::Refused => {
-            for fragment in [REFUSED_TEXT, function, principal] {
+            // The principal a refusal blames is a SESSION of that role, under the name
+            // the assume gave it.
+            let principal =
+                crate::task_refusal_session_principal::session_principal(role_arn, cause);
+            for fragment in [REFUSED_TEXT, function, principal.as_str()] {
                 assert!(
                     cause.contains(fragment),
                     "case {case:?}: expected the refusal to carry {fragment:?}, got {cause:?}"
@@ -513,10 +517,6 @@ async fn the_failures_error_name_decides_which_retrier_and_catcher_act_on_it() {
             Role::Denied => denied.as_str(),
         };
         let machine_name = format!("machine-{index}");
-        // The principal a refusal blames is the SESSION of that role, named after the state
-        // machine the work is for.
-        let principal =
-            crate::task_refusal_session_principal::session_principal(role_arn, &machine_name);
         let described = chain
             .ran_as(
                 case,
@@ -565,7 +565,7 @@ async fn the_failures_error_name_decides_which_retrier_and_catcher_act_on_it() {
                     &text(&caught, "Cause", case),
                     order,
                     &function,
-                    &principal,
+                    role_arn,
                     case,
                 );
             }
@@ -585,7 +585,7 @@ async fn the_failures_error_name_decides_which_retrier_and_catcher_act_on_it() {
                     &string(&described, "cause"),
                     order,
                     &function,
-                    &principal,
+                    role_arn,
                     case,
                 );
                 assert_eq!(

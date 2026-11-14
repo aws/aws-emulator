@@ -1392,7 +1392,10 @@ async fn a_message_attribute_is_refused_outside_the_rules_its_parts_carry() {
             "n",
             "Number",
             "five",
-            Some(("ParameterValueInvalid", "is not a number.")),
+            Some((
+                "ParameterValueInvalid",
+                "Could not cast message attribute 'n' value to number.",
+            )),
         ),
         (
             "an empty value",

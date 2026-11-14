@@ -106,6 +106,9 @@ mod list_subscriptions;
 #[path = "all/notification_signature.rs"]
 mod notification_signature;
 
+#[path = "all/number_attribute_cast_refusal.rs"]
+mod number_attribute_cast_refusal;
+
 #[path = "all/origination_numbers_listing.rs"]
 mod origination_numbers_listing;
 

@@ -59,14 +59,23 @@ const PATIENCE: Duration = Duration::from_secs(20);
 /// back under.
 const REFUSAL_CODE: &str = "Error Code: AccessDeniedException";
 
-/// The ARN of the SESSION a refusal of one of an execution's calls blames: Step Functions
+/// The ARN of the SESSION a refusal of one of an execution's calls blames, read back out of
+/// the refusal `cause`: Step Functions
 /// holds no credentials of the state machine's `roleArn` — it ASSUMES the role for the
 /// run's work — so the identity the call is made as is a session of that role, spelled the
-/// way `sts:AssumeRole` reports one, and named after the state machine the work is for.
+/// way `sts:AssumeRole` reports one.
+///
+/// The session's NAME is the assume's own — nothing a caller writes states a
+/// `RoleSessionName` for it — so it is one run's own value and what is asserted of it is
+/// that it IS a name a session can carry: `length 2..64` over the pattern `^[\w+=,.@-]*$`
+/// (`smithy_query(query="shape",shape="roleSessionNameType",model_path="services/
+/// service-com-amazonaws-sts-awssecuritytokenservicev20110615/smithy-model/
+/// com-amazonaws-sts-awssecuritytokenservicev20110615.json")`). The whole principal is
+/// returned, so a row holds the rest of the sentence to exactly what it must be.
 ///
 /// `pub(crate)` for the same reason the harness is: `all/sfn_athena_run_a_job_sync.rs` reads
 /// the same refusal and `tests/all.rs` is one crate root, so the spelling is stated once.
-pub(crate) fn session_principal(role_arn: &str, session_name: &str) -> String {
+pub(crate) fn session_principal(role_arn: &str, cause: &str) -> String {
     let (head, named) = role_arn
         .split_once(":role/")
         .unwrap_or_else(|| panic!("expected an IAM role ARN, got {role_arn:?}"));
@@ -75,7 +84,24 @@ pub(crate) fn session_principal(role_arn: &str, session_name: &str) -> String {
     let fields: Vec<&str> = head.split(':').collect();
     let partition = fields.get(1).copied().unwrap_or_default();
     let account = fields.get(4).copied().unwrap_or_default();
-    format!("arn:{partition}:sts::{account}:assumed-role/{role_name}/{session_name}")
+    let prefix = format!("arn:{partition}:sts::{account}:assumed-role/{role_name}/");
+    let tail = cause
+        .split_once(&prefix)
+        .map(|(_, tail)| tail)
+        .unwrap_or_else(|| {
+            panic!("expected the cause to blame a session of {role_arn:?}, got {cause:?}")
+        });
+    let session: String = tail
+        .chars()
+        .take_while(|character| character.is_ascii_alphanumeric() || "_+=,.@-".contains(*character))
+        .collect();
+    let carried = session.chars().count();
+    assert!(
+        (2..=64).contains(&carried),
+        "expected a name a session can carry, got {session:?} ({carried} characters) in \
+         {cause:?}"
+    );
+    format!("{prefix}{session}")
 }
 
 /// The history event a failed task writes
@@ -500,22 +526,30 @@ async fn an_integration_call_the_role_is_not_granted_is_not_made() {
             "case {case:?}: expected the cause to name the action {:?}, got {cause:?}",
             row.action
         );
-        // The principal is the SESSION of the role the call was made as, named after the
-        // state machine the work is for.
-        let principal = session_principal(&role_arn, &machine_name);
-        assert!(
-            cause.contains(&principal),
-            "case {case:?}: expected the cause to name the principal {principal}, got {cause:?}"
-        );
         // The resource it was refused ON is the ARN of what the request addressed,
         // whichever form the request named it in.
         let resource = match row.action {
             "sqs:SendMessage" => queue_arn.clone(),
             _ => function_arn.clone(),
         };
+        // The whole sentence, principal first: the SESSION of the role the call was made
+        // as — under the name the assume gave it, which is why the principal is read back
+        // out of the cause — then the action and the resource the request addressed.
+        let principal = session_principal(&role_arn, &cause);
+        let expected = format!(
+            "User: {principal} is not authorized to perform: {} on resource: {resource} ",
+            row.action
+        );
         assert!(
-            cause.contains(&format!("on resource: {resource} ")),
-            "case {case:?}: expected the cause to name the resource {resource}, got {cause:?}"
+            cause.starts_with(&expected),
+            "case {case:?}: expected the cause to open {expected:?}, got {cause:?}"
+        );
+        // The role's own IAM ARN names a principal rather than the session the call was
+        // made as, so it appears nowhere in the sentence.
+        assert!(
+            !cause.contains(&role_arn),
+            "case {case:?}: expected the cause never to name the role ARN {role_arn:?}, got \
+             {cause:?}"
         );
         assert_eq!(
             waiting(&router, &queue_url).await,

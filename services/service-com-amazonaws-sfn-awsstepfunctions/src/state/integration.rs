@@ -460,7 +460,9 @@ impl Api {
     /// shape of that model, so no client has a class for either and the base exception
     /// is what carries it: a shape of the request-handling framework that fronts the
     /// service ([`FRAMEWORK_NAMESPACES`]), and one of the errors EVERY service answers
-    /// ([`COMMON_WIRE_CODES`]).
+    /// ([`COMMON_WIRE_CODES`]). An answer that names its class by a LEGACY QUERY CODE
+    /// names the shape that service's model binds the code to, which is the shape its
+    /// own client resolves the answer to ([`Wire::Query`]).
     fn exception_of(&self, shape: &str) -> String {
         let namespace = shape.rsplit_once('#').map(|(namespace, _)| namespace);
         let named = bare_name(shape);
@@ -469,9 +471,25 @@ impl Api {
         {
             return self.sdk_exception.to_string();
         }
+        let named = self.shape_of_query_code(named);
         match named.ends_with(EXCEPTION_SUFFIX) {
             true => named.to_string(),
             false => format!("{named}{EXCEPTION_SUFFIX}"),
+        }
+    }
+
+    /// The error SHAPE of this service's model that the class name `named` stands for:
+    /// the shape a LEGACY QUERY CODE is bound to where this service answers its errors
+    /// under one, and `named` itself everywhere else — a shape name, a code the model
+    /// binds to a shape of that same name, and the answer of a service whose protocol
+    /// names the shape directly.
+    fn shape_of_query_code<'a>(&self, named: &'a str) -> &'a str {
+        match self.wire {
+            Wire::Query { exceptions, .. } => exceptions
+                .iter()
+                .find(|(code, _)| *code == named)
+                .map_or(named, |(_, shape)| *shape),
+            Wire::Json { .. } | Wire::Rest(_) => named,
         }
     }
 
@@ -572,6 +590,19 @@ pub enum Wire {
         /// The API version its model declares (`service.version`), which every request
         /// to such a service names beside the action.
         version: &'static str,
+        /// How the LEGACY QUERY CODE such an answer names an error class by maps to the
+        /// error SHAPE of this service's model, for each code whose shape is not the
+        /// code itself ([`Api::exception_of`] gives a shape the `Exception` suffix a
+        /// class name ends in).
+        ///
+        /// An `awsQuery` refusal names its class by the `awsQueryError` code alone, and
+        /// that code is a name of its own: the service's client resolves the answer to
+        /// the class of the SHAPE its model binds the code to, which is what a `Retry`
+        /// or a `Catch` then matches on. Each entry is `(code, shape)` as that service's
+        /// model states the pair, so this table carries no naming rule of its own; a
+        /// code whose shape name is the code's is not listed, because the suffix rule
+        /// already answers for it.
+        exceptions: &'static [(&'static str, &'static str)],
     },
 }
 
@@ -908,6 +939,19 @@ const TARGET_FORBIDDEN_STATUS: u16 = 403;
 /// REQUEST carries for the same refusal (`Status Code: 400`).
 const TARGET_CLIENT_ERROR_STATUS: u16 = 400;
 
+/// The legacy query codes Amazon SNS names an error class by whose SHAPE is spelled
+/// differently, as `(code, shape)` ([`Wire::Query`]).
+///
+/// Read from that service's own model
+/// (`smithy_query(query="operation",operation="Publish",model_path="services/
+/// service-com-amazonaws-sns-amazonsimplenotificationservice/smithy-model/
+/// com-amazonaws-sns-amazonsimplenotificationservice.json")`, and `query="shape"` for
+/// the errors its other operations declare): every other error of SNS is bound to the
+/// code that is its own shape name without the `Exception` suffix (`NotFound` ->
+/// `NotFoundException`, `AuthorizationError` -> `AuthorizationErrorException`), which the
+/// suffix rule already names, so this one pair is the whole table.
+const SNS_QUERY_EXCEPTIONS: &[(&str, &str)] = &[("ParameterValueInvalid", "InvalidParameterValueException")];
+
 /// The services a `Task` state's integration call is made to, and how a request to
 /// each is bound to HTTP ([`Wire`]) — so the document the state built IS the
 /// operation's input, wherever that protocol puts it.
@@ -1039,6 +1083,7 @@ pub const APIS: &[Api] = &[
         endpoint_prefix: SNS_NAMESPACE,
         wire: Wire::Query {
             version: "2010-03-31",
+            exceptions: SNS_QUERY_EXCEPTIONS,
         },
         sdk_id: "SNS",
         error_prefix: "SNS",
@@ -1234,6 +1279,12 @@ pub const APIS: &[Api] = &[
         endpoint_prefix: "sts",
         wire: Wire::Query {
             version: "2011-06-15",
+            // Every error of its model is bound to the query code that is its own shape
+            // name, with or without the `Exception` suffix a class name ends in
+            // (`MalformedPolicyDocument` -> `MalformedPolicyDocumentException`,
+            // `RegionDisabledException` -> `RegionDisabledException`), so the suffix rule
+            // already names each class and there is no pair to state.
+            exceptions: &[],
         },
         sdk_id: "STS",
         error_prefix: "STS",
@@ -3654,7 +3705,7 @@ fn wired(call: &Call, request: &Value) -> Result<Wired, String> {
             Wire::Json { target_prefix, .. } => format!("{target_prefix}.{}", call.operation),
             // An `awsQuery` request is a FORM, posted to the root, with the operation
             // named in it rather than in a header.
-            Wire::Query { version } => {
+            Wire::Query { version, .. } => {
                 return Ok(Wired {
                     method: "POST",
                     uri: "/".to_string(),

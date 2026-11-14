@@ -457,7 +457,7 @@ async fn the_optimized_sns_publish_is_made_as_the_execution_role() {
                 // role the call was made as, the action that service publishes, the topic
                 // the request named, why its documents withheld it, and the metadata its
                 // own client appends.
-                let principal = session_principal(&role_arn, &machine_name);
+                let principal = session_principal(&role_arn, &string(details, "cause"));
                 let expected = format!(
                     "User: {principal} is not authorized to perform: {PUBLISH_ACTION} on \
                      resource: {topic_arn} {because}{REFUSAL_METADATA}"

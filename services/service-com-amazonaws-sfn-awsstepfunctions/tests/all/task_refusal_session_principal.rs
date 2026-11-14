@@ -10,12 +10,15 @@
 //! `arn:<partition>:sts::<account>:assumed-role/<role name>/<session name>`. The `sts`
 //! vendor and the `assumed-role` resource type are what tell an assumed-role caller apart
 //! from an IAM principal, so the role's own `arn:<partition>:iam::<account>:role/…` ARN is
-//! never what such a refusal names. The DECISION is still the role's: what the documents in
-//! force on it allow is unchanged by how the refusal spells the caller.
+//! never what such a refusal names. The session's NAME is the service's own — nothing a
+//! caller writes states a `RoleSessionName` for an assume Step Functions makes, so it names
+//! no resource of the request ([`session_principal`]). The DECISION is still the role's:
+//! what the documents in force on it allow is unchanged by how the refusal spells the
+//! caller.
 //!
 //! The rows differ along what the rule generalises over: whether the role sits at the
 //! account root or under a PATH (a session ARN carries the role's name alone, never its
-//! path), which state machine the work is for (the session is named after it), which
+//! path), which state machine the work is for, which
 //! service and action the refused call asks for, and whether the documents withhold the
 //! call by stating nothing about it or by denying it outright.
 //!
@@ -37,13 +40,46 @@ const ACCOUNT: &str = "000000000000";
 /// The `Error Code:` fragment every row's cause carries.
 const REFUSAL_CODE: &str = "Error Code: AccessDeniedException";
 
-/// The ARN of the SESSION a refusal must blame, built the way `sts:AssumeRole` reports one:
-/// the `sts` vendor, no Region, the role's own account, and the role's NAME — never its path
-/// — followed by the session's name.
+/// The ARN of the SESSION the refusal in `cause` must blame, built the way
+/// `sts:AssumeRole` reports one: the `sts` vendor, no Region, the role's own account, and
+/// the role's NAME — never its path — followed by the name the ASSUME gave the session.
+///
+/// That name is the SERVICE's own: nothing in a state machine's definition or in a
+/// `StartExecution` request states a `RoleSessionName` for the sessions Step Functions
+/// takes, so it is an opaque token of one run's own and the only thing that can be
+/// asserted of it is that it IS a name a session can carry — `length 2..64` over the
+/// pattern `^[\w+=,.@-]*$`
+/// (`smithy_query(query="shape",shape="roleSessionNameType",model_path="services/
+/// service-com-amazonaws-sts-awssecuritytokenservicev20110615/smithy-model/
+/// com-amazonaws-sts-awssecuritytokenservicev20110615.json")`), which this asserts. It is
+/// read back out of `cause` and returned as part of the whole principal, so a suite holds
+/// the rest of the sentence — the prefix included — to exactly what it must be.
 ///
 /// `pub(crate)` because every suite that reads a refused `Task` state's cause is held to the
 /// same principal: `tests/all.rs` is one crate root, so the spelling is stated here once.
-pub(crate) fn session_principal(role_arn: &str, session_name: &str) -> String {
+pub(crate) fn session_principal(role_arn: &str, cause: &str) -> String {
+    let prefix = session_prefix(role_arn);
+    let tail = cause
+        .split_once(&prefix)
+        .map(|(_, tail)| tail)
+        .unwrap_or_else(|| {
+            panic!("expected the cause to blame a session of {role_arn:?}, got {cause:?}")
+        });
+    let session: String = tail
+        .chars()
+        .take_while(|character| is_session_name_character(*character))
+        .collect();
+    let carried = session.chars().count();
+    assert!(
+        (2..=64).contains(&carried),
+        "expected a name a session can carry, got {session:?} ({carried} characters) in \
+         {cause:?}"
+    );
+    format!("{prefix}{session}")
+}
+
+/// Everything a session of `role_arn` is spelled under, up to the session's own name.
+pub(crate) fn session_prefix(role_arn: &str) -> String {
     let (head, named) = role_arn
         .split_once(":role/")
         .unwrap_or_else(|| panic!("expected an IAM role ARN, got {role_arn:?}"));
@@ -51,7 +87,13 @@ pub(crate) fn session_principal(role_arn: &str, session_name: &str) -> String {
     let fields: Vec<&str> = head.split(':').collect();
     let partition = fields.get(1).copied().unwrap_or_default();
     let account = fields.get(4).copied().unwrap_or_default();
-    format!("arn:{partition}:sts::{account}:assumed-role/{role_name}/{session_name}")
+    format!("arn:{partition}:sts::{account}:assumed-role/{role_name}/")
+}
+
+/// Whether `character` is one a `RoleSessionName` may carry (the pattern above, whose
+/// `\w` is ASCII).
+fn is_session_name_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || "_+=,.@-".contains(character)
 }
 
 /// A definition whose one `Task` state makes `resource`'s call with `parameters`.
@@ -254,7 +296,7 @@ async fn a_refused_tasks_cause_names_the_assumed_role_session_of_the_execution_r
 
         // The whole sentence, principal first: the session of the role, the action, the
         // resource the request addressed and why the documents withheld the call.
-        let principal = session_principal(&role_arn, row.machine_name);
+        let principal = session_principal(&role_arn, &cause);
         let expected = format!(
             "User: {principal} is not authorized to perform: {} on resource: {} {}",
             row.action, row.resource_arn, row.because
@@ -279,6 +321,19 @@ async fn a_refused_tasks_cause_names_the_assumed_role_session_of_the_execution_r
             "case {case:?}: expected the cause never to name the role ARN {role_arn:?}, got \
              {cause:?}"
         );
+        // The session's name is the one the assume gave it, so it is no name the request
+        // carried: a caller cannot read the acting identity off its own state machine.
+        let session = principal
+            .strip_prefix(&session_prefix(&role_arn))
+            .unwrap_or_default()
+            .to_string();
+        for named in [row.machine_name, row.role_name] {
+            assert_ne!(
+                session, named,
+                "case {case:?}: expected a session name of the assume's own, got the request's \
+                 {named:?} in {cause:?}"
+            );
+        }
         // The refusal is still the invoked service's own answer to an unauthorized call.
         assert!(
             cause.contains(REFUSAL_CODE),

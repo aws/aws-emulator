@@ -36,7 +36,9 @@ use service_com_amazonaws_glue_awsglue::state::{
 };
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::job_runs::{already_past, emulator_with_engine, far_future};
+use crate::job_runs::{
+    already_past, emulator_with_engine, far_future, RUN_AT_REST_DEADLINE, RUN_POLL_INTERVAL,
+};
 use crate::wire::{ok, REGION};
 
 /// The role every job below is registered with.
@@ -371,9 +373,27 @@ async fn a_run_comes_to_rest_once_the_work_it_began_has() {
 
         // Once the work has finished, the run comes to rest: its statistics report what each
         // action came to, and the run itself carries no error.
-        hold_actions_due(&engine, &workflow, already_past());
-        hold_runs_due(&engine, &workflow, already_past());
-        let settled = last_run_of(&router, &workflow).await;
+        //
+        // The condition is POLLED for, with the owed instants made due through the store on
+        // every turn rather than slept out: a read performs the script an action's run is
+        // still owed and only then stamps when that run rests, so the instant to push past
+        // can be the one the previous read made due. The two constants are the crate's own
+        // ([`crate::job_runs::RUN_AT_REST_DEADLINE`]).
+        let deadline = SystemTime::now() + RUN_AT_REST_DEADLINE;
+        let settled = loop {
+            hold_actions_due(&engine, &workflow, already_past());
+            hold_runs_due(&engine, &workflow, already_past());
+            let read = last_run_of(&router, &workflow).await;
+            if read.get("Status").and_then(Value::as_str) != Some(WORKFLOW_RUN_STATUS_RUNNING) {
+                break read;
+            }
+            assert!(
+                SystemTime::now() < deadline,
+                "case {case}: the last run of {workflow:?} must come to rest, and it reports \
+                 {read}"
+            );
+            ::tokio::time::sleep(RUN_POLL_INTERVAL).await;
+        };
         assert_eq!(
             settled.get("Status").and_then(Value::as_str),
             Some(WORKFLOW_RUN_STATUS_COMPLETED),

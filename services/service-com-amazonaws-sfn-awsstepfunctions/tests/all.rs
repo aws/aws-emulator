@@ -221,6 +221,8 @@ mod send_task_failure;
 mod sibling_abort_timing;
 #[path = "all/sns_publish_task_integration.rs"]
 mod sns_publish_task_integration;
+#[path = "all/sns_publish_task_refusal_relay.rs"]
+mod sns_publish_task_refusal_relay;
 #[path = "all/state_data_in_history.rs"]
 mod state_data_in_history;
 #[path = "all/state_machine_aliases.rs"]

@@ -95,16 +95,14 @@ async fn poll<Eng: Send + Sync + 'static>(
         // time, is gone by the time it is read, and there is then nothing to poll.
         // The execution role is read with it, because the call that reports the job is
         // made as that role — the role of the configuration this execution RAN, read
-        // at the moment of the call, exactly as the starting call's was — together with
-        // the state machine's own name, which is what the session the role is assumed
-        // under is named after.
+        // at the moment of the call, exactly as the starting call's was.
         // What the execution's own KEY owes an outcome the clock has already made due,
         // decided before this pass settles and with no store of this service locked
         // ([`super::encryption::fail_due_runs_the_key_refuses`]): the decision is the
         // key's and the clock's together, so it is taken wherever a due outcome is
         // materialised rather than only where a caller reaches it.
         super::encryption::fail_due_runs_the_key_refuses(&**engine, super::now());
-        let (task, role_arn, machine_name) = {
+        let (task, role_arn) = {
             let mut store = state.lock();
             store.settle(super::now());
             let task = store.job_tasks.get(execution_arn).cloned();
@@ -113,8 +111,7 @@ async fn poll<Eng: Send + Sync + 'static>(
                 .get(execution_arn)
                 .and_then(|execution| store.state_machines.get(&execution.state_machine_arn));
             let role_arn = machine.map_or_else(String::new, |machine| machine.role_arn.clone());
-            let machine_name = machine.map_or_else(String::new, |machine| machine.name.clone());
-            (task, role_arn, machine_name)
+            (task, role_arn)
         };
         let Some(task) = task else {
             return;
@@ -134,7 +131,6 @@ async fn poll<Eng: Send + Sync + 'static>(
                 super::task_authorization::job_report_denial(
                     &**engine,
                     &role_arn,
-                    &machine_name,
                     &call,
                     resource,
                 )
@@ -282,7 +278,6 @@ async fn resolve<Eng: Send + Sync + 'static>(
             engine,
             &region,
             &context.role_arn,
-            &context.state_machine_name,
             unassumable,
         );
         integration::interpret_through(callback, depth, &region, acting, move |tasks| {

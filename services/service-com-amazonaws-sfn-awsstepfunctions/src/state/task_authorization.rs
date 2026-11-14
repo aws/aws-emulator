@@ -41,7 +41,8 @@
 //! refusal says: the principal is the SESSION of the role the call is made as — this
 //! service holds no credentials of the role, it assumes the role for the resource's
 //! work, and `sts:AssumeRole` reports the credentials it gets under an assumed-role
-//! session ARN ([`assumed_role_session`]), which is the identity an invoked service
+//! session ARN ([`assumed_role_session`]) whose name is the one the ASSUME gave it
+//! ([`new_session_name`]), which is the identity an invoked service
 //! blames — and the metadata tail names the service, the status and the error code the
 //! answer came back with, and nothing it did not carry.
 //!
@@ -198,10 +199,10 @@ pub async fn unassumable_role(
 /// `sts:AssumeRole` reports a session by, and therefore the identity a refusal about a
 /// call this service makes as that role names.
 ///
-/// Step Functions holds no credentials of the role: it assumes the role for the
-/// resource's work, and the session it gets is named after the resource that work is
-/// for. The ONE rendering of that identity in this crate, so a refusal about an
-/// integration call and one about a use of a key ([`super::encryption`]) name the
+/// Step Functions holds no credentials of the role: it assumes the role for the work, and
+/// what comes back is a session of it, under the name the ASSUME gave it
+/// ([`new_session_name`]). The ONE rendering of that identity in this crate, so a refusal
+/// about an integration call and one about a use of a key ([`super::encryption`]) name the
 /// acting principal alike. `None` for an ARN that is not a role of an account, or an
 /// empty session name, neither of which names a session.
 #[must_use]
@@ -216,10 +217,35 @@ pub fn assumed_role_session(role_arn: &str, session: &str) -> Option<String> {
     })
 }
 
+/// A fresh name for the session this service assumes a state machine's execution role
+/// under.
+///
+/// The name of such a session is the SERVICE's to choose, not the caller's: a caller that
+/// assumes a role itself states the `RoleSessionName`, and nothing a state machine's
+/// definition or a `StartExecution` request carries states one for the sessions this
+/// service takes — so the name names no resource of the account and is not derivable from
+/// the request. It is an opaque token, minted per assume: the 32 hexadecimal digits of a
+/// fresh version-4 UUID from the maintained crate, which is within the `length 2..64` over
+/// the pattern `^[\w+=,.@-]*$` a `RoleSessionName` carries
+/// (`smithy_query(query="shape",shape="roleSessionNameType",model_path="services/
+/// service-com-amazonaws-sts-awssecuritytokenservicev20110615/smithy-model/
+/// com-amazonaws-sts-awssecuritytokenservicev20110615.json")`), so the identity a refusal
+/// blames is one `sts:AssumeRole` could really have minted.
+///
+/// Minted once per ASSUME: the calls of one walk share the session that walk was given
+/// ([`role_gate`]), so every refusal of its own work blames the same identity, and two
+/// walks blame two. A call made outside a walk — the report a run-a-job pattern polls its
+/// job with ([`job_report_denial`]), a use of a resource's key ([`super::encryption`]) —
+/// is an assume of its own and carries its own session, exactly as a service that takes
+/// credentials per piece of work does.
+#[must_use]
+pub fn new_session_name() -> String {
+    ::uuid::Uuid::new_v4().simple().to_string()
+}
+
 /// The principal a refusal about a call made as `role_arn` names: the session of that
 /// role this service assumed for the work ([`assumed_role_session`]), and the role's own
-/// ARN where that names no session — a value that is not a role ARN of an account, or a
-/// call with no resource to name a session after.
+/// ARN where that names no session — a value that is not a role ARN of an account.
 fn acting_principal(role_arn: &str, session_name: &str) -> String {
     assumed_role_session(role_arn, session_name).unwrap_or_else(|| role_arn.to_string())
 }
@@ -274,10 +300,10 @@ fn denied_answer(api: &Api, denied: Option<Denied>) -> (&'static str, u16) {
 /// what the ARN the access request is over is formed in
 /// ([`super::integration::TargetNaming`]).
 ///
-/// `session_name` is the resource the walk's work is for — the state machine's own name
-/// — which is what the session this service assumes the role under is named after, and
-/// therefore the principal a refusal of one of its calls blames
-/// ([`assumed_role_session`]).
+/// The session this service assumes the role under is minted HERE, once for the walk
+/// ([`new_session_name`]): every call of this walk is made as that session, so every
+/// refusal of its work blames the same identity, which is the principal a refusal of one
+/// of its calls names ([`assumed_role_session`]).
 ///
 /// `unassumable` is the refusal [`unassumable_role`] resolved for this walk's role: a
 /// role this service cannot assume fails EVERY call of the walk, whatever the call
@@ -292,7 +318,6 @@ pub fn role_gate<Eng: Send + Sync + 'static>(
     engine: &Arc<Eng>,
     region: &str,
     role_arn: &str,
-    session_name: &str,
     unassumable: Option<Failed>,
 ) -> Option<RoleGate> {
     if role_arn.is_empty() {
@@ -304,7 +329,7 @@ pub fn role_gate<Eng: Send + Sync + 'static>(
     let engine = Arc::clone(engine);
     let region = region.to_string();
     let role_arn = role_arn.to_string();
-    let session_name = session_name.to_string();
+    let session_name = new_session_name();
     Some(Arc::new(move |call: &Call, request: &::serde_json::Value| {
         if let Some(refused) = &unassumable {
             return Some(refused.clone());
@@ -415,11 +440,10 @@ pub fn acting<Eng: Send + Sync + 'static>(
     engine: &Arc<Eng>,
     region: &str,
     role_arn: &str,
-    session_name: &str,
     unassumable: Option<Failed>,
 ) -> Acting {
     Acting {
-        role: role_gate(engine, region, role_arn, session_name, unassumable),
+        role: role_gate(engine, region, role_arn, unassumable),
         connections: super::http_task::connections(engine),
         handovers: super::callbacks::handovers(engine),
         // A walk that BEGINS an attempt runs every item of every Map state it enters,
@@ -430,7 +454,7 @@ pub fn acting<Eng: Send + Sync + 'static>(
 }
 
 /// What the task a run-a-job (`.sync`) pattern is parked at fails with when the
-/// execution role `role_arn`, acting under `session_name`, may not make `call` — the
+/// execution role `role_arn` may not make `call` — the
 /// call that REPORTS its job — on
 /// `resource`, the ARN of the resource that job belongs to; `None` when nothing of the
 /// kind can be shown (see the module docs).
@@ -443,11 +467,13 @@ pub fn acting<Eng: Send + Sync + 'static>(
 /// [`TASK_FAILED_ERROR`], carrying the refusal the invoked service answers an
 /// unauthorized call with, exactly as the starting call's refusal carries it.
 ///
+/// The poll is a call of its own, made under a session of its own
+/// ([`new_session_name`]).
+///
 /// Call it with no store of this service locked: it takes the IAM store's own.
 pub fn job_report_denial<Eng: Send + Sync + 'static>(
     engine: &Eng,
     role_arn: &str,
-    session_name: &str,
     call: &Call,
     resource: &str,
 ) -> Option<Failed> {
@@ -464,7 +490,7 @@ pub fn job_report_denial<Eng: Send + Sync + 'static>(
         &iam.lock(),
         Acts {
             role_arn,
-            session_name,
+            session_name: &new_session_name(),
         },
         &call.action(),
         resource,
@@ -521,7 +547,7 @@ pub fn role_is_denied<Eng: Send + Sync + 'static>(
 }
 
 /// WHO a call is made as: the execution role, and the name of the session this service
-/// assumes it under — the resource the work is for ([`assumed_role_session`]).
+/// assumes it under ([`new_session_name`]).
 ///
 /// The two travel together because the DECISION is the role's and the PRINCIPAL a refusal
 /// blames is the session's, so every reading of one needs the other.

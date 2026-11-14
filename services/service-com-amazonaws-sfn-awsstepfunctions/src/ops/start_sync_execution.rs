@@ -444,14 +444,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &machine_arn,
         )
         .await;
-        // The identity those calls are made under is a SESSION of that role, named after
-        // the state machine whose work they are, which is the principal a refusal of one
-        // of them reports (`task_authorization::assumed_role_session`).
+        // The identity those calls are made under is a SESSION of that role, under the
+        // name the assume gave it
+        // (`task_authorization::new_session_name`), which is the principal a refusal of
+        // one of them reports.
         let acting = crate::state::task_authorization::acting(
             &self.engine,
             &region,
             &role_arn,
-            &machine_name,
             unassumable,
         );
         let interpreted = {

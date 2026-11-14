@@ -381,12 +381,10 @@ async fn the_execution_role_decides_the_patterns_reporting_call() {
                 cause.contains(&format!("on resource: {group_arn} ")),
                 "case {case:?}: expected the cause to name the workgroup {group_arn}, got {cause:?}"
             );
-            // The principal is the SESSION of the role the poll was made as, named after
-            // the state machine the work is for.
-            let principal = crate::sfn_task_target_authorization::session_principal(
-                &role_arn,
-                &machine_name,
-            );
+            // The principal is the SESSION of the role the poll was made as, under the
+            // name the assume gave it.
+            let principal =
+                crate::sfn_task_target_authorization::session_principal(&role_arn, &cause);
             assert!(
                 cause.contains(&principal),
                 "case {case:?}: expected the cause to name the principal {principal}, got \

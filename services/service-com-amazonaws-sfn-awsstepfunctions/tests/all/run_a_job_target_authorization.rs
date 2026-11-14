@@ -207,10 +207,10 @@ async fn a_started_jobs_call_is_judged_on_the_resource_the_job_belongs_to() {
             "case {case:?}: expected the cause to name the resource {}, got {cause:?}",
             row.resource_arn
         );
-        // The principal is the SESSION of the role the call was made as, named after the
-        // state machine the work is for.
+        // The principal is the SESSION of the role the call was made as, under the name
+        // the assume gave it.
         let principal =
-            crate::task_refusal_session_principal::session_principal(&role_arn, &machine_name);
+            crate::task_refusal_session_principal::session_principal(&role_arn, &cause);
         assert!(
             cause.contains(&principal),
             "case {case:?}: expected the cause to name the principal {principal}, got {cause:?}"

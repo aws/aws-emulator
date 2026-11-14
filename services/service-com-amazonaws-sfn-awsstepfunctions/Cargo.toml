@@ -95,6 +95,10 @@ service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true 
 # answer from, so a published metric and its reader cannot disagree.
 service-com-amazonaws-cloudwatch-graniteserviceversion20100801 = { workspace = true }
 service-com-amazonaws-cloudwatchlogs-logs-20140328 = { workspace = true }
+# The opaque name of the session this service assumes a state machine's execution role
+# under (`state::task_authorization::new_session_name`): a fresh version-4 UUID from the
+# maintained crate, rendered as its 32 hexadecimal digits.
+uuid = { version = "1", features = ["v4"] }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

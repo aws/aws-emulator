@@ -7,21 +7,24 @@
 //! mounts them in.
 //!
 //! RULE: this service holds no credentials of a state machine's `roleArn` — it ASSUMES
-//! the role for the run's work — so every refusal of that work names the SAME identity,
-//! the assumed-role session of that role named after the state machine the work is for
-//! (`arn:<partition>:sts::<account>:assumed-role/<role name>/<session name>`), whichever
+//! the role for the run's work — so every refusal of that work names a SESSION OF THAT
+//! ROLE (`arn:<partition>:sts::<account>:assumed-role/<role name>/<session name>`),
+//! whichever
 //! authority refused: the role's OWN identity-based documents, which decide a `Task`
 //! state's integration call, or the resource's CUSTOMER MANAGED KEY, whose policy and the
 //! role's documents together decide the use that seals an execution's data. The role's
 //! own `arn:<partition>:iam::<account>:role/…` ARN is never what such a refusal names,
-//! and the decision is unchanged by how the refusal spells the caller.
+//! and the decision is unchanged by how the refusal spells the caller. The session's NAME
+//! is the one its assume minted — a value of that run's own, held to what a
+//! `RoleSessionName` may be, and no name the request carried — so each assume the work
+//! needs (the walk's own calls, and a use of the resource's key) carries its own.
 //!
 //! The rows differ along what the rule generalises over: which authority refuses (the
 //! role's documents withholding an integration call, an explicit deny in the key's policy,
 //! and a key policy that delegates to the account while the role's documents allow nothing
 //! of KMS), the channel the refusal arrives in (a failed execution's `cause`, and the
 //! modelled `KmsAccessDeniedException` of the start itself) and which state machine the
-//! work is for — the session is named after it, so no two rows name the same session.
+//! work is for.
 //!
 //! The harness is `tests/all/execution_data_encryption.rs`'s `Chain`, and the role maker,
 //! the documents and the key policies are `tests/all/role_log_and_key_authorization.rs`'s —
@@ -94,10 +97,10 @@ struct Row {
     machine_name: &'static str,
 }
 
-/// RULE: both authorities name the same acting identity — the session of the execution
-/// role, named after the state machine the work is for.
+/// RULE: both authorities name the acting identity the same way — a session OF THE
+/// EXECUTION ROLE, under the name its own assume minted, never the role's own ARN.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn every_refusal_of_the_roles_work_names_the_same_session() {
+async fn every_refusal_of_the_roles_work_names_a_session_of_that_role() {
     let chain = Chain::new();
     // The function a `Task` row addresses: nothing is created for it, because the call is
     // refused before it is made.
@@ -137,8 +140,6 @@ async fn every_refusal_of_the_roles_work_names_the_same_session() {
     for row in &rows {
         let case = row.case;
         let role_arn = role(&chain, row.role_name, &row.policy).await;
-        // The identity every one of this row's refusals must name.
-        let principal = session_principal(&role_arn, row.machine_name);
 
         let refusal = match row.authority {
             Authority::Documents => {
@@ -233,6 +234,9 @@ async fn every_refusal_of_the_roles_work_names_the_same_session() {
             }
         };
 
+        // The identity this row's refusal names: a session of the role, under the name
+        // the assume gave it.
+        let principal = session_principal(&role_arn, &refusal);
         assert!(
             refusal.contains(&principal),
             "case {case:?}: expected the refusal to name the acting session {principal}, got \

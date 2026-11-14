@@ -522,12 +522,10 @@ async fn a_tasks_dynamodb_call_is_made_only_when_the_execution_role_allows_it() 
             "case {case:?}: expected {REFUSAL_ERROR}, got {described:?}"
         );
         let cause = string(&described, "cause");
-        // The principal is the SESSION of the role the call was made as, named after the
-        // state machine the work is for.
-        let principal = crate::task_refusal_session_principal::session_principal(
-            &role_arn,
-            &machine_name,
-        );
+        // The principal is the SESSION of the role the call was made as, under the name
+        // the assume gave it.
+        let principal =
+            crate::task_refusal_session_principal::session_principal(&role_arn, &cause);
         for fragment in [
             REFUSAL_CODE,
             &format!("on resource: {table_arn} "),
