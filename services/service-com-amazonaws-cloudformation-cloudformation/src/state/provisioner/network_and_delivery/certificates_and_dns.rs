@@ -1519,6 +1519,30 @@ pub(crate) async fn delete_eb_application(
     }
 }
 
+/// Whether Elastic Beanstalk has finished removing the application a stack deleted.
+///
+/// `DeleteApplication` "deletes the specified application along with all associated versions
+/// and configurations" and ANSWERS BEFORE it has: the application goes on being described
+/// while the deletion runs, so the call being accepted is not evidence the name is free. The
+/// application is gone only once that service's own read no longer reports it — its answer,
+/// never a span this crate assumed — and the stack's deletion is held open until then
+/// (`crate::state::stabilising`), because CloudFormation does not report an
+/// operation complete while a resource it deleted is still there. Elastic Beanstalk reports
+/// no status of its own for an application, so what the resource is still in is
+/// CloudFormation's own deleting state.
+pub(crate) async fn eb_application_removal(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    physical_resource_id: &str,
+) -> Result<Removal, Refusal> {
+    match describe_eb_application(ctx, region, physical_resource_id).await? {
+        Some(_) => Ok(Removal::Pending(
+            crate::state::resource_status::DELETE_IN_PROGRESS.to_string(),
+        )),
+        None => Ok(Removal::Gone),
+    }
+}
+
 /// Delete the application version a stack created: its label is this resource's physical
 /// id, and the application it belongs to is on the resource's own declaration.
 ///

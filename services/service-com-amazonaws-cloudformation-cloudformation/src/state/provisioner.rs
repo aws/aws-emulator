@@ -2202,6 +2202,17 @@ impl Provisioner {
             Self::SageMakerNotebookInstance => {
                 notebook_instance_removal(ctx, region, physical_resource_id).await
             }
+            // `DeleteApplication` "deletes the specified application along with all
+            // associated versions and configurations" and answers before it has — the
+            // application is still described while the deletion runs — so it is still there
+            // when the delete answers and the deletion is finished once Elastic Beanstalk no
+            // longer holds it. (Its ENVIRONMENT needs no arm here: that delete waits for the
+            // termination itself, because the application this stack deletes next cannot go
+            // while the environment still runs; and an application VERSION is removed by the
+            // call that deletes it.)
+            Self::ElasticBeanstalkApplication => {
+                eb_application_removal(ctx, region, physical_resource_id).await
+            }
             _ => Ok(Removal::Gone),
         }
     }

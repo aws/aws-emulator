@@ -2189,3 +2189,10 @@ mod ses_delivery_event_advances_the_subscribed_queue;
 // once, and two branches landing at once appended a second declaration of it here.)
 // above: a module may be declared only once, and this tail declared it a second time while
 // two branches were landing at once.)
+// Declared beside the provisioning suite above: this one pins that the stack's DELETION is
+// reported complete only once Elastic Beanstalk has let the application go, which only an
+// engine carrying both services can show.
+#[path = "all/cloudformation_elastic_beanstalk_removal_stabilisation.rs"]
+mod cloudformation_elastic_beanstalk_removal_stabilisation;
+// at the top of this file: two `mod` items for one name is a redefinition that compiles
+// (`cloudformation_metric_stream_estate_is_drainable` is declared ONCE, in the span above: a
