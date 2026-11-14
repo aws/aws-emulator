@@ -350,7 +350,16 @@ async fn create_scheduled_report_persists_the_configuration_and_get_reads_it_bac
                     "case {label}: schedulePeriod.{member} must round-trip, got {stored_period}"
                 ),
                 None => {
-                    let days = (stored - created_at) / 86_400.0;
+                    // The span is the difference of two LARGE epoch seconds, so its last bits
+                    // are the float arithmetic's rather than the service's: a span landing
+                    // exactly on a day bound reads a few hundred nanoseconds either side of
+                    // it, which made this comparison depend on where the clock happened to
+                    // be. It is therefore rounded to whole seconds — the resolution the
+                    // default is stated in — before being read as days, the same slack
+                    // `tests/all/schedule_period_defaults.rs` compares its own spans with, so
+                    // the check is about the instant the service chose and not about the
+                    // representation of the number carrying it. The day bounds are unchanged.
+                    let days = (stored - created_at).round() / 86_400.0;
                     assert!(
                         default_days.contains(&days),
                         "case {label}: schedulePeriod.{member} must default to {default_days:?} \

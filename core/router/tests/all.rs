@@ -2073,15 +2073,6 @@ mod cognito_rules_role_mapping;
 // crate's own test target can ask it.
 #[path = "all/iam_secretsmanager_denial_envelope_by_protocol.rs"]
 mod iam_secretsmanager_denial_envelope_by_protocol;
-// (`apigateway_cognito_authorizer_app_client_audience` is declared at line 30, in the sorted
-// block above: a module may be declared only once, and two branches landing at once declared
-// it twice.)
-// (`zz_probe` is declared in the head region above: a module may be declared only once, and
-// two branches landing at once appended it twice.)
-// (`cloudformation_metric_stream_estate_is_drainable` is declared in the head region above:
-// a module may be declared only once, and two branches landing at once appended it twice.)
-// (`apigateway_cognito_authorizer_app_client_audience` is declared in the head region above:
-// (`zz_probe` is declared further up this tail already: a module may be declared only once.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared once, further up this
 // file: a module may be declared only once.)
 // (That suite is declared ONCE, in the sorted span at the head of this file: a module may be
@@ -2384,3 +2375,15 @@ mod cloudformation_deployed_crawler_crawls_its_s3_target;
 // (`cloudformation_metric_stream_estate_is_drainable` is declared in the head region above
 // and `zz_probe` once further up this tail: two branches landing at once appended a second
 // declaration of each here, which compiled neither. A module may be declared only once.)
+// Declared here, in this appended tail: what an Amazon SQS event source mapping hands its
+// function, and what it does with a batch the function did not take, spans Amazon SQS, IAM,
+// CloudFormation and Lambda at once, so no single service crate's test target can send the
+// message and then read the record the handler was given.
+#[path = "all/lambda_sqs_event_source_failed_batch_keeps_its_message.rs"]
+mod lambda_sqs_event_source_failed_batch_keeps_its_message;
+// Declared here, in this appended tail: that ONE published event reaches a Lambda, an Amazon
+// SQS and a Step Functions target of the same rule carrying one envelope spans EventBridge and
+// each of those three services, so no single service crate's test target can publish it and
+// then read what each target was handed.
+#[path = "all/events_one_envelope_reaches_every_target_kind.rs"]
+mod events_one_envelope_reaches_every_target_kind;
