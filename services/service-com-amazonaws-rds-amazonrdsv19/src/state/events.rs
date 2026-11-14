@@ -80,17 +80,25 @@ pub fn check_event_source_type(source_type: &str) -> Result<(), String> {
 }
 
 /// One row of the published event table: the source type the change happens to, the
-/// category RDS reports it under, and the message it reports.
+/// identifier RDS publishes that change under, the category RDS reports it under, and the
+/// message it reports.
 ///
 /// Source: the per-source-type event tables of "Amazon RDS event categories and event
-/// messages" (Amazon RDS User Guide). Only the rows this service can actually PERFORM are
-/// here — a handler records a row when it makes that change — and every row's category is
-/// one its source type publishes in [`super::EVENT_CATEGORIES`], which
-/// [`categories_are_published`] holds to.
+/// messages" (Amazon RDS User Guide), each row of which states exactly these four fields.
+/// Only the rows this service can actually PERFORM are here — a handler records a row when
+/// it makes that change — and every row's category is one its source type publishes in
+/// [`super::EVENT_CATEGORIES`], which [`categories_are_published`] holds to.
 #[derive(Debug, Clone, Copy)]
 pub struct LifecycleEvent {
     /// The `Event$SourceType` the record carries.
     pub source_type: &'static str,
+    /// The event identifier of this row in the published table (`RDS-EVENT-nnnn`), which
+    /// is what the `detail.EventID` of the published envelope carries
+    /// ([`super::bus_events`]). It is NOT a member of the modelled `Event` shape
+    /// (`smithy_query(query="shape",shape="Event")` declares `SourceIdentifier`,
+    /// `SourceType`, `Message`, `EventCategories`, `Date` and `SourceArn` and no id), so
+    /// nothing in `DescribeEvents` reports it.
+    pub event_id: &'static str,
     /// The `Event$EventCategories` entry the record carries.
     pub category: &'static str,
     /// The `Event$Message` the record carries.
@@ -100,6 +108,7 @@ pub struct LifecycleEvent {
 /// A DB instance was created (`CreateDBInstance`).
 pub const DB_INSTANCE_CREATED: LifecycleEvent = LifecycleEvent {
     source_type: "db-instance",
+    event_id: "RDS-EVENT-0005",
     category: "creation",
     message: "DB instance created",
 };
@@ -107,6 +116,7 @@ pub const DB_INSTANCE_CREATED: LifecycleEvent = LifecycleEvent {
 /// A DB instance was deleted (`DeleteDBInstance`).
 pub const DB_INSTANCE_DELETED: LifecycleEvent = LifecycleEvent {
     source_type: "db-instance",
+    event_id: "RDS-EVENT-0003",
     category: "deletion",
     message: "DB instance deleted",
 };
@@ -114,6 +124,7 @@ pub const DB_INSTANCE_DELETED: LifecycleEvent = LifecycleEvent {
 /// A DB instance was restarted (`RebootDBInstance`).
 pub const DB_INSTANCE_RESTARTED: LifecycleEvent = LifecycleEvent {
     source_type: "db-instance",
+    event_id: "RDS-EVENT-0006",
     category: "availability",
     message: "DB instance restarted",
 };
@@ -121,6 +132,7 @@ pub const DB_INSTANCE_RESTARTED: LifecycleEvent = LifecycleEvent {
 /// A stopped DB instance was started again (`StartDBInstance`).
 pub const DB_INSTANCE_STARTED: LifecycleEvent = LifecycleEvent {
     source_type: "db-instance",
+    event_id: "RDS-EVENT-0088",
     category: "notification",
     message: "DB instance started",
 };
@@ -128,6 +140,7 @@ pub const DB_INSTANCE_STARTED: LifecycleEvent = LifecycleEvent {
 /// A DB instance was stopped (`StopDBInstance`).
 pub const DB_INSTANCE_STOPPED: LifecycleEvent = LifecycleEvent {
     source_type: "db-instance",
+    event_id: "RDS-EVENT-0087",
     category: "notification",
     message: "DB instance stopped",
 };
@@ -137,6 +150,7 @@ pub const DB_INSTANCE_STOPPED: LifecycleEvent = LifecycleEvent {
 /// which is the status the snapshot itself reports.
 pub const DB_SNAPSHOT_CREATING: LifecycleEvent = LifecycleEvent {
     source_type: "db-snapshot",
+    event_id: "RDS-EVENT-0040",
     category: "creation",
     message: "Creating manual snapshot",
 };
@@ -145,6 +159,7 @@ pub const DB_SNAPSHOT_CREATING: LifecycleEvent = LifecycleEvent {
 /// deletion row for this source type.
 pub const DB_SNAPSHOT_DELETED: LifecycleEvent = LifecycleEvent {
     source_type: "db-snapshot",
+    event_id: "RDS-EVENT-0041",
     category: "deletion",
     message: "Manual snapshot deleted",
 };
@@ -152,6 +167,7 @@ pub const DB_SNAPSHOT_DELETED: LifecycleEvent = LifecycleEvent {
 /// A DB cluster was created (`CreateDBCluster`).
 pub const DB_CLUSTER_CREATED: LifecycleEvent = LifecycleEvent {
     source_type: "db-cluster",
+    event_id: "RDS-EVENT-0170",
     category: "creation",
     message: "DB cluster created",
 };
@@ -159,6 +175,7 @@ pub const DB_CLUSTER_CREATED: LifecycleEvent = LifecycleEvent {
 /// A DB cluster was deleted (`DeleteDBCluster`).
 pub const DB_CLUSTER_DELETED: LifecycleEvent = LifecycleEvent {
     source_type: "db-cluster",
+    event_id: "RDS-EVENT-0171",
     category: "deletion",
     message: "DB cluster deleted",
 };
@@ -185,6 +202,9 @@ pub struct EventRecord {
     pub source_identifier: String,
     /// `Event$SourceType`.
     pub source_type: &'static str,
+    /// The event identifier of the published table row this record is, which the published
+    /// envelope carries as `detail.EventID` ([`LifecycleEvent::event_id`]).
+    pub event_id: &'static str,
     /// The one `Event$EventCategories` entry this record carries.
     pub category: &'static str,
     /// `Event$Message`.
@@ -235,21 +255,34 @@ pub struct EventLog {
 
 impl EventLog {
     /// Record `event` for the resource `source_identifier` / `source_arn`, timestamped
-    /// now, dropping the oldest record when the log is full.
-    pub fn record(&mut self, event: LifecycleEvent, source_identifier: &str, source_arn: String) {
+    /// now, dropping the oldest record when the log is full, and hand back the record that
+    /// was written.
+    ///
+    /// The record is handed back so the PUBLICATION of the same change is rendered from it
+    /// ([`super::bus_events`]): the envelope on the account's default event bus and the row
+    /// `DescribeEvents` reports are then one record, down to its `Date`.
+    pub fn record(
+        &mut self,
+        event: LifecycleEvent,
+        source_identifier: &str,
+        source_arn: String,
+    ) -> EventRecord {
         self.next_sequence += 1;
-        self.entries.push(EventRecord {
+        let record = EventRecord {
             sequence: self.next_sequence,
             source_identifier: source_identifier.to_string(),
             source_type: event.source_type,
+            event_id: event.event_id,
             category: event.category,
             message: event.message.to_string(),
             source_arn,
             date: super::now_as_wire_timestamp(),
-        });
+        };
+        self.entries.push(record.clone());
         if self.entries.len() > MAX_EVENTS_PER_REGION {
             self.entries.remove(0);
         }
+        record
     }
 
     /// Drop the records past the published retention window, `now_seconds` being the
@@ -286,6 +319,41 @@ mod tests {
             categories_are_published(&rows),
             "every recorded event's category must be one its source type publishes, got {rows:?}"
         );
+    }
+
+    /// Every row carries the published form of an RDS event identifier, and no two rows
+    /// share one: the identifier is what a consumer's rule matches `detail.EventID` on, so
+    /// two different changes publishing the same id would be indistinguishable.
+    #[test]
+    fn every_recorded_event_carries_its_own_published_identifier() {
+        let rows = [
+            DB_INSTANCE_CREATED,
+            DB_INSTANCE_DELETED,
+            DB_INSTANCE_RESTARTED,
+            DB_INSTANCE_STARTED,
+            DB_INSTANCE_STOPPED,
+            DB_SNAPSHOT_CREATING,
+            DB_SNAPSHOT_DELETED,
+            DB_CLUSTER_CREATED,
+            DB_CLUSTER_DELETED,
+        ];
+        let mut seen: Vec<&str> = Vec::new();
+        for row in rows {
+            let digits = row.event_id.strip_prefix("RDS-EVENT-").unwrap_or_default();
+            assert!(
+                digits.len() == 4 && digits.bytes().all(|byte| byte.is_ascii_digit()),
+                "case {:?}: an event identifier is RDS-EVENT-nnnn, got {:?}",
+                row.message,
+                row.event_id
+            );
+            assert!(
+                !seen.contains(&row.event_id),
+                "case {:?}: the identifier {:?} is already published for another change",
+                row.message,
+                row.event_id
+            );
+            seen.push(row.event_id);
+        }
     }
 
     /// Every source type the table records for is one a read may narrow by.

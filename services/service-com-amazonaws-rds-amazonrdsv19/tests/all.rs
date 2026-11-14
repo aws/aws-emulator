@@ -75,6 +75,8 @@ mod db_engine_version_engine_selection;
 mod db_engine_version_wire_members;
 #[path = "all/db_engine_versions.rs"]
 mod db_engine_versions;
+#[path = "all/db_instance_bus_events.rs"]
+mod db_instance_bus_events;
 #[path = "all/db_instance_deletion.rs"]
 mod db_instance_deletion;
 #[path = "all/db_instance_engine_endpoint.rs"]

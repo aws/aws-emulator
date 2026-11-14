@@ -118,12 +118,19 @@ pub fn with_request_id(mut resp: RtResponse) -> RtResponse {
 /// refuse for an absent member before any handler ran (see
 /// [`crate::service::unresolved_reference`]). Every other request is served exactly as
 /// before.
+///
+/// And it is where the events a served call RECORDED are published onto the account's
+/// default event bus ([`crate::state::bus_events`]): every request of this front door passes
+/// through here, so the publication is made once, from outside the handler that recorded the
+/// change and after the response has been rendered — never from a handler holding this
+/// service's store.
 pub struct RequestIdEnvelopeOperation<Eng: Send + Sync + 'static> {
     /// Every modelled operation, each served behind the audit recorder, keyed by the same
     /// routing key the generated table uses.
     audited: OperationRoutingTable,
     /// The shared engine, for the one pre-dispatch refusal above — which reads this
-    /// service's store and writes nothing to it.
+    /// service's store and writes nothing to it — and for the publication of what the
+    /// served call recorded.
     engine: std::sync::Arc<Eng>,
 }
 
@@ -164,7 +171,18 @@ impl<Eng: Send + Sync + 'static> ErasedOperation for RequestIdEnvelopeOperation<
                 return with_request_id(resp);
             }
             match self.operation_for(svc, req) {
-                Some(op) => with_request_id(op.run(svc, req, ctx).await),
+                Some(op) => {
+                    let resp = with_request_id(op.run(svc, req, ctx).await);
+                    // Every lifecycle change the call just recorded is also an event on the
+                    // account's default bus, which Amazon RDS publishes with no opt-in. It
+                    // is handed over HERE, after the response the caller gets has been
+                    // rendered and this service's store released, rather than from a
+                    // handler: EventBridge's own handler matches the event against the
+                    // account's rules and delivers it to each of their targets, and a target
+                    // may call back into this service (see `crate::state::bus_events`).
+                    crate::state::publish_recorded_events(&*self.engine, ctx.callback()).await;
+                    resp
+                }
                 // Unreachable through `Service::override_operation`, which claims a
                 // request only when the routing table holds its key; answered as the
                 // framework answers an unroutable request rather than guessed at.

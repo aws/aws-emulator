@@ -126,6 +126,9 @@ pub mod option_catalog;
 // The IAM-role associations a DB instance and a DB cluster both carry, and the rules the
 // four association operations share.
 pub mod associated_roles;
+// The EventBridge envelope each recorded lifecycle change is also PUBLISHED as: the
+// account's default-bus view of the same records `DescribeEvents` reports.
+pub mod bus_events;
 pub mod blue_green;
 pub mod custom_engine_versions;
 pub mod db_proxies;
@@ -207,6 +210,10 @@ pub use db_proxies::{
     MISSING_DB_PROXY_TARGET_IDENTIFIER_MESSAGE, NETWORK_TYPE_IPV4, TARGET_ROLE_READ_ONLY,
     TARGET_ROLE_READ_WRITE, TARGET_STATE_AVAILABLE, TARGET_STATE_REGISTERING,
     TARGET_STATE_UNAVAILABLE, TARGET_TYPE_RDS_INSTANCE, TARGET_TYPE_TRACKED_CLUSTER,
+};
+pub use bus_events::{
+    detail_source_type, publish_recorded_events, published_detail_type, BusEvent,
+    DEFAULT_EVENT_BUS, EVENT_SOURCE, MAX_PENDING_BUS_EVENTS,
 };
 pub use engine_log::InstanceLog;
 pub use events::{
@@ -469,6 +476,16 @@ pub struct ComAmazonawsRdsAmazonrdsv19State {
     /// [`MAX_REGIONS`] regions, which [`Self::has_room_for_region`] counts this map into;
     /// see [`events`] for the published retention window a record also ages out of.
     pub events: BTreeMap<String, EventLog>,
+    /// The recorded changes that have not been published onto the account's default event
+    /// bus yet, oldest first.
+    ///
+    /// Every change [`Self::record_event`] writes is queued here as well, and the ONE seam
+    /// every request of this front door passes through drains it after the response has been
+    /// rendered (`crate::service::query_error_envelope`), so a change is published from
+    /// outside the handler that made it and with this store released — see [`bus_events`].
+    /// Bounded by [`MAX_PENDING_BUS_EVENTS`], so an emulator with nothing draining it holds
+    /// a queue rather than growing one.
+    pub pending_bus_events: Vec<BusEvent>,
     /// Monotonic counter behind every server-assigned id this service mints, so
     /// resource ids and endpoint hosts are unique and reproducible.
     pub mint_counter: u64,
@@ -750,10 +767,33 @@ impl ComAmazonawsRdsAmazonrdsv19State {
         if !self.events.contains_key(region) && !self.has_room_for_region(region) {
             return;
         }
-        self.events
+        let record = self
+            .events
             .entry(region.to_string())
             .or_default()
             .record(event, source_identifier, source_arn);
+        // The same change, queued for the account's default event bus: Amazon RDS publishes
+        // every lifecycle change it records, and the envelope is rendered from the record
+        // just written so the two cannot disagree (see [`bus_events`]).
+        self.pending_bus_events.push(BusEvent::of(region, record));
+        // Past the bound the oldest queued publication goes, exactly as the event log
+        // itself is a ring; a request drains the queue, so this is the pathological case.
+        let over = self
+            .pending_bus_events
+            .len()
+            .saturating_sub(MAX_PENDING_BUS_EVENTS);
+        if over > 0 {
+            self.pending_bus_events.drain(..over);
+        }
+    }
+
+    /// Take the publications queued by [`Self::record_event`], leaving the queue empty.
+    ///
+    /// Called by the one seam that publishes them, which holds this store only for the take
+    /// itself ([`publish_recorded_events`]): the envelopes are owned values, so nothing of
+    /// this store is borrowed across the publication.
+    pub fn take_pending_bus_events(&mut self) -> Vec<BusEvent> {
+        ::std::mem::take(&mut self.pending_bus_events)
     }
 
     /// The events recorded in `region`, oldest first — the order `DescribeEvents` reports

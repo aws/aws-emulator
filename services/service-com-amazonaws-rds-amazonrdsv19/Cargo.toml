@@ -114,6 +114,13 @@ hex = { workspace = true }
 # recorded through Amazon S3's own store on the same engine (`src/state/export_objects.rs`),
 # so a bucket this service writes to is a bucket that service holds.
 service-com-amazonaws-s3-amazons3 = { workspace = true }
+# Every lifecycle change this service records is also published onto the account's DEFAULT
+# EventBridge bus as an `aws.rds` event, the way Amazon RDS publishes one with no opt-in:
+# this is the EventBridge client that publication goes out over the in-process callback with
+# (`src/state/bus_events.rs`), through the one shared client construction in
+# `service-common`. Only the generated client is needed — the emulator supplies the
+# transport.
+aws-sdk-eventbridge = { version = "1", default-features = false }
 # An event subscription's delivery target is an Amazon SNS topic, and a subscription is
 # refused when that topic does not exist, so the topic is resolved against the service that
 # OWNS topics: this is the Amazon SNS client that question goes out over the in-process
@@ -175,6 +182,13 @@ service-com-amazonaws-kms-trentservice = { workspace = true }
 # the assembled router mounts it, so the topic a subscription delivers to is a real topic of
 # this emulator, created through Amazon SNS's own `CreateTopic`.
 service-com-amazonaws-sns-amazonsimplenotificationservice = { workspace = true }
+# The default-bus suite mounts EventBridge and Amazon SQS beside this service on one engine,
+# exactly as the assembled router mounts them: without them there is nowhere for a recorded
+# RDS event to be delivered, and what that suite asserts is the message a rule's targets
+# really received. Both are driven through the router's own front door, so no extra client
+# is needed.
+service-com-amazonaws-eventbridge-awsevents = { workspace = true }
+service-com-amazonaws-sqs-amazonsqs = { workspace = true }
 
 [lints]
 workspace = true
