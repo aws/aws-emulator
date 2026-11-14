@@ -233,6 +233,8 @@ mod query_language_admission;
 mod query_results;
 #[path = "all/query_row_limit_and_handle_refusals.rs"]
 mod query_row_limit_and_handle_refusals;
+#[path = "all/query_window_before_group_creation.rs"]
+mod query_window_before_group_creation;
 #[path = "all/query_window_refusal.rs"]
 mod query_window_refusal;
 #[path = "all/refusal_error_codes.rs"]

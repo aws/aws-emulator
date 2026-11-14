@@ -375,8 +375,60 @@ pub fn effective_end_time_offset(stated: Option<i64>) -> Option<i64> {
 mod tests {
     use super::{
         effective_end_time_offset, execution_role_arn_refusal, schedule_expression_refusal,
-        DEFAULT_END_TIME_OFFSET_SECONDS, EXECUTION_ROLE_ARN_PATTERN,
+        schedule_of, DEFAULT_END_TIME_OFFSET_SECONDS, EXECUTION_ROLE_ARN_PATTERN,
     };
+
+    /// The PERIOD of a schedule is the gap between the instants it names, whatever instant it
+    /// is read at — which is the lookback a scheduled query stating none of its own reads back
+    /// over, so two consecutive runs of it tile the time line.
+    #[test]
+    fn a_schedules_period_is_the_gap_between_the_instants_it_names() {
+        let hour = 60 * 60 * 1_000i64;
+        let day = 24 * hour;
+        // 2026-01-01T00:00:00Z, so every row's instants are stated against one known day.
+        let midnight = 1_767_225_600_000i64;
+        // (case, the expression, the instant it is read at, the period in milliseconds)
+        let cases: [(&str, &str, i64, i64); 8] = [
+            ("a daily cron read at midnight", "cron(0 3 * * ? *)", midnight, day),
+            (
+                "the same cron read an hour before the instant it names",
+                "cron(0 3 * * ? *)",
+                midnight + 2 * hour,
+                day,
+            ),
+            (
+                "the same cron read a minute after that instant",
+                "cron(0 3 * * ? *)",
+                midnight + 3 * hour + 60_000,
+                day,
+            ),
+            (
+                "an hourly cron read on the hour",
+                "cron(0 * * * ? *)",
+                midnight,
+                hour,
+            ),
+            (
+                "an hourly cron read mid-hour",
+                "cron(0 * * * ? *)",
+                midnight + hour / 2,
+                hour,
+            ),
+            ("a rate of five minutes", "rate(5 minutes)", midnight, 5 * 60 * 1_000),
+            ("a rate of twelve hours", "rate(12 hours)", midnight + 7 * hour, 12 * hour),
+            ("a rate of one day", "rate(1 day)", midnight + 7 * hour, day),
+        ];
+        for (case, expression, read_at, expected) in cases {
+            let schedule = schedule_of(expression)
+                .unwrap_or_else(|| panic!("case {case:?}: {expression} is a schedule"));
+            let actual = schedule.interval_after(read_at, None);
+            assert_eq!(
+                actual,
+                Some(expected),
+                "case {case:?}: expected a period of {expected} ms, got {actual:?}"
+            );
+        }
+    }
 
     /// A schedule expression parses as a six-field `cron(...)` or a well-formed `rate(...)`, and
     /// every value that is neither is refused with the one sentence this class is stated with.

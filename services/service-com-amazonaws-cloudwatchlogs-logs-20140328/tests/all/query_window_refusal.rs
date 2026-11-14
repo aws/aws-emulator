@@ -192,12 +192,15 @@ async fn an_inverted_query_window_is_refused_in_the_services_own_wording() {
         );
     }
 
-    // The positive control: a window that is a range — forward, and of a single instant —
-    // is accepted, and the query it starts is then reported.
+    // The positive control: a window that is a range — forward, and of a single instant — is
+    // accepted, and the query it starts is then reported. Every accepted end is rounded UP to
+    // the next whole second past the present, so the range reaches the instant the log groups
+    // were created.
+    let horizon = now_secs + 1;
     let accepted: [(&str, i64, i64); 3] = [
-        ("a forward window", now_secs - 60 * 60, now_secs),
-        ("a window of a single instant", now_secs, now_secs),
-        ("a forward window at the minimum of the range", 0, 1),
+        ("a forward window", now_secs - 60 * 60, horizon),
+        ("a window of a single instant", horizon, horizon),
+        ("a forward window opening at the minimum of the range", 0, horizon),
     ];
     for (case, start_time, end_time) in accepted {
         let answer = logs

@@ -7,9 +7,10 @@
 //! log groups the request selects and mints a `queryId` the store then holds the query under —
 //! for every request a scheduled-query workflow makes. In particular:
 //!
-//! * the time range selects which EVENTS the query reads and is never a precondition on
-//!   acceptance, so a window spanning the group's events, one holding a single event, and one
-//!   holding none are all accepted;
+//! * the time range selects which EVENTS the query reads, so a range spanning the group's
+//!   events, one opening on a single one of them and one holding none at all are all accepted —
+//!   as long as the range reaches the instant the log group was created, since a range closing
+//!   before that covers no instant of the group's lifetime;
 //! * a log group is resolved from whichever form of `logGroupIdentifiers` names it — the
 //!   name, the group's ARN, or the ARN of one of its streams — and two forms naming ONE group
 //!   select one group, so the started query reports that single `logGroupName`, while the ARN
@@ -30,7 +31,7 @@
 
 use serde_json::{json, Value};
 
-use crate::harness::{base_ms, batch, group_with_stream, Logs};
+use crate::harness::{base_ms, batch, group_with_stream, now_ms, Logs};
 
 /// The operations under test, and the reads each is proved through.
 const START: &str = "StartQuery";
@@ -105,6 +106,15 @@ async fn seed_events(logs: &Logs) -> i64 {
     first_ms / 1_000
 }
 
+/// The instant every window below closes at: the present, rounded UP to the next whole second
+/// so the range reaches the instant the log groups queried were created. A range that closes
+/// before a log group it reads existed covers no instant of that group's lifetime and is
+/// refused, which is the subject of `tests/all/query_window_before_group_creation.rs`; the
+/// seeded events are an hour old, so where a window OPENS is what varies here.
+fn horizon() -> i64 {
+    now_ms() / 1_000 + 1
+}
+
 /// The `queryId` a successful `StartQuery` answered.
 fn query_id(case: &str, answer: &Value) -> String {
     answer["queryId"]
@@ -141,7 +151,8 @@ async fn described(logs: &Logs, filter: &Value, id: &str) -> Option<Value> {
         .cloned()
 }
 
-/// The window selects which events a query reads; it is not a precondition on starting one.
+/// Where the window OPENS selects which events a query reads; it is not a precondition on
+/// starting one.
 #[tokio::test]
 async fn a_query_of_a_group_holding_events_is_served_for_every_window_in_the_class() {
     let logs = Logs::new();
@@ -149,22 +160,32 @@ async fn a_query_of_a_group_holding_events_is_served_for_every_window_in_the_cla
     let last = first + (MESSAGES.len() as i64 - 1);
     let query_string = "fields @timestamp, @message | filter @message like /ERROR/";
 
-    // (case, startTime, endTime) — where the window falls relative to the seeded events.
-    let cases: [(&str, i64, i64); 6] = [
-        ("a window spanning every seeded event", first - 60, last + 60),
-        ("a window of one instant on the oldest event", first, first),
-        ("a window of one instant on the newest event", last, last),
+    // (case, startTime, endTime) — where the window opens relative to the seeded events, and
+    // how far past the present it closes.
+    let cases: [(&str, i64, i64); 7] = [
         (
-            "a window wholly before every seeded event",
+            "a window spanning every seeded event",
+            first - 60,
+            horizon(),
+        ),
+        ("a window opening on the oldest event", first, horizon()),
+        ("a window opening on the newest event", last, horizon()),
+        (
+            "a window opening an hour before every seeded event",
             first - 3_600,
-            first - 1_800,
+            horizon(),
         ),
         (
-            "a window wholly after every seeded event",
+            "a window opening after every seeded event, holding none",
             last + 1_800,
-            last + 3_600,
+            horizon(),
         ),
-        ("a window that starts at the epoch", 0, last + 60),
+        ("a window that opens at the epoch", 0, horizon()),
+        (
+            "a window closing a day after the present",
+            first - 60,
+            horizon() + 24 * 60 * 60,
+        ),
     ];
     let mut minted: Vec<String> = Vec::new();
     for (case, start_time, end_time) in cases {
@@ -277,7 +298,7 @@ async fn the_log_groups_are_resolved_from_every_identifier_form() {
             &json!({
                 "logGroupIdentifiers": identifiers,
                 "startTime": first - 60,
-                "endTime": first + 60,
+                "endTime": horizon(),
                 "queryString": query_string,
             }),
         )
@@ -332,7 +353,7 @@ async fn the_log_groups_are_resolved_from_every_identifier_form() {
                 &json!({
                     "logGroupIdentifiers": [identifier],
                     "startTime": first - 60,
-                    "endTime": first + 60,
+                    "endTime": horizon(),
                     "queryString": query_string,
                 }),
             )
@@ -435,7 +456,7 @@ async fn a_scheduled_querys_own_configuration_starts_an_interactive_query() {
             &json!({
                 "logGroupIdentifiers": configured,
                 "startTime": first - 60,
-                "endTime": first + 60,
+                "endTime": horizon(),
                 "queryString": scheduled["queryString"].clone(),
             }),
         )

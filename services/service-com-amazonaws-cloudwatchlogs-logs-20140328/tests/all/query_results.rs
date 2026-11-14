@@ -391,20 +391,25 @@ async fn the_statistics_count_what_the_run_read_and_matched() {
             2.0,
         ),
         (
+            // The events are an hour old, so a window of the present holds none of them —
+            // and it still reaches the instant the group was created, which is what a range
+            // must do to be run at all.
             "a window holding none of the events",
-            (0, 1_000),
+            (end_time - 1, end_time),
             "fields @message",
             0.0,
             0.0,
         ),
         (
             // The window is inclusive at both ends and is stated in whole SECONDS, so one
-            // ending on the second the second event falls in holds exactly the first two.
-            "a window ending on the second of the second event",
-            (start_time, (base + EVENTS[1].0) / 1_000),
+            // opening on the second the second event falls in holds exactly the last three.
+            // (Where it CLOSES is bounded by the rule that a range must reach the instant the
+            // log group was created, so it is the opening end that varies here.)
+            "a window opening on the second of the second event",
+            ((base + EVENTS[1].0) / 1_000, end_time),
             "fields @message",
-            2.0,
-            2.0,
+            3.0,
+            3.0,
         ),
     ];
     for (case, window, query_string, scanned, matched) in cases {

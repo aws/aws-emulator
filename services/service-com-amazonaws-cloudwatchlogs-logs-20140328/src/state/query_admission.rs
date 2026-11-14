@@ -18,6 +18,12 @@
 //! group (`CreateLogGroup$logGroupClass`) and invisible in `StartQuery`'s input, so the rule
 //! can only be applied where the named groups are resolved against state — here.
 //!
+//! The fourth relates the request's TIME RANGE to the same resolved groups: a range that
+//! closes before a log group it reads was created covers no instant of that group's lifetime,
+//! and such a query is refused rather than run over a period in which the group did not exist.
+//! Like the log class, a group's `creationTime` is invisible in the input, so this rule too
+//! belongs where the groups are resolved.
+//!
 //! Each refusal states the sentence CloudWatch Logs states for its class, inside the SDK
 //! envelope every refusal of this service carries
 //! ([`crate::state::with_sdk_error_envelope`]), so the status and code stated in the text are
@@ -82,6 +88,69 @@ pub fn log_group_not_found_refusal(log_group_name: &str) -> String {
         ),
         super::ENVELOPE_RESOURCE_NOT_FOUND,
     )
+}
+
+/// The sentence a query asked over a time range that does not reach the log data a group it
+/// reads holds is refused with — the class CloudWatch Logs words in one sentence: a range that
+/// closes before the group came into existence, and one that closes outside what the group
+/// retains.
+///
+/// `StartQuery`'s range is "the end of the time range to query … specified as epoch time, the
+/// number of seconds since January 1, 1970" and "the range is inclusive", so a range whose end
+/// lies before a log group's own `creationTime` covers no instant of that group's lifetime:
+/// there was no log group to query for the whole of it, and CloudWatch Logs will not run such
+/// a query. Fixed text for the class — it names neither the group nor either end of the range.
+pub const RANGE_OUTSIDE_GROUP_DATA_MESSAGE: &str =
+    "Query's end date and time is either before the log groups creation time or exceeds the \
+     log groups log retention settings";
+
+/// What this service prints where a refusal of this class would otherwise state the SPAN of the
+/// text at fault: a range that does not reach a group's log data is a fault of the range and not
+/// of any part of the submitted query string, so there is no span of it to name.
+///
+/// It is part of the message this class is worded with, not a choice: the RECORDED refusal of
+/// this class states the sentence above, then this marker, then the SDK envelope — the replay
+/// of the recorded unit reports that whole text as the message it expects, and a response
+/// stating the sentence alone diverges from it. Its own compile diagnostics state a span the
+/// same way, as the character range of the text at fault
+/// ([`crate::state::insights::sql::NO_AGGREGATE_IN_FILTER_PREFIX`]'s refusal, which appends
+/// `([first,last])`), so the marker is what stands in that place for a fault with no span.
+pub const NO_SPAN_MARKER: &str = "<no span>";
+
+/// The whole body of such a refusal: the sentence, then the marker that stands for the span of
+/// the query string a fault in the text would have named.
+pub fn range_outside_group_data_message() -> String {
+    format!("{RANGE_OUTSIDE_GROUP_DATA_MESSAGE} {NO_SPAN_MARKER}")
+}
+
+/// That body inside the envelope of the `MalformedQueryException` it is refused under, so
+/// the status and the code stated in the text are the ones the response answers with.
+pub fn range_outside_group_data_refusal() -> String {
+    super::with_sdk_error_envelope(
+        &range_outside_group_data_message(),
+        super::ENVELOPE_MALFORMED_QUERY,
+    )
+}
+
+/// Whether the query range ending at `end_time_secs` closes before one of the log groups the
+/// query reads was created — the condition [`range_outside_group_data_refusal`] words.
+///
+/// The range is stated in epoch SECONDS and a log group's `creationTime` in epoch
+/// milliseconds, so the end is scaled to milliseconds before the two are compared
+/// ([`super::MILLIS_PER_SECOND`]). The end is INCLUSIVE ("the range is inclusive, so the
+/// specified end time is included in the query"), so a range ending exactly at the instant a
+/// group was created still covers that instant. Groups this account does not hold have no
+/// creation instant and count for nothing here.
+pub fn window_ends_before_a_group_existed(
+    store: &State,
+    names: &[String],
+    end_time_secs: i64,
+) -> bool {
+    let end_ms = end_time_secs.saturating_mul(super::MILLIS_PER_SECOND);
+    names
+        .iter()
+        .filter_map(|name| store.log_groups.get(name))
+        .any(|group| end_ms < group.creation_time_ms)
 }
 
 /// Whether `names` names log groups of more than one log class, which is what one query may

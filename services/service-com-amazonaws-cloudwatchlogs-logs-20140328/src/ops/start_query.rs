@@ -288,7 +288,7 @@ const END_OF_QUERY_SYMBOL: &str = "<EOF>";
 /// declares `MalformedQueryException` for this operation (client error, HTTP 400) — the pair
 /// the SDK envelope of this refusal states ([`crate::state::with_sdk_error_envelope`]).
 const ENVELOPE_MALFORMED_QUERY: crate::state::SdkEnvelopeFacts =
-    (400, "MalformedQueryException");
+    crate::state::ENVELOPE_MALFORMED_QUERY;
 
 /// The three members a request may name the log groups to query by, in the order
 /// `StartQuery`'s own documentation lists them ("Either exactly one of the following
@@ -301,6 +301,22 @@ const LOG_GROUP_MEMBERS: [&str; 3] = ["logGroupName", "logGroupNames", "logGroup
 /// `StartQuery$logGroupName`), and `logGroupIdentifiers` is the member the statement's own
 /// clause overrides rather than one it conflicts with.
 const LEGACY_LOG_GROUP_MEMBERS: [&str; 2] = ["logGroupName", "logGroupNames"];
+
+/// Refuse a query asked over a time range that closes before a log group it reads was
+/// created: the range covers no instant of that group's lifetime, which is not a query this
+/// service runs.
+///
+/// The fault is in the RANGE and not in the query string, so the refusal carries the sentence
+/// CloudWatch Logs states for this class ([`crate::state::query_admission`]) and no
+/// `QueryCompileError`: nothing about the submitted text failed to compile, so there is no
+/// position in it to point at.
+fn range_outside_group_data() -> StartQueryError {
+    StartQueryErrorModeled::MalformedQueryException(MalformedQueryException {
+        message: Some(crate::state::query_admission::range_outside_group_data_refusal()),
+        query_compile_error: None,
+    })
+    .into()
+}
 
 /// Refuse the request with the error this operation models for a log group that is not there,
 /// naming the group that is missing.
@@ -592,12 +608,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         }
 
+        // "The end of the time range to query. The range is inclusive, so the specified end
+        // time is included in the query" (`StartQuery$endTime`): a range whose end lies before
+        // one of the log groups the query reads was created covers no instant of that group's
+        // lifetime — there was no log group to query for the whole of it — so the query is
+        // refused as the malformed query it is, BEFORE any query object exists, which is what
+        // leaves `DescribeQueries` nothing to report for the refused call.
+        if crate::state::query_admission::window_ends_before_a_group_existed(
+            &store,
+            &log_group_names,
+            input.end_time,
+        ) {
+            return Err(range_outside_group_data());
+        }
+
         // A `lookup` command in the query reads a lookup table of this account, which the
         // command names and the store holds: the query is resolved against that state, so a
         // table the account does not hold is the missing resource it is rather than a fault
-        // in the query string. The window the request asks for selects which events the query
-        // reads and bounds NO resource's lifetime, so neither a log group nor a lookup table
-        // is judged against it.
+        // in the query string. A lookup table is NOT judged against the request's time range:
+        // the range bounds which events the query reads, and a table the query joins against
+        // carries no events.
         for table in compiled
             .as_ref()
             .map(|compiled| compiled.lookup_tables.as_slice())

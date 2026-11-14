@@ -384,6 +384,18 @@ async fn the_window_and_the_log_group_selection_are_judged_as_parameters() {
             }),
             NOT_FOUND,
         ),
+        (
+            // The range covers no instant of the group's lifetime: there was no log group to
+            // query for the whole of it, so the query is not one the service runs.
+            "a window that ends before the log group was created",
+            json!({
+                "logGroupName": GROUP,
+                "startTime": 0,
+                "endTime": 1_000,
+                "queryString": VALID_QUERY,
+            }),
+            MALFORMED,
+        ),
     ];
     for (case, body, expected) in cases {
         let (status, response) = logs.call(START, &body).await;
@@ -434,14 +446,13 @@ async fn the_window_and_the_log_group_selection_are_judged_as_parameters() {
             }),
         ),
         (
-            // The window selects which EVENTS the query reads; it bounds no log group's
-            // lifetime, so a window wholly in the past of the group is a query that reads
-            // whatever events fall in it.
-            "a window that ends before the log group was created",
+            // The range may open long before the group existed: what it has to cover is the
+            // group's lifetime, which a range ending in the present does.
+            "a window opening at the published minimum of the range",
             json!({
                 "logGroupName": GROUP,
                 "startTime": 0,
-                "endTime": 1_000,
+                "endTime": end_time,
                 "queryString": VALID_QUERY,
             }),
         ),

@@ -2196,3 +2196,10 @@ mod ses_delivery_event_advances_the_subscribed_queue;
 mod cloudformation_elastic_beanstalk_removal_stabilisation;
 // at the top of this file: two `mod` items for one name is a redefinition that compiles
 // (`cloudformation_metric_stream_estate_is_drainable` is declared ONCE, in the span above: a
+// Every suite the comment fragments this tail accumulated name —
+// `cloudformation_provisions_cloudfront_resources`,
+// `cloudformation_stack_clock`, `elbv2_lambda_target_published_address` and
+// `apigateway_cognito_authorizer_app_client_audience` — is declared exactly ONCE, in the
+// sorted span above: two `mod` items for one name compile neither copy.
+// (`zz_probe` and `cloudformation_metric_stream_estate_is_drainable` are declared once each,
+// further up this tail: a module may be declared only once.)

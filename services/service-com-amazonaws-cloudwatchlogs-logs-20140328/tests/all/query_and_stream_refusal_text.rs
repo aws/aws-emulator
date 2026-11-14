@@ -80,7 +80,10 @@ async fn started_query(logs: &Logs, group: &str) -> String {
             &json!({
                 "logGroupName": group,
                 "startTime": now_secs - 3_600,
-                "endTime": now_secs,
+                // Rounded UP to the next whole second, so the range reaches the instant the
+                // group was just created: one closing before that covers no instant of the
+                // group's lifetime.
+                "endTime": now_secs + 1,
                 "queryString": VALID_QUERY,
             }),
         )

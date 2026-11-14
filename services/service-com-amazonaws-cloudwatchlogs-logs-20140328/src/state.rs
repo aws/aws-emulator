@@ -3274,6 +3274,10 @@ pub const ENVELOPE_INVALID_PARAMETER: SdkEnvelopeFacts = (400, "InvalidParameter
 /// declares `ResourceNotFoundException` for this service (client error, HTTP 400).
 pub const ENVELOPE_RESOURCE_NOT_FOUND: SdkEnvelopeFacts = (400, "ResourceNotFoundException");
 
+/// The status and code of a refusal for a query the service will not run as asked, as the
+/// model declares `MalformedQueryException` for the query operations (client error, HTTP 400).
+pub const ENVELOPE_MALFORMED_QUERY: SdkEnvelopeFacts = (400, "MalformedQueryException");
+
 /// `body` followed by the envelope the AWS SDK appends to a CloudWatch Logs refusal:
 /// ` (Service: AWSLogs; Status Code: <status>; Error Code: <code>; Request ID: <id>; Proxy: null)`.
 ///
