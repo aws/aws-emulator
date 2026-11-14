@@ -62,3 +62,10 @@ The three OUTBOUND WEB IDENTITY FEDERATION operations —
 wired in from its own `//! @op` header. They read and write the one account-level record
 `src/state/outbound_web_identity_federation.rs` owns. Their decline lines above likewise
 record only that the generator did not emit them.
+
+`GetAccountSummary` — the account's own usage and quota counters — is hand-authored the
+same way, in `src/ops/get_account_summary.rs` with its shapes in
+`src/ops/types/get_account_summary_types.rs`, and is wired in from its own
+`//! @op GetAccountSummary` header. It aggregates `src/state/account_summary.rs`, which
+holds the counters, the quotas and the account's global-endpoint token version in one
+place. Its decline line above likewise records only that the generator did not emit it.

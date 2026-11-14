@@ -35,6 +35,8 @@ mod account_password_policy;
 mod account_properties;
 #[path = "all/account_singleton_authorization.rs"]
 mod account_singleton_authorization;
+#[path = "all/account_summary.rs"]
+mod account_summary;
 #[path = "all/authentication_refusal_wording.rs"]
 mod authentication_refusal_wording;
 #[path = "all/aws_managed_policy_arn_resolution.rs"]

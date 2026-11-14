@@ -314,7 +314,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         // Which members carry the credential is the FORM the service issues: a user
-        // name and a password, or a long-term API key's public alias and its secret.
+        // name and a password, or a long-term API key's public alias and its secret. The
+        // HANDLE is the one convention either form reports
+        // (`crate::state::service_user_name`), in the member that form carries it in.
         let (service_user_name, service_password, alias, credential_secret) = match service.form {
             crate::state::ServiceCredentialForm::UserNameAndPassword => (
                 Some(crate::state::service_user_name(&user_name)),
@@ -325,7 +327,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             crate::state::ServiceCredentialForm::LongTermApiKey => (
                 None,
                 None,
-                Some(crate::state::api_key_alias(&user_name, now)),
+                Some(crate::state::service_user_name(&user_name)),
                 Some(secret),
             ),
         };

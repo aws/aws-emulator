@@ -255,12 +255,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // A trust policy is "the policy that grants an entity permission to assume the
         // role", and it must be an IAM JSON policy document, not merely the non-empty
-        // string `policyDocumentType`'s pattern asks for. The rule and the note on how far
-        // it checks live on `crate::state::policy_document_defect` — the one definition
-        // every operation in this crate that takes a policy document shares. The SENTENCE
-        // is the trust-policy one, which IAM's own trust-policy validator answers, shared
-        // with `CreateRole`, the other writer of this very member.
-        if let Some(defect) = crate::state::policy_document_defect(&input.policy_document) {
+        // string `policyDocumentType`'s pattern asks for — and a resource-based one, so
+        // every statement of it names the principal the role trusts. The rule and the note
+        // on how far it checks live on `crate::state::trust_policy_document_defect`, the
+        // one definition both writers of this very member share. The SENTENCE is the
+        // trust-policy one, which IAM's own trust-policy validator answers.
+        if let Some(defect) = crate::state::trust_policy_document_defect(&input.policy_document) {
             return Err(
                 UpdateAssumeRolePolicyErrorModeled::MalformedPolicyDocumentException(
                     MalformedPolicyDocumentException {

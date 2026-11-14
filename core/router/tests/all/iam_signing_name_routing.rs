@@ -33,9 +33,13 @@ const AUTHORIZATION: &str = "AWS4-HMAC-SHA256 \
      SignedHeaders=host, Signature=0000000000000000000000000000000000000000000000000000000000000000";
 
 /// A trust policy with a statement, percent-encoded for an
-/// `application/x-www-form-urlencoded` body: `{"Statement":[{"Effect":"Allow"}]}`.
+/// `application/x-www-form-urlencoded` body:
+/// `{"Statement":[{"Effect":"Allow","Principal":{"Service":"medialive.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
+/// — a role's trust policy is a RESOURCE-based policy, so every statement of it names the
+/// principal the role trusts.
 const TRUST_POLICY_FORM_VALUE: &str =
-    "%7B%22Statement%22%3A%5B%7B%22Effect%22%3A%22Allow%22%7D%5D%7D";
+    "%7B%22Statement%22%3A%5B%7B%22Effect%22%3A%22Allow%22%2C%22Principal%22%3A%7B%22Service%22\
+     %3A%22medialive.amazonaws.com%22%7D%2C%22Action%22%3A%22sts%3AAssumeRole%22%7D%5D%7D";
 
 /// The two refusals the router itself answers when claim resolution fails. Neither is an
 /// AWS error code, so seeing one means no service served the request.

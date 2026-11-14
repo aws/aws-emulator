@@ -716,19 +716,15 @@ fn authorize_request(
         "the policies in force on the caller do not permit this call"
     );
     // AWS's refusal is the sentence that ENDS at the reason, which is what this gate
-    // answers unless the call asked for one of the few actions whose refusal AWS
-    // CONTINUES with the pointer at the request's authorization details
-    // ([`NAMES_AUTHORIZATION_DETAILS`]). For those, the pointer closes a refusal that
-    // WITHHELD a grant — nothing in force allowed the call, the implicit deny — because
-    // that is the refusal reporting an evaluation there are details to read, whether or
-    // not the principal held a document for the evaluation to read: the evaluation ran
-    // either way, and it is the one the pointer names. A refusal explained by an explicit
-    // `Deny` is explained by that statement, which the reason already names, so it ends at
-    // the reason whichever action it refused.
-    let withheld = decided != Decision::Denied
-        && scoped != Decision::Denied
-        && capped != Decision::Denied;
-    if withheld && NAMES_AUTHORIZATION_DETAILS.contains(&action) {
+    // answers unless the call asked for one of the actions whose refusal AWS CONTINUES
+    // with the pointer at the request's authorization details
+    // ([`NAMES_AUTHORIZATION_DETAILS`]). WHICH of the two wordings a refusal carries is a
+    // fact about the ACTION alone: the evaluation whose details the pointer names ran
+    // whatever the decision was, so a refusal explained by an explicit `Deny` carries the
+    // pointer exactly as one that withheld a grant does — recorded behaviour for a
+    // `GetUser` an identity-based statement explicitly denies, whose message carries the
+    // pointer after the explicit-deny reason.
+    if NAMES_AUTHORIZATION_DETAILS.contains(&action) {
         return Err(not_authorized_with_details(
             &principal,
             action,
@@ -740,9 +736,8 @@ fn authorize_request(
     Err(not_authorized(&principal, action, named_as, &reason))
 }
 
-/// The actions whose withheld-grant refusal AWS CONTINUES with the pointer at the
-/// request's authorization details, instead of ending at the reason the decision went that
-/// way.
+/// The actions whose refusal AWS CONTINUES with the pointer at the request's authorization
+/// details, instead of ending at the reason the decision went that way.
 ///
 /// The refusal AWS documents ("Troubleshoot access denied error messages", IAM User Guide)
 /// is the single sentence naming the principal, the action, the resource and why — which
@@ -763,6 +758,7 @@ fn authorize_request(
 const NAMES_AUTHORIZATION_DETAILS: &[&str] = &[
     GENERATE_CREDENTIAL_REPORT,
     GET_CREDENTIAL_REPORT,
+    GET_OUTBOUND_WEB_IDENTITY_FEDERATION_INFO,
     GET_USER,
     // The two reads of what a USER embeds, each recorded answering its withheld call with
     // the pointer — the same wording their role counterparts below are recorded with, which
@@ -770,11 +766,13 @@ const NAMES_AUTHORIZATION_DETAILS: &[&str] = &[
     GET_USER_POLICY,
     LIST_USER_POLICIES,
     LIST_ACCESS_KEYS,
+    LIST_ATTACHED_ROLE_POLICIES,
     LIST_OPEN_ID_CONNECT_PROVIDERS,
     LIST_ROLE_POLICIES,
     LIST_ROLE_TAGS,
     LIST_USER_TAGS,
     PUT_ACCOUNT_PROPERTIES,
+    SET_SECURITY_TOKEN_SERVICE_PREFERENCES,
     TAG_USER,
 ];
 

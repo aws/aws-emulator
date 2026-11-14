@@ -13,6 +13,12 @@
 //! `MalformedPolicyDocumentException` (awsQuery code `MalformedPolicyDocument`, HTTP 400)
 //! and AWS's sentence for the clause it broke, and NOTHING is stored.
 //!
+//! The sentence is the clause's, not the operation's — with ONE exception recorded on both
+//! sides: an `Effect` the language does not define is worded `The policy failed legacy
+//! parsing` by the INLINE-policy validator and `Syntax errors in policy.` by the
+//! MANAGED-policy one, so each row below carries the two sentences its clause is refused
+//! with.
+//!
 //! SOURCE for the published values: the "IAM JSON policy elements" reference — `Version`
 //! is `2012-10-17` or the legacy `2008-10-17`, `Effect` is `Allow` or `Deny`, and a
 //! resource is named by its ARN, with `*` admitted for "all resources". The rows below are
@@ -47,12 +53,24 @@ const USER_NAME: &str = "grant-target-user";
 const GROUP_NAME: &str = "grant-target-group";
 
 /// One document the policy language does not define a value of, and AWS's sentence for the
-/// clause it breaks.
+/// clause it breaks — as the inline-policy validator words it, and as the managed-policy
+/// validator does.
 struct RefusedCase {
     case: &'static str,
     document: &'static str,
     message: &'static str,
+    /// The sentence a MANAGED-policy write is refused the same document with, where it
+    /// differs from [`Self::message`].
+    managed_message: &'static str,
 }
+
+/// The sentence the MANAGED-policy validator words an `Effect` the language does not define
+/// with — recorded for a `CreatePolicy` whose statement declares one.
+const MANAGED_UNREADABLE_EFFECT: &str = "Syntax errors in policy.";
+
+/// The sentence the INLINE-policy validator words that same clause with — recorded for a
+/// `PutRolePolicy` whose statement declares an effect spelled in another case.
+const INLINE_UNREADABLE_EFFECT: &str = "The policy failed legacy parsing";
 
 /// Every clause of the language a document can declare a value outside, each with the
 /// sentence that clause is refused with.
@@ -61,56 +79,67 @@ const REFUSED: &[RefusedCase] = &[
         case: "a policy version that does not exist",
         document: r#"{"Version":"2012-10-18","Statement":[{"Sid":"InvokeApi","Effect":"Allow","Action":"execute-api:Invoke","Resource":"arn:aws:execute-api:us-west-2:000000000000:a1b2c3d4e5/beta/GET/*"}]}"#,
         message: "Syntax errors in policy.",
+        managed_message: "Syntax errors in policy.",
     },
     RefusedCase {
         case: "a policy version that is not a string",
         document: r#"{"Version":20121017,"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]}"#,
         message: "Syntax errors in policy.",
+        managed_message: "Syntax errors in policy.",
     },
     RefusedCase {
         case: "an effect written in another case",
         document: r#"{"Version":"2012-10-17","Statement":[{"Sid":"InvokeApi","Effect":"allow","Action":"execute-api:Invoke","Resource":"arn:aws:execute-api:us-west-2:000000000000:a1b2c3d4e5/beta/GET/*"}]}"#,
-        message: "The policy failed legacy parsing",
+        message: INLINE_UNREADABLE_EFFECT,
+        managed_message: MANAGED_UNREADABLE_EFFECT,
     },
     RefusedCase {
         case: "an effect the language does not define",
         document: r#"{"Statement":[{"Effect":"Permit","Action":"s3:GetObject","Resource":"*"}]}"#,
-        message: "The policy failed legacy parsing",
+        message: INLINE_UNREADABLE_EFFECT,
+        managed_message: MANAGED_UNREADABLE_EFFECT,
     },
     RefusedCase {
         case: "an effect that is not a string",
         document: r#"{"Statement":[{"Effect":true,"Action":"s3:GetObject","Resource":"*"}]}"#,
-        message: "The policy failed legacy parsing",
+        message: INLINE_UNREADABLE_EFFECT,
+        managed_message: MANAGED_UNREADABLE_EFFECT,
     },
     RefusedCase {
         case: "the second statement's effect",
         document: r#"{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"},{"Effect":"DENY","Action":"s3:PutObject","Resource":"*"}]}"#,
-        message: "The policy failed legacy parsing",
+        message: INLINE_UNREADABLE_EFFECT,
+        managed_message: MANAGED_UNREADABLE_EFFECT,
     },
     RefusedCase {
         case: "a resource that is no ARN",
         document: r#"{"Version":"2012-10-17","Statement":[{"Sid":"InvokeApi","Effect":"Allow","Action":"execute-api:Invoke","Resource":"data-agreements/*"}]}"#,
         message: "Resource data-agreements/* must be in ARN format or \"*\".",
+        managed_message: "Resource data-agreements/* must be in ARN format or \"*\".",
     },
     RefusedCase {
         case: "the second value of a resource list",
         document: r#"{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":["arn:aws:s3:::reports/*","reports/*"]}]}"#,
         message: "Resource reports/* must be in ARN format or \"*\".",
+        managed_message: "Resource reports/* must be in ARN format or \"*\".",
     },
     RefusedCase {
         case: "a NotResource that is no ARN",
         document: r#"{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","NotResource":"public"}]}"#,
         message: "Resource public must be in ARN format or \"*\".",
+        managed_message: "Resource public must be in ARN format or \"*\".",
     },
     RefusedCase {
         case: "a single statement object naming no resource ARN",
         document: r#"{"Statement":{"Effect":"Allow","Action":"s3:GetObject","Resource":"my-bucket"}}"#,
         message: "Resource my-bucket must be in ARN format or \"*\".",
+        managed_message: "Resource my-bucket must be in ARN format or \"*\".",
     },
     RefusedCase {
         case: "the second statement's resource",
         document: r#"{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"},{"Effect":"Deny","Action":"s3:PutObject","Resource":"writes"}]}"#,
         message: "Resource writes must be in ARN format or \"*\".",
+        managed_message: "Resource writes must be in ARN format or \"*\".",
     },
 ];
 
@@ -325,9 +354,9 @@ async fn a_managed_policy_write_is_held_to_the_same_clauses() {
         );
         let message = element(&body, "Message");
         assert_eq!(
-            message, row.message,
+            message, row.managed_message,
             "case {:?} on CreatePolicy: expected the refusal worded {:?}, got {message:?}",
-            row.case, row.message
+            row.case, row.managed_message
         );
         let (get_status, got) = call(
             &router,
@@ -353,9 +382,9 @@ async fn a_managed_policy_write_is_held_to_the_same_clauses() {
         , row.case);
         let version_message = element(&version_body, "Message");
         assert_eq!(
-            version_message, row.message,
+            version_message, row.managed_message,
             "case {:?} on CreatePolicyVersion: expected the refusal worded {:?}, got {version_message:?}",
-            row.case, row.message
+            row.case, row.managed_message
         );
         let (second_status, second_body) = call(
             &router,

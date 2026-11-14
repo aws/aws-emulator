@@ -6,16 +6,16 @@
 //! the ARN of the principal that signed the request + ` is not authorized to perform: ` +
 //! the IAM action the call was decided on + ` on resource: ` + the resource it was decided
 //! against + ` ` + why the decision went that way — and ENDS there, which is the refusal
-//! AWS documents. Only for the few actions whose refusal AWS continues with the pointer at
+//! AWS documents. Only for the actions whose refusal AWS continues with the pointer at
 //! the request's authorization details does that sentence go on: the console page, at IAM's
 //! own endpoint Region whichever Region the caller addressed, and the authorization id of
 //! the refused request, named in both of the pointer's slots, whether or not the caller
 //! held any document for the evaluation to read. Which of the two an action is answered
 //! with is a fact about that action, not about the call: nothing else selects the wording —
 //! not the Region the request addressed, not which documents the caller held, not the
-//! resource form, not whether the call reads or writes, not how often it is made. A refusal
-//! explained by an explicit `Deny` about the request ends at the reason whichever action it
-//! refused: that statement is the explanation, and the reason already names it.
+//! resource form, not whether the call reads or writes, not how often it is made, and not
+//! WHY the decision went the way it did — so a refusal explained by an explicit `Deny`
+//! about the request carries the wording that action's withheld refusal carries.
 //!
 //! Each suite is a TABLE whose rows differ along what the rule generalises over: which
 //! operation is refused and therefore which of the two wordings it is answered with,
@@ -102,9 +102,8 @@ struct Case {
     named_as: String,
     /// The clause closing the sentence.
     reason: String,
-    /// Whether the refusal points at the authorization details of an evaluation: nothing
-    /// in force allowed the call, so the grant was withheld rather than explicitly denied,
-    /// AND this action's refusal is one AWS words with that pointer.
+    /// Whether the refusal points at the authorization details of an evaluation: this
+    /// action's refusal is one AWS words with that pointer.
     details: bool,
 }
 
@@ -471,8 +470,9 @@ fn cases(policy_arn: &str) -> Vec<Case> {
             reason: EXPLICIT_DENY.to_string(),
             details: false,
         },
-        // An explicit `Deny` of an action whose WITHHELD refusal does carry the pointer:
-        // there is no withheld grant here, so this one ends at the reason.
+        // An explicit `Deny` of an action whose refusal carries the pointer: WHICH wording
+        // a refusal takes is a fact about the action, so the pointer closes this one too —
+        // the evaluation it names ran whatever the decision was.
         Case {
             case: "explicit deny reading one user by name",
             policies: vec![
@@ -487,11 +487,11 @@ fn cases(policy_arn: &str) -> Vec<Case> {
             iam_action: "iam:GetUser",
             named_as: target.clone(),
             reason: EXPLICIT_DENY.to_string(),
-            details: false,
+            details: true,
         },
-        // An explicit `Deny` of another action whose WITHHELD refusal carries the
-        // pointer, on a request that addresses one entity: nothing was withheld here
-        // either, so it ends at the reason.
+        // An explicit `Deny` of another action whose refusal carries the pointer, on a
+        // request that addresses one entity: the same wording as that action's withheld
+        // refusal.
         Case {
             case: "explicit deny listing one user's tags",
             policies: vec![
@@ -506,7 +506,7 @@ fn cases(policy_arn: &str) -> Vec<Case> {
             iam_action: "iam:ListUserTags",
             named_as: target.clone(),
             reason: EXPLICIT_DENY.to_string(),
-            details: false,
+            details: true,
         },
         // An explicit `Deny` on the account-wide read.
         Case {
@@ -596,8 +596,8 @@ async fn managed_policy(router: &MultiServiceRouter) -> String {
 
 /// RULE: a refusal's message names the principal, the action and the resource the decision
 /// was made on, closed by why it went that way, and ENDS there — continuing with the
-/// pointer at the request's authorization details only for the few actions AWS answers
-/// that pointer for, and only where the refusal withheld a grant.
+/// pointer at the request's authorization details only for the actions AWS answers that
+/// pointer for, whichever way their decision went.
 #[tokio::test]
 async fn a_refusal_names_the_decision_and_is_worded_as_its_action_is() {
     let router = router();

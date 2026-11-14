@@ -1,15 +1,24 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op SetSecurityTokenServicePreferences
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `SetSecurityTokenServicePreferences`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`SetSecurityTokenServicePreferences::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! ## What this operation answers on the wire
+//!
+//! A MUTATION with an empty response: it "sets the specified version of the global
+//! endpoint token as the token version used for the Amazon Web Services account", so the
+//! version the request names is what the account holds from then on, and "to view the
+//! current session token version, see the GlobalEndpointTokenVersion entry in the response
+//! of the GetAccountSummary operation" — the one reader of what this writes.
+//!
+//! The preference is an ACCOUNT-level value, so it is held once
+//! ([`crate::state::ComAmazonawsIamAwsidentitymanagementv20100508State::global_endpoint_token_version`])
+//! and a second call naming the other version replaces it rather than recording a second
+//! preference beside it. Setting the version the account already holds is the same state
+//! again, so it is accepted.
+//!
+//! A caller whose identity-based policies do not permit the call is refused before
+//! anything is written, `403` `<Code>AccessDenied</Code>`
+//! ([`crate::state::authorization::authorize`]).
 //!
 //! ## Shape of an operation
 //!
@@ -171,18 +180,58 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `SetSecurityTokenServicePreferences` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(SetSecurityTokenServicePreferencesErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("SetSecurityTokenServicePreferences"))
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(
+                SetSecurityTokenServicePreferencesErrorModeled::ServiceFailureException(
+                    ServiceFailureException {
+                        message: Some("the IAM store is unavailable".to_string()),
+                    },
+                )
+                .into(),
+            );
+        };
+        // The version the summary reports for the token version the request names. The
+        // member is an enum, so the constraint walk has already refused every value the
+        // model does not declare before this handler runs; a value this crate has no
+        // reported number for is therefore unreachable, and is refused rather than
+        // recorded as a preference nothing can report.
+        let Some(version) =
+            crate::state::global_endpoint_token_version(&input.global_endpoint_token_version)
+        else {
+            return Err(crate::scaffolded::Scaffolded::validation_error(format!(
+                "Invalid value for GlobalEndpointTokenVersion: {}",
+                input.global_endpoint_token_version
+            )));
+        };
+
+        // A mutation: the lock is held for write across the decision and the write.
+        let mut store = state.lock();
+
+        // IAM authorizes its own API: the signing principal's identity-based policies are
+        // evaluated before the preference is written. The preference is the ACCOUNT's, not
+        // one entity's, so the decision is made against the account-wide resource — as
+        // every other account-wide write of this service decides. Nothing is written when
+        // it refuses.
+        crate::state::authorization::authorize(
+            &store,
+            ctx,
+            crate::state::authorization::SET_SECURITY_TOKEN_SERVICE_PREFERENCES,
+            crate::state::authorization::ACCOUNT_WIDE_RESOURCE,
+        )?;
+
+        store.global_endpoint_token_version = Some(version);
+
+        // Audit record for a state-changing operation: who asked, what was set, how it
+        // ended. Only wire metadata and the version written.
+        ::tracing::info!(
+            audit = true,
+            operation = "SetSecurityTokenServicePreferences",
+            outcome = "set",
+            caller_akid = %::engine::extract_akid(&ctx.parts().headers),
+            global_endpoint_token_version = version,
+            "the account's global endpoint token version was set"
+        );
+
+        Ok(SetSecurityTokenServicePreferencesOutput)
     }
 }

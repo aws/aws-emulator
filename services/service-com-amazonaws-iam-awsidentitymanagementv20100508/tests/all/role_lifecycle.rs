@@ -377,7 +377,7 @@ async fn a_held_role_name_is_refused_whatever_its_case() {
                 // A different trust policy and path: it is the NAME that conflicts.
                 (
                     "AssumeRolePolicyDocument",
-                    r#"{"Statement":[{"Effect":"Deny","Action":"*"}]}"#,
+                    r#"{"Statement":[{"Effect":"Deny","Action":"*","Principal":{"AWS":"*"}}]}"#,
                 ),
                 ("Path", "/other/"),
             ],
@@ -427,6 +427,12 @@ async fn a_trust_policy_that_is_not_a_json_policy_is_refused() {
         ),
         ("an empty object", "{}"),
         ("a truncated object", r#"{"Statement":[{"Effect":"Allow"}"#),
+        // A role's trust policy is a RESOURCE-based policy, so every statement of it names
+        // the principal the role trusts; one that names none trusts nobody.
+        (
+            "a statement naming no principal",
+            r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sts:AssumeRole"}]}"#,
+        ),
     ];
 
     let router = router();
@@ -470,11 +476,11 @@ async fn a_trust_policy_that_is_not_a_json_policy_is_refused() {
         ),
         (
             "a statement list with no Version",
-            r#"{"Statement":[{"Effect":"Allow"}]}"#,
+            r#"{"Statement":[{"Effect":"Allow","Principal":{"AWS":"*"}}]}"#,
         ),
-        // The rule stops at the top level of the IAM policy grammar — `Statement`
-        // present — so a document whose statements this emulator does not inspect is
-        // STORED, not refused. See `state::is_policy_document`.
+        // The per-statement rule a TRUST policy is held to is the principal it names
+        // (`state::trust_policy_document_defect`); nothing below that is inspected, so a
+        // document whose statements carry no action is STORED, not refused.
         (
             "the smallest document the grammar admits",
             r#"{"Statement":[]}"#,

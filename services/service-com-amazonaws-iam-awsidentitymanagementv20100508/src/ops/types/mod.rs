@@ -80,6 +80,7 @@ pub mod get_access_key_last_used_types;
 pub mod get_account_authorization_details_types;
 pub mod get_account_password_policy_types;
 pub mod get_account_properties_types;
+pub mod get_account_summary_types;
 pub mod get_context_keys_for_custom_policy_types;
 pub mod get_context_keys_for_principal_policy_types;
 pub mod get_credential_report_types;
@@ -325,6 +326,8 @@ pub use get_account_authorization_details_types::*;
 pub use get_account_password_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_account_properties_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_account_summary_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_context_keys_for_custom_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

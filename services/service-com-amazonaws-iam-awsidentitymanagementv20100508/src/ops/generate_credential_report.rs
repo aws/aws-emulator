@@ -35,9 +35,9 @@
 //!   the account can no longer read is not what a caller asking for a report needs;
 //! * a report the account already has, asked for again before the published rate allows a
 //!   new one ("you can generate a credential report as often as once every four hours",
-//!   [`crate::state::CREDENTIAL_REPORT_REGENERATION_SECONDS`]): refused with the modelled
-//!   `LimitExceededException` (HTTP 409, awsQuery code `LimitExceeded`), whose message
-//!   describes the limit exceeded ([`crate::state::credential_report_rate_exceeded`]);
+//!   [`crate::state::CREDENTIAL_REPORT_REGENERATION_SECONDS`]): nothing is started, and
+//!   the call reports the generation the account holds [`STATE_COMPLETE`] — the report it
+//!   produced is still the account's;
 //! * from the end of that window: a new generation is started, so the account can get a
 //!   fresh report, and the call reports it [`STATE_STARTED`] again.
 //!
@@ -267,24 +267,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 (STATE_COMPLETE, DESCRIPTION_COMPLETE)
             }
             // The account has a report, and the published rate does not allow another
-            // one yet, so no generation is started and nothing is written.
+            // one yet: no generation is started and nothing is written, and what the call
+            // reports is the generation the account holds — complete, with its report
+            // still the account's. The published rate governs whether a new report is
+            // GENERATED, not whether the call is served.
             Some(held)
                 if now.secs()
                     < held.requested.secs() + crate::state::CREDENTIAL_REPORT_REGENERATION_SECONDS =>
             {
-                ::tracing::info!(
-                    audit = true,
-                    operation = "GenerateCredentialReport",
-                    outcome = "refused_rate_exceeded",
-                    caller_akid = %caller_akid,
-                    "no credential report generation was started"
-                );
-                return Err(GenerateCredentialReportErrorModeled::LimitExceededException(
-                    LimitExceededException {
-                        message: Some(crate::state::credential_report_rate_exceeded()),
-                    },
-                )
-                .into());
+                (STATE_COMPLETE, DESCRIPTION_COMPLETE)
             }
             // Either the account has never asked for a report, or the rate now allows a
             // new one: a generation is started, due after the span this emulator gives

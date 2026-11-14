@@ -208,6 +208,13 @@ pub const LIST_ORGANIZATIONS_FEATURES: &str = "iam:ListOrganizationsFeatures";
 /// `iam:ListDelegationRequests`.
 pub const LIST_DELEGATION_REQUESTS: &str = "iam:ListDelegationRequests";
 
+/// `iam:GetAccountSummary`.
+pub const GET_ACCOUNT_SUMMARY: &str = "iam:GetAccountSummary";
+
+/// `iam:SetSecurityTokenServicePreferences`.
+pub const SET_SECURITY_TOKEN_SERVICE_PREFERENCES: &str =
+    "iam:SetSecurityTokenServicePreferences";
+
 /// `iam:GetAccountProperties`.
 pub const GET_ACCOUNT_PROPERTIES: &str = "iam:GetAccountProperties";
 

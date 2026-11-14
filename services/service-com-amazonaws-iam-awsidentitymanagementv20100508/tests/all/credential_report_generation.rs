@@ -16,8 +16,8 @@
 //!   read off that record and the clock: a call with none on record starts one
 //!   (`STARTED`), a call while it runs reports `INPROGRESS`, the call that first finds it
 //!   due reports `COMPLETE`, a request for another report inside the published
-//!   once-every-four-hours rate is refused `LimitExceeded` (HTTP 409), and from the end of
-//!   that window a new generation starts;
+//!   once-every-four-hours rate generates none and reports that same `COMPLETE`, and from
+//!   the end of that window a new generation starts;
 //! * a caller whose identity-based policies do not allow the action is refused, and a
 //!   refused call starts nothing.
 //!
@@ -125,8 +125,8 @@ async fn the_action_is_routed_rather_than_answered_as_an_unknown_action() {
 /// RULE: what a call reports is the state of the account's one credential-report
 /// generation, read off that record and the clock — so the rows are where the clock
 /// stands: before the generation is due, at it, and on each side of the published rate
-/// that governs asking for another report. Every value `ReportStateType` declares is
-/// reached, and the refusal in between is the modelled one.
+/// that governs generating another report. Every value `ReportStateType` declares is
+/// reached.
 #[tokio::test]
 async fn the_clock_and_the_held_generation_are_what_a_call_reports() {
     let (router, engine) = router_with_engine();
@@ -161,39 +161,22 @@ async fn the_clock_and_the_held_generation_are_what_a_call_reports() {
     assert_state("the generation has become due", status, &body, COMPLETE);
 
     // The account now HAS a report, so a further call is asking for a new one — which the
-    // published rate refuses, twice over and whatever the caller.
+    // published rate does not generate yet: the call is served and reports the generation
+    // the account holds, twice over and whatever the caller.
     for attempt in 0..2 {
         let case = format!("a report asked for again inside the rate, attempt {attempt}");
         let (status, body) = generate(&router, None).await;
-        assert_eq!(
-            status, 409,
-            "case {case:?}: expected 409, got {status}: {body}"
-        );
-        assert_eq!(
-            error_code(&body),
-            "LimitExceeded",
-            "case {case:?}: expected LimitExceeded, got {:?}: {body}",
-            error_code(&body)
-        );
-        assert_eq!(
-            element(&body, "Message"),
-            state::credential_report_rate_exceeded(),
-            "case {case:?}: the refusal must describe the limit exceeded, got {:?}",
-            element(&body, "Message")
-        );
+        assert_state(&case, status, &body, COMPLETE);
     }
 
-    // One second short of the rate's end: still refused.
+    // One second short of the rate's end: still the held generation.
     rewind(
         &engine,
         state::CREDENTIAL_REPORT_REGENERATION_SECONDS - state::CREDENTIAL_REPORT_GENERATION_SECONDS
             - 1,
     );
     let (status, body) = generate(&router, None).await;
-    assert_eq!(
-        status, 409,
-        "one second short of the rate's end must still be refused, got {status}: {body}"
-    );
+    assert_state("one second short of the rate's end", status, &body, COMPLETE);
 
     // From the rate's end: a new generation starts, so the account can get a fresh report.
     rewind(&engine, 1);
@@ -225,9 +208,11 @@ async fn the_reported_state_follows_the_generation_rather_than_the_caller() {
     let (status, body) = generate(&router, Some(&second)).await;
     assert_state("the other caller finds it due", status, &body, COMPLETE);
     let (status, body) = generate(&router, Some(&first)).await;
-    assert_eq!(
-        status, 409,
-        "the caller that started it is refused a new report too, got {status}: {body}"
+    assert_state(
+        "the caller that started it reads the same completion",
+        status,
+        &body,
+        COMPLETE,
     );
 }
 

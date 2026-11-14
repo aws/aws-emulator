@@ -737,6 +737,20 @@ pub struct ComAmazonawsIamAwsidentitymanagementv20100508State {
     /// Monotonic counter feeding [`hold_password`](Self::hold_password), so every
     /// password the account holds a verifier for carries its own salt.
     pub password_salt_seq: u64,
+    /// The version of the global endpoint token the account is set to, as
+    /// `GetAccountSummary` reports it, or `None` while nothing has set a preference.
+    ///
+    /// `SetSecurityTokenServicePreferences` is what fills this field — it "sets the
+    /// specified version of the global endpoint token as the token version used for the
+    /// Amazon Web Services account" — and "to view the current session token version, see
+    /// the GlobalEndpointTokenVersion entry in the response of the GetAccountSummary
+    /// operation", which is the one reader of it
+    /// ([`Self::account_summary`]).
+    ///
+    /// `None` rather than the default value itself, so an account that has never set a
+    /// preference is a different record from one set to the version it already had; both
+    /// report [`super::account_summary::DEFAULT_GLOBAL_ENDPOINT_TOKEN_VERSION`].
+    pub global_endpoint_token_version: Option<i32>,
 }
 
 impl Default for ComAmazonawsIamAwsidentitymanagementv20100508State {
@@ -835,6 +849,7 @@ impl ComAmazonawsIamAwsidentitymanagementv20100508State {
             signing_certificate_id_seq: 0,
             ssh_public_key_id_seq: 0,
             password_salt_seq: 0,
+            global_endpoint_token_version: None,
         }
     }
 }

@@ -3,14 +3,17 @@
 //! The GRAMMAR a managed policy's statements are held to, end to end over the awsQuery
 //! wire.
 //!
-//! The rule under test: **a managed policy's document is an identity-based policy, so
-//! every statement of it must name the actions it is about (`Action` or `NotAction`) and
-//! the resources those actions apply to (`Resource` or `NotResource`)** — a statement
-//! omitting one describes no permission IAM could enforce, so the write is refused with
-//! the modelled `MalformedPolicyDocumentException` (awsQuery code
-//! `MalformedPolicyDocument`, HTTP 400) and the fixed sentence IAM words that missing
-//! element with, and nothing is stored. Both operations that write such a document —
-//! `CreatePolicy` and `CreatePolicyVersion` — answer the same way.
+//! The rule under test: **a managed policy's document is an identity-based policy, so it
+//! declares at least one statement, and every statement of it must name the actions it is
+//! about (`Action` or `NotAction`) and the resources those actions apply to (`Resource` or
+//! `NotResource`) and must name NO principal** — a statement omitting a required element
+//! describes no permission IAM could enforce, a document declaring no statement grants
+//! nothing, and an identity-based policy states no principal because the identity it is
+//! attached to IS the principal. Each is refused with the modelled
+//! `MalformedPolicyDocumentException` (awsQuery code `MalformedPolicyDocument`, HTTP 400)
+//! and the fixed sentence IAM words that clause with, and nothing is stored. Both
+//! operations that write such a document — `CreatePolicy` and `CreatePolicyVersion` —
+//! answer the same way.
 //!
 //! The rows differ along what the rule generalises over: which required element is
 //! missing, which spelling of the other one the statement uses, the form `Statement`
@@ -38,8 +41,12 @@ const NO_RESOURCES: &str = "Policy statement must contain resources.";
 const NO_ACTIONS: &str = "Policy statement must contain actions.";
 
 /// The sentence IAM words a value that is no policy document at all with — the defect a
-/// `Statement` entry that is not a statement OBJECT falls under.
+/// `Statement` entry that is not a statement OBJECT, and a document declaring no statement
+/// at all, fall under.
 const SYNTAX_ERRORS: &str = "Syntax errors in policy.";
+
+/// The sentence IAM words an identity-based policy document that states a principal with.
+const STATES_PRINCIPAL: &str = "Policy document should not specify a principal.";
 
 /// A document whose one statement names both required elements: the shape every accepted
 /// row below is a variation of.
@@ -168,6 +175,26 @@ const REFUSED: &[RefusedCase] = &[
         document: r#"{"Statement":["Allow"]}"#,
         message: SYNTAX_ERRORS,
     },
+    // A managed policy's permissions ARE its statements, so a document whose `Statement`
+    // element describes none grants nothing: recorded behaviour refuses it rather than
+    // creating a policy that says nothing.
+    RefusedCase {
+        case: "no statements at all",
+        document: r#"{"Statement":[]}"#,
+        message: SYNTAX_ERRORS,
+    },
+    // An identity-based policy's statements name no principal — the identity the policy is
+    // attached to is the principal — so a document that states one is refused.
+    RefusedCase {
+        case: "a statement naming a principal",
+        document: r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"*"},"Action":"s3:GetObject","Resource":"*"}]}"#,
+        message: STATES_PRINCIPAL,
+    },
+    RefusedCase {
+        case: "the second statement naming a principal by the complement element",
+        document: r#"{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"},{"Effect":"Deny","NotPrincipal":"*","Action":"s3:PutObject","Resource":"*"}]}"#,
+        message: STATES_PRINCIPAL,
+    },
 ];
 
 /// Every document whose statements DO name both required elements, in each form the
@@ -198,10 +225,8 @@ const ACCEPTED: &[(&str, &str)] = &[
         "a complete statement with a condition",
         r#"{"Statement":[{"Effect":"Allow","Action":"s3:ListBucket","Resource":"*","Condition":{"Bool":{"aws:SecureTransport":"true"}}}]}"#,
     ),
-    // A document that declares NO statement has no statement to hold to the rule, which
-    // is why the refusals above are about what a statement carries and not about the
-    // document's size.
-    ("no statements at all", r#"{"Statement":[]}"#),
+    // A document that declares NO statement is refused above, which is why the refusals
+    // there are about what a statement carries and about the document declaring one at all.
     (
         "pretty-printed with tabs and newlines",
         "{\n\t\"Version\": \"2012-10-17\",\n\t\"Statement\": [\n\t\t{\n\t\t\t\"Effect\": \"Allow\",\n\t\t\t\"Action\": \"sts:GetCallerIdentity\",\n\t\t\t\"Resource\": \"*\"\n\t\t}\n\t]\n}",

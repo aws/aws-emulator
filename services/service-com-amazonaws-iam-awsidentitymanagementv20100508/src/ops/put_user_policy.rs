@@ -225,11 +225,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // An IAM policy document is a JSON object whose top-level elements are
         // `Version` and `Id` (both optional) and `Statement` (required) — the IAM
-        // JSON policy grammar. The rule itself, the note on how far it checks and the
-        // fixed sentence each defect is refused with live on
-        // `crate::state::policy_document_defect`, which every operation taking a policy
-        // document shares.
-        if let Some(defect) = crate::state::policy_document_defect(&input.policy_document) {
+        // JSON policy grammar — and an inline policy is an IDENTITY-based policy, so no
+        // statement of it names a principal. The rule itself, the note on how far it checks
+        // and the fixed sentence each defect is refused with live on
+        // `crate::state::inline_policy_document_defect`, which the three operations that
+        // embed an inline policy share.
+        if let Some(defect) = crate::state::inline_policy_document_defect(&input.policy_document) {
             return Err(PutUserPolicyErrorModeled::MalformedPolicyDocumentException(
                 MalformedPolicyDocumentException {
                     message: Some(defect.message().to_string()),

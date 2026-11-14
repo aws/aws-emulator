@@ -4,19 +4,18 @@
 //! permissions boundary is part of the decision, end to end over the awsQuery wire.
 //!
 //! RULE: whether a refusal's message continues with the pointer at the request's
-//! authorization details is decided by the ACTION the call asked for together with the
-//! KIND of refusal it is — a withheld grant (nothing in force allowed the call, whichever
-//! document withheld it) continues for the actions AWS answers that pointer for, and a
-//! refusal explained by an explicit `Deny` about the request ends at the reason — and by
-//! nothing else about the documents in force: attaching a permissions boundary, attaching
-//! one that admits the very action, attaching one that admits everything, and attaching
-//! one that is silent on the action all leave the wording of the refusal exactly where the
-//! action puts it. The reason clause still names the document that withheld the grant (the
-//! identity-based policies where nothing granted the call, the boundary where they did and
-//! the ceiling capped it), since that is a different fact about the same decision.
+//! authorization details is decided by the ACTION the call asked for and by nothing else:
+//! not by which document refused it, not by whether the refusal withheld a grant or is
+//! explained by an explicit `Deny`, and not by what is attached to the caller — attaching a
+//! permissions boundary, attaching one that admits the very action, attaching one that
+//! admits everything, and attaching one that is silent on the action all leave the wording
+//! of the refusal exactly where the action puts it. The reason clause still names the
+//! document that withheld or denied the call (the identity-based policies where nothing
+//! granted it, the boundary where they did and the ceiling capped it), since that is a
+//! different fact about the same decision.
 //!
 //! Each suite is a TABLE whose rows differ along what the rule generalises over: which
-//! operation is refused and therefore which of the two wordings its withheld refusal takes,
+//! operation is refused and therefore which of the two wordings its refusal takes,
 //! whether a boundary is attached at all, what that boundary admits (the action itself,
 //! every action, another action only) or denies, which document the refusal is explained
 //! by, whether the request addresses one entity or a collection, and whether the call
@@ -67,14 +66,14 @@ struct Subject {
     /// The resource as a refusal NAMES it: the entity a request addressing one names, and
     /// the collection ARN a list read is decided on.
     named_as: String,
-    /// Whether AWS continues this action's withheld refusal with the authorization-details
+    /// Whether AWS continues this action's refusal with the authorization-details
     /// pointer.
     details: bool,
 }
 
 /// The operations the rows refuse.
 ///
-/// SOURCE for the `details` column: the message the service answers that action's withheld
+/// SOURCE for the `details` column: the message the service answers that action's refused
 /// call with — the fact `tests/all/access_denied_message_wording.rs` owns the table for.
 /// Four actions it records the pointer for and two it records the sentence alone for are
 /// taken here, so a boundary is shown not to move either wording.
@@ -152,8 +151,7 @@ enum Refusal {
 impl Refusal {
     /// The clause closing the message for this refusal of `iam_action` under the boundary
     /// `boundary`.
-    fn reason(self, iam_action: &str, boundary: &str) -> String {
-        match self {
+    fn reason(self, iam_action: &str, boundary: &str) -> String {        match self {
             Self::NoIdentityAllow => {
                 format!("because no identity-based policy allows the {iam_action} action")
             }
@@ -165,12 +163,6 @@ impl Refusal {
                 format!("with an explicit deny in a permissions boundary: {boundary}")
             }
         }
-    }
-
-    /// Whether this refusal WITHHELD a grant — nothing in force allowed the call — rather
-    /// than being explained by an explicit `Deny` about the request.
-    fn withheld(self) -> bool {
-        matches!(self, Self::NoIdentityAllow | Self::NoBoundaryAllow)
     }
 }
 
@@ -304,7 +296,7 @@ fn assert_refusal(
         &subject.named_as,
         &refusal.reason(subject.iam_action, boundary),
     );
-    let points = subject.details && refusal.withheld();
+    let points = subject.details;
     assert_eq!(
         !pointed_at.is_empty(),
         points,
@@ -316,8 +308,8 @@ fn assert_refusal(
 }
 
 /// RULE: a refusal carries the authorization-details pointer exactly when the action is
-/// one AWS answers that pointer for AND the refusal withheld a grant — whichever document
-/// withheld it, and whatever ceiling is attached to the caller.
+/// one AWS answers that pointer for — whichever document withheld or denied the call, and
+/// whatever ceiling is attached to the caller.
 #[tokio::test]
 async fn a_boundary_does_not_move_which_wording_a_refusal_takes() {
     let router = router();

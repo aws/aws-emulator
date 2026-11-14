@@ -449,6 +449,7 @@ pub fn audited_table<Eng: Send + Sync + 'static>(engine: &Arc<Eng>) -> Operation
         get_account_authorization_details::GetAccountAuthorizationDetails => reports,
         get_account_password_policy::GetAccountPasswordPolicy => reports,
         get_account_properties::GetAccountProperties => reports,
+        get_account_summary::GetAccountSummary => reports,
         get_context_keys_for_custom_policy::GetContextKeysForCustomPolicy => reports,
         get_context_keys_for_principal_policy::GetContextKeysForPrincipalPolicy => reports,
         get_credential_report::GetCredentialReport => reports,

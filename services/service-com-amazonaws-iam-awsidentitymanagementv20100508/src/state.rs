@@ -20,6 +20,7 @@ use crate::ops::types::{
 };
 
 pub mod account;
+pub mod account_summary;
 pub mod authorization;
 pub mod credential_report;
 pub mod entity_path;
@@ -28,6 +29,7 @@ pub mod input_formats;
 pub mod member_forms;
 pub mod outbound_web_identity_federation;
 pub mod policy_document_reports;
+pub mod policy_statement_grammar;
 pub mod reported_services;
 pub mod role_templates;
 pub mod simulated_decisions;
@@ -38,6 +40,7 @@ mod managed_policy_catalog;
 pub use managed_policy_catalog::*;
 
 pub use account::*;
+pub use account_summary::*;
 pub use credential_report::*;
 pub use entity_path::*;
 pub use entity_references::*;
@@ -45,6 +48,7 @@ pub use input_formats::*;
 pub use member_forms::*;
 pub use outbound_web_identity_federation::*;
 pub use policy_document_reports::*;
+pub use policy_statement_grammar::*;
 pub use reported_services::*;
 pub use role_templates::*;
 pub use ssh_public_keys::*;
@@ -314,12 +318,6 @@ pub const MAX_SERVICE_SPECIFIC_CREDENTIALS_PER_SERVICE: usize = 2;
 /// the IAM user's name combined with the ID number of the Amazon Web Services
 /// account, as in `jane-at-123456789012`".
 const SERVICE_USER_NAME_INFIX: &str = "-at-";
-
-/// The version tag a long-term API key's `ServiceCredentialAlias` carries.
-/// `ServiceSpecificCredential$ServiceCredentialAlias` says the alias "includes the
-/// IAM user name and a suffix containing version and creation information"; this is
-/// the version part of that suffix, and the creation instant is the rest.
-const API_KEY_ALIAS_VERSION: &str = "v1";
 
 /// Seconds in a day: the unit `CreateServiceSpecificCredential$CredentialAgeDays`
 /// counts ("the number of days until the service specific credential expires").
@@ -812,31 +810,27 @@ pub fn service_with_credentials(service_name: &str) -> Option<&'static ServiceWi
         .find(|service| service.service_name.eq_ignore_ascii_case(service_name))
 }
 
-/// The `ServiceUserName` IAM generates for a service-specific credential of the
-/// user-name-and-password form: the IAM user's name joined to the account id (see
-/// [`SERVICE_USER_NAME_INFIX`]).
+/// The handle IAM generates for a service-specific credential: the IAM user's name joined
+/// to the account id (see [`SERVICE_USER_NAME_INFIX`]).
 ///
-/// Inside `serviceUserName`'s constraints (len 0..200, pattern `^[\w+=,.@-]*$`) for
-/// every name `userNameType` admits: that pattern is a subset of this one, the
-/// infix and the account id add 16 characters, and a user name is at most 64.
+/// ONE convention, reported in whichever member the service's credential form carries it:
+/// the `ServiceUserName` of a user-name-and-password credential, and the
+/// `ServiceCredentialAlias` of a long-term API key. `ServiceUserName` documents it ("the
+/// IAM user's name combined with the ID number of the Amazon Web Services account"), and
+/// `ServiceCredentialAlias` — documented only as "the unique alias for the service specific
+/// credential" — is recorded carrying that same value, so both are built here rather than
+/// one being given a shape of its own. Either way it is built once at creation, stored with
+/// the credential, and every later read reports the stored value.
+///
+/// Inside `serviceUserName`'s constraints (len 0..200, pattern `^[\w+=,.@-]*$`) and
+/// `serviceCredentialAlias`'s (len 0..200, pattern `^[\w+=,.@-]+$`) for every name
+/// `userNameType` admits: those patterns are a subset of this one, the infix and the
+/// account id add 16 characters, and a user name is at most 64.
 pub fn service_user_name(user_name: &str) -> String {
     format!(
         "{user_name}{SERVICE_USER_NAME_INFIX}{}",
         ::engine::emulator_account_id()
     )
-}
-
-/// The `ServiceCredentialAlias` IAM generates for a long-term API key: the IAM
-/// user's name followed by the suffix `ServiceCredentialAlias` documents, "version
-/// and creation information" — the alias format's version and the second the key was
-/// created.
-///
-/// The exact suffix AWS assembles is not documented, so this is a server-generated
-/// value of the modelled type (`serviceCredentialAlias`, len 0..200, pattern
-/// `^[\w+=,.@-]+$`): it is built once at creation, stored with the credential, and
-/// every later read reports the stored value.
-pub fn api_key_alias(user_name: &str, created: ::aws_smithy_types::DateTime) -> String {
-    format!("{user_name}-{API_KEY_ALIAS_VERSION}-{}", created.secs())
 }
 
 /// When a credential created at `created` with `credential_age_days` expires:
@@ -3927,28 +3921,16 @@ pub fn report_job_not_found(job_id: &str) -> String {
 /// a caller calling again straight away still sees the generation in flight.
 pub const CREDENTIAL_REPORT_GENERATION_SECONDS: i64 = 3;
 
-/// How long after a credential report was ASKED FOR the account may ask for another.
+/// How long after a credential report was ASKED FOR the account's next request generates
+/// a new one.
 ///
 /// "You can generate a credential report as often as once every four hours" ("Getting
 /// credential reports for your Amazon Web Services account", IAM User Guide) — a published
-/// rate, so it keeps its value: a request for a new report inside the window is past "the
-/// current Amazon Web Services account limits" and is refused with the modelled
-/// `LimitExceededException`, and from the window's end a new generation starts.
+/// rate, so it keeps its value: inside the window a request does not generate another
+/// report, and from the window's end a new generation starts. The request itself is SERVED
+/// either way: it reports the `State` of the generation the account holds, which is what
+/// `GenerateCredentialReport` answers.
 pub const CREDENTIAL_REPORT_REGENERATION_SECONDS: i64 = 4 * 60 * 60;
-
-/// The message a request for a credential report the published rate does not yet allow is
-/// refused with — the `LimitExceededException` message, which "describes the limit
-/// exceeded" the way every quota refusal of this service words one: `Cannot exceed quota
-/// for `, the quota's name, and the figure it stands at.
-///
-/// Stated ONCE here, beside the rate it reports, so the refusal and the decision behind it
-/// cannot drift apart.
-pub fn credential_report_rate_exceeded() -> String {
-    format!(
-        "Cannot exceed quota for ReportGenerationLimit: 1 report every {} seconds",
-        CREDENTIAL_REPORT_REGENERATION_SECONDS
-    )
-}
 
 // The role templates AWS services publish, the `@{parameter}` substitution a role created
 // from one goes through and the wording of a call addressing a template the account holds
@@ -4306,6 +4288,14 @@ pub enum PolicyDocumentDefect {
     /// nor a `NotResource` element, which an identity-based policy's every statement
     /// must.
     NoResources,
+    /// A statement of the document NAMES A PRINCIPAL, by either `Principal` or
+    /// `NotPrincipal` — an element an IDENTITY-based policy's statements do not carry,
+    /// because the identity the policy is attached to is the principal.
+    StatesPrincipal,
+    /// No statement of the document names a principal, by either `Principal` or
+    /// `NotPrincipal` — the element a RESOURCE-based policy, which a role's trust policy
+    /// is, states the trusted party in.
+    NoPrincipals,
 }
 
 /// The fixed sentence IAM refuses an IDENTITY policy document it cannot read as a policy
@@ -4393,6 +4383,8 @@ impl PolicyDocumentDefect {
             Self::Syntax | Self::NoStatements => SYNTAX_ERRORS_IN_POLICY,
             Self::NoActions => STATEMENT_WITHOUT_ACTIONS,
             Self::NoResources => STATEMENT_WITHOUT_RESOURCES,
+            Self::StatesPrincipal => IDENTITY_POLICY_STATES_PRINCIPAL,
+            Self::NoPrincipals => POLICY_WITHOUT_PRINCIPAL,
         }
     }
 
@@ -4429,7 +4421,9 @@ pub fn policy_document_defect(document: &str) -> Option<PolicyDocumentDefect> {
 /// The ONE place the top-level grammar is read, so the decision
 /// [`policy_document_defect`] reports and the statements
 /// [`managed_policy_document_defect`] walks come from one parse of one rule.
-fn policy_statements(document: &str) -> Result<::serde_json::Value, PolicyDocumentDefect> {
+pub(crate) fn policy_statements(
+    document: &str,
+) -> Result<::serde_json::Value, PolicyDocumentDefect> {
     match ::serde_json::from_str::<::serde_json::Value>(document) {
         Ok(::serde_json::Value::Object(mut elements)) => elements
             .remove("Statement")
@@ -4448,7 +4442,7 @@ fn policy_statements(document: &str) -> Result<::serde_json::Value, PolicyDocume
 /// is about and WHICH resources they may be performed on, and an identity policy carries
 /// no `Principal` because the identity it is attached to is the principal ("Grammar of
 /// the IAM JSON policy language", IAM User Guide).
-const IDENTITY_STATEMENT_ELEMENTS: &[(&[&str], PolicyDocumentDefect)] = &[
+pub(crate) const IDENTITY_STATEMENT_ELEMENTS: &[(&[&str], PolicyDocumentDefect)] = &[
     (
         &["Action", "NotAction"],
         PolicyDocumentDefect::NoActions,
@@ -4461,7 +4455,7 @@ const IDENTITY_STATEMENT_ELEMENTS: &[(&[&str], PolicyDocumentDefect)] = &[
 
 /// Whether `element` NAMES something: a statement element that is absent, null or an
 /// empty list names nothing, and so does not satisfy a requirement of the grammar.
-fn names_something(element: Option<&::serde_json::Value>) -> bool {
+pub(crate) fn names_something(element: Option<&::serde_json::Value>) -> bool {
     match element {
         None | Some(::serde_json::Value::Null) => false,
         Some(::serde_json::Value::Array(values)) => !values.is_empty(),
@@ -4469,44 +4463,45 @@ fn names_something(element: Option<&::serde_json::Value>) -> bool {
     }
 }
 
+/// How the MANAGED-policy validator words a value the IAM policy language does not define.
+///
+/// The clauses and their sentences are the shared reading every service taking an IAM
+/// policy document asks (`::service_common::iam_policy::PolicyValueDefect`), which carries
+/// the sentence AWS answers an INLINE policy write with. IAM words one of them differently
+/// for a MANAGED policy: an `Effect` the language does not define is reported as an error
+/// in the policy's syntax ([`SYNTAX_ERRORS_IN_POLICY`]) where the inline write is refused
+/// the parse-stage sentence — recorded behaviour for a `CreatePolicy` whose statement
+/// declares an effect outside the two the language defines, beside the recorded inline
+/// write that carries the other sentence for the same clause. Every other clause is worded
+/// alike for both, so this is the one mapping and not a second table.
+///
+/// The ONE definition of that wording, shared by both operations that write a managed
+/// policy's document: `CreatePolicy` and `CreatePolicyVersion`.
+pub fn managed_policy_value_message(
+    defect: &::service_common::iam_policy::PolicyValueDefect,
+) -> String {
+    match defect {
+        ::service_common::iam_policy::PolicyValueDefect::UnreadableEffect => {
+            SYNTAX_ERRORS_IN_POLICY.to_string()
+        }
+        other => other.message(),
+    }
+}
+
 /// Why `document` is no document a MANAGED policy can hold, or `None` when it is one.
 ///
 /// A managed policy's document is an IDENTITY-based policy — "a customer managed policy
 /// … can be attached to a user, group or role" and grants that identity its permissions —
-/// so it is the document [`policy_document_defect`] judges, held to the grammar BELOW
-/// `Statement` as well: every statement of it must name the actions it is about and the
-/// resources those actions apply to ([`IDENTITY_STATEMENT_ELEMENTS`]), and a statement
-/// omitting one describes no permission IAM could enforce, so the operation taking the
-/// document is refused with the modelled `MalformedPolicyDocumentException`. `Statement`
-/// is read both as the list and as the single statement the grammar admits, and a
-/// statement that is not an object at all is no statement — which is the SYNTAX defect,
-/// not a missing element.
+/// so it is exactly the document [`identity_policy_document_defect`] judges: the top-level
+/// grammar, the elements an identity statement must not carry, and the ones every one of
+/// its statements must name ([`IDENTITY_STATEMENT_ELEMENTS`]). A statement omitting one
+/// describes no permission IAM could enforce, so the operation taking the document is
+/// refused with the modelled `MalformedPolicyDocumentException`.
 ///
 /// This is the ONE definition of the rule, shared by both operations that write a managed
 /// policy's document: `CreatePolicy` and `CreatePolicyVersion`.
 pub fn managed_policy_document_defect(document: &str) -> Option<PolicyDocumentDefect> {
-    let statement = match policy_statements(document) {
-        Ok(statement) => statement,
-        Err(defect) => return Some(defect),
-    };
-    let statements = match statement.as_array() {
-        Some(statements) => statements.as_slice(),
-        None => ::std::slice::from_ref(&statement),
-    };
-    for statement in statements {
-        let Some(elements) = statement.as_object() else {
-            return Some(PolicyDocumentDefect::Syntax);
-        };
-        for (spellings, defect) in IDENTITY_STATEMENT_ELEMENTS {
-            if !spellings
-                .iter()
-                .any(|spelling| names_something(elements.get(*spelling)))
-            {
-                return Some(*defect);
-            }
-        }
-    }
-    None
+    identity_policy_document_defect(document)
 }
 
 /// What IAM reads out of a SAML provider's metadata document.

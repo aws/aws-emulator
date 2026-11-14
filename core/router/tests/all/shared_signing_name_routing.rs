@@ -187,11 +187,13 @@ async fn each_service_sharing_a_signing_name_serves_its_own_path_space() {
                 method: "POST",
                 uri: "https://emulator.local/",
                 headers: &[("content-type", "application/x-www-form-urlencoded")],
-                // The trust policy, form-encoded:
-                // `{"Statement":[{"Effect":"Allow"}]}`.
+                // The trust policy, form-encoded — a role's trust policy names the
+                // principal the role trusts in every statement:
+                // `{"Statement":[{"Effect":"Allow","Principal":{"Service":"medialive.amazonaws.com"},"Action":"sts:AssumeRole"}]}`.
                 body: "Action=CreateRole&Version=2010-05-08&RoleName=routing-check-role\
                        &AssumeRolePolicyDocument=%7B%22Statement%22%3A%5B%7B%22Effect%22\
-                       %3A%22Allow%22%7D%5D%7D",
+                       %3A%22Allow%22%2C%22Principal%22%3A%7B%22Service%22%3A%22medialive\
+                       .amazonaws.com%22%7D%2C%22Action%22%3A%22sts%3AAssumeRole%22%7D%5D%7D",
             },
             200,
             None,
