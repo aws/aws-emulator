@@ -76,6 +76,11 @@ use smithy_server_runtime::{
 };
 use std::sync::Arc;
 
+/// The wire error code a member-constraint failure carries, which is the code the
+/// framework's own renderer picks for this class too: rewording the message leaves it
+/// unchanged, so a client keeps branching on the code it already branches on.
+const VALIDATION_EXCEPTION_CODE: &str = "ValidationException";
+
 /// The `com-amazonaws-wafv2-awswaf-20190729` emulated service: the generated [`ServiceDefinition`] plus
 /// the behavioral seams this file owns.
 ///
@@ -176,7 +181,6 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             list_regex_pattern_sets::ListRegexPatternSets,
             list_rule_groups::ListRuleGroups,
             list_settlement_records::ListSettlementRecords,
-            list_web_ac_ls::ListWebACLs,
             put_managed_rule_set_versions::PutManagedRuleSetVersions,
             update_ip_set::UpdateIPSet,
             update_managed_rule_set_version_expiry_date::UpdateManagedRuleSetVersionExpiryDate,
@@ -184,7 +188,19 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             update_rule_group::UpdateRuleGroup,
             update_web_acl::UpdateWebACL,
         );
-        gate_optional_scope!(gated, engine, get_rule_group::GetRuleGroup, get_web_acl::GetWebACL,);
+        // `ListWebACLs` is gated here rather than above although its model marks `Scope`
+        // `@required`: it reads its input through `ListWebACLsWireInput`, which keeps an
+        // absent scope as the absence it is so the handler can report the omission against
+        // the request itself (`crate::state::critical_information_missing`) instead of the
+        // request validator's member envelope. A request that names no scope names no
+        // namespace for this gate to judge, which is exactly what the optional form says.
+        gate_optional_scope!(
+            gated,
+            engine,
+            get_rule_group::GetRuleGroup,
+            get_web_acl::GetWebACL,
+            list_web_ac_ls::ListWebACLs,
+        );
         Self {
             entry: crate::ServiceDefinition::new(engine),
             gated,
@@ -227,15 +243,24 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {
         // The centralized walk calls this on a framework-level refusal (an absent
         // required member, or a value outside a declared bound) to let this
-        // service reword it. Returning `None` keeps the framework's default
-        // wording. To state a refusal the way the emulated service states it,
-        // replace this body with a `match refusal { .. }` that returns
-        // `Some(Refused { code, message })` for the cases you reword and `None`
-        // for the rest. Replace BOTH the code and the message: a client branches
-        // on the code, so a message without its matching code is worse than
-        // leaving both alone.
-        let _ = refusal;
-        None
+        // service reword it.
+        //
+        // A value outside a declared bound is stated in WAF's own clause order and
+        // with its `@pattern` reported as the full-match expression WAF advertises
+        // (`crate::state::constraint_envelope`) — the SAME reporter a handler's
+        // self-applied check goes through, so a member refused at the boundary reads
+        // exactly like one refused by an operation. The code stays the one the
+        // protocol chose for this class: `ValidationException` is what WAF answers a
+        // member-constraint failure with, which is why only the message is reworded.
+        match refusal {
+            Refusal::Invalid(violations) => Some(Refused {
+                code: VALIDATION_EXCEPTION_CODE.to_string(),
+                message: crate::state::constraint_envelope(violations),
+            }),
+            // An authentication refusal is the framework's: this service neither
+            // signs nor verifies a request.
+            _ => None,
+        }
     }
 
     fn override_routing_error(

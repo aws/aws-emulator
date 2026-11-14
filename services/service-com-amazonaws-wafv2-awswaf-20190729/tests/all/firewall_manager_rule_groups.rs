@@ -114,8 +114,23 @@ fn seed_firewall_manager(
 
 /// The stored web ACL, as `GetWebACL` answers it for `arn`, paired with its current
 /// lock token.
+///
+/// Read at the endpoint of the region the ARN itself names — which is the endpoint a
+/// conforming client uses, because a resource is reached through the endpoint of its own
+/// region: a CLOUDFRONT-scoped web ACL's ARN carries the one region the global namespace
+/// lives in, and a REGIONAL one carries the region it was created at.
 async fn read_web_acl(waf: &Waf, arn: &str) -> (Value, String) {
-    let body = waf.ok("GetWebACL", json!({ "ARN": arn })).await;
+    let region = arn
+        .split(':')
+        .nth(3)
+        .expect("a wafv2 resource ARN names its region");
+    let (status, body) = waf
+        .call_from(region, "GetWebACL", json!({ "ARN": arn }))
+        .await;
+    assert_eq!(
+        status, 200,
+        "GetWebACL({arn}) at {region} must succeed, got status {status} and body {body}"
+    );
     let lock_token = body["LockToken"]
         .as_str()
         .expect("GetWebACL answers a LockToken")

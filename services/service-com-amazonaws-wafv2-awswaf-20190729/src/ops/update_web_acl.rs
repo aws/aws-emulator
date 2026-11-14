@@ -309,11 +309,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `ctx` carries the request's own metadata: the endpoint region the scope is
         // judged against. An update never re-mints the ARN, so it needs no other.
         //
-        // `Scope` is judged first: an unknown value, and the global scope at an
-        // endpoint that does not serve it, are the same bad parameter
-        // (`crate::service::requests::validate_scope`).
-        if let Err(refusal) = crate::service::requests::validate_scope(&input.scope, ctx.parts()) {
-            return Err(UpdateWebACLErrorModeled::WAFInvalidParameterException(refusal).into());
+        // `Scope` is judged first: an undeclared value, and the global scope at an
+        // endpoint that does not serve it, are judged by the same shared reading
+        // (`crate::service::requests::judge_scope`), here rather than at the request
+        // boundary so WAF's own `Field`/`Parameter`/`Reason` reach the caller.
+        if let Err(refusal) = crate::service::requests::judge_scope(&input.scope, ctx.parts()) {
+            return Err(refusal.refuse(UpdateWebACLErrorModeled::WAFInvalidParameterException));
         }
         // The rule tree comes straight off the wire and nests, so its depth is
         // bounded here, before anything walks, stores or measures it.

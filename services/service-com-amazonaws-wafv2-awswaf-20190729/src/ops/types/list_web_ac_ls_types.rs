@@ -11,7 +11,21 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-wafv2-awswaf-20190729.json");
 
-#[smithy_macros::smithy(shape = "com.amazonaws.wafv2#ListWebACLsRequest")]
+// `skip_validation` names `Scope`: WAF refuses a scope value its `Scope` enum does not
+// declare as an invalid WAF PARAMETER — `WAFInvalidParameterException` carrying `Field`
+// SCOPE_VALUE, the offending value in `Parameter` and the scope reason — rather than as
+// a generic enum-constraint violation, and the boundary walk runs every modelled
+// constraint before the handler, so leaving the enum there answers the generic one. The
+// handler judges the value instead, against the same two conditions every scoped
+// operation judges it against, split by which of the two refusals WAF answers for an
+// undeclared value (`crate::service::requests::judge_scope`, which delegates the two
+// conditions to the shared `validate_scope`). Every other member keeps its boundary
+// check, including `NextMarker`'s `@length` and `@pattern`, which WAF does answer as a
+// member-constraint failure.
+#[smithy_macros::smithy(
+    shape = "com.amazonaws.wafv2#ListWebACLsRequest",
+    skip_validation = ["Scope"]
+)]
 #[derive(Debug, Clone, Default)]
 pub struct ListWebACLsInput {
     pub scope: String,
@@ -26,3 +40,100 @@ pub struct ListWebACLsOutput {
     pub web_ac_ls: Option<Vec<WebACLSummary>>,
 }
 
+/// The Smithy member names of `ListWebACLsRequest`, as
+/// `smithy_query(query="operation",operation="ListWebACLs")` lists them: `Scope`
+/// (`@required`, the `Scope` enum), `NextMarker` (`@length(1..256)`, `@pattern \S`) and
+/// `Limit` (`PaginationLimit`, `@range(1..100)`).
+const SCOPE_MEMBER: &str = "Scope";
+const NEXT_MARKER_MEMBER: &str = "NextMarker";
+const LIMIT_MEMBER: &str = "Limit";
+
+/// This operation's input, read with an ABSENT `Scope` kept as the absence it is rather
+/// than refused while the request is being read.
+///
+/// `Scope` is `@required`, so the generated [`ListWebACLsInput`] deserializer refuses a
+/// request that carries no scope before any handler runs — and what it answers is the
+/// member-constraint envelope. WAF answers something else entirely for a request that
+/// leaves out information it cannot act without: the omission is reported against the
+/// REQUEST, naming the request shape and every member it did or did not carry
+/// (`crate::state::critical_information_missing`), under a code this service's model does
+/// not declare. Only the handler can state that, because only it knows which members the
+/// request carried — so the absence travels here, and the handler decides.
+///
+/// Everything else is read exactly as the generated deserializer reads it, and the
+/// centralized walk still applies every constraint this input schema carries, since the
+/// members below are written back to it unchanged.
+#[derive(Debug, Clone, Default)]
+pub struct ListWebACLsWireInput {
+    /// The `Scope` the request named, or `None` when it named none.
+    pub scope: Option<String>,
+    /// `NextMarker`, as the request carried it.
+    pub next_marker: Option<String>,
+    /// `Limit`, as the request carried it.
+    pub limit: Option<i32>,
+}
+
+impl ::aws_smithy_schema_server::DeserializableStruct for ListWebACLsWireInput {
+    fn deserialize(
+        deserializer: &mut dyn ::aws_smithy_schema::serde::ShapeDeserializer,
+    ) -> ::std::result::Result<Self, ::aws_smithy_schema::serde::SerdeError> {
+        let mut read = Self::default();
+        deserializer.read_struct(
+            LIST_WEB_AC_LS_INPUT_SCHEMA,
+            &mut |member, member_deserializer| {
+                match member.member_name() {
+                    Some(SCOPE_MEMBER) => {
+                        read.scope = Some(member_deserializer.read_string(member)?);
+                    }
+                    Some(NEXT_MARKER_MEMBER) => {
+                        read.next_marker = Some(member_deserializer.read_string(member)?);
+                    }
+                    Some(LIMIT_MEMBER) => {
+                        read.limit = Some(member_deserializer.read_integer(member)?);
+                    }
+                    _ => {}
+                }
+                Ok(())
+            },
+        )?;
+        Ok(read)
+    }
+}
+
+/// The members the request carried, written against the model's own member schemas, so
+/// the centralized walk — which drives the input as a serializer over
+/// `LIST_WEB_AC_LS_INPUT_SCHEMA` — judges exactly what the request sent.
+///
+/// The member schemas are the ones hanging off that input schema, walked rather than
+/// re-declared: the walk reads a member's constraints off them and the codec its wire
+/// name, so a hand-written codec that named its own would judge something the model does
+/// not declare. Nothing here can fail on a request: a member the model does not declare
+/// is simply not visited.
+impl ::aws_smithy_schema::serde::SerializableStruct for ListWebACLsWireInput {
+    fn serialize_members(
+        &self,
+        serializer: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
+    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
+        for member in LIST_WEB_AC_LS_INPUT_SCHEMA.members() {
+            match member.member_name() {
+                Some(SCOPE_MEMBER) => {
+                    if let Some(scope) = self.scope.as_deref() {
+                        serializer.write_string(member, scope)?;
+                    }
+                }
+                Some(NEXT_MARKER_MEMBER) => {
+                    if let Some(next_marker) = self.next_marker.as_deref() {
+                        serializer.write_string(member, next_marker)?;
+                    }
+                }
+                Some(LIMIT_MEMBER) => {
+                    if let Some(limit) = self.limit {
+                        serializer.write_integer(member, limit)?;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}

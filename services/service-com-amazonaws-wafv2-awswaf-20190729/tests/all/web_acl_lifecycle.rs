@@ -476,11 +476,14 @@ async fn web_acl_round_trips_through_get_update_and_delete() {
         "GetWebACL by ARN must answer the same web ACL, got {by_arn}"
     );
 
-    // Naming neither form is a parameter error, not a 404 and not a 501.
+    // Naming neither addressing form is the refusal WAF answers a request that left
+    // out what it cannot act without — not a 404 and not a 501. The class and the
+    // sentence are asserted over the whole table in
+    // `crate::web_acl_identifier_refusals`.
     waf.refused(
         "GetWebACL",
         json!({ "Name": "boot-acl" }),
-        "WAFInvalidParameterException",
+        "AccessDeniedException",
         "GetWebACL with only a Name",
     )
     .await;
@@ -1330,15 +1333,16 @@ async fn ip_set_address_count_is_bounded() {
     .await;
 }
 
-/// `GetWebACL` by ARN separates the two ARN failures the model names: an ARN that
-/// is malformed is a parameter error ("Your request references an ARN that is
-/// malformed"), while a well-formed ARN naming nothing stored — including one
-/// naming a resource of another type — is a nonexistent item. One row per way an
-/// ARN can be wrong.
+/// `GetWebACL` by ARN separates the ARN failures the model names: an ARN that is
+/// malformed is a parameter error ("Your request references an ARN that is
+/// malformed"), while a well-formed web ACL ARN of this endpoint's own region naming
+/// nothing stored is a nonexistent item. One row per way an ARN can be wrong.
+///
+/// An ARN of another resource KIND, and one naming another region, are refusals of
+/// their own; `crate::web_acl_identifier_refusals` asserts those.
 #[tokio::test]
 async fn get_web_acl_by_arn_separates_malformed_from_unknown() {
     let waf = Waf::new();
-    let (_ip_set_id, ip_set_arn, _lock) = create_ip_set(&waf, "REGIONAL", "arn-ips").await;
     let (_acl_id, acl_arn, _acl_lock) = create_web_acl(&waf, "REGIONAL", "arn-acl", json!([])).await;
 
     let found = waf.ok("GetWebACL", json!({ "ARN": acl_arn })).await;
@@ -1348,15 +1352,12 @@ async fn get_web_acl_by_arn_separates_malformed_from_unknown() {
         "a stored web ACL's own ARN must resolve to it, got {found}"
     );
 
-    // Well formed, but naming nothing this service holds as a web ACL.
-    let unknown: &[(&str, &str)] = &[
-        ("the ARN of an IP set", ip_set_arn.as_str()),
-        (
-            "a web ACL ARN that was never created",
-            "arn:aws:wafv2:us-west-2:000000000000:regional/webacl/absent/\
+    // Well formed and this endpoint's own, but naming no stored web ACL.
+    let unknown: &[(&str, &str)] = &[(
+        "a web ACL ARN that was never created",
+        "arn:aws:wafv2:us-west-2:000000000000:regional/webacl/absent/\
              11111111-2222-4333-8444-555555555555",
-        ),
-    ];
+    )];
     for (case, arn) in unknown {
         waf.refused(
             "GetWebACL",

@@ -165,6 +165,8 @@ mod web_acl_association_fanout;
 mod web_acl_associations;
 #[path = "all/web_acl_edge_reports.rs"]
 mod web_acl_edge_reports;
+#[path = "all/web_acl_identifier_refusals.rs"]
+mod web_acl_identifier_refusals;
 #[path = "all/web_acl_lifecycle.rs"]
 mod web_acl_lifecycle;
 #[path = "all/web_acl_request_metrics.rs"]

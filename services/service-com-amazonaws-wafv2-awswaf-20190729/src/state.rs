@@ -18,7 +18,8 @@ use std::sync::LazyLock;
 use ::aws_smithy_schema::serde::{SerdeError, SerializableStruct, ShapeSerializer};
 use ::aws_smithy_schema::{Schema, ShapeId, ShapeType, TraitMap};
 use ::aws_smithy_schema_server::constraints::{
-    validate, ElementConstraintsTrait, LengthTrait, PatternTrait, Violation, ViolationKind,
+    validate, ElementConstraintsTrait, EnumTrait, LengthTrait, PatternTrait, Violation,
+    ViolationKind,
 };
 
 use crate::ops::types::{
@@ -42,8 +43,14 @@ mod api_keys;
 mod capacity;
 /// The managed rule groups this service publishes.
 mod catalog;
+/// How a member-constraint failure is STATED: the clause order and the form a
+/// `@pattern` is reported in.
+mod constraint_clauses;
 /// The `Description` an entity carries, and the form it has to take.
 mod description;
+/// What WAF answers a request whose ARN it cannot use, or that leaves out information
+/// the call cannot be made without.
+mod identifier_refusals;
 /// The notation and the order an IP set holds its `Addresses` in.
 mod ip_set_addresses;
 /// The caller-supplied regular expressions a save carries, and the refusal one that
@@ -56,7 +63,9 @@ mod scope;
 pub use api_keys::*;
 pub use capacity::*;
 pub use catalog::*;
+pub use constraint_clauses::*;
 pub use description::*;
+pub use identifier_refusals::*;
 pub use ip_set_addresses::*;
 pub use patterns::*;
 pub use rule_set::*;
@@ -3659,6 +3668,20 @@ pub fn arn_resource_kind(value: &str) -> Option<&str> {
     value.split(':').nth(5)?.split('/').nth(1)
 }
 
+/// The REGION segment of a wafv2 resource ARN, or `None` when `value` is not one at all.
+///
+/// Same layout as [`arn_resource_kind`], so the region is the ARN's fourth
+/// colon-separated field. A resource is reached through the endpoint of the region its
+/// ARN names — [`resource_arn`] mints that segment from the scope and the endpoint the
+/// create arrived at — so this is what a request addressing a resource BY ARN is judged
+/// against: an endpoint cannot act on an ARN naming another region's namespace.
+pub fn arn_resource_region(value: &str) -> Option<&str> {
+    if !is_wafv2_resource_arn(value) {
+        return None;
+    }
+    value.split(':').nth(3)
+}
+
 /// This service's Smithy namespace, for the shadow member schemas below.
 const NAMESPACE: &str = "com.amazonaws.wafv2";
 
@@ -3842,13 +3865,6 @@ impl SerializableStruct for ConstrainedMembers<'_> {
 /// over, and report every violation it found.
 pub fn validate_members(members: &[(&'static Schema, ConstrainedValue<'_>)]) -> Vec<Violation> {
     validate(&ConstrainedMembers { members }, &CONSTRAINED_INPUT_SCHEMA)
-}
-
-/// The framework's own `ValidationException` envelope for `violations`, so a
-/// member refused by a handler reads exactly like one refused at the boundary.
-pub fn constraint_envelope(violations: &[Violation]) -> String {
-    ::aws_smithy_schema_server::envelope(violations)
-        .unwrap_or_else(|| "invalid request".to_string())
 }
 
 /// The envelope WAF's request validator answers for a collection of scalars,

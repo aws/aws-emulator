@@ -2661,3 +2661,29 @@ mod iam_session_tag_authorization;
 // (`cloudformation_metric_stream_estate_is_drainable` is declared ONCE, in the sorted span
 // (`cloudformation_metric_stream_filter_update` is declared ONCE, in the head region at the
 // top of this file: it was appended here as well while two branches were landing at once,
+// above beside the other CloudFormation suites: it was appended here as well while two
+// (`apigateway_sns_service_integration` is declared ONCE, further up this tail: the merge of
+// two tails that had both edited this list declared it a second time here.)
+// (`apigateway_cognito_authorizer_app_client_audience` is declared once, in the sorted
+// block at the top of this file: a module may be declared only once.)
+// (`zz_probe` is declared in the head region above, with the note on why the file is still
+// there: a module may be declared only once.)
+// (`cloudformation_metric_stream_filter_update` is declared ONCE, further up this tail: the
+// merge of two tails that had both edited this list declared it a second time here.)
+// (`https_front_door_concurrent_pooled_producer` is declared ONCE, further down this tail:
+// the merge of two tails that had both edited this list declared it twice.)
+// (`sdb_legacy_query_api_on_the_assembled_router` and
+// `apigateway_cognito_authorizer_app_client_audience` are declared ONCE, in the head
+// region at the top of this file: a module may be declared only once, and two branches
+// landing at once appended each of them here as well.)
+// (`cloudtrail_read_only_api_calls` and `zz_probe` are declared ONCE, in the sorted span
+// above: they had each lost their declaration while two branches removed the same duplicate,
+// and the declaration that stands is the one up there.)
+// `cloudformation_scripted_queue_deploy` are each declared ONCE, in the sorted span at the
+// head of this file: each was appended here as well while two branches were landing at
+// (`https_front_door_concurrent_pooled_producer` is declared ONCE, a few lines above: a
+// module may be declared only once, and two branches landing at once declared it twice.)
+// (`cloudformation_metric_stream_estate_is_drainable` is declared in the head region
+// this tail: a module may be declared only once, and two branches landing at once appended
+// it here as well.)
+// this tail: the merge of two tails that had both edited this list declared it twice.)

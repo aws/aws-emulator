@@ -177,6 +177,94 @@ impl SerializableStruct for ValidationException {
     }
 }
 
+/// The `Message` member of the synthetic unmodeled-refusal shape.
+///
+/// Spelled `Message` because that is how WAF spells it on the refusals it states with a
+/// code its own model does not declare (the recorded bodies of this class carry
+/// `Message`), unlike the modelled exceptions of this service, whose member is `message`
+/// (`smithy_query(query="shape",shape="WAFNonexistentItemException")`).
+static UNMODELED_REFUSAL_MESSAGE: Schema = Schema::new_member(
+    ShapeId::from_static(
+        "smithy.framework#UnmodeledRefusal$Message",
+        "smithy.framework",
+        "Message",
+    ),
+    ShapeType::String,
+    "Message",
+    0,
+)
+.with_xml_name("Message");
+
+/// Schema for the synthetic unmodeled-refusal shape — the BODY (`{"Message": …}`) of a
+/// refusal this service states with an error code its Smithy model does not declare.
+///
+/// In the `smithy.framework` namespace for the same reason as [`NOT_IMPLEMENTED_SCHEMA`]:
+/// the shape is not in this service's model, so it must not collide with a modeled one.
+/// The wire error code and the HTTP status travel beside it, on [`UnmodeledRefusal`],
+/// because a schema only shapes the body.
+pub static UNMODELED_REFUSAL_SCHEMA: Schema = Schema::new_struct(
+    ShapeId::from_static(
+        "smithy.framework#UnmodeledRefusal",
+        "smithy.framework",
+        "UnmodeledRefusal",
+    ),
+    ShapeType::Structure,
+    &[&UNMODELED_REFUSAL_MESSAGE],
+);
+
+/// The wire error code WAF answers a request whose identifiers it will not act on at
+/// all — an ARN that names a resource of another kind, or a request that leaves out
+/// information the call cannot be made without. It is what a client branches on, and
+/// this service's model declares no such shape.
+pub const ACCESS_DENIED_CODE: &str = "AccessDeniedException";
+
+/// The HTTP status of that refusal. 400, not 403: the recorded responses of this class
+/// are client-input refusals that happen to carry the access-denied code, so a client
+/// must not read them as a credential problem to re-sign.
+pub const ACCESS_DENIED_STATUS: u16 = 400;
+
+/// One refusal this service states with an error code its model does not declare.
+///
+/// It carries its own wire code, HTTP status and message precisely because the shape is
+/// not in the model, so there is no `#[operation_error]` variant that could render it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnmodeledRefusal {
+    /// The wire error code (`__type`, and `x-amzn-errortype` where the protocol sets it).
+    pub code: &'static str,
+    /// The HTTP status.
+    pub status: u16,
+    /// The message this refusal carries.
+    pub message: String,
+}
+
+impl UnmodeledRefusal {
+    /// The refusal of a request WAF will not act on: [`ACCESS_DENIED_CODE`] at
+    /// [`ACCESS_DENIED_STATUS`], carrying `message` — which the wording this service
+    /// owns (`crate::state`) composes.
+    pub fn access_denied(message: impl Into<String>) -> Self {
+        Self {
+            code: ACCESS_DENIED_CODE,
+            status: ACCESS_DENIED_STATUS,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for UnmodeledRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for UnmodeledRefusal {}
+
+impl SerializableStruct for UnmodeledRefusal {
+    fn serialize_members(&self, s: &mut dyn ShapeSerializer) -> Result<(), SerdeError> {
+        s.write_string(&UNMODELED_REFUSAL_MESSAGE, self.message.as_str())?;
+        Ok(())
+    }
+}
+
 /// An operation's error channel: either the synthetic scaffold signal, or one of the
 /// operation's own modeled errors.
 #[derive(Debug)]
@@ -185,6 +273,10 @@ pub enum Scaffolded<E> {
     NotImplemented(NotImplemented),
     /// A modeled error the operation declares. Renders with the model's own status.
     Modeled(E),
+    /// A refusal this service states with a code its model does not declare — so it
+    /// cannot travel as [`Modeled`](Self::Modeled). Renders with the status and the code
+    /// the refusal itself carries.
+    Unmodeled(UnmodeledRefusal),
     /// The request was refused as invalid. Renders as HTTP 400 with the error code
     /// `ValidationException`.
     ///
@@ -221,6 +313,15 @@ impl<E> Scaffolded<E> {
     pub fn validation(message: impl Into<String>) -> Self {
         Self::ValidationException(ValidationException::new(message))
     }
+
+    /// Refuse the request the way WAF refuses one whose identifiers it will not act on:
+    /// [`ACCESS_DENIED_CODE`] at [`ACCESS_DENIED_STATUS`], carrying `message`.
+    ///
+    /// The verdict and the wording both live in `crate::state`; this constructor is only
+    /// how they travel, because the code is not a shape this service's model declares.
+    pub fn access_denied(message: impl Into<String>) -> Self {
+        Self::Unmodeled(UnmodeledRefusal::access_denied(message))
+    }
 }
 
 impl<E: std::fmt::Display> std::fmt::Display for Scaffolded<E> {
@@ -228,6 +329,7 @@ impl<E: std::fmt::Display> std::fmt::Display for Scaffolded<E> {
         match self {
             Self::NotImplemented(e) => write!(f, "{e}"),
             Self::Modeled(e) => write!(f, "{e}"),
+            Self::Unmodeled(e) => write!(f, "{e}"),
             Self::ValidationException(e) => write!(f, "{e}"),
         }
     }
@@ -240,6 +342,7 @@ impl<E: std::error::Error + 'static> std::error::Error for Scaffolded<E> {
         match self {
             Self::NotImplemented(e) => e.source(),
             Self::Modeled(e) => e.source(),
+            Self::Unmodeled(e) => e.source(),
             Self::ValidationException(e) => e.source(),
         }
     }
@@ -254,6 +357,7 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
         match self {
             Self::NotImplemented(e) => e,
             Self::Modeled(e) => e.as_serializable(),
+            Self::Unmodeled(e) => e,
             Self::ValidationException(e) => e,
         }
     }
@@ -262,6 +366,7 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
         match self {
             Self::NotImplemented(_) => &NOT_IMPLEMENTED_SCHEMA,
             Self::Modeled(e) => e.variant_schema(),
+            Self::Unmodeled(_) => &UNMODELED_REFUSAL_SCHEMA,
             Self::ValidationException(_) => &VALIDATION_EXCEPTION_SCHEMA,
         }
     }
@@ -274,6 +379,7 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
         match self {
             Self::NotImplemented(_) => "NotImplemented",
             Self::Modeled(e) => e.shape_name(),
+            Self::Unmodeled(e) => e.code,
             Self::ValidationException(_) => "ValidationException",
         }
     }
@@ -286,6 +392,7 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
         match self {
             Self::NotImplemented(_) => 501,
             Self::Modeled(e) => e.http_status(),
+            Self::Unmodeled(e) => e.status,
             Self::ValidationException(_) => 400,
         }
     }
@@ -297,7 +404,8 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
             // envelope carries the signal on the query protocols too.
             Self::NotImplemented(_) => None,
             Self::Modeled(e) => e.query_error_code(),
-            // Same reason: the synthetic shape carries no `awsQueryError` trait.
+            // Same reason for both: the synthetic shapes carry no `awsQueryError` trait.
+            Self::Unmodeled(_) => None,
             Self::ValidationException(_) => None,
         }
     }

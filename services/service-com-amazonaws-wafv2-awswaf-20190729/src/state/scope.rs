@@ -16,6 +16,21 @@ pub const SCOPE_CLOUDFRONT: &str = "CLOUDFRONT";
 /// See [`SCOPE_CLOUDFRONT`].
 pub const SCOPE_REGIONAL: &str = "REGIONAL";
 
+/// The `Scope` value set, in the order the model declares it — which is the order the
+/// request validator lists it in when it refuses a value outside it.
+pub const SCOPE_VALUES: &[&str] = &[SCOPE_CLOUDFRONT, SCOPE_REGIONAL];
+
+/// The scope token WAF reads as a scope WITHOUT the `Scope` enum declaring it: the name
+/// of the global namespace itself, which every CLOUDFRONT-scoped resource's ARN carries
+/// as its first resource segment (`global/…`, [`resource_arn`]), spelled as a scope.
+///
+/// Recorded behaviour separates it from every other undeclared value: WAF answers this
+/// one with its own bad-parameter refusal naming the scope ([`invalid_scope_exception`]),
+/// and a token its scope vocabulary does not carry at all with the request validator's
+/// value-set clause ([`scope_value_set_envelope`]) — so the two are two different
+/// refusals, not one.
+pub const SCOPE_GLOBAL_NAMESPACE: &str = "GLOBAL";
+
 /// The region an ARN carries when the request names none: the emulator's default
 /// endpoint region.
 pub const DEFAULT_REGION: &str = "us-east-1";
@@ -23,6 +38,52 @@ pub const DEFAULT_REGION: &str = "us-east-1";
 /// `true` when `scope` is one of the two values the `Scope` enum declares.
 pub fn is_known_scope(scope: &str) -> bool {
     matches!(scope, SCOPE_CLOUDFRONT | SCOPE_REGIONAL)
+}
+
+/// `true` when WAF reads `scope` as a scope at all — one of the two values the enum
+/// declares, or [`SCOPE_GLOBAL_NAMESPACE`].
+///
+/// A value this answers `false` for is not a scope WAF can even name, so it is the
+/// request validator's value-set refusal rather than an operation's.
+pub fn is_scope_token(scope: &str) -> bool {
+    is_known_scope(scope) || scope == SCOPE_GLOBAL_NAMESPACE
+}
+
+/// `Scope`: the `@enum` value set and nothing else.
+static SCOPE_TRAITS: LazyLock<TraitMap> = LazyLock::new(|| {
+    let mut traits = TraitMap::new();
+    traits.insert(Box::new(EnumTrait::new(SCOPE_VALUES)));
+    traits
+});
+
+/// `Scope`, as every operation that takes one declares it: the member schema the
+/// validating walk judges a scope value against.
+///
+/// The walk reads only a member schema's NAME — which is what the clause's `'scope'`
+/// path comes from — and its trait map, so one declaration serves every such operation.
+static M_SCOPE: Schema = Schema::new_member(
+    ShapeId::from_static(
+        "com.amazonaws.wafv2#ConstrainedInput$Scope",
+        NAMESPACE,
+        "Scope",
+    ),
+    ShapeType::String,
+    "Scope",
+    0,
+)
+.with_traits(&SCOPE_TRAITS);
+
+/// The request validator's envelope for a scope value WAF's vocabulary does not carry:
+/// the value-set clause naming the two values the enum declares.
+///
+/// Built by the framework's own walk over [`M_SCOPE`] ([`validate_members`]), so a scope
+/// refused by an operation that judges the value itself reads exactly like one refused
+/// at the request boundary.
+pub fn scope_value_set_envelope(scope: &str) -> String {
+    constraint_envelope(&validate_members(&[(
+        &M_SCOPE,
+        ConstrainedValue::Text(scope),
+    )]))
 }
 
 /// The `ErrorReason` WAF carries for a `Scope` it will not accept, as the recorded

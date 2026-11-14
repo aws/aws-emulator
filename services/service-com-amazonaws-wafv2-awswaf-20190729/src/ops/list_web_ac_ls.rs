@@ -114,6 +114,11 @@ pub enum ListWebACLsErrorModeled {
 /// lets a scaffolded operation answer 501 for one whose model declares no errors at all.
 pub type ListWebACLsError = crate::scaffolded::Scaffolded<ListWebACLsErrorModeled>;
 
+/// The input shape as the model names it
+/// (`smithy_query(query="operation",operation="ListWebACLs")` → `ListWebACLsRequest`),
+/// which is how WAF names the request in the refusal for an omission.
+const LIST_WEB_AC_LS_REQUEST_SHAPE: &str = "ListWebACLsRequest";
+
 /// Lets `?` and `.into()` lift a modeled failure into the error channel, so an
 /// implemented handler writes `Err(SomeModeledError.into())` rather than naming the
 /// wrapper variant. See `crate::scaffolded` for how to drop the wrapper entirely once
@@ -146,7 +151,7 @@ impl<Eng> ListWebACLs<Eng> {
 impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_runtime::Operation
     for ListWebACLs<Eng>
 {
-    type Input = ListWebACLsInput;
+    type Input = ListWebACLsWireInput;
     type Output = ListWebACLsOutput;
     type Error = ListWebACLsError;
 
@@ -162,8 +167,34 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ) -> Result<Self::Output, Self::Error> {
         // A read: `ctx` carries the request's own metadata (the endpoint region the
         // scope is judged against) and nothing here writes to the store.
-        if let Err(refusal) = crate::service::requests::validate_scope(&input.scope, ctx.parts()) {
-            return Err(ListWebACLsErrorModeled::WAFInvalidParameterException(refusal).into());
+        //
+        // `Limit` is a number, so the omission refusal below renders it as its decimal
+        // text; the other two members are already strings.
+        let limit_rendering = input.limit.map(|limit| limit.to_string());
+        //
+        // A request that names NO scope asked for a listing of nothing: the member is
+        // `@required`, and WAF reports the omission against the request itself — the
+        // request shape and every member it did or did not carry — rather than as the
+        // member-constraint envelope a bad VALUE gets. The absence reaches here because
+        // this operation reads its input through `ListWebACLsWireInput` (see that type).
+        let Some(scope) = input.scope.as_deref() else {
+            return Err(crate::scaffolded::Scaffolded::access_denied(
+                crate::state::critical_information_missing(
+                    LIST_WEB_AC_LS_REQUEST_SHAPE,
+                    &[
+                        ("Scope", None),
+                        ("NextMarker", input.next_marker.as_deref()),
+                        ("Limit", limit_rendering.as_deref()),
+                    ],
+                ),
+            ));
+        };
+        // A scope the enum does not declare, and the global scope at an endpoint that
+        // does not serve it, are the same bad parameter
+        // (`crate::service::requests::judge_scope`) — judged here rather than at the
+        // request boundary, so WAF's own `Field`/`Parameter`/`Reason` reach the caller.
+        if let Err(refusal) = crate::service::requests::judge_scope(scope, ctx.parts()) {
+            return Err(refusal.refuse(ListWebACLsErrorModeled::WAFInvalidParameterException));
         }
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(ListWebACLsErrorModeled::WAFInternalErrorException(
@@ -180,7 +211,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut entries: Vec<&crate::state::WebAclEntry> = state
             .web_acls
             .values()
-            .filter(|entry| entry.scope == input.scope)
+            .filter(|entry| entry.scope == scope)
             .collect();
         entries.sort_by(|left, right| left.web_acl.name.cmp(&right.web_acl.name));
 

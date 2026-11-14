@@ -3,8 +3,11 @@
 //! @op GetWebACL
 //! Answers the stored WebACL, resolved either by `(Scope, Name, Id)` or by `ARN`,
 //! together with its current `LockToken`. A resource that is not stored is
-//! `WAFNonexistentItemException`; a request that names neither form is
-//! `WAFInvalidParameterException` (both HTTP 400).
+//! `WAFNonexistentItemException`; an ARN this request cannot use — malformed, of
+//! another region, or disagreeing with the `Scope` named — is
+//! `WAFInvalidParameterException`; an ARN naming another KIND of resource, and a
+//! request that names no identifier at all, are the refusals WAF states with the
+//! access-denied code (every one of them HTTP 400).
 //!
 //! ## Shape of an operation
 //!
@@ -175,14 +178,46 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A read: `ctx` carries the request's own metadata (the endpoint region a
         // named scope is judged against) and nothing here writes to the store.
         //
-        // A request that NAMES a scope has it judged before anything is looked up —
-        // an unknown value, and the global scope at an endpoint that does not serve
-        // it, are the same bad parameter (`crate::service::requests::validate_scope`); a request
-        // addressing the web ACL by its ARN alone names none, and the ARN carries the
-        // namespace itself.
+        // Two addressing forms, as the model declares: every member is optional, and
+        // a web ACL is named EITHER by its ARN or by the (Scope, Name, Id) triple. WAF
+        // judges the IDENTIFIER the request handed it FIRST — before the `Scope`
+        // member, and before anything is resolved — so a request whose ARN names the
+        // wrong namespace or the wrong kind of resource is told about its ARN, and one
+        // that names no identifier at all is told what it left out.
+        if let Some(arn) = input.arn.as_deref() {
+            judge_web_acl_arn(
+                arn,
+                input.scope.as_deref(),
+                &crate::service::requests::request_region(ctx.parts()),
+            )?;
+        } else if input.name.is_none() || input.scope.is_none() || input.id.is_none() {
+            // Neither form: the request named no ARN and no complete triple, so it
+            // asked WAF to resolve nothing. WAF reports the omission against the
+            // REQUEST — the request shape and every member it did or did not carry
+            // (`crate::state::critical_information_missing`) — rather than as a bad
+            // parameter, because no parameter is at fault.
+            return Err(crate::scaffolded::Scaffolded::access_denied(
+                crate::state::critical_information_missing(
+                    GET_WEB_ACL_REQUEST_SHAPE,
+                    &[
+                        ("Name", input.name.as_deref()),
+                        ("Scope", input.scope.as_deref()),
+                        ("Id", input.id.as_deref()),
+                        ("ARN", input.arn.as_deref()),
+                    ],
+                ),
+            ));
+        }
+
+        // A request that NAMES a scope has it judged next — an undeclared value, and the
+        // global scope at an endpoint that does not serve it, are judged by the same
+        // shared reading (`crate::service::requests::judge_scope`), here rather than at
+        // the request boundary so WAF's own `Field`/`Parameter`/`Reason` reach the
+        // caller; a request addressing the web ACL by its ARN alone names none, and the
+        // ARN carries the namespace itself.
         if let Some(scope) = input.scope.as_deref() {
-            if let Err(refusal) = crate::service::requests::validate_scope(scope, ctx.parts()) {
-                return Err(GetWebACLErrorModeled::WAFInvalidParameterException(refusal).into());
+            if let Err(refusal) = crate::service::requests::judge_scope(scope, ctx.parts()) {
+                return Err(refusal.refuse(GetWebACLErrorModeled::WAFInvalidParameterException));
             }
         }
         let Some(state) = crate::state::service_state(&*self.engine) else {
@@ -195,22 +230,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         let state = state.lock();
 
-        // Two addressing forms, as the model declares: every member is optional, and
-        // a web ACL is named EITHER by its ARN or by the (Scope, Name, Id) triple.
         let entry = if let Some(arn) = input.arn.as_deref() {
-            // The model names two different ARN failures: malformed, and naming
-            // nothing that exists.
-            if !crate::state::is_wafv2_resource_arn(arn) {
-                return Err(GetWebACLErrorModeled::WAFInvalidParameterException(
-                    crate::state::invalid_arn_exception(arn),
-                )
-                .into());
-            }
+            // The ARN is one this request may use (judged above), so all that is left
+            // is whether it names a web ACL this account holds.
             match state.arn_index.get(arn) {
                 Some(crate::state::ResourceRef::WebAcl { scope, id }) => {
                     state.web_acls.get(&(scope.clone(), id.clone()))
                 }
-                // An ARN that resolves to something else is not a web ACL ARN.
                 Some(crate::state::ResourceRef::IpSet { .. })
                 | Some(crate::state::ResourceRef::RegexPatternSet { .. })
                 | Some(crate::state::ResourceRef::RuleGroup { .. })
@@ -223,16 +249,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 input.id.as_deref(),
             ) {
                 (Some(scope), Some(name), Some(id)) => state.web_acl(scope, name, id),
-                _ => {
-                    return Err(GetWebACLErrorModeled::WAFInvalidParameterException(
-                        crate::state::invalid_parameter_exception(
-                            crate::state::FIELD_WEB_ACL,
-                            "ARN",
-                            "a web ACL is addressed by its ARN or by its name, scope and id",
-                        ),
-                    )
-                    .into());
-                }
+                // The incomplete triple was refused above, so this arm states that
+                // invariant rather than guarding a case a request can still reach.
+                _ => None,
             }
         };
 
@@ -255,4 +274,68 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             application_integration_url: None,
         })
     }
+}
+
+/// The input shape as the model names it
+/// (`smithy_query(query="operation",operation="GetWebACL")` → `GetWebACLRequest`), which
+/// is how WAF names the request in the two refusals that report the request itself.
+const GET_WEB_ACL_REQUEST_SHAPE: &str = "GetWebACLRequest";
+
+/// `Ok(())` when `arn` is an ARN this request may use to address a web ACL, else the
+/// refusal WAF answers for it.
+///
+/// An ARN identifies a resource completely — the region whose endpoint serves it, its
+/// namespace, its kind, its name and its id — so WAF reads all of that off the value
+/// before it resolves anything, and the ways it can be unusable are two different
+/// refusals.
+///
+/// Three of them are the invalid-parameter refusal naming the ARN (`Field` RESOURCE_ARN,
+/// `Reason` the ARN sentence, `Parameter` the value exactly as supplied) — the ARN that
+/// "is malformed" of `WAFInvalidParameterException`'s own doc:
+///
+/// * a value that is no wafv2 resource ARN at all;
+/// * an ARN naming a region other than the one this request was signed for: a resource
+///   lives in the namespace of the region its ARN names ([`crate::state::resource_arn`]),
+///   and an endpoint cannot act on another region's namespace, so the ARN is not one this
+///   endpoint can use;
+/// * an ARN whose namespace segment is not the `Scope` the request names — the two
+///   disagree about which namespace to look in, and it is the ARN that carries the
+///   answer, so WAF reports the ARN rather than the scope.
+///
+/// The last is a different class: an ARN of the right form naming a resource of another
+/// KIND is a resource this request may not address at all — the "corresponds to a
+/// resource with which a web ACL can't be associated" half of that doc — and WAF answers
+/// it with the access-denied code and a sentence naming the request shape and the ARN
+/// (`crate::state::invalid_arn_for_request`), a code this service's model does not
+/// declare.
+///
+/// An ARN that passes all of them and names nothing stored is the nonexistent-item
+/// refusal, which the caller's own lookup reports.
+fn judge_web_acl_arn(
+    arn: &str,
+    scope: Option<&str>,
+    request_region: &str,
+) -> Result<(), GetWebACLError> {
+    let unusable_arn = || {
+        GetWebACLError::from(GetWebACLErrorModeled::WAFInvalidParameterException(
+            crate::state::invalid_arn_exception(arn),
+        ))
+    };
+    if !crate::state::is_wafv2_resource_arn(arn) {
+        return Err(unusable_arn());
+    }
+    if crate::state::arn_resource_region(arn) != Some(request_region) {
+        return Err(unusable_arn());
+    }
+    if let Some(scope) = scope {
+        if crate::state::arn_scope(arn) != Some(scope) {
+            return Err(unusable_arn());
+        }
+    }
+    if crate::state::arn_resource_kind(arn) != Some(crate::state::WEB_ACL_ARN_KIND) {
+        return Err(crate::scaffolded::Scaffolded::access_denied(
+            crate::state::invalid_arn_for_request(GET_WEB_ACL_REQUEST_SHAPE, arn),
+        ));
+    }
+    Ok(())
 }

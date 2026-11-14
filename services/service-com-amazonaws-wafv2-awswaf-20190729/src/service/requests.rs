@@ -120,3 +120,53 @@ pub fn validate_minted_scope(scope: &str) -> Result<(), WAFInvalidParameterExcep
     }
     Ok(())
 }
+
+/// What a request naming a scope is refused with, where the OPERATION judges the value
+/// rather than the request boundary.
+///
+/// An operation whose input hands `Scope` over (`skip_validation`, see `src/ops/types/`)
+/// sees every value a caller can send, and the two WAF answers them with are two
+/// different refusals:
+///
+/// * [`Self::Parameter`] — WAF's own bad-parameter refusal, carrying `Field` SCOPE_VALUE,
+///   the offending value in `Parameter` and the scope reason. This is what a scope WAF
+///   READS as a scope but will not act on gets: the global namespace's own token
+///   ([`crate::state::SCOPE_GLOBAL_NAMESPACE`]), and the CLOUDFRONT scope at an endpoint
+///   that does not serve it.
+/// * [`Self::Constraint`] — the request validator's value-set clause, for a token WAF's
+///   scope vocabulary does not carry at all.
+pub enum ScopeRefusal {
+    /// WAF's own bad-parameter refusal for the scope.
+    Parameter(WAFInvalidParameterException),
+    /// The request validator's envelope, as [`crate::state::scope_value_set_envelope`]
+    /// words it.
+    Constraint(String),
+}
+
+impl ScopeRefusal {
+    /// This refusal on the error channel of the operation that made the judgement:
+    /// `modeled` is that operation's `WAFInvalidParameterException` variant, and the
+    /// validator's envelope travels on the channel's own validation variant, which
+    /// renders the same status and code the boundary would have.
+    pub fn refuse<E>(
+        self,
+        modeled: impl FnOnce(WAFInvalidParameterException) -> E,
+    ) -> crate::scaffolded::Scaffolded<E> {
+        match self {
+            Self::Parameter(refusal) => crate::scaffolded::Scaffolded::Modeled(modeled(refusal)),
+            Self::Constraint(message) => crate::scaffolded::Scaffolded::validation(message),
+        }
+    }
+}
+
+/// [`validate_scope`] for an operation that judges the scope VALUE itself, so a value
+/// outside the `Scope` enum reaches it: the same two conditions, plus the split between
+/// the two refusals WAF answers an undeclared value with ([`ScopeRefusal`]).
+pub fn judge_scope(scope: &str, parts: &::http::request::Parts) -> Result<(), ScopeRefusal> {
+    if !crate::state::is_scope_token(scope) {
+        return Err(ScopeRefusal::Constraint(
+            crate::state::scope_value_set_envelope(scope),
+        ));
+    }
+    validate_scope(scope, parts).map_err(ScopeRefusal::Parameter)
+}

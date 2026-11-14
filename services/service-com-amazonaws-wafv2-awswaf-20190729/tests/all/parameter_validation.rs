@@ -22,7 +22,7 @@
 
 use serde_json::{json, Value};
 
-use crate::web_acl_lifecycle::{create_ip_set, rule, visibility, Waf};
+use crate::web_acl_lifecycle::{create_ip_set, create_web_acl, rule, visibility, Waf};
 
 /// The `ErrorReason` WAF carries for an ARN it will not accept, as recorded.
 /// Spelled out here independently of the service's own constant, so this suite
@@ -108,6 +108,11 @@ async fn every_invalid_parameter_refusal_carries_field_parameter_and_reason() {
     let waf = Waf::new();
     let (_ip_set_id, ip_set_arn, _ip_set_lock) =
         create_ip_set(&waf, "REGIONAL", "probe-reference-ips").await;
+    // A CLOUDFRONT-scoped web ACL, for the WEB_ACL row: such a web ACL is put in front
+    // of a distribution through the distribution's own configuration, so associating it
+    // through this API is the refusal that names WEB_ACL.
+    let (_global_id, global_acl_arn, _global_lock) =
+        create_web_acl(&waf, "CLOUDFRONT", "probe-global-acl", json!([])).await;
 
     // A rule tree one level past the published nesting maximum, for the STATEMENT
     // row: ten `NotStatement`s wrapping a leaf is eleven levels.
@@ -156,12 +161,19 @@ async fn every_invalid_parameter_refusal_carries_field_parameter_and_reason() {
             field: "RESOURCE_ARN",
             parameter: malformed_arn.to_string(),
         },
+        // A request that names no identifier at all is NOT an invalid parameter: WAF
+        // reports the omission against the request itself, under its own code and
+        // sentence, which `crate::web_acl_identifier_refusals` asserts.
         Case {
-            case: "GetWebACL, neither addressing form",
-            operation: "GetWebACL",
-            request: json!({ "Name": "probe-acl" }),
+            case: "AssociateWebACL, a CLOUDFRONT-scoped web ACL",
+            operation: "AssociateWebACL",
+            request: json!({
+                "WebACLArn": &global_acl_arn,
+                "ResourceArn": "arn:aws:elasticloadbalancing:us-west-2:000000000000:\
+                                loadbalancer/app/probe-lb/1234567890abcdef",
+            }),
             field: "WEB_ACL",
-            parameter: "ARN".to_string(),
+            parameter: global_acl_arn.clone(),
         },
         Case {
             case: "CreateIPSet, an address that is not in CIDR notation",
