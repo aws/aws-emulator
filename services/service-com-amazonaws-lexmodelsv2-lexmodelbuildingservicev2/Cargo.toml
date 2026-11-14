@@ -25,12 +25,16 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 # Hex, for encoding the opaque `nextToken` a listing hands back.
 hex = { workspace = true }
+# The zip archive `CreateExport` assembles for a bot or bot locale export.
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
 sha2 = { workspace = true }
+# `zip` reads back the archive an export assembled, as a client that downloaded it does.
+zip = { version = "9", default-features = false, features = ["deflate"] }
 # `time` is enabled for the tests only: they wait past a status transition's due instant.
 tokio = { workspace = true, features = ["time"] }
 

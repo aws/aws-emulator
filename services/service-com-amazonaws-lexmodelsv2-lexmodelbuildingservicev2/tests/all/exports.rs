@@ -16,7 +16,8 @@
 //!   failed, and records nothing — so a listing scoped to what it named stays empty;
 //! * a specification that resolves records an export job, which `DescribeExport` reports
 //!   back member for member and `ListExports` summarizes;
-//! * a recorded job is `InProgress` until the terminal status the clock owes falls due;
+//! * a recorded job is `InProgress` until the terminal status the clock owes falls due,
+//!   and reports the address its archive is served at once it is `Completed`;
 //! * a listing is built from the stored jobs, scoped by the identifiers the request
 //!   names, filtered by the kind of resource, ordered by the one sortable attribute and
 //!   paged.
@@ -363,8 +364,9 @@ async fn a_created_export_is_recorded_and_read_back() {
     );
 
     // Past the due instant the transition the clock owed is materialised: the job leaves
-    // the transient status for the terminal one, reports the instant it was updated at,
-    // and states why there is nothing to download — and no address to download it from.
+    // the transient status for the one in which the archive is ready, reports the instant
+    // it was updated at, states no reason for a failure that did not happen, and announces
+    // the address its archive is served at.
     for (case, request, created) in &submitted {
         let export_id = text(created, "exportId");
         let settled = settled_export(&router, case, &export_id).await;
@@ -380,21 +382,20 @@ async fn a_created_export_is_recorded_and_read_back() {
         );
         assert_eq!(
             text(&settled, "exportStatus"),
-            state::EXPORT_STATUS_FAILED,
-            "case {case:?}: a job that produced no archive must report the modelled failure \
-             status, got {settled:?}"
+            state::EXPORT_STATUS_COMPLETED,
+            "case {case:?}: a job whose archive was assembled must report the status in \
+             which the export is ready to download, got {settled:?}"
         );
         assert_eq!(
             member(&settled, "failureReasons"),
-            json!([state::EXPORT_ARCHIVE_UNSUPPORTED_REASON]),
-            "case {case:?}: the settled job must state why the export could not be completed, \
-             got {settled:?}"
-        );
-        assert_eq!(
-            member(&settled, "downloadUrl"),
             Value::Null,
-            "case {case:?}: no archive was produced, so no address may be announced for one, \
-             got {settled:?}"
+            "case {case:?}: a job that did not fail reports no failure reasons, got \
+             {settled:?}"
+        );
+        assert!(
+            text(&settled, "downloadUrl").starts_with("https://"),
+            "case {case:?}: a completed job must announce the address its archive is \
+             served at, got {settled:?}"
         );
     }
 

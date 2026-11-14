@@ -12,11 +12,17 @@
 //! ([`crate::state::EXPORT_SETTLES_AFTER`]), which is what `DescribeExport` and
 //! `ListExports` read back.
 //!
-//! What this records is the JOB, not the zip archive the job assembles: nothing in this
-//! emulator produces one, and no operation of this service hands one out, so the status a
-//! recorded job settles on is the modelled failure status carrying the reason that says
-//! so ([`crate::state::EXPORT_ARCHIVE_UNSUPPORTED_REASON`]) rather than the one that tells
-//! a caller an archive is ready to download.
+//! What this records is the JOB together with the zip archive the job hands out: "creates a
+//! zip archive containing the contents of a bot or a bot locale", so the archive is
+//! assembled HERE, out of the records the store holds for the resource that just resolved
+//! ([`crate::state::ComAmazonawsLexmodelsv2Lexmodelbuildingservicev2State::export_archive_files`]
+//! reads them and [`crate::state::export_archive_bytes`] compresses them, both on the
+//! blocking pool). Assembling it with the call that records the job is what makes the
+//! archive a snapshot of the instant the export was asked for, and it is why the status the
+//! clock then owes is the one that tells a caller the archive is ready to download. A
+//! resource whose definition files are past either cap one archive has
+//! ([`crate::state::EXPORT_ARCHIVE_MAX_FILES`], [`crate::state::EXPORT_ARCHIVE_MAX_BYTES`])
+//! records no job at all and is reported through the modelled quota error.
 //!
 //! ## Shape of an operation
 //!
@@ -210,20 +216,61 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // check — the boundary validator cannot express "exactly one of".
         let exported = exported(&input.resource_specification)?;
 
-        let mut store = state.lock();
-
         // The resource the export is OF has to be there to be exported, so the
         // specification is resolved against the store before any job is recorded: a
         // refusal here is terminal and leaves nothing behind, which is why a listing
-        // scoped to what it named stays empty.
-        if let Some(missing) = unresolved(&store, &exported) {
-            return Err(CreateExportErrorModeled::PreconditionFailedException(
-                PreconditionFailedException {
-                    message: Some(missing),
-                },
-            )
-            .into());
-        }
+        // scoped to what it named stays empty. The guard is taken for the resolve alone
+        // and dropped with the statement.
+        let exported = match resolved(&state.lock(), &exported) {
+            Ok(exported) => exported,
+            Err(missing) => {
+                return Err(CreateExportErrorModeled::PreconditionFailedException(
+                    PreconditionFailedException {
+                        message: Some(missing),
+                    },
+                )
+                .into())
+            }
+        };
+
+        // The resource resolved, so its definition is there to be read: the archive is
+        // assembled from it now, which is what makes it the snapshot of this instant.
+        //
+        // Reading the definition files and compressing them are both synchronous CPU work
+        // over the store, bounded by the two caps one archive has, so the whole assembly
+        // runs on the BLOCKING pool: the worker serving this request is left free, so a
+        // timeout, a cancellation or a graceful shutdown still lands while an archive is
+        // being written.
+        let assembling = {
+            let state = state.clone();
+            let exported = exported.clone();
+            let file_format = input.file_format.clone();
+            ::tokio::task::spawn_blocking(move || {
+                let files = {
+                    let store = state.lock();
+                    store.export_archive_files(&exported, &file_format)
+                }?;
+                crate::state::export_archive_bytes(&files)
+            })
+            .await
+        };
+
+        let archive = match assembling {
+            Ok(Ok(archive)) => archive,
+            Ok(Err(refused)) => return Err(refused_archive(refused, &exported)),
+            // The assembly did not finish at all (the task was cancelled or panicked), so
+            // there is no archive to record a job for.
+            Err(_) => {
+                return Err(CreateExportErrorModeled::InternalServerException(
+                    InternalServerException {
+                        message: Some("the export archive could not be assembled".to_string()),
+                    },
+                )
+                .into())
+            }
+        };
+
+        let mut store = state.lock();
 
         // `filePassword` encrypts the archive the job assembles; nothing reports it back
         // (`smithy_query(query="operation",operation="CreateExport")` carries no such
@@ -239,19 +286,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             export_id.clone(),
             input.resource_specification,
             input.file_format,
+            archive,
             now,
         );
         // The response is read back off the record that was just stored, so what this
         // call reports is what a later read reports. The id was minted against the
         // stored jobs, so nothing is there under it to replace.
-        let stored = store.exports.entry(export_id).or_insert(export);
-        Ok(CreateExportOutput {
+        let stored = store.exports.entry(export_id.clone()).or_insert(export);
+        let answer = CreateExportOutput {
             export_id: Some(stored.export_id.clone()),
             resource_specification: Some(stored.resource_specification.clone()),
             file_format: Some(stored.file_format.clone()),
             export_status: Some(stored.export_status.clone()),
             creation_date_time: Some(crate::state::to_date_time(stored.creation_date_time)),
-        })
+        };
+        // The archives the stored jobs hold are what this map's size is in, so the oldest
+        // jobs make room for this one once they no longer fit
+        // ([`crate::state::EXPORT_ARCHIVES_HELD_BYTES`]) — the same drop the retention
+        // window makes, only sooner.
+        store.fit_export_archives();
+        Ok(answer)
     }
 }
 
@@ -325,8 +379,8 @@ const EXPORT_SPECIFICATION_MEMBERS: [&str; 4] = [
     "testSetExportSpecification",
 ];
 
-/// What the refusal says when the resource `exported` names does not resolve against the
-/// store, or `None` when it does.
+/// The resource `exported` names, resolved against the store, or what the refusal says
+/// when the store does not hold it.
 ///
 /// The parents are resolved OUTSIDE IN — the bot and the version of it first, then the
 /// locale inside that version, then the resource defined in that locale — so the
@@ -338,10 +392,10 @@ const EXPORT_SPECIFICATION_MEMBERS: [&str; 4] = [
 /// locale (the operations over both are still scaffolds), so an export of one resolves on
 /// nothing and is refused naming it. When this service starts holding either, the check
 /// becomes a lookup in that state, exactly as the bot, version and locale legs are.
-fn unresolved(
+fn resolved(
     store: &crate::state::ComAmazonawsLexmodelsv2Lexmodelbuildingservicev2State,
     exported: &Exported<'_>,
-) -> Option<String> {
+) -> Result<crate::state::ExportedBotResource, String> {
     let (bot_id, bot_version, locale_id) = match exported {
         Exported::Bot(bot) => (&bot.bot_id, &bot.bot_version, None),
         Exported::BotLocale(locale) => (
@@ -355,7 +409,7 @@ fn unresolved(
             Some(&vocabulary.locale_id),
         ),
         Exported::TestSet(test_set) => {
-            return Some(crate::state::request_path_resource_missing(
+            return Err(crate::state::request_path_resource_missing(
                 crate::state::EXPORTED_TEST_SET_LABEL,
                 &[("id", &test_set.test_set_id)],
             ));
@@ -363,14 +417,16 @@ fn unresolved(
     };
 
     if !store.bot_version_exists(bot_id, bot_version) {
-        return Some(crate::state::request_path_resource_missing(
+        return Err(crate::state::request_path_resource_missing(
             crate::state::EXPORTED_BOT_LABEL,
             &[("id", bot_id), ("version", bot_version)],
         ));
     }
-    let locale_id = locale_id?;
+    let Some(locale_id) = locale_id else {
+        return Ok(crate::state::ExportedBotResource::bot(bot_id, bot_version));
+    };
     if !store.bot_locale_exists(bot_id, bot_version, locale_id) {
-        return Some(crate::state::request_path_resource_missing(
+        return Err(crate::state::request_path_resource_missing(
             crate::state::EXPORTED_BOT_LOCALE_LABEL,
             &[("id", locale_id)],
         ));
@@ -378,12 +434,69 @@ fn unresolved(
     // The locale is there; a custom vocabulary of it is not, because this service holds
     // no custom vocabulary at all. The locale is what identifies one, since a custom
     // vocabulary has no id of its own.
-    matches!(exported, Exported::CustomVocabulary(_)).then(|| {
-        crate::state::request_path_resource_missing(
+    if matches!(exported, Exported::CustomVocabulary(_)) {
+        return Err(crate::state::request_path_resource_missing(
             crate::state::EXPORTED_CUSTOM_VOCABULARY_LABEL,
             &[("locale id", locale_id)],
-        )
-    })
+        ));
+    }
+    Ok(crate::state::ExportedBotResource::locale(
+        bot_id,
+        bot_version,
+        locale_id,
+    ))
+}
+
+/// How an archive this service would not assemble is reported, with no job recorded for
+/// it.
+///
+/// A resource whose definition files are past either cap one archive has is reported
+/// through the modelled quota error, naming the limit reached and the resource it was
+/// reached for, exactly as this crate reports the quotas on a locale's intents, slot types
+/// and slots. The two outcomes nothing about a stored record reaches — a resource that is
+/// no longer there, and an archive that cannot be written at all — are reported as the
+/// resource that is not there and as the server-side failure they are.
+fn refused_archive(
+    refused: crate::state::ExportArchiveRefused,
+    exported: &crate::state::ExportedBotResource,
+) -> CreateExportError {
+    let quota = |limit: usize, of: &str| {
+        CreateExportErrorModeled::ServiceQuotaExceededException(ServiceQuotaExceededException {
+            message: Some(format!(
+                "You have reached the quota of {limit} {of} for one export of bot {} version \
+                 {}; export one locale at a time or request a quota increase",
+                exported.bot_id, exported.bot_version
+            )),
+        })
+        .into()
+    };
+    match refused {
+        crate::state::ExportArchiveRefused::TooManyFiles => {
+            quota(crate::state::EXPORT_ARCHIVE_MAX_FILES, "definition files")
+        }
+        crate::state::ExportArchiveRefused::TooLarge => quota(
+            crate::state::EXPORT_ARCHIVE_MAX_BYTES,
+            "bytes of definition files",
+        ),
+        crate::state::ExportArchiveRefused::Unresolved => {
+            CreateExportErrorModeled::PreconditionFailedException(PreconditionFailedException {
+                message: Some(crate::state::request_path_resource_missing(
+                    crate::state::EXPORTED_BOT_LABEL,
+                    &[
+                        ("id", &exported.bot_id),
+                        ("version", &exported.bot_version),
+                    ],
+                )),
+            })
+            .into()
+        }
+        crate::state::ExportArchiveRefused::Unwritable => {
+            CreateExportErrorModeled::InternalServerException(InternalServerException {
+                message: Some("the export archive could not be assembled".to_string()),
+            })
+            .into()
+        }
+    }
 }
 
 /// Refuse the request with the modelled `ValidationException` (HTTP 400).

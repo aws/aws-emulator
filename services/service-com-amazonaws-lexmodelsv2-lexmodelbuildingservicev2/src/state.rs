@@ -46,11 +46,16 @@
 //! `exports`, keyed by the `exportId` the create minted: an export job is recorded only
 //! once the resource it names resolves against the bots, versions and locales above, so
 //! a job the store holds is a job over a resource that was there to export. A job is held
-//! for the window AWS documents exports are kept for, which is what bounds that map.
+//! for the window AWS documents exports are kept for, which is what bounds that map. The
+//! zip archive such a job hands out is assembled from those same records as the job is
+//! recorded, and is served at the address `DescribeExport` announces for it — see
+//! [`export_archive`].
 
+mod export_archive;
 mod exports;
 mod prompt_defaults;
 
+pub use export_archive::*;
 pub use exports::*;
 pub use prompt_defaults::{
     normalize_intent_confirmation_setting, normalize_slot_value_elicitation_setting,
@@ -1069,7 +1074,8 @@ pub struct ComAmazonawsLexmodelsv2Lexmodelbuildingservicev2State {
     /// Every export job this emulator holds, keyed by the `exportId` [`Self::mint_export_id`]
     /// minted. A job is recorded by `CreateExport`, kept for the window AWS documents
     /// ([`EXPORT_RETENTION`]) and removed once it is past it, so this map holds the jobs a
-    /// caller submitted inside one window and no more; what a job holds and how it settles
+    /// caller submitted inside one window and no more; the archives those jobs carry are
+    /// capped besides ([`EXPORT_ARCHIVES_HELD_BYTES`]). What a job holds and how it settles
     /// is in [`Export`].
     pub exports: HashMap<String, Export>,
     /// The monotonic source the minted ids are derived from.

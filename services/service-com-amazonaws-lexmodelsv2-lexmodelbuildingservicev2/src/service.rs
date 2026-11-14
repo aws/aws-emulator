@@ -55,12 +55,24 @@
 //! One response is announced by the framework alone, because no author seam reaches it:
 //! the authentication refusal, which the router renders through
 //! `definition().refusal_response(..)` before this service is asked anything.
+//!
+//! ## The export archive plane
+//!
+//! `DescribeExport` hands out `downloadUrl`, "a pre-signed S3 URL that points to the bot or
+//! bot locale archive"; a URL this service announces is a promise that a caller can follow
+//! it, so it is pre-signed against the base URL this emulator is reached on and carries the
+//! archive's own object path (`crate::state::export_archive_path`), a path space no modelled
+//! operation binds. Two seams carry it, the same pair any emulated download plane uses:
+//! [`Service::can_handle`] also claims a request addressed to that path space, and
+//! [`Service::override_operation`] serves it through [`export_archive::ExportArchiveRoute`].
 
 use service_common::response_media_type::{ResponseMediaType, ResponseMediaTypeOperation};
 use smithy_server_runtime::{
     http, ErasedOperation, Refusal, Refused, Service,
 };
 use std::sync::Arc;
+
+pub(crate) mod export_archive;
 
 /// `refusal` with the clauses of each refused member in the order this service states
 /// them, or `None` when it is not a constraint refusal.
@@ -116,6 +128,10 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     /// the request walk announces this service's media type too. Held in a field, built
     /// once, because [`Service::override_operation`] hands back a borrow of it.
     media_type: ResponseMediaTypeOperation,
+    /// Serves the download of an export's archive at the pre-signed URL `DescribeExport`
+    /// announced for it; [`Service::override_operation`] hands it that request (see
+    /// [`export_archive`]).
+    export_archive: export_archive::ExportArchiveRoute<Eng>,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -124,8 +140,9 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
         Self {
-            entry: crate::ServiceDefinition::new(engine),
+            entry: crate::ServiceDefinition::new(Arc::clone(&engine)),
             media_type: ResponseMediaTypeOperation::new(RESPONSE_MEDIA_TYPE),
+            export_archive: export_archive::ExportArchiveRoute::new(engine),
         }
     }
 }
@@ -154,12 +171,24 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // equality, and — on a segment a sibling publishes too — the modelled route
         // (method + URI pattern) its own model binds.
         service_common::lex::claims_request(parts, self.definition(), crate::ROUTE_PATH_SEGMENTS)
+            // And a request addressed to the path space the archive of an export is served
+            // from, which no modelled operation of any Lex-family model binds: without
+            // this the router answers a URL `DescribeExport` handed out as a request naming
+            // no operation. See the module docs.
+            || self.export_archive.claims_path(parts)
     }
 
     fn override_operation(
         &self,
         req: &aws_smithy_runtime_api::http::Request,
     ) -> Option<&dyn ErasedOperation> {
+        // The download of an export's archive, which is not an API call at all: it is the
+        // artifact `DescribeExport` hands out a pre-signed URL for, served by the route
+        // that owns it (see [`export_archive`]). Claimed first, because such a request
+        // names no modelled operation for the routing table below to resolve.
+        if self.export_archive.claims(req).is_some() {
+            return Some(&self.export_archive as &dyn ErasedOperation);
+        }
         // Every request the generated routing table can serve is served through the
         // shared media-type wrapper, which delegates to that same table entry and then
         // re-announces the media type of what it answered — reaching the refusal the

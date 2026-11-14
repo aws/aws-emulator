@@ -19,6 +19,8 @@ mod bot_lifecycle;
 mod bot_locale;
 #[path = "all/bot_versions.rs"]
 mod bot_versions;
+#[path = "all/export_archive.rs"]
+mod export_archive;
 #[path = "all/exports.rs"]
 mod exports;
 #[path = "all/intents_and_builds.rs"]

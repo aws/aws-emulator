@@ -8,9 +8,11 @@
 //!
 //! The status reported is the one the clock owes at the instant of the read
 //! ([`crate::state::Export::settle`]), so a caller polling this operation observes the
-//! transition a submitted export makes without anything sleeping for it, together with
-//! the `failureReasons` that status reports — "one or more reasons why the export could
-//! not be completed".
+//! transition a submitted export makes without anything sleeping for it. A job that has
+//! reached the status in which "the export is ready to download" is reported with
+//! `downloadUrl`, the pre-signed address the archive it assembled is served at
+//! ([`crate::state::export_archive_url`]); a job still in flight is reported without one,
+//! because there is nothing to download until the transition falls due.
 //!
 //! ## Shape of an operation
 //!
@@ -161,7 +163,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
 
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             DescribeExportErrorModeled::InternalServerException(InternalServerException {
@@ -181,18 +182,40 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
+        // `downloadUrl` is "a pre-signed S3 URL that points to the bot or bot locale
+        // archive", so it is an address the CALLER fetches: it is announced on a job that
+        // produced an archive to serve at one, which is a job that has reached the status
+        // in which the export is ready to download. The address leads back to this
+        // emulator, where the archive route answers it with that job's own bytes.
+        let download_url = if export.completed() {
+            match crate::state::export_archive_url(ctx, &export.export_id) {
+                Some(url) => Some(url),
+                // A completed job owes the caller an address it can fetch the archive
+                // from, so an address that cannot be signed is a failure of the read
+                // rather than a success reporting none.
+                None => {
+                    return Err(DescribeExportErrorModeled::InternalServerException(
+                        InternalServerException {
+                            message: Some(
+                                "the export archive's download address could not be signed"
+                                    .to_string(),
+                            ),
+                        },
+                    )
+                    .into())
+                }
+            }
+        } else {
+            None
+        };
+
         Ok(DescribeExportOutput {
             export_id: Some(export.export_id.clone()),
             resource_specification: Some(export.resource_specification.clone()),
             file_format: Some(export.file_format.clone()),
             export_status: Some(export.export_status.clone()),
             failure_reasons: export.wire_failure_reasons(),
-            // `downloadUrl` is "a pre-signed S3 URL that points to the bot or bot locale
-            // archive", so it is an address the CALLER fetches: it is announced only on a
-            // job that produced an archive to serve at one. No job of this emulator does
-            // — which is what its terminal status and the reason beside it state — so the
-            // member stays absent rather than carrying an address nothing answers.
-            download_url: None,
+            download_url,
             creation_date_time: Some(crate::state::to_date_time(export.creation_date_time)),
             last_updated_date_time: Some(crate::state::to_date_time(
                 export.last_updated_date_time,

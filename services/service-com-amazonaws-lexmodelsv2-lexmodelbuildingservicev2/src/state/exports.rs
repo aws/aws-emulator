@@ -16,13 +16,11 @@
 //! fell due is what `lastUpdatedDateTime` then reports ([`PendingExportStatus`]), so the
 //! order two exports settle in is the order they were submitted in.
 //!
-//! WHICH terminal status is owed follows from what this emulator produces: the archive a
-//! job exists to assemble is not built by anything here — no operation of this service
-//! hands one out — so a job reaches the modelled failure status carrying the reason that
-//! says so ([`EXPORT_ARCHIVE_UNSUPPORTED_REASON`]), rather than the status that tells a
-//! caller an archive is ready to download when none is. A read reports that reason, so a
-//! client polling the job learns what did not happen instead of being handed a success it
-//! cannot act on.
+//! The terminal status owed is the one that says the archive is ready to download: the
+//! archive a job exists to assemble IS assembled, out of the records this store holds for
+//! the resource the job names (see [`super::export_archive`]), by the call that records the
+//! job — so the job carries its own bytes from that instant and a read past the due one
+//! reports [`EXPORT_STATUS_COMPLETED`] and the address those bytes are served at.
 
 use super::*;
 
@@ -41,16 +39,6 @@ pub const EXPORT_STATUS_COMPLETED: &str = "Completed";
 /// an archive; `DescribeExport` documents `failureReasons` as carrying "one or more
 /// reasons why the export could not be completed" for exactly this status.
 pub const EXPORT_STATUS_FAILED: &str = "Failed";
-
-/// The reason a job of this emulator gives for not having produced an archive.
-///
-/// It names what did not happen and why there is nothing to download, so a client that
-/// polls the job reads it instead of inferring it from a missing member. Assembling the
-/// archive is what this sentence is waiting for: once this service produces one, the
-/// terminal status a job reaches becomes [`EXPORT_STATUS_COMPLETED`] and this reason goes.
-pub const EXPORT_ARCHIVE_UNSUPPORTED_REASON: &str =
-    "The export archive was not created: this emulator records the export request but does \
-     not assemble the archive, so there is nothing to download.";
 
 /// How long after a create the `InProgress` -> terminal transition of an export falls
 /// due.
@@ -74,6 +62,19 @@ pub const EXPORT_SETTLES_AFTER: Duration = Duration::from_secs(3);
 /// rather than slept for, and it is also what bounds the stored exports: a caller cannot
 /// grow that map beyond the jobs it submitted inside one retention window.
 pub const EXPORT_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+/// How many bytes of assembled archives this store keeps across every job it holds.
+///
+/// A CHOSEN bound, and the one that keeps the archives off the host's back: a job carries
+/// the bytes it assembled for as long as the service keeps the job, and a caller may submit
+/// jobs for as long as [`EXPORT_RETENTION`] runs, so the archives alone are what the stored
+/// jobs can grow without one. Once the archives held pass this, the OLDEST jobs are dropped
+/// until they fit again
+/// ([`ComAmazonawsLexmodelsv2Lexmodelbuildingservicev2State::fit_export_archives`]), which
+/// is the same drop [`EXPORT_RETENTION`] makes, only sooner: a job that was dropped is
+/// reported exactly as one whose window has closed, so no answer this service gives is
+/// affected by it.
+pub const EXPORT_ARCHIVES_HELD_BYTES: usize = 64 * 1024 * 1024;
 
 /// How the `ExportResourceType` filter of `ListExports` names an export of a whole bot.
 /// The values that filter admits are the ones its own documentation lists
@@ -132,6 +133,11 @@ pub struct Export {
     pub failure_reasons: Vec<String>,
     pub creation_date_time: SystemTime,
     pub last_updated_date_time: SystemTime,
+    /// The zip archive this job assembled, held as the bytes a download of it serves (see
+    /// [`super::export_archive`]). Assembled by the call that recorded the job, so it is
+    /// that instant's snapshot of the exported resource whenever it is downloaded, and
+    /// refcounted, so announcing or serving it copies nothing.
+    pub archive: ::bytes::Bytes,
     /// The instant this export falls out of the window the service keeps one for
     /// ([`EXPORT_RETENTION`]), after which it is no longer one of the account's exports.
     pub kept_until: Instant,
@@ -142,18 +148,19 @@ pub struct Export {
 }
 
 impl Export {
-    /// The export a create records: in progress from the call that submitted it, with the
-    /// terminal status the clock owes due [`EXPORT_SETTLES_AFTER`] later.
+    /// The export a create records: in progress from the call that submitted it, carrying
+    /// the `archive` that call assembled, with the terminal status the clock owes due
+    /// [`EXPORT_SETTLES_AFTER`] later.
     ///
-    /// That terminal status is the modelled failure one, carrying
-    /// [`EXPORT_ARCHIVE_UNSUPPORTED_REASON`]: the job is recorded, and the archive it
-    /// exists to assemble is not produced by anything in this emulator, so the status it
-    /// settles on is the one that says the export could not be completed rather than the
-    /// one that tells a caller an archive is ready to download.
+    /// That terminal status is [`EXPORT_STATUS_COMPLETED`], and it reports no failure
+    /// reason: the archive the job exists to assemble is already assembled when the job is
+    /// recorded, so what the clock owes is the status that tells a caller the archive is
+    /// ready to download.
     pub fn created(
         export_id: String,
         resource_specification: ExportResourceSpecification,
         file_format: String,
+        archive: ::bytes::Bytes,
         now: SystemTime,
     ) -> Self {
         let mut export = Self {
@@ -164,16 +171,27 @@ impl Export {
             failure_reasons: Vec::new(),
             creation_date_time: now,
             last_updated_date_time: now,
+            archive,
             kept_until: Instant::now() + EXPORT_RETENTION,
             pending_status: None,
         };
         export.schedule_status(
-            EXPORT_STATUS_FAILED,
-            vec![EXPORT_ARCHIVE_UNSUPPORTED_REASON.to_string()],
+            EXPORT_STATUS_COMPLETED,
+            Vec::new(),
             EXPORT_SETTLES_AFTER,
             now,
         );
         export
+    }
+
+    /// Has this job reached the status in which "the export is ready to download"?
+    ///
+    /// Read off the status the job CARRIES, so a job still inside the span the clock owes
+    /// is not one yet: the archive is announced and served only once the transition that
+    /// completes the job has fallen due.
+    #[must_use]
+    pub fn completed(&self) -> bool {
+        self.export_status == EXPORT_STATUS_COMPLETED
     }
 
     /// Apply the status transition the clock has already made due, if any — the same
@@ -355,5 +373,41 @@ impl ComAmazonawsLexmodelsv2Lexmodelbuildingservicev2State {
     pub fn drop_expired_exports(&mut self) {
         let now = Instant::now();
         self.exports.retain(|_, export| !export.expired(now));
+    }
+
+    /// Drop the OLDEST jobs until the archives this store holds fit inside
+    /// [`EXPORT_ARCHIVES_HELD_BYTES`], and answer how many went.
+    ///
+    /// Called by the create that records a job, so the bytes a caller can make this store
+    /// hold are capped however many jobs it submits inside one retention window. A job
+    /// dropped here is reported exactly as one whose retention window has closed — the read
+    /// answers the resource it does not hold — so this bounds the host's memory without
+    /// changing what any answer says.
+    pub fn fit_export_archives(&mut self) -> usize {
+        let mut held: usize = self
+            .exports
+            .values()
+            .map(|export| export.archive.len())
+            .sum();
+        if held <= EXPORT_ARCHIVES_HELD_BYTES {
+            return 0;
+        }
+        let mut by_age: Vec<(SystemTime, String)> = self
+            .exports
+            .values()
+            .map(|export| (export.creation_date_time, export.export_id.clone()))
+            .collect();
+        by_age.sort();
+        let mut dropped = 0;
+        for (_, export_id) in by_age {
+            if held <= EXPORT_ARCHIVES_HELD_BYTES {
+                break;
+            }
+            if let Some(export) = self.exports.remove(&export_id) {
+                held = held.saturating_sub(export.archive.len());
+                dropped += 1;
+            }
+        }
+        dropped
     }
 }
