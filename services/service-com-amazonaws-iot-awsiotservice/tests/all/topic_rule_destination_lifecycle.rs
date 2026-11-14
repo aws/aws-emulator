@@ -33,6 +33,9 @@
 //! * the GATE table varies what decides whether an action is admitted — the destination's
 //!   status, an endpoint URL under the confirmed prefix and one outside it, an action
 //!   naming its own `confirmationUrl`, and values carrying a substitution template;
+//! * the PER-DESTINATION table decides every row from ONE publish of one rule carrying an
+//!   action per endpoint, so enabling one destination is shown not to open an endpoint whose
+//!   own destination rests at `DISABLED`, is still `IN_PROGRESS`, or does not exist;
 //! * the refusal table varies the way a request can be wrong — an unknown ARN, an unknown
 //!   token, a status no caller can ask for, enabling an unconfirmed destination, a second
 //!   create for one URL, and a configuration naming a destination kind this emulator does
@@ -1001,6 +1004,159 @@ async fn a_requested_challenge_supersedes_the_token_the_last_one_carried() {
         DESTINATION_DISABLED,
         "case {case:?}: expected a repeated confirmation to change nothing"
     );
+}
+
+/// The gate is PER DESTINATION, not per account: one publish, one rule carrying an `http`
+/// action for each of four endpoints, and only the endpoint whose own destination is
+/// `ENABLED` receives the message — the destination that rests at `DISABLED`, the one still
+/// `IN_PROGRESS`, and the endpoint no destination was ever created for each receive nothing
+/// from the same publish.
+///
+/// This is the whole lifecycle driven through the modelled API (`POST /destinations`,
+/// `GET /confirmdestination/{confirmationToken+}`, `PATCH /destinations`,
+/// `GET /destinations/{arn+}` and the data plane's `Publish`), with the endpoints' own view
+/// read back through the data plane: enabling ONE destination must not open any of the
+/// others.
+#[tokio::test]
+async fn one_enabled_destination_does_not_open_another_endpoint() {
+    // (case, the endpoint topic, the status its destination is driven to, does the publish
+    // reach it). The rows differ along what the gate reads: the destination's status, and
+    // whether a destination admitting that endpoint exists at all.
+    let rows: [(&str, &str, Option<&str>, bool); 4] = [
+        (
+            "its destination is enabled",
+            "gate-endpoint-enabled",
+            Some(DESTINATION_ENABLED),
+            true,
+        ),
+        (
+            "its destination rests at disabled",
+            "gate-endpoint-disabled",
+            Some(DESTINATION_DISABLED),
+            false,
+        ),
+        (
+            "its destination is unconfirmed",
+            "gate-endpoint-unconfirmed",
+            Some(DESTINATION_IN_PROGRESS),
+            false,
+        ),
+        (
+            "no destination admits it",
+            "gate-endpoint-unregistered",
+            None,
+            false,
+        ),
+    ];
+    let emulator = Emulator::new();
+
+    // Every endpoint a destination is created for is challenged, so what it has received by
+    // the time the message is published is that challenge — the baseline each row's
+    // "nothing was delivered" is measured against.
+    let mut baseline: Vec<Option<Vec<u8>>> = Vec::new();
+    for (case, topic, wanted, _) in rows {
+        let url = endpoint_url(topic);
+        let Some(wanted) = wanted else {
+            baseline.push(None);
+            continue;
+        };
+        let created = emulator.create_http_destination(&url).await;
+        assert_eq!(
+            created.status, 200,
+            "case {case:?}: CreateTopicRuleDestination answered {} {:?}",
+            created.status, created.body
+        );
+        let arn = created.arn();
+        assert_eq!(
+            created.status_value(),
+            DESTINATION_IN_PROGRESS,
+            "case {case:?}: expected a created destination to be {DESTINATION_IN_PROGRESS}, \
+             got {:?}",
+            created.status_value()
+        );
+        let challenge = emulator.received_within(case, topic).await;
+        baseline.push(Some(challenge.clone()));
+
+        if wanted != DESTINATION_IN_PROGRESS {
+            // The token the endpoint was handed is what completes the confirmation; the move
+            // out of `IN_PROGRESS` is the clock's, so the row waits for the status rather
+            // than for a span.
+            let token = token_of(case, &challenge);
+            let confirmed = emulator.confirm_destination(&token).await;
+            assert_eq!(
+                confirmed.status, 200,
+                "case {case:?}: ConfirmTopicRuleDestination answered {} {:?}",
+                confirmed.status, confirmed.body
+            );
+            let rested = emulator
+                .status_within(case, &arn, DESTINATION_DISABLED)
+                .await;
+            assert_eq!(
+                rested, DESTINATION_DISABLED,
+                "case {case:?}: expected a confirmed destination to rest at \
+                 {DESTINATION_DISABLED}, got {rested}"
+            );
+        }
+        if wanted == DESTINATION_ENABLED {
+            let enabled = emulator.update_destination(&arn, DESTINATION_ENABLED).await;
+            assert_eq!(
+                enabled.status, 200,
+                "case {case:?}: UpdateTopicRuleDestination({DESTINATION_ENABLED}) answered \
+                 {} {:?}",
+                enabled.status, enabled.body
+            );
+        }
+        let reported = emulator.status_within(case, &arn, wanted).await;
+        assert_eq!(
+            reported, wanted,
+            "case {case:?}: expected the destination to be {wanted}, got {reported}"
+        );
+    }
+
+    // ONE rule, one action per endpoint: every row is decided from the same publish.
+    let actions: Vec<Value> = rows
+        .iter()
+        .map(|(_, topic, _, _)| json!({ "http": { "url": endpoint_url(topic) } }))
+        .collect();
+    emulator
+        .create_topic_rule(
+            "the gated rule",
+            "per_destination_gate",
+            &json!({
+                "sql": "SELECT * FROM 'gated/+'",
+                "ruleDisabled": false,
+                "actions": actions,
+            }),
+        )
+        .await;
+
+    let marker = "per-destination-gate-marker";
+    emulator
+        .publish("the gated rule", "gated/room", marker.as_bytes())
+        .await;
+
+    // The rules engine runs INSIDE the publish (`Publish` awaits it), so by the time the
+    // publish has answered every row is decided and no row waits for anything.
+    for ((case, topic, _, delivered), before) in rows.iter().zip(baseline) {
+        if *delivered {
+            let received = emulator.received(topic).await;
+            assert_eq!(
+                received.as_deref().map(String::from_utf8_lossy),
+                Some(std::borrow::Cow::Borrowed(marker)),
+                "case {case:?}: expected the published message at the endpoint, got {:?}",
+                received.as_deref().map(String::from_utf8_lossy)
+            );
+        } else {
+            let received = emulator.received(topic).await;
+            assert_eq!(
+                received,
+                before,
+                "case {case:?}: expected NOTHING to be delivered to the endpoint, but it \
+                 received {:?}",
+                received.as_deref().map(String::from_utf8_lossy)
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
