@@ -419,6 +419,38 @@ pub(crate) async fn read_until(
     }
 }
 
+/// Read `uri` until the account no longer holds what it addresses, handing every served
+/// reading to `served`, and answer the 404 body that ended the loop.
+///
+/// The removal-after-a-delete counterpart of [`read_until`], which asserts 200 on every
+/// reading and so cannot observe the 404 a removal the clock owes ends in. The wait is for
+/// the same kind of CONDITION, bounded by the same [`CONDITION_DEADLINE`], so neither a
+/// fast nor a loaded host changes what a case observes.
+pub(crate) async fn read_until_gone(
+    emulator: &MultiServiceRouter,
+    case: &str,
+    uri: &str,
+    mut served: impl FnMut(&Value),
+) -> Value {
+    let deadline = std::time::Instant::now() + CONDITION_DEADLINE;
+    loop {
+        let (status, body) = call(emulator, "GET", uri, None).await;
+        if status == 404 {
+            return body;
+        }
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected 200 or 404 from GET {uri}, got {status} {body}"
+        );
+        served(&body);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case:?}: {uri} never reported what it addresses gone, last read {body}"
+        );
+        tokio::task::yield_now().await;
+    }
+}
+
 /// Wait until this test's clock reads a LATER whole second than `seconds`.
 ///
 /// The condition a case needs when it asserts that a stored instant did NOT move: the

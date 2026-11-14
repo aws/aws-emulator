@@ -289,6 +289,8 @@ mod vpc_link_deletion;
 mod vpc_link_lifecycle;
 #[path = "all/vpc_link_listing.rs"]
 mod vpc_link_listing;
+#[path = "all/vpc_link_status_messages.rs"]
+mod vpc_link_status_messages;
 #[path = "all/vpc_link_subnet_resolution.rs"]
 mod vpc_link_subnet_resolution;
 #[path = "all/vpc_link_update.rs"]

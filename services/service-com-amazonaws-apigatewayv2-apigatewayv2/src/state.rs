@@ -964,6 +964,28 @@ pub const VPC_LINK_STATUS_DELETING: &str = "DELETING";
 /// the version every link this service mints reports.
 pub const VPC_LINK_VERSION_V2: &str = "V2";
 
+/// The `VpcLinkStatusMessage` a VPC link in [`VPC_LINK_STATUS_AVAILABLE`] reports: "a
+/// message summarizing the cause of the status of the VPC link"
+/// (`VpcLink$VpcLinkStatusMessage`).
+///
+/// API Gateway serves this sentence, verbatim and in full, for every settled link — it
+/// interpolates nothing from the request or from the link's own record, so it is fixed
+/// text rather than a value this emulator composes. See [`VpcLink::status_message`].
+pub const VPC_LINK_AVAILABLE_MESSAGE: &str = "VPC link is ready to route traffic";
+
+/// The `VpcLinkStatusMessage` a VPC link in [`VPC_LINK_STATUS_PENDING`] reports.
+///
+/// Unlike [`VPC_LINK_AVAILABLE_MESSAGE`], no sentence for this status has been observed
+/// from the service and the model states none, so this one is not verified text: it is
+/// written in the form the observed one takes — the status summarised, with nothing
+/// interpolated from the request or from state.
+pub const VPC_LINK_PENDING_MESSAGE: &str = "VPC link is being provisioned";
+
+/// The `VpcLinkStatusMessage` a VPC link in [`VPC_LINK_STATUS_DELETING`] reports.
+///
+/// Not verified text either, for the reason [`VPC_LINK_PENDING_MESSAGE`] gives.
+pub const VPC_LINK_DELETING_MESSAGE: &str = "VPC link is being deleted";
+
 /// How long a created VPC link stays [`VPC_LINK_STATUS_PENDING`] before it reports
 /// [`VPC_LINK_STATUS_AVAILABLE`]: API Gateway attaches the link's network interfaces to
 /// the subnets it was given, which is not done when the create call answers.
@@ -3309,23 +3331,19 @@ impl VpcLink {
     /// The `VpcLinkStatusMessage` this link reports now: "a message summarizing the
     /// cause of the status of the VPC link" (`VpcLink$VpcLinkStatusMessage`).
     ///
-    /// AWS documents no wording for it, so the sentence itself is the emulator's own and
-    /// is NOT a contract; what IS one is that it summarises the status
-    /// [`VpcLink::status`] reports at the same instant.
-    pub fn status_message(&self) -> String {
+    /// The message is keyed off the status [`VpcLink::status`] reports at the same
+    /// instant, and is fixed text for that status: no part of it is taken from the
+    /// request or from the link's record, so two links in one status report one
+    /// sentence. A settled link carries [`VPC_LINK_AVAILABLE_MESSAGE`], the sentence the
+    /// service itself serves; the statuses the clock moves a link through carry
+    /// [`VPC_LINK_PENDING_MESSAGE`] and [`VPC_LINK_DELETING_MESSAGE`], which are written
+    /// in the form of that one rather than verified against the service.
+    pub fn status_message(&self) -> &'static str {
         match self.status() {
-            VPC_LINK_STATUS_PENDING => {
-                "The VPC link is being provisioned and is not ready to be used by an \
-                 integration yet."
-                    .to_string()
-            }
-            VPC_LINK_STATUS_DELETING => {
-                "The VPC link is being deleted and can no longer be used by an \
-                 integration."
-                    .to_string()
-            }
+            VPC_LINK_STATUS_PENDING => VPC_LINK_PENDING_MESSAGE,
+            VPC_LINK_STATUS_DELETING => VPC_LINK_DELETING_MESSAGE,
             // VPC_LINK_STATUS_AVAILABLE: the only other status a stored record reaches.
-            _ => "The VPC link is available for use by an integration.".to_string(),
+            _ => VPC_LINK_AVAILABLE_MESSAGE,
         }
     }
 
@@ -3339,7 +3357,7 @@ impl VpcLink {
             tags: Some(self.tags.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
             vpc_link_id: self.vpc_link_id.clone(),
             vpc_link_status: Some(self.status().to_string()),
-            vpc_link_status_message: Some(self.status_message()),
+            vpc_link_status_message: Some(self.status_message().to_string()),
             vpc_link_version: Some(VPC_LINK_VERSION_V2.to_string()),
         }
     }
