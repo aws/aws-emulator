@@ -949,20 +949,29 @@ pub const TERMINAL_JOB_RUN_STATES: [&str; 6] = [
     JOB_RUN_STATE_EXPIRED,
 ];
 
-/// How long a run stays in the state a call put it in before the clock owes it the next
-/// one: [`JOB_RUN_STATE_STARTING`] before the state the run comes to rest in, and
+/// How long a run stays in each state a call or an execution put it in before the clock
+/// owes it the next one: [`JOB_RUN_STATE_STARTING`] before [`JOB_RUN_STATE_RUNNING`],
+/// `RUNNING` before the state the run's own execution came to, and
 /// [`JOB_RUN_STATE_STOPPING`] before [`JOB_RUN_STATE_STOPPED`].
 ///
-/// CHOSEN, not documented: Glue publishes no duration for starting or for stopping a job
-/// run, so this is the emulator's own span — deliberately not zero, so a caller that
-/// polls `GetJobRun` straight after `StartJobRun` still observes the run in flight, and
-/// the concurrency limit that goes with it, and one that polls straight after a submitted
-/// stop still observes the run stopping. The due instant is stored on the run and
-/// materialised by whichever later call reads it; nothing sleeps.
-pub const JOB_RUN_SETTLES_AFTER: Duration = Duration::from_millis(500);
+/// CHOSEN, not documented: Glue publishes no duration for starting, running or stopping a
+/// job run, so this is the emulator's own span. It is deliberately neither zero nor
+/// sub-second: a client observes a job run by POLLING it, so each state the run passes
+/// through has to stand for long enough that a poll lands inside it — which is what lets a
+/// caller see the run start, then run, then come to rest, and see the concurrency limit and
+/// the state errors that go with each of those. The due instant is stored on the run and
+/// materialised by whichever later call reads it, or by this service's own clock pump;
+/// nothing sleeps for it.
+pub const JOB_RUN_SETTLES_AFTER: Duration = Duration::from_secs(3);
 
 /// The `JobRunState` a run is in while its script is being executed, before the state that
 /// execution comes to. See [`JOB_RUN_STATE_STARTING`].
+///
+/// A run OCCUPIES this state: it is owed it one span after its start, and the state its own
+/// execution came to is owed one further span after that execution answered
+/// ([`JobRunEntry::record_execution`]) — so a run passes through `RUNNING` on its way to
+/// rest, for at least one span and for as long as its script takes, and a client polling it
+/// for progress observes it there.
 pub const JOB_RUN_STATE_RUNNING: &str = "RUNNING";
 
 /// `JobRun$Attempt` of a run that is not a retry of an earlier one: "The number of the
@@ -1056,19 +1065,36 @@ pub struct JobRunEntry {
     pub completed_on: Option<SystemTime>,
     /// One of the modelled `JobRunState` values.
     pub state: String,
-    /// The instant the clock owes this run its next state; `None` once it has settled.
+    /// The instant the clock owes this run its next state; `None` while it owes none —
+    /// once the run has come to rest, and while it is in [`JOB_RUN_STATE_RUNNING`] waiting
+    /// for the one execution of its script it is still owed
+    /// ([`JobRunEntry::awaiting_script`]), which is what then decides the state it comes to
+    /// rest in and when ([`JobRunEntry::record_execution`]).
     pub settles_at: Option<SystemTime>,
     /// The `JobRunState` the clock owes this run at [`JobRunEntry::settles_at`]:
-    /// [`JOB_RUN_STATE_RUNNING`] while the run's script is still owed an execution, the
-    /// state that execution came to once it has been performed
-    /// ([`JobRunEntry::record_execution`]), and [`JOB_RUN_STATE_STOPPED`] once a stop has
-    /// been submitted for it.
+    /// [`JOB_RUN_STATE_RUNNING`] while the run has not been through that state yet, the
+    /// state its own execution came to once it has been there ([`JobRunEntry::rests_in`]),
+    /// and [`JOB_RUN_STATE_STOPPED`] once a stop has been submitted for it.
     pub settles_to: String,
     /// `JobRun$ErrorMessage` the run carries once it has come to rest, and `None` for a run
     /// that comes to rest having failed at nothing: the reason travels with the run from
     /// the instant the execution answered until the clock settles it, so the message a run
     /// reports is the one its own execution produced.
     pub settles_error: Option<String>,
+    /// The instant the clock owes this run the state it comes to REST in, once it has been
+    /// through [`JOB_RUN_STATE_RUNNING`] — and `None` while no execution has decided one.
+    ///
+    /// A run whose script has been executed is owed TWO further states: `RUNNING`, at
+    /// [`JobRunEntry::settles_at`], and then the state that execution came to, here. That is
+    /// what makes a run OCCUPY `RUNNING` for a span of its own instead of passing straight
+    /// from the state its start put it in to the state it ends in
+    /// ([`JobRunEntry::record_execution`]).
+    pub rests_at: Option<SystemTime>,
+    /// The `JobRunState` owed at [`JobRunEntry::rests_at`]: the state this run's own
+    /// execution came to, held until the run has been through [`JOB_RUN_STATE_RUNNING`].
+    pub rests_in: Option<String>,
+    /// The `JobRun$ErrorMessage` that goes with [`JobRunEntry::rests_in`], held with it.
+    pub rests_error: Option<String>,
     /// Whether this run still owes its job's script ONE execution.
     ///
     /// A run begins owing it, and the execution path clears this when the script has been
@@ -1190,6 +1216,10 @@ impl JobRunEntry {
             // ([`JobRunEntry::record_execution`]).
             settles_to: JOB_RUN_STATE_RUNNING.to_string(),
             settles_error: None,
+            // No execution has decided the state this run comes to rest in yet.
+            rests_at: None,
+            rests_in: None,
+            rests_error: None,
             awaiting_script: true,
             // Nothing has come to rest, so nothing has been published about this run.
             state_change_published: false,
@@ -1238,11 +1268,20 @@ impl JobRunEntry {
     /// state carrying the script's own error for one that raised, and the state a run that
     /// ran past its `Timeout` reports ([`super::JobRunOutcome`]).
     ///
-    /// The state is owed from the instant the execution answered, but no earlier than the
-    /// span every run spends in the state its start put it in
-    /// ([`JOB_RUN_SETTLES_AFTER`]) — so a caller that polls straight after `StartJobRun`
-    /// still observes the run in flight however fast its script was, and a run whose script
-    /// took longer than that span comes to rest as soon as it answered.
+    /// The run does NOT go straight there. A started run occupies each state of its
+    /// lifecycle for a span of its own: it is [`JOB_RUN_STATE_STARTING`] until the span its
+    /// start owes it passes, [`JOB_RUN_STATE_RUNNING`] from then until one further span after
+    /// its script answered, and only then the state that execution came to. So what is
+    /// recorded here is the state the run comes to REST in ([`JobRunEntry::rests_in`]) and
+    /// WHEN — one span after `RUNNING` begins, and never before one span after the execution
+    /// answered, so a slow script keeps its run running for as long as it takes — while the
+    /// `RUNNING` transition the clock already owed stands. A client polling the run for
+    /// progress observes it running whether its script was quick or slow, and
+    /// `JobRun$ExecutionTime` — the whole elapsed time of the run — grows with what the
+    /// script took.
+    ///
+    /// A run that is already running is owed the rest directly, because the state it was
+    /// going to pass through is the one it is in.
     ///
     /// A run a stop has already been submitted for keeps the stop it was owed: a client
     /// asked for that run to stop, and the script's own outcome does not undo it. Nor does
@@ -1257,13 +1296,29 @@ impl JobRunEntry {
         {
             return;
         }
-        let span_ends = self
-            .started_on
+        // When this run is (or becomes) RUNNING: the instant the clock owes it that state,
+        // or the instant it entered it where that has already happened.
+        let running_from = match self.settles_at {
+            Some(due) => due,
+            None => self.last_modified_on,
+        };
+        let rests_at = running_from
+            .max(now)
             .checked_add(JOB_RUN_SETTLES_AFTER)
-            .unwrap_or(self.started_on);
-        self.settles_at = Some(span_ends.max(now));
-        self.settles_to = outcome.job_run_state().to_string();
-        self.settles_error = outcome.error_message();
+            .unwrap_or(now);
+        let rests_in = outcome.job_run_state().to_string();
+        let rests_error = outcome.error_message();
+        if self.settles_at.is_some() {
+            // The `RUNNING` transition is still owed, so the rest falls due after it.
+            self.rests_at = Some(rests_at);
+            self.rests_in = Some(rests_in);
+            self.rests_error = rests_error;
+        } else {
+            // The run is already running: the rest is the next state it is owed.
+            self.settles_at = Some(rests_at);
+            self.settles_to = rests_in;
+            self.settles_error = rests_error;
+        }
     }
 
     /// Whether this stored run has finished, by [`TERMINAL_JOB_RUN_STATES`].
@@ -1309,6 +1364,11 @@ impl JobRunEntry {
             // execution answers.
             settles_to: JOB_RUN_STATE_RUNNING.to_string(),
             settles_error: None,
+            // Nor has anything decided what this attempt comes to rest in: its own
+            // execution will.
+            rests_at: None,
+            rests_in: None,
+            rests_error: None,
             awaiting_script: true,
             // A fresh attempt has come to rest at nothing, whatever was published about the
             // attempt it retries.
@@ -1323,24 +1383,37 @@ impl JobRunEntry {
     /// The run was due to leave the state a call put it in at [`JobRunEntry::settles_at`]
     /// whether or not anybody called, and the instants recorded are that DUE instant, not
     /// the instant somebody read it — so two reads of a settled run report the same run.
+    ///
+    /// A run can be owed MORE than one state at once: one whose script has been executed
+    /// owes [`JOB_RUN_STATE_RUNNING`] and then the state that execution came to
+    /// ([`JobRunEntry::rests_in`]). Every state already due is materialised, which is the
+    /// state the clock itself had reached; a state not yet due stops the walk, so a caller
+    /// reading inside the span the run spends running still sees it running.
     pub fn settle_if_due(&mut self, now: SystemTime) {
-        let Some(due) = self.settles_at else {
-            return;
-        };
-        if due > now {
-            return;
+        while let Some(due) = self.settles_at {
+            if due > now {
+                return;
+            }
+            self.settles_at = None;
+            self.state = self.settles_to.clone();
+            // `JobRun$ErrorMessage` is "the error message associated with this job run": the
+            // run carries the reason its own execution answered with, and a run that comes to
+            // rest having failed at nothing — one that succeeded, and one a submitted stop
+            // brought to rest — carries none.
+            if self.is_terminal() {
+                self.error_message = self.settles_error.take();
+                self.completed_on = Some(due);
+            }
+            self.last_modified_on = due;
+            // The state the run's own execution decided follows the one it has just reached,
+            // at the instant that execution made it due.
+            if let (Some(rests_at), Some(rests_in)) = (self.rests_at, self.rests_in.take()) {
+                self.rests_at = None;
+                self.settles_at = Some(rests_at);
+                self.settles_to = rests_in;
+                self.settles_error = self.rests_error.take();
+            }
         }
-        self.settles_at = None;
-        self.state = self.settles_to.clone();
-        // `JobRun$ErrorMessage` is "the error message associated with this job run": the
-        // run carries the reason its own execution answered with, and a run that comes to
-        // rest having failed at nothing — one that succeeded, and one a submitted stop
-        // brought to rest — carries none.
-        if self.is_terminal() {
-            self.error_message = self.settles_error.take();
-            self.completed_on = Some(due);
-        }
-        self.last_modified_on = due;
     }
 
     /// Submit a stop for this run, as `BatchStopJobRun` asks for one, and answer whether
@@ -1368,6 +1441,11 @@ impl JobRunEntry {
         // nothing.
         self.awaiting_script = false;
         self.settles_error = None;
+        // A stop a client submitted wins over whatever the run's own execution came to, so
+        // the state that execution decided is no longer owed.
+        self.rests_at = None;
+        self.rests_in = None;
+        self.rests_error = None;
         self.last_modified_on = now;
         true
     }

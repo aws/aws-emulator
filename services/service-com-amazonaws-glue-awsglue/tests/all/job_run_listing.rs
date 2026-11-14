@@ -112,8 +112,11 @@ fn set_start_instants(engine: &Arc<engine::InMemoryEngine>, job_name: &str, offs
     }
 }
 
-/// Move the due instant of every run of `job_name` to `at`, so a row can make the
-/// transition the clock owes due without sleeping.
+/// Move every due instant of every run of `job_name` to `at`, so a row can make what the
+/// clock owes due without sleeping.
+///
+/// A run owes up to TWO states at once — the one it is in while its script runs, and the one
+/// its own execution came to — so both instants move, or a run would stop half way.
 fn set_due_instant(engine: &Arc<engine::InMemoryEngine>, job_name: &str, at: SystemTime) {
     let state = engine.state::<ComAmazonawsGlueAwsglueState>();
     let mut store = state.lock();
@@ -122,6 +125,9 @@ fn set_due_instant(engine: &Arc<engine::InMemoryEngine>, job_name: &str, at: Sys
         .unwrap_or_else(|| panic!("the store must hold job {job_name:?}"));
     for run in &mut job.runs {
         run.settles_at = Some(at);
+        if run.rests_at.is_some() {
+            run.rests_at = Some(at);
+        }
     }
 }
 

@@ -7,16 +7,19 @@
 //! answers with. `GetJobRun` then reports the run until it reaches a terminal
 //! `JobRunState`.
 //!
-//! The run is recorded in `STARTING`, and the clock owes it its next state one span
-//! later ([`crate::state::JOB_RUN_SETTLES_AFTER`]) — so a caller that polls straight
-//! after this call still sees the run in flight, and a second start of a job already at
-//! its `MaxConcurrentRuns` is refused.
+//! The run is recorded in `STARTING`, and the clock owes it `RUNNING` one span later
+//! ([`crate::state::JOB_RUN_SETTLES_AFTER`]) — so a caller that polls straight after this
+//! call still sees the run starting, and a second start of a job already at its
+//! `MaxConcurrentRuns` is refused.
 //!
 //! The job's SCRIPT is then executed ([`crate::state::perform_owed_job_runs`]): a run of a
 //! job is one execution of the script its `JobCommand$ScriptLocation` names, with this
 //! request's `Arguments` on its command line, so the state the run comes to rest in is
 //! whatever that execution came to — `SUCCEEDED` for a script that exited cleanly, and the
-//! modelled failure state carrying the script's own error for one that raised.
+//! modelled failure state carrying the script's own error for one that raised. That state is
+//! owed one span after the run has been `RUNNING`, and never before one span after the
+//! execution answered, so the run PASSES THROUGH `RUNNING` for as long as its script takes
+//! and a client polling `GetJobRun` for progress observes every state it goes through.
 //!
 //! That execution happens IN THIS PROCESS and reaches nothing of the host: the script is
 //! compiled and run by the embedded Python interpreter ([`crate::state::job_script`]), so no
@@ -405,8 +408,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // is given. An attempt the job's retry policy owes this run is performed by a LATER
         // call, once this attempt has come to rest, so one start runs one script.
         //
-        // What each execution came to is recorded on the run it belongs to, which is what
-        // the state the clock owes that run then reports.
+        // What each execution came to is recorded on the run it belongs to as the state that
+        // run comes to REST in — owed one span after the run has been `RUNNING`, and never
+        // before one span after the execution answered — so the run passes through every
+        // state of its lifecycle rather than from its start to its end.
         crate::state::perform_owed_job_runs(
             &*self.engine,
             ctx,

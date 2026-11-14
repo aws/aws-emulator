@@ -9,10 +9,12 @@
 //! The rule under test: `StartJobRun` on a stored job definition records a run of it and
 //! answers 200 with the id it minted for that run; the run carries the job's own
 //! configuration with the members the request overrode applied on top, and `GetJobRun`
-//! reports it under that id — in a non-terminal `JobRunState` until the state the clock
-//! owes it falls due, and in a terminal one afterwards. Because this emulator runs no job
-//! script, the state the clock owes is the modelled failure state carrying the reason it
-//! did not run, so the run never reports a result nothing computed.
+//! reports it under that id — `STARTING` until the state the clock owes it falls due,
+//! `RUNNING` while the one execution of its script is owed and performed, and the state
+//! that execution came to afterwards. The jobs here point their `ScriptLocation` at an
+//! object no Amazon S3 serves (Glue is mounted on its own), so that state is the modelled
+//! failure state carrying the reason the script could not be read, and the run never
+//! reports a result nothing computed.
 //!
 //! The recorded cross-service case — a `pythonshell` job started by name with no
 //! overrides at all — is ONE row of the tables below; the rows differ along which
@@ -20,8 +22,8 @@
 //! job allows, the arguments sent, and whether the start is a first attempt or a retry.
 //!
 //! The due instants the lifecycle turns on are read and moved THROUGH THE STORE rather
-//! than slept for, so the transient window is deterministic: one test sleeps, to pin
-//! that the transition is owed by the wall clock and not by a reader.
+//! than slept for, and every wait is a poll for the CONDITION it waits on, so what these
+//! tests observe does not depend on how fast the host runs.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -31,8 +33,8 @@ use serde_json::{json, Value};
 use service_com_amazonaws_glue_awsglue::state::{
     ComAmazonawsGlueAwsglueState, JobRunEntry, DEFAULT_GLUE_VERSION, FIRST_JOB_RUN_ATTEMPT,
     JOB_RUN_ID_PREFIX, JOB_RUN_SCRIPT_UNREADABLE_LEAD, JOB_RUN_SETTLES_AFTER,
-    JOB_RUN_STATE_FAILED, JOB_RUN_STATE_STARTING, MAX_RUNS_PER_JOB, MAX_TIMEOUT_MINUTES,
-    PYTHON_SHELL_JOB_LOG_GROUP, TERMINAL_JOB_RUN_STATES,
+    JOB_RUN_STATE_FAILED, JOB_RUN_STATE_RUNNING, JOB_RUN_STATE_STARTING, MAX_RUNS_PER_JOB,
+    MAX_TIMEOUT_MINUTES, PYTHON_SHELL_JOB_LOG_GROUP, TERMINAL_JOB_RUN_STATES,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -44,8 +46,13 @@ const ROLE_ARN: &str = "arn:aws:iam::000000000000:role/sim2real-glue-job-role";
 /// The lower and upper bound of the window a transition this emulator owes falls due in.
 /// [`JOB_RUN_SETTLES_AFTER`] must sit inside it, and so must every run's stored due
 /// instant.
+///
+/// A span a client has to be able to OBSERVE by polling cannot be sub-second, and a span a
+/// test suite has to wait out cannot be long: these are the bounds that leave room for both,
+/// and they are the window this project's own guidance gives a transition the emulator
+/// chooses the span of.
 pub(crate) const OWED_TRANSITION_WINDOW: (Duration, Duration) =
-    (Duration::from_millis(250), Duration::from_millis(750));
+    (Duration::from_secs(2), Duration::from_secs(5));
 
 /// An emulator plus the engine it runs on, so a test can read and move the due instants
 /// the run lifecycle turns on instead of waiting for them.
@@ -115,12 +122,27 @@ pub(crate) fn stored_runs(
         .unwrap_or_else(|| panic!("the store must hold job {job_name:?}"))
 }
 
-/// Move the due instant of every unsettled run of `job_name` to `at`, so a test can hold
-/// the transient window open or make the owed transition due without sleeping.
+/// Move EVERY due instant an unsettled run of `job_name` still owes to `at`, so a test can
+/// hold the transient window open or make what the clock owes due without sleeping.
+///
+/// A run owes up to TWO states at once — the state it is in while its script runs, and the
+/// state its own execution came to — so a helper that makes "what is owed" due has to move
+/// both, or a run would stop half way.
 pub(crate) fn set_due_instant(
     engine: &Arc<engine::InMemoryEngine>,
     job_name: &str,
     at: SystemTime,
+) {
+    set_due_instants(engine, job_name, at, at);
+}
+
+/// The same, moving the NEXT state a run is owed and the state it comes to REST in to
+/// different instants.
+fn set_due_instants(
+    engine: &Arc<engine::InMemoryEngine>,
+    job_name: &str,
+    next: SystemTime,
+    rest: SystemTime,
 ) {
     let state = engine.state::<ComAmazonawsGlueAwsglueState>();
     let mut store = state.lock();
@@ -129,7 +151,61 @@ pub(crate) fn set_due_instant(
         .unwrap_or_else(|| panic!("the store must hold job {job_name:?}"));
     for run in &mut job.runs {
         if run.settles_at.is_some() {
-            run.settles_at = Some(at);
+            run.settles_at = Some(next);
+        }
+        if run.rests_at.is_some() {
+            run.rests_at = Some(rest);
+        }
+    }
+}
+
+/// Hold the state every unfinished run of `job_name` comes to REST in open, leaving the state
+/// the clock owes it NEXT where it was.
+///
+/// What this fixes is only that a run may not come to rest yet: the transition into the state
+/// it is in while its script runs still falls due on the clock, so a test can poll for it.
+/// Which instant carries the rest depends on how far the run has got, which is why it is
+/// decided per run here.
+pub(crate) fn hold_rest_open(engine: &Arc<engine::InMemoryEngine>, job_name: &str) {
+    let state = engine.state::<ComAmazonawsGlueAwsglueState>();
+    let mut store = state.lock();
+    let job = store
+        .job_mut(crate::wire::REGION, job_name)
+        .unwrap_or_else(|| panic!("the store must hold job {job_name:?}"));
+    for run in &mut job.runs {
+        if run.rests_at.is_some() {
+            run.rests_at = Some(far_future());
+        } else if run.state == JOB_RUN_STATE_RUNNING && run.settles_at.is_some() {
+            run.settles_at = Some(far_future());
+        }
+    }
+}
+
+/// Bring every unfinished run of `job_name` into the state it is in WHILE ITS SCRIPT RUNS,
+/// and hold it there, so a test can read it in that state without waiting for a clock.
+///
+/// Which instant that takes depends on how far the run has got, which is why it is decided
+/// per run here rather than by the caller: a run the clock still owes that state has it made
+/// due and the state it comes to REST in held open; a run whose script outlasted the first
+/// span and that is therefore already there has only its rest held open.
+pub(crate) fn hold_running(engine: &Arc<engine::InMemoryEngine>, job_name: &str) {
+    let state = engine.state::<ComAmazonawsGlueAwsglueState>();
+    let mut store = state.lock();
+    let job = store
+        .job_mut(crate::wire::REGION, job_name)
+        .unwrap_or_else(|| panic!("the store must hold job {job_name:?}"));
+    for run in &mut job.runs {
+        if run.rests_at.is_some() {
+            run.settles_at = Some(already_past());
+            run.rests_at = Some(far_future());
+        } else if run.settles_at.is_some() {
+            // Either the state it is in while its script runs is the one still owed, or its
+            // script has answered and the rest is: the first is made due, the second held.
+            run.settles_at = Some(if run.settles_to == JOB_RUN_STATE_RUNNING {
+                already_past()
+            } else {
+                far_future()
+            });
         }
     }
 }
@@ -544,15 +620,35 @@ async fn the_terminal_state_is_owed_by_the_clock_a_span_after_the_start() {
         );
     }
 
-    // Nobody called in between, and the transition came due anyway.
+    // Nobody moved a due instant and nobody forced anything: the run leaves the state the
+    // start put it in because the CLOCK passed its due instant, so a reader only observes
+    // what was already owed. The next state owed a started run is the one a run is in while
+    // its script runs, and the run comes to rest after that.
     let name = "owed-by-the-clock";
     let run_id = create_and_start(&router, name, json!({})).await;
-    std::thread::sleep(JOB_RUN_SETTLES_AFTER + Duration::from_millis(250));
-    let run = get_run(&router, name, &run_id).await;
+    let deadline = SystemTime::now() + RUN_AT_REST_DEADLINE;
+    let moved = loop {
+        let run = get_run(&router, name, &run_id).await;
+        if run.get("JobRunState").and_then(Value::as_str) != Some(JOB_RUN_STATE_STARTING) {
+            break run;
+        }
+        assert!(
+            SystemTime::now() < deadline,
+            "the transition the clock owes must fall due with nobody forcing it, and the run \
+             reports {run}"
+        );
+        tokio::time::sleep(RUN_POLL_INTERVAL).await;
+    };
     assert_eq!(
-        run.get("JobRunState").and_then(Value::as_str),
+        moved.get("JobRunState").and_then(Value::as_str),
+        Some(JOB_RUN_STATE_RUNNING),
+        "the state the clock owes a started run is {JOB_RUN_STATE_RUNNING}, got {moved}"
+    );
+    let settled = run_at_rest(&router, &engine, "owed by the clock", name, &run_id).await;
+    assert_eq!(
+        settled.get("JobRunState").and_then(Value::as_str),
         Some(JOB_RUN_STATE_FAILED),
-        "once the span has passed the run is {JOB_RUN_STATE_FAILED}, got {run}"
+        "the run then comes to rest in {JOB_RUN_STATE_FAILED}, got {settled}"
     );
     assert!(
         TERMINAL_JOB_RUN_STATES.contains(&JOB_RUN_STATE_FAILED),

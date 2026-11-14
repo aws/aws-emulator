@@ -243,6 +243,8 @@ mod job_run_rest;
 mod job_run_retries;
 #[path = "all/job_run_state_change_events.rs"]
 mod job_run_state_change_events;
+#[path = "all/job_run_state_progression.rs"]
+mod job_run_state_progression;
 #[path = "all/job_runs.rs"]
 mod job_runs;
 #[path = "all/job_script_bounds.rs"]

@@ -38,6 +38,12 @@
 //! what that run was already owed rather than reporting a run nothing is running: the
 //! execution was owed the instant the run began, whoever began it.
 //!
+//! WHAT the run then REPORTS is the clock's, not this module's: the state the execution came
+//! to is owed one span after the run has been [`JOB_RUN_STATE_RUNNING`], and never before one
+//! span after the execution itself answered ([`JobRunEntry::record_execution`]) — so the run
+//! passes through `RUNNING` for as long as its script takes, and a client polling it observes
+//! every state it goes through.
+//!
 //! # Bounds
 //!
 //! A script is caller-supplied code, so every bound is this emulator's and none of them is
@@ -545,6 +551,12 @@ fn configured_timeout(timeout_minutes: i32) -> Duration {
 /// way. Awaited with NO store guard held: the plan is copied out under the guard, the script
 /// runs without it, and the outcome is recorded under it again.
 ///
+/// What the run REPORTS while and after that is the clock's: the state the execution came to
+/// is owed one span after the run has been [`JOB_RUN_STATE_RUNNING`], and never before one
+/// span after the execution answered ([`JobRunEntry::record_execution`]) — so a client
+/// observes the run starting, then running, then at rest, whichever call performed which
+/// part.
+///
 /// NOTHING IS SPAWNED: each script is compiled and executed inside this process by the
 /// embedded interpreter, contained and bounded as the module docs set out. What ONE call
 /// costs is bounded twice over — at most [`MAX_JOB_SCRIPT_RUNS_PER_CALL`] scripts, and a
@@ -594,7 +606,13 @@ pub async fn perform_owed_job_runs<Eng: ::std::marker::Send + ::std::marker::Syn
                 };
                 match JobScriptPlan::of(job, &run_id) {
                     Some(plan) => plan,
-                    None => break,
+                    // Nothing can be run without a plan, so the claim goes straight back:
+                    // a run left claimed by an execution nobody performs would report the
+                    // state it is in while its script runs for ever.
+                    None => {
+                        job.release_script_claim(&run_id);
+                        break;
+                    }
                 }
             };
 
@@ -934,6 +952,15 @@ async fn run_script(
                     request_id: &run_id,
                     invoked_function_arn: "",
                     client_context: None,
+                    // The tenant context an AWS Lambda INVOCATION carries, which that
+                    // runtime reports to its handler as `context.tenant_id`: a Glue job run
+                    // carries no such value — neither `StartJobRun` nor the modelled
+                    // `JobRun` has a tenant member — so there is none to report, and nothing
+                    // of this run's scope rests on it. What scopes the run is
+                    // request-derived and passed beside it: the role session its own AWS
+                    // calls are made as, built from the job's `Role`
+                    // ([`JobScriptPlan::role_arn`]), and the Region of the endpoint the
+                    // start arrived at, both of which reach the guest through `aws`.
                     tenant_id: None,
                     budget,
                     aws: access.as_ref(),

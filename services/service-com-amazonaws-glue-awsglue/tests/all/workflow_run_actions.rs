@@ -490,8 +490,8 @@ async fn a_runs_statistics_move_as_the_clock_moves_its_job_runs() {
     let cases: [(&str, bool, bool, &str); 4] = [
         ("still in flight", false, false, "RunningActions"),
         (
-            // Nothing executes a job script here, so the state the clock owes a run nobody
-            // stopped is the modelled failure state.
+            // The jobs here point their script at an object no Amazon S3 serves, so the
+            // state a run nobody stopped comes to rest in is the modelled failure state.
             "the clock has finished them",
             false,
             true,
