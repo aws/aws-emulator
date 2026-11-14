@@ -25,11 +25,19 @@
 //!
 //! * `AWS::IAM::Role` — the role's trust policy, which is the resource-based policy of a
 //!   role (it names the principals that may assume it);
-//! * `AWS::S3::Bucket` — the bucket policy.
+//! * `AWS::S3::Bucket` — the bucket policy;
+//! * `AWS::SQS::Queue` — the queue's access policy, the document its `Policy` attribute
+//!   carries.
 //!
 //! A resource type whose policy no service of this emulator holds yet contributes nothing:
 //! a finding is reported only for a policy that was actually read, never for a resource
 //! type this emulator could merely have one for.
+//!
+//! An analyzer is also a REGIONAL resource — one is created in each Region whose resources
+//! are to be monitored — so the walk is scoped to the Region the analyzer's own ARN names
+//! ([`in_analyzer_region`]): a resource whose ARN names a Region is analyzed by that
+//! Region's analyzer, and one in a global namespace (an IAM role, an Amazon S3 general
+//! purpose bucket), whose ARN names none, by every Region's.
 //!
 //! ## Which grants are reported
 //!
@@ -66,6 +74,9 @@ pub const RESOURCE_TYPE_IAM_ROLE: &str = "AWS::IAM::Role";
 /// The `ResourceType` of an Amazon S3 general purpose bucket's finding, from the same
 /// enum.
 pub const RESOURCE_TYPE_S3_BUCKET: &str = "AWS::S3::Bucket";
+
+/// The `ResourceType` of an Amazon SQS queue's finding, from the same enum.
+pub const RESOURCE_TYPE_SQS_QUEUE: &str = "AWS::SQS::Queue";
 
 /// The `FindingSourceType` of access granted by the resource's own policy, from
 /// [`crate::ops::types::FINDING_SOURCE_TYPE_VALUES`].
@@ -201,8 +212,13 @@ impl MonitoredResource {
     }
 }
 
-/// Every resource of `account` whose resource-based policy this emulator holds, in ARN
+/// Every resource the analyzer `analyzer_arn` names monitors — the resources of its own
+/// account, in its own Region, whose resource-based policy this emulator holds — in ARN
 /// order.
+///
+/// The analyzer's ARN is what says which those are: its account segment is the zone of
+/// trust the findings are analyzed against, and its Region segment is the Region whose
+/// resources it monitors ([`in_analyzer_region`]).
 ///
 /// Call it with a handler's `&*self.engine` and NO store lock held: each provider takes the
 /// lock of the service that owns its resources, copies what the analysis needs out of it
@@ -216,15 +232,41 @@ impl MonitoredResource {
 /// policy was not read is not analyzed, rather than reported as granting no access.
 pub fn monitored_resources<Eng: Send + Sync + 'static>(
     engine: &Eng,
-    account: &str,
+    analyzer_arn: &str,
 ) -> Vec<MonitoredResource> {
+    let account = resource_owner_account(analyzer_arn, None);
+    let region = arn_region(analyzer_arn).unwrap_or_default();
     let mut resources: Vec<MonitoredResource> = Vec::new();
-    iam_roles(engine, account, &mut resources);
-    s3_buckets(engine, account, &mut resources);
+    iam_roles(engine, &account, &mut resources);
+    s3_buckets(engine, &account, &mut resources);
+    sqs_queues(engine, &account, &mut resources);
+    // A resource of another Region is the analyzer of THAT Region's to report, so it is
+    // left out of this one's walk rather than analyzed here.
+    resources.retain(|resource| in_analyzer_region(&resource.arn, region));
     // ARN order, so the walk — and with it every finding's id and the order the findings
     // are reported in — is independent of how each store happens to be laid out.
     resources.sort_by(|left, right| left.arn.cmp(&right.arn));
     resources
+}
+
+/// The Region an ARN names, or `None` when its Region segment is empty — the form the ARN
+/// of a resource in a GLOBAL namespace takes (an IAM role, an Amazon S3 general purpose
+/// bucket).
+fn arn_region(arn: &str) -> Option<&str> {
+    arn.split(':').nth(3).filter(|region| !region.is_empty())
+}
+
+/// Whether the analyzer of `analyzer_region` monitors the resource `resource_arn` names.
+///
+/// A resource whose ARN names a Region lives in that Region, so it is the analyzer of that
+/// Region that analyzes it; a resource in a global namespace names none and is analyzed by
+/// every Region's analyzer. An ARN that names no Region for the ANALYZER constrains
+/// nothing, so no resource is left out for it.
+fn in_analyzer_region(resource_arn: &str, analyzer_region: &str) -> bool {
+    if analyzer_region.is_empty() {
+        return true;
+    }
+    arn_region(resource_arn).is_none_or(|region| region == analyzer_region)
 }
 
 /// The account's IAM roles, each with its trust policy.
@@ -291,6 +333,40 @@ fn s3_buckets<Eng: Send + Sync + 'static>(
             owner_account,
             policy: document.to_string(),
             created_at: bucket.created_at(),
+        });
+    }
+}
+
+/// The account's Amazon SQS queues, each with its access policy.
+///
+/// A queue's `Policy` attribute IS its resource-based policy: it is the document that says
+/// which principals may act on the queue, so it is what decides whether a principal outside
+/// the account can reach it, and a queue carrying no such attribute grants nothing to
+/// analyze. A queue ARN names the Region whose namespace holds the queue, so only that
+/// Region's analyzer reports it ([`in_analyzer_region`]).
+fn sqs_queues<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    account: &str,
+    into: &mut Vec<MonitoredResource>,
+) {
+    let Some(sqs) = ::service_com_amazonaws_sqs_amazonsqs::state::service_state(engine) else {
+        return;
+    };
+    let store = sqs.lock();
+    for queue in store.queues.values() {
+        let Some(document) = queue.policy() else {
+            continue;
+        };
+        let owner_account = resource_owner_account(&queue.arn, None);
+        if owner_account != account {
+            continue;
+        }
+        into.push(MonitoredResource {
+            arn: queue.arn.clone(),
+            resource_type: RESOURCE_TYPE_SQS_QUEUE,
+            owner_account,
+            policy: document.to_string(),
+            created_at: Some(queue.created_at),
         });
     }
 }

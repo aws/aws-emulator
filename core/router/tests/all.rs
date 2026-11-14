@@ -1877,6 +1877,9 @@ mod cloudformation_provisions_cloudfront_resources;
 // (`cloudformation_monitored_alb_search_estate` and `cloudformation_domain_endpoint_outputs`
 // are declared in the head region above: a module may be declared only once.)
 // are declared further up this tail already: a module may be declared only once.)
+// (`apigateway_sns_service_integration` is declared ONCE, a few lines above in this same
+// tail: it was appended here as well while two branches were landing at once, which
+// declared it a second time and compiled neither.)
 // (`apigateway_sns_service_integration` is declared ONCE, a few lines up in this same
 // appended tail: two branches landing in the same window appended a second declaration of it
 // here, which is a redefinition that compiled neither, so the duplicate is removed and the
@@ -1941,6 +1944,11 @@ mod cloudformation_metric_stream_estate_is_drainable;
 // cluster and then read the alarm's state.
 #[path = "all/redshift_health_alarms_evaluate.rs"]
 mod redshift_health_alarms_evaluate;
+// (`cloudwatch_alarm_ssm_ops_item_action` is declared once, in the head region above: a
+// module may be declared only once.)
+// (`cloudformation_metric_stream_filter_update` is declared ONCE, in the head region above
+// beside the other `cloudformation_…` suites: it was appended here as well while two
+// branches were landing at once, which declared it a second time and compiled neither.)
 // (`cloudformation_metric_stream_filter_update` is declared once, in the head region above:
 // two branches landing in the same window each declared it, and a module may be declared
 // only once.)
@@ -1959,7 +1967,6 @@ mod redshift_health_alarms_evaluate;
 // (`zz_probe` is declared further up this tail already: a module may be declared only once.)
 // (`zz_probe` is declared once further up this tail: a module may be declared only once.)
 // (`zz_probe` is declared ONCE, further up this tail: it was appended here as well while two
-// branches were landing at once, which declared it a second time and compiled neither.)
 // (`cloudwatch_alarm_ssm_ops_item_action` is declared in the head region above: a module may
 // be declared only once.)
 // (`zz_probe` is declared ONCE, further up this tail: a module may be declared only once.)
@@ -2203,6 +2210,11 @@ mod ses_delivery_event_advances_the_subscribed_queue;
 // (`zz_probe` is declared once, in the head region above: a module may be declared only
 // once, and two branches landing at once had appended a second declaration of it here.)
 // above: two branches landing at once had appended a second declaration of it here.)
+// (The Amazon Cognito authorizer suite is declared ONCE, in the head region above: a module
+// may be declared only once, and two branches landing at once appended it here as well.)
+// Declared ONCE, in the head region above beside the other API Gateway suites: it was
+// appended here as well while two branches were landing at once, which declared it a second
+// time and compiled neither.
 // (The suite that reads which app client's token a COGNITO_USER_POOLS authorizer admits is
 // declared in the head region at the top of this file already: a module may be declared only
 // once.)

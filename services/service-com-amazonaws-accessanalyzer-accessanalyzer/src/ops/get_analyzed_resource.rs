@@ -225,11 +225,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             (analyzer.arn.clone(), analyzer.created_at)
         };
 
-        // The zone of trust of an account analyzer is the account it monitors, which its
-        // own ARN names; the resources of that account are read out of the services that
-        // own them, each under its own lock and none of them held past the read.
-        let account = crate::state::resource_owner_account(&analyzer_arn, None);
-        let resources = crate::state::monitored_resources(&*self.engine, &account);
+        // The zone of trust of an account analyzer is the account it monitors and the
+        // Region it monitors it in, both of which its own ARN names; the resources of that
+        // account are read out of the services that own them, each under its own lock and
+        // none of them held past the read.
+        let resources = crate::state::monitored_resources(&*self.engine, &analyzer_arn);
 
         // The analyzer analyzes a resource of its own account whose resource-based policy
         // this emulator holds, so an ARN naming no such resource was analyzed by nothing:

@@ -49,6 +49,8 @@ mod policy_checks;
 mod policy_generation;
 #[path = "all/policy_validation.rs"]
 mod policy_validation;
+#[path = "all/queue_policy_findings.rs"]
+mod queue_policy_findings;
 #[path = "all/resource_scan.rs"]
 mod resource_scan;
 #[path = "all/resource_tags.rs"]

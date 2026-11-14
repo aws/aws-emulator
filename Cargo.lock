@@ -8810,6 +8810,7 @@ dependencies = [
  "serde_json",
  "service-com-amazonaws-iam-awsidentitymanagementv20100508",
  "service-com-amazonaws-s3-amazons3",
+ "service-com-amazonaws-sqs-amazonsqs",
  "sha2 0.10.9",
  "tokio",
  "tracing",

@@ -38,9 +38,10 @@ jsonc-parser = "0.26"
 sha2 = { workspace = true }
 # An external access analyzer reports findings for the account's own resources, so the
 # analysis reads each resource-based policy out of the service that OWNS it: a role's
-# trust policy from IAM, a bucket policy from S3.
+# trust policy from IAM, a bucket policy from S3, a queue's access policy from SQS.
 service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
 service-com-amazonaws-s3-amazons3 = { workspace = true }
+service-com-amazonaws-sqs-amazonsqs = { workspace = true }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
