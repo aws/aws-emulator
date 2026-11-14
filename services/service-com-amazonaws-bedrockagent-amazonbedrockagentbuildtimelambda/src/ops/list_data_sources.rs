@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListDataSources
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListDataSources`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListDataSources::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! IMPLEMENTED: reports the data sources the knowledge base the request names holds, in
+//! creation order and from the position a `nextToken` names, at most `maxResults` of them
+//! (see [`crate::state::ComAmazonawsBedrockagentAmazonbedrockagentbuildtimelambdaState::page_of_data_sources`]).
+//! Each summary comes off the stored record the data source's own read reports, whatever
+//! its status. A `knowledgeBaseId` this store holds no knowledge base for has nothing to
+//! enumerate, so the request is refused with the modelled `ResourceNotFoundException`
+//! rather than answered with an empty listing, and a `nextToken` this service did not hand
+//! out is the bad request `ValidationException` refuses.
 //!
 //! ## Shape of an operation
 //!
@@ -159,18 +158,77 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListDataSources` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListDataSourcesErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListDataSources"))
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(ListDataSourcesErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: Some("the bedrock-agent store is unavailable".to_string()),
+                },
+            )
+            .into());
+        };
+
+        // A token this service did not hand out names no position in the listing, which
+        // is a bad request rather than an empty page.
+        let cursor = match input.next_token.as_deref() {
+            None => None,
+            Some(token) => match crate::state::DataSourcePageCursor::parse(token) {
+                Some(cursor) => Some(cursor),
+                None => {
+                    return Err(ListDataSourcesErrorModeled::ValidationException(
+                        ValidationException {
+                            message: Some(
+                                "nextToken is not a pagination token this service issued"
+                                    .to_string(),
+                            ),
+                            field_list: Some(vec![ValidationExceptionField {
+                                name: "nextToken".to_string(),
+                                message: "not a pagination token this service issued".to_string(),
+                            }]),
+                        },
+                    )
+                    .into())
+                }
+            },
+        };
+
+        // `maxResults` is "the maximum number of results to return in the response", so
+        // it shortens the page and nothing lengthens it past the default.
+        let page_size = input
+            .max_results
+            .map_or(crate::state::MAX_DATA_SOURCES_PER_PAGE, |requested| {
+                usize::try_from(requested).unwrap_or(crate::state::MAX_DATA_SOURCES_PER_PAGE)
+            })
+            .clamp(1, crate::state::MAX_DATA_SOURCES_PER_PAGE);
+
+        // A read: the data sources are reported as they stand, and the one write is the
+        // materialising of a change the CLOCK had already made due — a data source whose
+        // settling or removal was owed before this call is reported here exactly as every
+        // other reader reports it.
+        let now = ::std::time::SystemTime::now();
+        let mut state = state.lock();
+        state.materialise_due_transitions(now);
+
+        // The data sources belong to one knowledge base, so it has to exist and may not
+        // be on its way out of the store: an id nothing holds has no data sources to
+        // enumerate.
+        if state.live_knowledge_base(&input.knowledge_base_id).is_none() {
+            return Err(ListDataSourcesErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: Some(crate::state::knowledge_base_not_found_message(
+                        &input.knowledge_base_id,
+                    )),
+                },
+            )
+            .into());
+        }
+
+        let (data_source_summaries, next_token) =
+            state.page_of_data_sources(&input.knowledge_base_id, cursor.as_ref(), page_size);
+
+        Ok(ListDataSourcesOutput {
+            data_source_summaries,
+            next_token,
+        })
     }
 }

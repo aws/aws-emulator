@@ -79,6 +79,29 @@ use super::{resource_drift_status, StoredResource, DRIFT_STATUS_DRIFTED, DRIFT_S
 /// which is what `NOT_CHECKED` states.
 const NOT_IMPLEMENTED: &str = "NotImplemented";
 
+/// The resource types drift detection is NOT supported for, of the ones this emulator
+/// provisions.
+///
+/// "Resources that don't currently support drift detection can't be checked": support is
+/// per resource TYPE and published by CloudFormation itself (its resource-type support for
+/// imports and drift detection), not decided by whether the owning service happens to
+/// serve a read — so a type outside that published support is NOT_CHECKED however well its
+/// configuration can be read back, and the request for that one resource's drift is
+/// refused ([`crate::ops::detect_stack_resource_drift`]).
+///
+/// An Amazon Bedrock knowledge base is such a type: a drift check of one is refused,
+/// naming the type, while the `AWS::IAM::Role` of the same stack is checked and reported
+/// (recorded). A type of this emulator that no provisioner owns, or whose owning service
+/// does not serve the read, is already NOT_CHECKED without being named here — nothing was
+/// read for it either way.
+const DRIFT_DETECTION_UNSUPPORTED_TYPES: &[&str] = &[super::template::BEDROCK_KNOWLEDGE_BASE];
+
+/// Whether drift detection is supported for `resource_type`
+/// ([`DRIFT_DETECTION_UNSUPPORTED_TYPES`]).
+pub fn supports_drift_detection(resource_type: &str) -> bool {
+    !DRIFT_DETECTION_UNSUPPORTED_TYPES.contains(&resource_type)
+}
+
 /// The model's `DifferenceType`: which kind of difference one property difference is.
 pub mod difference_type {
     /// "A value has been added to a resource property that's an array or list data type."
@@ -243,7 +266,13 @@ pub async fn detect(
         let (status, detail) = match owner_for(&resource.resource_type) {
             // Nothing was created for this resource in any service, so there is no actual
             // configuration to compare: the type does not support drift detection here.
-            Some(provisioner) if resource.materialised => {
+            // Nor is anything read for a type CloudFormation does not support drift
+            // detection for ([`supports_drift_detection`]) — such a resource cannot be
+            // checked at all, whatever its owning service would report.
+            Some(provisioner)
+                if resource.materialised
+                    && supports_drift_detection(&resource.resource_type) =>
+            {
                 match provisioner.actual_configuration(ctx, region, resource).await {
                     // Nothing was asked of any service for this resource, because no read of
                     // its type's configuration is served here: no comparison was carried
@@ -382,7 +411,7 @@ pub async fn drifted(
         let Some(provisioner) = owner_for(&resource.resource_type) else {
             continue;
         };
-        if !resource.materialised {
+        if !resource.materialised || !supports_drift_detection(&resource.resource_type) {
             continue;
         }
         let Ok(ActualConfiguration::Reported(actual)) =

@@ -26,7 +26,15 @@ pub struct ListDataSourcesOutput {
     pub next_token: Option<String>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagent#DataSourceSummary")]
+/// `DataSourceSummary`. Its schema and codec come from
+/// [`bedrock_agent_schema_and_codec!`] rather than
+/// `#[smithy_macros::smithy(shape = ...)]` because `updatedAt` targets `DateTimestamp`,
+/// which carries `@timestampFormat("date-time")`
+/// (`smithy_query(query="shape", shape="DataSourceSummary")`), and the derive does not put
+/// that trait on a member schema — see `types/date_time_wire.rs` for that whole story.
+///
+/// The member list below is the model's, member for member: same shape ids, same wire
+/// names, same order, same shape types.
 #[derive(Debug, Clone)]
 pub struct DataSourceSummary {
     pub knowledge_base_id: String,
@@ -36,4 +44,25 @@ pub struct DataSourceSummary {
     pub description: Option<String>,
     pub updated_at: ::aws_smithy_types::DateTime,
 }
+
+bedrock_agent_schema_and_codec!(
+    DataSourceSummary,
+    DATA_SOURCE_SUMMARY_SCHEMA,
+    "com.amazonaws.bedrockagent#DataSourceSummary",
+    "com.amazonaws.bedrockagent",
+    "DataSourceSummary",
+    (
+        M_KNOWLEDGE_BASE_ID,
+        knowledge_base_id,
+        "knowledgeBaseId",
+        0,
+        req,
+        string
+    ),
+    (M_DATA_SOURCE_ID, data_source_id, "dataSourceId", 1, req, string),
+    (M_NAME, name, "name", 2, req, string),
+    (M_STATUS, status, "status", 3, req, string),
+    (M_DESCRIPTION, description, "description", 4, opt, string),
+    (M_UPDATED_AT, updated_at, "updatedAt", 5, req, date_time),
+);
 

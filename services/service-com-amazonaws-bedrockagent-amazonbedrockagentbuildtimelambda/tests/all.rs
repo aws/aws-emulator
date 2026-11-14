@@ -19,6 +19,8 @@ mod agents_classic_maintenance_mode;
 mod client_error_fidelity;
 #[path = "all/data_source_lifecycle.rs"]
 mod data_source_lifecycle;
+#[path = "all/data_source_listing.rs"]
+mod data_source_listing;
 #[path = "all/delete_removes_the_resource.rs"]
 mod delete_removes_the_resource;
 #[path = "all/enum_value_set_order.rs"]
@@ -65,8 +67,12 @@ mod knowledge_base_lifecycle;
 mod knowledge_base_role_and_vector_store_access;
 #[path = "all/knowledge_base_listing.rs"]
 mod knowledge_base_listing;
+#[path = "all/knowledge_base_name_conflict.rs"]
+mod knowledge_base_name_conflict;
 #[path = "all/managed_connector_defaults.rs"]
 mod managed_connector_defaults;
+#[path = "all/resource_tags.rs"]
+mod resource_tags;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
 #[path = "all/update_reports_the_transitional_status.rs"]

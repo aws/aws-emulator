@@ -261,6 +261,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let now = ::std::time::SystemTime::now();
         let mut state = state.lock();
         state.materialise_due_transitions(now);
+
+        // A knowledge base's NAME is this account's to hold once, and this operation
+        // takes a new required one: a rename onto a name ANOTHER knowledge base of the
+        // account holds is refused with the modelled `ConflictException`, the same
+        // refusal a create under a taken name gets, and nothing is written. The knowledge
+        // base being renamed is not its own obstacle, so re-sending its own name is the
+        // no-op rename it is. Read here, and ANSWERED below the resolution of the
+        // knowledge base the request addresses: an id this store holds nothing for is the
+        // missing resource whatever name the request carries.
+        let name_taken = state
+            .knowledge_base_named_other_than(&input.name, &input.knowledge_base_id)
+            .is_some();
+
         // A knowledge base a delete has already been accepted for serves no
         // update: it is on its way out of the store, so it answers what it will
         // answer once the removal has happened.
@@ -274,6 +287,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
+
+        if name_taken {
+            return Err(UpdateKnowledgeBaseErrorModeled::ConflictException(
+                ConflictException {
+                    message: Some(crate::state::knowledge_base_name_conflict_message(
+                        Self::NAME,
+                        &input.name,
+                    )),
+                },
+            )
+            .into());
+        }
 
         // `knowledgeBaseConfiguration` and `storageConfiguration` are the
         // members this operation's own contract documents as unchangeable once

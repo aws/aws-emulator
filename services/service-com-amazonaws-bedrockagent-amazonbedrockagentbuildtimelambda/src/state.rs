@@ -158,12 +158,27 @@ mod service_role;
 /// writes into it.
 mod vector_store;
 
+/// Which stored resource a tagging operation's `resourceArn` names, and the tags that
+/// resource holds.
+mod tagged_resources;
+
+/// The order `ListDataSources` reports one knowledge base's data sources in, and the
+/// page it hands out.
+mod data_source_listing;
+
+/// A knowledge base's name as the account's own namespace: who holds one, and the
+/// refusal a second knowledge base under it gets.
+mod knowledge_base_names;
+
+pub use data_source_listing::*;
 pub use flow_aliases::*;
 pub use ingestion::*;
 pub use ingestion_record::*;
+pub use knowledge_base_names::*;
 pub use opensearch_serverless_store::*;
 pub use pushed_documents::*;
 pub use service_role::*;
+pub use tagged_resources::*;
 pub use vector_store::*;
 
 /// What an ingestion records in the bound vector index beside the vector: the published
@@ -183,7 +198,8 @@ use ::aws_smithy_types::Document;
 
 use crate::ops::types::{
     Agent, AgentSummary, CreateFlowOutput, CreateFlowVersionOutput, CustomDocumentIdentifier,
-    CustomOrchestration, DataSource, DataSourceConfiguration, DocumentContent, DocumentIdentifier,
+    CustomOrchestration, DataSource, DataSourceConfiguration, DataSourceSummary, DocumentContent,
+    DocumentIdentifier,
     DocumentMetadata, FlowDefinition, FlowValidation, FlowVersionSummary, GetFlowOutput,
     GetFlowVersionOutput, GuardrailConfiguration, ImageExtractionConfiguration, IngestionJob, IngestionJobStatistics,
     KnowledgeBase, KnowledgeBaseConfiguration, KnowledgeBaseDocumentDetail, KnowledgeBaseSummary,

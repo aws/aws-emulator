@@ -11,7 +11,14 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-bedrockagent-amazonbedrockagentbuildtimelambda.json");
 
-#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagent#UntagResourceRequest")]
+// `skip_validation = ["resourceArn"]`: the same member, the same published expression and
+// the same reason as `ListTagsForResourceInput` records — AWS does not enforce that
+// expression, which no ARN this plane mints satisfies, and the handler enforces the syntax
+// it spells instead (`crate::state::taggable_resource`).
+#[smithy_macros::smithy(
+    shape = "com.amazonaws.bedrockagent#UntagResourceRequest",
+    skip_validation = ["resourceArn"]
+)]
 #[derive(Debug, Clone, Default)]
 pub struct UntagResourceInput {
     pub resource_arn: String,

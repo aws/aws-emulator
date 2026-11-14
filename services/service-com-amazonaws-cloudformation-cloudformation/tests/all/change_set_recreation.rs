@@ -42,12 +42,14 @@ const SECOND_MODEL: &str =
 ///
 /// The knowledge base is really created in Amazon Bedrock Agent by the deployment
 /// (`state::provisioner::bedrock_knowledge_bases`), so the declaration carries the vector
-/// store that create requires of a self-managed `VECTOR` knowledge base.
-fn base_template() -> String {
+/// store that create requires of a self-managed `VECTOR` knowledge base — and its NAME
+/// carries the row's stack, because a knowledge base's name is the ACCOUNT's to hold once
+/// and every row of the table deploys into the same account.
+fn base_template(stack: &str) -> String {
     format!(
         r#"{{"Resources":{{
              "Escalation":{{"Type":"AWS::Bedrock::KnowledgeBase","Properties":{{
-                "Name":"recreation-escalation-kb-g1",
+                "Name":"{stack}-escalation-kb-g1",
                 "Description":"the escalation knowledge base",
                 "RoleArn":"arn:aws:iam::000000000000:role/recreation-kb",
                 "KnowledgeBaseConfiguration":{{"Type":"VECTOR",
@@ -67,8 +69,8 @@ fn base_template() -> String {
 
 /// `base_template` with each `(original, replacement)` spliced in, which is how a row states
 /// "the same revision, with this edit".
-fn edited(edits: &[(&str, &str)]) -> String {
-    let mut template = base_template();
+fn edited(stack: &str, edits: &[(&str, &str)]) -> String {
+    let mut template = base_template(stack);
     for (original, replacement) in edits {
         assert!(
             template.contains(original),
@@ -243,7 +245,7 @@ async fn a_change_set_reports_what_each_changed_property_does_to_the_resource() 
     let (router, engine) = router_with_engine();
     for case in recreation_cases() {
         let name = case.case;
-        let (code, body) = create_stack(&router, case.stack, &base_template(), &[]).await;
+        let (code, body) = create_stack(&router, case.stack, &base_template(case.stack), &[]).await;
         assert_eq!(
             code, 200,
             "case {name:?}: the stack the change set is for must be created, got {code} {body}"
@@ -260,7 +262,7 @@ async fn a_change_set_reports_what_each_changed_property_does_to_the_resource() 
             &[
                 member("StackName", case.stack),
                 member("ChangeSetName", "recreation"),
-                member("TemplateBody", &edited(&case.edits)),
+                member("TemplateBody", &edited(case.stack, &case.edits)),
             ],
         )
         .await;

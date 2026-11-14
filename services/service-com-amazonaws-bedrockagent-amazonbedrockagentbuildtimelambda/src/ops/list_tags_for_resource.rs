@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListTagsForResource
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListTagsForResource`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! IMPLEMENTED: reports the tags stored on the resource the `resourceArn` names — the
+//! ones that resource's create was given, read off the same record the resource's own
+//! reads report. A resource carrying no tags reports an EMPTY map: the modelled `TagsMap`
+//! bounds neither its size nor its entries, and the member is what "the key-value pairs
+//! for the tags associated with the resource" is reported in.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListTagsForResource::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! The ARN is resolved by [`crate::state::taggable_resource`], the one reader of this
+//! plane's taggable-resource syntax: a value outside it is the bad request the modelled
+//! `ValidationException` refuses, and one of that syntax naming a resource this store does
+//! not hold is the missing resource `ResourceNotFoundException` refuses.
 //!
 //! ## Shape of an operation
 //!
@@ -149,18 +150,56 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListTagsForResource` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListTagsForResourceErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListTagsForResource"))
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(ListTagsForResourceErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: Some("the bedrock-agent store is unavailable".to_string()),
+                },
+            )
+            .into());
+        };
+
+        // `resourceArn` is judged here rather than at the boundary (`skip_validation` on
+        // this input, which records why): a value outside the taggable-resource syntax
+        // this plane publishes names no resource of it at all, so it is refused as the
+        // bad request it is before anything is looked up.
+        let Some(resource) = crate::state::taggable_resource(&input.resource_arn) else {
+            return Err(ListTagsForResourceErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(crate::state::taggable_resource_arn_pattern_message(
+                        &input.resource_arn,
+                    )),
+                    field_list: None,
+                },
+            )
+            .into());
+        };
+
+        // A read: the tags are reported as the resource holds them, and the one write is
+        // the materialising of a transition the CLOCK had already made due — owed at this
+        // instant whether or not anyone asked for the tags.
+        let now = ::std::time::SystemTime::now();
+        let mut state = state.lock();
+        state.materialise_due_transitions(now);
+
+        let Some(tags) = state.taggable_resource_tags(&resource) else {
+            return Err(ListTagsForResourceErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: Some(crate::state::resource_not_found_message(
+                        Self::NAME,
+                        resource.resource_type_name(),
+                    )),
+                },
+            )
+            .into());
+        };
+
+        Ok(ListTagsForResourceOutput {
+            // The stored map, read back as it stands: the modelled `TagsMap` bounds
+            // neither its size nor its entries, so a resource holding no tags reports an
+            // empty map rather than nothing at all.
+            tags: Some(tags.clone()),
+        })
     }
 }

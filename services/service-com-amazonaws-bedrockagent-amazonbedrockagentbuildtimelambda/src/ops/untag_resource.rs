@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op UntagResource
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `UntagResource`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! IMPLEMENTED: removes the named keys from the record the `resourceArn` names — the same
+//! record `ListTagsForResource` reports them off — and leaves every key the request does
+//! not name. A key the resource does not hold is nothing to remove, so a repeat of the
+//! same request answers the same way (the operation is `@idempotent`).
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`UntagResource::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! The ARN is resolved by [`crate::state::taggable_resource`], the one reader of this
+//! plane's taggable-resource syntax: a value outside it is the bad request the modelled
+//! `ValidationException` refuses, and one of that syntax naming a resource this store does
+//! not hold is the missing resource `ResourceNotFoundException` refuses.
 //!
 //! ## Shape of an operation
 //!
@@ -148,18 +148,55 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `UntagResource` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(UntagResourceErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("UntagResource"))
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(UntagResourceErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: Some("the bedrock-agent store is unavailable".to_string()),
+                },
+            )
+            .into());
+        };
+
+        // `resourceArn` is judged here rather than at the boundary (`skip_validation` on
+        // this input, which records why): a value outside the taggable-resource syntax
+        // this plane publishes names no resource of it at all, so it is refused as the
+        // bad request it is before anything is written.
+        let Some(resource) = crate::state::taggable_resource(&input.resource_arn) else {
+            return Err(UntagResourceErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(crate::state::taggable_resource_arn_pattern_message(
+                        &input.resource_arn,
+                    )),
+                    field_list: None,
+                },
+            )
+            .into());
+        };
+
+        let now = ::std::time::SystemTime::now();
+        let mut state = state.lock();
+        state.materialise_due_transitions(now);
+
+        let Some(held) = state.taggable_resource_tags_mut(&resource) else {
+            return Err(UntagResourceErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: Some(crate::state::resource_not_found_message(
+                        Self::NAME,
+                        resource.resource_type_name(),
+                    )),
+                },
+            )
+            .into());
+        };
+
+        // "Remove tags from a resource": the keys the request names and no others. A key
+        // the resource does not hold is nothing to remove, which is what makes a repeat of
+        // the same request answer the same way.
+        for key in &input.tag_keys {
+            held.remove(key);
+        }
+
+        Ok(UntagResourceOutput {})
     }
 }

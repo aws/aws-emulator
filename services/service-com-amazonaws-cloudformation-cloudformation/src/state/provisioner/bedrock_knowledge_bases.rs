@@ -106,6 +106,12 @@ const KNOWLEDGE_BASE_REPORTED_PROPERTIES: &[(&str, &str)] = &[
     ("RoleArn", "roleArn"),
 ];
 
+/// The error code Amazon Bedrock Agent answers when the name a create asks for is one
+/// this account's knowledge bases already hold: `CreateKnowledgeBase`'s modelled 409
+/// (`ConflictException`), whose one cause for this operation is the name — the only value
+/// of the request that has to be unique in the account.
+const BEDROCK_CONFLICT: &str = "ConflictException";
+
 /// Create the knowledge base an `AWS::Bedrock::KnowledgeBase` declares, so a client that
 /// deployed the stack and calls `GetKnowledgeBase` with the id the stack publishes reads the
 /// knowledge base back — and so every hop off it (its data sources, a retrieval against it)
@@ -115,6 +121,14 @@ const KNOWLEDGE_BASE_REPORTED_PROPERTIES: &[(&str, &str)] = &[
 /// resource's physical id — the primary identifier of the type, and the handle every
 /// knowledge-base API takes — and the id, the ARN, the status and the two instants it
 /// answered are the resource's attributes.
+///
+/// A create that service refuses because the NAME is taken is reported as the collision it
+/// is ([`name_taken`]): the class a client branches on for "the resource is already there"
+/// is `AlreadyExists`, which is what this type's handler puts such a refusal in, and it is
+/// what the create of a REPLACEMENT knowledge base runs into — the replacement is created
+/// before the knowledge base it replaces is deleted, so a declaration that changes an
+/// embedding model while keeping the `Name` asks for a second knowledge base under a name
+/// the account still holds.
 pub(super) async fn create_bedrock_knowledge_base(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
@@ -122,10 +136,8 @@ pub(super) async fn create_bedrock_knowledge_base(
     propagated: &[(String, String)],
 ) -> Result<Created, Refusal> {
     let mut request = declared_knowledge_base_members(&resource.properties)?;
-    request.insert(
-        NAME_MEMBER.to_string(),
-        Value::String(knowledge_base_name(resource)),
-    );
+    let name = knowledge_base_name(resource);
+    request.insert(NAME_MEMBER.to_string(), Value::String(name.clone()));
     let tags = tags_of(&resource.properties, propagated);
     if !tags.is_empty() {
         request.insert(TAGS_MEMBER.to_string(), Value::Object(tags_as_map(&tags)));
@@ -138,7 +150,8 @@ pub(super) async fn create_bedrock_knowledge_base(
         KNOWLEDGE_BASES_URI,
         Some(&Value::Object(request)),
     )
-    .await?;
+    .await
+    .map_err(|refusal| name_taken(resource, &name, refusal))?;
     let attributes = knowledge_base_attributes(&answered)?;
     Ok(Created {
         // Amazon Bedrock Agent assigned the knowledge base's identity, so the id it answered
@@ -147,6 +160,20 @@ pub(super) async fn create_bedrock_knowledge_base(
         physical_resource_id: attributes.get("KnowledgeBaseId").cloned(),
         attributes,
     })
+}
+
+/// A create Amazon Bedrock Agent refused because the knowledge base's NAME is already
+/// taken, as this type's handler reports it: the `AlreadyExists` class — the one a client
+/// branches on to rename or stage the change — and the handler's own sentence naming the
+/// type and the identifier it asked for. Every other refusal is passed on as it came.
+fn name_taken(resource: &StoredResource, name: &str, refusal: Refusal) -> Refusal {
+    if refusal.code != BEDROCK_CONFLICT {
+        return refusal;
+    }
+    Refusal {
+        code: ALREADY_EXISTS.to_string(),
+        message: crate::state::early_validation::already_exists(&resource.resource_type, name),
+    }
 }
 
 /// Whether Amazon Bedrock Agent has finished bringing up the knowledge base a stack created.

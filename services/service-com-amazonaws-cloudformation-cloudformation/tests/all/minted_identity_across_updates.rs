@@ -123,7 +123,13 @@ fn rows() -> Vec<Row> {
             case: "the revision states another EMBEDDING MODEL, which the knowledge base \
                    cannot be given anew",
             stack: "minted-remodelled",
-            name: FIRST_NAME,
+            // The replacement is created BEFORE the knowledge base it replaces is deleted,
+            // so a revision that keeps the `Name` asks the owning service for a second
+            // knowledge base under a name it still holds — the collision
+            // `bedrock_knowledge_base_drift_and_replacement.rs` pins. This row is about the
+            // identity MOVING, so it renames as well, which is the replacement AWS carries
+            // out.
+            name: "minted-remodelled-name",
             description: FIRST_DESCRIPTION,
             role: FIRST_ROLE,
             model: TITAN_V2,

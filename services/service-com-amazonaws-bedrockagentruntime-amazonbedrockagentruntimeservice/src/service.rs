@@ -186,11 +186,13 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // first three the two models bind DIFFERENT routes, so this service claims only
         // the routes its own model binds (`POST /knowledgebases/{id}/retrieve`, the flow
         // execution paths, the agent memory and invocation paths); under `tags` both bind
-        // the identical three routes and the ARN in the path names no endpoint — each
-        // Bedrock endpoint judges a tagging ARN by its OWN model's taggable-resource
-        // pattern and refuses one it does not admit — so that segment has a declared
-        // owner, this service. `None` for the RPC argument: every operation here is bound
-        // to a URI.
+        // the identical three routes and the ARN in the path names the plane that MINTS the
+        // tagged resource — each model enumerates the resource types its OWN tagging
+        // admits and the two enumerations are disjoint — so this service claims a request
+        // naming a resource IT mints (a session, an advanced-optimize-prompt job), and an
+        // ARN naming no taggable resource of either plane, which neither can resolve, as
+        // the segment's declared owner. `None` for the RPC argument: every operation here
+        // is bound to a URI.
         service_common::bedrock::claims_request(
             parts,
             self.definition(),

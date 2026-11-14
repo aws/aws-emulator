@@ -322,11 +322,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // adding another record, and `ServiceQuotaExceededException` is the
         // modelled refusal for exactly that. Checked AFTER the idempotency
         // replay above, so a retry of an accepted create is still served.
-        //
-        // No name check: `Name` carries no uniqueness constraint in the model
-        // (only its pattern), and a knowledge base's identity is the minted
-        // `knowledgeBaseId` its ARN carries — so two knowledge bases may share a
-        // name and the modelled `ConflictException` is not owed here.
         if state.knowledge_bases.len() >= crate::state::KNOWLEDGE_BASE_QUOTA {
             return Err(
                 CreateKnowledgeBaseErrorModeled::ServiceQuotaExceededException(
@@ -339,6 +334,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
                 .into(),
             );
+        }
+
+        // A knowledge base's NAME is this account's to hold once: a create under a name
+        // another knowledge base of the account already has is refused with the modelled
+        // `ConflictException` (recorded: a CloudFormation replacement that re-declares the
+        // same `Name` fails on the name being taken, and the stack rolls back). A
+        // knowledge base a delete has been accepted for is on its way out of the store, so
+        // it no longer holds its name. Checked AFTER the idempotency replay, so a retry of
+        // an accepted create is still served the knowledge base it already made.
+        if state.knowledge_base_named(&input.name).is_some() {
+            return Err(CreateKnowledgeBaseErrorModeled::ConflictException(
+                ConflictException {
+                    message: Some(crate::state::knowledge_base_name_conflict_message(
+                        Self::NAME,
+                        &input.name,
+                    )),
+                },
+            )
+            .into());
         }
 
         let Some(knowledge_base_id) = state.mint_knowledge_base_id(now) else {

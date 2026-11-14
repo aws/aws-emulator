@@ -2223,3 +2223,7 @@ mod cloudformation_rest_api_request_validation;
 // target can drive the transition and then read what it opened.)
 // crate's test target can drive it. (Declared ONCE: two landings each appended their own copy
 // of this line, and a module declared twice loads the same file twice, which compiles
+// declared ONCE above: two `mod` items for one name is a redefinition that compiles
+// neither, which is what two branches each appending the same lines here produced.)
+// (`zz_probe` is declared once, just above: a module may be declared only once.)
+// (`cloudformation_metric_stream_estate_is_drainable` is declared once, above: a module may

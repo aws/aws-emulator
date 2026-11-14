@@ -642,20 +642,26 @@ async fn get_knowledge_base_refuses_an_id_no_knowledge_base_holds() {
 }
 
 /// A repeated `@idempotencyToken` returns the knowledge base the first call
-/// created, and two knowledge bases that share a name are still two distinct
-/// knowledge bases — the model constrains `Name`'s shape, not its uniqueness.
+/// created, and a create under a name this account's knowledge bases already
+/// hold is refused — the name is the account's to hold once
+/// (`knowledge_base_name_conflict`).
 #[tokio::test]
 async fn create_knowledge_base_honours_its_idempotency_token_and_mints_one_per_call() {
     let emulator = Emulator::new();
 
     // Two tokens (each at least the modelled 33 characters), each replayed: a
-    // replay returns the knowledge base the first call created.
-    for token in [
+    // replay returns the knowledge base the first call created. Each row carries
+    // its own name, since a second knowledge base under a name the account holds
+    // is refused.
+    for (position, token) in [
         "idempotency-token-for-the-first-kb",
         "IdempotencyTokenForTheSecondKb00000",
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let request = json!({
-            "name": "idempotent-kb",
+            "name": format!("idempotent-kb-{position}"),
             "roleArn": KB_ROLE,
             "knowledgeBaseConfiguration": vector_configuration(),
             "storageConfiguration": opensearch_storage(),
@@ -687,7 +693,9 @@ async fn create_knowledge_base_honours_its_idempotency_token_and_mints_one_per_c
         }
     }
 
-    // Same name, no token: distinct knowledge bases, each readable back.
+    // Same name, no token: the second create is refused, and the knowledge base
+    // holding the name is untouched. The whole rule — which names collide, and
+    // when a name is free again — is pinned by `knowledge_base_name_conflict`.
     let first = emulator
         .create_knowledge_base(json!({
             "name": "shared-name-kb",
@@ -705,23 +713,16 @@ async fn create_knowledge_base_honours_its_idempotency_token_and_mints_one_per_c
         }))
         .await;
     assert_eq!(
-        second.status, 202,
-        "case duplicate name: the model constrains Name's pattern, not its uniqueness, \
+        second.status, 409,
+        "case duplicate name: a knowledge base's name is this account's to hold once, \
          got {second:?}"
     );
-    assert_ne!(
-        first.kb_string("knowledgeBaseId"),
-        second.kb_string("knowledgeBaseId"),
-        "case duplicate name: each create mints its own knowledgeBaseId"
+    let id = first.kb_string("knowledgeBaseId");
+    let fetched = emulator.get_knowledge_base(&id).await;
+    assert_eq!(
+        fetched.kb_string("knowledgeBaseArn"),
+        first.kb_string("knowledgeBaseArn"),
+        "case duplicate name: the refused create leaves the knowledge base holding the name \
+         exactly as it was"
     );
-    for (case, answer) in [("first", &first), ("second", &second)] {
-        let id = answer.kb_string("knowledgeBaseId");
-        let fetched = emulator.get_knowledge_base(&id).await;
-        assert_eq!(
-            fetched.kb_string("knowledgeBaseArn"),
-            answer.kb_string("knowledgeBaseArn"),
-            "case duplicate name {case}: GetKnowledgeBase reports the knowledge base that \
-             create minted"
-        );
-    }
 }

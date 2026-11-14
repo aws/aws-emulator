@@ -357,9 +357,9 @@ async fn the_listing_reports_a_summary_of_every_stored_knowledge_base() {
             None,
         ),
         (
-            "a name that repeats an earlier one",
-            "listing-kb".to_string(),
-            Some("Name carries no uniqueness constraint"),
+            "a name whose both admitted separators appear",
+            "listing-kb_again".to_string(),
+            Some("Name admits one separator after each alphanumeric"),
         ),
     ];
 

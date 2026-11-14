@@ -2372,10 +2372,7 @@ pub async fn reconcile(
             )
         });
         if let Some(reason) = collision {
-            failed.push((
-                resource.logical_id.clone(),
-                reporting.action,
-            ));
+            failed.push((resource.logical_id.clone(), reporting.action));
             outcome.transitions.push(ResourceTransition::failed(
                 &resource,
                 reporting.failed,
@@ -2396,10 +2393,7 @@ pub async fn reconcile(
             // is one CloudFormation refuses itself, so the provider is never asked about it
             // and the resource fails with the rule as its reason.
             if let Some(reason) = custom_resource::service_timeout_refusal(&deployed_properties) {
-                failed.push((
-                    resource.logical_id.clone(),
-                    reporting.action,
-                ));
+                failed.push((resource.logical_id.clone(), reporting.action));
                 outcome.transitions.push(ResourceTransition::failed(
                     &resource,
                     reporting.failed,
@@ -2458,10 +2452,7 @@ pub async fn reconcile(
                 // to answer for this resource and the deployment stops here, exactly as it
                 // does on a refused create.
                 Err(refusal) => {
-                    failed.push((
-                        resource.logical_id.clone(),
-                        reporting.action,
-                    ));
+                    failed.push((resource.logical_id.clone(), reporting.action));
                     outcome.transitions.push(ResourceTransition::failed(
                         &resource,
                         reporting.failed,
@@ -2494,10 +2485,7 @@ pub async fn reconcile(
         )
         .await
         {
-            failed.push((
-                resource.logical_id.clone(),
-                reporting.action,
-            ));
+            failed.push((resource.logical_id.clone(), reporting.action));
             outcome.transitions.push(ResourceTransition::failed(
                 &resource,
                 reporting.failed,
@@ -2674,10 +2662,7 @@ pub async fn reconcile(
                     // does on a refused create. The record keeps `materialised`, so the
                     // rollback still deletes what the create made.
                     Ok(Readiness::Failed(reason)) => {
-                        failed.push((
-                            resource.logical_id.clone(),
-                            reporting.action,
-                        ));
+                        failed.push((resource.logical_id.clone(), reporting.action));
                         outcome.transitions.push(ResourceTransition::finished(
                             &resource,
                             reporting.failed,
@@ -2687,10 +2672,7 @@ pub async fn reconcile(
                         continue;
                     }
                     Err(refusal) => {
-                        failed.push((
-                            resource.logical_id.clone(),
-                            reporting.action,
-                        ));
+                        failed.push((resource.logical_id.clone(), reporting.action));
                         outcome.transitions.push(ResourceTransition::finished(
                             &resource,
                             reporting.failed,
@@ -2706,10 +2688,7 @@ pub async fn reconcile(
                 }
             }
             Err(refusal) => {
-                failed.push((
-                    resource.logical_id.clone(),
-                    reporting.action,
-                ));
+                failed.push((resource.logical_id.clone(), reporting.action));
                 outcome.transitions.push(ResourceTransition::failed(
                     &resource,
                     reporting.failed,

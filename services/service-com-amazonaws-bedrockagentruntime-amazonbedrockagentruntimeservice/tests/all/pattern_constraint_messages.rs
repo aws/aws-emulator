@@ -132,10 +132,15 @@ struct Row {
 async fn a_pattern_refusal_quotes_the_expression_the_whole_value_must_match() {
     let router = router();
 
-    // An ARN naming a resource no runtime tagging operation admits, as the three tagging
-    // rows address it.
-    let agent_arn = "arn:aws:bedrock:us-west-2:000000000000:agent/NOTASESSION";
-    let knowledge_base_arn = "arn:aws:bedrock:us-west-2:000000000000:knowledge-base/KB12345678";
+    // An ARN inside the resource types this plane's tagging addresses — which is what makes
+    // the request this plane's rather than the build-time plane's, the two being split by
+    // the tagged resource's type (`service_common::bedrock`) — but outside the on-disk
+    // `@pattern` the value is CHECKED against, as the three tagging rows address it: a
+    // session whose body is no uuid, and the other resource kind the PUBLISHED expression
+    // admits and the on-disk one does not.
+    let session_arn = "arn:aws:bedrock:us-west-2:000000000000:session/NOTAUUID";
+    let optimization_job_arn =
+        "arn:aws:bedrock:us-west-2:000000000000:advanced-optimize-prompt-job/job-1";
 
     let rows: Vec<Row> = vec![
         Row {
@@ -266,29 +271,30 @@ async fn a_pattern_refusal_quotes_the_expression_the_whole_value_must_match() {
             pattern: KMS_KEY_ARN,
         },
         Row {
-            case: "TagResource, an ARN naming a resource this plane does not tag",
+            case: "TagResource, a session ARN whose body is no uuid",
             method: "POST",
-            path: format!("/tags/{}", label(agent_arn)),
+            path: format!("/tags/{}", label(session_arn)),
             body: json!({ "tags": { "env": "test" } }),
-            value: "arn:aws:bedrock:us-west-2:000000000000:agent/NOTASESSION",
+            value: "arn:aws:bedrock:us-west-2:000000000000:session/NOTAUUID",
             member: "resourceArn",
             pattern: TAGGABLE_RESOURCES_ARN,
         },
         Row {
             case: "UntagResource, the same ARN on the untag path",
             method: "DELETE",
-            path: format!("/tags/{}?tagKeys=env", label(agent_arn)),
+            path: format!("/tags/{}?tagKeys=env", label(session_arn)),
             body: Value::Null,
-            value: "arn:aws:bedrock:us-west-2:000000000000:agent/NOTASESSION",
+            value: "arn:aws:bedrock:us-west-2:000000000000:session/NOTAUUID",
             member: "resourceArn",
             pattern: TAGGABLE_RESOURCES_ARN,
         },
         Row {
-            case: "ListTagsForResource, a knowledge-base ARN on the read path",
+            case: "ListTagsForResource, the other resource kind only the published \
+                   expression admits",
             method: "GET",
-            path: format!("/tags/{}", label(knowledge_base_arn)),
+            path: format!("/tags/{}", label(optimization_job_arn)),
             body: Value::Null,
-            value: "arn:aws:bedrock:us-west-2:000000000000:knowledge-base/KB12345678",
+            value: "arn:aws:bedrock:us-west-2:000000000000:advanced-optimize-prompt-job/job-1",
             member: "resourceArn",
             pattern: TAGGABLE_RESOURCES_ARN,
         },

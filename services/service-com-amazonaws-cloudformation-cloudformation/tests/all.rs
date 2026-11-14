@@ -29,6 +29,8 @@ mod apigateway_vpc_link_resources;
 mod apigatewayv2_api_property_updates;
 #[path = "all/application_auto_scaling_resources.rs"]
 mod application_auto_scaling_resources;
+#[path = "all/bedrock_knowledge_base_drift_and_replacement.rs"]
+mod bedrock_knowledge_base_drift_and_replacement;
 #[path = "all/bedrock_knowledge_base_identity.rs"]
 mod bedrock_knowledge_base_identity;
 #[path = "all/braket_spending_limit_resource_type.rs"]

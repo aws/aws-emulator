@@ -11,7 +11,18 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-bedrockagent-amazonbedrockagentbuildtimelambda.json");
 
-#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagent#ListTagsForResourceRequest")]
+// `skip_validation = ["resourceArn"]`: AWS does NOT enforce the published
+// `TaggableResourcesArn` `@pattern` on this member. That expression spells the account
+// field `/d{12}` and every identifier `[A-Z0-9]{10}`, which no ARN this plane mints can
+// satisfy — an account is twelve DIGITS and a `knowledgeBaseId` is the modelled
+// `^[0-9a-zA-Z]{10}$` — while the recorded answer for a knowledge base's own ARN is the
+// tags map. The syntax that expression spells out is enforced by the handler instead
+// (`crate::state::taggable_resource`), which refuses a value outside it with the modelled
+// `ValidationException` quoting that same expression.
+#[smithy_macros::smithy(
+    shape = "com.amazonaws.bedrockagent#ListTagsForResourceRequest",
+    skip_validation = ["resourceArn"]
+)]
 #[derive(Debug, Clone, Default)]
 pub struct ListTagsForResourceInput {
     pub resource_arn: String,
