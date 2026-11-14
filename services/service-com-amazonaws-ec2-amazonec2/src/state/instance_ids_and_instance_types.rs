@@ -2363,9 +2363,10 @@ pub(super) fn supported_boot_modes(architecture: &str, nitro: bool) -> Vec<Strin
 /// The count is a property of the whole instance rather than of its family's ladder — only
 /// the size that has the whole host's cards carries more than one — so the entries name full
 /// instance types, not families.
-pub(super) const MULTI_NETWORK_CARD_TYPES: [(&str, i32); 16] = [
+pub(super) const MULTI_NETWORK_CARD_TYPES: [(&str, i32); 17] = [
     ("c6in.32xlarge", 2),
     ("c6in.metal", 2),
+    ("c8gb.48xlarge", 2),
     ("dl1.24xlarge", 4),
     ("m6idn.32xlarge", 2),
     ("m6in.32xlarge", 2),
@@ -2749,8 +2750,16 @@ pub fn instance_type_info(instance_type: &str) -> Option<InstanceTypeInfo> {
                     .unwrap_or(if nitro { "shared" } else { "dedicated" })
                     .to_string(),
             ),
-            maximum_ebs_cards: None,
-            ebs_cards: None,
+            // "The number of EBS cards supported by the instance type"
+            // (`EbsInfo$MaximumEbsCards`) and the cards themselves: reported for a type whose
+            // row publishes EBS hardware of its own, and absent for one whose volumes are
+            // attached to the host's shared pool, which has no cards of the type's own to
+            // describe. Each card carries an equal share of the type's published figures.
+            maximum_ebs_cards: facts.and_then(|facts| facts.ebs_cards),
+            ebs_cards: facts.and_then(|facts| {
+                let cards = facts.ebs_cards?;
+                Some(facts.ebs_performance?.to_ebs_cards(cards))
+            }),
         }),
         network_info: Some(NetworkInfo {
             // "The network performance": the figure AWS publishes for the type, or — for a
@@ -2832,8 +2841,10 @@ pub fn instance_type_info(instance_type: &str) -> Option<InstanceTypeInfo> {
             )),
             // "Indicates conntrack information for the instance type"
             // (`NetworkInfo$ConnectionTrackingConfiguration`): the idle timeouts a security
-            // group's connection tracking applies by default, which are the same for every
-            // instance type and are reported for every one.
+            // group's connection tracking applies by default, reported for every instance
+            // type. The two UDP ones are the same for every type; how long an ESTABLISHED TCP
+            // connection is held is a fact of the type's own hardware generation where the
+            // catalog publishes it, and [`CONNECTION_TRACKING_TIMEOUTS`] for every other type.
             connection_tracking_configuration: Some(DefaultConnectionTrackingConfiguration {
                 default_tcp_established_timeout: Some(
                     facts
@@ -2844,14 +2855,19 @@ pub fn instance_type_info(instance_type: &str) -> Option<InstanceTypeInfo> {
                 default_udp_stream_timeout: Some(udp_stream),
             }),
             // "Indicates whether secondary interface attachments from secondary network
-            // are supported" (`$SecondaryNetworkSupported`). A type that supports them
-            // takes them on the same adapter as its primary interfaces, so the secondary
-            // limits are the primary ones; a type that does not reports neither.
+            // are supported" (`$SecondaryNetworkSupported`): the published row where the
+            // catalog holds one, else the feature of the hardware generation named by
+            // [`FIRST_NITRO_CLOCK_GENERATION`]. A type that supports them takes them on the
+            // same adapter as its primary interfaces, so the secondary limits are the primary
+            // ones; a type that does not reports neither — unless its row publishes the
+            // addresses one such interface takes, which a type that takes none publishes as
+            // none at all.
             secondary_network_supported: Some(secondary_network),
             maximum_secondary_network_interfaces: secondary_network
                 .then_some(record.maximum_network_interfaces),
-            ipv4_addresses_per_secondary_interface: secondary_network
-                .then_some(record.ipv4_addresses_per_interface),
+            ipv4_addresses_per_secondary_interface: facts
+                .and_then(|facts| facts.ipv4_addresses_per_secondary_interface)
+                .or_else(|| secondary_network.then_some(record.ipv4_addresses_per_interface)),
         }),
         gpu_info: facts
             .and_then(|facts| facts.gpu_devices)
@@ -2891,6 +2907,11 @@ pub fn instance_type_info(instance_type: &str) -> Option<InstanceTypeInfo> {
                     |modes| modes.iter().map(|mode| (*mode).to_string()).collect(),
                 ),
         ),
+        // "Indicates whether Nitro Enclaves is supported" (`$NitroEnclavesSupport`): an
+        // enclave is carved out of the instance's own vCPUs and memory by the Nitro
+        // hypervisor, so a type needs enough of them for one and a bare metal type has no
+        // hypervisor to carve it — except where the catalog publishes the type's own answer,
+        // the hardware generations that offer an enclave below that floor.
         nitro_enclaves_support: Some(supported_or_not(
             facts
                 .and_then(|facts| facts.nitro_enclaves_supported)

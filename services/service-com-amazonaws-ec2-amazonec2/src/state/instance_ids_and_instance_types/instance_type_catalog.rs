@@ -22,8 +22,9 @@
 
 use super::*;
 use crate::ops::types::{
-    FpgaDeviceInfo, FpgaDeviceMemoryInfo, FpgaInfo, GpuDeviceInfo, GpuDeviceMemoryInfo, GpuInfo,
-    InferenceAcceleratorInfo, InferenceDeviceInfo, InferenceDeviceMemoryInfo,
+    EbsCardInfo, FpgaDeviceInfo, FpgaDeviceMemoryInfo, FpgaInfo, GpuDeviceInfo,
+    GpuDeviceMemoryInfo, GpuInfo, InferenceAcceleratorInfo, InferenceDeviceInfo,
+    InferenceDeviceMemoryInfo,
 };
 
 /// The EBS-optimized performance AWS publishes for one instance type: the two bandwidth and
@@ -60,6 +61,33 @@ impl PublishedEbsPerformance {
             maximum_throughput_in_m_bps: Some(megabytes(self.maximum_bandwidth_mbps)),
             maximum_iops: Some(self.maximum_iops),
         }
+    }
+
+    /// This row spread over the `cards` EBS cards the type carries, as
+    /// `EbsInfo$EbsCards` reports them.
+    ///
+    /// The cards of one instance are identical and the instance's own figures are what its
+    /// cards carry together — the same way [`super::network_cards`] reads the network cards of
+    /// an instance — so each card takes an equal share of the four figures.
+    pub fn to_ebs_cards(self, cards: i32) -> Vec<EbsCardInfo> {
+        let count = cards.max(1);
+        let share = |figure: i32| (figure / count).max(1);
+        let megabytes = |mbps: i32| f64::from(mbps) / EBS_MEGABITS_PER_MEGABYTE;
+        (0..count)
+            .map(|index| EbsCardInfo {
+                ebs_card_index: Some(index),
+                baseline_bandwidth_in_mbps: Some(share(self.baseline_bandwidth_mbps)),
+                baseline_throughput_in_m_bps: Some(megabytes(share(
+                    self.baseline_bandwidth_mbps,
+                ))),
+                baseline_iops: Some(share(self.baseline_iops)),
+                maximum_bandwidth_in_mbps: Some(share(self.maximum_bandwidth_mbps)),
+                maximum_throughput_in_m_bps: Some(megabytes(share(
+                    self.maximum_bandwidth_mbps,
+                ))),
+                maximum_iops: Some(share(self.maximum_iops)),
+            })
+            .collect()
     }
 }
 
@@ -265,8 +293,15 @@ pub struct PublishedInstanceTypeFacts {
     pub traffic_mirroring_supported: Option<bool>,
     /// Does it take interface attachments from a secondary network?
     pub secondary_network_supported: Option<bool>,
+    /// The most private IPv4 addresses one interface attached from a secondary network can
+    /// have (`NetworkInfo$Ipv4AddressesPerSecondaryInterface`), reported whatever the answer
+    /// above is where the row publishes it.
+    pub ipv4_addresses_per_secondary_interface: Option<i32>,
     /// Is Nitro Enclaves supported?
     pub nitro_enclaves_supported: Option<bool>,
+    /// The EBS cards the type's volumes are attached to, where its row publishes hardware of
+    /// its own for them (`EbsInfo$MaximumEbsCards`).
+    pub ebs_cards: Option<i32>,
     /// The idle timeout, in seconds, its connection tracking applies to an established TCP
     /// connection by default (`DefaultConnectionTrackingConfiguration$DefaultTcpEstablishedTimeout`),
     /// where the type's own default is not the one every earlier type reports.
@@ -311,7 +346,9 @@ impl PublishedInstanceTypeFacts {
             phc_supported: None,
             traffic_mirroring_supported: None,
             secondary_network_supported: None,
+            ipv4_addresses_per_secondary_interface: None,
             nitro_enclaves_supported: None,
+            ebs_cards: None,
             default_tcp_established_timeout: None,
             fpga_devices: None,
             gpu_devices: None,
@@ -533,6 +570,20 @@ impl PublishedInstanceTypeFacts {
         self
     }
 
+    /// The most private IPv4 addresses one interface attached from a secondary network can
+    /// have — none at all on a type that takes no such attachment.
+    const fn ipv4_per_secondary_interface(mut self, addresses: i32) -> Self {
+        self.ipv4_addresses_per_secondary_interface = Some(addresses);
+        self
+    }
+
+    /// The EBS cards the type's volumes are attached to, where it carries hardware of its own
+    /// for them.
+    const fn ebs_cards(mut self, cards: i32) -> Self {
+        self.ebs_cards = Some(cards);
+        self
+    }
+
     /// Whether Traffic Mirroring is supported, where the published answer for the type is not
     /// the one its hypervisor gives.
     const fn traffic_mirroring(mut self, supported: bool) -> Self {
@@ -698,6 +749,208 @@ static PUBLISHED_INSTANCE_TYPE_FACTS: &[PublishedInstanceTypeFacts] = &[
         .ena(ENA_UNSUPPORTED)
         .dedicated_hosts(true)
         .host_features(true, false),
+    // C5ad — compute optimized, 2nd generation AMD EPYC 7002 series (7R32) at a sustained
+    // 3.3 GHz, with local NVMe SSD devices. The family's EBS figures are DEDICATED from
+    // `8xlarge` up — 3,170 Mbps and 13,300 IOPS there, then its own figure per size — and the
+    // four sizes below it burst to that dedicated figure from a baseline that is their share
+    // of the figures the family's largest size carries. The devices come out of the shared attachment pool, so the EBS volume limit each
+    // size reports is what the pool leaves and these rows leave it unset. Dedicated Hosts are
+    // not offered on the family, hibernation is not (a local instance store cannot be carried
+    // over one), and neither reboot migration nor a PTP hardware clock is on this hardware
+    // generation. The whole family's cores sit on ONE processor socket — its largest size
+    // carries the 48 of an EPYC 7R32 — so they are configured one at a time.
+    PublishedInstanceTypeFacts::of("c5ad.large")
+        .ebs(200, 800, 3_170, 13_300)
+        .instance_store(1, 75)
+        .network("Up to 10 Gigabit")
+        .processor("AMD", 3.3)
+        .dedicated_hosts(false)
+        .hibernation(false)
+        .host_features(false, false),
+    PublishedInstanceTypeFacts::of("c5ad.xlarge")
+        .ebs(400, 1_600, 3_170, 13_300)
+        .instance_store(1, 150)
+        .network("Up to 10 Gigabit")
+        .processor("AMD", 3.3)
+        .dedicated_hosts(false)
+        .hibernation(false)
+        .host_features(false, false),
+    PublishedInstanceTypeFacts::of("c5ad.2xlarge")
+        .ebs(800, 3_200, 3_170, 13_300)
+        .instance_store(1, 300)
+        .network("Up to 10 Gigabit")
+        .processor("AMD", 3.3)
+        .dedicated_hosts(false)
+        .hibernation(false)
+        .host_features(false, false),
+    PublishedInstanceTypeFacts::of("c5ad.4xlarge")
+        .ebs(1_580, 6_320, 3_170, 13_300)
+        .instance_store(2, 300)
+        .network("Up to 10 Gigabit")
+        .processor("AMD", 3.3)
+        .dedicated_hosts(false)
+        .hibernation(false)
+        .host_features(false, false),
+    PublishedInstanceTypeFacts::of("c5ad.8xlarge")
+        .ebs(3_170, 13_300, 3_170, 13_300)
+        .instance_store(2, 600)
+        .network("10 Gigabit")
+        .processor("AMD", 3.3)
+        .dedicated_hosts(false)
+        .hibernation(false)
+        .host_features(false, false),
+    PublishedInstanceTypeFacts::of("c5ad.12xlarge")
+        .ebs(4_750, 20_000, 4_750, 20_000)
+        .instance_store(2, 900)
+        .network("12 Gigabit")
+        .processor("AMD", 3.3)
+        .dedicated_hosts(false)
+        .hibernation(false)
+        .host_features(false, false),
+    PublishedInstanceTypeFacts::of("c5ad.16xlarge")
+        .ebs(6_300, 26_700, 6_300, 26_700)
+        .instance_store(2, 1_200)
+        .network("20 Gigabit")
+        .processor("AMD", 3.3)
+        .dedicated_hosts(false)
+        .hibernation(false)
+        .host_features(false, false),
+    PublishedInstanceTypeFacts::of("c5ad.24xlarge")
+        .ebs(9_500, 40_000, 9_500, 40_000)
+        .instance_store(2, 1_900)
+        .network("20 Gigabit")
+        .processor("AMD", 3.3)
+        .dedicated_hosts(false)
+        .hibernation(false)
+        .host_features(false, false),
+    // C8gb — compute optimized, AWS Graviton4, block storage optimized: the `b` capability
+    // letter is "block storage optimized" (the naming conventions), and what it buys is EBS
+    // hardware of the type's own. Every size's EBS figures are DEDICATED from `4xlarge` up,
+    // scaling with the size — 100,000 Mbps and 480,000 IOPS at `16xlarge` — while the four
+    // sizes below it burst to the `4xlarge` figure; the volumes are attached to that hardware
+    // rather than out of the shared pool, so the limit is the type's own — 32 volumes up to
+    // the `12xlarge`, then 48, 64 and 128 as the size grows — and is reported as the
+    // `dedicated` kind. The largest size spreads its figures over two EBS cards. The
+    // family's network is the Graviton4 compute ladder's, its connection tracking holds an
+    // established TCP connection for the 350 s of this hardware generation, ENA Express is
+    // offered from the `4xlarge` up, EFA on its three largest
+    // sizes, and an enclave from two vCPUs up.
+    // Reboot migration is offered on the family while a local PTP hardware clock is not, it
+    // takes no interface attachments from a secondary network, so no address at all is
+    // available on one, and the packets of a session cannot be mirrored under its guest. The
+    // largest size
+    // carries the cores of TWO 96-core Graviton4 sockets, taken one per socket, so its
+    // published core counts go up in twos, and a network card per socket; every smaller size
+    // sits on one socket.
+    PublishedInstanceTypeFacts::of("c8gb.medium")
+        .ebs(1_562, 7_500, 25_000, 120_000)
+        .dedicated_ebs_attachments(32)
+        .network("Up to 12.5 Gigabit")
+        .interfaces(2)
+        .ipv4_per_interface(4)
+        .efa(0)
+        .ena_srd(false)
+        .tcp_established_timeout(350)
+        .host_features(true, false)
+        .secondary_network(false)
+        .ipv4_per_secondary_interface(0)
+        .traffic_mirroring(false),
+    PublishedInstanceTypeFacts::of("c8gb.large")
+        .ebs(3_125, 15_000, 25_000, 120_000)
+        .dedicated_ebs_attachments(32)
+        .network("Up to 12.5 Gigabit")
+        .efa(0)
+        .ena_srd(false)
+        .nitro_enclaves(true)
+        .tcp_established_timeout(350)
+        .host_features(true, false)
+        .secondary_network(false)
+        .ipv4_per_secondary_interface(0)
+        .traffic_mirroring(false),
+    PublishedInstanceTypeFacts::of("c8gb.xlarge")
+        .ebs(6_250, 30_000, 25_000, 120_000)
+        .dedicated_ebs_attachments(32)
+        .network("Up to 12.5 Gigabit")
+        .efa(0)
+        .ena_srd(false)
+        .tcp_established_timeout(350)
+        .host_features(true, false)
+        .secondary_network(false)
+        .ipv4_per_secondary_interface(0)
+        .traffic_mirroring(false),
+    PublishedInstanceTypeFacts::of("c8gb.2xlarge")
+        .ebs(12_500, 60_000, 25_000, 120_000)
+        .dedicated_ebs_attachments(32)
+        .network("Up to 15 Gigabit")
+        .efa(0)
+        .ena_srd(false)
+        .tcp_established_timeout(350)
+        .host_features(true, false)
+        .secondary_network(false)
+        .ipv4_per_secondary_interface(0)
+        .traffic_mirroring(false),
+    PublishedInstanceTypeFacts::of("c8gb.4xlarge")
+        .ebs(25_000, 120_000, 25_000, 120_000)
+        .dedicated_ebs_attachments(32)
+        .network("Up to 15 Gigabit")
+        .efa(0)
+        .tcp_established_timeout(350)
+        .host_features(true, false)
+        .secondary_network(false)
+        .ipv4_per_secondary_interface(0)
+        .traffic_mirroring(false),
+    PublishedInstanceTypeFacts::of("c8gb.8xlarge")
+        .ebs(50_000, 240_000, 50_000, 240_000)
+        .dedicated_ebs_attachments(32)
+        .network("15 Gigabit")
+        .efa(0)
+        .tcp_established_timeout(350)
+        .host_features(true, false)
+        .secondary_network(false)
+        .ipv4_per_secondary_interface(0)
+        .traffic_mirroring(false),
+    PublishedInstanceTypeFacts::of("c8gb.12xlarge")
+        .ebs(75_000, 360_000, 75_000, 360_000)
+        .dedicated_ebs_attachments(32)
+        .network("22.5 Gigabit")
+        .efa(0)
+        .tcp_established_timeout(350)
+        .host_features(true, false)
+        .secondary_network(false)
+        .ipv4_per_secondary_interface(0)
+        .traffic_mirroring(false),
+    PublishedInstanceTypeFacts::of("c8gb.16xlarge")
+        .ebs(100_000, 480_000, 100_000, 480_000)
+        .dedicated_ebs_attachments(48)
+        .network("30 Gigabit")
+        .efa(1)
+        .tcp_established_timeout(350)
+        .host_features(true, false)
+        .secondary_network(false)
+        .ipv4_per_secondary_interface(0)
+        .traffic_mirroring(false),
+    PublishedInstanceTypeFacts::of("c8gb.24xlarge")
+        .ebs(150_000, 720_000, 150_000, 720_000)
+        .dedicated_ebs_attachments(64)
+        .network("40 Gigabit")
+        .efa(1)
+        .tcp_established_timeout(350)
+        .host_features(true, false)
+        .secondary_network(false)
+        .ipv4_per_secondary_interface(0)
+        .traffic_mirroring(false),
+    PublishedInstanceTypeFacts::of("c8gb.48xlarge")
+        .cores_in_steps_of(2)
+        .ebs(300_000, 1_440_000, 300_000, 1_440_000)
+        .dedicated_ebs_attachments(128)
+        .ebs_cards(2)
+        .network("50 Gigabit")
+        .efa(1)
+        .tcp_established_timeout(350)
+        .host_features(true, false)
+        .secondary_network(false)
+        .ipv4_per_secondary_interface(0)
+        .traffic_mirroring(false),
     // C5 — compute optimized on the AWS Nitro System, Intel Xeon Platinum: the 8124M
     // (Skylake) at a sustained 3.4 GHz on most of the ladder, and the 8275CL (Cascade Lake) at
     // a sustained 3.6 GHz on the sizes built on it (`12xlarge`, `24xlarge` and the bare metal

@@ -15,6 +15,13 @@
 // exactly that. The lines above are the file header, which no landing edits.
 #[path = "all/prefix_lists.rs"]
 mod prefix_lists;
+// The published EBS-performance, instance-store, network and host-feature rows of a compute
+// optimized family with local NVMe devices and of a block storage optimized one: every
+// hardware member of a reported type is the figure AWS publishes for that one type. Declared
+// beside `prefix_lists` for the reason the note above gives: the sorted neighbourhood and the
+// tail of this file are where every new ec2 suite inserts its lines.
+#[path = "all/published_ebs_performance_catalog_rows.rs"]
+mod published_ebs_performance_catalog_rows;
 // The per-instance-type facts no function of a type's NAME can produce: its accelerator
 // inventory (`gpuInfo`), the established-TCP idle timeout its connection tracking applies,
 // whether Nitro Enclaves is offered on it, its EBS performance and attachment limit, the core

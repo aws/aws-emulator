@@ -2453,3 +2453,6 @@ mod cloudformation_drift_detection_status_change_events;
 // (`cloudformation_provisions_cloudfront_resources`, `cloudformation_monitored_alb_search_estate`
 // and `cloudformation_domain_endpoint_outputs` are each declared ONCE, in a span above this
 // one: a module declared twice in this file loads the same suite twice, which compiles
+// `cloudformation_metric_stream_filter_update` is declared ONCE, in the head region above:
+// two landings each appended their own copy here, and a module declared twice loads the same
+// file twice, which compiles neither.
