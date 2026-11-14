@@ -84,7 +84,10 @@ pub(crate) fn router_with_dns() -> (MultiServiceRouter, Arc<engine::InMemoryEngi
 }
 
 /// Send one Route 53 request and return `(status, body)`.
-async fn dns_call(
+///
+/// `pub(crate)` so a sibling suite in this test target reaches the DNS service over the
+/// SAME wire rather than growing a second copy of it.
+pub(crate) async fn dns_call(
     router: &MultiServiceRouter,
     method: &str,
     uri: &str,
@@ -103,16 +106,21 @@ async fn dns_call(
     (status, body)
 }
 
-/// The bare (`Z…`) zone id a `CreateHostedZone` reply carries.
-fn zone_id_from(body: &str) -> String {
-    const MARKER: &str = "/hostedzone/";
+/// The bare id following `prefix` in a Route 53 reply — the form a hosted zone
+/// (`/hostedzone/Z…`) and a change (`/change/C…`) report their id in.
+fn bare_id_after(body: &str, prefix: &str) -> String {
     let start = body
-        .find(MARKER)
-        .unwrap_or_else(|| panic!("the reply must carry a hosted-zone id, got {body}"))
-        + MARKER.len();
+        .find(prefix)
+        .unwrap_or_else(|| panic!("the reply must carry a {prefix} id, got {body}"))
+        + prefix.len();
     let rest = &body[start..];
     let end = rest.find('<').unwrap_or(rest.len());
     rest[..end].to_string()
+}
+
+/// The bare (`Z…`) zone id a `CreateHostedZone` reply carries.
+fn zone_id_from(body: &str) -> String {
+    bare_id_after(body, "/hostedzone/")
 }
 
 /// Create a hosted zone for `apex` and return its bare id. `extra` carries the
@@ -171,14 +179,16 @@ pub(crate) struct Record {
 /// reads it — but a record set has one.
 const RECORD_TTL: i64 = 60;
 
-/// Submit one change batch applying `action` to `record`, and assert it was accepted.
+/// Submit one change batch applying `action` to `record`, assert it was accepted, and
+/// return the bare (`C…`) id of the change it created — the id `GetChange` takes, which
+/// a client polls for the propagation the submission owes.
 pub(crate) async fn submit_change(
     case: &str,
     router: &MultiServiceRouter,
     zone_id: &str,
     action: &str,
     record: &Record,
-) {
+) -> String {
     let body = format!(
         "<ChangeResourceRecordSetsRequest xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\">\
          <ChangeBatch><Changes><Change><Action>{action}</Action><ResourceRecordSet>\
@@ -199,6 +209,7 @@ pub(crate) async fn submit_change(
         status, 200,
         "case {case}: the {action} of {record:?} must be accepted, got {status} {reply}"
     );
+    bare_id_after(&reply, "/change/")
 }
 
 /// The validation records ACM handed out for a described certificate, one per covered

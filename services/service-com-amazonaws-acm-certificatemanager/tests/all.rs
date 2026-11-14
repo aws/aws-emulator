@@ -151,6 +151,11 @@ mod resource_tagging;
 mod state_roundtrip;
 #[path = "all/stated_enum_value_sets.rs"]
 mod stated_enum_value_sets;
+// Declared beside the DNS-validation suites: this one is the WHOLE chain a tag-driven
+// client walks — Route 53's hosted-zone listing and tag reads first, then the
+// certificate it validates in the zone those reads found.
+#[path = "all/tag_discovered_zone_certificate_issuance.rs"]
+mod tag_discovered_zone_certificate_issuance;
 #[path = "all/tag_surface_refusal_subject.rs"]
 mod tag_surface_refusal_subject;
 #[path = "all/validation_domain_superdomain.rs"]
