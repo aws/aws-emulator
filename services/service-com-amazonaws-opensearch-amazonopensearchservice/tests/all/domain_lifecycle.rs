@@ -365,9 +365,43 @@ impl Emulator {
     }
 
     /// Create the log group `name` through the CloudWatch Logs service's own
-    /// `CreateLogGroup`, so the destination ARN naming it resolves in the store this
-    /// service reads an enabled log-publishing option against.
+    /// `CreateLogGroup` and attach, through that service's own `PutResourcePolicy`, the
+    /// resource policy that lets Amazon OpenSearch Service deliver into it — the two
+    /// halves an enabled log-publishing option's destination has to satisfy, so the
+    /// destination ARN naming it resolves in the store this service reads an option
+    /// against AND is one the service may publish to.
     pub(crate) async fn created_log_group(&self, name: &str) {
+        self.created_log_group_without_grant(name).await;
+        let document = json!({
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": { "Service": "es.amazonaws.com" },
+                "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+                "Resource": format!("{}:*", log_group_arn(name)),
+            }],
+        });
+        let answer = self
+            .logs_call(
+                "PutResourcePolicy",
+                json!({
+                    "policyName": format!("{name}-opensearch"),
+                    "resourceArn": log_group_arn(name),
+                    "policyDocument": document.to_string(),
+                }),
+            )
+            .await;
+        assert_eq!(
+            answer.status, 200,
+            "case PutResourcePolicy({name:?}): expected 200, got {} with {:?}",
+            answer.status, answer.body
+        );
+    }
+
+    /// Create the log group `name` through the CloudWatch Logs service's own
+    /// `CreateLogGroup` and NOTHING else: a group that carries no resource policy at all,
+    /// which is what a suite driving the grant half of the rule starts from.
+    pub(crate) async fn created_log_group_without_grant(&self, name: &str) {
         let answer = self
             .logs_call("CreateLogGroup", json!({ "logGroupName": name }))
             .await;

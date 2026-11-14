@@ -50,7 +50,10 @@ const SEARCH_THRESHOLD: &str = "index.search.slowlog.threshold.query";
 
 /// The messages `FilterLogEvents` reports for the whole of `group`, in the order it pages
 /// them.
-async fn events(emulator: &Emulator, group: &str) -> Vec<String> {
+///
+/// `pub(crate)` because a sibling suite reads a published record the same way rather than
+/// growing a second copy of this.
+pub(crate) async fn events(emulator: &Emulator, group: &str) -> Vec<String> {
     let answer = emulator
         .logs_call("FilterLogEvents", json!({ "logGroupName": group }))
         .await;

@@ -187,6 +187,8 @@ mod instance_type_catalog;
 mod instance_type_engine_refusal;
 #[path = "all/instance_type_limits.rs"]
 mod instance_type_limits;
+#[path = "all/log_destination_grants.rs"]
+mod log_destination_grants;
 #[path = "all/log_publishing_delivery.rs"]
 mod log_publishing_delivery;
 #[path = "all/log_publishing_destinations.rs"]

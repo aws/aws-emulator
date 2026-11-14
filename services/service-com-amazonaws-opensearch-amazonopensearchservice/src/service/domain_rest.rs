@@ -768,6 +768,9 @@ fn reads_analysis(request: &Request<'_>) -> bool {
         request.segments().as_slice(),
         ["_analyze"]
             | [_, "_analyze"]
+            // A search or a count reads the chains of every index it is about, whether the
+            // path names them or addresses the whole cluster.
+            | ["_search" | "_count"]
             | [_, "_search" | "_count"]
             // The documents a delete-by-query removes are the ones the same query SELECTS,
             // so it reads the same chains a search does.
@@ -1266,6 +1269,21 @@ fn serve_resolved(
         ["_refresh"] => match request.method {
             "GET" | "POST" => guarded(domain, request, fgac::ACTION_REFRESH, |domain| {
                 refresh(domain, request, None)
+            }),
+            _ => wrong_method(request, "GET, POST"),
+        },
+        // A search or a count with no index named is the whole cluster's — the engine reads
+        // every index it holds, which is what `_all` names — and both arms come before the
+        // single-segment one below so neither reserved name is read as an index.
+        ["_search"] => match request.method {
+            "GET" | "POST" => guarded(domain, request, fgac::ACTION_SEARCH, |domain| {
+                search(domain, request, state::ALL_INDEXES, across, files)
+            }),
+            _ => wrong_method(request, "GET, POST"),
+        },
+        ["_count"] => match request.method {
+            "GET" | "POST" => guarded(domain, request, fgac::ACTION_COUNT, |domain| {
+                count(domain, request, state::ALL_INDEXES, across, files)
             }),
             _ => wrong_method(request, "GET, POST"),
         },

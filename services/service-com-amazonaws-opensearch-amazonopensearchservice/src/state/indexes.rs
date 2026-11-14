@@ -721,7 +721,7 @@ pub const SCHEMA_SETTINGS: &str = "settings";
 pub const SETTINGS_INDEX_SECTION: &str = "index";
 
 /// The settings `schema` carries, as ONE section: every setting under the name it has
-/// below [`SETTINGS_INDEX_SECTION`], whichever of the two spellings a caller wrote it in.
+/// below [`SETTINGS_INDEX_SECTION`], whichever of the SPELLINGS a caller wrote it in.
 ///
 /// A client writes an index's settings either directly under [`SCHEMA_SETTINGS`]
 /// (`{"settings": {"number_of_shards": 2}}`) or under the `index` section inside them
@@ -730,6 +730,14 @@ pub const SETTINGS_INDEX_SECTION: &str = "index";
 /// every reader of an index's settings sees — with the explicit spelling standing where
 /// both carry a name, and the merge is [`merged_index_schema`]'s so a nested section
 /// (`analysis`) written in both spellings keeps the members of each.
+///
+/// A name is read in either FORM as well: "settings in a flattened or expanded format"
+/// name the same setting, so a flattened name — `index.search.slowlog.threshold.query.warn`
+/// or `search.slowlog.threshold.query.warn` — is read as the sections it names
+/// ([`expanded_settings`]) rather than as one member whose name happens to carry dots.
+/// Without that, a setting an index was CREATED with in the flattened form would be stored
+/// where no reader of that setting looks, and the index would behave as though it had never
+/// been given it.
 pub fn index_settings(
     schema: &::aws_smithy_types::Document,
 ) -> ::serde_json::Map<String, ::serde_json::Value> {
@@ -740,15 +748,87 @@ pub fn index_settings(
         return Map::new();
     };
     let Some(nested) = written.remove(SETTINGS_INDEX_SECTION) else {
-        return written;
+        return expanded_settings(written);
     };
     let merged = merged_index_schema(
-        &document_from_json(&Value::Object(written)),
-        &document_from_json(&nested),
+        &document_from_json(&Value::Object(expanded_settings(written))),
+        &document_from_json(&match nested {
+            Value::Object(members) => Value::Object(expanded_settings(members)),
+            other => other,
+        }),
     );
     match json_from_document(&merged) {
         Value::Object(members) => members,
         _ => Map::new(),
+    }
+}
+
+/// `settings` with every FLATTENED name expanded into the sections that name names: the
+/// `index.` prefix an index setting's full name carries dropped ([`index_setting_name`]),
+/// and what is left split on the `.` that separates one section from the next — which is
+/// the engine's own reading of a setting name, the reading its `flat_settings` form writes
+/// one in.
+///
+/// Applied all the way down, because either spelling may carry the other inside it
+/// (`{"index": {"search.slowlog.threshold.query.warn": "0ms"}}`), and two names that expand
+/// into one section keep the members of both rather than one replacing the other.
+fn expanded_settings(
+    settings: ::serde_json::Map<String, ::serde_json::Value>,
+) -> ::serde_json::Map<String, ::serde_json::Value> {
+    use ::serde_json::{Map, Value};
+
+    let mut expanded = Map::new();
+    for (name, value) in settings {
+        let value = match value {
+            Value::Object(members) => Value::Object(expanded_settings(members)),
+            other => other,
+        };
+        let path: Vec<&str> = index_setting_name(&name)
+            .split('.')
+            .filter(|section| !section.is_empty())
+            .collect();
+        written_setting(&mut expanded, &path, value);
+    }
+    expanded
+}
+
+/// Write `value` at `path` in `settings`, as [`expanded_settings`]'s one step: the sections
+/// above it are created where they are not there, and a section both the existing value and
+/// the new one are a set of members of keeps the members of each.
+fn written_setting(
+    settings: &mut ::serde_json::Map<String, ::serde_json::Value>,
+    path: &[&str],
+    value: ::serde_json::Value,
+) {
+    use ::serde_json::{Map, Value};
+
+    let Some((name, ancestors)) = path.split_last() else {
+        return;
+    };
+    let mut node = settings;
+    for ancestor in ancestors {
+        let entry = node
+            .entry((*ancestor).to_string())
+            .or_insert_with(|| Value::Object(Map::new()));
+        if !entry.is_object() {
+            *entry = Value::Object(Map::new());
+        }
+        let Value::Object(members) = entry else {
+            return;
+        };
+        node = members;
+    }
+    match (node.get_mut(*name), value) {
+        // Two names that name the same section — one of them written flattened — are the
+        // same section, so the members of both stand.
+        (Some(Value::Object(held)), Value::Object(members)) => {
+            for (name, value) in members {
+                written_setting(held, &[name.as_str()], value);
+            }
+        }
+        (_, value) => {
+            node.insert((*name).to_string(), value);
+        }
     }
 }
 

@@ -2002,10 +2002,7 @@ mod cognito_rules_role_mapping;
 #[path = "all/iam_secretsmanager_denial_envelope_by_protocol.rs"]
 mod iam_secretsmanager_denial_envelope_by_protocol;
 // (`apigateway_cognito_authorizer_app_client_audience` is declared in the head region above:
-// a module may be declared only once.)
 // (`zz_probe` is declared further up this tail already: a module may be declared only once.)
-// (`apigateway_cognito_authorizer_app_client_audience` is declared in the head region
-// above: a module may be declared only once.)
 // (`zz_probe` is declared once, further up this tail: a module may be declared only once.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared once, further up this
 // file: a module may be declared only once.)
@@ -2060,7 +2057,6 @@ mod lambda_durable_execution_status_events_reach_sqs;
 // (`apigateway_cognito_authorizer_app_client_audience` is declared ONCE, in the head region
 // above: two `mod` items for one name is a redefinition that compiles neither.)
 // (`zz_probe` is declared ONCE, further up this tail: two `mod` items for one name is a
-// redefinition that compiles neither.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared ONCE, further up this tail:
 // two `mod` items for one name is a redefinition that compiles neither.)
 // Declared here, in this same head region, for the reason the entry above records: the chain
@@ -2085,3 +2081,16 @@ mod dynamodb_write_capacity_metrics_drive_the_alarm_chain;
 // twice, which compiles neither.
 // (`cloudformation_metric_stream_estate_is_drainable` is declared further up this tail
 // already: a module may be declared only once.)
+// `cloudformation_provisions_cloudfront_resources` is declared once, just below: two `mod`
+// items for one name is a redefinition that compiles neither.
+// are declared ONCE, in the head region above beside the other `cloudformation_…` suites.
+// Two branches each re-declared the pair in this tail, which compiles neither: a suite is
+// declared in exactly one place.
+// are declared ONCE each, in the head region above: a module declared twice in this file
+// compiles the suite twice, which the workspace's lints refuse.
+// are declared once, in the span above: two branches each re-added the pair here after both
+// had removed it, which declares each of them twice and compiles nowhere.
+// Declared in the appended tail, which is where every new suite inserts its lines. Both
+// suites exist under tests/all/ and had lost their declaration when two branches removed
+// the same duplicated pair, which compiles them nowhere.
+// (`cloudformation_monitored_alb_search_estate` and `cloudformation_domain_endpoint_outputs`

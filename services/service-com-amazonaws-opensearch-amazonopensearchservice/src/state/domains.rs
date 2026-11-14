@@ -1518,6 +1518,23 @@ pub fn data_node_ids(domain: &Domain) -> Vec<String> {
         .collect()
 }
 
+/// The id of the node `domain`'s cluster does its work on, which is the node its logs come
+/// FROM: the FIRST of its data nodes.
+///
+/// A cluster serves its indexes from at least one data node, whatever its configuration
+/// STATES: the data plane already reads an unstated `ClusterConfig$InstanceCount` as one
+/// node when it allocates an index's shards, so a domain created without an explicit count
+/// logs from a node too, under the id the census publishes for the first data node of a
+/// cluster that states one. The census itself reports only the nodes the configuration
+/// names ([`census_size`]) — what it publishes is what was configured — so this is a
+/// reading of the cluster that SERVED a request rather than a second census.
+pub fn logging_node_id(domain: &Domain) -> String {
+    data_node_ids(domain)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| node_id(&domain.domain_id, NODE_TYPE_DATA, 0))
+}
+
 // ---------------------------------------------------------------------------
 // Node maintenance
 //

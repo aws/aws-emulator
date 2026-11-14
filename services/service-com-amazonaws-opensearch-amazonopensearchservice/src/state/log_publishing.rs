@@ -49,8 +49,9 @@
 //! guard and answers in one step.
 //!
 //! A record comes FROM a node of the domain's cluster, so the stream it is written to is
-//! named for that node — the same `NodeId` `DescribeDomainNodes` reports
-//! ([`crate::state::data_node_ids`]) — and a reader can tell which node logged what.
+//! named for that node — the `NodeId` of its first data node
+//! ([`crate::state::logging_node_id`]), which is the id `DescribeDomainNodes` publishes for
+//! it — and a reader can tell which node logged what.
 //!
 //! Delivery is BEST EFFORT, as publishing to a customer-owned destination is: a group
 //! CloudWatch Logs does not hold receives nothing (nothing here creates one — the option
@@ -66,7 +67,7 @@ use ::std::time::{Duration, SystemTime};
 
 use ::service_com_amazonaws_cloudwatchlogs_logs_20140328::state as logs;
 
-use super::{data_node_ids, epoch_millis, index_settings, Domain};
+use super::{epoch_millis, index_settings, logging_node_id, Domain};
 
 /// `LogType`'s `SEARCH_SLOW_LOGS` — the log of searches the cluster found slow.
 pub const LOG_TYPE_SEARCH_SLOW: &str = "SEARCH_SLOW_LOGS";
@@ -249,13 +250,13 @@ pub struct PublishedRecord {
 
 /// The records `domain`'s enabled log-publishing options have of `served`, at `at`.
 ///
-/// Empty for a domain that publishes none of the log types the work belongs to, for an
-/// operation no threshold of its index makes slow, and for a domain whose cluster reports no
-/// node to log from — which is the whole of "the group stays empty".
+/// Empty for a domain that publishes none of the log types the work belongs to, and for an
+/// operation no threshold of its index makes slow — which is the whole of "the group stays
+/// empty".
 pub fn records(domain: &Domain, served: &[Served<'_>], at: SystemTime) -> Vec<PublishedRecord> {
-    let Some(node) = data_node_ids(domain).into_iter().next() else {
-        return Vec::new();
-    };
+    // The node the records come from: the cluster that served the work has one whatever its
+    // configuration states ([`logging_node_id`]).
+    let node = logging_node_id(domain);
     let mut published = Vec::new();
     for one in served {
         match one {
