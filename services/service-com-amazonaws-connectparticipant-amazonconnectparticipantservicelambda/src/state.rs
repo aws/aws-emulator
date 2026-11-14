@@ -71,6 +71,14 @@ pub const CHAT_ITEM_TYPE_EVENT: &str = "EVENT";
 /// participant token obtained from `StartChatContact`.
 pub const PARTICIPANT_ROLE_CUSTOMER: &str = "CUSTOMER";
 
+/// The `AccessDeniedException$Message` this service answers with.
+///
+/// The text is fixed: this service tells a caller whose token does not authenticate it
+/// only that access was denied, never which token failed or whether the resource it
+/// named exists. Every operation that refuses with this error words it the same way, so
+/// the wording lives here rather than at each call site.
+pub const ACCESS_DENIED_MESSAGE: &str = "Access denied";
+
 /// One message or event stored in a session's transcript, in the order it was sent.
 #[derive(Debug, Clone)]
 pub struct TranscriptItem {
@@ -104,6 +112,41 @@ pub struct ConnectionBinding {
     pub contact_id: String,
     /// The `Expiry` this token was reported with.
     pub expiry: SystemTime,
+}
+
+/// A view one chat's participant was shown, and what `DescribeView` reports for it.
+///
+/// A `ViewToken` is "an encrypted token originating from the interactive message of a
+/// ShowView block operation" (`DescribeViewRequest$ViewToken`), so it is minted where
+/// the view is SHOWN — the contact flow the chat runs — and no call this service's API
+/// carries creates one, exactly as no call here creates the chat session itself. The
+/// component that shows a view therefore writes this record into this store (the engine
+/// keys state by TYPE, so a copy of its own would be invisible to the reader here) and
+/// `DescribeView` only reports it; nothing in this service invents a view or a token for
+/// one.
+///
+/// Every member is the `View` member it is named for, so the read reports what was
+/// stored and derives nothing from the request.
+#[derive(Debug, Clone)]
+pub struct ShownView {
+    /// The contact whose participant was shown this view. Only a connection token that
+    /// authenticates THIS contact's participant may read it: a view token minted for one
+    /// chat is not a token for another's.
+    pub contact_id: String,
+    /// `View$Id`.
+    pub id: String,
+    /// `View$Arn`.
+    pub arn: String,
+    /// `View$Name`.
+    pub name: String,
+    /// `View$Version`.
+    pub version: i32,
+    /// `ViewContent$InputSchema`.
+    pub input_schema: Option<String>,
+    /// `ViewContent$Template`.
+    pub template: Option<String>,
+    /// `ViewContent$Actions`.
+    pub actions: Vec<String>,
 }
 
 /// A participant's chat session: who its items are attributed to, whether it is still
@@ -204,6 +247,11 @@ pub struct ComAmazonawsConnectparticipantAmazonconnectparticipantservicelambdaSt
     /// Participant token -> contact id, so re-using a participant token resolves to the
     /// session it already created.
     pub participant_tokens: HashMap<String, String>,
+    /// View token -> the view that token was minted for: what `DescribeView` reports.
+    /// Written where a view is shown to a participant (see [`ShownView`]), and bounded
+    /// by the sessions it belongs to — [`State::prune_expired`] drops a view with the
+    /// session whose chat it was shown in.
+    pub shown_views: HashMap<String, ShownView>,
 }
 
 impl ComAmazonawsConnectparticipantAmazonconnectparticipantservicelambdaState {
@@ -239,6 +287,16 @@ impl ComAmazonawsConnectparticipantAmazonconnectparticipantservicelambdaState {
             .filter(|session| session.connected)
     }
 
+    /// The view `view_token` names, when it was shown to `contact_id`'s participant.
+    ///
+    /// A token that names no view here, or one shown in another contact's chat, resolves
+    /// to nothing: a view token is a credential for one participant of one chat.
+    pub fn view_for_token(&self, view_token: &str, contact_id: &str) -> Option<&ShownView> {
+        self.shown_views
+            .get(view_token)
+            .filter(|view| view.contact_id == contact_id)
+    }
+
     /// How many live connection tokens reach `contact_id`.
     pub fn connection_count(&self, contact_id: &str) -> usize {
         self.connections
@@ -264,6 +322,10 @@ impl ComAmazonawsConnectparticipantAmazonconnectparticipantservicelambdaState {
         });
         self.participant_tokens
             .retain(|_, contact_id| sessions.contains_key(contact_id));
+        // A view was shown inside one chat, so it is reachable exactly as long as that
+        // chat's session is.
+        self.shown_views
+            .retain(|_, view| sessions.contains_key(&view.contact_id));
     }
 
     /// Drop every connection token that reaches `contact_id`: a disconnected

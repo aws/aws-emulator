@@ -13,5 +13,7 @@
 // points it into `tests/all/`.
 #[path = "all/chat_participant_slice.rs"]
 mod chat_participant_slice;
+#[path = "all/describe_view.rs"]
+mod describe_view;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;

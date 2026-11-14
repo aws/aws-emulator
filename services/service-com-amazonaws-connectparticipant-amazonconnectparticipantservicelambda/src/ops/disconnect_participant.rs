@@ -161,8 +161,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         else {
             return Err(DisconnectParticipantErrorModeled::AccessDeniedException(
                 AccessDeniedException {
-                    message: "the connection token does not name a connected chat participant"
-                        .to_string(),
+                    message: crate::state::ACCESS_DENIED_MESSAGE.to_string(),
                 },
             )
             .into());

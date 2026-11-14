@@ -283,8 +283,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     // token stops being valid.
                     return Err(CreateParticipantConnectionErrorModeled::AccessDeniedException(
                         AccessDeniedException {
-                            message: "the participant token is no longer part of a contact"
-                                .to_string(),
+                            message: crate::state::ACCESS_DENIED_MESSAGE.to_string(),
                         },
                     )
                     .into());

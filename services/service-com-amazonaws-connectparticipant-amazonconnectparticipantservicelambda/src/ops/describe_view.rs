@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DescribeView
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DescribeView`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! IMPLEMENTED. Reports the view the `ViewToken` names, as it is stored for the chat of
+//! the participant the `ConnectionToken` header authenticates
+//! ([`crate::state::ShownView`]). Nothing is derived from the request: every `View`
+//! member is the stored one.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DescribeView::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! A view token is minted where the view is SHOWN, not by any call this service carries,
+//! so a token this store holds no view for — unknown, already reclaimed with its chat,
+//! or minted for another contact — authorises nothing and is refused with
+//! `AccessDeniedException` (HTTP 403), as is an unknown, expired or disconnected
+//! connection token.
 //!
 //! ## Shape of an operation
 //!
@@ -149,18 +150,56 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DescribeView` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DescribeViewErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DescribeView"))
+        let _ = ctx;
+        let now = std::time::SystemTime::now();
+
+        let Some(store) = crate::state::service_state(&*self.engine) else {
+            return Err(DescribeViewErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: "the connectparticipant store is unavailable".to_string(),
+                },
+            )
+            .into());
+        };
+        // Retrieving a view reports what is stored, so this call writes nothing: the
+        // windows it judges its tokens by are read, never materialised here.
+        let state = store.lock();
+
+        // Both tokens are credentials, and neither names a resource a caller may ask
+        // about without holding it: a connection token that authenticates nobody, and a
+        // view token that names no view of that participant's own chat, are the same
+        // refusal, worded so it tells a caller nothing about which of them failed.
+        let denied = || {
+            DescribeViewError::from(DescribeViewErrorModeled::AccessDeniedException(
+                AccessDeniedException {
+                    message: crate::state::ACCESS_DENIED_MESSAGE.to_string(),
+                },
+            ))
+        };
+
+        let Some(session) = state.session_for_connection_token(&input.connection_token, now)
+        else {
+            return Err(denied());
+        };
+        let Some(view) = state.view_for_token(&input.view_token, &session.contact_id) else {
+            return Err(denied());
+        };
+
+        Ok(DescribeViewOutput {
+            view: Some(View {
+                id: Some(view.id.clone()),
+                arn: Some(view.arn.clone()),
+                name: Some(view.name.clone()),
+                version: Some(view.version),
+                content: Some(ViewContent {
+                    input_schema: view.input_schema.clone(),
+                    template: view.template.clone(),
+                    // An empty action list is reported as the empty list it is: the view
+                    // has actions or it has none, and `None` would say the view carries
+                    // no action member at all.
+                    actions: Some(view.actions.clone()),
+                }),
+            }),
+        })
     }
 }
