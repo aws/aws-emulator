@@ -83,6 +83,8 @@ mod encrypted_execution_writes;
 mod encrypted_resource_key_configuration;
 #[path = "all/error_messages.rs"]
 mod error_messages;
+#[path = "all/eventbridge_delivered_lambda_task.rs"]
+mod eventbridge_delivered_lambda_task;
 #[path = "all/execution_alias_routing.rs"]
 mod execution_alias_routing;
 #[path = "all/execution_data_encryption.rs"]

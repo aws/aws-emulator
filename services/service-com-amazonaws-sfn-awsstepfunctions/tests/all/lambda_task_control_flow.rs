@@ -116,6 +116,14 @@ const DYNAMODB_SIGNING_NAME: &str = "dynamodb";
 /// See [`DYNAMODB_SIGNING_NAME`].
 const DYNAMODB_TARGET_PREFIX: &str = "DynamoDB_20120810";
 
+/// The same, for the service a sibling suite mounts beside the two through
+/// [`Chain::with_eventbridge`] so a rule's own delivery starts a real execution:
+/// EventBridge's signing name and `X-Amz-Target` prefix, from its model's own
+/// `service_info`.
+const EVENTS_SIGNING_NAME: &str = "events";
+/// See [`EVENTS_SIGNING_NAME`].
+const EVENTS_TARGET_PREFIX: &str = "AWSEvents";
+
 /// Step Functions and Lambda over ONE engine, so the invocation a task makes is served
 /// by the very function the test created.
 ///
@@ -128,14 +136,14 @@ pub(crate) struct Chain {
 
 impl Chain {
     pub(crate) fn new() -> Self {
-        Self::mounted(false, false)
+        Self::mounted(false, false, false)
     }
 
     /// [`Self::new`] with DynamoDB mounted beside the two, for a suite whose handlers
     /// call it through the SDK their runtime supplies: what a run wrote is then read
     /// back through DynamoDB's own API rather than claimed by the handler's answer.
     pub(crate) fn with_dynamodb() -> Self {
-        Self::mounted(true, false)
+        Self::mounted(true, false, false)
     }
 
     /// [`Self::new`] with IAM mounted beside the two, for a suite whose rule is about the
@@ -143,10 +151,18 @@ impl Chain {
     /// role this account really holds, so the access gate in front of the call really
     /// runs ([`Self::role`]).
     pub(crate) fn with_iam() -> Self {
-        Self::mounted(false, true)
+        Self::mounted(false, true, false)
     }
 
-    fn mounted(dynamodb: bool, iam: bool) -> Self {
+    /// [`Self::new`] with EventBridge mounted beside the two, for a suite whose rule is
+    /// about an execution a RULE started: with EventBridge there a matched event is
+    /// really delivered to its state-machine target, so the execution under test is the
+    /// delivery's own ([`Self::events`]).
+    pub(crate) fn with_eventbridge() -> Self {
+        Self::mounted(false, false, true)
+    }
+
+    fn mounted(dynamodb: bool, iam: bool, events: bool) -> Self {
         let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
         let mut router = MultiServiceRouter::new();
         router.set_request_authentication(false);
@@ -163,6 +179,13 @@ impl Chain {
                 service_com_amazonaws_iam_awsidentitymanagementv20100508::EmulatedService::new(
                     Arc::clone(&engine),
                 ),
+            );
+        }
+        if events {
+            router.register_service(
+                service_com_amazonaws_eventbridge_awsevents::EmulatedService::new(Arc::clone(
+                    &engine,
+                )),
             );
         }
         router.register_service(
@@ -190,6 +213,32 @@ impl Chain {
             .header("content-type", "application/x-amz-json-1.0")
             .header("x-amz-target", format!("{SFN_TARGET_PREFIX}.{operation}"))
             .header("authorization", Self::authorization(SFN_SIGNING_NAME))
+            .body(Bytes::from(body.to_string()))
+            .expect("a well-formed request");
+        let response = self.router.dispatch(request).await;
+        let status = response.status().as_u16();
+        let parsed = parsed(response.into_body());
+        assert_eq!(
+            status, 200,
+            "case {case:?}: {operation} must answer 200, got {status} with {parsed}"
+        );
+        parsed
+    }
+
+    /// One EventBridge call (`awsJson1_1`), requiring a 200: how a suite wires the rule
+    /// whose delivery starts the execution under test. Only a
+    /// [`Chain::with_eventbridge`] chain serves one.
+    pub(crate) async fn events(&self, case: &str, operation: &str, body: &Value) -> Value {
+        let request = http::Request::builder()
+            .method("POST")
+            .uri("/")
+            .header(
+                "host",
+                format!("{EVENTS_SIGNING_NAME}.{REGION}.amazonaws.com"),
+            )
+            .header("content-type", "application/x-amz-json-1.1")
+            .header("x-amz-target", format!("{EVENTS_TARGET_PREFIX}.{operation}"))
+            .header("authorization", Self::authorization(EVENTS_SIGNING_NAME))
             .body(Bytes::from(body.to_string()))
             .expect("a well-formed request");
         let response = self.router.dispatch(request).await;
