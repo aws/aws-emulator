@@ -310,18 +310,32 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             NamedRecipe::Container(reference) => return Err(missing(reference)),
         };
 
-        // A distribution configuration is a resource of this service, so a reference to one
-        // has to name a stored configuration of this Region; a workflow is one this store
-        // does not hold yet, so a reference to one names nothing.
+        // A distribution configuration and a workflow are both resources of this service, so
+        // a reference to either has to name a stored resource of this Region. A workflow
+        // reference resolves the way every reference to a versioned resource does: a build
+        // version ARN names one build, a version ARN the most recent matching build.
         if let Some(reference) = &input.distribution_configuration_arn {
             if store.distribution_configuration(reference, &region).is_none() {
                 return Err(missing(reference));
             }
         }
-        if let Some(configuration) = input.workflows.iter().flatten().next() {
-            return Err(missing(&configuration.workflow_arn));
+        // How many references a request names is the caller's to choose and each one is a
+        // lookup against the store, so the references are resolved through the one bounded
+        // path this store has for them.
+        match store.unresolved_workflow(
+            input
+                .workflows
+                .iter()
+                .flatten()
+                .map(|configuration| configuration.workflow_arn.as_str()),
+            &region,
+        ) {
+            crate::state::WorkflowReferences::AllResolved => {}
+            crate::state::WorkflowReferences::Unresolved(reference) => {
+                return Err(missing(reference))
+            }
+            crate::state::WorkflowReferences::TooMany => return Err(too_many_workflows()),
         }
-
         // The store is finite: a build that would take it past this emulator's own cap is
         // refused rather than growing it, and nothing is queued.
         if store.image_store_is_full() {
@@ -484,6 +498,15 @@ fn missing(reference: &str) -> CreateImageError {
 fn store_full() -> CreateImageError {
     CreateImageErrorModeled::ServiceQuotaExceededException(ServiceQuotaExceededException {
         message: Some(crate::state::image_store_full_message()),
+    })
+    .into()
+}
+
+/// The refusal a request naming more workflows than this emulator resolves for one request
+/// is answered with.
+fn too_many_workflows() -> CreateImageError {
+    CreateImageErrorModeled::ServiceQuotaExceededException(ServiceQuotaExceededException {
+        message: Some(crate::state::too_many_request_workflows_message()),
     })
     .into()
 }

@@ -71,5 +71,7 @@ mod versioned_resource_responses;
 mod waiting_workflow_step_pages;
 #[path = "all/waiting_workflow_steps.rs"]
 mod waiting_workflow_steps;
+#[path = "all/workflow_resources.rs"]
+mod workflow_resources;
 #[path = "all/workflow_versions.rs"]
 mod workflow_versions;

@@ -122,6 +122,10 @@ pub use recorded_refusals::*;
 mod workflows;
 pub use workflows::*;
 
+/// How many workflow references ONE REQUEST resolves, and what they established.
+mod workflow;
+pub use workflow::*;
+
 /// What a pipeline listing asks for, and which member one of its filters selects on.
 mod image_pipeline_listing;
 pub use image_pipeline_listing::*;
@@ -582,6 +586,21 @@ pub const POLICY_MEMBER: &str = "policy";
 /// ([`ComAmazonawsImagebuilderImagebuilderState::file_create_receipt`]), never the create.
 pub const MAX_CREATE_RECEIPTS: usize =
     2 * (MAX_INFRASTRUCTURE_CONFIGURATIONS + MAX_COMPONENTS + MAX_IMAGE_RECIPES);
+
+/// The most resource policies this emulator will hold.
+///
+/// A bound on an index filed into from the request path, like every other store of this
+/// module, set to the TOTAL of every resource store's own cap: a policy belongs to one
+/// stored resource, so an index holding one per resource this emulator will keep can hold
+/// every policy there is to hold. See
+/// [`ComAmazonawsImagebuilderImagebuilderState::put_resource_policy`].
+pub const MAX_RESOURCE_POLICIES: usize = MAX_INFRASTRUCTURE_CONFIGURATIONS
+    + MAX_DISTRIBUTION_CONFIGURATIONS
+    + MAX_COMPONENTS
+    + MAX_IMAGE_RECIPES
+    + MAX_IMAGE_PIPELINES
+    + MAX_IMAGES
+    + MAX_WORKFLOWS;
 
 /// One stored infrastructure configuration: what a create wrote, which is what every
 /// later read reports.
@@ -1975,7 +1994,18 @@ impl ComAmazonawsImagebuilderImagebuilderState {
     /// (`service_common::iam_policy_rendering`), which is the form a read of this service
     /// reports. Every other element keeps the form the caller wrote, an `Action` list
     /// included.
+    ///
+    /// The index is BOUNDED at [`MAX_RESOURCE_POLICIES`], like every other store filed into
+    /// from the request path: past it a policy for an ARN the index does not already carry
+    /// one for is not filed. No caller can observe that, and nothing is reported as applied
+    /// that was not — a policy call of this service resolves its resource against this store
+    /// and reports an ARN it holds nothing under as missing BEFORE reaching here, and the
+    /// bound is the total of every resource store's own cap, so an ARN that got this far
+    /// always has room.
     pub fn put_resource_policy(&mut self, arn: &str, policy: &str) {
+        if self.resource_policy_store_is_full() && !self.resource_policies.contains_key(arn) {
+            return;
+        }
         self.resource_policies.insert(
             arn.to_string(),
             ::service_common::iam_policy_rendering::rendered_collapsing(
@@ -1983,6 +2013,13 @@ impl ComAmazonawsImagebuilderImagebuilderState {
                 &::service_common::iam_policy_rendering::PRINCIPAL_ELEMENTS,
             ),
         );
+    }
+
+    /// Whether the index is already holding as many resource policies as this emulator will
+    /// keep ([`MAX_RESOURCE_POLICIES`]).
+    #[must_use]
+    pub fn resource_policy_store_is_full(&self) -> bool {
+        self.resource_policies.len() >= MAX_RESOURCE_POLICIES
     }
 
     /// Whether the store is already holding as many image recipes as this emulator will
