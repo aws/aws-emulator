@@ -21,11 +21,15 @@
 //!   for anything the model does not express: a signing name shared by several
 //!   services, or routing that keys on the access-key id.
 //! - `override_operation` — serve a request the model's routing key cannot name
-//!   correctly. The default returns `None`, so every request resolves through the
-//!   generated routing table. Return `Some(op)` to route one yourself.
+//!   correctly. THIS SERVICE USES IT: every modelled operation is served behind the
+//!   modelled-refusal wrapper in [`validation`], which answers a request refused BEFORE
+//!   the handler runs — a `@required` member absent, a value outside a declared bound —
+//!   in this service's own modelled `ValidationException`, with the `fieldList` the
+//!   model declares, and hands every other request to the generated operation unchanged.
 //! - `override_refusal` — how this service words a request the framework refused
-//!   before any handler ran. The default returns `None`, keeping the framework's
-//!   wording. See the inline note on that method for how to reword.
+//!   before any handler ran. THIS SERVICE REWORDS IT, for whatever still renders there:
+//!   the same envelope and clause [`validation`] states, which that hook can reword but
+//!   not reshape.
 //! - `override_routing_error` — how this service words a request that reached it
 //!   but named no modeled operation. The default returns `None`, so the entry
 //!   renders the protocol-correct default (query -> 400 InvalidAction, awsJson ->
@@ -45,6 +49,8 @@ use smithy_server_runtime::{
 };
 use std::sync::Arc;
 
+pub mod validation;
+
 /// The `com-amazonaws-paymentcryptographydata-paymentcryptographydataplane` emulated service: the generated [`ServiceDefinition`] plus
 /// the behavioral seams this file owns.
 ///
@@ -52,6 +58,13 @@ use std::sync::Arc;
 /// router builds one shared engine and hands it to `new`.
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
     entry: crate::ServiceDefinition<Eng>,
+    /// One modelled-refusal wrapper per modelled operation, keyed by the routing key the
+    /// model names that operation by ([`smithy_server_runtime::Operation::NAME`], the same
+    /// key the generated routing table uses). Built once here, never per request; each
+    /// entry is zero-sized, so this is a table of NAMES rather than a second set of
+    /// operations — the operation that serves a request is still the one the generated
+    /// table built from the shared engine.
+    refusals: ::std::collections::HashMap<&'static str, Box<dyn ErasedOperation>>,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -61,6 +74,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     pub fn new(engine: Arc<Eng>) -> Self {
         Self {
             entry: crate::ServiceDefinition::new(engine),
+            refusals: validation::modelled_validation_table::<Eng>(),
         }
     }
 }
@@ -102,26 +116,42 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         &self,
         req: &aws_smithy_runtime_api::http::Request,
     ) -> Option<&dyn ErasedOperation> {
-        // Return `Some(op)` to serve a request the model's routing key cannot name
-        // correctly; `None` (the default) lets the generated routing table resolve
-        // it. `req` is the whole request, so a decision that depends on the body —
-        // the `Action` form field on a query protocol, say — is reachable here.
-        let _ = req;
-        None
+        // Serve every modelled operation through its modelled-refusal wrapper, so a
+        // request this service refuses before the handler runs is stated in the service's
+        // OWN modelled `ValidationException` — with the `fieldList` the model declares —
+        // instead of the framework's two-field refusal body. The wrapper hands every
+        // request it does not refuse to the generated operation in the routing table,
+        // which remains the only thing that serves one.
+        //
+        // Keyed by the protocol's own routing key, so a request the model names no
+        // operation for resolves to nothing here and keeps the framework's routing
+        // failure.
+        let key = self.entry.protocol().routing_key(req).ok()?;
+        self.refusals.get(key).map(|wrapper| &**wrapper)
     }
 
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {
         // The centralized walk calls this on a framework-level refusal (an absent
-        // required member, or a value outside a declared bound) to let this
-        // service reword it. Returning `None` keeps the framework's default
-        // wording. To state a refusal the way the emulated service states it,
-        // replace this body with a `match refusal { .. }` that returns
-        // `Some(Refused { code, message })` for the cases you reword and `None`
-        // for the rest. Replace BOTH the code and the message: a client branches
-        // on the code, so a message without its matching code is worse than
-        // leaving both alone.
-        let _ = refusal;
-        None
+        // required member, or a value outside a declared bound) to let this service
+        // reword it.
+        //
+        // This hook can reword a refusal but not RESHAPE it: `Refused` carries a code and
+        // a message, so nothing reached through here can carry the `fieldList` the model
+        // declares on `ValidationException`. Every boundary refusal of this service is
+        // therefore made where the modelled shape can be returned — in the wrapper in
+        // [`validation`] — and this stays as the wording of last resort for a refusal
+        // that still renders here, so that the sentence a caller reads is the same one
+        // either way.
+        //
+        // An authentication refusal keeps the framework's wording: it is not an
+        // input-constraint failure.
+        match refusal {
+            Refusal::Invalid(violations) => Some(Refused {
+                code: validation::VALIDATION_EXCEPTION.to_string(),
+                message: validation::boundary_exception(violations)?.message,
+            }),
+            _ => None,
+        }
     }
 
     fn override_routing_error(

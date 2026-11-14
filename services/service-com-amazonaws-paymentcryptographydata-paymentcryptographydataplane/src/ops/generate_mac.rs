@@ -189,6 +189,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let key =
             crate::state::resolve_key(&*self.engine, &input.key_identifier).map_err(refused)?;
+        // The key has to be a MAC key of the requested algorithm before anything else
+        // about it is judged: a key whose own algorithm computes no such MAC is the wrong
+        // KEY, so that is what the refusal says — not that a mode of use is missing,
+        // which a caller could widen and still be handed back a key that cannot compute
+        // the MAC. Checked here, ahead of the modes-of-use gate, rather than inside the
+        // computation, which is reached only after that gate.
+        crate::state::crypto::mac_key_check(algorithm, &key.key_algorithm)
+            .map_err(mac_refusal)?;
         // "the key must have KeyModesOfUse set to Generate" (this operation's own
         // documentation).
         if !key.modes.generate() {
@@ -201,22 +209,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let Ok(message_data) = hex::decode(&input.message_data) else {
             return Err(invalid("MessageData must be hexadecimal.".to_string()));
         };
-        let mac = match crate::state::crypto::generate_mac(
-            algorithm,
-            &key.key_algorithm,
-            key.material(),
-            &message_data,
-        ) {
-            Ok(mac) => hex::encode_upper(mac),
-            Err(crate::state::crypto::MacRefusal::Invalid(message)) => {
-                return Err(invalid(message))
-            }
-            Err(crate::state::crypto::MacRefusal::NotImplemented(algorithm)) => {
-                return Err(crate::scaffolded::Scaffolded::not_implemented(&format!(
-                    "GenerateMac with the {algorithm} algorithm"
-                )))
-            }
-        };
+        let mac = hex::encode_upper(
+            crate::state::crypto::generate_mac(
+                algorithm,
+                &key.key_algorithm,
+                key.material(),
+                &message_data,
+            )
+            .map_err(mac_refusal)?,
+        );
         let mac = crate::state::crypto::truncated_mac(&mac, input.mac_length).map_err(invalid)?;
 
         Ok(GenerateMacOutput {
@@ -234,6 +235,28 @@ fn invalid(message: String) -> GenerateMacError {
         field_list: None,
     })
     .into()
+}
+
+/// The refusal the MAC computation answered, in this operation's own error channel: an
+/// inadmissible request is the modelled `ValidationException`, an algorithm with no
+/// computation here is the scaffold's 501, and key material that cannot key a computation
+/// its algorithm admits is this emulator's own invariant — the modelled
+/// `InternalServerException` rather than a refusal of the request.
+fn mac_refusal(refusal: crate::state::crypto::MacRefusal) -> GenerateMacError {
+    match refusal {
+        crate::state::crypto::MacRefusal::Invalid(message) => invalid(message),
+        crate::state::crypto::MacRefusal::NotImplemented(algorithm) => {
+            crate::scaffolded::Scaffolded::not_implemented(&format!(
+                "GenerateMac with the {algorithm} algorithm"
+            ))
+        }
+        crate::state::crypto::MacRefusal::Unusable(message) => {
+            GenerateMacErrorModeled::InternalServerException(InternalServerException {
+                message: Some(message),
+            })
+            .into()
+        }
+    }
 }
 
 /// The refusal [`crate::state::resolve_key`] answered, in this operation's own error

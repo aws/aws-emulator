@@ -261,10 +261,6 @@ pub const KEY_USAGE_CARD_VERIFICATION: &str = "TR31_C0_CARD_VERIFICATION_KEY";
 /// (`GenerateCardValidationData$ValidationDataLength`).
 pub const DEFAULT_VALIDATION_DATA_LENGTH: i32 = 3;
 
-/// The message the service answers a failed verification with, as
-/// `VerificationFailedException` states it: "This request failed verification."
-pub const VERIFICATION_FAILED_MESSAGE: &str = "This request failed verification.";
-
 /// The `Reason` a failed MAC verification carries, from the modelled
 /// `VerificationFailedReason`.
 pub const VERIFICATION_FAILED_INVALID_MAC: &str = "INVALID_MAC";

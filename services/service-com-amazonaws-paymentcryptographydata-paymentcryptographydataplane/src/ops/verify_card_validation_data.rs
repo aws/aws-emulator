@@ -146,6 +146,16 @@ impl From<VerifyCardValidationDataErrorModeled> for VerifyCardValidationDataErro
     }
 }
 
+/// What this operation's `VerificationFailedException` states: the verification class
+/// that failed, which for this operation is the card validation data comparison.
+///
+/// The model requires `Message` but does not word it, so the sentence is AWS's recorded
+/// wording for THIS class — one sentence per verifying operation, rather than one shared
+/// by all of them — and it interpolates nothing: the `Reason` member carries the
+/// discriminator, and neither the message nor the reason reveals anything of the
+/// presented validation data or of the key.
+const VERIFICATION_FAILED_MESSAGE: &str = "Card validation data verification failed.";
+
 /// The `VerifyCardValidationData` operation.
 ///
 /// Owns the shared engine (the constructor seam) and implements
@@ -233,7 +243,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(VerifyCardValidationDataErrorModeled::VerificationFailedException(
                 VerificationFailedException {
                     reason: crate::state::VERIFICATION_FAILED_INVALID_VALIDATION_DATA.to_string(),
-                    message: crate::state::VERIFICATION_FAILED_MESSAGE.to_string(),
+                    message: VERIFICATION_FAILED_MESSAGE.to_string(),
                 },
             )
             .into());

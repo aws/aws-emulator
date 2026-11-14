@@ -487,6 +487,10 @@ pub enum MacRefusal {
     Invalid(String),
     /// The algorithm is one this emulator does not compute yet; the value names it.
     NotImplemented(String),
+    /// The key's working material cannot key a computation its algorithm admits — an
+    /// invariant of this emulator's own derivation rather than anything the caller
+    /// asked for, so it is a server fault and not a refusal of the request.
+    Unusable(String),
 }
 
 /// How many bytes of key material a computation that uses two single-DES halves
@@ -529,11 +533,79 @@ pub fn generate_mac(
     }
 }
 
-/// Refuse an algorithm the key cannot perform, in the service's own voice: the member
-/// that is not valid, then the member it is not valid for.
+/// Refuse a key whose own algorithm cannot compute the requested MAC algorithm, as AWS
+/// words that refusal: the requested MAC algorithm, the key's own `KeyAlgorithm`, and the
+/// kind of key the caller has to use instead.
+///
+/// The fixed text is `Invalid key with KeyAlgorithm <requested> used with MacAlgorithm
+/// <key's KeyAlgorithm>. Please use valid <requested> Key.` — the two variable parts are
+/// the `MacAlgorithm` the REQUEST named and the `KeyAlgorithm` the resolved key reports,
+/// and nothing of the key's identity (its ARN is a per-run value AWS's sentence does not
+/// contain) appears in it.
 fn wrong_key(algorithm: &str, key_algorithm: &str) -> MacRefusal {
     MacRefusal::Invalid(format!(
-        "KeyAlgorithm {key_algorithm} is not valid for the algorithm {algorithm}."
+        "Invalid key with KeyAlgorithm {algorithm} used with MacAlgorithm {key_algorithm}. \
+         Please use valid {algorithm} Key."
+    ))
+}
+
+/// The `KeyAlgorithm` values the modelled `MacAlgorithm` `algorithm` is computed under,
+/// or `None` when the algorithm names no computation here.
+///
+/// One table for every MAC algorithm, so the compatibility rule is stated once: the
+/// handler consults it BEFORE the key's modes of use are judged ([`mac_key_check`]), and
+/// each computation below consults it again rather than restating its own key set.
+fn mac_key_algorithms(algorithm: &str) -> Option<&'static [&'static str]> {
+    Some(match algorithm {
+        // The ISO 9797 CBC-MACs are Triple DES chains.
+        "ISO9797_ALGORITHM1" | "ISO9797_ALGORITHM3" => &["TDES_2KEY", "TDES_3KEY"],
+        // CMAC is defined for the algorithms that name a block cipher.
+        "CMAC" => &["AES_128", "AES_192", "AES_256", "TDES_2KEY", "TDES_3KEY"],
+        // `HMAC` names whichever hash the KEY selects, so any HMAC key computes it.
+        "HMAC" => &[
+            "HMAC_SHA224",
+            "HMAC_SHA256",
+            "HMAC_SHA384",
+            "HMAC_SHA512",
+        ],
+        // An explicit `HMAC_SHA*` names a hash itself, and has to name the one the key
+        // selects.
+        "HMAC_SHA224" => &["HMAC_SHA224"],
+        "HMAC_SHA256" => &["HMAC_SHA256"],
+        "HMAC_SHA384" => &["HMAC_SHA384"],
+        "HMAC_SHA512" => &["HMAC_SHA512"],
+        _ => return None,
+    })
+}
+
+/// Whether the key `key_algorithm` names may compute the MAC `algorithm` names.
+///
+/// The ALGORITHM-COMPATIBILITY half of a MAC request, separated from the computation so
+/// an operation can judge it where AWS judges it: before the key's `KeyModesOfUse` are
+/// consulted, so a data-encryption key handed to a MAC operation is told which key it
+/// needs rather than which mode of use to widen. `Ok` for an algorithm with no
+/// computation here — that request is answered where the computation is reached, as the
+/// algorithm it does not implement rather than as a key that cannot perform it.
+pub fn mac_key_check(algorithm: &str, key_algorithm: &str) -> Result<(), MacRefusal> {
+    match mac_key_algorithms(algorithm) {
+        Some(admitted) if !admitted.contains(&key_algorithm) => {
+            Err(wrong_key(algorithm, key_algorithm))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The key material of a key the algorithm ADMITS turned out not to key the computation.
+///
+/// Not the compatibility refusal above: the algorithm pair was already admitted by
+/// [`mac_key_check`], so what failed is the length or the form of the working material
+/// this service derived for the key ([`working_material`] always derives the algorithm's
+/// own key length, so this is unreachable), and that is this emulator's invariant rather
+/// than the caller's request.
+fn unusable_material(algorithm: &str, key_algorithm: &str) -> MacRefusal {
+    MacRefusal::Unusable(format!(
+        "The working material held for this {key_algorithm} key does not key the \
+         {algorithm} computation."
     ))
 }
 
@@ -543,11 +615,9 @@ fn iso9797_algorithm1(
     material: &[u8],
     message: &[u8],
 ) -> Result<Vec<u8>, MacRefusal> {
-    if !matches!(key_algorithm, "TDES_2KEY" | "TDES_3KEY") {
-        return Err(wrong_key("ISO9797_ALGORITHM1", key_algorithm));
-    }
+    mac_key_check("ISO9797_ALGORITHM1", key_algorithm)?;
     let Some(cipher) = BlockCipher::new(key_algorithm, material) else {
-        return Err(wrong_key("ISO9797_ALGORITHM1", key_algorithm));
+        return Err(unusable_material("ISO9797_ALGORITHM1", key_algorithm));
     };
     Ok(cbc_mac(&cipher, &padded(message, cipher.block_len())))
 }
@@ -560,17 +630,16 @@ fn iso9797_algorithm3(
     material: &[u8],
     message: &[u8],
 ) -> Result<Vec<u8>, MacRefusal> {
-    if !matches!(key_algorithm, "TDES_2KEY" | "TDES_3KEY")
-        || material.len() < RETAIL_MAC_KEY_BYTES
-    {
-        return Err(wrong_key("ISO9797_ALGORITHM3", key_algorithm));
+    mac_key_check("ISO9797_ALGORITHM3", key_algorithm)?;
+    if material.len() < RETAIL_MAC_KEY_BYTES {
+        return Err(unusable_material("ISO9797_ALGORITHM3", key_algorithm));
     }
     let (left, right) = (&material[..8], &material[8..16]);
     let Some(first) = single_des(left) else {
-        return Err(wrong_key("ISO9797_ALGORITHM3", key_algorithm));
+        return Err(unusable_material("ISO9797_ALGORITHM3", key_algorithm));
     };
     let Some(second) = single_des(right) else {
-        return Err(wrong_key("ISO9797_ALGORITHM3", key_algorithm));
+        return Err(unusable_material("ISO9797_ALGORITHM3", key_algorithm));
     };
     let mut mac = cbc_mac(&first, &padded(message, first.block_len()));
     second.decrypt_block(&mut mac);
@@ -581,6 +650,7 @@ fn iso9797_algorithm3(
 /// The CMAC of the key's own block cipher. Defined for the AES and Triple DES
 /// algorithms, which are the ones that name a block cipher.
 fn cmac(key_algorithm: &str, material: &[u8], message: &[u8]) -> Result<Vec<u8>, MacRefusal> {
+    mac_key_check("CMAC", key_algorithm)?;
     let mac = match key_algorithm {
         "AES_128" => <Cmac<Aes128> as Mac>::new_from_slice(material)
             .ok()
@@ -599,7 +669,7 @@ fn cmac(key_algorithm: &str, material: &[u8], message: &[u8]) -> Result<Vec<u8>,
             .map(|mac| mac.chain_update(message).finalize().into_bytes().to_vec()),
         _ => None,
     };
-    mac.ok_or_else(|| wrong_key("CMAC", key_algorithm))
+    mac.ok_or_else(|| unusable_material("CMAC", key_algorithm))
 }
 
 /// The HMAC of the hash the key's algorithm selects.
@@ -613,9 +683,7 @@ fn hmac(
     material: &[u8],
     message: &[u8],
 ) -> Result<Vec<u8>, MacRefusal> {
-    if algorithm != "HMAC" && algorithm != key_algorithm {
-        return Err(wrong_key(algorithm, key_algorithm));
-    }
+    mac_key_check(algorithm, key_algorithm)?;
     let mac = match key_algorithm {
         "HMAC_SHA224" => <Hmac<Sha224> as Mac>::new_from_slice(material)
             .ok()
@@ -631,7 +699,7 @@ fn hmac(
             .map(|mac| mac.chain_update(message).finalize().into_bytes().to_vec()),
         _ => None,
     };
-    mac.ok_or_else(|| wrong_key(algorithm, key_algorithm))
+    mac.ok_or_else(|| unusable_material(algorithm, key_algorithm))
 }
 
 /// The single-DES cipher keyed by `key`, one half of a double-length Triple DES key.

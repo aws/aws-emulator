@@ -141,6 +141,16 @@ impl From<VerifyMacErrorModeled> for VerifyMacError {
     }
 }
 
+/// What this operation's `VerificationFailedException` states: the verification class
+/// that failed, which for this operation is the MAC comparison.
+///
+/// The model requires `Message` but does not word it, so the sentence is AWS's recorded
+/// wording for THIS class — one sentence per verifying operation, rather than one shared
+/// by all of them — and it interpolates nothing: the `Reason` member carries the
+/// discriminator, and neither the message nor the reason reveals anything of the
+/// presented MAC or of the key.
+const VERIFICATION_FAILED_MESSAGE: &str = "Mac verification failed.";
+
 /// The `VerifyMac` operation.
 ///
 /// Owns the shared engine (the constructor seam) and implements
@@ -185,6 +195,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let key =
             crate::state::resolve_key(&*self.engine, &input.key_identifier).map_err(refused)?;
+        // The key has to be a MAC key of the requested algorithm before anything else
+        // about it is judged, for the reason the sibling `GenerateMac` states: a key whose
+        // own algorithm computes no such MAC is the wrong KEY, so that is what the refusal
+        // says rather than naming a mode of use the caller could widen and still be
+        // handed back a key that cannot compute the MAC.
+        crate::state::crypto::mac_key_check(algorithm, &key.key_algorithm)
+            .map_err(mac_refusal)?;
         // "the key must have KeyModesOfUse set to Verify" (this operation's own
         // documentation).
         if !key.modes.verify() {
@@ -197,22 +214,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let Ok(message_data) = hex::decode(&input.message_data) else {
             return Err(invalid("MessageData must be hexadecimal.".to_string()));
         };
-        let expected = match crate::state::crypto::generate_mac(
-            algorithm,
-            &key.key_algorithm,
-            key.material(),
-            &message_data,
-        ) {
-            Ok(mac) => hex::encode_upper(mac),
-            Err(crate::state::crypto::MacRefusal::Invalid(message)) => {
-                return Err(invalid(message))
-            }
-            Err(crate::state::crypto::MacRefusal::NotImplemented(algorithm)) => {
-                return Err(crate::scaffolded::Scaffolded::not_implemented(&format!(
-                    "VerifyMac with the {algorithm} algorithm"
-                )))
-            }
-        };
+        let expected = hex::encode_upper(
+            crate::state::crypto::generate_mac(
+                algorithm,
+                &key.key_algorithm,
+                key.material(),
+                &message_data,
+            )
+            .map_err(mac_refusal)?,
+        );
         let expected =
             crate::state::crypto::truncated_mac(&expected, input.mac_length).map_err(invalid)?;
 
@@ -222,7 +232,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(VerifyMacErrorModeled::VerificationFailedException(
                 VerificationFailedException {
                     reason: crate::state::VERIFICATION_FAILED_INVALID_MAC.to_string(),
-                    message: crate::state::VERIFICATION_FAILED_MESSAGE.to_string(),
+                    message: VERIFICATION_FAILED_MESSAGE.to_string(),
                 },
             )
             .into());
@@ -242,6 +252,28 @@ fn invalid(message: String) -> VerifyMacError {
         field_list: None,
     })
     .into()
+}
+
+/// The refusal the MAC computation answered, in this operation's own error channel: an
+/// inadmissible request is the modelled `ValidationException`, an algorithm with no
+/// computation here is the scaffold's 501, and key material that cannot key a computation
+/// its algorithm admits is this emulator's own invariant — the modelled
+/// `InternalServerException` rather than a refusal of the request.
+fn mac_refusal(refusal: crate::state::crypto::MacRefusal) -> VerifyMacError {
+    match refusal {
+        crate::state::crypto::MacRefusal::Invalid(message) => invalid(message),
+        crate::state::crypto::MacRefusal::NotImplemented(algorithm) => {
+            crate::scaffolded::Scaffolded::not_implemented(&format!(
+                "VerifyMac with the {algorithm} algorithm"
+            ))
+        }
+        crate::state::crypto::MacRefusal::Unusable(message) => {
+            VerifyMacErrorModeled::InternalServerException(InternalServerException {
+                message: Some(message),
+            })
+            .into()
+        }
+    }
 }
 
 /// The refusal [`crate::state::resolve_key`] answered, in this operation's own error

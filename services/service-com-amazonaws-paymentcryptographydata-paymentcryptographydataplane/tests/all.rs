@@ -13,5 +13,7 @@
 // points it into `tests/all/`.
 #[path = "all/data_protection.rs"]
 mod data_protection;
+#[path = "all/refusal_fidelity.rs"]
+mod refusal_fidelity;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
