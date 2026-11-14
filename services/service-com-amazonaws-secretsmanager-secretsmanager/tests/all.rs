@@ -81,6 +81,8 @@ mod secret_rotation_cancel;
 mod secret_rotation_driver;
 #[path = "all/secret_rotation_span.rs"]
 mod secret_rotation_span;
+#[path = "all/secret_rotation_staging_ladder.rs"]
+mod secret_rotation_staging_ladder;
 #[path = "all/secret_service_owned_writes.rs"]
 mod secret_service_owned_writes;
 #[path = "all/secret_stop_replication_refusal.rs"]
