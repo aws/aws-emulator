@@ -50,6 +50,12 @@ service-com-amazonaws-kms-trentservice = { workspace = true }
 # The Lambda client a rotation drives its rotation function over, in process through the
 # emulator's own callback.
 aws-sdk-lambda = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
+# Evaluates the cron() rotation schedule a secret stores: the occurrences it names on the
+# calendar, which is what the next rotation of such a secret is due at.
+cron = "0.15"
+# The UTC calendar those occurrences are counted on ("Secrets Manager rotation schedules use
+# UTC time zone"), which is also the clock type the cron evaluator reads.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

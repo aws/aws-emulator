@@ -1269,3 +1269,89 @@ async fn the_rotation_stamp_is_the_instant_the_rotation_finished() {
         "case {case:?}: expected a stamp between {before} and {after}, got {stamped}"
     );
 }
+
+/// RULE: "if rotation fails, Secrets Manager retries the entire rotation process multiple
+/// times" (`DescribeSecretResponse$NextRotationDate`, this service's Smithy model) — so a
+/// rotation whose first attempt could not run the rotation function is tried again, and one
+/// whose obstacle has cleared by then finishes.
+///
+/// The obstacle here is the one a caller hits by configuring rotation as soon as the function
+/// is created: Lambda opens a provisioning window on `CreateFunction` ("During this time, you
+/// can't invoke or modify the function"), so the first invocation of the rotation is refused
+/// while the function is still provisioning. The window closes on its own, which is what the
+/// retry finds.
+#[tokio::test]
+async fn a_rotation_refused_by_the_provisioning_window_is_retried() {
+    let case = "a rotation started while its function is still provisioning";
+    let router = router();
+    let name = "promptly-rotated-secret";
+    sm_ok(
+        &router,
+        case,
+        "CreateSecret",
+        &json!({
+            "Name": name,
+            "ClientRequestToken": format!("{:032}", 902),
+            "SecretString": "initial-credential",
+        }),
+    )
+    .await;
+
+    // The function is NOT waited for: the rotation is configured straight after the create,
+    // the way a caller that sets a secret up in one script does.
+    let function = "prompt-rotator";
+    let (status, created) = lambda(
+        &router,
+        "POST",
+        "/2015-03-31/functions",
+        &json!({
+            "FunctionName": function,
+            "Role": ROLE,
+            "Runtime": "python3.12",
+            "Handler": HANDLER,
+            "Timeout": 10,
+            "Code": {
+                "ZipFile": base64::engine::general_purpose::STANDARD
+                    .encode(package(ROTATION_FUNCTION)),
+            },
+        }),
+    )
+    .await;
+    assert_eq!(
+        status, 201,
+        "case {case:?}: expected HTTP 201 from CreateFunction, got {status} with {created}"
+    );
+    let function_arn = created["FunctionArn"]
+        .as_str()
+        .unwrap_or_else(|| panic!("case {case:?}: expected a FunctionArn, got {created}"))
+        .to_string();
+    add_permission(&router, case, function, SERVICE_PRINCIPAL, None, None).await;
+
+    let started = sm_ok(
+        &router,
+        case,
+        "RotateSecret",
+        &json!({"SecretId": name, "RotationLambdaARN": function_arn}),
+    )
+    .await;
+    let version_id = started["VersionId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("case {case:?}: expected a VersionId, got {started}"))
+        .to_string();
+
+    let finished = rotated(&router, case, name).await;
+    assert!(
+        finished.get("LastRotatedDate").is_some(),
+        "case {case:?}: expected the retried rotation to finish, got {finished}"
+    );
+    assert_eq!(
+        staged_versions(&finished, CURRENT_STAGE),
+        vec![version_id.clone()],
+        "case {case:?}: expected AWSCURRENT on the version the rotation created, got {finished}"
+    );
+    assert_eq!(
+        value_at(&router, case, name, CURRENT_STAGE).await,
+        Some("initial-credential-rotated".to_string()),
+        "case {case:?}: expected the value the rotation function wrote, got {finished}"
+    );
+}

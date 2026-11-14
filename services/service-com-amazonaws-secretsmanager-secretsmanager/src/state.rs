@@ -515,13 +515,15 @@ pub const SCHEDULE_EXPRESSION_SYNTAX: &str = "ScheduleExpression must be a rate(
 pub const DURATION_WITHOUT_SCHEDULE: &str =
     "You can't specify a rotation Duration without a rotation schedule.";
 
-/// The interval the schedule in `rules` rotates the secret on, or the
+/// The schedule the rules in `rules` rotate the secret on, or the
 /// `InvalidParameterException` message for rules that cannot hold together.
 ///
-/// `Ok(None)` is rules this emulator computes no next due instant from: rules
-/// that name no schedule at all (an empty structure), and a `cron()` expression —
-/// see [`parse_schedule_expression`].
-pub fn parse_rotation_rules(rules: &RotationRulesType) -> Result<Option<Duration>, String> {
+/// `Ok(None)` is rules this service computes no due instant from: rules that
+/// name no schedule at all (an empty structure), and a `cron()` expression in the
+/// service's own wildcard dialect — see [`SERVICE_CRON_WILDCARDS`].
+pub fn parse_rotation_rules(
+    rules: &RotationRulesType,
+) -> Result<Option<RotationSchedule>, String> {
     // "In RotateSecret, you can set the rotation schedule in RotationRules with
     // AutomaticallyAfterDays or ScheduleExpression, but not both."
     if rules.automatically_after_days.is_some() && rules.schedule_expression.is_some() {
@@ -537,11 +539,11 @@ pub fn parse_rotation_rules(rules: &RotationRulesType) -> Result<Option<Duration
         return Err(DURATION_WITHOUT_SCHEDULE.to_string());
     }
     if let Some(days) = rules.automatically_after_days {
-        return Ok(Some(interval_of(
+        return Ok(Some(RotationSchedule::Every(interval_of(
             u64::try_from(days).unwrap_or_default(),
             SECONDS_PER_DAY,
             "AutomaticallyAfterDays",
-        )?));
+        )?)));
     }
     match rules.schedule_expression.as_deref() {
         Some(expression) => parse_schedule_expression(expression),
@@ -549,15 +551,65 @@ pub fn parse_rotation_rules(rules: &RotationRulesType) -> Result<Option<Duration
     }
 }
 
-/// The interval a `ScheduleExpression` names.
+/// The schedule a secret's rotation rules state, which is what answers when that
+/// secret's next rotation is due.
 ///
-/// A `rate()` expression names one outright. A `cron()` expression names
-/// occurrences on a calendar rather than an interval, so there is nothing to add
-/// to an instant: it is checked for the six fields the service documents, stored
-/// and reported back unchanged, and answers `Ok(None)` — this emulator reports
-/// `NextRotationDate` for the interval forms and OMITS it for a `cron()`
-/// schedule rather than reporting an instant it did not compute.
-fn parse_schedule_expression(expression: &str) -> Result<Option<Duration>, String> {
+/// The two ways `RotationRulesType` states one: an INTERVAL
+/// (`AutomaticallyAfterDays`, or a `rate()` expression), where "Secrets Manager
+/// calculates the next rotation date based on the previous rotation"; and a
+/// CALENDAR (a `cron()` expression), which names the occurrences themselves —
+/// "Secrets Manager rotation schedules use UTC time zone"
+/// (`RotationRulesType$AutomaticallyAfterDays` / `$ScheduleExpression`, this
+/// service's Smithy model).
+#[derive(Debug, Clone)]
+pub enum RotationSchedule {
+    /// One rotation due every span of this length, counted from the rotation
+    /// before it.
+    Every(Duration),
+    /// One rotation due at each instant the expression names on the UTC
+    /// calendar.
+    Calendar(Box<::cron::Schedule>),
+}
+
+impl RotationSchedule {
+    /// The next instant this schedule makes a rotation due, after `anchor`.
+    ///
+    /// For an interval that is one interval past `anchor`, the instant the
+    /// previous rotation (or the configuration of the schedule) puts the next
+    /// one at. For a calendar it is the first occurrence the expression names
+    /// after `anchor`, read in UTC and so independent of where this emulator
+    /// runs — the instant the rotation window opens, which is what `Duration`
+    /// measures that window from ("The window starts according to the
+    /// ScheduleExpression", `RotationRulesType$Duration`, this service's Smithy
+    /// model).
+    ///
+    /// `None` when this schedule names no instant at all ahead of `anchor`: an
+    /// interval no clock can represent past it, and a `cron()` expression whose
+    /// year field is already behind it, which names no further occurrence.
+    #[must_use]
+    pub fn next_after(&self, anchor: SystemTime) -> Option<SystemTime> {
+        match self {
+            Self::Every(interval) => anchor.checked_add(*interval),
+            Self::Calendar(occurrences) => {
+                let from: ::chrono::DateTime<::chrono::Utc> = anchor.into();
+                occurrences.after(&from).next().map(SystemTime::from)
+            }
+        }
+    }
+}
+
+/// The schedule a `ScheduleExpression` names.
+///
+/// A `rate()` expression names an interval outright. A `cron()` expression names
+/// occurrences on the calendar, in the six-field form the service documents, and
+/// is evaluated in UTC: a `?` ("no specific value") in the day-of-month or
+/// day-of-week field is the same statement as `*` in the grammar the evaluator
+/// reads, and that grammar carries a seconds field this form does not, so a
+/// literal `0` seconds is prepended — the expression names instants on the
+/// minute. A field in the service's own wildcard dialect is read on the
+/// service's grammar and named no occurrence by this evaluator
+/// ([`cron_occurrences`]).
+fn parse_schedule_expression(expression: &str) -> Result<Option<RotationSchedule>, String> {
     let expression = expression.trim();
     let body = |keyword: &str| {
         expression
@@ -578,19 +630,125 @@ fn parse_schedule_expression(expression: &str) -> Result<Option<Duration>, Strin
             .find(|(name, _)| *name == unit)
             .map(|(_, seconds)| *seconds)
             .ok_or_else(|| SCHEDULE_EXPRESSION_SYNTAX.to_string())?;
-        return Ok(Some(interval_of(value, seconds, "ScheduleExpression")?));
+        return Ok(Some(RotationSchedule::Every(interval_of(
+            value,
+            seconds,
+            "ScheduleExpression",
+        )?)));
     }
-    if let Some(fields) = body("cron") {
-        let fields = fields.split_whitespace().count();
-        if fields != CRON_FIELDS {
+    if let Some(body) = body("cron") {
+        let fields: Vec<&str> = body.split_whitespace().collect();
+        if fields.len() != CRON_FIELDS {
             return Err(format!(
                 "ScheduleExpression must carry a cron expression of {CRON_FIELDS} fields \
-                 (minutes hours day-of-month month day-of-week year), not {fields}."
+                 (minutes hours day-of-month month day-of-week year), not {}.",
+                fields.len()
             ));
         }
-        return Ok(None);
+        return Ok(cron_occurrences(&fields)?
+            .map(|occurrences| RotationSchedule::Calendar(Box::new(occurrences))));
     }
     Err(SCHEDULE_EXPRESSION_SYNTAX.to_string())
+}
+
+/// The indexes of the day-of-month and day-of-week fields, the two in which `?`
+/// states "no specific value".
+const NO_SPECIFIC_VALUE_FIELDS: [usize; 2] = [2, 4];
+
+/// The field value stating "no specific value", which is the same statement `*`
+/// makes in the grammar the occurrences are evaluated on.
+const NO_SPECIFIC_VALUE: &str = "?";
+
+/// The seconds field that grammar carries and the documented six-field form does
+/// not: an occurrence the documented form names falls on the minute.
+const ON_THE_MINUTE: &str = "0";
+
+/// The field values a normalised expression carries for every field but the one
+/// being judged, so a field is read in the place it stands and not against the
+/// rest of the expression.
+const NEUTRAL_CRON_FIELDS: [&str; CRON_FIELDS + 1] = ["0", "0", "0", "*", "*", "*", "*"];
+
+/// The wildcards the schedule-expression reference documents on top of the ones
+/// the evaluated grammar reads: `L` (last), `W` (nearest weekday) and `#` (nth
+/// weekday of the month). A field carrying one of them states occurrences that
+/// grammar cannot read at all, so it is read on the SERVICE's grammar rather than
+/// refused on the evaluator's.
+const SERVICE_CRON_WILDCARDS: [char; 3] = ['L', 'W', '#'];
+
+/// The occurrences the documented six cron `fields` name, the refusal for fields
+/// that name none, or `Ok(None)` for an expression in the service's own wildcard
+/// dialect — one this service stores and reports back, and computes no occurrence
+/// from ([`SERVICE_CRON_WILDCARDS`]).
+///
+/// Every field is judged on the EVALUATED grammar first, so a value that grammar
+/// reads is read there whatever letters it is spelled with — a month or weekday
+/// name carrying one of the dialect's letters (`JUL`, `WED`, `MON-WED`) is an
+/// ordinary named field, not a wildcard. Only a field that grammar cannot read at
+/// all is put to the service's own dialect, and a field neither reads is refused.
+fn cron_occurrences(fields: &[&str]) -> Result<Option<::cron::Schedule>, String> {
+    let mut service_dialect = false;
+    for (index, field) in fields.iter().enumerate() {
+        if cron_field_reads(index, field) {
+            continue;
+        }
+        if !names_service_wildcard(field) {
+            return Err(SCHEDULE_EXPRESSION_SYNTAX.to_string());
+        }
+        service_dialect = true;
+    }
+    // An expression whose own dialect that grammar does not read is not evaluated
+    // as a whole either: it is stored and reported back, and names no instant
+    // this service computes.
+    if service_dialect {
+        return Ok(None);
+    }
+    normalised_cron(fields)
+        .parse()
+        .map(Some)
+        .map_err(|_| SCHEDULE_EXPRESSION_SYNTAX.to_string())
+}
+
+/// Whether `field` carries one of the wildcards this service's cron dialect
+/// documents and the evaluated grammar does not read.
+///
+/// Asked only of a field that grammar could not read, and case-insensitively: the
+/// dialect's letters are documented in capitals, and a field is the same
+/// statement however it is cased.
+fn names_service_wildcard(field: &str) -> bool {
+    field
+        .chars()
+        .any(|carried| SERVICE_CRON_WILDCARDS.contains(&carried.to_ascii_uppercase()))
+}
+
+/// Whether `field` states something the evaluated grammar reads in the place
+/// `index` names, judged with every other field neutral.
+fn cron_field_reads(index: usize, field: &str) -> bool {
+    let mut expression = NEUTRAL_CRON_FIELDS;
+    expression[index + 1] = cron_field_as_evaluated(index, field);
+    expression
+        .join(" ")
+        .parse::<::cron::Schedule>()
+        .is_ok()
+}
+
+/// The six documented fields as the expression the occurrences are evaluated on.
+fn normalised_cron(fields: &[&str]) -> String {
+    let mut expression = String::from(ON_THE_MINUTE);
+    for (index, field) in fields.iter().enumerate() {
+        expression.push(' ');
+        expression.push_str(cron_field_as_evaluated(index, field));
+    }
+    expression
+}
+
+/// One field as that grammar reads it: `?` is the `*` it spells the same
+/// statement with, in the two fields `?` is a statement in.
+fn cron_field_as_evaluated(index: usize, field: &str) -> &str {
+    if field == NO_SPECIFIC_VALUE && NO_SPECIFIC_VALUE_FIELDS.contains(&index) {
+        "*"
+    } else {
+        field
+    }
 }
 
 /// `value` units of `seconds` as a rotation interval, refused when it falls
@@ -2053,13 +2211,34 @@ impl Secret {
         }
     }
 
-    /// The interval the stored rules rotate the secret on, for recomputing the
+    /// The schedule the stored rules rotate the secret on, for computing the
     /// next due instant. Rules are validated before they are stored, so rules
-    /// that no longer parse, and a `cron()` schedule, name no interval.
-    pub fn rotation_interval(&self) -> Option<Duration> {
+    /// that no longer parse, and rules naming no schedule at all, name none.
+    pub fn rotation_schedule(&self) -> Option<RotationSchedule> {
         parse_rotation_rules(&self.rotation_rules.as_ref()?.to_modeled())
             .ok()
             .flatten()
+    }
+
+    /// Stamp the instant the stored schedule next makes a rotation due, measured
+    /// from `anchor` — the rotation (or the configuration of the schedule) the
+    /// next one follows.
+    ///
+    /// "In DescribeSecret and ListSecrets, this value is calculated from the
+    /// rotation schedule after every successful rotation"
+    /// (`RotationRulesType$AutomaticallyAfterDays`, this service's Smithy
+    /// model), so every event that re-anchors the schedule comes through here
+    /// rather than each computing an instant of its own.
+    ///
+    /// Nothing is due while rotation is off: "If the secret isn't configured for
+    /// rotation or rotation has been disabled, Secrets Manager returns null"
+    /// (`DescribeSecretResponse$NextRotationDate`).
+    fn reschedule_next_rotation(&mut self, anchor: SystemTime) {
+        self.next_rotation_date = self
+            .rotation_enabled
+            .then(|| self.rotation_schedule())
+            .flatten()
+            .and_then(|schedule| schedule.next_after(anchor));
     }
 
     /// The stored rotation rules for the wire.
@@ -2389,6 +2568,16 @@ impl Secret {
                 None => break,
             }
         }
+        // "Manually updating the secret value by calling PutSecretValue or
+        // UpdateSecret is considered a valid rotation"
+        // (`RotationRulesType$AutomaticallyAfterDays`, this service's Smithy
+        // model): a version that takes `AWSCURRENT` is the secret's value having
+        // been replaced, so the schedule is measured from THAT rather than from
+        // whenever rotation was configured. A version staged under any other
+        // label is not the current value and re-anchors nothing.
+        if claimed.iter().any(|stage| stage == STAGE_CURRENT) {
+            self.reschedule_next_rotation(at);
+        }
     }
 
     /// The version id `stage` currently names: the version carrying the label,
@@ -2505,9 +2694,7 @@ impl Secret {
             self.external_rotation_role_arn = Some(role_arn);
         }
         self.rotation_enabled = true;
-        self.next_rotation_date = self
-            .rotation_interval()
-            .and_then(|interval| at.checked_add(interval));
+        self.reschedule_next_rotation(at);
         self.last_changed_date = at;
     }
 
@@ -2542,9 +2729,7 @@ impl Secret {
     /// ran, so nothing here moves a label or mints a version.
     pub fn finish_rotation(&mut self, at: SystemTime) {
         self.last_rotated_date = Some(at);
-        self.next_rotation_date = self
-            .rotation_interval()
-            .and_then(|interval| at.checked_add(interval));
+        self.reschedule_next_rotation(at);
         self.last_changed_date = at;
     }
 
@@ -2817,4 +3002,401 @@ pub fn service_state<Eng: Send + Sync + 'static>(
     (engine as &dyn ::std::any::Any)
         .downcast_ref::<::engine::InMemoryEngine>()
         .map(::engine::InMemoryEngine::state::<ComAmazonawsSecretsmanagerSecretsmanagerState>)
+}
+
+#[cfg(test)]
+mod tests {
+    use ::chrono::{DateTime, Datelike, Timelike, Utc, Weekday};
+
+    use super::*;
+
+    /// What a row expects the next due instant to be, as the TEST derives it —
+    /// independently of the schedule evaluation under test.
+    enum Expected {
+        /// This span past the instant the schedule is measured from.
+        After(Duration),
+        /// The first instant past it, on the minute, that this predicate holds
+        /// for — the test's own reading of the calendar the expression names.
+        FirstMatching(fn(&DateTime<Utc>) -> bool),
+    }
+
+    impl Expected {
+        /// The next due instant expected when the schedule is measured from
+        /// `anchor`.
+        fn at(&self, anchor: SystemTime) -> SystemTime {
+            match self {
+                Self::After(span) => anchor + *span,
+                Self::FirstMatching(holds) => {
+                    let from: DateTime<Utc> = anchor.into();
+                    // The expression names instants on the minute, so the search
+                    // starts at the first whole minute strictly past `anchor` and
+                    // steps a minute at a time. Six weeks of minutes is past
+                    // every calendar these rows name.
+                    let mut at = from
+                        .with_second(0)
+                        .and_then(|at| at.with_nanosecond(0))
+                        .expect("a whole minute")
+                        + ::chrono::Duration::minutes(1);
+                    for _ in 0..60_480 {
+                        if holds(&at) {
+                            return at.into();
+                        }
+                        at += ::chrono::Duration::minutes(1);
+                    }
+                    panic!("no instant matching this row's calendar inside six weeks");
+                }
+            }
+        }
+    }
+
+    /// A secret with no versions, to configure rotation on.
+    fn secret_at(at: SystemTime) -> Secret {
+        Secret::new(
+            "db-credentials".to_string(),
+            "arn:aws:secretsmanager:us-west-2:000000000000:secret:db-credentials-AbCdEf"
+                .to_string(),
+            "us-west-2".to_string(),
+            at,
+        )
+    }
+
+    /// One version of a secret, carrying `stages`.
+    fn version(version_id: &str, stages: &[&str], at: SystemTime) -> SecretVersion {
+        let value = envelope::SecretValue::from_request(Some(&"a-value".to_string()), None)
+            .expect("a value the request carried");
+        SecretVersion {
+            version_id: version_id.to_string(),
+            value: envelope::StoredValue::as_sent(&value),
+            version_stages: stages.iter().map(|stage| (*stage).to_string()).collect(),
+            created_date: at,
+            last_accessed_date: None,
+        }
+    }
+
+    /// The rotation configuration carrying `rules`.
+    fn config(rules: StoredRotationRules) -> RotationConfig {
+        RotationConfig {
+            lambda_arn: Some(
+                "arn:aws:lambda:us-west-2:000000000000:function:rotator".to_string(),
+            ),
+            rules: Some(rules),
+            metadata: None,
+            role_arn: None,
+        }
+    }
+
+    /// Rules naming a schedule by `AutomaticallyAfterDays`.
+    fn after_days(days: i64) -> StoredRotationRules {
+        StoredRotationRules {
+            automatically_after_days: Some(days),
+            ..StoredRotationRules::default()
+        }
+    }
+
+    /// Rules naming a schedule by `ScheduleExpression`, with an optional
+    /// rotation-window `Duration`.
+    fn expression(schedule: &str, duration: Option<&str>) -> StoredRotationRules {
+        StoredRotationRules {
+            schedule_expression: Some(schedule.to_string()),
+            duration: duration.map(str::to_string),
+            ..StoredRotationRules::default()
+        }
+    }
+
+    /// An instant a fixed number of seconds past the epoch, so every row runs on
+    /// a calendar the test states rather than on the host's clock.
+    fn instant(seconds: u64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)
+    }
+
+    /// RULE: the next due instant is the first instant the stored schedule names
+    /// after the event it is measured from — the call that configured rotation,
+    /// then every later rotation of the secret's value — and it is cleared while
+    /// rotation is off.
+    ///
+    /// The rows differ along how the schedule is stated (an interval in days, a
+    /// `rate()` interval, a `cron()` calendar by weekday and by day of month)
+    /// and so along what re-anchoring it moves the instant to. Every instant is
+    /// the test's own, which is what makes the ANCHOR observable: each event
+    /// below falls on a different day of a stated calendar.
+    #[test]
+    fn the_next_rotation_date_is_measured_from_the_last_rotation_of_the_value() {
+        // 2023-11-14T22:13:20Z, a Tuesday, and the events that follow it.
+        let configured = instant(1_700_000_000);
+        let rotated = configured + Duration::from_secs(10 * SECONDS_PER_DAY);
+        let written = rotated + Duration::from_secs(20 * SECONDS_PER_DAY);
+        let staged = written + Duration::from_secs(SECONDS_PER_DAY);
+
+        // (case, the stored rules, what the next due instant is measured as)
+        let rows: Vec<(&str, StoredRotationRules, Expected)> = vec![
+            (
+                "an interval in days",
+                after_days(30),
+                Expected::After(Duration::from_secs(30 * SECONDS_PER_DAY)),
+            ),
+            (
+                "a rate in hours",
+                expression("rate(12 hours)", None),
+                Expected::After(Duration::from_secs(12 * SECONDS_PER_HOUR)),
+            ),
+            (
+                "a cron window on one weekday",
+                expression("cron(0 16 ? * SAT *)", Some("3h")),
+                Expected::FirstMatching(|at| {
+                    at.weekday() == Weekday::Sat && at.hour() == 16 && at.minute() == 0
+                }),
+            ),
+            (
+                "a cron schedule on one day of the month",
+                expression("cron(45 6 15 * ? *)", None),
+                Expected::FirstMatching(|at| {
+                    at.day() == 15 && at.hour() == 6 && at.minute() == 45
+                }),
+            ),
+            (
+                "a cron schedule every day",
+                expression("cron(0 8 * * ? *)", None),
+                Expected::FirstMatching(|at| at.hour() == 8 && at.minute() == 0),
+            ),
+        ];
+
+        for (case, rules, expected) in rows {
+            let mut secret = secret_at(configured);
+            secret.configure_rotation(config(rules), configured);
+            assert_eq!(
+                secret.next_rotation_date,
+                Some(expected.at(configured)),
+                "case {case:?}: expected the schedule measured from the call that configured \
+                 it, got {:?}",
+                secret.next_rotation_date
+            );
+
+            // A rotation that COMPLETED re-anchors the schedule to itself.
+            secret.finish_rotation(rotated);
+            assert_eq!(
+                secret.last_rotated_date,
+                Some(rotated),
+                "case {case:?}: expected the completed rotation to be stamped, got {:?}",
+                secret.last_rotated_date
+            );
+            assert_eq!(
+                secret.next_rotation_date,
+                Some(expected.at(rotated)),
+                "case {case:?}: expected the schedule measured from the completed rotation, got \
+                 {:?}",
+                secret.next_rotation_date
+            );
+
+            // A write that becomes the CURRENT value is a rotation of the value,
+            // so the schedule follows it — and it is not a rotation this service
+            // performed, so the completed-rotation stamp stays where it was.
+            secret.put_version(version("manual-write", &[STAGE_CURRENT], written), written);
+            assert_eq!(
+                secret.next_rotation_date,
+                Some(expected.at(written)),
+                "case {case:?}: expected the schedule measured from the manual write, got {:?}",
+                secret.next_rotation_date
+            );
+            assert_eq!(
+                secret.last_rotated_date,
+                Some(rotated),
+                "case {case:?}: expected the manual write to leave LastRotatedDate alone, got \
+                 {:?}",
+                secret.last_rotated_date
+            );
+
+            // A version staged for a rotation that has not finished is not the
+            // current value, so it re-anchors nothing.
+            secret.put_version(version("staged-write", &[STAGE_PENDING], staged), staged);
+            assert_eq!(
+                secret.next_rotation_date,
+                Some(expected.at(written)),
+                "case {case:?}: expected a staged write to leave the schedule where it was, got \
+                 {:?}",
+                secret.next_rotation_date
+            );
+
+            // Nothing is due while rotation is off, and a later write does not
+            // put the secret back on its schedule.
+            secret.cancel_rotation(staged);
+            assert_eq!(
+                secret.next_rotation_date, None,
+                "case {case:?}: expected no rotation due once rotation is off, got {:?}",
+                secret.next_rotation_date
+            );
+            secret.put_version(
+                version("write-while-off", &[STAGE_CURRENT], staged),
+                staged,
+            );
+            assert_eq!(
+                secret.next_rotation_date, None,
+                "case {case:?}: expected a write while rotation is off to schedule nothing, got \
+                 {:?}",
+                secret.next_rotation_date
+            );
+        }
+    }
+
+    /// RULE: a `cron()` expression names occurrences on the UTC calendar, so the
+    /// schedule it states answers with the first occurrence past the instant it
+    /// is measured from — and with none at all once the expression names no
+    /// further occurrence.
+    ///
+    /// The rows differ along which field carries the restriction: a month name,
+    /// a list, a step, a range, a day of the week by number and by name (the
+    /// field is numbered from Sunday, as the schedule-expression reference this
+    /// member's documentation links names it), a month and a weekday whose names
+    /// carry one of the letters the service's own wildcard dialect uses, and a
+    /// year already behind the clock.
+    #[test]
+    fn a_cron_expression_names_occurrences_on_the_utc_calendar() {
+        // 2024-02-29T12:00:00Z, a Thursday in a leap year.
+        let anchor = instant(1_709_208_000);
+        // (case, the expression, the instant it next makes a rotation due)
+        let rows: Vec<(&str, &str, Option<SystemTime>)> = vec![
+            (
+                "a month named in words",
+                "cron(0 9 1 MAR ? *)",
+                // 2024-03-01T09:00:00Z
+                Some(instant(1_709_283_600)),
+            ),
+            (
+                "a list of hours",
+                "cron(0 13,18 * * ? *)",
+                // 2024-02-29T13:00:00Z
+                Some(instant(1_709_211_600)),
+            ),
+            (
+                "a step over the hours",
+                "cron(0 */6 * * ? *)",
+                // 2024-02-29T18:00:00Z
+                Some(instant(1_709_229_600)),
+            ),
+            (
+                "a range of days of the month",
+                "cron(30 0 1-5 * ? *)",
+                // 2024-03-01T00:30:00Z
+                Some(instant(1_709_253_000)),
+            ),
+            (
+                "a year already behind the clock",
+                "cron(0 10 1 1 ? 2000)",
+                None,
+            ),
+            (
+                "a day of the week by number, where 1 is Sunday",
+                "cron(0 12 ? * 1 *)",
+                // 2024-03-03T12:00:00Z, the Sunday after the anchor's Thursday.
+                Some(instant(1_709_467_200)),
+            ),
+            (
+                "a day of the week by name",
+                "cron(0 12 ? * SUN *)",
+                // The same Sunday: the two spellings name one day.
+                Some(instant(1_709_467_200)),
+            ),
+            (
+                "a month whose name carries one of the dialect's letters",
+                "cron(0 9 1 JUL ? *)",
+                // 2024-07-01T09:00:00Z: `JUL` is an ordinary month name, not an
+                // `L` wildcard.
+                Some(instant(1_719_824_400)),
+            ),
+            (
+                "a day of the week whose name carries one of them",
+                "cron(0 12 ? * WED *)",
+                // 2024-03-06T12:00:00Z, the Wednesday after the anchor's
+                // Thursday: `WED` is an ordinary weekday name, not a `W`
+                // wildcard.
+                Some(instant(1_709_726_400)),
+            ),
+            (
+                "a range of weekday names carrying one of them",
+                "cron(0 12 ? * MON-WED *)",
+                // The Monday after the anchor, 2024-03-04T12:00:00Z.
+                Some(instant(1_709_553_600)),
+            ),
+            (
+                "the same weekday name in lower case",
+                "cron(0 12 ? * wed *)",
+                // The same Wednesday: a field is the same statement however it
+                // is cased.
+                Some(instant(1_709_726_400)),
+            ),
+        ];
+
+        for (case, expression, due) in rows {
+            let schedule = parse_rotation_rules(&schedule_rules(expression))
+                .unwrap_or_else(|refusal| {
+                    panic!("case {case:?}: expected {expression} to state a schedule, got {refusal}")
+                })
+                .unwrap_or_else(|| {
+                    panic!("case {case:?}: expected {expression} to state a schedule")
+                });
+            let next = schedule.next_after(anchor);
+            assert_eq!(
+                next, due,
+                "case {case:?}: expected {expression} to make a rotation due at {due:?} after \
+                 {anchor:?}, got {next:?}"
+            );
+        }
+    }
+
+    /// RULE: a `cron()` expression in the wildcard dialect the service's own
+    /// schedule-expression reference documents — `L` (last), `W` (nearest
+    /// weekday) and `#` (nth weekday of the month) — is read on the SERVICE's
+    /// grammar: the rules are accepted and stored, and this service computes no
+    /// occurrence from them, rather than the expression being refused for a
+    /// grammar the service does not state.
+    ///
+    /// The rows differ along which wildcard the expression carries and which
+    /// field carries it; the refusing rows show that a field outside the range
+    /// its place allows is still refused, wildcard or no wildcard.
+    #[test]
+    fn the_services_own_cron_wildcards_are_read_on_its_own_grammar() {
+        // (case, an expression in the service's own dialect)
+        let dialect: Vec<(&str, &str)> = vec![
+            ("the last day of the month", "cron(0 16 L * ? *)"),
+            ("the nearest weekday to a day of the month", "cron(0 8 15W * ? *)"),
+            ("the last weekday of the month", "cron(0 8 LW * ? *)"),
+            ("the third Friday of the month", "cron(0 10 ? * 6#3 *)"),
+            ("the last Friday of the month", "cron(0 10 ? * 6L *)"),
+        ];
+        for (case, expression) in dialect {
+            let schedule = parse_rotation_rules(&schedule_rules(expression)).unwrap_or_else(
+                |refusal| panic!("case {case:?}: expected {expression} to be read, got {refusal}"),
+            );
+            assert!(
+                schedule.is_none(),
+                "case {case:?}: expected no occurrence computed for {expression}"
+            );
+        }
+
+        // (case, an expression no grammar reads in the place the field stands)
+        let refused: Vec<(&str, &str)> = vec![
+            ("an hour past the end of the day", "cron(0 24 1 * ? *)"),
+            (
+                "an hour past the end of the day beside one of those wildcards",
+                "cron(0 24 L * ? *)",
+            ),
+            ("a month that is not one of the twelve", "cron(0 8 1 13 ? *)"),
+        ];
+        for (case, expression) in refused {
+            let refusal = parse_rotation_rules(&schedule_rules(expression));
+            assert!(
+                refusal.is_err(),
+                "case {case:?}: expected {expression} to be refused, got {:?}",
+                refusal.map(|schedule| schedule.is_some())
+            );
+        }
+    }
+
+    /// Rotation rules naming a schedule by `ScheduleExpression`, for the wire.
+    fn schedule_rules(expression: &str) -> RotationRulesType {
+        RotationRulesType {
+            automatically_after_days: None,
+            duration: None,
+            schedule_expression: Some(expression.to_string()),
+        }
+    }
 }

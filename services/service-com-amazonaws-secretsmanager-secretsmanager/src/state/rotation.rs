@@ -31,9 +31,12 @@
 //!   stamped as rotated only once the last step has returned.
 //!
 //! Nothing here invents a rotation: every version a rotation produces is one the rotation
-//! function itself wrote through this service's own operations, and a step whose function
-//! raised leaves the secret in the state the real service leaves a failed rotation in — the
-//! current value still readable, `AWSPENDING` still staked, and `LastRotatedDate` unset.
+//! function itself wrote through this service's own operations. A rotation whose function did
+//! not complete a step is driven again from the first step — "if rotation fails, Secrets
+//! Manager retries the entire rotation process multiple times"
+//! (`DescribeSecretResponse$NextRotationDate`, this service's Smithy model) — and one whose
+//! function keeps raising is left in the state the real service leaves a failed rotation in:
+//! the current value still readable, `AWSPENDING` still staked, and `LastRotatedDate` unset.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -107,6 +110,26 @@ const ROTATION_START_DELAY: Duration = Duration::from_millis(250);
 /// It is this emulator's own figure, chosen well above any rotation function's run and far
 /// below a span a developer would call stuck.
 const ROTATION_STEP_BUDGET: Duration = Duration::from_secs(30);
+
+/// How many times a rotation whose function did not complete every step is driven, the first
+/// attempt included.
+///
+/// "If rotation fails, Secrets Manager retries the entire rotation process multiple times"
+/// (`DescribeSecretResponse$NextRotationDate`, this service's Smithy model) — the ENTIRE
+/// process, so a retry starts again at the first step, which is what makes a rotation whose
+/// function could not be reached at all finish once it can be.
+///
+/// AWS publishes neither the number of attempts nor their spacing, so both are this
+/// emulator's own: enough for an obstacle in front of the function that clears by itself — a
+/// function still inside the provisioning window its creation opened, a concurrency limit
+/// momentarily reached — and few enough that a rotation whose function always raises stops
+/// being driven rather than being retried for as long as this process runs.
+const ROTATION_ATTEMPTS: u32 = 4;
+
+/// How long after an attempt that did not finish the rotation the next one begins. See
+/// [`ROTATION_ATTEMPTS`]: it is this emulator's own span, above the windows a service of this
+/// emulator opens on a resource it is still provisioning.
+const ROTATION_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 /// The resource type a Lambda function's ARN names:
 /// `arn:aws:lambda:<region>:<account>:function:<name>`.
@@ -255,26 +278,77 @@ pub struct Rotation {
     pub lambda_arn: String,
 }
 
-/// Invoke each step in turn, stopping at the first one the function did not complete.
+/// Invoke each step in turn, stopping at the first one the function did not complete, and
+/// drive the whole rotation again when an attempt ended there.
 ///
-/// A step that raised ends the rotation where it stands: the real service leaves such a
-/// rotation unfinished — `AWSPENDING` staked, `AWSCURRENT` where it was and
-/// `LastRotatedDate` unset — and so does this, because the only writes to the secret are the
-/// ones the rotation function itself made through this service's operations.
+/// A rotation is retried from its FIRST step ([`ROTATION_ATTEMPTS`]), which is what gets one
+/// past an obstacle in front of the function that clears by itself. A rotation whose function
+/// keeps raising ends where the real service leaves such a rotation — `AWSPENDING` staked,
+/// `AWSCURRENT` where it was and `LastRotatedDate` unset — because the only writes to the
+/// secret are the ones the rotation function itself made through this service's operations.
 async fn run<Eng: Send + Sync + 'static>(
     engine: &Arc<Eng>,
     callback: &EmbeddedEmulator,
     rotation: &Rotation,
 ) {
     ::tokio::time::sleep(ROTATION_START_DELAY).await;
-    for step in ROTATION_STEPS {
-        if !invoke_step(callback, rotation, step).await {
+    for attempt in 1..=ROTATION_ATTEMPTS {
+        // A rotation the secret is no longer waiting for is not driven: "if a rotation is
+        // currently in progress, cancels the rotation" (`CancelRotateSecret`, this service's
+        // Smithy model), and a secret that is gone awaits nothing either.
+        if !still_awaited(engine, rotation) {
+            ::tracing::debug!(
+                secret = %rotation.secret_arn,
+                version = %rotation.version_id,
+                "this rotation is no longer the one the secret awaits, so it is not driven \
+                 further"
+            );
             return;
         }
+        if drive_steps(callback, rotation).await {
+            // Every step returned, so the rotation COMPLETED: "LastRotatedDate — the last
+            // date and time that Secrets Manager rotated the secret"
+            // (`DescribeSecretResponse`, this service's Smithy model), and the schedule's
+            // next due instant is computed from it.
+            stamp_rotated(engine, rotation);
+            return;
+        }
+        if attempt < ROTATION_ATTEMPTS {
+            ::tokio::time::sleep(ROTATION_RETRY_DELAY).await;
+        }
     }
-    // Every step returned, so the rotation COMPLETED: "LastRotatedDate — the last date and
-    // time that Secrets Manager rotated the secret" (`DescribeSecretResponse`, this service's
-    // Smithy model), and the schedule's next due instant is computed from it.
+}
+
+/// Invoke the four steps in order, and report whether every one of them completed.
+async fn drive_steps(callback: &EmbeddedEmulator, rotation: &Rotation) -> bool {
+    for step in ROTATION_STEPS {
+        if !invoke_step(callback, rotation, step).await {
+            return false;
+        }
+    }
+    true
+}
+
+/// Whether the secret is still waiting for THIS rotation: it exists, rotation is on, and the
+/// version this rotation creates is the one `AWSPENDING` names.
+///
+/// Read under the store's guard, between invocations rather than across one, so a rotation
+/// cancelled while a step was in flight is not driven again.
+fn still_awaited<Eng: Send + Sync + 'static>(engine: &Arc<Eng>, rotation: &Rotation) -> bool {
+    let Some(state) = super::service_state(&**engine) else {
+        return false;
+    };
+    let store = state.lock();
+    store
+        .get(&rotation.region, &rotation.secret_arn)
+        .is_some_and(|secret| {
+            secret.rotation_enabled
+                && secret.pending_version_id() == Some(rotation.version_id.as_str())
+        })
+}
+
+/// Stamp the secret as rotated, at the instant its rotation finished.
+fn stamp_rotated<Eng: Send + Sync + 'static>(engine: &Arc<Eng>, rotation: &Rotation) {
     let Some(state) = super::service_state(&**engine) else {
         return;
     };

@@ -64,8 +64,9 @@ struct Setup {
     /// Whether that call started a rotation straight away, which is what leaves
     /// a rotation in progress for `CancelRotateSecret` to cancel.
     rotate_immediately: bool,
-    /// Whether the schedule names an interval, and so a `NextRotationDate`:
-    /// `rate()` and `AutomaticallyAfterDays` do, a `cron()` expression does not.
+    /// Whether the schedule makes a next rotation due, which every schedule the
+    /// service reads does: an interval names one a span past the call, and a
+    /// `cron()` expression the next occurrence it names on the UTC calendar.
     schedules_next: bool,
 }
 
@@ -245,7 +246,7 @@ async fn cancel_turns_rotation_off_and_keeps_the_configuration() {
             Setup {
                 rules: json!({"ScheduleExpression": "cron(0 8 1 * ? *)"}),
                 rotate_immediately: false,
-                schedules_next: false,
+                schedules_next: true,
             },
             |name, _arn| name.to_string(),
         ),

@@ -25,20 +25,20 @@ const AUTHORIZATION: &str = "AWS4-HMAC-SHA256 \
      SignedHeaders=host;x-amz-date, Signature=deadbeef";
 
 /// The ARN of a Lambda rotation function, as `RotationLambdaARN` carries it.
-const LAMBDA_ARN: &str = "arn:aws:lambda:us-west-2:123456789012:function:RotateMySecret";
+pub(crate) const LAMBDA_ARN: &str = "arn:aws:lambda:us-west-2:123456789012:function:RotateMySecret";
 
 /// Seconds in an hour and in a day, for the intervals a schedule names.
-const HOUR: f64 = 3_600.0;
+pub(crate) const HOUR: f64 = 3_600.0;
 /// See [`HOUR`].
-const DAY: f64 = 86_400.0;
+pub(crate) const DAY: f64 = 86_400.0;
 
 /// How far a reported `NextRotationDate` may sit from the instant the test
 /// computed for it: the emulator reads its own clock while serving the call, so
 /// the two differ by the time the call took.
-const CLOCK_SLACK_SECONDS: f64 = 120.0;
+pub(crate) const CLOCK_SLACK_SECONDS: f64 = 120.0;
 
 /// A fresh emulator holding only this service, over its own engine.
-fn emulator() -> MultiServiceRouter {
+pub(crate) fn emulator() -> MultiServiceRouter {
     let engine = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     router.register_service(EmulatedService::new(engine));
@@ -46,7 +46,11 @@ fn emulator() -> MultiServiceRouter {
 }
 
 /// Send one `awsJson1_1` request and return its status and JSON body.
-async fn call(router: &MultiServiceRouter, operation: &str, body: &Value) -> (u16, Value) {
+pub(crate) async fn call(
+    router: &MultiServiceRouter,
+    operation: &str,
+    body: &Value,
+) -> (u16, Value) {
     let request = http::Request::builder()
         .method("POST")
         .uri("/")
@@ -73,7 +77,12 @@ async fn call(router: &MultiServiceRouter, operation: &str, body: &Value) -> (u1
 }
 
 /// Send one request that must succeed, and return its body.
-async fn ok(router: &MultiServiceRouter, operation: &str, body: Value, case: &str) -> Value {
+pub(crate) async fn ok(
+    router: &MultiServiceRouter,
+    operation: &str,
+    body: Value,
+    case: &str,
+) -> Value {
     let (status, parsed) = call(router, operation, &body).await;
     assert_eq!(
         status, 200,
@@ -113,7 +122,7 @@ fn text(parsed: &Value, member: &str, case: &str) -> String {
 }
 
 /// A required timestamp member of a response body, in seconds since the epoch.
-fn instant(parsed: &Value, member: &str, case: &str) -> f64 {
+pub(crate) fn instant(parsed: &Value, member: &str, case: &str) -> f64 {
     parsed
         .get(member)
         .and_then(Value::as_f64)
@@ -121,7 +130,7 @@ fn instant(parsed: &Value, member: &str, case: &str) -> f64 {
 }
 
 /// Seconds since the epoch, for comparing a reported date with the clock.
-fn epoch_seconds(at: SystemTime) -> f64 {
+pub(crate) fn epoch_seconds(at: SystemTime) -> f64 {
     at.duration_since(UNIX_EPOCH)
         .expect("the test clock is after the epoch")
         .as_secs_f64()
@@ -167,7 +176,7 @@ fn ids_with_stage(parsed: &Value, member: &str, stage: &str) -> Vec<String> {
 
 /// Create a secret holding `value`, and return its ARN and the id of the
 /// version `AWSCURRENT` names.
-async fn create_secret(
+pub(crate) async fn create_secret(
     router: &MultiServiceRouter,
     name: &str,
     value: &str,
@@ -187,7 +196,7 @@ async fn create_secret(
 }
 
 /// `DescribeSecret` for one secret.
-async fn describe(router: &MultiServiceRouter, secret_id: &str, case: &str) -> Value {
+pub(crate) async fn describe(router: &MultiServiceRouter, secret_id: &str, case: &str) -> Value {
     ok(router, "DescribeSecret", json!({"SecretId": secret_id}), case).await
 }
 
@@ -356,28 +365,40 @@ async fn rotation_rules_fix_the_next_rotation_date() {
 /// (minutes, hours, day-of-month, month, day-of-week, year), round-trips
 /// unchanged, and enables rotation.
 ///
-/// It names occurrences on a calendar rather than an interval, and this emulator
-/// reports `NextRotationDate` only where it computes one — so a `cron()` schedule
-/// leaves that member absent rather than carrying an instant nothing computed.
+/// It names occurrences on the UTC calendar rather than an interval, so the next
+/// rotation it makes due is the next occurrence it names — ahead of the call that
+/// configured it. WHICH occurrence, for each field a cron expression restricts,
+/// is the table in `secret_rotation_schedule`.
 #[tokio::test]
-async fn cron_schedules_round_trip_and_report_no_computed_next_date() {
-    // (case, the expression)
-    let rows: &[(&str, &str)] = &[
-        ("every day at 08:00", "cron(0 8 * * ? *)"),
-        ("every day at 22:30", "cron(30 22 * * ? *)"),
-        ("the first of every month at midnight", "cron(0 0 1 * ? *)"),
-        ("the fifteenth of every month at 06:45", "cron(45 6 15 * ? *)"),
+async fn cron_schedules_round_trip_and_schedule_their_next_occurrence() {
+    // (case, the expression, the longest span its calendar leaves between two
+    // occurrences — so the reported instant is the next one, not a later one)
+    let rows: &[(&str, &str, f64)] = &[
+        ("every day at 08:00", "cron(0 8 * * ? *)", DAY),
+        ("every day at 22:30", "cron(30 22 * * ? *)", DAY),
+        (
+            "the first of every month at midnight",
+            "cron(0 0 1 * ? *)",
+            31.0 * DAY,
+        ),
+        (
+            "the fifteenth of every month at 06:45",
+            "cron(45 6 15 * ? *)",
+            31.0 * DAY,
+        ),
         (
             "a rotation window on a cron schedule",
             "cron(0 8 1 * ? *)",
+            31.0 * DAY,
         ),
     ];
 
     let router = emulator();
-    for (index, (case, expression)) in rows.iter().enumerate() {
+    for (index, (case, expression, longest_gap)) in rows.iter().enumerate() {
         let name = format!("cron-scheduled-{index}");
         create_secret(&router, &name, "the-current-value", case).await;
 
+        let before = epoch_seconds(SystemTime::now());
         ok(
             &router,
             "RotateSecret",
@@ -402,11 +423,11 @@ async fn cron_schedules_round_trip_and_report_no_computed_next_date() {
             Some(&json!(true)),
             "case {case:?}: expected rotation to be enabled, got {described}"
         );
-        assert_eq!(
-            described.get("NextRotationDate"),
-            None,
-            "case {case:?}: expected no computed NextRotationDate for a cron schedule, got \
-             {described}"
+        let next = instant(&described, "NextRotationDate", case);
+        assert!(
+            next > before && next - before <= longest_gap + CLOCK_SLACK_SECONDS,
+            "case {case:?}: expected the next occurrence of {expression} within \
+             {longest_gap} seconds of the call at {before}, got {next}"
         );
     }
 }
