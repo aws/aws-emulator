@@ -4,9 +4,10 @@
 //!
 //! Reports the basic image scan one image carries: the record `StartImageScan` wrote on
 //! it. An image nothing has scanned answers `ScanNotFoundException`, an identifier that
-//! names no stored image `ImageNotFoundException`, and a scan the clock has not yet made
-//! due is reported `IN_PROGRESS` with no findings — the findings are readable once it has
-//! completed, paged like every other list this service serves.
+//! names no stored image `ImageNotFoundException`, and a scan the clock has not yet
+//! carried to its completion is reported `PENDING` while it is still queued and
+//! `IN_PROGRESS` once its run is due, with no findings in either state — the findings are
+//! readable once it has completed, paged like every other list this service serves.
 //!
 //! This is the one API that reports a basic scan's results: "The new version of Amazon
 //! ECR Basic Scanning doesn't use the ImageDetail$imageScanFindingsSummary and

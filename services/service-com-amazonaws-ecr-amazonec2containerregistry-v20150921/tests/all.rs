@@ -33,6 +33,8 @@ mod image_scan;
 mod image_scan_filesystem;
 #[path = "all/image_scan_outcome.rs"]
 mod image_scan_outcome;
+#[path = "all/image_scan_status_progression.rs"]
+mod image_scan_status_progression;
 #[path = "all/image_signing_status.rs"]
 mod image_signing_status;
 #[path = "all/image_storage_class_identification.rs"]

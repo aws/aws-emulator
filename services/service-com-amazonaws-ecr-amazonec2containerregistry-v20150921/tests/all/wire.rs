@@ -146,6 +146,44 @@ pub fn at(value: &Value, pointer: &str) -> Value {
     value.pointer(pointer).cloned().unwrap_or(Value::Null)
 }
 
+/// How long [`ok_until`] keeps looking before it gives up.
+///
+/// Generous on purpose: a clock-owed transition is due on the emulator's own clock, and
+/// this only bounds a wait that would otherwise never end, so neither a slow nor a loaded
+/// host decides the outcome of a poll.
+pub const POLL_DEADLINE: ::std::time::Duration = ::std::time::Duration::from_secs(60);
+
+/// How long [`ok_until`] waits between two looks.
+pub const POLL_INTERVAL: ::std::time::Duration = ::std::time::Duration::from_millis(10);
+
+/// Call `operation` again and again until its answer satisfies `settled`, and answer the
+/// first answer that does.
+///
+/// A suite waiting for a clock-owed transition waits for the CONDITION rather than for a
+/// span of wall clock: it looks again until the transition has happened, bounded only by
+/// [`POLL_DEADLINE`].
+pub async fn ok_until(
+    router: &MultiServiceRouter,
+    case: &str,
+    operation: &str,
+    body: &Value,
+    settled: impl Fn(&Value) -> bool,
+) -> Value {
+    let since = ::std::time::Instant::now();
+    loop {
+        let answer = ok(router, case, operation, body).await;
+        if settled(&answer) {
+            return answer;
+        }
+        assert!(
+            since.elapsed() < POLL_DEADLINE,
+            "case {case:?}: {operation} never reached the state this poll waits for; \
+             its last answer was {answer:?}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
 /// A refused call: HTTP 400 with the wire error code `code`, or a panic naming the case
 /// and what came back instead. The refusal's body is returned for a caller that wants to
 /// look at its message.

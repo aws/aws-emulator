@@ -3,9 +3,10 @@
 //! Basic image scanning, end to end over the wire.
 //!
 //! The rule under test: `StartImageScan` records ONE basic scan on the stored image its
-//! identifier resolves to, which answers `IN_PROGRESS` until the clock makes its
-//! completion due ([`state::IMAGE_SCAN_DELAY`]) and the TERMINAL status that run came to
-//! afterwards — the outcome of examining that image (`state::basic_scan_outcome`), which
+//! identifier resolves to, which the start admits QUEUED (`PENDING`) and the clock then
+//! carries into its run ([`state::IMAGE_SCAN_QUEUE_DELAY`]) and on to the TERMINAL status
+//! that run came to ([`state::IMAGE_SCAN_DELAY`]) — the outcome of examining that image
+//! (`state::basic_scan_outcome`), which
 //! for an image whose layers carry no operating system to identify is `FAILED` with the
 //! unsupported-image description and never a clean `COMPLETE`;
 //! `DescribeImageScanFindings` derives its whole answer from that one record and changes
@@ -24,22 +25,19 @@
 //! serialization — the same path a client takes.
 
 use std::collections::BTreeMap;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use serde_json::{json, Value};
 use service_com_amazonaws_ecr_amazonec2containerregistry_v20150921 as ecr;
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::wire::{
-    at, emulator, emulator_with_engine, given_layer, layer_digest, ok, refused, REGISTRY_ID,
+    at, emulator, emulator_with_engine, given_layer, layer_digest, ok, ok_until, refused,
+    REGISTRY_ID,
 };
 
 use ecr::ops::types::{Attribute, ImageScanFinding, ImageScanStatus, FINDING_SEVERITY_VALUES};
 use ecr::state;
-
-/// Long enough past [`state::IMAGE_SCAN_DELAY`] that the completion the clock owes is
-/// certainly due. Derived from the span itself, never a bare number.
-const PAST_THE_DELAY: Duration = state::IMAGE_SCAN_DELAY.saturating_add(Duration::from_millis(150));
 
 /// The manifest forms this registry stores, as `state::is_scannable_image_manifest`
 /// reads them: the Docker image manifest V2 schema 2 and the OCI image manifest declare
@@ -215,8 +213,17 @@ async fn findings(
     .await
 }
 
-/// A started scan is reported `IN_PROGRESS`, completes on the clock, and is then read
-/// back — unchanged by the reading — by both operations that report an image's scan.
+/// Whether the scan an answer reports has ENDED: a run is over at either of the terminal
+/// statuses a basic scan reaches, and which one it reached is what an assertion judges.
+fn is_terminal(answer: &Value) -> bool {
+    [state::SCAN_STATUS_COMPLETE, state::SCAN_STATUS_FAILED]
+        .iter()
+        .any(|status| at(answer, "/imageScanStatus/status") == json!(status))
+}
+
+/// A started scan is admitted `PENDING`, reaches its terminal status on the clock, and is
+/// then read back — unchanged by the reading — by both operations that report an image's
+/// scan.
 ///
 /// The rows differ along what the rule generalises over: the manifest form the image was
 /// pushed in, how many filesystem layers it declares, and how the request addresses the
@@ -316,20 +323,24 @@ async fn a_started_scan_is_reported_until_the_clock_completes_it() {
             "case {case:?}: the start reports the stored image's own digest, got {:?}",
             at(&started, "/imageId")
         );
+        // The start ADMITS the scan: the record it writes is queued, so what the start
+        // reports is the queued state and not a run it did not perform.
         assert_eq!(
             at(&started, "/imageScanStatus/status"),
-            json!(state::SCAN_STATUS_IN_PROGRESS),
-            "case {case:?}: a scan that has just started is still running, got {:?}",
+            json!(state::SCAN_STATUS_PENDING),
+            "case {case:?}: a scan that has just been admitted is queued, got {:?}",
             at(&started, "/imageScanStatus")
         );
 
-        // A read straight after the start meets the same running scan, and no findings:
-        // they are readable once it has completed.
+        // A read straight after the start meets the one record the start wrote, still
+        // queued: nothing but the clock moves a run on, and it owes the move out of the
+        // queue a span away. No findings either — they are readable once a run that
+        // examined the image has completed.
         let running = findings(&router, case, repository, &image_id).await;
         assert_eq!(
             at(&running, "/imageScanStatus/status"),
-            json!(state::SCAN_STATUS_IN_PROGRESS),
-            "case {case:?}: the scan is still running, got {:?}",
+            json!(state::SCAN_STATUS_PENDING),
+            "case {case:?}: the read meets the queued run the start admitted, got {:?}",
             at(&running, "/imageScanStatus")
         );
         assert_eq!(
@@ -354,9 +365,17 @@ async fn a_started_scan_is_reported_until_the_clock_completes_it() {
         )
         .await;
 
-        tokio::time::sleep(PAST_THE_DELAY).await;
-
-        let completed = findings(&router, case, repository, &image_id).await;
+        // The terminal status is the clock's to owe, so the suite looks again until the
+        // run has ended rather than waiting out a span of wall clock. The poll waits for
+        // TERMINALITY alone, so which status it ended at is judged by the assertion below.
+        let completed = ok_until(
+            &router,
+            case,
+            "DescribeImageScanFindings",
+            &json!({"repositoryName": repository, "imageId": image_id}),
+            is_terminal,
+        )
+        .await;
         assert_eq!(
             at(&completed, "/imageScanStatus"),
             json!({
@@ -666,11 +685,6 @@ async fn a_scan_call_the_registry_cannot_resolve_is_refused() {
 /// `ACTIVATING` while a restore is in flight.
 #[tokio::test]
 async fn an_archived_image_cannot_be_scanned_until_it_is_restored() {
-    /// Long enough past `state::IMAGE_RESTORE_DELAY` that the restore the clock owes is
-    /// certainly due. Derived from the span itself, never a bare number.
-    const PAST_THE_RESTORE: Duration =
-        state::IMAGE_RESTORE_DELAY.saturating_add(Duration::from_millis(150));
-
     let router = emulator();
     let repository = "scan-archived";
     given_repository(&router, "archived", repository).await;
@@ -734,8 +748,22 @@ async fn an_archived_image_cannot_be_scanned_until_it_is_restored() {
     }
 
     // Past the restore the clock owed, the image is in standard storage again and the
-    // same start is honoured.
-    tokio::time::sleep(PAST_THE_RESTORE).await;
+    // same start is honoured. The restore is the clock's to owe, so the suite looks again
+    // until the image reports itself restored.
+    ok_until(
+        &router,
+        "restored",
+        "DescribeImages",
+        &json!({
+            "repositoryName": repository,
+            "imageIds": [image_id],
+            "filter": {"imageStatus": "ANY"},
+        }),
+        |answer| {
+            at(answer, "/imageDetails/0/imageStatus") == json!(state::ACTIVE_IMAGE_STATUS)
+        },
+    )
+    .await;
     let started = ok(
         &router,
         "restored",
@@ -745,13 +773,19 @@ async fn an_archived_image_cannot_be_scanned_until_it_is_restored() {
     .await;
     assert_eq!(
         at(&started, "/imageScanStatus/status"),
-        json!(state::SCAN_STATUS_IN_PROGRESS),
-        "case \"restored\": the restored image's scan starts running, got {:?}",
+        json!(state::SCAN_STATUS_PENDING),
+        "case \"restored\": the restored image's scan is admitted queued, got {:?}",
         at(&started, "/imageScanStatus")
     );
 
-    tokio::time::sleep(PAST_THE_DELAY).await;
-    let completed = findings(&router, "restored", repository, &image_id).await;
+    let completed = ok_until(
+        &router,
+        "restored",
+        "DescribeImageScanFindings",
+        &json!({"repositoryName": repository, "imageId": image_id}),
+        is_terminal,
+    )
+    .await;
     assert_eq!(
         at(&completed, "/imageScanStatus/status"),
         json!(state::SCAN_STATUS_FAILED),
@@ -801,7 +835,9 @@ fn seed_findings(
     let now = SystemTime::now();
     image.scan = Some(state::ImageScan {
         started_at: now,
-        // Already due, so the scan has reached its terminal status.
+        // Both owed transitions are already due, so the scan has reached its terminal
+        // status.
+        running_due_at: now,
         complete_due_at: now,
         // A run that examined the image: the status whose findings are a statement about
         // it, and therefore the one whose findings are readable.

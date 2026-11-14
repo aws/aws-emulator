@@ -19,26 +19,21 @@
 //! The wire harness is `crate::wire`'s: every case goes through the router, so it exercises
 //! routing, deserialization, the handlers, the persisted state and serialization.
 
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use serde_json::{json, Value};
 use service_com_amazonaws_ecr_amazonec2containerregistry_v20150921 as ecr;
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::wire::{at, call, emulator, emulator_with_engine, given_layer, ok, REGISTRY_ID};
+use crate::wire::{at, call, emulator, emulator_with_engine, given_layer, ok, ok_until, REGISTRY_ID};
 
 use ecr::ops::types::ImageScanStatus;
 use ecr::state;
 
-/// Long enough past [`state::IMAGE_SCAN_DELAY`] that the completion the clock owes is
-/// certainly due. Derived from the span itself, never a bare number.
-const PAST_THE_DELAY: Duration = state::IMAGE_SCAN_DELAY.saturating_add(Duration::from_millis(150));
-
 /// The `description` Amazon ECR reports beside the terminal status of a run whose image it
 /// could not scan, spelled out here rather than imported so a change to the constant the
 /// handler reads fails this suite.
-const UNSUPPORTED_IMAGE_DESCRIPTION: &str =
-    "UnsupportedImageError: The operating system and/or package manager are not supported.";
+const UNSUPPORTED_IMAGE_DESCRIPTION: &str = "UnsupportedImageError: The image is not supported.";
 
 /// The manifest member each image form declares its filesystem layers in: the Docker image
 /// manifest V2 schema 2 and the OCI image manifest use `layers` (descriptors), the older V2
@@ -251,14 +246,26 @@ async fn a_scan_ends_at_the_outcome_of_examining_its_image() {
         .await;
         assert_eq!(
             at(&started, "/imageScanStatus/status"),
-            json!(state::SCAN_STATUS_IN_PROGRESS),
-            "case {case:?}: the run is still going when it is started, got {:?}",
+            json!(state::SCAN_STATUS_PENDING),
+            "case {case:?}: the run is queued when it is admitted, got {:?}",
             at(&started, "/imageScanStatus")
         );
 
-        tokio::time::sleep(PAST_THE_DELAY).await;
-
-        let ended = findings(&router, case, repository, &digest).await;
+        // The terminal status is the clock's to owe, so the suite looks again until the
+        // run has ended rather than waiting out a span of wall clock. The poll waits for
+        // TERMINALITY alone, so the status it ended at is judged by the assertion below.
+        let ended = ok_until(
+            &router,
+            case,
+            "DescribeImageScanFindings",
+            &json!({"repositoryName": repository, "imageId": {"imageDigest": digest}}),
+            |answer| {
+                [state::SCAN_STATUS_COMPLETE, state::SCAN_STATUS_FAILED]
+                    .iter()
+                    .any(|status| at(answer, "/imageScanStatus/status") == json!(status))
+            },
+        )
+        .await;
         assert_eq!(
             at(&ended, "/imageScanStatus"),
             expected,
@@ -332,6 +339,7 @@ async fn a_run_that_examined_its_image_reports_the_status_whose_findings_are_rea
             .get_mut(&digest)
             .expect("the image was pushed over the wire");
         let scan = image.scan.as_mut().expect("the scan was started over the wire");
+        scan.running_due_at = SystemTime::now();
         scan.complete_due_at = SystemTime::now();
         scan.terminal = ImageScanStatus {
             status: Some(state::SCAN_STATUS_COMPLETE.to_string()),

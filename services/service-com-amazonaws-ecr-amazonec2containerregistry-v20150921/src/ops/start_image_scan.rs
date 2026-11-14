@@ -3,9 +3,10 @@
 //! @op StartImageScan
 //!
 //! Starts a basic vulnerability scan of one stored image: the image the call names is
-//! resolved in the named repository and a scan record is written onto it, which answers
-//! `IN_PROGRESS` until the clock makes its completion due
-//! ([`crate::state::IMAGE_SCAN_DELAY`]) and is then readable through
+//! resolved in the named repository and a scan record is written onto it in the QUEUED
+//! state, so the start reports `PENDING`; the clock then owes that run its move into
+//! `IN_PROGRESS` ([`crate::state::IMAGE_SCAN_QUEUE_DELAY`]) and its completion
+//! ([`crate::state::IMAGE_SCAN_DELAY`]), after which it is readable through
 //! `DescribeImageScanFindings`. One image carries one scan: a start inside
 //! [`crate::state::BASIC_SCAN_INTERVAL`] of that image's last scan is refused with
 //! `LimitExceededException`, as is a start past the registry's

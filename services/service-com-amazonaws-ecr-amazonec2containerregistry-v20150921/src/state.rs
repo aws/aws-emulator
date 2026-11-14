@@ -212,15 +212,32 @@ pub const PREVIEW_STATUS_COMPLETE: &str = "COMPLETE";
 /// that goes with [`ACTIVE_IMAGE_STATUS`], as a lifecycle policy preview spells it.
 pub const STANDARD_STORAGE_CLASS: &str = "STANDARD";
 
-/// How long after the `StartImageScan` call that starts it the clock owes a basic image
-/// scan its `IN_PROGRESS` -> `COMPLETE` transition.
+/// How long after the `StartImageScan` call that admitted it the clock owes a basic image
+/// scan its `PENDING` -> `IN_PROGRESS` transition: a scan is QUEUED when the start call
+/// admits it, and begins running afterwards.
+///
+/// AWS publishes no duration for the queueing of a basic scan, so this is a CHOSEN value
+/// inside the 250–750 ms band this project fixes for a clock-owed transition. It is never
+/// zero, so a caller that reads the scan straight after starting it still meets the
+/// `PENDING` state. Like [`IMAGE_SCAN_DELAY`] it is stored as a due instant and never
+/// slept for: the transition is owed whether or not anybody calls again.
+pub const IMAGE_SCAN_QUEUE_DELAY: Duration = Duration::from_millis(400);
+
+/// How long after it starts RUNNING (see [`IMAGE_SCAN_QUEUE_DELAY`]) the clock owes a
+/// basic image scan its `IN_PROGRESS` -> terminal transition.
 ///
 /// AWS publishes no duration for a basic scan run, so this is a CHOSEN value inside the
 /// 250–750 ms band this project fixes for a clock-owed transition. It is never zero, so a
-/// caller that reads the scan straight after starting it still meets the `IN_PROGRESS`
-/// state. Like [`LIFECYCLE_PREVIEW_DELAY`] it is stored as a due instant and never slept
-/// for: the completion is owed whether or not anybody calls again.
+/// caller that reads the scan once it has begun still meets the `IN_PROGRESS` state. Like
+/// [`LIFECYCLE_PREVIEW_DELAY`] it is stored as a due instant and never slept for: the
+/// completion is owed whether or not anybody calls again.
 pub const IMAGE_SCAN_DELAY: Duration = Duration::from_millis(400);
+
+/// The `ScanStatus` a basic scan carries while it is QUEUED: the state the start call
+/// admits it into, before the clock has made its run due. `ScanStatus` carries this value
+/// beside [`SCAN_STATUS_IN_PROGRESS`] precisely because a scan that has been accepted but
+/// has not begun is observable.
+pub const SCAN_STATUS_PENDING: &str = "PENDING";
 
 /// The `ScanStatus` a basic scan carries while it is still running.
 pub const SCAN_STATUS_IN_PROGRESS: &str = "IN_PROGRESS";
@@ -240,11 +257,16 @@ pub const SCAN_STATUS_FAILED: &str = "FAILED";
 /// stated in words beside [`SCAN_STATUS_COMPLETE`].
 pub const SCAN_COMPLETE_DESCRIPTION: &str = "The scan was completed successfully.";
 
+/// The `imageScanStatus.description` of a run the clock has started but not yet finished
+/// — the wording Amazon ECR reports beside [`SCAN_STATUS_IN_PROGRESS`].
+pub const SCAN_IN_PROGRESS_DESCRIPTION: &str = "The scan is in progress.";
+
 /// The `imageScanStatus.description` of a run whose image carries no operating system
-/// basic scanning can examine — the wording Amazon ECR reports for that outcome, which
-/// names the error and what about the image was not supported.
+/// basic scanning can examine — the wording Amazon ECR reports for that outcome. The
+/// whole sentence is FIXED text with no part taken from the request or from state, and
+/// the `UnsupportedImageError: ` prefix is the machine-readable part of it.
 pub const UNSUPPORTED_IMAGE_SCAN_DESCRIPTION: &str =
-    "UnsupportedImageError: The operating system and/or package manager are not supported.";
+    "UnsupportedImageError: The image is not supported.";
 
 /// How often one image may be scanned: "A basic image scan can only be started once per
 /// 24 hours on an individual image. This limit includes if an image was scanned on
@@ -2362,8 +2384,12 @@ impl Repo {
         missing
     }
 
-    /// Record the basic image scan a `StartImageScan` at `now` starts on the image `id`
+    /// Record the basic image scan a `StartImageScan` at `now` admits on the image `id`
     /// names, answering the `ImageScanStatus` that start reports.
+    ///
+    /// A start call ADMITS a scan: the record is created queued, so the start reports it
+    /// as `PENDING`, and the clock owes it the move into the run
+    /// ([`IMAGE_SCAN_QUEUE_DELAY`]) and then the completion ([`IMAGE_SCAN_DELAY`]).
     ///
     /// Where the run ENDS is decided here, once, from the image it was started on and
     /// this repository's own records of the blobs that image is built from
@@ -2380,9 +2406,11 @@ impl Repo {
         let image = self.resolve_image(id)?;
         let terminal = basic_scan_outcome(image, &self.layer_blobs);
         let findings = basic_scan_findings(image, &self.layer_blobs);
+        let running_due_at = now + IMAGE_SCAN_QUEUE_DELAY;
         let scan = ImageScan {
             started_at: now,
-            complete_due_at: now + IMAGE_SCAN_DELAY,
+            running_due_at,
+            complete_due_at: running_due_at + IMAGE_SCAN_DELAY,
             terminal,
             findings,
         };

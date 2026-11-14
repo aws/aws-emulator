@@ -22,25 +22,19 @@
 //! serialization — the same path a client takes.
 
 use std::io::Write;
-use std::time::Duration;
 
 use serde_json::{json, Value};
 use service_com_amazonaws_ecr_amazonec2containerregistry_v20150921 as ecr;
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::wire::{at, emulator, given_layer, ok};
+use crate::wire::{at, emulator, given_layer, ok, ok_until};
 
 use ecr::state;
-
-/// Long enough past [`state::IMAGE_SCAN_DELAY`] that the completion the clock owes is
-/// certainly due. Derived from the span itself, never a bare number.
-const PAST_THE_DELAY: Duration = state::IMAGE_SCAN_DELAY.saturating_add(Duration::from_millis(150));
 
 /// The `description` Amazon ECR reports beside the terminal status of a run whose image it
 /// could not scan, spelled out here rather than imported so a change to the constant the
 /// handler reads fails this suite.
-const UNSUPPORTED_IMAGE_DESCRIPTION: &str =
-    "UnsupportedImageError: The operating system and/or package manager are not supported.";
+const UNSUPPORTED_IMAGE_DESCRIPTION: &str = "UnsupportedImageError: The image is not supported.";
 
 /// The `description` of a run that examined the image and finished, spelled out here for
 /// the same reason as [`UNSUPPORTED_IMAGE_DESCRIPTION`].
@@ -291,8 +285,8 @@ async fn the_terminal_scan_status_follows_the_scanned_filesystem() {
     ];
 
     let router = emulator();
-    // Every row's scan is started before any is read, so the completion the clock owes is
-    // waited for once rather than per row.
+    // Every row's scan is started before any is read, so the runs the clock owes proceed
+    // together rather than one row at a time.
     let mut started_rows: Vec<(&str, &str, String, bool)> = Vec::new();
     for Case {
         case,
@@ -318,23 +312,14 @@ async fn the_terminal_scan_status_follows_the_scanned_filesystem() {
         .await;
         assert_eq!(
             at(&started, "/imageScanStatus/status"),
-            json!(state::SCAN_STATUS_IN_PROGRESS),
-            "case {case:?}: the run is still going when it is started, got {:?}",
+            json!(state::SCAN_STATUS_PENDING),
+            "case {case:?}: the run is queued when it is admitted, got {:?}",
             at(&started, "/imageScanStatus")
         );
         started_rows.push((case, repository, digest, *complete));
     }
 
-    tokio::time::sleep(PAST_THE_DELAY).await;
-
     for (case, repository, digest, complete) in started_rows {
-        let ended = ok(
-            &router,
-            case,
-            "DescribeImageScanFindings",
-            &json!({"repositoryName": repository, "imageId": {"imageDigest": digest}}),
-        )
-        .await;
         let expected_status = if complete {
             json!({
                 "status": state::SCAN_STATUS_COMPLETE,
@@ -346,6 +331,21 @@ async fn the_terminal_scan_status_follows_the_scanned_filesystem() {
                 "description": UNSUPPORTED_IMAGE_DESCRIPTION,
             })
         };
+        // The terminal status is the clock's to owe, so the suite looks again until the
+        // run has ended rather than waiting out a span of wall clock. The poll waits for
+        // TERMINALITY alone, so the status it ended at is judged by the assertion below.
+        let ended = ok_until(
+            &router,
+            case,
+            "DescribeImageScanFindings",
+            &json!({"repositoryName": repository, "imageId": {"imageDigest": digest}}),
+            |answer| {
+                [state::SCAN_STATUS_COMPLETE, state::SCAN_STATUS_FAILED]
+                    .iter()
+                    .any(|status| at(answer, "/imageScanStatus/status") == json!(status))
+            },
+        )
+        .await;
         assert_eq!(
             at(&ended, "/imageScanStatus"),
             expected_status,

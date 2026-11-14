@@ -211,16 +211,21 @@ pub(super) fn os_release_id(content: &str) -> Option<String> {
 ///
 /// A scan is the record of a RUN, not a projection of the image: it exists because a
 /// start call created it, and reading it back computes nothing new. Its status follows
-/// from the instant the clock owes it its completion, so every reader derives the same
-/// answer from the same record and no read has to write.
+/// from the instants the clock owes it its run and its completion, so every reader
+/// derives the same answer from the same record and no read has to write.
 #[derive(Debug, Clone)]
 pub struct ImageScan {
-    /// When the call that started this scan was made. It is what the once-per-image
+    /// When the call that admitted this scan was made. It is what the once-per-image
     /// [`BASIC_SCAN_INTERVAL`] is measured from, and what counts this scan towards the
     /// registry's [`MAX_BASIC_SCANS_PER_INTERVAL`].
     pub started_at: SystemTime,
-    /// When the clock owes this scan its `IN_PROGRESS` -> `COMPLETE` transition:
-    /// `started_at` + [`IMAGE_SCAN_DELAY`]. The transition is owed whether or not
+    /// When the clock owes this scan its `PENDING` -> `IN_PROGRESS` transition:
+    /// `started_at` + [`IMAGE_SCAN_QUEUE_DELAY`]. A start call ADMITS a scan — it does
+    /// not run it — so until this instant the run is queued, and the transition out of
+    /// the queue belongs to the clock rather than to any caller.
+    pub running_due_at: SystemTime,
+    /// When the clock owes this scan its `IN_PROGRESS` -> terminal transition:
+    /// `running_due_at` + [`IMAGE_SCAN_DELAY`]. The transition is owed whether or not
     /// anybody calls again, so the instant is stored and never slept for, and a
     /// completed scan reports it as `imageScanCompletedAt` — the same instant on every
     /// read.
@@ -244,6 +249,12 @@ impl ImageScan {
     /// Whether the clock has already made this scan's completion due at `now`.
     pub fn is_complete(&self, now: SystemTime) -> bool {
         self.complete_due_at <= now
+    }
+
+    /// Whether the clock has already taken this scan out of the queue at `now`, i.e.
+    /// whether the run has begun. A completed run has begun too.
+    pub fn is_running(&self, now: SystemTime) -> bool {
+        self.running_due_at <= now
     }
 
     /// When this scan completed, or `None` while it is still running. The instant is the
@@ -285,16 +296,27 @@ impl ImageScan {
             .collect()
     }
 
-    /// The `ImageScanStatus` every operation that reports this scan answers with: the
-    /// run's own terminal status once the clock has made its completion due, and
-    /// `IN_PROGRESS` until then.
+    /// The `ImageScanStatus` every operation that reports this scan answers with — the
+    /// start call included: how far the clock has carried this run through the lifecycle
+    /// `ScanStatus` models for it. A run is `PENDING` while it is queued, `IN_PROGRESS`
+    /// once the clock has made its run due, and its own terminal status once the clock
+    /// has made its completion due.
+    ///
+    /// A queued run carries no description: the only wording ECR has for a scan is about
+    /// a run that has begun or has ended, so nothing is authored for the state in which
+    /// nothing has happened yet.
     pub fn to_status(&self, now: SystemTime) -> ImageScanStatus {
         if self.is_complete(now) {
             self.terminal.clone()
-        } else {
+        } else if self.is_running(now) {
             ImageScanStatus {
                 status: Some(SCAN_STATUS_IN_PROGRESS.to_string()),
-                description: Some("The scan is in progress.".to_string()),
+                description: Some(SCAN_IN_PROGRESS_DESCRIPTION.to_string()),
+            }
+        } else {
+            ImageScanStatus {
+                status: Some(SCAN_STATUS_PENDING.to_string()),
+                description: None,
             }
         }
     }
@@ -380,8 +402,8 @@ pub fn basic_scan_findings(
 /// both the operating system and the package manager whose installed packages it reports
 /// on ([`scanned_filesystem`]); an image missing either is one basic scanning does not
 /// support, and the run ends `FAILED` with [`UNSUPPORTED_IMAGE_SCAN_DESCRIPTION`] — the
-/// outcome that names the operating system and the package manager as what was not
-/// supported. Neither outcome is the default: each follows from what the layers carry.
+/// outcome that reports the image as one that is not supported. Neither outcome is the
+/// default: each follows from what the layers carry.
 pub fn basic_scan_outcome(
     image: &ImageRecord,
     layers: &BTreeMap<String, LayerBlob>,
