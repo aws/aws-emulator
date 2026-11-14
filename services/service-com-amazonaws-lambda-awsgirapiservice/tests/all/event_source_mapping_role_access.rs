@@ -294,7 +294,11 @@ fn queue_refusal(action: &str) -> String {
 
 /// How AWS words the refusal of a role that may not make one CALL on the named source:
 /// the call it may not make, and the service it would have been made to.
-fn call_refusal(action: &str, service: &str) -> String {
+///
+/// `pub(crate)` because this sentence has ONE owner here: the suite over its wording across
+/// the source services reads it from this function too
+/// (`tests/all/event_source_read_refusal_sentence.rs`), so the two tables cannot drift apart.
+pub(crate) fn call_refusal(action: &str, service: &str) -> String {
     format!("The function execution role does not have permissions to call {action} on {service}")
 }
 
