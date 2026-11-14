@@ -83,6 +83,8 @@ mod event_bus_lifecycle;
 mod event_bus_write_semantics;
 #[path = "all/fifo_queue_target_delivery.rs"]
 mod fifo_queue_target_delivery;
+#[path = "all/fifo_queue_target_parameters.rs"]
+mod fifo_queue_target_parameters;
 #[path = "all/fixed_refusal_sentences.rs"]
 mod fixed_refusal_sentences;
 #[path = "all/function_target_grant_takes_effect_on_the_next_event.rs"]

@@ -9,7 +9,9 @@
 //! is the order [`super::list_targets_by_rule`] pages through. Because `Id` is
 //! that key, a single request carrying one `Id` twice is refused whole (400
 //! `ValidationException`) before anything is stored — as is a request carrying
-//! an ARN-valued target member that holds no ARN.
+//! an ARN-valued target member that holds no ARN, or a target that names none of
+//! the parameters its own kind of resource can only be delivered to with
+//! ([`crate::state::request_validation`]).
 //!
 //! The call is authorized before any of that: it is the action `events:PutTargets` on the
 //! rule's ARN, decided with the ARN of every target it attaches published as
@@ -290,8 +292,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         // What each target asks for BESIDE the form of its ARNs: the role
         // EventBridge has to assume to invoke a target of its kind at all, the
-        // service its dead-letter destination belongs to, and the JSON paths it
-        // reshapes its input with (`crate::state::request_validation`). Each is a
+        // parameters the target's own kind of resource can only be delivered to
+        // with (the message group of a FIFO queue), the service its dead-letter
+        // destination belongs to, and the JSON paths it reshapes its input with
+        // (`crate::state::request_validation`). Each is a
         // property of one target and none of them is modelled, so the request is
         // refused in its own order and as a WHOLE: a rule carrying a target
         // EventBridge could never invoke would report back a healthy rule that

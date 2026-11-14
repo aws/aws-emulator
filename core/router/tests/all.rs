@@ -1899,12 +1899,9 @@ mod apigateway_sns_service_integration;
 // crate's test target can drive it.
 #[path = "all/lambda_signed_write_to_an_aoss_collection_endpoint.rs"]
 mod lambda_signed_write_to_an_aoss_collection_endpoint;
-// Declared here, in this same head region, for the reason the entry above records: which app
-// client's token a COGNITO_USER_POOLS authorizer admits spans Amazon Cognito user pools (which
-// mints the tokens) and API Gateway's execute-api data plane (which reads them), so neither
-// crate's own test target can mint a pool token and then present it to a deployed method.
-#[path = "all/apigateway_cognito_authorizer_app_client_audience.rs"]
-mod apigateway_cognito_authorizer_app_client_audience;
+// `apigateway_cognito_authorizer_app_client_audience` is declared ONCE, in the head region
+// above: two landings each appended their own copy here, and a module declared twice loads
+// the same file twice, which compiles neither.
 #[path = "all/cloudformation_metric_stream_estate_is_drainable.rs"]
 mod cloudformation_metric_stream_estate_is_drainable;
 // Declared here, in the SORTED block beside the other CloudTrail suites rather than
@@ -1931,13 +1928,8 @@ mod redshift_health_alarms_evaluate;
 // crate's test target can deploy the pipeline and then read the objects it delivered.
 #[path = "all/cloudformation_metric_stream_filter_update.rs"]
 mod cloudformation_metric_stream_filter_update;
-// EMPTY, and declared only because the build script requires every file under `tests/all/`
-// to be declared: `zz_probe.rs` held a throwaway probe for the pre-existing stack overflow
-// in `all/s3_notification_invokes_its_lambda_target.rs` and carries no test now. The file
-// stays because this fixer's tool set can write a file but not remove one; the next change
-// to touch this directory should delete both it and this declaration.
-#[path = "all/zz_probe.rs"]
-mod zz_probe;
+// `zz_probe` is declared ONCE, in the span above: two landings each appended their own copy
+// here, and a module declared twice loads the same file twice, which compiles neither.
 // Both suites below are declared ONCE, in the sorted span above beside the other
 // CloudFormation suites: the pair was appended here as well while two branches were landing
 // at once, which declared each of them a second time and compiled neither.
@@ -1968,8 +1960,8 @@ mod cloudformation_domain_endpoint_is_dialled_by_consumers;
 // which only this target links.
 #[path = "all/https_front_door_concurrent_pooled_producer.rs"]
 mod https_front_door_concurrent_pooled_producer;
-#[path = "all/cloudformation_metric_stream_estate_is_drainable.rs"]
-mod cloudformation_metric_stream_estate_is_drainable;
+// `cloudformation_metric_stream_estate_is_drainable` is declared ONCE, further up this tail:
+// two landings each appended their own copy, and a module declared twice compiles neither.
 // session an identity pool vends may DO is decided by IAM's record of the mapped role and
 // answered by Amazon S3 and the Cognito Identity control plane, so no single service crate's
 // test target can vend the session and then be refused by what it reaches.

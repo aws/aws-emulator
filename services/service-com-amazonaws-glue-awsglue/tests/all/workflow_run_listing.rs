@@ -137,7 +137,9 @@ fn set_start_instants(engine: &Arc<engine::InMemoryEngine>, workflow: &str, offs
 /// transition due without sleeping.
 ///
 /// The actions move WITH the run because a run is a composite of them: it comes to rest only
-/// once the runs it began have.
+/// once the runs it began have. A job run owes up to TWO states at once — the state it is in
+/// while its script runs, and the state its own execution came to — so both of its instants
+/// move, as `job_runs::set_due_instant` does for a job's own runs.
 fn set_due_instant(engine: &Arc<engine::InMemoryEngine>, workflow: &str, at: SystemTime) {
     let state = engine.state::<ComAmazonawsGlueAwsglueState>();
     let mut store = state.lock();
@@ -156,6 +158,9 @@ fn set_due_instant(engine: &Arc<engine::InMemoryEngine>, workflow: &str, at: Sys
         {
             if job_run.settles_at.is_some() {
                 job_run.settles_at = Some(at);
+            }
+            if job_run.rests_at.is_some() {
+                job_run.rests_at = Some(at);
             }
         }
     }

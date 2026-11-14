@@ -148,12 +148,15 @@ fn run_properties(run: &Value) -> Value {
     }
 }
 
-/// Move the due instant of every unsettled run of `workflow`, and of every job run those
-/// runs' actions began, to `at` — so a test can hold the transient window open or make the
-/// owed transition due without sleeping.
+/// Move the due instant of every unsettled run of `workflow`, and every due instant the job
+/// runs those runs' actions began still owe, to `at` — so a test can hold the transient
+/// window open or make the owed transition due without sleeping.
 ///
 /// The actions move WITH the run because a run is a composite of them: it comes to rest only
-/// once the runs it began have, so moving its own instant alone would leave it waiting.
+/// once the runs it began have, so moving its own instant alone would leave it waiting. A job
+/// run owes up to TWO states at once — the state it is in while its script runs, and the
+/// state its own execution came to — so both of its instants move, as
+/// `job_runs::set_due_instant` does for a job's own runs.
 fn set_due_instant(engine: &Arc<engine::InMemoryEngine>, workflow: &str, at: SystemTime) {
     let state = engine.state::<ComAmazonawsGlueAwsglueState>();
     let mut store = state.lock();
@@ -172,6 +175,9 @@ fn set_due_instant(engine: &Arc<engine::InMemoryEngine>, workflow: &str, at: Sys
         {
             if job_run.settles_at.is_some() {
                 job_run.settles_at = Some(at);
+            }
+            if job_run.rests_at.is_some() {
+                job_run.rests_at = Some(at);
             }
         }
     }

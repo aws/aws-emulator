@@ -5,19 +5,24 @@
 //!
 //! The RULE asserted here: `Target$SqsParameters` "contains the message group ID to use
 //! when the target is an Amazon SQS fair or FIFO queue", so the `MessageGroupId` the target
-//! names travels with the `sqs:SendMessage` each matched event is delivered by — and
-//! because "if you do not provide a MessageGroupId when sending a message to a FIFO queue,
-//! the action fails" (Amazon SQS `SendMessage$MessageGroupId`), a FIFO target that names
-//! none is a delivery the queue refuses rather than one it takes. EventBridge sends no
+//! names travels with the `sqs:SendMessage` each matched event is delivered by — which is
+//! what "if you do not provide a MessageGroupId when sending a message to a FIFO queue, the
+//! action fails" (Amazon SQS `SendMessage$MessageGroupId`) requires of every delivery to a
+//! FIFO queue. EventBridge sends no
 //! deduplication id with it: "if you specify a fair or FIFO queue as a target, the queue
 //! must have content-based deduplication enabled", so the queue derives one from the body.
 //!
 //! The rows span the class rather than one case: they differ along the KIND of queue the
-//! target names (standard, FIFO), along whether the target carries `SqsParameters` at all,
+//! target names (standard, FIFO), along whether the target carries `SqsParameters` at all
+//! (a standard queue takes a delivery with no group),
 //! along the group id it names (two different groups, so what arrives is keyed on the
 //! target's own value rather than on a constant), and along how many entries one request
 //! publishes into one group (one, and three — whose order inside the group is what a FIFO
 //! queue adds).
+//!
+//! A FIFO target naming NO message group is not among them: EventBridge refuses to register
+//! one at all, so there is no such target to deliver to — that refusal is
+//! `tests/all/fifo_queue_target_parameters.rs`.
 //!
 //! The harness (the router with EventBridge, SQS, IAM and CloudWatch on one engine) is the
 //! one `target_dispatch` owns.
@@ -200,8 +205,6 @@ struct Row {
     markers: &'static [&'static str],
     /// The group every delivered message must carry — empty for a message sent under none.
     delivered_group: &'static str,
-    /// Whether the delivery reaches the queue at all.
-    delivered: bool,
 }
 
 #[tokio::test]
@@ -213,7 +216,6 @@ async fn a_queue_targets_message_group_travels_with_every_delivery() {
             group: None,
             markers: &["m1"],
             delivered_group: "",
-            delivered: true,
         },
         Row {
             // "In standard queues, using MessageGroupId enables fair queues", where it
@@ -223,7 +225,6 @@ async fn a_queue_targets_message_group_travels_with_every_delivery() {
             group: Some(GROUP),
             markers: &["m1"],
             delivered_group: GROUP,
-            delivered: true,
         },
         Row {
             case: "a FIFO queue target naming a message group",
@@ -231,7 +232,6 @@ async fn a_queue_targets_message_group_travels_with_every_delivery() {
             group: Some(GROUP),
             markers: &["m1"],
             delivered_group: GROUP,
-            delivered: true,
         },
         Row {
             case: "a FIFO queue target naming another message group",
@@ -239,7 +239,6 @@ async fn a_queue_targets_message_group_travels_with_every_delivery() {
             group: Some(OTHER_GROUP),
             markers: &["m1"],
             delivered_group: OTHER_GROUP,
-            delivered: true,
         },
         Row {
             case: "three entries of one request into one group of a FIFO queue",
@@ -247,18 +246,6 @@ async fn a_queue_targets_message_group_travels_with_every_delivery() {
             group: Some(GROUP),
             markers: &["m1", "m2", "m3"],
             delivered_group: GROUP,
-            delivered: true,
-        },
-        Row {
-            // The queue refuses a message with no group, so nothing arrives: "if you do
-            // not provide a MessageGroupId when sending a message to a FIFO queue, the
-            // action fails."
-            case: "a FIFO queue target carrying no SqsParameters",
-            fifo: true,
-            group: None,
-            markers: &["m1"],
-            delivered_group: "",
-            delivered: false,
         },
     ];
 
@@ -286,33 +273,20 @@ async fn a_queue_targets_message_group_travels_with_every_delivery() {
             "case {case:?}: expected {} recorded handover(s), got {recorded:?}",
             row.markers.len()
         );
-        if row.delivered {
-            let expected: Vec<(String, String)> = row
-                .markers
-                .iter()
-                .map(|marker| ((*marker).to_string(), row.delivered_group.to_string()))
-                .collect();
+        let expected: Vec<(String, String)> = row
+            .markers
+            .iter()
+            .map(|marker| ((*marker).to_string(), row.delivered_group.to_string()))
+            .collect();
+        assert_eq!(
+            arrived, expected,
+            "case {case:?}: expected {expected:?} on the queue, got {arrived:?}"
+        );
+        for (_, _, outcome) in &recorded {
             assert_eq!(
-                arrived, expected,
-                "case {case:?}: expected {expected:?} on the queue, got {arrived:?}"
-            );
-            for (_, _, outcome) in &recorded {
-                assert_eq!(
-                    *outcome,
-                    InvocationOutcome::Invoked,
-                    "case {case:?}: the handover must be recorded as invoked, got {recorded:?}"
-                );
-            }
-        } else {
-            assert!(
-                arrived.is_empty(),
-                "case {case:?}: a delivery the queue refuses puts nothing on it, got {arrived:?}"
-            );
-            assert!(
-                recorded
-                    .iter()
-                    .all(|(_, _, outcome)| matches!(outcome, InvocationOutcome::Failed { .. })),
-                "case {case:?}: the refused handover must be recorded as failed, got {recorded:?}"
+                *outcome,
+                InvocationOutcome::Invoked,
+                "case {case:?}: the handover must be recorded as invoked, got {recorded:?}"
             );
         }
     }

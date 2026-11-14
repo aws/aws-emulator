@@ -51,6 +51,10 @@ const TARGET_ID: &str = "t1";
 /// be allowed to make so the role gate is not what the row's delivery fails at.
 const START_EXECUTION: &str = "states:StartExecution";
 
+/// The message group a FIFO queue target names, which EventBridge requires of one
+/// before it will install it at all.
+const MESSAGE_GROUP_ID: &str = "classified";
+
 /// The account every resource below belongs to.
 fn account() -> &'static str {
     engine::emulator_account_id()
@@ -66,9 +70,9 @@ enum Target {
     QueueNeverCreated,
     /// A queue created, named by the target, and then deleted.
     DeletedQueue,
-    /// A FIFO queue, whose send needs a message group id the target does not
-    /// carry.
-    FifoQueueWithNoGroupId,
+    /// A FIFO queue with no content-based deduplication, whose send needs a
+    /// deduplication id no EventBridge delivery carries.
+    FifoQueueWithoutContentDeduplication,
     /// A state-machine ARN of this account that no state machine exists for.
     StateMachineNeverCreated,
 }
@@ -81,8 +85,11 @@ struct Row {
     condition: Option<&'static str>,
 }
 
-/// A queue called `name` whose `FifoQueue` attribute is set, so Amazon SQS refuses
-/// a send that carries no message group id; answers its ARN.
+/// A queue called `name` whose `FifoQueue` attribute is set and whose
+/// `ContentBasedDeduplication` is NOT — so Amazon SQS refuses a send that carries
+/// no deduplication id, which is every send EventBridge makes ("if you specify a
+/// fair or FIFO queue as a target, the queue must have content-based
+/// deduplication enabled", `Target$SqsParameters`); answers its ARN.
 async fn given_fifo_queue(emulator: &Emulator, case: &str, name: &str) -> String {
     let fifo = format!("{name}.fifo");
     let (status, body) = sqs(
@@ -90,7 +97,7 @@ async fn given_fifo_queue(emulator: &Emulator, case: &str, name: &str) -> String
         "CreateQueue",
         &json!({
             "QueueName": fifo,
-            "Attributes": { "FifoQueue": "true", "ContentBasedDeduplication": "true" },
+            "Attributes": { "FifoQueue": "true" },
         }),
     )
     .await;
@@ -161,7 +168,7 @@ async fn given_target(
             );
             (arn, None)
         }
-        Target::FifoQueueWithNoGroupId => (
+        Target::FifoQueueWithoutContentDeduplication => (
             given_fifo_queue(emulator, case, &format!("classified-{index}")).await,
             None,
         ),
@@ -217,8 +224,8 @@ async fn the_dead_letter_condition_classifies_the_targets_own_answer() {
             condition: Some(NO_RESOURCE),
         },
         Row {
-            case: "a FIFO queue whose send the target carries no message group id for",
-            target: Target::FifoQueueWithNoGroupId,
+            case: "a FIFO queue whose send has no deduplication id and derives none",
+            target: Target::FifoQueueWithoutContentDeduplication,
             condition: Some(UNKNOWN_CONDITION),
         },
     ];
@@ -236,6 +243,12 @@ async fn the_dead_letter_condition_classifies_the_targets_own_answer() {
         });
         if let Some(role_arn) = &role_arn {
             target["RoleArn"] = json!(role_arn);
+        }
+        // A FIFO queue target is only installable with the message group its send
+        // carries, so the row whose queue is a FIFO one names one: what that row's
+        // delivery then fails at is the deduplication id, not the group.
+        if matches!(row.target, Target::FifoQueueWithoutContentDeduplication) {
+            target["SqsParameters"] = json!({ "MessageGroupId": MESSAGE_GROUP_ID });
         }
         given_rule(&emulator, RULE, json!([target])).await;
 

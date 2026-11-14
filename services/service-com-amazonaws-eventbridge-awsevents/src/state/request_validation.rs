@@ -48,8 +48,9 @@ pub fn reserved_bus_name_violation(name: &str) -> Option<String> {
         .then(|| format!("EventBus name starting with '{RESERVED_BUS_NAMESPACE}' is not valid."))
 }
 
-/// The ARN namespace of Amazon SQS, the one service a dead-letter queue is a
-/// queue of.
+/// The ARN namespace of Amazon SQS, named once: it is the one service a
+/// dead-letter queue is a queue of, and the service whose FIFO queues a target
+/// may only be delivered to with a message group ([`target_parameters_violation`]).
 const SQS_ARN_NAMESPACE: &str = "sqs";
 
 /// What the service states for a dead-letter destination that is not a queue: the
@@ -149,17 +150,19 @@ pub fn reserved_tag_key_violation(tags: &[Tag]) -> Option<String> {
 ///
 /// The per-target requirements that follow from the target's own TYPE and from
 /// the members it carries, in the order a caller has to resolve them: the role
-/// EventBridge needs to invoke the target at all, the service its dead-letter
-/// destination has to belong to, and the JSON paths it reshapes its input with.
-/// Each is a property of ONE target, so the request is refused whole before any
-/// of its targets is stored — a rule carrying a target EventBridge could never
-/// invoke would report back a healthy rule that delivers nothing.
+/// EventBridge needs to invoke the target at all, the parameters the target's
+/// own kind of resource can only be delivered to with, the service its
+/// dead-letter destination has to belong to, and the JSON paths it reshapes its
+/// input with. Each is a property of ONE target, so the request is refused whole
+/// before any of its targets is stored — a rule carrying a target EventBridge
+/// could never invoke would report back a healthy rule that delivers nothing.
 ///
 /// This is the per-target counterpart of [`super::target_arn_violation`], which
 /// checks the FORM of each ARN-valued member and runs first: a value that is no
 /// ARN is reported as such rather than as a resource of the wrong service.
 pub fn target_violation(target: &Target) -> Option<String> {
     target_role_violation(target)
+        .or_else(|| target_parameters_violation(target))
         .or_else(|| {
             target
                 .dead_letter_config
@@ -167,6 +170,52 @@ pub fn target_violation(target: &Target) -> Option<String> {
                 .and_then(dead_letter_arn_violation)
         })
         .or_else(|| target_input_path_violation(target))
+}
+
+/// The suffix the name of an Amazon SQS FIFO queue carries — a queue whose name
+/// does not end in it is a standard queue. Source: Amazon SQS requires the name
+/// of a FIFO queue to end with `.fifo` (`CreateQueue$QueueName`), and a queue
+/// name is case-sensitive, so the suffix is matched as written.
+const FIFO_QUEUE_SUFFIX: &str = ".fifo";
+
+/// The `Target` member carrying the parameters an Amazon SQS queue target is
+/// delivered with.
+const SQS_PARAMETERS_MEMBER: &str = "SqsParameters";
+
+/// What the service states for a target whose own resource can only be delivered
+/// to with parameters the request did not specify: the `Target` member that
+/// carries them, and the `Id` of the target they were required for. Stated once,
+/// so every such requirement is refused in the same words.
+fn missing_target_parameters(member: &str, target_id: &str) -> String {
+    format!("Parameter(s) {member} must be specified for target: {target_id}.")
+}
+
+/// Why a target names none of the parameters its own kind of resource can only be
+/// delivered to with, or `None` when it names them or needs none.
+///
+/// `Target$SqsParameters` "contains the message group ID to use when the target is
+/// an Amazon SQS fair or FIFO queue", and a message sent to a FIFO queue without
+/// one is a send that queue refuses (Amazon SQS `SendMessage$MessageGroupId`): a
+/// FIFO queue target carrying no message group is a target EventBridge could never
+/// deliver to, so the request is refused when the target is CONFIGURED rather than
+/// stored and found undeliverable at every firing.
+///
+/// A FIFO queue is one whose NAME carries [`FIFO_QUEUE_SUFFIX`], which is the
+/// resource field of its ARN — read through the one ARN parse
+/// (`service_common::arn`), so a queue of this service's own reading. The member
+/// is required as the parameter BLOCK: `SqsParameters$MessageGroupId` is modelled
+/// `@length(min: 0)`, so a group id of no characters is a value the caller
+/// specified, while a `SqsParameters` carrying no `MessageGroupId` at all
+/// specifies none.
+fn target_parameters_violation(target: &Target) -> Option<String> {
+    let fifo_queue = ::service_common::arn::parse_of(&target.arn, SQS_ARN_NAMESPACE)
+        .is_some_and(|queue| queue.resource.ends_with(FIFO_QUEUE_SUFFIX));
+    let names_a_group = target
+        .sqs_parameters
+        .as_ref()
+        .is_some_and(|parameters| parameters.message_group_id.is_some());
+    (fifo_queue && !names_a_group)
+        .then(|| missing_target_parameters(SQS_PARAMETERS_MEMBER, &target.id))
 }
 
 /// Why a target names no role for an invocation EventBridge makes AS one, or
