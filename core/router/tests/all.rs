@@ -1297,6 +1297,11 @@ mod bedrock_agentcore_data_plane_parent_resources;
 // at the end of this file: the tail is where every suite landing in the same window appends.
 #[path = "all/cloudfront_edge_metrics_drive_the_alarm_chain.rs"]
 mod cloudfront_edge_metrics_drive_the_alarm_chain;
+// Declared beside the suite above, whose wiring it reuses: this one grades the SAME chain over
+// 4xx shares that do not breach the alarm's threshold, which needs the edge, CloudWatch, SNS
+// and SQS mounted together just as the firing leg does.
+#[path = "all/cloudfront_edge_4xx_share_decides_the_alarm.rs"]
+mod cloudfront_edge_4xx_share_decides_the_alarm;
 // Nothing below this point re-declares a suite: several landing in the same window each
 // appended their own entry to this tail, so the same suite stood here two and three times
 // over, which is a redefinition (`E0428`) that stops this target from compiling. The

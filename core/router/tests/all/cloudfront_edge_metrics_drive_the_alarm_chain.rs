@@ -24,7 +24,10 @@
 //!
 //! The rows differ along what the rule generalises over: how many of the burst's requests are
 //! answered 4xx (so the share the alarm grades differs), beside the untouched control
-//! distribution whose alarm has the same configuration and no traffic at all.
+//! distribution whose alarm has the same configuration and no traffic at all. The sibling
+//! [`super::cloudfront_edge_4xx_share_decides_the_alarm`] suite drives the same wiring — out of
+//! the helpers below — over shares that do NOT breach the threshold, including the bound the
+//! alarm's comparison excludes.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -46,7 +49,10 @@ use crate::query_wire::element;
 /// the one the edge puts on its own origin request. The setup calls go through a second
 /// router over the SAME engine with authentication off, so each one carries a credential
 /// scope (which is what names the Region) without a real signature.
-fn emulator(engine: &Arc<aws_emulator_router::InMemoryEngine>, authenticated: bool) -> MultiServiceRouter {
+pub(crate) fn emulator(
+    engine: &Arc<aws_emulator_router::InMemoryEngine>,
+    authenticated: bool,
+) -> MultiServiceRouter {
     let mut router = aws_emulator_router::build_router(Arc::clone(engine));
     router.set_request_authentication(authenticated);
     router
@@ -54,7 +60,7 @@ fn emulator(engine: &Arc<aws_emulator_router::InMemoryEngine>, authenticated: bo
 
 /// The Region the whole wiring lives in. CloudFront reports its per-distribution metrics in
 /// one Region, so the alarm, the topic and the queue live there too.
-const REGION: &str = "us-east-1";
+pub(crate) const REGION: &str = "us-east-1";
 
 /// CloudFront's control-plane host and the API version every route is under.
 const CLOUDFRONT_HOST: &str = "cloudfront.amazonaws.com";
@@ -80,14 +86,14 @@ const GLOBAL_REGION: &str = "Global";
 /// The alarm's period, in seconds, and the share of a period's requests its threshold sits
 /// at: a burst in which more than this percentage answered 4xx breaches it.
 const ALARM_PERIOD: i64 = 60;
-const ALARM_THRESHOLD: f64 = 20.0;
+pub(crate) const ALARM_THRESHOLD: f64 = 20.0;
 
 /// How long a row waits for the chain to complete, and how often it looks again. An
 /// evaluation grades the period the datapoints fell in once that period has been open for the
 /// evaluation cadence, so the transition is seconds away rather than instant; the deadline is
 /// generous only so a failure is a failure rather than a hang.
-const CHAIN_DEADLINE: Duration = Duration::from_secs(90);
-const LOOK_AGAIN: Duration = Duration::from_millis(200);
+pub(crate) const CHAIN_DEADLINE: Duration = Duration::from_secs(90);
+pub(crate) const LOOK_AGAIN: Duration = Duration::from_millis(200);
 
 /// How long a row watches the untouched control for a transition it must NOT make, once the
 /// subject has fired: long enough to span several of the alarm clock's own wake-ups.
@@ -129,15 +135,18 @@ async fn rest(
 /// One VIEWER request, addressed the way a client on the machine this emulator runs on can
 /// address one: nothing resolves a distribution's own domain name here, so the name travels
 /// in the first path segment on the emulator's own endpoint — the addressing the edge reads
-/// beside the host-style one.
-async fn view(router: &MultiServiceRouter, domain: &str, path: &str) -> u16 {
+/// beside the host-style one. Answers the status and the body the viewer was served.
+pub(crate) async fn view(router: &MultiServiceRouter, domain: &str, path: &str) -> (u16, String) {
     let request = http::Request::builder()
         .method("GET")
         .uri(format!("/{domain}{path}"))
         .header("host", EMULATOR_ENDPOINT)
         .body(Bytes::new())
         .expect("the viewer request is well formed");
-    router.dispatch(request).await.status().as_u16()
+    let response = router.dispatch(request).await;
+    let status = response.status().as_u16();
+    let served = String::from_utf8_lossy(&response.into_body()).to_string();
+    (status, served)
 }
 
 /// One VIEWER request addressed HOST-STYLE, at the distribution's own domain name.
@@ -166,9 +175,18 @@ fn origin_domain(bucket: &str) -> String {
     format!("{bucket}.s3.amazonaws.com")
 }
 
+/// The bytes the object in the origin bucket carries, which is what a viewer served that
+/// object is answered with.
+pub(crate) const ORIGIN_OBJECT_BODY: &str = "the object the edge serves";
+
 /// A private bucket holding `key`, with the policy that grants the CloudFront service
 /// principal the read its origin access control makes.
-async fn given_origin_bucket(router: &MultiServiceRouter, case: &str, bucket: &str, key: &str) {
+pub(crate) async fn given_origin_bucket(
+    router: &MultiServiceRouter,
+    case: &str,
+    bucket: &str,
+    key: &str,
+) {
     let (status, body) = rest(
         router,
         "s3",
@@ -190,7 +208,7 @@ async fn given_origin_bucket(router: &MultiServiceRouter, case: &str, bucket: &s
         "PUT",
         &format!("/{bucket}/{key}"),
         &[],
-        Bytes::from("the object the edge serves"),
+        Bytes::from(ORIGIN_OBJECT_BODY),
     )
     .await;
     assert_eq!(
@@ -225,7 +243,7 @@ async fn given_origin_bucket(router: &MultiServiceRouter, case: &str, bucket: &s
 }
 
 /// `cloudfront:CreateOriginAccessControl` for an `s3` origin, answering the control's id.
-async fn given_origin_access_control(
+pub(crate) async fn given_origin_access_control(
     router: &MultiServiceRouter,
     case: &str,
     name: &str,
@@ -260,7 +278,7 @@ async fn given_origin_access_control(
 /// access control `control`, answering the distribution's `(id, DomainName)` — the create a
 /// client that tags its distributions makes, which runs the same create as
 /// `CreateDistribution`.
-async fn given_distribution(
+pub(crate) async fn given_distribution(
     router: &MultiServiceRouter,
     case: &str,
     caller_reference: &str,
@@ -306,7 +324,7 @@ async fn given_distribution(
 }
 
 /// Wait until `GetDistribution` reports `id` as `Deployed`, which is when its edge serves.
-async fn deployed(router: &MultiServiceRouter, case: &str, id: &str) {
+pub(crate) async fn deployed(router: &MultiServiceRouter, case: &str, id: &str) {
     let started = Instant::now();
     let mut last = String::new();
     while started.elapsed() < CHAIN_DEADLINE {
@@ -335,7 +353,7 @@ async fn deployed(router: &MultiServiceRouter, case: &str, id: &str) {
 
 /// Create the alarm `name` over `distribution`'s 4xx error rate, with `topic` as its alarm
 /// action.
-async fn given_alarm(
+pub(crate) async fn given_alarm(
     router: &MultiServiceRouter,
     case: &str,
     name: &str,
@@ -368,7 +386,7 @@ async fn given_alarm(
 }
 
 /// What `DescribeAlarms` reports as `name`'s state.
-async fn alarm_state(router: &MultiServiceRouter, case: &str, name: &str) -> String {
+pub(crate) async fn alarm_state(router: &MultiServiceRouter, case: &str, name: &str) -> String {
     let described = cw(
         router,
         case,
@@ -384,7 +402,7 @@ async fn alarm_state(router: &MultiServiceRouter, case: &str, name: &str) -> Str
 }
 
 /// Wall-clock now as epoch seconds, the clock the series' windows are measured against.
-fn now_secs() -> f64 {
+pub(crate) fn now_secs() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0.0, |since| since.as_secs_f64())
@@ -392,7 +410,12 @@ fn now_secs() -> f64 {
 
 /// The share of the burst's requests the series reports as answered 4xx, read back through
 /// `GetMetricStatistics` over the window the traffic fell in.
-async fn reported_rate(router: &MultiServiceRouter, case: &str, distribution: &str, at: f64) -> f64 {
+pub(crate) async fn reported_rate(
+    router: &MultiServiceRouter,
+    case: &str,
+    distribution: &str,
+    at: f64,
+) -> f64 {
     let answered = cw(
         router,
         case,
@@ -503,17 +526,21 @@ async fn an_edge_4xx_burst_fires_the_alarm_to_its_queue_while_the_untouched_cont
         // the requests for the key it does hold, answered 200.
         let at = now_secs();
         for request in 0..row.missing {
-            let status = view(&viewers, &subject_domain, &format!("/{missing_key}")).await;
+            let (status, _served) = view(&viewers, &subject_domain, &format!("/{missing_key}")).await;
             assert!(
                 (400..500).contains(&status),
                 "case {case:?}: request {request} for a missing key must answer 4xx, got {status}"
             );
         }
         for request in 0..row.present {
-            let status = view(&viewers, &subject_domain, &format!("/{present_key}")).await;
+            let (status, served) = view(&viewers, &subject_domain, &format!("/{present_key}")).await;
             assert_eq!(
                 status, 200,
                 "case {case:?}: request {request} for the present key must answer 200"
+            );
+            assert_eq!(
+                served, ORIGIN_OBJECT_BODY,
+                "case {case:?}: request {request} must be served the origin object's own bytes"
             );
         }
         // The same answer is served HOST-STYLE, at the name the distribution publishes, so
