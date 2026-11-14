@@ -1,15 +1,33 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListEnterpriseSupportLinkedAccountCharges
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListEnterpriseSupportLinkedAccountCharges`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListEnterpriseSupportLinkedAccountCharges::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! IMPLEMENTED: this operation BREAKS DOWN the Support-eligible spend
+//! persisted in
+//! [`crate::state::ComAmazonawsBillingAwsbillingState::support_eligible_spend`]
+//! at linked-account level, for the accounts of the Enterprise Support profile.
+//!
+//! It is a REPORTING operation (`@readonly`): it reads the store and writes
+//! nothing, so a caller cannot change another caller's answer by reading. For
+//! a billing month in the past it walks the records of the caller's
+//! consolidated billing family that were subscribed to Enterprise Support,
+//! reports each account's Support-eligible spend and the parts of it that are
+//! Reserved Instance, Savings Plan and per-service spend, counts how much of
+//! the billing period the account was subscribed for from the intervals in
+//! [`crate::state::ComAmazonawsBillingAwsbillingState::enterprise_support_linked_accounts`],
+//! and prorates the account's spend by that share of the period — filtered to
+//! one account when the request names one, ascending by account and paged by
+//! `maxResults`/`nextToken`.
+//!
+//! NOTE: nothing in this emulator writes either store yet — spend accrues from
+//! a billing run and a subscription is recorded outside this service, and the
+//! emulator performs neither. So on a running emulator this reports an empty
+//! month until an operation that bills usage exists; the suite at
+//! `tests/all/enterprise_support_linked_account_charges.rs` persists spend and
+//! subscription intervals through
+//! `ComAmazonawsBillingAwsbillingState::record_support_eligible_spend` and
+//! `record_enterprise_support_linked_account` to exercise the breakdown,
+//! proration, selection and paging rules. Nothing here synthesises a record.
 //!
 //! ## Shape of an operation
 //!
@@ -84,6 +102,14 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+// The money, billing-month and subscription-interval arithmetic this handler
+// shares with the service's other charge reports — amounts in minor units
+// (`crate::state::MINOR_UNITS_PER_UNIT`) and periods in whole seconds past the
+// epoch.
+use crate::state::{
+    amount, covered_seconds, month_index, month_period, parse_month, prorate, SupportEligibleSpend,
+};
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -139,6 +165,139 @@ impl<Eng> ListEnterpriseSupportLinkedAccountCharges<Eng> {
     }
 }
 
+/// The page size used when the request omits `maxResults`.
+///
+/// From the `maxResults` doc: "The maximum number of results to return per
+/// page. Default is 100."
+const DEFAULT_MAX_RESULTS: usize = 100;
+
+/// The smallest and largest page size the model's `maxResults` range allows
+/// (1..100, the same ceiling the output's `linkedAccount` list carries), used
+/// to clamp a size that reached this handler anyway.
+const MIN_MAX_RESULTS: usize = 1;
+const MAX_MAX_RESULTS: usize = 100;
+
+/// Refuse a request member as invalid, in the modeled `ValidationException`
+/// shape (HTTP 400) this operation declares.
+///
+/// `constraint` continues the sentence the member name starts, so the refusal
+/// names the member and the constraint the request broke without echoing the
+/// offending value back — the form this service's other paginated reads of a
+/// billing month use.
+fn invalid_field(member: &str, constraint: &str) -> ListEnterpriseSupportLinkedAccountChargesError {
+    ListEnterpriseSupportLinkedAccountChargesErrorModeled::ValidationException(ValidationException {
+        message: format!("InvalidArgument: {member} (DetailedCode={member} {constraint})"),
+        reason: crate::state::VALIDATION_REASON_FIELD.to_string(),
+        field_list: Some(vec![ValidationExceptionField {
+            name: member.to_string(),
+            message: format!("Member {constraint}"),
+        }]),
+    })
+    .into()
+}
+
+/// Report a failure of this emulator itself, in the modeled
+/// `InternalServerException` shape (HTTP 500) this operation declares.
+fn unavailable(what: &str) -> ListEnterpriseSupportLinkedAccountChargesError {
+    ListEnterpriseSupportLinkedAccountChargesErrorModeled::InternalServerException(
+        InternalServerException {
+            message: format!("{what} is unavailable"),
+        },
+    )
+    .into()
+}
+
+/// The store key a `nextToken` resumes after, or a `ValidationException` when
+/// the token is not one this service issued. The token format and the refusal's
+/// wording live in `crate::state`, shared with this service's other paginated
+/// reads.
+fn resume_key(token: &str) -> Result<String, ListEnterpriseSupportLinkedAccountChargesError> {
+    crate::state::decode_page_token(token).ok_or_else(|| {
+        ListEnterpriseSupportLinkedAccountChargesErrorModeled::ValidationException(
+            ValidationException {
+                message: crate::state::PAGE_TOKEN_REFUSAL.to_string(),
+                reason: crate::state::VALIDATION_REASON_CANNOT_PARSE.to_string(),
+                field_list: Some(vec![ValidationExceptionField {
+                    name: "nextToken".to_string(),
+                    message: crate::state::PAGE_TOKEN_FIELD_REFUSAL.to_string(),
+                }]),
+            },
+        )
+        .into()
+    })
+}
+
+/// A window of whole seconds past the epoch, as the modeled
+/// `EnterpriseSupportTimePeriod` reports it.
+fn time_period((begin_secs, end_secs): (i64, i64)) -> EnterpriseSupportTimePeriod {
+    EnterpriseSupportTimePeriod {
+        begin_date: ::aws_smithy_types::DateTime::from_secs(begin_secs),
+        end_date: Some(::aws_smithy_types::DateTime::from_secs(end_secs)),
+    }
+}
+
+/// Report one account-month of Support-eligible spend as the modeled
+/// `LinkedAccountCharge`, over the billing period
+/// `period_start_secs..period_end_secs`.
+///
+/// `billableSeconds` is "the number of billable seconds in the billing period
+/// based on when the account was subscribed to Enterprise Support": the part of
+/// the period covered by the account's recorded subscription periods, or — for
+/// an account whose subscription intervals are not recorded — the whole period,
+/// since the account's bill for the month carries the Enterprise Support plan.
+/// Either way it is the length of exactly the `subscriptionTimePeriods` the
+/// entry reports, and `proratedTotalSupportEligibleSpend` is the account's
+/// spend in that share of the period.
+fn linked_account_charge(
+    state: &crate::state::ComAmazonawsBillingAwsbillingState,
+    payer_account_id: &str,
+    spend: &SupportEligibleSpend,
+    period_start_secs: i64,
+    period_end_secs: i64,
+) -> LinkedAccountCharge {
+    let total_seconds = period_end_secs.saturating_sub(period_start_secs);
+    let recorded = state.enterprise_support_linked_account(&spend.account_id);
+    let subscription_windows =
+        recorded.and_then(|account| account.subscribed_within(period_start_secs, period_end_secs));
+    let billable_seconds = subscription_windows
+        .as_deref()
+        .map_or(total_seconds, covered_seconds);
+    let total_spend_minor = spend.total_support_eligible_spend_minor();
+
+    LinkedAccountCharge {
+        account_id: spend.account_id.clone(),
+        payer_account_id: payer_account_id.to_string(),
+        account_type: Some(state.enterprise_support_account_type(&spend.account_id)),
+        billable_seconds,
+        total_seconds,
+        total_support_eligible_spend: amount(total_spend_minor),
+        prorated_total_support_eligible_spend: amount(prorate(
+            total_spend_minor,
+            billable_seconds,
+            total_seconds,
+        )),
+        linked_time_periods: recorded
+            .and_then(|account| account.linked_within(period_start_secs, period_end_secs))
+            .map(|windows| windows.into_iter().map(time_period).collect()),
+        subscription_time_periods: subscription_windows
+            .map(|windows| windows.into_iter().map(time_period).collect()),
+        total_support_eligible_reserved_instance_spend: Some(amount(
+            spend.reserved_instance_spend_minor,
+        )),
+        total_support_eligible_savings_plan_spend: Some(amount(spend.savings_plan_spend_minor)),
+        support_eligible_spend_by_service: Some(
+            spend
+                .by_service
+                .iter()
+                .map(|line| ServiceLevelAccountUsage {
+                    service_code: Some(line.contributing_service.clone()),
+                    total_support_eligible_spend: Some(amount(line.charge_amount_minor)),
+                })
+                .collect(),
+        ),
+    }
+}
+
 impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_runtime::Operation
     for ListEnterpriseSupportLinkedAccountCharges<Eng>
 {
@@ -156,18 +315,104 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListEnterpriseSupportLinkedAccountCharges` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListEnterpriseSupportLinkedAccountChargesErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListEnterpriseSupportLinkedAccountCharges"))
+        // Every modeled constraint (the `billingMonth` and `accountId`
+        // patterns, `maxResults` 1..100, the `nextToken` pattern and length) is
+        // refused by the boundary validator before this runs; what is checked
+        // here is which months the operation documents an answer for, and
+        // whether the caller is the payer account whose Support profile that
+        // answer is about.
+        let state = crate::state::service_state(&*self.engine)
+            .ok_or_else(|| unavailable("the Support charge store"))?;
+        // A reporting operation: the guard is only read through, so two callers
+        // reading the same month see the same answer.
+        let state = state.lock();
+
+        // `payerAccountId` is "the payer account ID that is authorized to view
+        // Enterprise Support data for all accounts in its Support profile": the
+        // profile's data belongs to the account that pays for the family, so a
+        // caller that pays for nobody is refused rather than answered with
+        // another profile's charges.
+        let payer_account_id = state.billing_family_management_account_id.clone();
+        let caller_account_id = crate::state::caller_account_id();
+        if payer_account_id != caller_account_id {
+            return Err(
+                ListEnterpriseSupportLinkedAccountChargesErrorModeled::AccessDeniedException(
+                    crate::state::enterprise_support_access_denied(
+                        Self::NAME,
+                        &*self.engine,
+                        ctx,
+                    ),
+                )
+                .into(),
+            );
+        }
+
+        let requested = parse_month(&input.billing_month)
+            .ok_or_else(|| invalid_field("billingMonth", "must name a calendar month"))?;
+        let current = crate::state::billing_period(::std::time::SystemTime::now())
+            .ok_or_else(|| unavailable("the current billing month"))?;
+        // The `EnterpriseSupportBillingMonth` doc: "This must be a month in the
+        // past." The current month's billing period has not closed and a later
+        // one has not begun, so neither has a Support charge to break down and
+        // both are refused rather than answered with an empty month.
+        if month_index(requested) >= month_index(current) {
+            return Err(invalid_field("billingMonth", "must be a month in the past"));
+        }
+        let (period_start, period_end) = month_period(&input.billing_month)
+            .ok_or_else(|| unavailable("the requested billing period"))?;
+        let (period_start_secs, period_end_secs) = (period_start.secs(), period_end.secs());
+
+        let resume_after = match input.next_token.as_deref() {
+            Some(token) => Some(resume_key(token)?),
+            None => None,
+        };
+        let limit = input
+            .max_results
+            .and_then(|max| usize::try_from(max).ok())
+            .unwrap_or(DEFAULT_MAX_RESULTS)
+            .clamp(MIN_MAX_RESULTS, MAX_MAX_RESULTS);
+
+        // The accounts of the profile the caller pays for that were subscribed
+        // to Enterprise Support in the month, ascending by account — the same
+        // selection `GetEnterpriseSupportChargeSummary` aggregates, so the
+        // entries of every page of this report add up to that summary's spend.
+        let selected = state
+            .enterprise_support_spend_entries_for_month(&payer_account_id, &input.billing_month)
+            .filter(|(_, spend)| {
+                input
+                    .account_id
+                    .as_deref()
+                    .is_none_or(|filter| filter == spend.account_id)
+            });
+
+        // The page resumes strictly after the account the previous page ended
+        // on, so a bill written or removed between pages cannot make the walk
+        // skip or repeat another account. One extra match is read to learn
+        // whether a further page exists.
+        let mut remaining =
+            selected.filter(|(key, _)| resume_after.as_ref().is_none_or(|after| *key > after));
+        let page: Vec<(&String, &SupportEligibleSpend)> = remaining.by_ref().take(limit).collect();
+        let next_token = if remaining.next().is_some() {
+            page.last()
+                .map(|(key, _)| crate::state::encode_page_token(key))
+        } else {
+            None
+        };
+
+        Ok(ListEnterpriseSupportLinkedAccountChargesOutput {
+            linked_account: page
+                .into_iter()
+                .map(|(_, spend)| {
+                    linked_account_charge(
+                        &state,
+                        &payer_account_id,
+                        spend,
+                        period_start_secs,
+                        period_end_secs,
+                    )
+                })
+                .collect(),
+            next_token,
+        })
     }
 }

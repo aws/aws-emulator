@@ -719,9 +719,20 @@ impl ComAmazonawsBillingAwsbillingState {
         payer_account_id: &'a str,
         billing_month: &str,
     ) -> impl Iterator<Item = &'a SupportEligibleSpend> {
-        self.support_eligible_spend_for_month(payer_account_id, billing_month)
+        self.enterprise_support_spend_entries_for_month(payer_account_id, billing_month)
             .map(|(_, spend)| spend)
-            .filter(|spend| spend.support_plan_name == SUPPORT_PLAN_ENTERPRISE)
+    }
+
+    /// The same records, each beside the store key it is held under, so a
+    /// paginated read of the profile resumes after the account its previous
+    /// page ended on instead of counting entries.
+    pub fn enterprise_support_spend_entries_for_month<'a>(
+        &'a self,
+        payer_account_id: &'a str,
+        billing_month: &str,
+    ) -> impl Iterator<Item = (&'a String, &'a SupportEligibleSpend)> {
+        self.support_eligible_spend_for_month(payer_account_id, billing_month)
+            .filter(|(_, spend)| spend.support_plan_name == SUPPORT_PLAN_ENTERPRISE)
     }
 
     /// The accounts the Enterprise Support contract covers, as the modeled

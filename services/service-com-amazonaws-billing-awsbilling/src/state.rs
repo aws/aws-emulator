@@ -74,6 +74,13 @@ mod money;
 
 pub use money::*;
 
+/// When each account of the billing family was linked and subscribed to
+/// Enterprise Support, which `ListEnterpriseSupportLinkedAccountCharges`
+/// prorates an account's spend by.
+mod linked_accounts;
+
+pub use linked_accounts::*;
+
 /// `CUSTOM`, the `BillingViewType` a view created through `CreateBillingView`
 /// carries (one of `BILLING_VIEW_TYPE_VALUES` in `ops::types`).
 pub const BILLING_VIEW_TYPE_CUSTOM: &str = "CUSTOM";
@@ -704,6 +711,16 @@ pub struct ComAmazonawsBillingAwsbillingState {
     /// Support-eligible spend by, and the method that distributes the charge
     /// across the accounts it covers.
     pub enterprise_support_contract: EnterpriseSupportContract,
+    /// When each account of the consolidated billing family was linked to the
+    /// payer account and subscribed to Enterprise Support, keyed and ordered by
+    /// account id — the intervals
+    /// `ListEnterpriseSupportLinkedAccountCharges` prorates a month's spend by.
+    /// Bounded by [`EnterpriseSupportLinkedAccount::MAX_RESIDENT`].
+    ///
+    /// Empty on a fresh emulator: an account is linked and subscribed outside
+    /// this service, so an account with no record here is reported with the
+    /// whole billing period billable (see the `linked_accounts` module).
+    pub enterprise_support_linked_accounts: BTreeMap<String, EnterpriseSupportLinkedAccount>,
     /// The `BillingFeature` values whose preferences this account's caller may
     /// reach — read through `GetBillingPreferences` and write through
     /// `UpdateBillingPreferences`.
@@ -774,6 +791,10 @@ impl Default for ComAmazonawsBillingAwsbillingState {
             // a profile is billed under the standard plan unless its contract
             // names another.
             enterprise_support_contract: EnterpriseSupportContract::default(),
+            // No account's linkage or Support subscription has been recorded:
+            // both happen outside this service, so a month's bill is the only
+            // evidence of a subscription until one is.
+            enterprise_support_linked_accounts: BTreeMap::new(),
             // Every feature except the ones behind the Billing-console access
             // activation this account does not have.
             feature_access: BILLING_FEATURE_VALUES
