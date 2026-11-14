@@ -15353,6 +15353,7 @@ dependencies = [
  "service-com-amazonaws-sqs-amazonsqs",
  "service-com-amazonaws-ssm-amazonssm",
  "service-com-amazonaws-sts-awssecuritytokenservicev20110615",
+ "service-com-amazonaws-xray-awsxray",
  "service-common",
  "sha1 0.10.7",
  "sha2 0.10.9",

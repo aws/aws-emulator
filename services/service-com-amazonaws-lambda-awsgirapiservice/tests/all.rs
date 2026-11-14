@@ -531,6 +531,8 @@ mod handler_eventbridge_publication;
 mod sqs_event_source_record_attributes;
 #[path = "all/xray_daemon_datagram.rs"]
 mod xray_daemon_datagram;
+#[path = "all/xray_daemon_trace_store.rs"]
+mod xray_daemon_trace_store;
 #[path = "all/execution_role_session_identity.rs"]
 mod execution_role_session_identity;
 #[path = "all/handler_event_publication_authorization.rs"]

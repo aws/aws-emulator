@@ -339,6 +339,11 @@ image = { version = "0.25", default-features = false, features = [
 # ONE engine: the pipe a handler described, started, stopped and tagged is asserted where a
 # client reads it, through that service's own reads.
 service-com-amazonaws-pipes-pipes = { workspace = true }
+# The trace store a traced invocation's own segments and a handler's UDP-submitted documents
+# land in, mounted beside lambda on ONE engine: what the X-Ray daemon this runtime serves
+# submitted is asserted where a client reads it, through that service's own BatchGetTraces and
+# GetTraceSummaries.
+service-com-amazonaws-xray-awsxray = { workspace = true }
 
 [lints]
 workspace = true

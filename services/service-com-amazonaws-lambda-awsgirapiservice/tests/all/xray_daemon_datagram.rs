@@ -19,22 +19,29 @@
 //! The RUN-based half — what the environment of an invocation really reports in
 //! `_X_AMZN_TRACE_ID`, `AWS_XRAY_DAEMON_ADDRESS` and `AWS_XRAY_CONTEXT_MISSING`, what the
 //! daemon at that address does with a datagram a handler writes to it, and the two segments
-//! X-Ray records for the invocation — is asserted in two other places, because it cannot be
-//! asserted from THIS target: its suites run in parallel and the runs of all of them share one
-//! process-wide resident ceiling (`crate::state::execution::python`), which the target reaches
-//! as it goes, so whichever run is in flight then is killed whatever it is doing. (Reproduced
-//! both ways: a handler-running suite added here is killed, and with none added
-//! `invoke_request_id` fails on its own.) The two places are:
+//! X-Ray records for the invocation — is asserted in three other places, and never from the
+//! test FUNCTION below: the suites of this target run in parallel and the runs of all of them
+//! share one process-wide resident ceiling (`crate::state::execution::python`), which the
+//! target reaches as it goes, so a suite that keeps several interpreters in flight gets
+//! whichever run is in flight then killed whatever it is doing. (Reproduced both ways: a
+//! handler-running suite that drives one run per row is killed, and with none added
+//! `invoke_request_id` fails on its own.) The three places are:
 //!
 //! * beside the rule itself, over the whole table each half generalises over: every form a
 //!   caller's tracing header can take and both modes
 //!   (`crate::state::execution::trace_context`);
-//! * END TO END, through the whole wire, by
+//! * END TO END for a DIRECT `Invoke`, by `crate::xray_daemon_trace_store` — which mounts THIS
+//!   service and AWS X-Ray on one engine, reads those three variables out of the environment of
+//!   a handler it really runs, and drives the whole datagram FRAMING table through ONE run on
+//!   ONE socket while holding `crate::invoke_request_id::one_invocation_stream_at_a_time`,
+//!   which is what keeps it inside the ceiling above (measured: one interpreter for the whole
+//!   table leaves this target's own suites passing, one per row does not);
+//! * END TO END through a deployed stage, by
 //!   `services/service-com-amazonaws-apigateway-backplanecontrolservice/tests/all/\
 //!   stage_trace_context.rs` — which mounts API Gateway, THIS service and AWS X-Ray on one
-//!   engine, reads those three variables out of the environment of a handler it really runs,
-//!   drives the datagram FRAMING table from inside that handler, and reads the `AWS::Lambda`
-//!   and `AWS::Lambda::Function` segments back through X-Ray's own `BatchGetTraces`.
+//!   engine, drives the datagram FRAMING table from inside the handler it runs, and reads the
+//!   `AWS::Lambda` and `AWS::Lambda::Function` segments back through X-Ray's own
+//!   `BatchGetTraces`.
 
 use std::sync::Arc;
 use std::time::Duration;
