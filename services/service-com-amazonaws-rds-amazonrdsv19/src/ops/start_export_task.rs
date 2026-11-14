@@ -694,9 +694,7 @@ fn resolve_export_source(
             if snapshot.status != crate::state::SNAPSHOT_STATUS_AVAILABLE {
                 return Err(StartExportTaskErrorModeled::InvalidExportSourceStateFault(
                     InvalidExportSourceStateFault {
-                        message: Some(crate::state::invalid_export_source_state_message(
-                            &snapshot.status,
-                        )),
+                        message: Some(crate::state::invalid_export_source_state_message()),
                     },
                 )
                 .into());
@@ -729,9 +727,7 @@ fn resolve_export_source(
             if snapshot.status != crate::state::SNAPSHOT_STATUS_AVAILABLE {
                 return Err(StartExportTaskErrorModeled::InvalidExportSourceStateFault(
                     InvalidExportSourceStateFault {
-                        message: Some(crate::state::invalid_export_source_state_message(
-                            &snapshot.status,
-                        )),
+                        message: Some(crate::state::invalid_export_source_state_message()),
                     },
                 )
                 .into());
@@ -767,9 +763,7 @@ fn resolve_export_source(
             if cluster.status != crate::state::DB_CLUSTER_STATUS_AVAILABLE {
                 return Err(StartExportTaskErrorModeled::InvalidExportSourceStateFault(
                     InvalidExportSourceStateFault {
-                        message: Some(crate::state::invalid_export_source_state_message(
-                            &cluster.status,
-                        )),
+                        message: Some(crate::state::invalid_export_source_state_message()),
                     },
                 )
                 .into());

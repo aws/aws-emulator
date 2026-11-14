@@ -2228,3 +2228,6 @@ mod cloudformation_rest_api_request_validation;
 // (`zz_probe` is declared once, just above: a module may be declared only once.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared once, above: a module may
 // `cloudformation_provisions_cloudfront_resources` is declared once, in the head region
+// (`cloudformation_metric_stream_filter_update` is declared in the head region above too: the
+// suite was appended here as well while two branches were landing at once, which declared it a
+// second time and compiled neither.)

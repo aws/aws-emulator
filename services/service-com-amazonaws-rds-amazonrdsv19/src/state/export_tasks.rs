@@ -116,10 +116,11 @@ pub fn invalid_export_only_message(entry: &str) -> String {
     )
 }
 
-/// What an `InvalidExportSourceStateFault` carries: the source is not in a state its data
-/// can be exported from, naming the state it is in.
-pub fn invalid_export_source_state_message(status: &str) -> String {
-    format!("The state of the export source is invalid for exporting to an Amazon S3 bucket: {status}.")
+/// What an `InvalidExportSourceStateFault` carries: the one sentence the model states for
+/// that error class, which states the single fact and has no variable part — the state the
+/// source is in is reported by the read of the source itself, not spliced into this sentence.
+pub fn invalid_export_source_state_message() -> String {
+    "The state of the export snapshot is invalid for exporting to an Amazon S3 bucket.".to_string()
 }
 
 /// What an `InvalidS3BucketFault` carries for a destination bucket the export cannot write
