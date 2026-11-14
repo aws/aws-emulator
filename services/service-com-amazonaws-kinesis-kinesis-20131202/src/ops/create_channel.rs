@@ -14,6 +14,12 @@
 //! region already holds a channel under is refused with the modelled `ResourceInUseException`
 //! and leaves the stored channel untouched.
 //!
+//! The `ServiceExecutionRoleARN` is resolved against this account's IAM records
+//! SYNCHRONOUSLY, before any channel state is written and before anything the request says
+//! about the streams it names is judged: a channel delivers AS that role, so a role this
+//! service cannot assume ([`crate::state::service_execution_role_is_unassumable`]) is
+//! refused with the modelled `ValidationException` leaving no channel behind.
+//!
 //! The `EncryptionConfiguration` is judged SYNCHRONOUSLY, before any channel state is
 //! written: a channel delivers under its `ServiceExecutionRoleARN`, so the key policy KMS
 //! holds and — where that policy delegates to the account — the role's own IAM policies have
@@ -324,6 +330,10 @@ fn s3_tables_description(
 /// The destination the create names, or the modelled refusal for a request that names none
 /// or both: "You must specify either S3DestinationConfiguration or
 /// S3TablesDestinationConfiguration, but not both" (`CreateChannel`).
+///
+/// That is a rule about the REQUEST, so it is carried by the error the service answers for
+/// an input it validates before it provisions anything ([`validation`]), with the fixed
+/// sentence it states for the rule.
 fn destination(input: &CreateChannelInput) -> Result<Destination, CreateChannelError> {
     match (
         input.s3_destination_configuration.as_ref(),
@@ -339,7 +349,7 @@ fn destination(input: &CreateChannelInput) -> Result<Destination, CreateChannelE
             s3: None,
             s3_tables: Some(s3_tables_description(tables)),
         }),
-        _ => Err(invalid_argument(
+        _ => Err(validation(
             crate::state::CHANNEL_DESTINATION_REQUIRED_MESSAGE.to_string(),
         )),
     }
@@ -604,22 +614,53 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let now = ::std::time::SystemTime::now();
 
-        // The KMS half of the create, judged BEFORE anything is written and outside the
-        // store's lock (no guard is held across an await): "the service checks the
+        // What the request says ON ITS OWN is judged FIRST — before either resolution below
+        // and before the store is read at all — so a create that is wrong in two ways is
+        // refused for its own fault whatever this account's IAM, KMS or channel store happen
+        // to hold. The write below re-decides these from the same two readers, which is what
+        // keeps the refusal it answers and the one answered here identical.
+        if let Some(refusal) = destination(&input).err().or_else(|| {
+            input
+                .encryption_configuration
+                .as_ref()
+                .and_then(encryption_refusal)
+        }) {
+            audit(&akid, &region, "refused");
+            return Err(refusal);
+        }
+
+        // The IAM half of the create, judged before anything is written and outside the
+        // store's lock (no guard is held across an await): a channel delivers AS its
+        // `ServiceExecutionRoleARN`, so a role this service cannot assume is one it could
+        // never deliver under, whatever state the streams the request names happen to be in
+        // ([`crate::state::service_execution_role_is_unassumable`], which refuses only what
+        // IAM ANSWERED).
+        if crate::state::service_execution_role_is_unassumable(
+            ctx,
+            &region,
+            &input.service_execution_role_arn,
+        )
+        .await
+        {
+            audit(&akid, &region, "refused");
+            return Err(validation(
+                crate::state::UNASSUMABLE_SERVICE_EXECUTION_ROLE_MESSAGE.to_string(),
+            ));
+        }
+
+        // The KMS half of the create, judged the same way: "the service checks the
         // EncryptionConfiguration.KeyId synchronously with the ServiceExecutionRoleARN", so
-        // a configuration whose role could never use its key creates no channel at all. The
-        // refusals that are decided from the REQUEST and the STORE alone are the write
-        // below's, so a create that is wrong in two ways is still refused for the request's
-        // own fault first.
+        // a configuration whose role could never use its key creates no channel at all. It
+        // follows the assume above, because a role this service cannot take on at all is one
+        // no key policy decides anything further about.
         if let Some(configuration) = input.encryption_configuration.as_ref() {
-            if encryption_refusal(configuration).is_none()
-                && crate::state::role_cannot_use_key(
-                    ctx,
-                    &region,
-                    &configuration.key_id,
-                    &input.service_execution_role_arn,
-                )
-                .await
+            if crate::state::role_cannot_use_key(
+                ctx,
+                &region,
+                &configuration.key_id,
+                &input.service_execution_role_arn,
+            )
+            .await
             {
                 audit(&akid, &region, "refused");
                 return Err(validation(

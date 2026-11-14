@@ -35,6 +35,8 @@ mod channel_lifecycle;
 mod channel_listing;
 #[path = "all/channel_removal.rs"]
 mod channel_removal;
+#[path = "all/channel_service_execution_role.rs"]
+mod channel_service_execution_role;
 #[path = "all/consumer_deregistration.rs"]
 mod consumer_deregistration;
 #[path = "all/consumer_listing.rs"]

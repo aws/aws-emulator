@@ -20,20 +20,23 @@
 //! `ENABLED_UNTIL_EARLIEST_ALLOWED_END` -> `DISABLED` transitions decided in one place
 //! ([`Commitment::status`]).
 
-//! Four concerns of that state live in their own files beside this one, because each is a
+//! Five concerns of that state live in their own files beside this one, because each is a
 //! rule of its own that several operations consult: the per-shard WRITE quota a producer is
 //! metered by ([`write_quota`]), what KMS says about the key a stream is encrypted with
-//! ([`kms_key`]), whether a channel's service execution role may use that key
+//! ([`kms_key`]), whether this service can assume a channel's service execution role at all
+//! ([`service_execution_role`]), whether that role may use that key
 //! ([`channel_key_access`]), and where in a shard a reader starts and what one read of it
 //! from there delivers ([`shard_reading`]).
 
 mod channel_key_access;
 mod kms_key;
+mod service_execution_role;
 mod shard_reading;
 mod write_quota;
 
 pub use channel_key_access::*;
 pub use kms_key::*;
+pub use service_execution_role::*;
 pub use shard_reading::*;
 pub use write_quota::*;
 
@@ -3369,13 +3372,17 @@ pub fn epoch_seconds(at: SystemTime) -> u64 {
         .unwrap_or(0)
 }
 
-/// How a create refuses a request that names no destination, or names both: "You must
-/// specify either S3DestinationConfiguration or S3TablesDestinationConfiguration, but not
-/// both" (`CreateChannel`). FIXED text for the one rule both halves break — it names no
-/// request- or state-derived value.
+/// How a create refuses a request that names no destination, or names both.
+///
+/// The RULE is the one `CreateChannel` publishes ("You must specify either
+/// S3DestinationConfiguration or S3TablesDestinationConfiguration, but not both"); the text
+/// below is the sentence the service ANSWERS for it, which is not the documented sentence —
+/// so it is not to be "corrected" back to the doc's wording. FIXED text for the one rule
+/// both halves break: it names no request- or state-derived value, and it is the SAME
+/// sentence either way, since what it reports is that exactly one of the two is wanted.
 pub const CHANNEL_DESTINATION_REQUIRED_MESSAGE: &str =
-    "You must specify either S3DestinationConfiguration or S3TablesDestinationConfiguration, \
-     but not both.";
+    "Exactly one of S3DestinationConfiguration or S3TablesDestinationConfiguration is \
+     required.";
 
 /// The channel name an identifier carries: a `ChannelARN` ends in the resource
 /// `channel/<name>` (pattern `^arn:aws.*:kinesis:.*:\d{12}:channel/\S+$`) and a `ChannelName`

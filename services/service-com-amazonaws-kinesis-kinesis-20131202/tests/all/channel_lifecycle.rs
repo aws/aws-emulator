@@ -787,9 +787,9 @@ async fn a_refused_create_stores_nothing() {
         (
             "no-destination",
             create("no-destination", json!({ "S3DestinationConfiguration": null })),
-            "InvalidArgumentException",
-            "You must specify either S3DestinationConfiguration or \
-             S3TablesDestinationConfiguration, but not both."
+            "ValidationException",
+            "Exactly one of S3DestinationConfiguration or S3TablesDestinationConfiguration \
+             is required."
                 .to_string(),
         ),
         (
@@ -798,9 +798,9 @@ async fn a_refused_create_stores_nothing() {
                 "both-destinations",
                 json!({ "S3TablesDestinationConfiguration": tables_destination.clone() }),
             ),
-            "InvalidArgumentException",
-            "You must specify either S3DestinationConfiguration or \
-             S3TablesDestinationConfiguration, but not both."
+            "ValidationException",
+            "Exactly one of S3DestinationConfiguration or S3TablesDestinationConfiguration \
+             is required."
                 .to_string(),
         ),
         (
