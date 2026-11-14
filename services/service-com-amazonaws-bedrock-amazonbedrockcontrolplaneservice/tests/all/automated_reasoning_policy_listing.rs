@@ -21,8 +21,10 @@
 //! 3. **A `policyArn` filter selects the revisions of the one policy it names**: an
 //!    unversioned ARN lists that policy's draft and every version cut from it, and a
 //!    versioned ARN lists exactly that version — for policies carrying 0, 1 and 3 versions.
-//! 4. **An ARN naming no revision of this account is 404**, refused with the sentence a
-//!    read of that same ARN is refused with, rather than answered as an empty listing.
+//! 4. **An ARN naming no revision of this account is 404**, refused rather than answered as
+//!    an empty listing, and refused with the sentence THIS operation words that miss in —
+//!    over the halves of the ARN that can name nothing, each checked against the sentence a
+//!    read of the same ARN answers, which words the absent policy its own way.
 //! 5. **A `nextToken` this service did not issue is refused** with `ValidationException`,
 //!    over a set of malformed tokens, while a token the listing itself issued resumes it.
 //!
@@ -47,6 +49,22 @@ const DRAFT: &str = "DRAFT";
 /// The page size an absent `maxResults` takes: that member's own modelled `default`
 /// (`smithy_query(query="operation",operation="ListAutomatedReasoningPolicies")`).
 const DEFAULT_PAGE_SIZE: usize = 25;
+
+/// `ResourceNotFoundException` for a `policyArn` FILTER naming a policy this account holds
+/// no record of: this operation's own sentence for that class, written out here rather than
+/// read off the crate so this suite pins the text independently of the constant that
+/// produces it. The model carries no template for it
+/// (`smithy_query(query="shape",shape="ResourceNotFoundException")` documents the class
+/// only), so the words are the requirement.
+const LISTING_POLICY_NOT_FOUND: &str = "Policy does not exist.";
+
+/// The same class as [`LISTING_POLICY_NOT_FOUND`] as a READ of one policy words it, which
+/// is not this operation's wording.
+const READ_POLICY_NOT_FOUND: &str = "Policy does not exist";
+
+/// `ResourceNotFoundException` for an ARN naming a version a policy this account DOES hold
+/// has not cut: the one sentence every operation reports that half of the ARN in.
+const POLICY_VERSION_NOT_FOUND: &str = "Policy version does not exist";
 
 /// The ARN prefix every policy minted for `region` carries.
 fn arn_prefix(region: &str) -> String {
@@ -592,21 +610,39 @@ async fn an_arn_naming_no_revision_of_this_account_is_not_found() {
         .unwrap_or_else(|| panic!("case setup: {arn:?} is not under {:?}", arn_prefix(REGION)))
         .to_string();
 
-    // Rows: an id nothing minted, the minted id in another region, and a version this
-    // policy has not cut — `AutomatedReasoningPolicyArn` admits a `:<version>` suffix.
-    let rows: Vec<(&str, String)> = vec![
+    // Rows: which half of a well-formed `AutomatedReasoningPolicyArn` names nothing — the
+    // policy id, the region, the id of an ARN that also carries the `:<version>` suffix the
+    // member admits, or a version a policy this account DOES hold has not cut — paired with
+    // the sentence THIS operation words that miss in, and with whether a read of the same
+    // ARN is worded the same way.
+    let rows: Vec<(&str, String, &str, bool)> = vec![
         (
             "an id nothing minted",
             format!("{}00000000000z", arn_prefix(REGION)),
+            LISTING_POLICY_NOT_FOUND,
+            false,
         ),
         (
             "the minted id in another region",
             format!("{}{id}", arn_prefix("eu-west-1")),
+            LISTING_POLICY_NOT_FOUND,
+            false,
         ),
-        ("a version nothing cut", format!("{arn}:7")),
+        (
+            "a versioned ARN of an id nothing minted",
+            format!("{}00000000000z:3", arn_prefix(REGION)),
+            LISTING_POLICY_NOT_FOUND,
+            false,
+        ),
+        (
+            "a version nothing cut",
+            format!("{arn}:7"),
+            POLICY_VERSION_NOT_FOUND,
+            true,
+        ),
     ];
 
-    for (case, policy_arn) in &rows {
+    for (case, policy_arn, expected, read_words_it_the_same) in &rows {
         let filtered = list(&emu, &format!("policyArn={}", label(policy_arn))).await;
         assert_eq!(
             filtered.status, 404,
@@ -620,17 +656,40 @@ async fn an_arn_naming_no_revision_of_this_account_is_not_found() {
             "case {case:?}: expected ResourceNotFoundException, got {:?}",
             filtered.error
         );
-        // One unresolvable ARN, one sentence: the listing refuses it exactly as a read of
-        // the same ARN does.
-        let read = get_policy(&emu, policy_arn).await;
+        let message = filtered.text("message");
         assert_eq!(
-            filtered.get("message"),
-            read.get("message"),
-            "case {case:?}: the listing must refuse the ARN with the sentence the read uses \
-             ({:?}), got {:?}",
-            read.get("message"),
-            filtered.get("message")
+            message, *expected,
+            "case {case:?}: the listing must refuse the ARN with its own sentence \
+             {expected:?}, got {message:?}"
         );
+        // The sentence carries no part of the request: not the ARN it filtered on, not the
+        // account inside that ARN.
+        assert!(
+            !message.contains(policy_arn.as_str()) && !message.contains(ACCOUNT),
+            "case {case:?}: the sentence must carry neither the ARN nor the account, got \
+             {message:?}"
+        );
+        // The listing and the read of one policy word the absent POLICY differently, and
+        // the missing VERSION of a policy that IS there identically.
+        let read = get_policy(&emu, policy_arn).await;
+        let read_message = read.text("message");
+        if *read_words_it_the_same {
+            assert_eq!(
+                read_message, message,
+                "case {case:?}: the read must word this miss as the listing does \
+                 ({message:?}), got {read_message:?}"
+            );
+        } else {
+            assert_eq!(
+                read_message, READ_POLICY_NOT_FOUND,
+                "case {case:?}: the read keeps its own sentence {READ_POLICY_NOT_FOUND:?}, \
+                 got {read_message:?}"
+            );
+            assert_ne!(
+                read_message, message,
+                "case {case:?}: the listing and the read word the absent policy differently"
+            );
+        }
     }
 
     // The policy that IS there still lists, so the rows above refused on the ARN rather

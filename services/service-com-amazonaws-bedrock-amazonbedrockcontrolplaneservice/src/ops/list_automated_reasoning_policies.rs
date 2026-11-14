@@ -18,8 +18,13 @@
 //! * an ARN carrying the `:<version>` suffix the shape admits — that one version.
 //!
 //! An ARN this account holds no such revision under is refused with
-//! `ResourceNotFoundException`, the way every request addressed by an
-//! `AutomatedReasoningPolicyArn` refuses one, rather than answered as an empty listing.
+//! `ResourceNotFoundException` rather than answered as an empty listing. WHICH sentence
+//! that refusal carries is this operation's own: Amazon Bedrock words the absent policy per
+//! operation, so the listing answers
+//! [`crate::state::AUTOMATED_REASONING_POLICY_NOT_FOUND_ON_LISTING`] where a read of one
+//! policy answers [`crate::state::AUTOMATED_REASONING_POLICY_NOT_FOUND`]. The missing
+//! VERSION of a policy that IS there is the one sentence every operation reports it in
+//! ([`crate::state::AUTOMATED_REASONING_POLICY_VERSION_NOT_FOUND`]).
 //!
 //! The listing is ordered by `(createdAt, policyArn)` — a TOTAL order, which is what lets
 //! its pages partition the revisions — and `nextToken` is the cursor of the row the next
@@ -221,14 +226,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 let Some((policy, version)) =
                     store.automated_reasoning_policy_revision(policy_arn)
                 else {
-                    // One unresolvable ARN, one sentence: whether it reports the missing
-                    // version or the missing policy is the store's own rule, which every
-                    // request addressed by this ARN shares.
+                    // Whether the refusal reports the missing version or the missing policy
+                    // is the store's own rule — which half of the ARN resolved to nothing —
+                    // and the sentence it words the missing POLICY in is THIS operation's,
+                    // which is not the sentence a read of one policy answers.
                     return Err(
                         ListAutomatedReasoningPoliciesErrorModeled::ResourceNotFoundException(
                             ResourceNotFoundException {
                                 message: Some(
-                                    store.automated_reasoning_policy_revision_not_found_message(
+                                    store.automated_reasoning_policy_listing_not_found_message(
                                         policy_arn,
                                     ),
                                 ),

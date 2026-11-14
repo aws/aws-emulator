@@ -649,7 +649,9 @@ pub const AUTOMATED_REASONING_POLICY_VERSION_NOT_FOUND: &str = "Policy version d
 /// looked in, so the wording is the whole requirement. Worded as its sibling
 /// [`AUTOMATED_REASONING_POLICY_VERSION_NOT_FOUND`] is, which reports the missing VERSION of
 /// a policy that IS there. The two writes of the POLICY ITSELF word this same error class
-/// their own way ([`AUTOMATED_REASONING_POLICY_NOT_FOUND_ON_WRITE`]).
+/// their own way ([`AUTOMATED_REASONING_POLICY_NOT_FOUND_ON_WRITE`]), and so does the
+/// LISTING of the policies themselves
+/// ([`AUTOMATED_REASONING_POLICY_NOT_FOUND_ON_LISTING`]).
 pub const AUTOMATED_REASONING_POLICY_NOT_FOUND: &str = "Policy does not exist";
 
 /// What a write of the POLICY ITSELF — `UpdateAutomatedReasoningPolicy` rewriting its draft,
@@ -663,6 +665,19 @@ pub const AUTOMATED_REASONING_POLICY_NOT_FOUND: &str = "Policy does not exist";
 /// policy — its tests, its build workflows, its versions — report the absent policy in the
 /// other sentence, whether they read or write that child.
 pub const AUTOMATED_REASONING_POLICY_NOT_FOUND_ON_WRITE: &str = "Policy was not found";
+
+/// What `ListAutomatedReasoningPolicies` answers as its `ResourceNotFoundException` message
+/// when its `policyArn` FILTER names a policy this account holds no record of.
+///
+/// RECORDED behaviour, and a message with NO variable parts like its two siblings
+/// [`AUTOMATED_REASONING_POLICY_NOT_FOUND`] and
+/// [`AUTOMATED_REASONING_POLICY_NOT_FOUND_ON_WRITE`]: Amazon Bedrock words this error class
+/// per operation, and the policy LISTING words it as a terminated sentence — the same words
+/// a read of the policy answers, carrying the full stop that read's wording does not. The
+/// three sentences are held apart here, one per wording, rather than one standing for the
+/// others, so changing what an operation answers never silently changes what another one
+/// answers.
+pub const AUTOMATED_REASONING_POLICY_NOT_FOUND_ON_LISTING: &str = "Policy does not exist.";
 
 /// One stored Automated Reasoning policy test: the identity
 /// `CreateAutomatedReasoningPolicyTestCase` minted, and the sample input and expected

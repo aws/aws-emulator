@@ -44,8 +44,10 @@
 //!   wholly fixed sentences, asserted to carry no part of the request or of the store;
 //! * the Automated Reasoning policy this account does not hold: EVERY operation that
 //!   resolves an `AutomatedReasoningPolicyArn`, over an id nothing minted, a live policy's
-//!   ARN moved to another region and a versioned ARN whose policy is the missing half, since
-//!   the sentence belongs to the resource rather than to the operation that addressed it;
+//!   ARN moved to another region and a versioned ARN whose policy is the missing half, each
+//!   asserted against the sentence the operation it drives words that miss in — the one most
+//!   of them share, the one the two writes of the policy itself answer, and the one the
+//!   listing of the policies themselves answers;
 //! * the build workflow a policy holds none of: every operation that reports that miss, over
 //!   the id spellings the member admits, each asserted against the sentence ITS surface owns
 //!   — the one an operation addressed by a workflow id answers, and the one the test surface
@@ -1068,11 +1070,32 @@ const POLICY_NOT_FOUND: &str = "Policy does not exist";
 const POLICY_NOT_FOUND_ON_WRITE: &str = "Policy was not found";
 
 /// The operations that answer [`POLICY_NOT_FOUND_ON_WRITE`]; every other row of this
-/// suite's table answers [`POLICY_NOT_FOUND`].
+/// suite's table answers the sentence [`policy_not_found_sentence`] picks for it.
 const POLICY_WRITES: [&str; 2] = [
     "UpdateAutomatedReasoningPolicy",
     "DeleteAutomatedReasoningPolicy",
 ];
+
+/// The same class as [`POLICY_NOT_FOUND`] as the LISTING of the policies themselves words
+/// it: `ListAutomatedReasoningPolicies`, whose `policyArn` is a FILTER. Recorded from that
+/// operation, which is why the sentence a row expects is chosen by the operation it drives.
+const POLICY_NOT_FOUND_ON_LISTING: &str = "Policy does not exist.";
+
+/// The operation that answers [`POLICY_NOT_FOUND_ON_LISTING`].
+const POLICY_LISTING: &str = "ListAutomatedReasoningPolicies";
+
+/// The sentence `operation` words an absent Automated Reasoning policy in: Amazon Bedrock
+/// words this one error class per operation, so the row's expectation is chosen by the
+/// operation it drives rather than by the resource it addressed.
+fn policy_not_found_sentence(operation: &str) -> &'static str {
+    if POLICY_WRITES.contains(&operation) {
+        POLICY_NOT_FOUND_ON_WRITE
+    } else if operation == POLICY_LISTING {
+        POLICY_NOT_FOUND_ON_LISTING
+    } else {
+        POLICY_NOT_FOUND
+    }
+}
 
 /// An `AutomatedReasoningPolicyTestCaseId` nothing has minted (`^[0-9A-Z]{12}$`) and an
 /// `AutomatedReasoningPolicyBuildWorkflowId` nothing has started (the UUIDv4 form
@@ -1090,9 +1113,10 @@ fn well_formed_hash() -> String {
 
 /// Every request this suite drives at `policy_arn`, as
 /// `(operation, method, path, body)` — one row per operation that resolves an
-/// `AutomatedReasoningPolicyArn`, since the sentence belongs to the RESOURCE rather than to
-/// the operation that addressed it — save for the two writes of the policy itself, which
-/// word it their own way ([`POLICY_WRITES`]). `versioned` says whether the ARN carries a
+/// `AutomatedReasoningPolicyArn`, with the sentence each one words the absent policy in
+/// chosen by [`policy_not_found_sentence`]: most operations share one wording, while the
+/// two writes of the policy itself and the listing of the policies themselves word it their
+/// own way. `versioned` says whether the ARN carries a
 /// `:<version>` suffix: a write of the DRAFT refuses such an ARN on its own terms
 /// ("policyArn must be the ARN of a draft policy"), so those two rows are driven at the
 /// unversioned spellings only.
@@ -1103,6 +1127,12 @@ fn policy_requests(policy_arn: &str, versioned: bool) -> Vec<(&'static str, &'st
     let epoch = at_millis("the epoch", 0);
     let mut rows: Vec<(&'static str, &'static str, String, Option<Value>)> = vec![
         ("GetAutomatedReasoningPolicy", "GET", policy.clone(), None),
+        (
+            POLICY_LISTING,
+            "GET",
+            format!("/automated-reasoning-policies?policyArn={}", label(policy_arn)),
+            None,
+        ),
         (
             "ExportAutomatedReasoningPolicyVersion",
             "GET",
@@ -1232,11 +1262,7 @@ async fn a_policy_this_account_does_not_hold_is_refused_in_one_fixed_sentence() 
         for (operation, method, path, body) in policy_requests(policy_arn, is_versioned) {
             let case = format!("{operation} / {arn_case}");
             let reply = emu.call(method, &path, body).await;
-            let expected = if POLICY_WRITES.contains(&operation) {
-                POLICY_NOT_FOUND_ON_WRITE
-            } else {
-                POLICY_NOT_FOUND
-            };
+            let expected = policy_not_found_sentence(operation);
             assert_refusal(&case, &reply, 404, "ResourceNotFoundException", expected);
             // The sentence carries no part of the request: not the ARN it addressed, not
             // the account inside that ARN.

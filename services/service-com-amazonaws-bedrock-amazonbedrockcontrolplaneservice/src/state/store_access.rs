@@ -136,10 +136,14 @@ impl ComAmazonawsBedrockAmazonbedrockcontrolplaneserviceState {
     /// version of a policy this account DOES hold addressed a revision that policy has not
     /// cut, so the refusal reports the missing version
     /// ([`AUTOMATED_REASONING_POLICY_VERSION_NOT_FOUND`]) rather than the policy, which is
-    /// there. Here rather than in one handler because the operations that READ this ARN, and
-    /// those that address a CHILD of the policy it names, all report one unresolvable ARN the
-    /// same way, and that wording is one rule; the policy's own writes report the absent
-    /// policy through [`Self::automated_reasoning_policy_write_not_found_message`].
+    /// there. Here rather than in one handler because the operations that READ one policy by
+    /// this ARN, and those that address a CHILD of the policy it names, all report one
+    /// unresolvable ARN the same way, and that wording is one rule; the policy's own writes
+    /// report the absent policy through
+    /// [`Self::automated_reasoning_policy_write_not_found_message`] and the listing of the
+    /// policies themselves through
+    /// [`Self::automated_reasoning_policy_listing_not_found_message`], because Amazon
+    /// Bedrock words the absent policy per operation.
     #[must_use]
     pub fn automated_reasoning_policy_revision_not_found_message(&self, policy_arn: &str) -> String {
         self.revision_not_found_message(policy_arn, AUTOMATED_REASONING_POLICY_NOT_FOUND)
@@ -147,15 +151,25 @@ impl ComAmazonawsBedrockAmazonbedrockcontrolplaneserviceState {
 
     /// The same message for a WRITE of the policy itself, which words the absent policy as
     /// [`AUTOMATED_REASONING_POLICY_NOT_FOUND_ON_WRITE`] — the missing VERSION of a policy
-    /// that IS there is reported in the one sentence every operation reports it in.
+    /// that IS there is reported in the one sentence every operation reports it in, which is
+    /// the only wording recorded for that half of the ARN.
     #[must_use]
     pub fn automated_reasoning_policy_write_not_found_message(&self, policy_arn: &str) -> String {
         self.revision_not_found_message(policy_arn, AUTOMATED_REASONING_POLICY_NOT_FOUND_ON_WRITE)
     }
 
+    /// The same message for the LISTING of the policies themselves, whose absent policy is
+    /// worded [`AUTOMATED_REASONING_POLICY_NOT_FOUND_ON_LISTING`] — one more operation that
+    /// words this error class its own way, served from here so the branch deciding WHICH
+    /// half of the ARN resolved to nothing is still written once.
+    #[must_use]
+    pub fn automated_reasoning_policy_listing_not_found_message(&self, policy_arn: &str) -> String {
+        self.revision_not_found_message(policy_arn, AUTOMATED_REASONING_POLICY_NOT_FOUND_ON_LISTING)
+    }
+
     /// Which half of an unresolvable `AutomatedReasoningPolicyArn` resolved to nothing,
     /// reported with `absent_policy` as the sentence for a policy this account does not
-    /// hold. The branch lives here once, so the two sentences a caller can be refused with
+    /// hold. The branch lives here once, so the sentences a caller can be refused with
     /// differ only in that wording.
     pub(super) fn revision_not_found_message(&self, policy_arn: &str, absent_policy: &str) -> String {
         let (base_arn, version) = automated_reasoning_policy_arn_parts(policy_arn);
