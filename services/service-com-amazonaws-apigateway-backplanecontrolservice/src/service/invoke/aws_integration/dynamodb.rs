@@ -36,7 +36,7 @@ use crate::ops::types::GetIntegrationOutput;
 
 use super::super::{MethodRequest, UnservedIntegration};
 use super::{
-    bounded, integration_request_body, substituted, unanswered, Answered, ACTION_FORM_PREFIX,
+    integration_request_body, substituted, unanswered, Answered, ACTION_FORM_PREFIX,
     APIGATEWAY_VENDOR,
 };
 
@@ -237,7 +237,7 @@ pub(super) async fn answered(
             format!("{DYNAMODB_TARGET_PREFIX}.{}", table.action),
         )
         .body(table.body.clone());
-    let mut request = built.map_err(|error| {
+    let request = built.map_err(|error| {
         ::tracing::warn!(%error, "the integration's Amazon DynamoDB call does not render an \
                                   HTTP request");
         unanswered(
@@ -245,74 +245,15 @@ pub(super) async fn answered(
              was made",
         )
     })?;
-    ::service_common::in_process_sigv4::sign_in_process_request(
-        &mut request,
+    super::answered_in_process(
+        ctx,
+        request,
         DYNAMODB_SUBDOMAIN,
         &table.region,
-        ctx,
+        DYNAMODB_SERVICE_NAME,
+        Some(AWS_JSON_1_0),
     )
     .await
-    .map_err(|error| {
-        ::tracing::warn!(%error, "the integration's Amazon DynamoDB call could not be signed");
-        unanswered(
-            "the integration request to Amazon DynamoDB could not be signed, so no call was made",
-        )
-    })?;
-    let (parts, body) = request.into_parts();
-    let request = ::aws_smithy_runtime_api::http::Request::try_from(::http::Request::from_parts(
-        parts,
-        ::aws_smithy_types::body::SdkBody::from(::bytes::Bytes::from(body)),
-    ))
-    .map_err(|error| {
-        ::tracing::warn!(%error, "the integration's Amazon DynamoDB call does not render an \
-                                  HTTP request");
-        unanswered(
-            "the integration's uri does not render a request to Amazon DynamoDB, so no call \
-             was made",
-        )
-    })?;
-    let answer = ::aws_smithy_runtime_api::client::http::HttpConnector::call(
-        &ctx.callback().http_connector(),
-        request,
-    )
-    .await
-    .map_err(|error| {
-        ::tracing::warn!(
-            error = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
-            "the integration request was not answered by Amazon DynamoDB"
-        );
-        unanswered(&format!(
-            "the integration request to {DYNAMODB_SERVICE_NAME} was not answered, so there is \
-             no backend answer to map"
-        ))
-    })?;
-    let status = answer.status().as_u16();
-    let content_type = answer
-        .headers()
-        .get(::http::header::CONTENT_TYPE.as_str())
-        .map(str::to_string);
-    let payload = answer.body().bytes().unwrap_or_default().to_vec();
-    // The emulator's own FRONT DOOR refusal is not an answer from the service: a deployment
-    // with Amazon DynamoDB not mounted answers the integration request that way, and mapping
-    // it as a backend answer would hand the caller a status and a body for a call nothing
-    // made. `service_common` owns the one reading of that refusal.
-    if ::service_common::in_process_refusal::is_transport_refusal(&payload) {
-        ::tracing::warn!(
-            status,
-            "the integration request reached no such service: this emulator mounts none, so \
-             there is no backend answer to map"
-        );
-        return Err(unanswered(&format!(
-            "the integration request reached no {DYNAMODB_SERVICE_NAME} in this emulator, so \
-             there is no backend answer to map"
-        )));
-    }
-    bounded(payload.len())?;
-    Ok(Answered {
-        status,
-        content_type: content_type.or_else(|| Some(AWS_JSON_1_0.to_string())),
-        body: payload,
-    })
 }
 
 #[cfg(test)]

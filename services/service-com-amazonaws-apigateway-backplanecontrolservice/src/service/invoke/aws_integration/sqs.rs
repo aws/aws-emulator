@@ -9,20 +9,13 @@
 //! that action's inputs in the other fields of an `application/x-www-form-urlencoded` body,
 //! which is why an integration to a queue carries a request template that renders that form.
 //! So the action and its parameters are read from the integration request the way the
-//! service's own wire form carries them, over the three places this integration puts them:
+//! service's own wire form carries them, over the three places this integration puts them —
+//! the `uri`'s own pairs, the query string the integration maps, and the rendered request
+//! template — which is the one reading [`super::query_form`] states for every service of that
+//! protocol this module calls.
 //!
-//! * the `action/{Action}&{name}={value}` form of the `uri`, which names the action and any
-//!   parameter the configuration fixes;
-//! * the query string the integration MAPS onto the integration request
-//!   (`integration.request.querystring.{name}`);
-//! * the integration request's own BODY — the request template this call selects, RENDERED
-//!   (`Integration$requestTemplates`) — read as the wire form it is written in: the fields of
-//!   an `application/x-www-form-urlencoded` body by the maintained reader for that media
-//!   type, and the members of a JSON object body, which is the form the protocol this
-//!   service's model declares (`awsJson1_0`) carries the same inputs in.
-//!
-//! A later source overrides an earlier one, so a value the request carries stands over one
-//! the `uri` fixes. The `path/{account-id}/{queue-name}` form of the `uri` names the QUEUE
+//! WHICH call those fields name is this module's own: the
+//! `path/{account-id}/{queue-name}` form of the `uri` names the QUEUE
 //! rather than the action, and the action is then the `Action` field of the integration
 //! request; the `action` form names the action, and the queue is then the `QueueUrl` field.
 //!
@@ -47,13 +40,12 @@ use ::aws_sdk_sqs::types::MessageAttributeValue;
 use ::smithy_server_runtime::OperationContext;
 
 use crate::ops::types::GetIntegrationOutput;
-use crate::service::mapping_template::TemplateInputs;
 
-use super::super::{MethodRequest, UnservedIntegration, INTEGRATION_REQUEST_QUERY_PREFIX};
+use super::super::{MethodRequest, UnservedIntegration};
+use super::query_form;
 use super::{
-    bounded, mapped_value, named_service, refusal_of, substituted, unanswered, Answered,
-    ACCESS_DENIED_CODE, ACCESS_DENIED_STATUS, ACTION_FORM_PREFIX, APIGATEWAY_VENDOR,
-    PATH_FORM_PREFIX,
+    bounded, named_service, refusal_of, substituted, unanswered, Answered, ACCESS_DENIED_CODE,
+    ACCESS_DENIED_STATUS, ACTION_FORM_PREFIX, APIGATEWAY_VENDOR, PATH_FORM_PREFIX,
 };
 
 /// The subdomain field that names Amazon SQS, from the form `Integration$uri` documents.
@@ -136,14 +128,6 @@ const BAD_REQUEST_STATUS: u16 = 400;
 /// class it threw in, as `{code};{fault}` — which is the code a client of the query api
 /// reads, and so the one the refusal this integration passes on carries.
 const QUERY_ERROR_HEADER: &str = "x-amzn-query-error";
-
-/// The most bytes of an integration request this module reads as the service's wire form.
-///
-/// The body is the rendered request template, which the renderer already bounds; this is the
-/// second half of the same guard, so a body that arrived some other way (a passed-through
-/// payload) is bounded too. A body past it is REFUSED rather than read as a prefix: half a
-/// form is a different request from the one the caller sent.
-const MAX_FORM_BYTES: usize = 1024 * 1024;
 
 /// One Amazon SQS action an `AWS` integration's request names.
 ///
@@ -296,10 +280,6 @@ fn resolved_queue(
     };
     let resource =
         substituted(arn.resource, integration, &call.inputs).map_err(|reason| unanswered(&reason))?;
-    let mut parameters = BTreeMap::new();
-    // The three sources, in the order a later one overrides an earlier: what the `uri`
-    // fixes, what the integration maps onto the integration request's query string, and
-    // what its own body carries.
     let named_queue = match resource.strip_prefix(PATH_FORM_PREFIX) {
         Some(path) => Some(addressed_path(path).ok_or_else(|| {
             unanswered(
@@ -309,20 +289,12 @@ fn resolved_queue(
         })?),
         None => None,
     };
-    let named_action = match resource.strip_prefix(ACTION_FORM_PREFIX) {
-        Some(named) => {
-            let (name, pairs) = match named.split_once('&') {
-                Some((name, pairs)) => (name, pairs),
-                None => (named, ""),
-            };
-            // The pairs the `uri` fixes are a query string, so they are read by the same
-            // maintained reader the integration request's own fields are.
-            for (field, value) in form_fields(pairs.as_bytes()) {
-                parameters.insert(field, value);
-            }
-            Some(name.to_string())
-        }
-        None => None,
+    let (named_action, fixed) = match resource.strip_prefix(ACTION_FORM_PREFIX) {
+        Some(named) => match named.split_once('&') {
+            Some((name, pairs)) => (Some(name.to_string()), pairs),
+            None => (Some(named.to_string()), ""),
+        },
+        None => (None, ""),
     };
     if named_queue.is_none() && named_action.is_none() {
         return Err(unanswered(
@@ -330,12 +302,9 @@ fn resolved_queue(
              Amazon SQS call",
         ));
     }
-    for (field, value) in mapped_query_parameters(integration, &call.inputs) {
-        parameters.insert(field, value);
-    }
-    for (field, value) in request_fields(&integration_request_body(integration, call)?) {
-        parameters.insert(field, value);
-    }
+    // The three places an `AWS` integration carries the fields of a query api's request, in
+    // the order a later one overrides an earlier ([`query_form`]).
+    let parameters = query_form::carried_parameters(integration, call, fixed)?;
 
     let action_name = named_action
         .or_else(|| parameters.get(ACTION_PARAMETER).cloned())
@@ -409,81 +378,6 @@ fn split_queue_path(path: &str) -> Option<(String, String)> {
     };
     (!queue.is_empty() && !account.is_empty())
         .then(|| (account.to_string(), queue.to_string()))
-}
-
-/// The query-string fields the integration MAPS onto the integration request, each resolved
-/// against this call off the same inputs a mapping template of it is rendered from.
-///
-/// A mapping whose source this request carries nothing for carries nothing, which is what an
-/// absent method request parameter means for every other mapping of this data plane.
-fn mapped_query_parameters(
-    integration: &GetIntegrationOutput,
-    inputs: &TemplateInputs,
-) -> Vec<(String, String)> {
-    integration
-        .request_parameters
-        .iter()
-        .flatten()
-        .filter_map(|(key, source)| {
-            let name = key.strip_prefix(INTEGRATION_REQUEST_QUERY_PREFIX)?;
-            Some((name.to_string(), mapped_value(source, inputs)?))
-        })
-        .collect()
-}
-
-/// The body the integration request carries, bounded again by what this module reads one AS:
-/// the service's own wire form, which it parses to learn the call.
-///
-/// The rendering itself is the parent module's ([`super::integration_request_body`]), because
-/// it is the rule `Integration$requestTemplates` and `Integration$passthroughBehavior` state
-/// for every service this data plane calls.
-fn integration_request_body(
-    integration: &GetIntegrationOutput,
-    call: &MethodRequest,
-) -> Result<Vec<u8>, UnservedIntegration> {
-    let body = super::integration_request_body(integration, call)?;
-    if body.len() > MAX_FORM_BYTES {
-        return Err(unanswered(&format!(
-            "the integration request of {bytes} bytes is larger than the {MAX_FORM_BYTES} \
-             bytes this emulator reads one as the service's wire form, so the call it names \
-             cannot be read",
-            bytes = body.len()
-        )));
-    }
-    Ok(body)
-}
-
-/// The fields an integration request body names, read as the service's own wire form
-/// carries them: the fields of an `application/x-www-form-urlencoded` body, which is the
-/// QUERY form of this api, and the top-level members of a JSON object, which is the form
-/// the protocol its model declares (`awsJson1_0`) carries the same inputs in. A body that is
-/// neither names no field.
-fn request_fields(body: &[u8]) -> Vec<(String, String)> {
-    if let Ok(::serde_json::Value::Object(members)) =
-        ::serde_json::from_slice::<::serde_json::Value>(body)
-    {
-        return members
-            .into_iter()
-            .filter_map(|(field, value)| match value {
-                ::serde_json::Value::String(text) => Some((field, text)),
-                ::serde_json::Value::Number(number) => Some((field, number.to_string())),
-                ::serde_json::Value::Bool(flag) => Some((field, flag.to_string())),
-                // A member that is itself a document names no single field of the query
-                // form, so it is left to the field the form spells it as.
-                _ => None,
-            })
-            .collect();
-    }
-    form_fields(body)
-}
-
-/// The fields of an `application/x-www-form-urlencoded` body, decoded by the maintained
-/// reader for that media type rather than by a split written here — so a field whose value
-/// carries a `&`, a `=` or a percent escape is read as the one value it is.
-fn form_fields(body: &[u8]) -> Vec<(String, String)> {
-    ::form_urlencoded::parse(body)
-        .map(|(field, value)| (field.into_owned(), value.into_owned()))
-        .collect()
 }
 
 /// Make the call `queue` addresses against Amazon SQS, in process, and report what it
@@ -928,6 +822,8 @@ mod tests {
     //! one part of this module that needs neither a backend nor a role to decide.
 
     use super::*;
+
+    use crate::service::mapping_template::TemplateInputs;
 
     /// The account every queue below belongs to, written as a queue url and a path form
     /// name one.

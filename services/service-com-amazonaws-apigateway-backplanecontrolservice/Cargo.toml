@@ -173,6 +173,12 @@ http-body-util = "0.1"
 rustls = { workspace = true }
 rustls-pemfile = "2"
 tokio-rustls = "0.26"
+# Writes the values of the XML document an `AWS` integration to a QUERY api answers a call
+# its execution role may not make with (`service::invoke::aws_integration::sns`): the
+# maintained coder for that format, so a role ARN or a resource ARN a caller configured
+# cannot end an element rather than a hand-written escape written here. The same version the
+# sibling apigatewayv2/cloudformation/s3 crates read and write XML with.
+quick-xml = "0.41"
 # Draws the identifiers this control plane ASSIGNS (`state::identifier`): an id a record is
 # addressed by is one opaque handle per record, drawn independently rather than derived from
 # how many have been minted. The maintained generator the sibling services in this tree draw
@@ -195,6 +201,12 @@ service-com-amazonaws-dynamodb-dynamodb-20120810 = { workspace = true }
 # store, and `tests/all/stage_proxy_run_logs.rs` reads the delivery back through that
 # service's own `FilterLogEvents`, so it is mounted on that suite's engine too.
 service-com-amazonaws-cloudwatchlogs-logs-20140328 = { workspace = true }
+# A deployed method whose `AWS` integration names an SNS topic action is served by making that
+# call, and what the topic then delivers to a subscribed queue is read back through those two
+# services' own APIs (`tests/all/sns_service_integration.rs`), so both are mounted on that
+# suite's engine beside this one.
+service-com-amazonaws-sns-amazonsimplenotificationservice = { workspace = true }
+service-com-amazonaws-sqs-amazonsqs = { workspace = true }
 # The segments a tracing stage and the invocation it made record live in the AWS X-Ray
 # emulator's store, and `tests/all/stage_trace_context.rs` reads them back through that
 # service's own `BatchGetTraces`, so it is mounted on that suite's engine too.

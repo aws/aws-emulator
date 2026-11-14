@@ -19,8 +19,8 @@
 //! The rows vary what the rule generalises over: which part of the `uri` puts the call out
 //! of reach (another service's subdomain, a form that is neither of the two documented
 //! ones, an action of the named service this emulator does not perform, a verb that names
-//! no action, a placeholder the integration maps nothing onto), and whether the service the
-//! `uri` names is mounted at all.
+//! no action, a placeholder the integration maps nothing onto, a path under a service's root
+//! that publishes none), and whether the service the `uri` names is mounted at all.
 
 use serde_json::{json, Value};
 
@@ -106,6 +106,22 @@ async fn an_aws_integration_naming_a_call_this_emulator_cannot_make_is_a_configu
             path_part: "no-object-store",
             uri: "arn:aws:apigateway:us-east-1:s3:path/shelf/plain.txt",
             integration_verb: "GET",
+            request_parameters: None,
+        },
+        Row {
+            case: "the Amazon SNS path form naming a path under the service's root, which \
+                   that api publishes none of",
+            path_part: "sns-under-the-root",
+            uri: "arn:aws:apigateway:us-east-1:sns:path/orders",
+            integration_verb: "POST",
+            request_parameters: None,
+        },
+        Row {
+            case: "a topic action in an emulator mounting no topic service, so nothing \
+                   answers the integration request",
+            path_part: "no-topic-service",
+            uri: "arn:aws:apigateway:us-east-1:sns:action/Publish",
+            integration_verb: "POST",
             request_parameters: None,
         },
     ];

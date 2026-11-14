@@ -193,6 +193,33 @@ pub(crate) fn gateway_with_dynamodb_and_iam() -> Gateway {
     gateway
 }
 
+/// One emulator with this service, Amazon SNS, Amazon SQS and IAM mounted on ONE shared
+/// engine.
+///
+/// An `AWS` integration naming an SNS topic action is PERFORMED by making that call against
+/// the service that OWNS the topic, in process, under the role its `credentials` names — and
+/// what the topic then does with a published message is its subscribers' business, so a suite
+/// that drives such an integration needs the topic service to answer the call, the queue
+/// service to hold what a subscribed queue was delivered, and IAM to hold the role whose
+/// policies decide whether the call is made. Built on the one constructor above, so this
+/// service is mounted and the router configured exactly once in this target.
+pub(crate) fn gateway_with_sns_sqs_and_iam() -> Gateway {
+    let mut gateway = Gateway::new();
+    let engine = Arc::clone(&gateway.engine);
+    gateway.router.register_service(
+        service_com_amazonaws_sns_amazonsimplenotificationservice::EmulatedService::new(
+            Arc::clone(&engine),
+        ),
+    );
+    gateway.router.register_service(
+        service_com_amazonaws_sqs_amazonsqs::EmulatedService::new(Arc::clone(&engine)),
+    );
+    gateway.router.register_service(
+        service_com_amazonaws_iam_awsidentitymanagementv20100508::EmulatedService::new(engine),
+    );
+    gateway
+}
+
 /// One emulator with this service AND Amazon EC2 mounted on ONE shared engine.
 ///
 /// A domain name access association's `accessAssociationSource` is resolved against the VPC

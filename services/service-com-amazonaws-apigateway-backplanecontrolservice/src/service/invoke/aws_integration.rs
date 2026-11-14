@@ -24,7 +24,11 @@
 //!   request then carries as its own query api's wire form does ([`sqs`]);
 //! * AMAZON DYNAMODB, whose actions the `action` form names and whose inputs the
 //!   integration request carries in its BODY, as that service's own JSON api's wire form
-//!   does ([`dynamodb`]).
+//!   does ([`dynamodb`]);
+//! * AMAZON SNS, whose actions the `action` form names and whose parameters the integration
+//!   request then carries as its own query api's wire form does ([`sns`]) — the `path` form
+//!   of a `uri` naming it addresses that api's root, which is where every action of it is
+//!   reached.
 //!
 //! The call is made THROUGH THE EMULATOR this service is running within, over the
 //! in-process transport `OperationContext::callback` hands a handler: nothing is invented
@@ -107,6 +111,8 @@ use super::{
 };
 
 mod dynamodb;
+mod query_form;
+mod sns;
 mod sqs;
 
 /// The integration type whose `uri` names an AWS service action: `AWS`, "for integrating
@@ -399,6 +405,9 @@ fn addressed_call(
     if let Some(table) = dynamodb::addressed_table(integration, default_region, call) {
         return Some(table.map(ServiceCall::Table));
     }
+    if let Some(topic) = sns::addressed_topic(integration, default_region, call) {
+        return Some(topic.map(ServiceCall::Topic));
+    }
     None
 }
 
@@ -416,6 +425,8 @@ enum ServiceCall {
     Queue(sqs::QueueCall),
     /// An Amazon DynamoDB table action.
     Table(dynamodb::TableCall),
+    /// An Amazon SNS topic action.
+    Topic(sns::TopicCall),
 }
 
 /// What an Amazon S3 integration `uri` addresses: the bucket itself, or an object in it.
@@ -433,6 +444,7 @@ impl ServiceCall {
             Self::Bucket(bucket) => &bucket.region,
             Self::Queue(queue) => queue.region(),
             Self::Table(table) => table.region(),
+            Self::Topic(topic) => topic.region(),
         }
     }
 
@@ -447,6 +459,7 @@ impl ServiceCall {
             Self::Bucket(bucket) => bucket.action.iam_action().to_string(),
             Self::Queue(queue) => queue.iam_action().to_string(),
             Self::Table(table) => table.iam_action(),
+            Self::Topic(topic) => topic.iam_action(),
         }
     }
 
@@ -458,6 +471,7 @@ impl ServiceCall {
             Self::Bucket(bucket) => bucket.bucket_arn(),
             Self::Queue(queue) => queue.queue_arn(),
             Self::Table(table) => table.table_arn(),
+            Self::Topic(topic) => topic.topic_arn(),
         }
     }
 
@@ -489,6 +503,7 @@ impl ServiceCall {
             },
             Self::Queue(queue) => sqs::access_denied(queue),
             Self::Table(table) => dynamodb::access_denied(table, principal),
+            Self::Topic(topic) => sns::access_denied(topic, principal),
         }
     }
 
@@ -503,6 +518,7 @@ impl ServiceCall {
             Self::Bucket(bucket) => answered_by_s3_bucket(ctx, bucket).await,
             Self::Queue(queue) => sqs::answered(ctx, queue, call).await,
             Self::Table(table) => dynamodb::answered(ctx, table).await,
+            Self::Topic(topic) => sns::answered(ctx, topic).await,
         }
     }
 }
@@ -773,78 +789,24 @@ async fn answered_by_s3_bucket(
         .uri(format!("https://{host}/{}", bucket.bucket))
         .header(::http::header::HOST, &host)
         .body(Vec::new());
-    let mut request = built.map_err(|error| {
+    let request = built.map_err(|error| {
         ::tracing::warn!(%error, "the integration's Amazon S3 bucket call does not render an \
                                   HTTP request");
         unanswered(
             "the integration's uri does not render a request to Amazon S3, so no call was made",
         )
     })?;
-    ::service_common::in_process_sigv4::sign_in_process_request(
-        &mut request,
+    answered_in_process(
+        ctx,
+        request,
         S3_SUBDOMAIN,
         &bucket.region,
-        ctx,
+        S3_SERVICE_NAME,
+        // Amazon S3's REST answers declare their own media type, and an answer that declared
+        // none is reported as carrying none.
+        None,
     )
     .await
-    .map_err(|error| {
-        ::tracing::warn!(%error, "the integration's Amazon S3 bucket call could not be signed");
-        unanswered("the integration request to Amazon S3 could not be signed, so no call was made")
-    })?;
-    let (parts, body) = request.into_parts();
-    let request = ::aws_smithy_runtime_api::http::Request::try_from(::http::Request::from_parts(
-        parts,
-        ::aws_smithy_types::body::SdkBody::from(::bytes::Bytes::from(body)),
-    ))
-    .map_err(|error| {
-        ::tracing::warn!(%error, "the integration's Amazon S3 bucket call does not render an \
-                                  HTTP request");
-        unanswered(
-            "the integration's uri does not render a request to Amazon S3, so no call was made",
-        )
-    })?;
-    let answered = ::aws_smithy_runtime_api::client::http::HttpConnector::call(
-        &ctx.callback().http_connector(),
-        request,
-    )
-    .await
-    .map_err(|error| {
-        ::tracing::warn!(
-            error = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
-            "the integration request was not answered by Amazon S3"
-        );
-        unanswered(&format!(
-            "the integration request to {S3_SERVICE_NAME} was not answered, so there is no \
-             backend answer to map"
-        ))
-    })?;
-    let status = answered.status().as_u16();
-    let content_type = answered
-        .headers()
-        .get(::http::header::CONTENT_TYPE.as_str())
-        .map(str::to_string);
-    let body = answered
-        .into_body()
-        .bytes()
-        .map(<[u8]>::to_vec)
-        .unwrap_or_default();
-    if ::service_common::in_process_refusal::is_transport_refusal(&body) {
-        ::tracing::warn!(
-            status,
-            "the integration request reached no such service: this emulator mounts none, so \
-             there is no backend answer to map"
-        );
-        return Err(unanswered(&format!(
-            "the integration request reached no {S3_SERVICE_NAME} in this emulator, so there \
-             is no backend answer to map"
-        )));
-    }
-    bounded(body.len())?;
-    Ok(Answered {
-        status,
-        content_type,
-        body,
-    })
 }
 
 /// An integration whose answer this stage could not produce at all, for the reason
@@ -907,6 +869,106 @@ fn bounded(bytes: usize) -> Result<(), UnservedIntegration> {
         });
     }
     Ok(())
+}
+
+/// Make `request` against the AWS service `service`, in process, and report what it
+/// answered.
+///
+/// The ONE dispatch of every call this module places by the service's own WIRE FORM rather
+/// than through an SDK client: the request is signed for `signing_name` in `region` by the
+/// tree's one in-process signer, with the credential the callback hands this handler — which
+/// is never reported or logged — and dispatched over the in-process callback transport, so it
+/// is served by the service this emulator mounts and no connection is opened. What the method
+/// response carries is then the service's OWN answer: its status, its media type and its
+/// bytes.
+///
+/// `declared` is the media type to report for an answer that declared none, which is the one
+/// that service's protocol answers in.
+///
+/// `Err` only where there is no answer FROM THE SERVICE to report at all — the request could
+/// not be signed or rendered, it reached no such service in this emulator, or the answer is
+/// larger than one method response may carry. Every answer the service DID give, refusals
+/// included, is reported as [`Answered`] and mapped.
+async fn answered_in_process(
+    ctx: &OperationContext<'_>,
+    mut request: ::http::Request<Vec<u8>>,
+    signing_name: &str,
+    region: &str,
+    service: &str,
+    declared: Option<&str>,
+) -> Result<Answered, UnservedIntegration> {
+    ::service_common::in_process_sigv4::sign_in_process_request(
+        &mut request,
+        signing_name,
+        region,
+        ctx,
+    )
+    .await
+    .map_err(|error| {
+        ::tracing::warn!(%error, service, "the integration's call could not be signed");
+        unanswered(&format!(
+            "the integration request to {service} could not be signed, so no call was made"
+        ))
+    })?;
+    let (parts, body) = request.into_parts();
+    let request = ::aws_smithy_runtime_api::http::Request::try_from(::http::Request::from_parts(
+        parts,
+        ::aws_smithy_types::body::SdkBody::from(::bytes::Bytes::from(body)),
+    ))
+    .map_err(|error| {
+        ::tracing::warn!(
+            %error,
+            service,
+            "the integration's call does not render an HTTP request"
+        );
+        unanswered(&format!(
+            "the integration's uri does not render a request to {service}, so no call was made"
+        ))
+    })?;
+    let answer = ::aws_smithy_runtime_api::client::http::HttpConnector::call(
+        &ctx.callback().http_connector(),
+        request,
+    )
+    .await
+    .map_err(|error| {
+        ::tracing::warn!(
+            error = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
+            service,
+            "the integration request was not answered by the service its uri names"
+        );
+        unanswered(&format!(
+            "the integration request to {service} was not answered, so there is no backend \
+             answer to map"
+        ))
+    })?;
+    let status = answer.status().as_u16();
+    let content_type = answer
+        .headers()
+        .get(::http::header::CONTENT_TYPE.as_str())
+        .map(str::to_string);
+    let payload = answer.body().bytes().unwrap_or_default().to_vec();
+    // The emulator's own FRONT DOOR refusal is not an answer from the service: a deployment
+    // with that service not mounted answers the integration request that way, and mapping it
+    // as a backend answer would hand the caller a status and a body for a call nothing made.
+    // `service_common` owns the one reading of that refusal.
+    if ::service_common::in_process_refusal::is_transport_refusal(&payload) {
+        ::tracing::warn!(
+            status,
+            service,
+            "the integration request reached no such service: this emulator mounts none, so \
+             there is no backend answer to map"
+        );
+        return Err(unanswered(&format!(
+            "the integration request reached no {service} in this emulator, so there is no \
+             backend answer to map"
+        )));
+    }
+    bounded(payload.len())?;
+    Ok(Answered {
+        status,
+        content_type: content_type.or_else(|| declared.map(str::to_string)),
+        body: payload,
+    })
 }
 
 /// The SERVICE the fifth field of an integration ARN names, from the two spellings

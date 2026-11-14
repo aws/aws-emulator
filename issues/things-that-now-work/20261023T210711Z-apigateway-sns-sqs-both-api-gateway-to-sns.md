@@ -28,3 +28,27 @@ Detail for both checks is exactly "Error: Check timed out after 60.0s".
 1. Create an SNS topic with an SQS subscriber, then a REST API with an AWS-service integration to sns:Publish; deploy to a stage.
 2. POST to the stage invoke URL and observe that no response arrives within 60 s.
 3. Or replay the check ids in trace_ids.
+
+## Resolution
+The cause this report names is fixed: an `AWS`-type integration whose `uri` names Amazon SNS is
+PERFORMED. `src/service/invoke/aws_integration/sns.rs` reads the call the `uri` and the
+integration request name (the action from the `action/{Action}` form or the request's own
+`Action` field, the topic from `TopicArn` or `TargetArn`, the `path` form addressing that api's
+root) and makes it by sending that api's own `awsQuery` wire form over the in-process transport,
+so the method response carries what the topic answered, the message attributes the integration
+set reach the topic's subscribers, and an integration credentials role without the publish earns
+Amazon SNS's own `AuthorizationError` (HTTP 403). Covered end to end by
+`tests/all/sns_service_integration.rs` (the `uri` forms, where the parameters come from, two
+actions, four message bodies, the attributes, and the four role outcomes — each read back on the
+subscribed queue through Amazon SQS's own `ReceiveMessage`),
+`core/router/tests/all/apigateway_sns_service_integration.rs` and the rows added to
+`tests/all/aws_service_integration.rs`.
+
+NOT CONFIRMED BY REPLAY, and recorded here so the remainder is not lost: both recorded units
+still report `Check timed out after 60.0s`, which is the harness's own cap rather than a response
+the stage gave, and the replay places no divergence on either (`expected` empty,
+`other_causes` empty). With the data plane made to answer every claimed invoke `200` with a
+`<PublishResponse>` document, and then `403` with Amazon SNS's
+`ErrorResponse`/`AuthorizationError` body, both checks still hit the cap — so what is left inside
+those checks' poll is not reachable from the status or the body this stage answers, and a further
+report should be filed against whatever that poll waits on rather than against this integration.

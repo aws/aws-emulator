@@ -175,6 +175,8 @@ mod rest_api_lifecycle;
 mod sdk_types;
 #[path = "all/service_claim.rs"]
 mod service_claim;
+#[path = "all/sns_service_integration.rs"]
+mod sns_service_integration;
 #[path = "all/stage_collection.rs"]
 mod stage_collection;
 // The access log format a stage may carry: which `accessLogSettings.format` identifies the

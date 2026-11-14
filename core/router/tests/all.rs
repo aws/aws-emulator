@@ -1854,9 +1854,14 @@ mod apigateway_dynamodb_service_integration;
 // can wire it and then read the group back.
 #[path = "all/logs_vended_group_lambda_subscriber_permission.rs"]
 mod logs_vended_group_lambda_subscriber_permission;
-// Both suites below are declared ONCE, in the sorted span above beside the other
-// CloudFormation suites: the pair was appended here as well while two branches were landing
-// at once, which declared each of them a second time and compiled neither.
+// Declared in the appended tail, which is where every new suite inserts its lines: a deployed
+// method whose integration is an `AWS` call on an SNS TOPIC, served by making that call —
+// asked of the router that mounts every service at once, which is where the hop between the
+// stage, the topic and the topic's queue subscriber is observable end to end.
+#[path = "all/apigateway_sns_service_integration.rs"]
+mod apigateway_sns_service_integration;
+// `cloudformation_provisions_cloudfront_resources` is declared once, just below: two `mod`
+// items for one name is a redefinition that compiles neither.
 #[path = "all/cloudformation_provisions_cloudfront_resources.rs"]
 mod cloudformation_provisions_cloudfront_resources;
 // are declared ONCE, in the head region above beside the other `cloudformation_…` suites.
