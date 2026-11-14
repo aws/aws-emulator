@@ -38,6 +38,10 @@ pub struct EvaluatedDataQualityRule {
     /// Whether the rows satisfied the rule, which is what the result reports as `PASS` or
     /// `FAIL` ([`DATA_QUALITY_RULE_RESULT_PASS`]).
     pub passed: bool,
+    /// `DataQualityRuleResult$EvaluatedMetrics`: what checking the rule MEASURED over the
+    /// rows, each entry the value under the name its metric is reported by
+    /// ([`DqdlRuleMetric`]). EMPTY for a rule whose type measures no metric of the data.
+    pub metrics: Vec<(String, f64)>,
 }
 
 /// What ONE ruleset's evaluation produced: the answer of each of its rules, in the order the
@@ -175,6 +179,10 @@ pub async fn evaluate_data_quality_rulesets(
                 name: data_quality_rule_name(position),
                 rule,
                 passed: outcome.passed,
+                metrics: outcome
+                    .metric
+                    .map(|metric| vec![(metric.name, metric.value)])
+                    .unwrap_or_default(),
             });
             // Checking one rule against every row is this emulator's own work on the
             // request's task, so it hands the runtime back between rules.
@@ -253,11 +261,16 @@ impl DataQualityResultEntry {
                         DATA_QUALITY_RULE_RESULT_FAIL.to_string()
                     }
                     ),
-                // The members an evaluation of the rule's own metrics would carry are left
-                // unset: this evaluation decides whether the rows satisfy the rule, and
-                // reports no metric, distribution, label or observation it did not compute.
+                // "A map of metrics associated with the evaluation of the rule": the metric
+                // checking this rule measured over the rows, under the name that metric is
+                // reported by — and nothing where its type measured none, rather than a map
+                // holding a metric this evaluation did not compute.
+                evaluated_metrics: (!rule.metrics.is_empty())
+                    .then(|| rule.metrics.iter().cloned().collect()),
+                // The members a row-level or historical analysis would carry are left unset:
+                // this evaluation decides whether the rows satisfy the rule, and reports no
+                // distribution, label or observation it did not compute.
                 evaluation_message: None,
-                evaluated_metrics: None,
                 evaluated_rule: None,
                 rule_metrics: None,
                 labels: None,

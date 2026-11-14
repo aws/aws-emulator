@@ -11,7 +11,8 @@
 //! Every member served is the one the run recorded: the ruleset the rules came from, the run
 //! and the data source they were evaluated for, the instants that run started and
 //! completed, one `RuleResults` entry per rule of the ruleset carrying whether the data
-//! satisfied it, and the `Score` those answers give — "the ratio of rules that passed to the
+//! satisfied it and the metric checking it measured over the rows, and the `Score` those
+//! answers give — "the ratio of rules that passed to the
 //! total number of rules". Nothing is computed here that the run did not evaluate.
 //!
 //! Only the status the clock had ALREADY made due is materialised before the lookup

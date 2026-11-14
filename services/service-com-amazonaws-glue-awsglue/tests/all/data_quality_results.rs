@@ -717,3 +717,165 @@ async fn a_result_id_no_run_published_is_the_modelled_miss() {
         "the published result is still readable after every refused read, got {result}"
     );
 }
+
+/// How complete `note` is over [`ROWS`]: it holds a value in two of the three rows.
+const NOTE_COMPLETENESS: f64 = 2.0 / 3.0;
+
+/// How unique `status` is over [`ROWS`]: of the three values it holds, one occurs exactly
+/// once.
+const STATUS_UNIQUENESS: f64 = 1.0 / 3.0;
+
+/// One row of the metric table: a rule, and what checking it MEASURES over [`ROWS`].
+struct MetricCase {
+    case: &'static str,
+    /// The one rule the ruleset declares, as its author writes it.
+    rule: &'static str,
+    /// The metrics the rule's result reports, each under the name it is reported by, or EMPTY
+    /// where the rule's type measures none — which the result reports by carrying no map.
+    metrics: &'static [(&'static str, f64)],
+}
+
+/// A rule's result reports the metric checking it MEASURED over the rows, in the modelled
+/// `EvaluatedMetrics` map — "a map of metrics associated with the evaluation of the rule"
+/// (`smithy_query shape="DataQualityRuleResult"`), whose key is a `NameString` and whose
+/// value is a double.
+///
+/// The names below are read off that map's namespace: a metric of the whole dataset is
+/// reported under `Dataset.*.<Metric>` and one of a column under `Column.<column>.<Metric>`,
+/// with `<Metric>` the metric the DQDL rule type measures — the recorded case, a rule
+/// counting the rows, is the first row here. The rows differ along what is measured (a count
+/// of rows, a count of columns, two fractions, a count of distinct values), whether the rule
+/// passed or failed, whether the rule states the condition or a fixed one, how the column is
+/// cased in the rule, and the two rule types that measure nothing.
+#[tokio::test]
+async fn each_rule_result_reports_the_metric_its_check_measured() {
+    let (router, engine) = emulator_with_s3();
+    store_table(&router, "metrics", Some(ROWS)).await;
+
+    let cases: [MetricCase; 12] = [
+        MetricCase {
+            case: "a count of the rows the data satisfies",
+            rule: "RowCount = 3",
+            metrics: &[("Dataset.*.RowCount", 3.0)],
+        },
+        MetricCase {
+            case: "a count of the rows the data does not satisfy",
+            rule: "RowCount = 999",
+            metrics: &[("Dataset.*.RowCount", 3.0)],
+        },
+        MetricCase {
+            case: "a count of the declared columns",
+            rule: "ColumnCount = 3",
+            metrics: &[("Dataset.*.ColumnCount", 3.0)],
+        },
+        MetricCase {
+            case: "a column holding a value in every row",
+            rule: "IsComplete \"id\"",
+            metrics: &[("Column.id.Completeness", 1.0)],
+        },
+        MetricCase {
+            case: "a column missing a value",
+            rule: "IsComplete \"note\"",
+            metrics: &[("Column.note.Completeness", NOTE_COMPLETENESS)],
+        },
+        MetricCase {
+            case: "completeness under a condition the rule states",
+            rule: "Completeness \"note\" between 0.5 and 0.7",
+            metrics: &[("Column.note.Completeness", NOTE_COMPLETENESS)],
+        },
+        MetricCase {
+            case: "a column holding no value twice",
+            rule: "IsUnique \"id\"",
+            metrics: &[("Column.id.Uniqueness", 1.0)],
+        },
+        MetricCase {
+            case: "uniqueness under a condition the rule states",
+            rule: "Uniqueness \"status\" < 0.5",
+            metrics: &[("Column.status.Uniqueness", STATUS_UNIQUENESS)],
+        },
+        MetricCase {
+            case: "a count of a column's distinct values",
+            rule: "DistinctValuesCount \"status\" = 2",
+            metrics: &[("Column.status.DistinctValuesCount", 2.0)],
+        },
+        MetricCase {
+            // A rule addresses a column folded, so the metric carries the name the TABLE
+            // declares rather than the casing the rule was written in.
+            case: "a column the rule addresses in another casing",
+            rule: "IsComplete \"ID\"",
+            metrics: &[("Column.id.Completeness", 1.0)],
+        },
+        MetricCase {
+            case: "a rule decided off the schema alone",
+            rule: "ColumnExists \"id\"",
+            metrics: &[],
+        },
+        MetricCase {
+            case: "a condition every row's value either satisfies or does not",
+            rule: "ColumnValues \"status\" in [ \"ACTIVE\", \"INACTIVE\" ]",
+            metrics: &[],
+        },
+    ];
+
+    for (position, MetricCase { case, rule, metrics }) in cases.into_iter().enumerate() {
+        let ruleset = format!("metric-ruleset-{position}");
+        store_ruleset(&router, &ruleset, &[rule]).await;
+        let run_id = start_run(&router, "metrics", &[ruleset.as_str()]).await;
+        make_terminal_status_due(&engine);
+        let run = get_run(&router, &run_id).await;
+        let ids = result_ids(&run);
+        assert_eq!(
+            ids.len(),
+            1,
+            "case {case:?}: the run evaluated one ruleset, so it publishes one result, got {run}"
+        );
+
+        let result = get_result(&router, &ids[0]).await;
+        let reported = result
+            .get("RuleResults")
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("case {case:?}: the result reports RuleResults, got {result}"));
+        assert_eq!(
+            reported.len(),
+            1,
+            "case {case:?}: the ruleset declares one rule, so one entry is reported, got \
+             {reported:?}"
+        );
+        let entry = &reported[0];
+        assert_eq!(
+            entry.get("Description").and_then(Value::as_str),
+            Some(rule),
+            "case {case:?}: the entry is of the rule {rule:?}, got {entry}"
+        );
+
+        let evaluated = entry.get("EvaluatedMetrics");
+        if metrics.is_empty() {
+            assert!(
+                evaluated.is_none(),
+                "case {case:?}: checking {rule:?} measures no metric, so none is reported, got \
+                 {entry}"
+            );
+            continue;
+        }
+        let evaluated = evaluated.and_then(Value::as_object).unwrap_or_else(|| {
+            panic!("case {case:?}: the entry reports EvaluatedMetrics, got {entry}")
+        });
+        assert_eq!(
+            evaluated.len(),
+            metrics.len(),
+            "case {case:?}: one entry per metric the check measured, got {entry}"
+        );
+        for (name, expected) in metrics.iter().copied() {
+            let measured = evaluated
+                .get(name)
+                .and_then(Value::as_f64)
+                .unwrap_or_else(|| {
+                    panic!("case {case:?}: the metric {name:?} is reported as a number, got {entry}")
+                });
+            assert!(
+                (measured - expected).abs() < SCORE_TOLERANCE,
+                "case {case:?}: the metric {name:?} measures {expected}, got {measured}"
+            );
+        }
+    }
+}

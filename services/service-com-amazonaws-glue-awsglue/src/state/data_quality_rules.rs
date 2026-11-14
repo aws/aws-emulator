@@ -17,11 +17,80 @@
 
 use super::*;
 
-/// How one rule's check came out: whether the rows satisfied it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// How one rule's check came out: whether the rows satisfied it, and the metric the check
+/// MEASURED over them.
+#[derive(Debug, Clone, PartialEq)]
 pub struct DqdlRuleOutcome {
     /// Whether the rows satisfied the rule.
     pub passed: bool,
+    /// What the check measured, where the rule's type measures a metric of the data:
+    /// `None` for one decided without measuring any — a rule type whose statement is about
+    /// the SCHEMA, or a condition each row either satisfies or does not.
+    pub metric: Option<DqdlRuleMetric>,
+}
+
+/// A metric one rule's check measured over the data: the value it measured, under the name
+/// the metric is reported by (`DataQualityRuleResult$EvaluatedMetrics`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DqdlRuleMetric {
+    /// The metric's name, in the namespace of what it is a metric OF
+    /// ([`dataset_metric`], [`column_metric`]).
+    pub name: String,
+    /// The value this check measured.
+    pub value: f64,
+}
+
+/// The metric a count of the rows measures, which is what the DQDL rule type of the same
+/// name states a condition on — a rule type is named after the metric it measures.
+const METRIC_ROW_COUNT: &str = "RowCount";
+
+/// The metric a count of the declared columns measures.
+const METRIC_COLUMN_COUNT: &str = "ColumnCount";
+
+/// The metric the fraction of rows in which a column holds a value measures: what the
+/// `Completeness` rule type states a condition on, and what `IsComplete` checks is whole.
+const METRIC_COMPLETENESS: &str = "Completeness";
+
+/// The metric the fraction of a column's values occurring once measures: what the
+/// `Uniqueness` rule type states a condition on, and what `IsUnique` checks is whole.
+const METRIC_UNIQUENESS: &str = "Uniqueness";
+
+/// The metric a count of a column's distinct values measures.
+const METRIC_DISTINCT_VALUES_COUNT: &str = "DistinctValuesCount";
+
+/// How long a metric's name may be: `EvaluatedMetricsMap`'s key is a `NameString` of
+/// `length 1..255`, so a name past it is not one that map carries.
+const MAX_METRIC_NAME: usize = 255;
+
+/// The name a metric of the WHOLE dataset is reported by: the dataset namespace, whose
+/// column part is the `*` standing for no one column — `Dataset.*.RowCount`, for a count of
+/// its rows.
+fn dataset_metric(metric: &str, value: f64) -> Option<DqdlRuleMetric> {
+    metric_named(format!("Dataset.*.{metric}"), value)
+}
+
+/// The name a metric of ONE column is reported by: the column namespace, under the column's
+/// name as the TABLE declares it (a rule addresses a column folded, so the name the metric
+/// carries is the declared one) — `Column.status.Completeness`, for how complete it is.
+fn column_metric(
+    rows: &TableRows,
+    column: &str,
+    metric: &str,
+    value: f64,
+) -> Option<DqdlRuleMetric> {
+    let position = rows.column_position(column)?;
+    let declared = rows.columns.get(position)?;
+    metric_named(format!("Column.{declared}.{metric}"), value)
+}
+
+/// A metric under `name`, or `None` where that name is not one the metric map can carry
+/// ([`MAX_METRIC_NAME`]): a column named long enough to push it past the bound leaves the
+/// metric unreported rather than reported under a name cut to fit.
+fn metric_named(name: String, value: f64) -> Option<DqdlRuleMetric> {
+    let length = name.chars().count();
+    (1..=MAX_METRIC_NAME)
+        .contains(&length)
+        .then_some(DqdlRuleMetric { name, value })
 }
 
 /// Check the DQDL rule `rule` against `rows`, or `None` when it is not a rule this
@@ -32,15 +101,23 @@ pub fn evaluate_dqdl_rule(rule: &str, rows: &TableRows) -> Option<DqdlRuleOutcom
     let DqdlToken::Word(kind) = kind else {
         return None;
     };
-    let passed = match kind.to_ascii_lowercase().as_str() {
+    // Each arm answers whether the rows satisfied the rule and, where its type measures one,
+    // the metric the check measured over them.
+    let (passed, metric) = match kind.to_ascii_lowercase().as_str() {
         // A count of the rows read, and of the columns the table declares.
         "rowcount" => {
             let count = numeric(rows.rows.len());
-            condition_of(rest)?.admits(count)
+            (
+                condition_of(rest)?.admits(count),
+                dataset_metric(METRIC_ROW_COUNT, count),
+            )
         }
         "columncount" => {
             let count = numeric(rows.columns.len());
-            condition_of(rest)?.admits(count)
+            (
+                condition_of(rest)?.admits(count),
+                dataset_metric(METRIC_COLUMN_COUNT, count),
+            )
         }
         // Whether the table declares the column at all, which is decided off its schema
         // rather than off any row. A rule of this type states nothing beyond the column, so
@@ -49,7 +126,9 @@ pub fn evaluate_dqdl_rule(rule: &str, rows: &TableRows) -> Option<DqdlRuleOutcom
         "columnexists" => {
             let (column, rest) = column_of(rest)?;
             nothing_further(rest)?;
-            rows.column_position(&column).is_some()
+            // Decided off the SCHEMA, so this check measures nothing over the rows and the
+            // result reports no metric for it.
+            (rows.column_position(&column).is_some(), None)
         }
         // The two rule types that are a fixed condition on a fraction: a complete column
         // has a value in every row, and a unique one has no value twice. Each states nothing
@@ -58,30 +137,50 @@ pub fn evaluate_dqdl_rule(rule: &str, rows: &TableRows) -> Option<DqdlRuleOutcom
             let (column, rest) = column_of(rest)?;
             nothing_further(rest)?;
             let cells = rows.column_cells(&column)?;
-            completeness(&cells) >= 1.0
+            let measured = completeness(&cells);
+            (
+                measured >= 1.0,
+                column_metric(rows, &column, METRIC_COMPLETENESS, measured),
+            )
         }
         "isunique" => {
             let (column, rest) = column_of(rest)?;
             nothing_further(rest)?;
             let cells = rows.column_cells(&column)?;
-            uniqueness(&cells) >= 1.0
+            let measured = uniqueness(&cells);
+            (
+                measured >= 1.0,
+                column_metric(rows, &column, METRIC_UNIQUENESS, measured),
+            )
         }
         // The same two fractions, and the distinct-value count, under a condition the rule
         // states.
         "completeness" => {
             let (column, rest) = column_of(rest)?;
             let cells = rows.column_cells(&column)?;
-            condition_of(rest)?.admits(completeness(&cells))
+            let measured = completeness(&cells);
+            (
+                condition_of(rest)?.admits(measured),
+                column_metric(rows, &column, METRIC_COMPLETENESS, measured),
+            )
         }
         "uniqueness" => {
             let (column, rest) = column_of(rest)?;
             let cells = rows.column_cells(&column)?;
-            condition_of(rest)?.admits(uniqueness(&cells))
+            let measured = uniqueness(&cells);
+            (
+                condition_of(rest)?.admits(measured),
+                column_metric(rows, &column, METRIC_UNIQUENESS, measured),
+            )
         }
         "distinctvaluescount" => {
             let (column, rest) = column_of(rest)?;
             let cells = rows.column_cells(&column)?;
-            condition_of(rest)?.admits(numeric(distinct_values(&cells)))
+            let measured = numeric(distinct_values(&cells));
+            (
+                condition_of(rest)?.admits(measured),
+                column_metric(rows, &column, METRIC_DISTINCT_VALUES_COUNT, measured),
+            )
         }
         // A condition on the VALUES: every row's cell has to satisfy it, so one row that
         // does not is what fails the rule.
@@ -89,11 +188,13 @@ pub fn evaluate_dqdl_rule(rule: &str, rows: &TableRows) -> Option<DqdlRuleOutcom
             let (column, rest) = column_of(rest)?;
             let cells = rows.column_cells(&column)?;
             let condition = value_condition_of(rest)?;
-            cells.iter().all(|cell| condition.admits(*cell))
+            // A condition each row either satisfies or does not: what this check decides is
+            // that, and it measures no metric of the column to report.
+            (cells.iter().all(|cell| condition.admits(*cell)), None)
         }
         _ => return None,
     };
-    Some(DqdlRuleOutcome { passed })
+    Some(DqdlRuleOutcome { passed, metric })
 }
 
 /// A count as the number a condition is checked against.
