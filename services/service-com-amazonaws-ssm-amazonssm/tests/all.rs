@@ -43,6 +43,8 @@ mod command_history;
 mod default_patch_baselines;
 #[path = "all/documents.rs"]
 mod documents;
+#[path = "all/ecs_optimized_image_manifests.rs"]
+mod ecs_optimized_image_manifests;
 #[path = "all/execution_previews.rs"]
 mod execution_previews;
 #[path = "all/hybrid_activations.rs"]

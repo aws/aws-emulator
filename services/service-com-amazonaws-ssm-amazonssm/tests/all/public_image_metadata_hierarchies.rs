@@ -18,13 +18,16 @@
 //! `ec2Query` form POST for the Amazon EC2 read. Nothing reaches into a state struct.
 //!
 //! The rows are the hierarchies this emulator publishes, written out with the leaves each one
-//! holds: the recommended ECS-optimized Amazon Linux 2023 AMIs (Amazon ECS Developer Guide,
-//! "Retrieve Amazon ECS-optimized AMI metadata", whose recommended path publishes the image's
-//! id and name, its build version, the operating system it is built on, the base AMI it was
-//! built from, the container agent and runtime versions it ships and the schema version of
-//! the hierarchy) and the recommended Bottlerocket builds (which publish an id and a
-//! version). WHICH builds and versions are published is service-published data no model
-//! describes: recorded behaviour.
+//! holds: the recommended ECS-optimized AMIs of every variant Amazon ECS recommends a
+//! container host for (Amazon ECS Developer Guide, "Retrieve Amazon ECS-optimized AMI
+//! metadata", whose recommended path publishes the image's id and name, its build version, the
+//! operating system it is built on, the base AMI it was built from, the container agent and
+//! runtime versions it ships and the schema version of the hierarchy) and the recommended
+//! Bottlerocket builds (which publish an id and a version). WHICH builds and versions are
+//! published is service-published data no model describes: recorded behaviour.
+//!
+//! What the path ITSELF resolves to for a hierarchy published as a manifest is
+//! `ecs_optimized_image_manifests`; this suite owns the leaves.
 
 use super::parameter_store::REGION;
 use super::public_parameter_catalog::{
@@ -55,16 +58,41 @@ const ECS_OPTIMIZED_LEAVES: &[&str] = &[
 /// The leaves a Bottlerocket `latest` path publishes.
 const BOTTLEROCKET_LEAVES: &[&str] = &["image_id", "image_version"];
 
-/// The hierarchies under test: both architectures of the ECS-optimized Amazon Linux 2023 AMI
-/// and of the Bottlerocket build for Amazon ECS, so the rows differ in the publishing
-/// service, the path form and the architecture.
+/// The hierarchies under test: every ECS-optimized variant and both architectures of the
+/// Bottlerocket build for Amazon ECS, so the rows differ in the publishing service, the path
+/// form, the operating-system family, the architecture and the accelerator the build carries
+/// drivers for.
 const HIERARCHIES: &[Hierarchy] = &[
+    Hierarchy {
+        path: "/aws/service/ecs/optimized-ami/amazon-linux-2/recommended",
+        leaves: ECS_OPTIMIZED_LEAVES,
+    },
+    Hierarchy {
+        path: "/aws/service/ecs/optimized-ami/amazon-linux-2/arm64/recommended",
+        leaves: ECS_OPTIMIZED_LEAVES,
+    },
+    Hierarchy {
+        path: "/aws/service/ecs/optimized-ami/amazon-linux-2/gpu/recommended",
+        leaves: ECS_OPTIMIZED_LEAVES,
+    },
+    Hierarchy {
+        path: "/aws/service/ecs/optimized-ami/amazon-linux-2/inf/recommended",
+        leaves: ECS_OPTIMIZED_LEAVES,
+    },
     Hierarchy {
         path: "/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended",
         leaves: ECS_OPTIMIZED_LEAVES,
     },
     Hierarchy {
         path: "/aws/service/ecs/optimized-ami/amazon-linux-2023/arm64/recommended",
+        leaves: ECS_OPTIMIZED_LEAVES,
+    },
+    Hierarchy {
+        path: "/aws/service/ecs/optimized-ami/amazon-linux-2023/gpu/recommended",
+        leaves: ECS_OPTIMIZED_LEAVES,
+    },
+    Hierarchy {
+        path: "/aws/service/ecs/optimized-ami/amazon-linux-2023/neuron/recommended",
         leaves: ECS_OPTIMIZED_LEAVES,
     },
     Hierarchy {
