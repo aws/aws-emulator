@@ -2582,3 +2582,11 @@ mod cloudformation_provisions_cloudfront_resources;
 // one: two landings each appended a declaration of it to this tail, and a module may be
 // (`apigatewaymanagementapi_manage_connections_authorization` is declared ONCE, further up
 // this tail, for the same reason.)
+// it was appended here as well while two branches were landing at once, and a module may be
+// Declared here, ONCE: whether a stack-deployed metric-stream estate drains was appended both
+// here and further down this tail in the same window, which declared it twice and compiled it
+// nowhere.
+// (`cloudformation_metric_stream_filter_update` is declared in the head region above: it was
+// appended here as well while two branches were landing at once, and a module may be declared
+// (`https_front_door_concurrent_pooled_producer` is declared once, further up this tail: it
+// was appended here as well while two branches were landing at once, and a module may be

@@ -43,3 +43,5 @@ mod service_role_read_is_a_pure_report;
 mod shared_endpoint_routing;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
+#[path = "all/tag_resource_write_scope.rs"]
+mod tag_resource_write_scope;

@@ -535,6 +535,58 @@ mod tests {
         }
     }
 
+    /// A schedule's PERIOD is the gap between two CONSECUTIVE instants it names, the same
+    /// span wherever in the cycle it is measured from — which is what a query stating no
+    /// lookback reads back over. Measuring from an instant inside a cycle, where a query's
+    /// first run falls, must not answer the REMAINDER of that cycle.
+    ///
+    /// Every instant below is a fixed epoch value, so no row depends on the wall clock.
+    #[test]
+    fn a_schedules_period_is_the_gap_between_two_instants_it_names() {
+        /// 2026-01-01T00:00:00Z.
+        const MIDNIGHT_MS: i64 = 1_767_225_600_000;
+        const MINUTE_MS: i64 = 60 * 1_000;
+        const HOUR_MS: i64 = 60 * MINUTE_MS;
+        const DAY_MS: i64 = 24 * HOUR_MS;
+
+        // (case, the expression, the period it names)
+        let schedules: [(&str, &str, i64); 5] = [
+            ("a daily cron", "cron(0 3 * * ? *)", DAY_MS),
+            ("an hourly cron", "cron(0 * * * ? *)", HOUR_MS),
+            ("a cron every five minutes", "cron(*/5 * * * ? *)", 5 * MINUTE_MS),
+            ("a rate of five minutes", "rate(5 minutes)", 5 * MINUTE_MS),
+            ("a rate of one day", "rate(1 day)", DAY_MS),
+        ];
+        // Where the measurement is taken from: the top of the day, just after and just before
+        // the instant the daily row names, and the middle of its cycle.
+        let measured_from: [(&str, i64); 4] = [
+            ("at midnight", MIDNIGHT_MS),
+            (
+                "one millisecond after the daily instant",
+                MIDNIGHT_MS + 3 * HOUR_MS + 1,
+            ),
+            ("halfway through the day", MIDNIGHT_MS + 15 * HOUR_MS),
+            (
+                "one minute before the daily instant",
+                MIDNIGHT_MS + 3 * HOUR_MS - MINUTE_MS,
+            ),
+        ];
+        for (schedule_case, expression, period) in schedules {
+            let schedule = schedule_of(expression).unwrap_or_else(|| {
+                panic!("case {schedule_case:?}: {expression:?} names a schedule")
+            });
+            for (from_case, instant_ms) in measured_from {
+                let actual = schedule.interval_after(instant_ms, None);
+                assert_eq!(
+                    actual,
+                    Some(period),
+                    "case {schedule_case:?} measured {from_case:?}: expected a period of \
+                     {period} ms, got {actual:?}"
+                );
+            }
+        }
+    }
+
     /// A write that states no end offset resolves to the documented one; a write that states
     /// one resolves to exactly it, including the boundary values.
     #[test]
