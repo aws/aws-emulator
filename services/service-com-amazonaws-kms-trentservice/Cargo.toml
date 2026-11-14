@@ -35,6 +35,16 @@ sm2 = { version = "0.14", default-features = false, features = [
     "pkcs8",
     "std",
 ] }
+# Ed25519ph, the PREHASHED Edwards25519 signature scheme of RFC 8032 Section 5.1, which
+# aws-lc-rs does not expose; already in this workspace's lock file. `hazmat` is what lets
+# the scheme be driven from the digest a caller submits, with the scheme's own hashing
+# left as the standard defines it.
+ed25519-dalek = { version = "2", default-features = false, features = [
+    "digest",
+    "hazmat",
+    "pkcs8",
+    "std",
+] }
 # KeyMaterialId (64 lowercase hex characters) and the opaque ListKeys marker.
 sha2 = { workspace = true }
 hex = { workspace = true }

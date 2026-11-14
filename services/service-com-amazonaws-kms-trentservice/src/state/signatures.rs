@@ -90,14 +90,24 @@ pub fn signs_message_type(signing_algorithm: &str, message_type: &str) -> bool {
 /// (`smithy_query(query="doc",shape="SignRequest",member="MessageType")`). `None` for
 /// an algorithm that signs either the message or its digest, which is every other one.
 ///
-/// It is the table [`signs_message_type`] judges a request against, so the predicate
-/// and the refusal that names the requirement cannot disagree.
+/// It is the table [`signs_message_type`] judges a request against, so the predicate and
+/// the one message type an algorithm takes cannot disagree.
 pub fn required_message_type(signing_algorithm: &str) -> Option<&'static str> {
     match signing_algorithm {
         SIGNING_ALGORITHM_ED25519_SHA_512 => Some(MESSAGE_TYPE_RAW),
         SIGNING_ALGORITHM_ED25519_PH_SHA_512 => Some(MESSAGE_TYPE_DIGEST),
         _ => None,
     }
+}
+
+/// The message a request is refused with when the `MessageType` it names is not one
+/// `signing_algorithm` takes ([`signs_message_type`] is that judgement): fixed text
+/// around the message type and the algorithm, both as the request named them.
+///
+/// ONE function for every operation that signs or verifies a message, so the refusal of
+/// one cannot be worded differently from the refusal of another.
+pub fn incompatible_message_type_message(message_type: &str, signing_algorithm: &str) -> String {
+    format!("Message type {message_type} is incompatible with algorithm {signing_algorithm}.")
 }
 
 /// Why no signature could be produced for a request the key and the algorithm are
@@ -175,9 +185,17 @@ pub fn sign_message(
                 Ed25519KeyPair::from_pkcs8(private_key).map_err(|_| SignatureRefusal::Failed)?;
             Ok(pair.sign(message).as_ref().to_vec())
         }
-        // The prehashed Ed25519 scheme of FIPS 186-5 Section 7.8.1 and the SM2DSA of
-        // GM/T 0003-2012 are the two signature schemes no library reachable from here
-        // produces a signature with.
+        // Prehashed Ed25519 signs the SHA-512 digest of the message — the digest the
+        // caller computed and submitted — under the prehash flag of RFC 8032 Section
+        // 5.1, which is why its signature over a message is not the pure Ed25519
+        // signature over that same message.
+        KeyPairKind::Ed25519 if signing_algorithm == SIGNING_ALGORITHM_ED25519_PH_SHA_512 => {
+            let digest = signed_digest(signing_algorithm, message_type, message)?;
+            super::ed25519ph::sign_prehash(private_key, digest.as_ref())
+                .ok_or(SignatureRefusal::Failed)
+        }
+        // The SM2DSA of GM/T 0003-2012 is the one signature scheme no library reachable
+        // from here produces a signature with.
         KeyPairKind::Ed25519 | KeyPairKind::Sm2 => Err(SignatureRefusal::Unsupported),
     }
 }
@@ -252,13 +270,27 @@ pub fn signature_matches(
     message: &[u8],
     signature: &[u8],
 ) -> Result<bool, SignatureRefusal> {
-    let (Some(private_key), Some(algorithm)) = (
-        key.material.private_key_pkcs8(),
-        verification_algorithm(&key.key_spec, signing_algorithm),
-    ) else {
+    let Some(private_key) = key.material.private_key_pkcs8() else {
         return Err(SignatureRefusal::Unsupported);
     };
 
+    // Prehashed Ed25519 is checked over the digest the request carries, by the library
+    // that implements that scheme — the same one the signature was produced with.
+    if signing_algorithm == SIGNING_ALGORITHM_ED25519_PH_SHA_512
+        && matches!(key_pair_kind(&key.key_spec), Some(KeyPairKind::Ed25519))
+    {
+        let digest = signed_digest(signing_algorithm, message_type, message)?;
+        return super::ed25519ph::prehash_signature_matches(
+            private_key,
+            digest.as_ref(),
+            signature,
+        )
+        .ok_or(SignatureRefusal::Failed);
+    }
+
+    let Some(algorithm) = verification_algorithm(&key.key_spec, signing_algorithm) else {
+        return Err(SignatureRefusal::Unsupported);
+    };
     let public_key =
         public_key_spki(&key.key_spec, private_key).ok_or(SignatureRefusal::Failed)?;
     let parsed = ::aws_lc_rs::signature::ParsedPublicKey::new(algorithm, &public_key)
@@ -276,9 +308,10 @@ pub fn signature_matches(
 /// The RSA schemes are verified for any modulus the specs allow, and each curve spec
 /// names its own curve, so the parameters a signature is checked with are the key's own
 /// rather than the ones a request asked for. `None` for a pairing no library reachable
-/// from here verifies — the prehashed Ed25519 scheme and SM2DSA, which [`sign_message`]
-/// likewise produces no signature with, and ML-DSA, whose key pair this service does not
-/// hold.
+/// from here verifies THIS way — SM2DSA, which [`sign_message`] likewise produces no
+/// signature with; ML-DSA, whose key pair this service does not hold; and the prehashed
+/// Ed25519 scheme, which [`signature_matches`] checks through the library that
+/// implements it before it asks here.
 fn verification_algorithm(
     key_spec: &str,
     signing_algorithm: &str,

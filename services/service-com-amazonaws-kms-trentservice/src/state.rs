@@ -55,6 +55,7 @@ pub mod cloud_hsm;
 // where the item lives.
 mod asymmetric;
 mod cryptography;
+mod ed25519ph;
 mod grants;
 mod import;
 mod macs;

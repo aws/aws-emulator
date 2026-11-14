@@ -383,21 +383,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .clone()
             .unwrap_or_else(|| crate::state::MESSAGE_TYPE_RAW.to_string());
         if !crate::state::signs_message_type(&input.signing_algorithm, &message_type) {
-            // An algorithm that takes exactly one message type is refused in the words
-            // the model states that requirement in; the only other way to reach here is
-            // the external μ of ML-DSA named for an algorithm that is not ML-DSA.
-            let message = match crate::state::required_message_type(&input.signing_algorithm) {
-                Some(required) => format!(
-                    "{} signing algorithm requires KMS MessageType:{required}.",
-                    input.signing_algorithm
+            // A message type the algorithm does not sign — the one message type each
+            // Edwards25519 algorithm does not take, or the external μ of ML-DSA named
+            // for an algorithm that is not ML-DSA — is refused as that pairing being
+            // incompatible, which is the class of refusal it is.
+            return Err(crate::scaffolded::Scaffolded::validation(
+                crate::state::incompatible_message_type_message(
+                    &message_type,
+                    &input.signing_algorithm,
                 ),
-                None => format!(
-                    "MessageType:{message_type} is the 64-byte representative μ used in \
-                     ML-DSA signing; the {} signing algorithm does not sign one.",
-                    input.signing_algorithm
-                ),
-            };
-            return Err(crate::scaffolded::Scaffolded::validation(message));
+            ));
         }
         // "When the value of MessageType is DIGEST, the length of the Message value
         // must match the length of hashed messages for the specified signing algorithm"

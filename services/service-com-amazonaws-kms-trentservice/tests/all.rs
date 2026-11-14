@@ -47,6 +47,8 @@ mod data_key_pair_without_plaintext;
 mod data_key_without_plaintext;
 #[path = "all/decrypt_key_origin.rs"]
 mod decrypt_key_origin;
+#[path = "all/ed25519_prehash.rs"]
+mod ed25519_prehash;
 #[path = "all/encryption_context_conditions.rs"]
 mod encryption_context_conditions;
 #[path = "all/encryption_context_validation.rs"]

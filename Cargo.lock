@@ -3322,6 +3322,7 @@ dependencies = [
  "fiat-crypto 0.2.9",
  "rustc_version",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -3763,6 +3764,7 @@ version = "2.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
 dependencies = [
+ "pkcs8 0.10.2",
  "signature",
 ]
 
@@ -3774,8 +3776,11 @@ checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
 dependencies = [
  "curve25519-dalek",
  "ed25519",
+ "serde",
  "sha2 0.10.9",
+ "signature",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -15209,6 +15214,7 @@ dependencies = [
  "aws-smithy-schema 0.2.1",
  "aws-smithy-types",
  "bytes",
+ "ed25519-dalek",
  "hex",
  "http",
  "ring",
@@ -21142,6 +21148,10 @@ name = "signature"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
+dependencies = [
+ "digest 0.10.7",
+ "rand_core 0.6.4",
+]
 
 [[package]]
 name = "simd-adler32"

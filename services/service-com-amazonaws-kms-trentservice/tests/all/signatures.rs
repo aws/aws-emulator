@@ -736,7 +736,6 @@ const UNSUPPORTED_CASES: &[(&str, &str)] = &[
     ("ML_DSA_65", "ML_DSA_SHAKE_256"),
     ("ML_DSA_87", "ML_DSA_SHAKE_256"),
     ("SM2", "SM2DSA"),
-    ("ECC_NIST_EDWARDS25519", "ED25519_PH_SHA_512"),
 ];
 
 /// A scheme nothing here signs with answers the scaffold's 501, never a fabricated
@@ -757,19 +756,11 @@ async fn unsupported_signature_schemes_are_not_implemented() {
         )
         .await;
         let key_id = text(&label, &metadata, "KeyId");
-        // The prehashed Ed25519 scheme takes a digest, and ML-DSA and SM2DSA take the
-        // message; each row sends the message type its algorithm requires, so the 501
-        // is about the scheme and not about the request.
-        let message_type = if *signing_algorithm == "ED25519_PH_SHA_512" {
-            DIGEST
-        } else {
-            RAW
-        };
-        let message = if message_type == DIGEST {
-            digest::digest(&digest::SHA512, b"prehashed").as_ref().to_vec()
-        } else {
-            message_of(32)
-        };
+        // ML-DSA and SM2DSA sign the message itself, so each row sends the message type
+        // its algorithm takes and the 501 is about the scheme and not about the request.
+        // Both Edwards25519 schemes are signed here now, so neither is a row.
+        let message_type = RAW;
+        let message = message_of(32);
 
         let (status, payload) = call(
             &router,

@@ -975,15 +975,14 @@ async fn refuses_every_request_that_cannot_be_checked() {
 }
 
 /// The signature schemes a KMS key can be created for and no library in this workspace
-/// verifies a signature with: ML-DSA, whose key pair is not generated here at all, the
-/// SM2DSA of GM/T 0003-2012, and the prehashed Ed25519 of FIPS 186-5. Such a request is
+/// verifies a signature with: ML-DSA, whose key pair is not generated here at all, and
+/// the SM2DSA of GM/T 0003-2012. Such a request is
 /// answered as not implemented rather than with a verification nothing performed.
 const UNVERIFIABLE_CASES: &[(&str, &str)] = &[
     ("ML_DSA_44", "ML_DSA_SHAKE_256"),
     ("ML_DSA_65", "ML_DSA_SHAKE_256"),
     ("ML_DSA_87", "ML_DSA_SHAKE_256"),
     ("SM2", "SM2DSA"),
-    ("ECC_NIST_EDWARDS25519", "ED25519_PH_SHA_512"),
 ];
 
 /// A scheme nothing here verifies with answers the scaffold's 501, never a fabricated
@@ -1004,19 +1003,12 @@ async fn unverifiable_schemes_are_not_implemented() {
         )
         .await;
         let key_id = text(&label, &metadata, "KeyId");
-        // The prehashed Ed25519 scheme takes a digest, and ML-DSA and SM2DSA take the
-        // message; each row sends the message type its algorithm requires, so the 501 is
-        // about the scheme and not about the request.
-        let message_type = if *signing_algorithm == "ED25519_PH_SHA_512" {
-            DIGEST
-        } else {
-            RAW
-        };
-        let message = if message_type == DIGEST {
-            digest::digest(&digest::SHA512, b"prehashed").as_ref().to_vec()
-        } else {
-            message_of(32)
-        };
+        // ML-DSA and SM2DSA verify over the message itself, so each row sends the
+        // message type its algorithm takes and the 501 is about the scheme and not about
+        // the request. Both Edwards25519 schemes are verified here now, so neither is a
+        // row.
+        let message_type = RAW;
+        let message = message_of(32);
 
         let (status, payload) = call(
             &router,
