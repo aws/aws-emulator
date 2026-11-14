@@ -398,6 +398,10 @@ impl ComAmazonawsEc2Amazonec2State {
         // at its exit instant whether or not anybody called, so that deletion is applied
         // before anything reads the bin.
         self.delete_due_recycled_volumes(now);
+        // The other clock-owed removal of a volume: one whose encryption key refused its data
+        // key never became available and was withdrawn at that instant, whether or not
+        // anybody called.
+        self.withdraw_due_unencryptable_volumes(now);
         // An AMI usage report past its `ExpirationTime` was deleted by EC2 at that instant —
         // "30 days after the report was created" — and a `pending` report reaches `available`
         // once its own due instant has passed; both were owed whether or not anybody called.

@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListInstances
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListInstances`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListInstances::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports the Amazon EC2 instances a cluster's collections were provisioned from — one
+//! record per instance Amazon EC2 launched for it ([`crate::state::ClusterInstanceRecord`])
+//! — narrowed by the collection, collection type and instance states the request filters on
+//! and paginated on `Marker`. Every instance is projected from the record `RunJobFlow`
+//! persisted when it asked Amazon EC2 for that capacity, so nothing here is built from this
+//! request. It is the ONLY file to touch for `ListInstances`.
 //!
 //! ## Shape of an operation
 //!
@@ -156,18 +153,154 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListInstances` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListInstancesErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
+        use crate::state::LIST_INSTANCES_PAGE_SIZE;
+
+        let _ = ctx;
+        let now = ::std::time::SystemTime::now();
+
+        // The SHAPE of the cluster id is settled BEFORE any cluster is resolved: a value
+        // carrying characters no cluster id is drawn from names no cluster the service
+        // could hold, so it is refused as a bad REQUEST — the request-validation
+        // envelope, HTTP 400, naming the member — rather than looked up. The same reading
+        // every cluster-scoped listing of this service makes.
+        if !crate::state::is_cluster_id_shaped(&input.cluster_id) {
+            return Err(crate::scaffolded::Scaffolded::validation(
+                crate::state::malformed_cluster_id_message(&input.cluster_id),
+            ));
+        }
+
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(ListInstancesErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: Some("the EMR cluster store is unavailable".to_string()),
+                },
+            )
+            .into());
+        };
+        let mut store = state.lock();
+
+        // A listing reports instance state, so every transition the clock already made due
+        // is materialised first: an instance whose provisioning span has passed is RUNNING,
+        // and the instances of a cluster whose termination came due are TERMINATED.
+        let Some(cluster) = store.cluster_mut(&input.cluster_id, now) else {
+            return Err(ListInstancesErrorModeled::InvalidRequestException(
+                crate::state::unknown_cluster(&input.cluster_id),
+            )
+            .into());
+        };
+
+        // Which COLLECTIONS the request's type filters select: "the type of instance group
+        // for which to list the instances" (`InstanceGroupTypes`) and "the node type of the
+        // instance fleet" (`InstanceFleetType`) name a collection by its role, so each is
+        // resolved to the collections of the cluster that fill it and the instances are
+        // then selected by the collection they belong to. A filter is read
+        // case-insensitively, the way every modelled enum value this service compares is.
+        let selected_groups: Option<Vec<String>> = input.instance_group_types.as_ref().map(|types| {
+            cluster
+                .groups
+                .iter()
+                .filter(|group| {
+                    types
+                        .iter()
+                        .any(|named| named.eq_ignore_ascii_case(&group.config.instance_role))
+                })
+                .map(|group| group.id.clone())
+                .collect()
+        });
+        let selected_fleets: Option<Vec<String>> = input.instance_fleet_type.as_deref().map(|kind| {
+            cluster
+                .fleets
+                .iter()
+                .filter(|fleet| kind.eq_ignore_ascii_case(&fleet.config.instance_fleet_type))
+                .map(|fleet| fleet.id.clone())
+                .collect()
+        });
+
+        // The instances the request selects, in launch order — the order the cluster holds
+        // them in, which is what the marker below names a position in. Each filter the
+        // request carries narrows the selection; a request carrying none selects every
+        // instance of the cluster.
+        let selected: Vec<crate::state::ClusterInstanceRecord> = cluster
+            .ec2_instances
+            .iter()
+            .filter(|instance| {
+                input
+                    .instance_group_id
+                    .as_deref()
+                    .is_none_or(|group_id| {
+                        instance.instance_group_id.as_deref() == Some(group_id)
+                    })
+            })
+            .filter(|instance| {
+                input
+                    .instance_fleet_id
+                    .as_deref()
+                    .is_none_or(|fleet_id| {
+                        instance.instance_fleet_id.as_deref() == Some(fleet_id)
+                    })
+            })
+            .filter(|instance| {
+                selected_groups.as_ref().is_none_or(|group_ids| {
+                    instance
+                        .instance_group_id
+                        .as_ref()
+                        .is_some_and(|group_id| group_ids.contains(group_id))
+                })
+            })
+            .filter(|instance| {
+                selected_fleets.as_ref().is_none_or(|fleet_ids| {
+                    instance
+                        .instance_fleet_id
+                        .as_ref()
+                        .is_some_and(|fleet_id| fleet_ids.contains(fleet_id))
+                })
+            })
+            .filter(|instance| {
+                // "A list of instance states that will filter the instances returned with
+                // this request" (`InstanceStates`): the state is the one the clock has
+                // reached, already materialised above, so the filter compares against what
+                // the caller is shown.
+                input.instance_states.as_ref().is_none_or(|states| {
+                    states
+                        .iter()
+                        .any(|named| named.eq_ignore_ascii_case(&instance.state))
+                })
+            })
+            .cloned()
+            .collect();
+
+        // The marker is the id of the first instance the previous page did not report, so a
+        // page boundary survives instances being added between calls — the same pagination
+        // contract every cluster-scoped listing of this service keeps.
         //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListInstances"))
+        // The page's records are taken under the lock and PROJECTED after it is released:
+        // building the wire shapes is caller-driven work that no other request should wait
+        // on.
+        let start = match input.marker.as_ref() {
+            Some(marker) => match selected.iter().position(|instance| instance.id == *marker) {
+                Some(at) => at,
+                None => {
+                    return Err(ListInstancesErrorModeled::InvalidRequestException(
+                        crate::state::malformed_marker(marker),
+                    )
+                    .into())
+                }
+            },
+            None => 0,
+        };
+        let end = selected.len().min(start + LIST_INSTANCES_PAGE_SIZE);
+        let page = selected[start..end].to_vec();
+        let marker = selected.get(end).map(|instance| instance.id.clone());
+        drop(store);
+
+        let instances: Vec<Instance> = page
+            .iter()
+            .map(crate::state::ClusterInstanceRecord::to_instance)
+            .collect();
+
+        Ok(ListInstancesOutput {
+            instances: Some(instances),
+            marker,
+        })
     }
 }

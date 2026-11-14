@@ -152,6 +152,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let _ = ctx;
         let now = ::std::time::SystemTime::now();
+        // The Region this request was signed for, which is where the fleet's instances are
+        // launched: a cluster's instances live in the Region its endpoint answers on.
+        let region = crate::state::request_region(ctx.parts());
 
         // The SHAPE of the cluster id is settled BEFORE any cluster is resolved: a value
         // carrying characters no cluster id is drawn from names no cluster the service
@@ -174,6 +177,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
+        // Everything this call writes to the store happens inside this block, so the store's
+        // guard is out of scope — whichever branch was taken — before the Amazon EC2 launch
+        // below is awaited: a call into another service is never made while this service's
+        // guard is held.
+        let (fleet_id, cluster_arn, planned) = {
         let mut store = state.lock();
 
         // Everything the refusals below turn on, read once off the resolved cluster;
@@ -267,16 +275,64 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let fleet_id = store.mint_instance_fleet_id();
-        store
-            .clusters
-            .get_mut(&input.cluster_id)
-            .expect("the cluster was just resolved under this id")
-            .fleets
-            .push(InstanceFleetRecord::from_config(
+        if let Some(cluster) = store.clusters.get_mut(&input.cluster_id) {
+            cluster.fleets.push(InstanceFleetRecord::from_config(
                 fleet_id.clone(),
                 input.instance_fleet,
                 now,
             ));
+        }
+
+        // The capacity this fleet asks for is Amazon EC2's to provide, exactly as the
+        // capacity a cluster is launched with is ([`crate::ops::run_job_flow`]): the
+        // instances are launched in the service that OWNS instances and the ids it minted are
+        // kept on the cluster, which is what `ListInstances` reports for this fleet. What is
+        // asked for is read off the record just stored — through the map's own lookup, so no
+        // path here can panic — and CUT to the room this cluster has left BEFORE anything is
+        // asked of Amazon EC2 ([`crate::state::launches_within`]), so what is launched and
+        // what is recorded are the same set: an instance launched past the ceiling would be
+        // one no `ListInstances` names and no `TerminateJobFlows` releases. The store's guard
+        // is released before the call is made.
+        let planned = store.clusters.get(&input.cluster_id).map(|cluster| {
+            (
+                crate::state::launches_within(
+                    cluster
+                        .fleets
+                        .iter()
+                        .filter(|fleet| fleet.id == fleet_id)
+                        .flat_map(crate::state::fleet_launches)
+                        .collect(),
+                    crate::state::MAX_INSTANCES_PER_CLUSTER
+                        .saturating_sub(cluster.ec2_instances.len()),
+                ),
+                crate::state::LaunchPlacement::of(cluster),
+            )
+        });
+        drop(store);
+        (fleet_id, cluster_arn, planned)
+        };
+
+        let launched = match &planned {
+            Some((launches, placement)) => {
+                crate::state::launch_cluster_instances(ctx, &region, placement, launches).await
+            }
+            None => Vec::new(),
+        };
+        {
+            let mut launched_store = state.lock();
+            // Every instance Amazon EC2 launched is recorded: the plan it was asked for was
+            // already cut to the room this cluster has, so nothing it minted is dropped here.
+            let instance_ids: Vec<String> = (0..launched.len())
+                .map(|_| launched_store.mint_cluster_instance_id())
+                .collect();
+            if let Some(cluster) = launched_store.clusters.get_mut(&input.cluster_id) {
+                for (instance_id, launched) in instance_ids.into_iter().zip(launched) {
+                    cluster.ec2_instances.push(
+                        crate::state::ClusterInstanceRecord::launched(instance_id, launched, now),
+                    );
+                }
+            }
+        }
 
         Ok(AddInstanceFleetOutput {
             cluster_id: Some(input.cluster_id),

@@ -1875,18 +1875,22 @@ impl Secret {
     }
 
     /// The keys every version of this secret is encrypted under: the key the
-    /// secret names, or [`DEFAULT_ENCRYPTION_KEY_ID`] for a secret left on the
-    /// account's default Secrets Manager key, which is the key one that names
-    /// none is encrypted with (`CreateSecretRequest$KmsKeyId`, this service's
-    /// Smithy model). This is `SecretVersionsListEntry$KmsKeyIds`, "the KMS
+    /// secret's configuration NAMES, exactly as the secret holds it — the value
+    /// `DescribeSecret` reports as its `KmsKeyId`, in whichever of the forms
+    /// `KmsKeyId` accepts it was given ("the ARN, key ID, or alias of the KMS
+    /// key", `CreateSecretRequest$KmsKeyId`, this service's Smithy model) — and
+    /// [`DEFAULT_ENCRYPTION_KEY_ID`] only for a secret whose configuration names
+    /// NO key, which is the one case the service has no identifier of the
+    /// caller's to report. This is `SecretVersionsListEntry$KmsKeyIds`, "the KMS
     /// keys used to encrypt the secret version", and it is never empty: every
     /// version is encrypted under some key.
+    ///
+    /// So a secret pointed at the Amazon Web Services managed key BY NAME reports
+    /// that name, and only one that was never given a key at all reports the
+    /// token — which is what lets a caller tell the two apart after an update
+    /// that re-keys a secret onto the managed key.
     pub fn encryption_key_ids(&self) -> Vec<String> {
-        match self
-            .kms_key_id
-            .as_deref()
-            .filter(|key| !names_default_kms_key(key))
-        {
+        match self.kms_key_id.as_deref().filter(|key| !key.is_empty()) {
             Some(key) => vec![key.to_string()],
             None => vec![DEFAULT_ENCRYPTION_KEY_ID.to_string()],
         }

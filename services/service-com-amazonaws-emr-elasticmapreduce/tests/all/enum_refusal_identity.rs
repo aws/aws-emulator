@@ -526,9 +526,10 @@ async fn an_out_of_enum_value_is_refused_by_the_layer_that_reaches_it() {
 
 /// THE RULE's other half: a value the model declares is never refused at the
 /// boundary, whatever depth it sits at — it reaches the handler, which answers for
-/// itself. `ListInstances` and `ListSessions` are still scaffold stubs, so their rows
-/// name 501; naming the status per row is what keeps an implemented operation still
-/// answering 501, or a re-scaffolded one, from passing here silently.
+/// itself. Naming the status per row is what keeps a re-scaffolded operation from
+/// passing here silently: `ListInstances` and `ListSessions` are implemented, so the
+/// declared values reach their handlers, which then refuse the CLUSTER this suite names
+/// and holds none of.
 #[tokio::test]
 async fn a_declared_enum_value_reaches_the_handler_at_every_depth() {
     let emr = Emr::new();
@@ -563,7 +564,7 @@ async fn a_declared_enum_value_reaches_the_handler_at_every_depth() {
             "every declared InstanceState at once",
             "ListInstances",
             json!({ "ClusterId": cluster, "InstanceStates": INSTANCE_STATES }),
-            501,
+            400,
         ),
         (
             // `ListSessions` is implemented: the declared values reach the handler, which

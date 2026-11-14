@@ -21,6 +21,8 @@ mod block_public_access;
 mod cluster_defaults;
 #[path = "all/cluster_id_refusal_code.rs"]
 mod cluster_id_refusal_code;
+#[path = "all/cluster_instances.rs"]
+mod cluster_instances;
 #[path = "all/cluster_placement.rs"]
 mod cluster_placement;
 #[path = "all/cluster_read_facts.rs"]

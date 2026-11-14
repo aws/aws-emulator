@@ -349,6 +349,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 incomplete = true;
                 break;
             }
+            // A volume the clock has withdrawn is gone, so no report of a volume's status
+            // names it either — the same reading `DescribeVolumes` makes.
+            if record.is_withdrawn_at(now) {
+                continue;
+            }
             // The id narrowing is read off the stored record, so a volume the request did
             // not name costs no projection and no comparison at all.
             if !narrowing.is_empty()

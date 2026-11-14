@@ -193,50 +193,84 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 TerminateJobFlowsErrorModeled::InternalServerError(InternalServerError {}).into(),
             );
         };
-        let mut store = state.lock();
+        // Everything this call writes to the store happens inside this block, so the store's
+        // guard is out of scope — whichever branch was taken — before the Amazon EC2
+        // termination below is awaited: a call into another service is never made while this
+        // service's guard is held.
+        let (shut_down, released_instances, released_groups) = {
+            let mut store = state.lock();
 
-        // Resolve every id AND decide protection BEFORE changing anything, so a request
-        // naming one unknown id, or one locked cluster, terminates nothing. Both
-        // sentences of this legacy job-flow surface are CONSTANT: neither names an id,
-        // and the protected one is plural because the whole batch is judged at once. The
-        // decision is only COLLECTED here (the cluster it is about, and the sentence):
-        // answering it needs no store, so it is answered once the guard is gone.
-        let mut refusal: Option<(String, String)> = None;
-        for job_flow_id in &input.job_flow_ids {
-            let Some(cluster) = store.cluster_mut(job_flow_id, now) else {
-                refusal = Some((
-                    job_flow_id.clone(),
-                    crate::state::unknown_job_flow_message(),
-                ));
-                break;
-            };
-            if cluster.termination_protection_holds() {
-                refusal = Some((
-                    job_flow_id.clone(),
-                    crate::state::termination_protected_message(),
-                ));
-                break;
-            }
-        }
-        if let Some((resource, message)) = refusal {
-            drop(store);
-            return Err(refuse(&resource, message));
-        }
-
-        let mut shut_down: Vec<&str> = Vec::new();
-        for job_flow_id in &input.job_flow_ids {
-            if let Some(cluster) = store.cluster_mut(job_flow_id, now) {
-                if cluster.begin_termination(now) {
-                    shut_down.push(job_flow_id);
+            // Resolve every id AND decide protection BEFORE changing anything, so a request
+            // naming one unknown id, or one locked cluster, terminates nothing. Both
+            // sentences of this legacy job-flow surface are CONSTANT: neither names an id,
+            // and the protected one is plural because the whole batch is judged at once. The
+            // decision is only COLLECTED here (the cluster it is about, and the sentence):
+            // answering it needs no store, so it is answered once the guard is gone.
+            let mut refusal: Option<(String, String)> = None;
+            for job_flow_id in &input.job_flow_ids {
+                let Some(cluster) = store.cluster_mut(job_flow_id, now) else {
+                    refusal = Some((
+                        job_flow_id.clone(),
+                        crate::state::unknown_job_flow_message(),
+                    ));
+                    break;
+                };
+                if cluster.termination_protection_holds() {
+                    refusal = Some((
+                        job_flow_id.clone(),
+                        crate::state::termination_protected_message(),
+                    ));
+                    break;
                 }
             }
-        }
-        drop(store);
+            if let Some((resource, message)) = refusal {
+                drop(store);
+                return Err(refuse(&resource, message));
+            }
+
+            let mut shut_down: Vec<String> = Vec::new();
+            // The Amazon EC2 instances those clusters were provisioned from: a cluster that
+            // is shutting down releases its capacity, and "all Amazon EC2 instances have been
+            // terminated" is what its collections reaching TERMINATED means — so the
+            // instances Amazon EMR launched are terminated in the service that OWNS them,
+            // rather than left running for a cluster that is gone.
+            let mut released_instances: Vec<String> = Vec::new();
+            // And the placement groups Amazon EMR created for those clusters: a group created
+            // for a cluster is released with it, so nothing of the cluster is left behind in
+            // Amazon EC2.
+            let mut released_groups: Vec<String> = Vec::new();
+            for job_flow_id in &input.job_flow_ids {
+                if let Some(cluster) = store.cluster_mut(job_flow_id, now) {
+                    if cluster.begin_termination(now) {
+                        shut_down.push(job_flow_id.clone());
+                        released_instances.extend(
+                            cluster
+                                .ec2_instances
+                                .iter()
+                                .map(|instance| instance.ec2_instance_id.clone()),
+                        );
+                        let placement = crate::state::LaunchPlacement::of(cluster);
+                        released_groups.extend(
+                            placement
+                                .placement_groups
+                                .iter()
+                                .map(|(role, _)| placement.placement_group_name_for(role)),
+                        );
+                    }
+                }
+            }
+            drop(store);
+            (shut_down, released_instances, released_groups)
+        };
+
+        let region = crate::state::request_region(ctx.parts());
+        crate::state::terminate_cluster_instances(ctx, &region, &released_instances).await;
+        crate::state::release_cluster_placement_groups(ctx, &region, &released_groups).await;
 
         // A cluster this call did not move — one already shutting down or already gone,
         // which keeps the repeated request a success — changed nothing, so there is
         // nothing to attribute for it.
-        for job_flow_id in shut_down {
+        for job_flow_id in &shut_down {
             crate::state::audit(
                 Self::NAME,
                 job_flow_id,
@@ -247,11 +281,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // The shutdown this call started — and the terminal state the clock owes at the end
         // of it — are announced on the default event bus as they happen.
-        crate::state::settle_cluster_events(
-            &self.engine,
-            ctx,
-            &crate::state::request_region(ctx.parts()),
-        );
+        crate::state::settle_cluster_events(&self.engine, ctx, &region);
 
         Ok(TerminateJobFlowsOutput)
     }

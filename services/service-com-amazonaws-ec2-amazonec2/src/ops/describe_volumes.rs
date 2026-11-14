@@ -280,13 +280,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let state = require_service_state(&*self.engine)?;
         let store = state.lock();
+        // The clock's own reading, taken once: a volume whose withdrawal has fallen due is
+        // one the account no longer holds, so it is resolved and reported exactly as a volume
+        // that was never created (`crate::state::volume_is_withdrawn`).
+        let now = ::std::time::Instant::now();
 
         // "Describes the specified EBS volumes": an id that names no volume of the account
         // is an error, not an absent row. Every id's form was refused above, so what is left
         // here is a well-formed id nothing was created for.
         if let Some(unknown) = requested_ids
             .iter()
-            .find(|volume_id| !store.volumes.contains_key(volume_id.as_str()))
+            .find(|volume_id| store.volume_is_withdrawn(volume_id.as_str(), now))
         {
             return Err(invalid_volume_id_not_found(unknown));
         }
@@ -313,12 +317,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Every comparison is charged to ONE budget, so the PRODUCT of stored volumes,
         // filters, values, held values and value length is bounded however the caller
         // combines them — which is also what bounds how long this holds the state lock.
-        let now = ::std::time::Instant::now();
         let mut budget = MatchBudget::new(MAX_FILTER_MATCH_STEPS);
         let mut selected: Vec<CreateVolumeOutput> = Vec::new();
         for record in store.volumes.values() {
             if budget.exhausted() {
                 break;
+            }
+            // A volume the clock has withdrawn is gone, so no describe reports it — the same
+            // reading the id narrowing above makes.
+            if record.is_withdrawn_at(now) {
+                continue;
             }
             // The id narrowing is read off the stored record, so a volume the request did
             // not name costs no projection and no comparison at all.

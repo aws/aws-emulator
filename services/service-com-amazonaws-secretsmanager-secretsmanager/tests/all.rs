@@ -89,6 +89,8 @@ mod secret_stop_replication_refusal;
 mod secret_tags_and_replication;
 #[path = "all/secret_value_lookup_messages.rs"]
 mod secret_value_lookup_messages;
+#[path = "all/secret_version_encryption_keys.rs"]
+mod secret_version_encryption_keys;
 #[path = "all/secret_version_history.rs"]
 mod secret_version_history;
 #[path = "all/secret_version_id_token_forms.rs"]

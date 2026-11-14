@@ -467,19 +467,19 @@ async fn a_secret_id_that_names_nothing_is_a_resource_not_found() {
 
 #[tokio::test]
 async fn every_version_reports_the_kms_key_the_secret_was_created_with() {
-    // "The KMS keys used to encrypt the secret version." A key of the secret's
-    // own is reported in the form the caller gave it, so the rows are the forms
-    // `KmsKeyId` accepts (KmsKeyIdType, this service's model: "the ARN, key ID,
-    // or alias"); a secret on the account's default Secrets Manager key — the
-    // one it is encrypted with when it names no key, and the same key whether it
-    // is named or left out — reports that key's own id instead.
+    // "The KMS keys used to encrypt the secret version." The key reported is the one the
+    // secret's configuration NAMES, in the form the caller gave it (`KmsKeyIdType`, this
+    // service's model: "the ARN, key ID, or alias") — including the Amazon Web Services
+    // managed key's own alias, which is a key the caller named like any other. Only a secret
+    // whose configuration names NO key at all has no identifier of the caller's to report,
+    // and that is the one case the service answers with the default key's own token.
     let router = emulator();
     for (case, kms_key_id, expected) in [
         ("no key given", None, vec![DEFAULT_ENCRYPTION_KEY_ID.to_string()]),
         (
             "the default key named by its alias",
             Some(DEFAULT_KMS_KEY_ALIAS.to_string()),
-            vec![DEFAULT_ENCRYPTION_KEY_ID.to_string()],
+            vec![DEFAULT_KMS_KEY_ALIAS.to_string()],
         ),
         (
             "a bare key id",

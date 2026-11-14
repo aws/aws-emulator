@@ -453,6 +453,30 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             input.client_token.as_deref(),
         );
 
+        // WHETHER THE VOLUME CAN EXIST AT ALL under the key it names, asked of the service
+        // that owns that key and asked BEFORE this store's guard is taken, because the ask is
+        // a call into another service: "Amazon EBS … requests a data key from KMS" for an
+        // encrypted volume, so a key that will not produce one — disabled, pending deletion,
+        // in a state KMS will not use, or naming no key of the account — leaves nothing to
+        // encrypt the volume with. The request is still ACCEPTED, and the volume it answers
+        // with is `creating`: what the key refuses is the volume coming into being, which is
+        // recorded as the withdrawal the clock then owes it
+        // ([`VolumeRecord::withdrawn_at`]). A key that will serve, and an emulator with no
+        // KMS to ask, leave the volume on the ordinary path to `available`
+        // ([`crate::state::volume_key_refusal`]).
+        //
+        // A `DryRun` probe asks nothing of KMS: it is answered below without creating
+        // anything, and the data key a volume is wrapped with is requested for a volume that
+        // is really being created.
+        let key_refusal = match input
+            .kms_key_id
+            .as_deref()
+            .filter(|key_id| !key_id.is_empty() && input.dry_run != Some(true))
+        {
+            Some(key_id) => crate::state::volume_key_refusal(ctx, &region, key_id).await,
+            None => None,
+        };
+
         let state = require_service_state(&*self.engine)?;
         let mut store = state.lock();
         let now = ::std::time::Instant::now();
@@ -546,7 +570,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let volume_id = store.next_id("vol");
-        let record = VolumeRecord::created(
+        let mut record = VolumeRecord::created(
             VolumeView {
                 volume_id: Some(volume_id.clone()),
                 volume_arn: Some(::engine::emulator_arn(
@@ -603,6 +627,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // `running` move takes in this crate.
             now + TRANSITION_DELAY,
         );
+        // A volume whose encryption key refused its data key never gets there: the clock owes
+        // it the withdrawal instead, at the same instant, so the caller still sees the
+        // `creating` volume it was answered with and then sees it gone.
+        if let Some(refusal) = key_refusal {
+            ::tracing::debug!(
+                volume_id = %volume_id,
+                refusal = %refusal,
+                "this volume's encryption key would not produce its data key, so the volume \
+                 is withdrawn rather than created"
+            );
+            record.withdrawn_at = Some(now + TRANSITION_DELAY);
+        }
         if let Some(token) = input.client_token.clone() {
             store.volume_client_tokens.insert(token, volume_id.clone());
         }

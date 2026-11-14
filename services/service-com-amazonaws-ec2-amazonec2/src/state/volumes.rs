@@ -308,6 +308,22 @@ pub struct VolumeRecord {
     /// next writer materialises that
     /// ([`VolumeRecord::materialize_due_attachments`]).
     pub attaching_at: BTreeMap<(String, String), Instant>,
+    /// The instant at which EC2 takes this volume back, because the KMS key it was to be
+    /// encrypted under will not produce its data key
+    /// ([`crate::state::volume_key_refusal`]) — and `None` for every volume whose key will,
+    /// which is every volume that is to be created.
+    ///
+    /// A volume is created before its data key is wrapped, so a request under an unusable
+    /// key is ACCEPTED and answers a `creating` volume; what the key refuses is the volume
+    /// coming into being, so it never reaches `available` and is withdrawn instead. The
+    /// withdrawal falls due at the same instant the `creating` -> `available` move would
+    /// have ([`TRANSITION_DELAY`]), so a caller that describes the volume straight after the
+    /// create still sees `creating` and a caller that waits sees the volume gone — which is
+    /// owed at that instant whether or not anybody calls, so the next writer applies it
+    /// ([`ComAmazonawsEc2Amazonec2State::withdraw_due_unencryptable_volumes`]) and every
+    /// reader observes it through the same reading
+    /// ([`ComAmazonawsEc2Amazonec2State::volume_is_withdrawn`]).
+    pub withdrawn_at: Option<Instant>,
 }
 
 impl VolumeRecord {
@@ -324,7 +340,18 @@ impl VolumeRecord {
             io_enabled: true,
             detaching_at: BTreeMap::new(),
             attaching_at: BTreeMap::new(),
+            // Every volume this store mints is one its encryption key will serve: the one
+            // path that learns otherwise is `CreateVolume`, which sets the instant itself.
+            withdrawn_at: None,
         }
+    }
+
+    /// Whether this volume has already been withdrawn at `now`, because the key it was to be
+    /// encrypted under refused its data key. A withdrawn volume is GONE — no read reports it
+    /// and no call resolves it — so this is asked wherever a volume is resolved, through
+    /// [`ComAmazonawsEc2Amazonec2State::volume_is_withdrawn`].
+    pub fn is_withdrawn_at(&self, now: Instant) -> bool {
+        self.withdrawn_at.is_some_and(|due_at| now >= due_at)
     }
 
     /// This volume as of `now`: the stored view with the `State` the clock has
@@ -639,15 +666,19 @@ pub fn require_known_volume<E>(
 
 /// The ONE definition of how this service resolves a volume id a request named: an id that
 /// is not shaped like one is answered as malformed, and a well-formed one this account
-/// holds no volume for as not found — the way the service orders the two.
+/// holds no volume for as not found — the way the service orders the two. A volume whose
+/// withdrawal the clock has made due is one the account no longer holds
+/// ([`ComAmazonawsEc2Amazonec2State::volume_is_withdrawn`]), so it resolves as not found.
 pub fn require_volume<'store, E>(
     store: &'store ComAmazonawsEc2Amazonec2State,
     volume_id: &str,
 ) -> Result<&'store VolumeRecord, crate::scaffolded::Scaffolded<E>> {
     require_well_formed_volume_id(volume_id)?;
+    let now = Instant::now();
     store
         .volumes
         .get(volume_id)
+        .filter(|record| !record.is_withdrawn_at(now))
         .ok_or_else(|| invalid_volume_id_not_found(volume_id))
 }
 
@@ -659,9 +690,11 @@ pub fn require_volume_mut<'store, E>(
     // The malformed half of the rule first, shared with `require_volume` rather than
     // repeated, because the mutable borrow of the store cannot be taken before it.
     require_well_formed_volume_id(volume_id)?;
+    let now = Instant::now();
     store
         .volumes
         .get_mut(volume_id)
+        .filter(|record| !record.is_withdrawn_at(now))
         .ok_or_else(|| invalid_volume_id_not_found(volume_id))
 }
 
@@ -810,6 +843,40 @@ pub fn invalid_attachment_not_found<E>(
 }
 
 impl ComAmazonawsEc2Amazonec2State {
+    /// Whether the volume `volume_id` has already been withdrawn at `now`: the account holds
+    /// no record for it, or the record it holds is one whose encryption key refused its data
+    /// key and whose withdrawal the clock has made due
+    /// ([`VolumeRecord::withdrawn_at`]).
+    ///
+    /// The ONE reading of "is this volume gone", so a reporting operation and a writer agree:
+    /// a withdrawn volume is resolved as not found ([`require_volume`]) and reported by no
+    /// describe, whether or not a writer has swept it out yet.
+    pub fn volume_is_withdrawn(&self, volume_id: &str, now: Instant) -> bool {
+        self.volumes
+            .get(volume_id)
+            .is_none_or(|record| record.is_withdrawn_at(now))
+    }
+
+    /// Apply the withdrawals the clock has already made due: every volume whose encryption
+    /// key refused its data key is removed once its instant has passed, which was owed at
+    /// that instant whether or not anybody called.
+    ///
+    /// A WRITER calls this, which is the only thing that may materialise it — a report
+    /// observes the same removal through [`Self::volume_is_withdrawn`] without writing.
+    /// Removal goes through [`Self::remove_volume`], so the record's bytes, its client token
+    /// and its modification go back exactly as they would for a delete.
+    pub fn withdraw_due_unencryptable_volumes(&mut self, now: Instant) {
+        let withdrawn: Vec<String> = self
+            .volumes
+            .iter()
+            .filter(|(_, record)| record.is_withdrawn_at(now))
+            .map(|(volume_id, _)| volume_id.clone())
+            .collect();
+        for volume_id in withdrawn {
+            self.remove_volume(&volume_id);
+        }
+    }
+
     /// The EBS attachments the instance `instance_id` holds at `now`, as
     /// `(volume id, attachment)` in volume-id order.
     ///

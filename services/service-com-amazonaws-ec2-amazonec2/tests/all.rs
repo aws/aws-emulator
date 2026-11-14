@@ -1319,6 +1319,11 @@ mod verified_access_trust_providers;
 // The volume attribute slice: modify one attribute of a volume, then describe it back.
 #[path = "all/volume_attributes.rs"]
 mod volume_attributes;
+// The encrypted-volume slice: whether the KMS key a volume names will produce its data key,
+// asked of the service that owns keys, and what becomes of a volume under a key that will
+// not.
+#[path = "all/volume_encryption_key.rs"]
+mod volume_encryption_key;
 #[path = "all/volume_lifecycle.rs"]
 mod volume_lifecycle;
 #[path = "all/volume_modifications.rs"]

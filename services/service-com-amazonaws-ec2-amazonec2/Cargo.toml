@@ -91,6 +91,11 @@ service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true 
 # root certificates it is given against that service's own `DescribeCertificate`, over the
 # emulator's in-process callback, rather than keeping a second copy of them.
 aws-sdk-acm = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
+# `state::volume_encryption`: the AWS KMS client an encrypted EBS volume's data key is asked
+# for, over the in-process callback into this same emulator — the key's state and the
+# permissions on it are KMS's own to judge, so a volume under a key that will not produce a
+# data key is withdrawn rather than created.
+aws-sdk-kms = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
 # `state::flow_log_s3_delivery`: the Amazon S3 client a flow log's destination bucket policy is
 # amended through, over the in-process callback into this same emulator — the permissions the log
 # delivery service needs to write a flow log's records are Amazon S3's own resource. No network
@@ -125,6 +130,10 @@ service-com-amazonaws-acm-certificatemanager = { workspace = true }
 # on a single engine — exactly as the assembled emulator does — because a create for an S3
 # destination amends that bucket's policy by calling it in process.
 service-com-amazonaws-s3-amazons3 = { workspace = true }
+# The KMS service, so the encrypted-volume suite can create, disable and schedule deletion of a
+# real key through the service that OWNS keys and watch what EC2 does with a volume under it.
+# TEST-ONLY — `src/` reaches that service over the in-process callback instead.
+service-com-amazonaws-kms-trentservice = { workspace = true }
 
 [lints]
 workspace = true

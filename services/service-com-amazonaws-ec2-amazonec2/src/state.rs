@@ -2682,6 +2682,11 @@ mod export_image_tasks;
 mod verified_access_trust_provider_attachments;
 mod verified_access_endpoint_deletion;
 mod volumes;
+/// Whether the KMS key an encrypted volume is to be created under will produce that
+/// volume's data key, asked of the service that owns the key. Everything it declares is
+/// re-exported below, so a handler reaches it as `crate::state::volume_key_refusal` like any
+/// other primitive of this module.
+mod volume_encryption;
 mod local_gateways_and_filter_patterns;
 pub mod outpost_lags;
 mod service_link_virtual_interfaces;
@@ -2717,6 +2722,7 @@ pub use local_gateways_and_filter_patterns::*;
 pub use outpost_lags::*;
 pub use service_link_virtual_interfaces::*;
 pub use tag_descriptions::*;
+pub use volume_encryption::*;
 pub use volumes::*;
 pub use import_image_tasks_and_verified_access::*;
 pub use export_image_tasks::*;

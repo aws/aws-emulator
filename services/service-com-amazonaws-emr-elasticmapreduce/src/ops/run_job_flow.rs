@@ -401,6 +401,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 return Err(refuse(message));
             }
         }
+        // The groups a launch that named NONE implies are held to exactly the same bounds as
+        // the ones it named: the uniform `MasterInstanceType` / `SlaveInstanceType` /
+        // `InstanceCount` form states the same capacity in fewer members, so a count no
+        // cluster could provision is refused here — before any record is minted and before
+        // any instance is asked for — rather than driving work proportional to it.
+        for config in &implied_instance_group_configs(&input.instances) {
+            if let Err(message) = validate_instance_group_config(config) {
+                return Err(refuse(message));
+            }
+        }
 
         // A cluster runs ONE Amazon EMR release, chosen EITHER by the release label or by
         // the AMI version of the 3.x/2.x generations — "applies only to Amazon EMR AMI
@@ -594,6 +604,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let availability_zone =
             crate::state::launched_availability_zone(ctx, &region, &requested_instances).await;
 
+        // Everything this launch writes to the store happens inside this block, so the
+        // store's guard is out of scope — unconditionally, whichever branch was taken —
+        // before the Amazon EC2 launch below is awaited: a call into another service is
+        // never made while this service's guard is held. What the block answers with is what
+        // the rest of this handler needs: the cluster's id and ARN, and what its
+        // collections ask Amazon EC2 for.
+        let (id, arn, planned) = {
         let mut store = state.lock();
 
         // The account holds a bounded number of clusters: a cluster record is kept after
@@ -769,9 +786,53 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // A new cluster carries no Spark Connect session: `StartSession` is what
             // starts one.
             sessions: Vec::new(),
+            // The Amazon EC2 instances this cluster's collections run on are launched in
+            // the service that OWNS instances, below, once this record is stored and the
+            // store's guard is released: the launch is a call into another service and
+            // cannot be made while the guard is held.
+            ec2_instances: Vec::new(),
         };
         store.clusters.insert(id.clone(), record);
+        // What this cluster's collections ask Amazon EC2 for, read off the records just
+        // stored so the launch asks for exactly the capacity the cluster reports. Read
+        // through the map's own lookup rather than by indexing it, so no path here can
+        // panic.
+        let planned = store.clusters.get(&id).map(|cluster| {
+            (
+                crate::state::planned_launches(&cluster.groups, &cluster.fleets),
+                crate::state::LaunchPlacement::of(cluster),
+            )
+        });
         drop(store);
+        (id, arn, planned)
+        };
+
+        // "Represents an Amazon EC2 instance provisioned as part of cluster"
+        // (`Instance` doc): a cluster's capacity is Amazon EC2's resource, so Amazon EMR asks
+        // the service that owns instances to launch it and keeps the ids Amazon EC2 minted
+        // — which is what `ListInstances` reports. An instance Amazon EC2 did not launch is
+        // not recorded at all ([`crate::state::launch_cluster_instances`]).
+        let launched = match &planned {
+            Some((launches, placement)) => {
+                crate::state::launch_cluster_instances(ctx, &region, placement, launches).await
+            }
+            None => Vec::new(),
+        };
+        {
+            let mut launched_store = state.lock();
+            let instance_ids: Vec<String> = (0..launched.len())
+                .map(|_| launched_store.mint_cluster_instance_id())
+                .collect();
+            if let Some(cluster) = launched_store.clusters.get_mut(&id) {
+                cluster.ec2_instances = instance_ids
+                    .into_iter()
+                    .zip(launched)
+                    .map(|(instance_id, launched)| {
+                        crate::state::ClusterInstanceRecord::launched(instance_id, launched, now)
+                    })
+                    .collect();
+            }
+        }
 
         // The cluster is persisted: the record names the id it was minted under, which is
         // what attributes the change after the fact.
