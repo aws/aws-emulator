@@ -261,7 +261,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // takes no second answer.
                 crate::state::CallbackHandoverReply::Answered => {
                     return Err(SendTaskFailureErrorModeled::TaskTimedOut(TaskTimedOut {
-                        message: Some(crate::state::task_timed_out_message()),
+                        message: Some(crate::state::task_timed_out_message(&input.task_token)),
                     })
                     .into())
                 }
@@ -273,7 +273,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
             let Some(task) = store.activity_tasks.get(&input.task_token) else {
                 return Err(SendTaskFailureErrorModeled::TaskTimedOut(TaskTimedOut {
-                    message: Some(crate::state::task_timed_out_message()),
+                    message: Some(crate::state::task_timed_out_message(&input.task_token)),
                 })
                 .into());
             };
@@ -315,7 +315,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .filter(|execution| !execution.is_terminal())
             else {
                 return Err(SendTaskFailureErrorModeled::TaskTimedOut(TaskTimedOut {
-                    message: Some(crate::state::task_timed_out_message()),
+                    message: Some(crate::state::task_timed_out_message(&input.task_token)),
                 })
                 .into());
             };
@@ -360,7 +360,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     Ok(()) => Ok(SendTaskFailureOutput {}),
                     Err(crate::state::TaskReplyRejection::Gone) => {
                         Err(SendTaskFailureErrorModeled::TaskTimedOut(TaskTimedOut {
-                            message: Some(crate::state::task_timed_out_message()),
+                            message: Some(crate::state::task_timed_out_message(&input.task_token)),
                         })
                         .into())
                     }
@@ -381,7 +381,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
             let Some(machine) = store.state_machines.get(&state_machine_arn) else {
                 return Err(SendTaskFailureErrorModeled::TaskTimedOut(TaskTimedOut {
-                    message: Some(crate::state::task_timed_out_message()),
+                    message: Some(crate::state::task_timed_out_message(&input.task_token)),
                 })
                 .into());
             };
@@ -539,7 +539,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 }
                 Err(crate::state::TaskReplyRejection::Gone) => {
                     return Err(SendTaskFailureErrorModeled::TaskTimedOut(TaskTimedOut {
-                        message: Some(crate::state::task_timed_out_message()),
+                        message: Some(crate::state::task_timed_out_message(&input.task_token)),
                     })
                     .into())
                 }

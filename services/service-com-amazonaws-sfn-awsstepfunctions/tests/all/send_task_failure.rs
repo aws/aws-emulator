@@ -173,7 +173,7 @@ async fn send_task_failure_fails_the_execution_with_the_reported_error() {
             (
                 400,
                 "TaskTimedOut".to_string(),
-                Some(task_timed_out_message().as_str())
+                Some(task_timed_out_message(&token).as_str())
             ),
             "case {case:?}: expected a repeat of the reply to be refused, got {status} with \
              {body:?}"
@@ -300,15 +300,15 @@ async fn a_failure_reply_is_refused_for_the_tokens_a_result_reply_is() {
     let cases: Vec<(&str, String, &str, String)> = vec![
         (
             "a token of a stopped execution, whose task can never be answered",
-            stopped_token,
+            stopped_token.clone(),
             "TaskTimedOut",
-            task_timed_out_message(),
+            task_timed_out_message(&stopped_token),
         ),
         (
             "a well-formed token no task was ever scheduled under",
             task_token(MINTED_ID, &stopped_activity),
             "TaskTimedOut",
-            task_timed_out_message(),
+            task_timed_out_message(&task_token(MINTED_ID, &stopped_activity)),
         ),
         (
             "a token whose activity was deleted while the task was outstanding",

@@ -324,8 +324,8 @@ async fn heartbeats_do_not_extend_the_whole_task_timeout() {
     );
     assert_eq!(
         body.get("message").and_then(Value::as_str),
-        Some(task_timed_out_message().as_str()),
-        "expected the refusal to state the reason of this error class, got {body:?}"
+        Some(task_timed_out_message(&token).as_str()),
+        "expected the refusal to name the activity of this closed task, got {body:?}"
     );
     let held = held_tasks(&emulator, &activity);
     assert_eq!(

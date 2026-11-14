@@ -276,9 +276,9 @@ async fn a_late_answer_is_refused_and_only_the_timed_out_series_move() {
                      TaskTimedOut, got {refused_status} {code} with {refusal}"
                 );
                 // The refusal's wording: the one construction every `SendTask*` answers
-                // this condition with, which states the condition and carries nothing of
-                // the request, the token or the store.
-                let message = task_timed_out_message();
+                // this condition with, which names the ACTIVITY the closed task was
+                // handed out by and nothing of the request or of the store.
+                let message = task_timed_out_message(&token);
                 assert_eq!(
                     refusal.get("message").and_then(Value::as_str),
                     Some(message.as_str()),

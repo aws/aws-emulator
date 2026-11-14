@@ -7,13 +7,13 @@
 //! `MultiServiceRouter`.
 //!
 //! The rule under test is the one `task_timed_out_wording` pins for the tokens a CALLER
-//! closed: `TaskTimedOut` carries ONE fixed sentence for the whole error class, so the
-//! refusal states why the token answers nothing and echoes no identifier of the request,
-//! of the token or of the store — and it is inert, leaving the execution the token
-//! belonged to exactly as the bound left it. The suites that drive the clock-closed paths
-//! (`activity_heartbeats`, `activity_timeout_late_answer`) read that sentence from the
-//! service's own constructor, so nothing yet holds those paths to the WORDING itself;
-//! this suite spells the sentence out and asserts it for them.
+//! closed: `TaskTimedOut` states the condition and then quotes the ACTIVITY the closed
+//! task was handed out by, so the refusal names that activity and echoes no other
+//! identifier of the request, of the token or of the store — and it is inert, leaving the
+//! execution the token belonged to exactly as the bound left it. The suites that drive the
+//! clock-closed paths (`activity_heartbeats`, `activity_timeout_late_answer`) read that
+//! message from the service's own constructor, so nothing yet holds those paths to the
+//! WORDING itself; this suite spells it out and asserts it for them.
 //!
 //! The rows differ along what the rule generalises over: WHICH bound ran out
 //! (`TimeoutSeconds`, the whole task's maximum duration; `HeartbeatSeconds`, the window
@@ -37,7 +37,7 @@ use crate::activity_callbacks::{activity_definition, claim, create_activity};
 use crate::state_machine_lifecycle::{
     create_machine, describe_execution, start_execution, Emulator,
 };
-use crate::task_timed_out_wording::{refused, REPLIES};
+use crate::task_timed_out_wording::{refused, timed_out_message, REPLIES};
 
 /// Generous room for the outcome the bound owes: far longer than any bound a row below
 /// declares, so a loaded host still reaches it. The loop waits for the CONDITION, not for
@@ -100,10 +100,10 @@ async fn closed_by_the_bound(emulator: &Emulator, case: &str, execution_arn: &st
 }
 
 /// A token whose task a BOUND closed is refused by the same rule as one a caller closed:
-/// every `SendTask*` answers the one sentence of this error class, quoting no identifier,
-/// and changes nothing the execution reports.
+/// every `SendTask*` answers the condition and the activity that handed the task out,
+/// quoting no other identifier, and changes nothing the execution reports.
 #[tokio::test]
-async fn every_send_task_call_refuses_a_bound_closed_token_with_the_one_sentence() {
+async fn every_send_task_call_refuses_a_bound_closed_token_naming_its_activity() {
     let emulator = Emulator::new();
 
     for row in rows() {
@@ -137,17 +137,13 @@ async fn every_send_task_call_refuses_a_bound_closed_token_with_the_one_sentence
              timeout error, got {closed}"
         );
 
-        // None of the identifiers this refusal must not leak: the activity and state
-        // machine it was scheduled under, the execution waiting at it, and the token
-        // itself.
-        let absent = [
-            activity.as_str(),
-            machine.as_str(),
-            execution.as_str(),
-            token.as_str(),
-        ];
+        // None of the identifiers this refusal must not leak: the state machine the task
+        // was scheduled under, the execution waiting at it, and the token itself. The
+        // ACTIVITY is the one identifier it does carry.
+        let absent = [machine.as_str(), execution.as_str(), token.as_str()];
+        let expected = timed_out_message(&activity);
         for reply in REPLIES {
-            refused(&emulator, case, *reply, &token, &absent).await;
+            refused(&emulator, case, *reply, &token, &expected, &absent).await;
         }
 
         // And the refusals changed nothing: the same read answers what the bound left.

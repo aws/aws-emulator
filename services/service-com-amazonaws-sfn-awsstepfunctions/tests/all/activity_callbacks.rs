@@ -503,12 +503,12 @@ async fn a_token_answers_its_task_once() {
         (400, "TaskTimedOut"),
         "expected a reused token to be refused, got {code_status} {code}"
     );
-    // The refusal states the one fixed reason this error class carries, quoting nothing
-    // of the request, the token or the store.
+    // The refusal names the ACTIVITY the closed task was handed out by, and nothing of
+    // the request or of the store.
     assert_eq!(
         body.get("message").and_then(Value::as_str),
-        Some(task_timed_out_message().as_str()),
-        "expected the refusal to state the reason of this error class, got {body:?}"
+        Some(task_timed_out_message(&token).as_str()),
+        "expected the refusal to name the activity of this closed task, got {body:?}"
     );
     let (status, reported) = settled(&emulator, &execution).await;
     assert_eq!(

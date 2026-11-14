@@ -3087,26 +3087,35 @@ pub fn invalid_history_token_message() -> String {
 /// [`resource_error_message`]. RECORDED text.
 pub const TASK_TIMED_OUT: &str = "Task Timed Out";
 
-/// The detail `TaskTimedOut`'s message quotes.
+/// The detail `TaskTimedOut`'s message quotes for a task that belongs to no ACTIVITY.
 ///
-/// RECORDED text: the recorded service answers a reply to a token whose task is no
-/// longer outstanding with `Task Timed Out: 'Provided task does not exist anymore'`,
-/// so the quoted value is the CONDITION itself and nothing of the request, the token
-/// or the store reaches the message — the same shape [`INVALID_TOKEN_DETAIL`] has.
-/// The error shape's own documentation is "the task token has either expired or the
-/// task associated with the token has already been closed", and either way the task
-/// the token named is gone, which is what this one sentence states.
+/// RECORDED text: a reply to a CALLBACK (`.waitForTaskToken`) token whose task is no
+/// longer outstanding is answered with
+/// `Task Timed Out: 'Provided task does not exist anymore'` — such a task was handed
+/// over by a `Task` state's own integration call and belongs to no activity, so the
+/// service has no activity to name and states the reason itself instead. The error
+/// shape's own documentation is "the task token has either expired or the task
+/// associated with the token has already been closed", and either way the task the
+/// token named is gone, which is what this sentence states.
 pub const TASK_TIMED_OUT_DETAIL: &str = "Provided task does not exist anymore";
 
-/// What every `SendTask*` operation answers for a token whose task is no longer
+/// What every `SendTask*` operation answers for `task_token`, whose task is no longer
 /// outstanding: ONE construction, so no two of them word that refusal differently.
 ///
-/// A FIXED service string for this error class, carrying no identifier: whichever
-/// `SendTask*` raises it, and whether the token named an activity's task or a callback
-/// (`.waitForTaskToken`) one, the refusal states the condition and quotes
-/// [`TASK_TIMED_OUT_DETAIL`] after it.
-pub fn task_timed_out_message() -> String {
-    resource_error_message(TASK_TIMED_OUT, TASK_TIMED_OUT_DETAIL)
+/// The quoted value is the ACTIVITY the closed task was handed out by, read from the
+/// token itself ([`read_task_token`]) since a store that no longer holds the task
+/// still has that ARN in the token it was answered with — RECORDED text: the service
+/// answers a reply to an activity task's closed token with
+/// `Task Timed Out: '<activity arn>'`. A task of no activity — a callback
+/// (`.waitForTaskToken`) one, whose token names the execution that was waiting at it —
+/// has no activity to quote, so that refusal quotes [`TASK_TIMED_OUT_DETAIL`] and
+/// names no resource.
+pub fn task_timed_out_message(task_token: &str) -> String {
+    let activity_arn = read_task_token(task_token).filter(|resource| names_an_activity(resource));
+    resource_error_message(
+        TASK_TIMED_OUT,
+        activity_arn.as_deref().unwrap_or(TASK_TIMED_OUT_DETAIL),
+    )
 }
 
 /// `InvalidOutput`'s, for [`resource_error_message`]. The error's own condition name

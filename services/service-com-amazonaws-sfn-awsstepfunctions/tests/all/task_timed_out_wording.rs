@@ -5,11 +5,11 @@
 //! (`awsJson1_0`, `POST /` with `X-Amz-Target: AWSStepFunctions.<Operation>`) through the
 //! production `MultiServiceRouter`.
 //!
-//! The rule under test: `TaskTimedOut` carries ONE fixed sentence for the whole error
-//! class — the condition, then the reason quoted after it — so the refusal states why the
-//! token answers nothing and echoes no identifier of the request, of the token or of the
-//! store; and it is inert, leaving the execution the token once belonged to exactly as it
-//! was.
+//! The rule under test: `TaskTimedOut` states the condition and then quotes the ACTIVITY
+//! the closed task was handed out by — read from the token, which names it — and for a
+//! task of no activity, a callback (`.waitForTaskToken`) one, the reason itself; either
+//! way the refusal echoes nothing else of the request, of the token or of the store, and
+//! it is inert, leaving the execution the token once belonged to exactly as it was.
 //!
 //! The rows differ along what the rule generalises over: WHICH `SendTask*` operation is
 //! refused (all three of them, each with its own members), and WHY the token answers
@@ -35,20 +35,29 @@ use crate::state_machine_lifecycle::{
     HELLO_DEFINITION,
 };
 
-/// The WHOLE message every `TaskTimedOut` below must carry, spelled out here rather than
-/// built by the code under test.
+/// The WHOLE message a `TaskTimedOut` carries for a task that was handed out by
+/// `activity_arn`, spelled out here rather than built by the code under test.
 ///
-/// Source: the recorded service answers a `SendTaskSuccess` quoting a token whose task has
-/// already been closed with exactly this sentence. It is fixed text for the error class —
-/// the shape's own documentation is "the task token has either expired or the task
-/// associated with the token has already been closed", and either way the task is gone —
-/// so no row below expects any part of it to vary.
+/// Source: the recorded service answers a `SendTaskSuccess` quoting a token whose activity
+/// task has already been closed with the condition and then that activity's own ARN —
+/// which is the one identifier such a refusal carries, and the only one a store that no
+/// longer holds the task still has, since the token names it.
 ///
 /// `pub(crate)`, not private: `tests/all.rs` is this binary's crate root, so the suite
 /// that drives the SAME error class for a token a BOUND closed
 /// (`crate::task_timed_out_closed_by_a_bound`) asserts this one spelling rather than
 /// carrying a second copy of it.
-pub(crate) const TIMED_OUT_MESSAGE: &str = "Task Timed Out: 'Provided task does not exist anymore'";
+pub(crate) fn timed_out_message(activity_arn: &str) -> String {
+    format!("Task Timed Out: '{activity_arn}'")
+}
+
+/// What the same message quotes for a task of NO activity — a callback
+/// (`.waitForTaskToken`) task, whose token names the execution that was waiting at it.
+///
+/// Source: the recorded service answers a replayed `SendTaskSuccess` for such a token with
+/// exactly this sentence, naming no resource: there is no activity to name, so the quoted
+/// value is the reason itself.
+pub(crate) const NO_ACTIVITY_DETAIL: &str = "Provided task does not exist anymore";
 
 /// Generous room for an outcome the clock owes: far longer than the delay itself, so a
 /// loaded host still settles inside it. The loop below waits for the CONDITION, not for
@@ -111,14 +120,14 @@ async fn settled(emulator: &Emulator, case: &str, execution_arn: &str) -> Value 
     }
 }
 
-/// Send `reply` for `token` and assert the refusal: 400, `TaskTimedOut`, and exactly the
-/// one sentence this error class carries — quoting none of `absent`, the identifiers this
-/// refusal must not leak.
+/// Send `reply` for `token` and assert the refusal: 400, `TaskTimedOut`, and exactly
+/// `expected` — quoting none of `absent`, the identifiers this refusal must not leak.
 pub(crate) async fn refused(
     emulator: &Emulator,
     case: &str,
     reply: Reply,
     token: &str,
+    expected: &str,
     absent: &[&str],
 ) {
     let operation = reply.operation();
@@ -127,8 +136,8 @@ pub(crate) async fn refused(
     let message = body.get("message").and_then(Value::as_str);
     assert_eq!(
         (status, code.as_str(), message),
-        (400, "TaskTimedOut", Some(TIMED_OUT_MESSAGE)),
-        "case {case:?}: expected {operation} to be refused with {TIMED_OUT_MESSAGE:?}, got \
+        (400, "TaskTimedOut", Some(expected)),
+        "case {case:?}: expected {operation} to be refused with {expected:?}, got \
          {status} with {body}"
     );
     let message = message.expect("the assertion above holds the message");
@@ -143,9 +152,9 @@ pub(crate) async fn refused(
 
 /// A token whose ACTIVITY task was already answered, one no task was ever scheduled under,
 /// and one whose execution was stopped under it: every `SendTask*` refuses each of them
-/// with the one sentence of this error class.
+/// with the condition and that token's own activity.
 #[tokio::test]
-async fn every_send_task_call_refuses_a_closed_activity_token_with_the_one_sentence() {
+async fn every_send_task_call_refuses_a_closed_activity_token_naming_its_activity() {
     let emulator = Emulator::new();
 
     // Row 1: the task was ANSWERED, which closes it — so the token answers nothing more.
@@ -183,27 +192,30 @@ async fn every_send_task_call_refuses_a_closed_activity_token_with_the_one_sente
         )
         .await;
 
-    let rows: Vec<(&str, String, Vec<&str>)> = vec![
+    let rows: Vec<(&str, String, String, Vec<&str>)> = vec![
         (
             "a token whose task a reply already answered",
             answered_token,
-            vec![answered_activity.as_str(), answered_execution.as_str()],
+            timed_out_message(&answered_activity),
+            vec![answered_execution.as_str(), answered_machine.as_str()],
         ),
         (
             "a well-formed token no task was ever scheduled under",
             task_token(MINTED_ID, &answered_activity),
-            vec![answered_activity.as_str(), MINTED_ID],
+            timed_out_message(&answered_activity),
+            vec![answered_execution.as_str(), MINTED_ID],
         ),
         (
             "a token whose execution was stopped under its task",
             stopped_token,
-            vec![stopped_activity.as_str(), stopped_execution.as_str()],
+            timed_out_message(&stopped_activity),
+            vec![stopped_execution.as_str(), stopped_machine.as_str()],
         ),
     ];
 
-    for (case, token, absent) in &rows {
+    for (case, token, expected, absent) in &rows {
         for reply in REPLIES {
-            refused(&emulator, case, *reply, token, absent).await;
+            refused(&emulator, case, *reply, token, expected, absent).await;
         }
     }
 }
@@ -225,6 +237,7 @@ async fn a_replayed_callback_token_is_refused_without_touching_the_execution() {
     );
     let output = string(&succeeded, "output");
 
+    let expected = timed_out_message(NO_ACTIVITY_DETAIL);
     let rows: Vec<(&str, String, Vec<&str>)> = vec![
         (
             case,
@@ -240,7 +253,7 @@ async fn a_replayed_callback_token_is_refused_without_touching_the_execution() {
 
     for (case, token, absent) in &rows {
         for reply in REPLIES {
-            refused(&emulator, case, *reply, token, absent).await;
+            refused(&emulator, case, *reply, token, &expected, absent).await;
         }
     }
 

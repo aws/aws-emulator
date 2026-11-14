@@ -200,7 +200,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let Some(task) = store.activity_tasks.get(&input.task_token) else {
             return Err(SendTaskHeartbeatErrorModeled::TaskTimedOut(TaskTimedOut {
-                message: Some(crate::state::task_timed_out_message()),
+                message: Some(crate::state::task_timed_out_message(&input.task_token)),
             })
             .into());
         };
@@ -234,7 +234,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .is_none_or(crate::state::Execution::is_terminal)
         {
             return Err(SendTaskHeartbeatErrorModeled::TaskTimedOut(TaskTimedOut {
-                message: Some(crate::state::task_timed_out_message()),
+                message: Some(crate::state::task_timed_out_message(&input.task_token)),
             })
             .into());
         }
