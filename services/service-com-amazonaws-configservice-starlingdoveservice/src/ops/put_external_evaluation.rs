@@ -96,16 +96,19 @@ use super::types::*;
 /// mentions the process check because the two conditions are neighbours on this
 /// operation, not because one code covers both.
 ///
-/// The MESSAGE is therefore the sentence the model states for THIS error class
-/// (`InvalidParameterValueException`: "One or more of the specified parameters are not
-/// valid. Verify that your parameters are valid and try again."), reproduced verbatim. It
-/// is FIXED and carries no part of the request: which parameter was not valid is what the
-/// operation itself says — it "checks if the rule is a process check when the name of the
-/// Config rule is provided" — and a name no rule answers to carries the other code
-/// instead.
-const NOT_A_PROCESS_CHECK_MESSAGE: &str =
-    "One or more of the specified parameters are not valid. Verify that your parameters \
-     are valid and try again.";
+/// Both refusals share nothing but their status, so the MESSAGE is the only thing that
+/// tells a caller whether the rule is missing or merely of the wrong kind: this class's
+/// own sentence names the condition — the `Source$SourceIdentifier` the operation
+/// requires ([`crate::state::SOURCE_IDENTIFIER_PROCESS_CHECK`]) — rather than the generic
+/// invalid-parameter text, which says nothing about the rule's type. It carries no part
+/// of the request: which parameter was not valid is what the operation itself says — it
+/// "checks if the rule is a process check when the name of the Config rule is provided".
+fn not_a_process_check_message() -> String {
+    format!(
+        "This API can only be applied to rules with sourceIdentifier as {}.",
+        crate::state::SOURCE_IDENTIFIER_PROCESS_CHECK,
+    )
+}
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -217,7 +220,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 return Err(
                     PutExternalEvaluationErrorModeled::InvalidParameterValueException(
                         InvalidParameterValueException {
-                            message: Some(NOT_A_PROCESS_CHECK_MESSAGE.to_string()),
+                            message: Some(not_a_process_check_message()),
                         },
                     )
                     .into(),

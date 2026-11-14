@@ -17,9 +17,10 @@
 //! 3. `PutExternalEvaluation` tells its two refusals apart — a rule name no rule answers
 //!    to is `NoSuchConfigRuleException`, whose message quotes the name the request sent,
 //!    while a rule that EXISTS and is not a Config Process Check rule is
-//!    `InvalidParameterValueException`, carrying that class's own fixed sentence and
-//!    quoting nothing of the request — because the remediation differs: create the rule,
-//!    or point the call at a process check.
+//!    `InvalidParameterValueException`, worded as the condition it refuses (the
+//!    `SourceIdentifier` the operation requires) and quoting nothing of the request —
+//!    because the remediation differs: create the rule, or point the call at a process
+//!    check.
 //!
 //! Each case drives the emulator the way a client does — an `awsJson1_1` `POST /`
 //! through the same `MultiServiceRouter` the production router builds.
@@ -29,11 +30,8 @@ use serde_json::{json, Value};
 use crate::config_setup_and_rule_loop::{
     managed_rule, recorder_request, with_recorder_and_channel, Emulator, ROLE_ARN,
 };
+use crate::external_evaluation::put_process_check_rule;
 use crate::put_evaluations::{custom_lambda_rule, result_token};
-
-/// The managed-rule `SourceIdentifier` a Config process check rule IS, from the *List of
-/// Config Managed Rules* `Source$SourceIdentifier` points at.
-const PROCESS_CHECK: &str = "AWS_CONFIG_PROCESS_CHECK";
 
 /// The resource type an external evaluation names
 /// (`ExternalEvaluation$ComplianceResourceType`: "Config accepts `AWS::::Account`
@@ -191,20 +189,31 @@ async fn a_result_token_config_did_not_mint_is_worded_without_quoting_the_token(
 async fn an_external_evaluation_tells_a_missing_rule_from_a_rule_of_the_wrong_kind() {
     let emulator = Emulator::new();
     with_recorder_and_channel(&emulator).await;
+    // A process check rule the account created while Config still offered that managed
+    // rule: `PutConfigRule` no longer accepts the identifier (pinned in
+    // `withdrawn_managed_rule`), and this operation still applies to the rules already
+    // created under it.
+    put_process_check_rule(&emulator, "process-check").await;
+    emulator.ok("PutConfigRule", &managed_rule("managed")).await;
+    emulator
+        .ok("PutConfigRule", &custom_lambda_rule("lambda-rule"))
+        .await;
     emulator
         .ok(
             "PutConfigRule",
             &json!({
                 "ConfigRule": {
-                    "ConfigRuleName": "process-check",
-                    "Source": { "Owner": "AWS", "SourceIdentifier": PROCESS_CHECK },
+                    "ConfigRuleName": "policy-rule",
+                    "Source": {
+                        "Owner": "CUSTOM_POLICY",
+                        "CustomPolicyDetails": {
+                            "PolicyRuntime": "guard-2.x.x",
+                            "PolicyText": "rule check { true }",
+                        },
+                    },
                 }
             }),
         )
-        .await;
-    emulator.ok("PutConfigRule", &managed_rule("managed")).await;
-    emulator
-        .ok("PutConfigRule", &custom_lambda_rule("lambda-rule"))
         .await;
 
     let delivery = |rule: &str| {
@@ -244,13 +253,16 @@ async fn an_external_evaluation_tells_a_missing_rule_from_a_rule_of_the_wrong_ki
     // a process check, which is a bad parameter value rather than a missing rule (RECORDED
     // behaviour: "the rule exists, so the refusal is about its type, not
     // NoSuchConfigRuleException, which is reserved for a rule name that does not exist at
-    // all"). The sentence is the one the model states for THAT error class, and it is the
-    // same for every kind of rule that is not a process check.
-    let expected = "One or more of the specified parameters are not valid. Verify that your \
-                    parameters are valid and try again.";
+    // all"). Because both refusals share one error code, the sentence is the only thing
+    // that tells the two apart, so it NAMES the condition — the `SourceIdentifier` this
+    // operation requires — rather than reading as the generic invalid-parameter text, and
+    // it is the same for every kind of rule that is not a process check.
+    let expected =
+        "This API can only be applied to rules with sourceIdentifier as AWS_CONFIG_PROCESS_CHECK.";
     for (case, rule) in [
         ("a managed rule that is not the process check one", "managed"),
         ("a Custom Lambda rule", "lambda-rule"),
+        ("a Custom Policy rule", "policy-rule"),
     ] {
         let message = refusal(
             case,

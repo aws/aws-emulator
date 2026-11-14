@@ -127,13 +127,18 @@ async fn described_recorder(emulator: &Emulator) -> Value {
     described["ConfigurationRecorders"][0].clone()
 }
 
-/// The two sentences `ValidationException` carries on these operations, which the model
-/// states for exactly them (`smithy_query(query="doc", shape="ValidationException")`:
-/// "For AssociateResourceTypes and DisassociateResourceTypes, one of the following
-/// errors: …"). Both are reproduced verbatim, including the service's own spelling of
-/// "configuraiton", and the second is ONE sentence covering both directions.
-const STRATEGY_FORBIDS: &str = "Your configuraiton recorder has a recording strategy that does \
-                                not allow the association or disassociation of resource types.";
+/// The two sentences `ValidationException` carries on these operations.
+///
+/// RECORDED behaviour words the strategy refusal: it is ONE sentence covering both
+/// directions and carries no part of the request, so every such refusal reads the same.
+/// The already-settled sentence is the one the model states for exactly these two
+/// operations (`smithy_query(query="doc", shape="ValidationException")`: "For
+/// AssociateResourceTypes and DisassociateResourceTypes, one of the following errors:
+/// … One or more of the specified resource types are already associated or disassociated
+/// with the configuration recorder"), reproduced verbatim.
+const STRATEGY_FORBIDS: &str = "The operation failed. configuration recorder may have a recording \
+                                strategy that does not permit association or disassociation of \
+                                resource types.";
 /// See [`STRATEGY_FORBIDS`].
 const ALREADY_SETTLED: &str = "One or more of the specified resource types are already associated \
                                or disassociated with the configuration recorder.";
@@ -161,8 +166,9 @@ struct Case {
 async fn associating_and_disassociating_resource_types_moves_the_strategys_own_list() {
     // Rows differ along what the rule generalises over: which direction the change is,
     // which strategy the recorder records under, how many types one request names,
-    // whether the named type is one the recorder already treats that way, and whether
-    // the strategy's list is empty to begin with.
+    // whether the named type is one the recorder already treats that way, whether the
+    // strategy's list is empty to begin with, and whether the group states the strategy
+    // it records under or only implies it.
     let cases = vec![
         Case {
             name: "an inclusion recorder takes on another type",
@@ -264,6 +270,20 @@ async fn associating_and_disassociating_resource_types_moves_the_strategys_own_l
             operation: "DisassociateResourceTypes",
             group: all_supported_group(),
             resource_types: vec![EC2_VOLUME],
+            expected: Expected::Refused("ValidationException", STRATEGY_FORBIDS),
+        },
+        Case {
+            name: "a recorder recording every supported type without stating the strategy",
+            operation: "AssociateResourceTypes",
+            group: json!({ "allSupported": true }),
+            resource_types: vec![EC2_VOLUME, S3_BUCKET],
+            expected: Expected::Refused("ValidationException", STRATEGY_FORBIDS),
+        },
+        Case {
+            name: "a recorder recording under the strategy alone, enumerating nothing",
+            operation: "DisassociateResourceTypes",
+            group: json!({ "recordingStrategy": { "useOnly": ALL_SUPPORTED } }),
+            resource_types: vec![LAMBDA_FUNCTION],
             expected: Expected::Refused("ValidationException", STRATEGY_FORBIDS),
         },
     ];

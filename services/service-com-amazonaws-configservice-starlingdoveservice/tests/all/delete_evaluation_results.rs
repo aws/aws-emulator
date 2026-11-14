@@ -28,7 +28,7 @@ use service_com_amazonaws_configservice_starlingdoveservice::state::{
 use service_com_amazonaws_configservice_starlingdoveservice::ComAmazonawsConfigserviceStarlingdoveserviceState as ConfigState;
 
 use crate::config_setup_and_rule_loop::{managed_rule, with_recorder_and_channel, Emulator};
-use crate::external_evaluation::process_check_rule;
+use crate::external_evaluation::put_process_check_rule;
 use crate::put_evaluations::{custom_lambda_rule, result_token};
 
 /// Every published `ComplianceType` value, from
@@ -179,7 +179,7 @@ async fn seed(emulator: &Emulator, name: &str, recorded: Recorded) -> usize {
             distinct_results(verdicts, &[EVALUATION_MODE_DETECTIVE])
         }
         Recorded::External(annotation) => {
-            emulator.ok("PutConfigRule", &process_check_rule(name)).await;
+            put_process_check_rule(emulator, name).await;
             emulator
                 .ok(
                     "PutExternalEvaluation",

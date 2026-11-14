@@ -23,6 +23,9 @@
 use std::time::SystemTime;
 
 use serde_json::{json, Value};
+use service_com_amazonaws_configservice_starlingdoveservice::state::{
+    point_at_process_check, service_state,
+};
 
 use crate::config_setup_and_rule_loop::{managed_rule, with_recorder_and_channel, Emulator};
 
@@ -65,17 +68,34 @@ const RULE: &str = "quarterly-access-review";
 /// Rules* the same way [`PROCESS_CHECK`] is.
 const NOT_A_PROCESS_CHECK: &str = "not-a-process-check";
 
-/// The `PutConfigRule` body for a Config Process Check rule named `name`.
+/// Put a Config Process Check rule named `name` into this account, the way an account
+/// holds one it created while Config still offered that managed rule.
 ///
-/// `pub(crate)` because a suite about what happens to a rule's DELIVERED verdicts needs
-/// exactly this rule kind to seed one from outside Config.
-pub(crate) fn process_check_rule(name: &str) -> Value {
-    json!({
-        "ConfigRule": {
-            "ConfigRuleName": name,
-            "Source": { "Owner": "AWS", "SourceIdentifier": PROCESS_CHECK },
-        }
-    })
+/// Config has since WITHDRAWN `AWS_CONFIG_PROCESS_CHECK` from the list of managed rules
+/// `PutConfigRule` accepts (RECORDED behaviour, pinned in `withdrawn_managed_rule`), so
+/// a process check rule can no longer be created over the wire — while
+/// `PutExternalEvaluation` still applies to the ones already created, which is the
+/// population every case here is about. The rule is therefore created through
+/// `PutConfigRule` as an instance of a managed rule Config does offer, scoped the way a
+/// process check is (it evaluates the account), and then pointed at the process check
+/// managed rule through the crate's own seam
+/// (`state::point_at_process_check`) — the way `compliance_details_by_config_rule` seeds
+/// the inventory no operation of this API mints.
+///
+/// `pub(crate)` because every suite about what happens to a rule's DELIVERED verdicts
+/// needs exactly this rule kind to seed one from outside Config.
+pub(crate) async fn put_process_check_rule(emulator: &Emulator, name: &str) {
+    let mut request = managed_rule(name);
+    request["ConfigRule"]["Scope"] =
+        json!({ "ComplianceResourceTypes": [ACCOUNT_RESOURCE_TYPE] });
+    emulator.ok("PutConfigRule", &request).await;
+    let state = service_state(&*emulator.engine).expect("the test engine is the shared engine");
+    let mut store = state.lock();
+    let rule = store
+        .config_rules
+        .get_mut(name)
+        .expect("the rule was created through PutConfigRule");
+    point_at_process_check(&mut rule.source);
 }
 
 /// The account this emulator serves, which is the account a process check evaluates.
@@ -87,7 +107,7 @@ fn this_account() -> String {
 async fn emulator_with_process_check() -> Emulator {
     let emulator = Emulator::new();
     with_recorder_and_channel(&emulator).await;
-    emulator.ok("PutConfigRule", &process_check_rule(RULE)).await;
+    put_process_check_rule(&emulator, RULE).await;
     emulator
 }
 
@@ -403,7 +423,7 @@ async fn each_process_check_rule_holds_its_own_verdict() {
     let emulator = Emulator::new();
     with_recorder_and_channel(&emulator).await;
     for rule in rules {
-        emulator.ok("PutConfigRule", &process_check_rule(rule)).await;
+        put_process_check_rule(&emulator, rule).await;
     }
     let account = this_account();
 

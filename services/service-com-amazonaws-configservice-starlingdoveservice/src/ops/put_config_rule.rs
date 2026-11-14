@@ -5,6 +5,11 @@
 //! persisted a `ConfigRuleId`, a `ConfigRuleArn` and `ConfigRuleState = ACTIVE`, so
 //! `DescribeConfigRules` reads back exactly what was created.
 //!
+//! A rule OWNED by Amazon Web Services is an instance of one of Config's own managed
+//! rules, named by its `SourceIdentifier`; an identifier Config no longer offers names
+//! no managed rule to evaluate, so the write is refused rather than creating a rule
+//! nothing evaluates ([`crate::state::withdrawn_managed_rule_identifier`]).
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -255,6 +260,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         "ConfigRule.Source.SourceIdentifier is required when Source.Owner is {}",
                         requested.source.owner,
                     )),
+                },
+            )
+            .into());
+        }
+
+        // A rule owned by Amazon Web Services is an instance of one of Config's own
+        // managed rules, named by its `SourceIdentifier`; an identifier Config no longer
+        // offers names no rule to evaluate, so no rule is created or updated to be an
+        // instance of it ([`crate::state::withdrawn_managed_rule_identifier`]). Judged
+        // before anything is written, so a refused request leaves the rule the account
+        // holds — or does not hold — exactly as it was.
+        if let Some(withdrawn) =
+            crate::state::withdrawn_managed_rule_identifier(&requested.source)
+        {
+            return Err(PutConfigRuleErrorModeled::InvalidParameterValueException(
+                InvalidParameterValueException {
+                    message: Some(crate::state::invalid_source_identifier_message(withdrawn)),
                 },
             )
             .into());

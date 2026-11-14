@@ -3711,15 +3711,16 @@ pub const RESOURCE_TYPES_ALREADY_SETTLED: &str =
 /// How Config words `ValidationException` for an association or disassociation of
 /// resource types on a recorder whose recording strategy has no place for one.
 ///
-/// The MODEL STATES THIS MESSAGE for exactly these two operations
-/// (`ValidationException`: "For AssociateResourceTypes and DisassociateResourceTypes,
-/// one of the following errors: Your configuraiton recorder has a recording strategy
-/// that does not allow the association or disassociation of resource types"), so the
-/// text is part of the contract — including the service's own spelling of
-/// "configuraiton", which is how the sentence reads in the API reference.
+/// RECORDED behaviour: this is the sentence the service answers on the wire for this
+/// refusal class, on both operations that change a recorder's recorded resource types —
+/// ONE sentence covering both directions, carrying no part of the request and no value
+/// read out of state, so every such refusal reads the same. The API reference's prose
+/// list of `ValidationException` conditions paraphrases it (and misspells
+/// "configuration" while doing so); the wire sentence is what a client branches on, so
+/// it is what this answers.
 pub const RECORDING_STRATEGY_FORBIDS_ASSOCIATION: &str =
-    "Your configuraiton recorder has a recording strategy that does not allow the \
-     association or disassociation of resource types.";
+    "The operation failed. configuration recorder may have a recording strategy that \
+     does not permit association or disassociation of resource types.";
 
 /// Apply `change` to the resource types `group` records, or refuse it with the message
 /// Config words for the rule it breaks.

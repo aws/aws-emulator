@@ -45,9 +45,11 @@ const COMPLIANCE_CHANGE_DETAIL_TYPE: &str = "Config Rules Compliance Change";
 /// The `detail.messageType` a compliance-change notification carries.
 const COMPLIANCE_CHANGE_MESSAGE_TYPE: &str = "ComplianceChangeNotification";
 
-/// The managed-rule `SourceIdentifier` of a Config process check rule, whose
-/// evaluations a caller delivers with `PutExternalEvaluation`.
-const PROCESS_CHECK: &str = "AWS_CONFIG_PROCESS_CHECK";
+/// A managed rule Config DOES offer to `PutConfigRule`, from *List of Config Managed
+/// Rules*. The process check rule a delivered evaluation needs is seeded from it through
+/// the Config crate's own seam (`state::point_at_process_check`), because Config has
+/// withdrawn the process check managed rule from `PutConfigRule`.
+const OFFERED_MANAGED_RULE: &str = "S3_BUCKET_VERSIONING_ENABLED";
 
 /// The resource type an external evaluation is recorded against
 /// (`ExternalEvaluation$ComplianceResourceType`: "Config accepts AWS::::Account
@@ -260,7 +262,17 @@ async fn queue_targeted_by_a_compliance_change_rule(
 
 /// Put the recorder, the delivery channel and the process check rule a delivered
 /// evaluation needs.
-async fn config_rule_ready_for_external_evaluations(router: &MultiServiceRouter) {
+///
+/// The rule is the one an account holds from before Config WITHDREW the
+/// `AWS_CONFIG_PROCESS_CHECK` managed rule from `PutConfigRule` (recorded behaviour,
+/// pinned by the Config crate's `withdrawn_managed_rule` suite): it is created as an
+/// instance of a managed rule Config does offer and then pointed at the process check
+/// identifier in the store the handlers share, which is the population
+/// `PutExternalEvaluation` still applies to.
+async fn config_rule_ready_for_external_evaluations(
+    router: &MultiServiceRouter,
+    engine: &Arc<engine::InMemoryEngine>,
+) {
     config(
         router,
         "PutConfigurationRecorder",
@@ -283,12 +295,24 @@ async fn config_rule_ready_for_external_evaluations(router: &MultiServiceRouter)
         &json!({
             "ConfigRule": {
                 "ConfigRuleName": CONFIG_RULE_NAME,
-                "Source": { "Owner": "AWS", "SourceIdentifier": PROCESS_CHECK },
+                "Source": { "Owner": "AWS", "SourceIdentifier": OFFERED_MANAGED_RULE },
                 "Scope": { "ComplianceResourceTypes": [ACCOUNT_RESOURCE_TYPE] },
             }
         }),
     )
     .await;
+    let config_state = service_com_amazonaws_configservice_starlingdoveservice::state::service_state(
+        &**engine,
+    )
+    .expect("the test engine is the shared engine");
+    let mut store = config_state.lock();
+    let rule = store
+        .config_rules
+        .get_mut(CONFIG_RULE_NAME)
+        .expect("the rule was created through PutConfigRule");
+    service_com_amazonaws_configservice_starlingdoveservice::state::point_at_process_check(
+        &mut rule.source,
+    );
 }
 
 /// Deliver one verdict for the account resource of the process check rule.
@@ -402,7 +426,7 @@ async fn a_verdict_change_reaches_the_sqs_target_of_an_eventbridge_rule() {
         let (router, engine) = router();
         let queue_url = queue_targeted_by_a_compliance_change_rule(&router, "compliance-events")
             .await;
-        config_rule_ready_for_external_evaluations(&router).await;
+        config_rule_ready_for_external_evaluations(&router, &engine).await;
 
         // Nothing has changed a verdict yet, so nothing has been published.
         let before = drain_events(&router, &queue_url).await;
@@ -539,7 +563,7 @@ async fn an_eventbridge_rule_that_does_not_match_receives_no_compliance_change()
     ];
 
     for (case, pattern) in patterns {
-        let (router, _engine) = router();
+        let (router, engine) = router();
         let created = sqs(&router, "CreateQueue", &json!({ "QueueName": "other-events" })).await;
         let queue_url = created["QueueUrl"]
             .as_str()
@@ -584,7 +608,7 @@ async fn an_eventbridge_rule_that_does_not_match_receives_no_compliance_change()
         )
         .await;
 
-        config_rule_ready_for_external_evaluations(&router).await;
+        config_rule_ready_for_external_evaluations(&router, &engine).await;
         deliver(&router, NON_COMPLIANT, 1_700_000_000.0).await;
 
         let received = drain_events(&router, &queue_url).await;

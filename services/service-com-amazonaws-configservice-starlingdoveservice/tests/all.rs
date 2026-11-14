@@ -232,3 +232,5 @@ mod recorded_item_status_and_resumed_recording;
 mod scratch_resume;
 #[path = "all/discovered_resource_item_identity.rs"]
 mod discovered_resource_item_identity;
+#[path = "all/withdrawn_managed_rule.rs"]
+mod withdrawn_managed_rule;

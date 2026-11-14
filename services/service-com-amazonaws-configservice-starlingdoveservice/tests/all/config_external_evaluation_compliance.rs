@@ -31,10 +31,7 @@
 use serde_json::{json, Value};
 
 use crate::config_setup_and_rule_loop::{managed_rule, with_recorder_and_channel, Emulator};
-
-/// The managed-rule `SourceIdentifier` of a Config process check rule — the only rule
-/// whose evaluations a caller delivers through `PutExternalEvaluation`.
-const PROCESS_CHECK: &str = "AWS_CONFIG_PROCESS_CHECK";
+use crate::external_evaluation::put_process_check_rule;
 
 /// The resource type an external evaluation is recorded against
 /// (`ExternalEvaluation$ComplianceResourceType`: "Config accepts AWS::::Account
@@ -62,17 +59,6 @@ const ORDERING_TIMESTAMP: f64 = 1_700_000_000.0;
 /// (`emulator_server::EMULATOR_ACCOUNT_ID`), which is the resource id a process check's
 /// evaluation names.
 const ACCOUNT_ID: &str = "000000000000";
-
-/// A process check rule named `name`, as `PutConfigRule` takes it.
-fn process_check_rule(name: &str) -> Value {
-    json!({
-        "ConfigRule": {
-            "ConfigRuleName": name,
-            "Source": { "Owner": "AWS", "SourceIdentifier": PROCESS_CHECK },
-            "Scope": { "ComplianceResourceTypes": [ACCOUNT_RESOURCE_TYPE] },
-        }
-    })
-}
 
 /// A `PutExternalEvaluation` request delivering `compliance_type` for the account.
 fn external_evaluation(rule: &str, compliance_type: &str) -> Value {
@@ -199,7 +185,7 @@ async fn a_delivered_verdict_replaces_the_result_recorded_for_that_resource() {
         let emulator = Emulator::in_region("eu-west-1");
         with_recorder_and_channel(&emulator).await;
         let rule = "process-check";
-        emulator.ok("PutConfigRule", &process_check_rule(rule)).await;
+        put_process_check_rule(&emulator, rule).await;
 
         // Before anything is delivered the rule is placed neither way.
         let (compliant, non_compliant) = summary_counts(&emulator).await;
@@ -325,7 +311,7 @@ async fn the_annotation_a_delivery_carries_is_reported_with_the_result_it_record
         let emulator = Emulator::new();
         with_recorder_and_channel(&emulator).await;
         let rule = "process-check";
-        emulator.ok("PutConfigRule", &process_check_rule(rule)).await;
+        put_process_check_rule(&emulator, rule).await;
 
         for (verdict, annotation) in deliveries {
             emulator
@@ -355,9 +341,7 @@ async fn the_annotation_a_delivery_carries_is_reported_with_the_result_it_record
 async fn an_evaluation_config_cannot_record_is_refused_by_what_is_wrong_with_it() {
     let emulator = Emulator::new();
     with_recorder_and_channel(&emulator).await;
-    emulator
-        .ok("PutConfigRule", &process_check_rule("process-check"))
-        .await;
+    put_process_check_rule(&emulator, "process-check").await;
     emulator.ok("PutConfigRule", &managed_rule("managed")).await;
 
     // Rows differ along WHICH part of the request Config cannot record: the rule

@@ -374,12 +374,11 @@ impl ConfigRuleEntry {
     /// Whether this rule is a Config Process Check rule, i.e. the Config Managed rule
     /// whose evaluations are delivered from OUTSIDE Config rather than computed by
     /// Config from recorded configuration state. A process check is identified by the
-    /// managed rule it is an instance of: its owner is Amazon Web Services
-    /// ([`OWNER_AWS`]) and its source identifier is that managed rule's
-    /// ([`SOURCE_IDENTIFIER_PROCESS_CHECK`]).
+    /// managed rule it is an instance of ([`names_process_check`]), which is the ONE
+    /// predicate for that question so this and the write path that refuses the
+    /// identifier cannot disagree about a value's spelling.
     pub fn is_process_check(&self) -> bool {
-        self.source.owner == OWNER_AWS
-            && self.source.source_identifier.as_deref() == Some(SOURCE_IDENTIFIER_PROCESS_CHECK)
+        names_process_check(&self.source)
     }
 
     /// Whether this rule's verdicts are DELIVERED to Config with `PutEvaluations`
@@ -556,4 +555,89 @@ impl ConfigRuleEntry {
             }),
         }
     }
+}
+
+/// The MANAGED rule `source` names, by its identifier, or `None` when it names none.
+///
+/// The OWNER decides whether the identifier is a managed rule's at all: a rule owned by
+/// Amazon Web Services is an instance of one of Config's own managed rules, named by
+/// `Source$SourceIdentifier` ("For Config Managed rules, a predefined identifier from a
+/// list"), while a Config Custom Lambda rule's identifier is the ARN of the function
+/// that evaluates it and a Custom Policy rule carries its policy instead. The identifier
+/// is TRIMMED, because the wire carries it as the caller typed it, and this is the ONE
+/// place that reading is taken — the managed-rule catalogues ([`managed_rule_of`],
+/// [`account_managed_rule_of`]), the process check predicate
+/// ([`names_process_check`]) and the withdrawn set below all look it up through here, so
+/// no two of them can disagree about which managed rule a source names.
+pub fn managed_rule_identifier(source: &Source) -> Option<&str> {
+    if source.owner != OWNER_AWS {
+        return None;
+    }
+    source
+        .source_identifier
+        .as_deref()
+        .map(str::trim)
+        .filter(|identifier| !identifier.is_empty())
+}
+
+/// Whether `source` names the managed rule a Config process check IS
+/// ([`SOURCE_IDENTIFIER_PROCESS_CHECK`]).
+pub fn names_process_check(source: &Source) -> bool {
+    managed_rule_identifier(source) == Some(SOURCE_IDENTIFIER_PROCESS_CHECK)
+}
+
+/// Point `source` at the managed rule a Config process check IS.
+///
+/// A process check rule cannot be WRITTEN any more — Config has withdrawn that managed
+/// rule ([`WITHDRAWN_MANAGED_RULE_IDENTIFIERS`]) — while `PutExternalEvaluation` still
+/// applies to the rules an account created while Config did offer it. This is how such a
+/// rule comes to exist in a store without `PutConfigRule` creating one, so a suite about
+/// what happens to a rule's DELIVERED verdicts has the rule kind those verdicts belong
+/// to, and reaches it through this one documented seam rather than by spelling the
+/// identifier into the store itself.
+pub fn point_at_process_check(source: &mut Source) {
+    source.source_identifier = Some(SOURCE_IDENTIFIER_PROCESS_CHECK.to_string());
+}
+
+/// The `Source$SourceIdentifier`s of the MANAGED rules Config no longer offers.
+///
+/// A rule owned by Amazon Web Services is an instance of one of Config's own managed
+/// rules, and the list `Source$SourceIdentifier` points at — *List of Config Managed
+/// Rules* — is what Config offers. An identifier WITHDRAWN from that list names no
+/// managed rule Config can evaluate, so nothing can be created or updated to be an
+/// instance of it.
+///
+/// RECORDED behaviour names this entry: `PutConfigRule` for an Amazon Web
+/// Services-owned rule whose identifier is [`SOURCE_IDENTIFIER_PROCESS_CHECK`] is
+/// refused as an invalid source identifier, while `PutExternalEvaluation` still applies
+/// to the process check rules an account created while Config did offer it.
+///
+/// The set is stated as what Config has WITHDRAWN rather than as what it offers because
+/// *List of Config Managed Rules* holds hundreds of entries that this emulator does not
+/// enumerate: the catalogues it does carry ([`MANAGED_RULES`], [`ACCOUNT_MANAGED_RULES`])
+/// are the managed rules it EVALUATES, which is a far smaller set than the ones Config
+/// accepts, so refusing every identifier outside them would refuse identifiers Config
+/// offers. An identifier that is merely unknown to this emulator is therefore accepted,
+/// as Config accepts the hundreds it offers; only one Config no longer offers at all is
+/// refused.
+pub const WITHDRAWN_MANAGED_RULE_IDENTIFIERS: [&str; 1] = [SOURCE_IDENTIFIER_PROCESS_CHECK];
+
+/// The identifier `source` names that Config no longer offers as a managed rule, or
+/// `None` when it names one Config does offer — or none at all.
+pub fn withdrawn_managed_rule_identifier(source: &Source) -> Option<&str> {
+    managed_rule_identifier(source)
+        .filter(|identifier| WITHDRAWN_MANAGED_RULE_IDENTIFIERS.contains(identifier))
+}
+
+/// How Config words `InvalidParameterValueException` for a rule whose source identifier
+/// names no managed rule Config offers.
+///
+/// RECORDED behaviour: the sentence states the identifier the request carried and where
+/// the list of the ones Config does offer is — the only two things a caller needs to
+/// pick another — and the identifier is the ONE part of it taken from the request.
+pub fn invalid_source_identifier_message(identifier: &str) -> String {
+    format!(
+        "The sourceIdentifier {identifier} is invalid. Please refer to the documentation \
+         for a list of valid sourceIdentifiers that can be used when AWS is the Owner."
+    )
 }

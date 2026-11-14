@@ -28,11 +28,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime};
 
 use super::{
-    compliance_change_detail, publish_service_event_via, run_remediation_actions, service_state,
-    stream_recorded_item_changes, ComAmazonawsConfigserviceStarlingdoveserviceState,
-    DiscoveredResourceEntry, EvaluationResultEntry, RecordedItemChange,
-    COMPLIANCE_CHANGE_DETAIL_TYPE, COMPLIANCE_TYPE_COMPLIANT, COMPLIANCE_TYPE_NON_COMPLIANT,
-    CONFIG_RULE_STATE_ACTIVE, EVALUATION_MODE_DETECTIVE, OWNER_AWS,
+    compliance_change_detail, managed_rule_identifier, publish_service_event_via,
+    run_remediation_actions, service_state, stream_recorded_item_changes,
+    ComAmazonawsConfigserviceStarlingdoveserviceState, DiscoveredResourceEntry,
+    EvaluationResultEntry, RecordedItemChange, COMPLIANCE_CHANGE_DETAIL_TYPE,
+    COMPLIANCE_TYPE_COMPLIANT, COMPLIANCE_TYPE_NON_COMPLIANT, CONFIG_RULE_STATE_ACTIVE,
+    EVALUATION_MODE_DETECTIVE,
 };
 use crate::ops::types::{Scope, Source};
 
@@ -180,14 +181,11 @@ pub const MANAGED_RULES: [ManagedRule; 2] = [
 
 /// The managed rule `source` names, when this emulator evaluates it.
 ///
-/// Only a rule OWNED by Amazon Web Services is a managed rule; a Custom Lambda or
-/// Custom Policy rule carries the caller's own implementation, which this emulator
-/// does not run.
+/// Which managed rule a source names at all is [`managed_rule_identifier`]'s, so a
+/// Custom Lambda or Custom Policy rule — which carries the caller's own implementation,
+/// and which this emulator does not run — names none.
 pub fn managed_rule_of(source: &Source) -> Option<&'static ManagedRule> {
-    if source.owner != OWNER_AWS {
-        return None;
-    }
-    let identifier = source.source_identifier.as_deref().map(str::trim)?;
+    let identifier = managed_rule_identifier(source)?;
     MANAGED_RULES
         .iter()
         .find(|managed| managed.identifier == identifier)
@@ -1206,6 +1204,7 @@ pub(crate) fn s3_client(
 mod tests {
     use super::*;
     use crate::ops::types::Scope;
+    use crate::state::OWNER_AWS;
 
     /// A recorded S3 bucket whose configuration item carries `versioning` as its
     /// versioning status and `algorithms` as the default encryption algorithms in force,

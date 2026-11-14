@@ -19,8 +19,8 @@
 use std::time::SystemTime;
 
 use super::{
-    ComplianceChange, ConfigRuleEntry, EvaluationResultEntry, ObservedAccount,
-    EVALUATION_MODE_DETECTIVE, EXTERNAL_EVALUATION_RESOURCE_TYPE, OWNER_AWS,
+    managed_rule_identifier, ComplianceChange, ConfigRuleEntry, EvaluationResultEntry,
+    ObservedAccount, EVALUATION_MODE_DETECTIVE, EXTERNAL_EVALUATION_RESOURCE_TYPE,
 };
 use crate::ops::types::Source;
 
@@ -58,13 +58,11 @@ pub const ACCOUNT_MANAGED_RULES: [AccountManagedRule; 1] = [AccountManagedRule {
 
 /// The account-wide managed rule `source` names, when this emulator evaluates it.
 ///
-/// Only a rule OWNED by Amazon Web Services is a managed rule; a Custom Lambda or Custom
-/// Policy rule carries the caller's own implementation.
+/// Which managed rule a source names at all is [`managed_rule_identifier`]'s, so a
+/// Custom Lambda or Custom Policy rule — which carries the caller's own implementation —
+/// names none.
 pub fn account_managed_rule_of(source: &Source) -> Option<&'static AccountManagedRule> {
-    if source.owner != OWNER_AWS {
-        return None;
-    }
-    let identifier = source.source_identifier.as_deref().map(str::trim)?;
+    let identifier = managed_rule_identifier(source)?;
     ACCOUNT_MANAGED_RULES
         .iter()
         .find(|managed| managed.identifier == identifier)
