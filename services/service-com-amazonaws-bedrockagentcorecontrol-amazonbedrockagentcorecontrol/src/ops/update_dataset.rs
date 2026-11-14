@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op UpdateDataset
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `UpdateDataset`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`UpdateDataset::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Updates one stored dataset's METADATA in [`crate::state`] and reports the record it
+//! wrote: "Only provided fields are updated; omitted fields remain unchanged", so a
+//! member the request does not carry is left as it was rather than cleared, and every
+//! later read of the dataset comes from that same record.
+//!
+//! The update is SYNCHRONOUS — the response carries no status and the dataset keeps the
+//! one it is in — and it touches no example: the working copy, every version published
+//! from it and the DRAFT's publish synchronization state are all left alone.
+//!
+//! A dataset whose own ingestion or last mutation is still in flight serves no write, so
+//! an update of one that is `CREATING`, `UPDATING` or on its way out in `DELETING`
+//! conflicts with the operation already running on it.
 //!
 //! ## Shape of an operation
 //!
@@ -164,18 +168,55 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `UpdateDataset` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(UpdateDatasetErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("UpdateDataset"))
+        let _ = ctx;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            UpdateDatasetErrorModeled::InternalServerException(InternalServerException {
+                message: Some("the dataset store is unavailable".to_string()),
+            })
+        })?;
+        let now = ::std::time::SystemTime::now();
+        let mut store = state.lock();
+
+        // A replayed request carrying the same `clientToken` answers with the
+        // dataset that token first updated, rather than applying a second
+        // update: "If this token matches a previous request, the service ignores
+        // the request, but doesn't return an error."
+        if let Some(dataset_id) =
+            store.replayed_dataset_result(Self::NAME, input.client_token.as_deref())
+        {
+            // `replayed_dataset_result` answers only for a dataset the store
+            // still holds, so this lookup cannot miss.
+            if let Some(record) = store.datasets.get(&dataset_id) {
+                return Ok(record.update_output());
+            }
+        }
+
+        // The store is keyed by the `datasetId` the create minted; an id naming
+        // no stored dataset is the modelled 404, and nothing is written for it.
+        let record = store.datasets.get_mut(&input.dataset_id).ok_or_else(|| {
+            UpdateDatasetErrorModeled::ResourceNotFoundException(crate::state::resource_not_found(
+                crate::state::RESOURCE_DATASET,
+            ))
+        })?;
+
+        // A dataset whose own ingestion or last mutation is still in flight
+        // blocks every write, so this request conflicts with the operation
+        // already running on it rather than overwriting what that one is doing.
+        let status = record.status_at(now).to_string();
+        if crate::state::dataset_blocks_writes(&status) {
+            return Err(UpdateDatasetErrorModeled::ConflictException(
+                crate::state::dataset_status_conflict(Self::NAME, &status),
+            )
+            .into());
+        }
+
+        // "Only provided fields are updated; omitted fields remain unchanged":
+        // this is a patch of the dataset's metadata and not its whole
+        // configuration, so an omitted member is left as it was.
+        record.apply_metadata_update(input.description, now);
+        let output = record.update_output();
+        store.remember_dataset_client_token(Self::NAME, input.client_token, &input.dataset_id);
+
+        Ok(output)
     }
 }

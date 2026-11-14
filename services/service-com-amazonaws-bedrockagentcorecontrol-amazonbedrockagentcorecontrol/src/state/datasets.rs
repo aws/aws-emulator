@@ -26,8 +26,9 @@ use ::aws_smithy_types::Document;
 use ::serde_json::Value;
 
 use crate::ops::types::{
-    CreateDatasetInput, CreateDatasetOutput, CreateDatasetVersionOutput, DataSourceType,
-    DatasetSummary, DatasetVersionSummary, GetDatasetOutput, ValidationException,
+    ConflictException, CreateDatasetInput, CreateDatasetOutput, CreateDatasetVersionOutput,
+    DataSourceType, DatasetSummary, DatasetVersionSummary, GetDatasetOutput, UpdateDatasetOutput,
+    ValidationException,
 };
 
 use super::{sorted_map, timestamp, VALIDATION_REASON_FIELD_VALIDATION_FAILED};
@@ -213,6 +214,38 @@ pub fn validate_inline_examples(
         }
     }
     Ok(())
+}
+
+/// Whether a dataset in `status` can serve a WRITE.
+///
+/// Which statuses block one is the model's own account of them: `CREATING` is
+/// "CreateDataset async ingestion in progress. All writes are blocked",
+/// `UPDATING` is "An async example mutation or CreateDatasetVersion is in
+/// progress. All writes are blocked", and for a `DELETING` dataset on its way
+/// out "Read operations are still allowed" — writes are not. A dataset is
+/// stable in `ACTIVE`, where "All operations are allowed per operation-specific
+/// guards" (`smithy_query shape=DatasetStatus`).
+///
+/// Shared by the handlers rather than written per operation, so no write path
+/// can disagree about when a dataset is busy.
+pub fn dataset_blocks_writes(status: &str) -> bool {
+    status == DATASET_STATUS_CREATING
+        || status == DATASET_STATUS_UPDATING
+        || status == DATASET_STATUS_DELETING
+}
+
+/// The modelled conflict a dataset write gets while the dataset is in a status
+/// that blocks it: the operation that was asked for, and the status it found.
+///
+/// The sentence is fixed; its variable parts are the asking operation's own name
+/// and the dataset's current status, spelled as the wire's enum token. Shared by
+/// the handlers so one refusal cannot be worded two ways.
+pub fn dataset_status_conflict(operation: &str, status: &str) -> ConflictException {
+    ConflictException {
+        message: Some(format!(
+            "Cannot perform operation {operation} when dataset is in {status} status"
+        )),
+    }
 }
 
 /// What ingesting a dataset's source established.
@@ -700,6 +733,33 @@ impl DatasetRecord {
                 .map(|(key, value)| (key.clone(), value.clone()))
                 .collect(),
         )
+    }
+
+    /// Apply an update of this dataset's METADATA: "Only provided fields are
+    /// updated; omitted fields remain unchanged", so a member the request does
+    /// not carry is left exactly as it was rather than cleared.
+    ///
+    /// The update is SYNCHRONOUS, so the dataset keeps the status it is already
+    /// in and the clock owes it no transition. It touches no example — "To
+    /// modify dataset content, use AddDatasetExamples, UpdateDatasetExamples, or
+    /// DeleteDatasetExamples" — so the working copy, every published version and
+    /// the DRAFT's publish synchronization state are all left alone.
+    pub fn apply_metadata_update(&mut self, description: Option<String>, now: SystemTime) {
+        if description.is_some() {
+            self.description = description;
+        }
+        self.updated_at = now;
+    }
+
+    /// What an update of this dataset reports: the three members
+    /// `UpdateDatasetResponse` declares, every one of them off the record just
+    /// written, so the `updatedAt` it answers is the one a later read reports.
+    pub fn update_output(&self) -> UpdateDatasetOutput {
+        UpdateDatasetOutput {
+            dataset_arn: self.dataset_arn.clone(),
+            dataset_id: self.dataset_id.clone(),
+            updated_at: timestamp(self.updated_at),
+        }
     }
 
     /// What the create of this dataset reports: the four members

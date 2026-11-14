@@ -202,17 +202,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `UPDATING`, so the request conflicts with the operation already
         // running on it.
         let status = record.status_at(now).to_string();
-        if status == crate::state::DATASET_STATUS_CREATING
-            || status == crate::state::DATASET_STATUS_UPDATING
-            || status == crate::state::DATASET_STATUS_DELETING
-        {
+        if crate::state::dataset_blocks_writes(&status) {
             return Err(CreateDatasetVersionErrorModeled::ConflictException(
-                ConflictException {
-                    message: Some(format!(
-                        "Cannot perform operation {} when dataset is in {status} status",
-                        Self::NAME
-                    )),
-                },
+                crate::state::dataset_status_conflict(Self::NAME, &status),
             )
             .into());
         }

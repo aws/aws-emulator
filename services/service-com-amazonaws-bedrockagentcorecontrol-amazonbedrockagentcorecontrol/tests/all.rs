@@ -43,6 +43,8 @@ mod control_plane_preconditions;
 mod credential_provider_external_secret_decryption;
 #[path = "all/dataset_lifecycle.rs"]
 mod dataset_lifecycle;
+#[path = "all/dataset_metadata_update.rs"]
+mod dataset_metadata_update;
 #[path = "all/dataset_schema_validation.rs"]
 mod dataset_schema_validation;
 #[path = "all/gateway_dependent_children.rs"]
