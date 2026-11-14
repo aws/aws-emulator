@@ -221,15 +221,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let now = crate::state::now();
-        let mut store = state.lock();
-        store.apply_due_changes(now);
+        let region = crate::state::request_region(ctx);
 
         // An `@idempotencyToken` replay answers with the subscription the first call
-        // created, so the same token never yields a second subscription.
-        if let Some(token) = client_token.as_deref() {
-            if let Some(existing) = store
-                .idempotency
-                .get(token)
+        // created, so the same token never yields a second subscription. The guard is
+        // taken and DROPPED here: the eligibility gate below asks another service, and no
+        // lock of this store may be held across that call.
+        {
+            let mut store = state.lock();
+            store.apply_due_changes(now);
+            if let Some(existing) = client_token
+                .as_deref()
+                .and_then(|token| store.idempotency.get(token))
                 .and_then(|arn| store.subscriptions.get(arn))
             {
                 return Ok(CreateSubscriptionOutput {
@@ -238,6 +241,31 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 });
             }
         }
+
+        // The resources a subscription covers have to be ELIGIBLE for the plan family it
+        // asks for: for the CloudFront family the named distribution must be fronted by
+        // the WAF web ACL the same request names, which is a fact CloudFront holds
+        // (`crate::state::resource_eligibility`). The gate runs before anything is
+        // minted, so a refused call leaves no subscription behind.
+        let ineligible =
+            crate::state::ineligible_resources(ctx, &region, &plan_family, &resource_arns).await;
+        if !ineligible.is_empty() {
+            return Err(CreateSubscriptionErrorModeled::ValidationException(
+                ValidationException {
+                    message: crate::state::ineligible_resources_message(&ineligible),
+                    // "The identifier of the resource that failed validation" — which is
+                    // a single resource only when exactly one failed; the message carries
+                    // the whole list either way.
+                    resource_id: match ineligible.as_slice() {
+                        [only] => Some(only.clone()),
+                        _ => None,
+                    },
+                },
+            )
+            .into());
+        }
+
+        let mut store = state.lock();
 
         // The account holds a bounded number of subscriptions, which is what the
         // modelled 402 reports: "You have reached the maximum number of subscriptions
@@ -266,11 +294,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let sequence = store.next_subscription_sequence();
-        let arn = crate::state::mint_subscription_arn(
-            &crate::state::request_region(ctx),
-            sequence,
-            now,
-        );
+        let arn = crate::state::mint_subscription_arn(&region, sequence, now);
         let mut record = crate::state::SubscriptionRecord {
             arn,
             plan_family,

@@ -18,6 +18,14 @@ use crate::ops::types::{
     SCHEDULED_CHANGE_TYPE_VALUES, STATUS_VALUES,
 };
 
+/// Whether the resources a subscription names are eligible for the plan family it asks
+/// for — a question about state ANOTHER service holds, so it lives on its own.
+pub mod resource_eligibility;
+
+pub use resource_eligibility::{
+    ineligible_resources, ineligible_resources_message, CLOUDFRONT_PLAN_FAMILY,
+};
+
 /// The region an unsigned request is served in. A signed request carries its own
 /// region in the SigV4 credential scope; see [`request_region`].
 pub const DEFAULT_REGION: &str = "us-east-1";

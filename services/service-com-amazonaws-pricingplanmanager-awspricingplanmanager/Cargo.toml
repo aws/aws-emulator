@@ -26,8 +26,15 @@ sha2 = { workspace = true }
 # Hex-codes that digest and the opaque ListSubscriptions `nextToken`.
 hex = { workspace = true }
 # `date_time_json`: the workspace's ONE rendering of a `restJson1` timestamp whose model
-# declares the `date-time` form, which every timestamp member of this model does.
+# declares the `date-time` form, which every timestamp member of this model does. `arn`
+# reads the resource ARNs a subscription names: which vendor and resource type each one
+# addresses, and whether its Region field is a label an endpoint can be reached at.
 service-common = { path = "../common" }
+# `CreateSubscription` gates the resources its `resourceArns` names on the state the
+# owning service holds for them; for a CloudFront distribution that is the web ACL
+# association the `GetDistribution` this client generates reports, driven over the
+# in-process callback.
+aws-sdk-cloudfront = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

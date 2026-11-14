@@ -17751,6 +17751,7 @@ dependencies = [
  "aws-emulator-smithy-macros",
  "aws-emulator-smithy-schema-server",
  "aws-emulator-smithy-server-runtime",
+ "aws-sdk-cloudfront",
  "aws-smithy-runtime-api",
  "aws-smithy-schema 0.2.1",
  "aws-smithy-types",
