@@ -54,7 +54,7 @@ const WORKSPACE: &str = "msgbounds";
 /// `@length(20..2048)`, from `smithy_query(query="shape",shape="TwinMakerArn")`
 /// — which is the member an IoT TwinMaker end of a transfer names a workspace on
 /// and the member every tagging operation addresses a resource on.
-const TWIN_MAKER_ARN_MAX: usize = 2048;
+pub(crate) const TWIN_MAKER_ARN_MAX: usize = 2048;
 
 /// The greatest number of keys the modelled `TagMap` and `TagKeyList` admit
 /// (`@length(0..50)`), and the greatest number of characters one `TagKey` admits
@@ -80,15 +80,22 @@ fn unheld_workspace_arn_base() -> String {
 
 /// A syntactically legal workspace ARN of exactly `length` characters that this
 /// service holds no workspace for.
+fn unheld_workspace_arn(length: usize) -> String {
+    padded(&unheld_workspace_arn_base(), length)
+}
+
+/// `base` padded to exactly `length` characters.
 ///
 /// The padding is appended inside the resource segment, which the modelled
 /// `TwinMakerArn` pattern admits (`[\/a-zA-Z0-9_\-\.:]+`), so the value a case
 /// sends is one the boundary validator passes and the handler has to resolve.
-fn unheld_workspace_arn(length: usize) -> String {
-    let mut arn = unheld_workspace_arn_base();
+/// The ONE construction of a sized ARN, so a suite about another FORM of ARN
+/// (`tests/all/tagging_resource_arn_forms.rs`) sizes its rows the same way.
+pub(crate) fn padded(base: &str, length: usize) -> String {
+    let mut arn = base.to_string();
     assert!(
         arn.chars().count() <= length,
-        "an unheld workspace ARN of {length} characters cannot be shorter than {arn:?}"
+        "an ARN of {length} characters cannot be shorter than {arn:?}"
     );
     while arn.chars().count() < length {
         arn.push('a');
@@ -105,7 +112,7 @@ const SHORT: usize = 8;
 /// characters: one that fits, one landing exactly on the member's maximum, one
 /// character past it, and `widest` — the variable text's own modelled maximum,
 /// or a size far past what the reason admits where the model declares none.
-fn sizes(fixed: usize, smallest: usize, widest: usize) -> Vec<(String, usize)> {
+pub(crate) fn sizes(fixed: usize, smallest: usize, widest: usize) -> Vec<(String, usize)> {
     vec![
         (
             "text short enough for the reason to fit".to_string(),
@@ -126,7 +133,7 @@ fn sizes(fixed: usize, smallest: usize, widest: usize) -> Vec<(String, usize)> {
 /// The reason a reader of this service words for a resource no ARN in its index
 /// names — the construction `ListTagsForResource`, `TagResource` and
 /// `UntagResource` share.
-fn resource_not_found(resource_arn: &str) -> String {
+pub(crate) fn resource_not_found(resource_arn: &str) -> String {
     format!("Resource {resource_arn} not found.")
 }
 
@@ -492,7 +499,7 @@ async fn an_out_of_enum_value_is_refused_at_the_boundary() {
 /// One tagging operation, which addresses a resource by an ARN the model bounds
 /// as widely as the member its refusal travels on.
 #[derive(Debug, Clone, Copy)]
-enum Tagging {
+pub(crate) enum Tagging {
     /// `TagResource`.
     Write,
     /// `UntagResource`.
@@ -502,11 +509,44 @@ enum Tagging {
 }
 
 /// The whole set of operations that addresses a resource by `resourceARN`.
-const TAGGING: [Tagging; 3] = [Tagging::Write, Tagging::Remove, Tagging::Read];
+pub(crate) const TAGGING: [Tagging; 3] = [Tagging::Write, Tagging::Remove, Tagging::Read];
 
 impl Tagging {
+    /// Drive this operation against `resource_arn` and assert the rule over the
+    /// reason it reports: an ARN naming no stored resource earns a 404
+    /// `ResourceNotFoundException` whose `message` is the service's own
+    /// construction, stated within the bound of the member it travels on.
+    ///
+    /// The ONE statement of the rule for a tagging refusal, so a suite about
+    /// another FORM of ARN (`tests/all/tagging_resource_arn_forms.rs`) asserts
+    /// it through this rather than restating it.
+    pub(crate) async fn assert_refusal_fits(
+        self,
+        emulator: &Emulator,
+        case: &str,
+        resource_arn: &str,
+    ) {
+        let refused = self.send(emulator, resource_arn).await;
+        assert_eq!(
+            (refused.status, refused.error_type.as_deref()),
+            (404, Some("ResourceNotFoundException")),
+            "case {case:?}: expected 404 ResourceNotFoundException, got {refused:?}"
+        );
+        let reported = refused
+            .member("message")
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert_within_bound(
+            case,
+            &reported,
+            &resource_not_found(resource_arn),
+            ERROR_MESSAGE_MAX,
+        );
+    }
+
     /// Drive this operation against `resource_arn`.
-    async fn send(self, emulator: &Emulator, resource_arn: &str) -> Resp {
+    pub(crate) async fn send(self, emulator: &Emulator, resource_arn: &str) -> Resp {
         match self {
             Tagging::Write => {
                 emulator
@@ -537,24 +577,9 @@ async fn a_tagging_refusal_fits_its_modelled_member() {
             TWIN_MAKER_ARN_MAX,
         ) {
             let case = format!("{operation:?} with {size_case}");
-            let resource_arn = unheld_workspace_arn(length);
-            let refused = operation.send(&emulator, &resource_arn).await;
-            assert_eq!(
-                (refused.status, refused.error_type.as_deref()),
-                (404, Some("ResourceNotFoundException")),
-                "case {case:?}: expected 404 ResourceNotFoundException, got {refused:?}"
-            );
-            let reported = refused
-                .member("message")
-                .as_str()
-                .unwrap_or_default()
-                .to_string();
-            assert_within_bound(
-                &case,
-                &reported,
-                &resource_not_found(&resource_arn),
-                ERROR_MESSAGE_MAX,
-            );
+            operation
+                .assert_refusal_fits(&emulator, &case, &unheld_workspace_arn(length))
+                .await;
         }
     }
 }

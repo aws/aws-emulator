@@ -266,6 +266,9 @@ mod tabular_page_token_scope;
 #[path = "all/tabular_property_sources.rs"]
 mod tabular_property_sources;
 
+#[path = "all/tagging_resource_arn_forms.rs"]
+mod tagging_resource_arn_forms;
+
 #[path = "all/time_series_latest_value.rs"]
 mod time_series_latest_value;
 
