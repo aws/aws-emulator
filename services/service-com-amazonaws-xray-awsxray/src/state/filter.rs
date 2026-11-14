@@ -69,7 +69,10 @@
 //! `service("name"[, "type"])` and `edge("source", "destination")` scope the
 //! keywords inside their `{ … }` block to one service's segments, or to one
 //! edge's destination segments; a scope keyword without a block asks only
-//! whether the trace ran through it.
+//! whether the trace ran through it. Each names its entities in either of the two
+//! spellings the same reference gives — the names alone, or one `id(…)` function
+//! per entity (`service(id(name: "…", type: "…"))`) — and both spellings name the
+//! same scope.
 //!
 //! A keyword whose value this emulator does not derive is REFUSED by name,
 //! rather than answered with silence: a caller is not told "no traces match" for
@@ -324,13 +327,14 @@ impl Literal {
     }
 
     /// The literal a parsed operand carries, or `None` for one naming another
-    /// field — a comparison between two fields is not evaluated here.
+    /// field or an entity — neither is a value a comparison is evaluated against
+    /// here.
     fn of(operand: &Operand) -> Option<Self> {
         match operand {
             Operand::Text(text) => Some(Self::Str(text.clone())),
             Operand::Number(number) => Some(Self::Num(*number)),
             Operand::Boolean(value) => Some(Self::Bool(*value)),
-            Operand::Field(_) => None,
+            Operand::Field(_) | Operand::Entity(_) => None,
         }
     }
 }
@@ -481,10 +485,23 @@ fn compile_exists(path: &str, inside: Option<RootCauseBlock>) -> Result<Node, Fi
 }
 
 /// The scope a `service(…)` / `edge(…)` predicate selects.
+///
+/// Each of the two keywords names its entities in either of the two spellings
+/// AWS's filter-expression reference gives: the NAMES alone
+/// (`service("name", "type")`, `edge("source", "destination")`) or an `id(…)`
+/// function per entity (`service(id(name: "name", type: "type"))`,
+/// `edge(id(name: "source"), id(name: "destination"))`). Both spellings name the
+/// same scope, so both compile to the one selector this module evaluates.
 fn selector_of(
     path: &str,
     arguments: &[filter_expression::Argument],
 ) -> Result<Selector, FilterError> {
+    if arguments
+        .iter()
+        .any(|argument| matches!(argument.value, Operand::Entity(_)))
+    {
+        return entity_selector_of(path, arguments);
+    }
     let names: Vec<&str> = arguments
         .iter()
         .filter_map(|argument| match &argument.value {
@@ -517,6 +534,68 @@ fn selector_of(
         ))),
         (_, found) => Err(FilterError::new(format!(
             "`edge` takes a source and a destination, not {} arguments",
+            found.len()
+        ))),
+    }
+}
+
+/// The same scope, where the keyword named its entities with `id(…)` functions.
+///
+/// One function per entity: a `service(…)` names one and an `edge(…)` names its
+/// source and its destination, so an argument list of any other shape is refused
+/// in the same words the names spelling is. The entity's NAME is what this module
+/// evaluates a scope by, so an `id(…)` that labels no name — or one that narrows
+/// by an account, which this module does not derive — is named rather than
+/// answered with silence.
+fn entity_selector_of(
+    path: &str,
+    arguments: &[filter_expression::Argument],
+) -> Result<Selector, FilterError> {
+    let entities: Vec<&filter_expression::EntityId> = arguments
+        .iter()
+        .filter_map(|argument| match &argument.value {
+            Operand::Entity(entity) => Some(entity),
+            _ => None,
+        })
+        .collect();
+    if entities.len() != arguments.len() {
+        return Err(FilterError::new(format!(
+            "`{path}` names its entities either by name or with `id(…)` functions, not both"
+        )));
+    }
+    for entity in &entities {
+        if entity.account_id.is_some() {
+            return Err(unevaluated(format!(
+                "`{path}` narrowed by an entity's account is not evaluated by this emulator yet"
+            )));
+        }
+    }
+    let named = |entity: &filter_expression::EntityId| {
+        entity.name.clone().ok_or_else(|| {
+            unevaluated(format!("`{path}` is evaluated for named services only"))
+        })
+    };
+    match (path, entities.as_slice()) {
+        ("service", [entity]) => Ok(Selector::Service {
+            name: named(entity)?,
+            r#type: entity.r#type.clone(),
+        }),
+        ("edge", [source, destination]) => Ok(Selector::Edge {
+            source: named(source)?,
+            destination: named(destination)?,
+        }),
+        ("service", found) => Err(FilterError::new(format!(
+            "`service` takes a name and optionally a type, not {} arguments",
+            found.len()
+        ))),
+        ("edge", found) => Err(FilterError::new(format!(
+            "`edge` takes a source and a destination, not {} arguments",
+            found.len()
+        ))),
+        // No other keyword is scoped, so none reaches here; a keyword that one day
+        // is reports its own name rather than inheriting another's wording.
+        (_, found) => Err(FilterError::new(format!(
+            "`{path}` is not scoped by {} entities",
             found.len()
         ))),
     }

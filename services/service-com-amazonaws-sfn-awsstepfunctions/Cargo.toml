@@ -147,6 +147,12 @@ service-com-amazonaws-sns-amazonsimplenotificationservice = { workspace = true }
 aws-sdk-s3 = { version = "1", default-features = false }
 # Gunzips one of those delivered log files, which is a gzip stream.
 flate2 = "1"
+# AWS X-Ray is mounted beside Step Functions in `tests/all/execution_xray_tracing.rs`: the
+# trace a tracing state machine's run publishes is submitted to that service's own
+# `PutTraceSegments` through the in-process callback, and read back through its own
+# `GetTraceSummaries` and `BatchGetTraces` — without it mounted there is nowhere for the
+# publication to reach.
+service-com-amazonaws-xray-awsxray = { workspace = true }
 
 [lints]
 workspace = true

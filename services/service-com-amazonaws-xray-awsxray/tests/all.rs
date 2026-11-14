@@ -26,6 +26,9 @@ mod encryption_key_resolution;
 #[path = "all/enum_value_set_order.rs"]
 mod enum_value_set_order;
 
+#[path = "all/filter_expression_entity_ids.rs"]
+mod filter_expression_entity_ids;
+
 #[path = "all/filter_expression_unary_forms.rs"]
 mod filter_expression_unary_forms;
 

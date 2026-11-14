@@ -3872,6 +3872,13 @@ pub mod filter_expression {
         Boolean(bool),
         /// Another indexed field, as `id(name: …)`'s arguments may name.
         Field(String),
+        /// An `id(…)` function naming ONE entity, which is the other way the
+        /// complex keywords name theirs: AWS's filter-expression reference writes
+        /// a service scope as `service("name")` and as
+        /// `service(id(name: "name", type: "type"))`, and an edge scope as
+        /// `edge("source", "destination")` and as `edge(id(…), id(…))`, so the
+        /// two spellings of one scope parse to one argument list.
+        Entity(EntityId),
     }
 
     /// One argument of a complex keyword, labelled as in `id(name: "svc")` or
@@ -4138,7 +4145,7 @@ pub mod filter_expression {
     /// predicate  := keyword ["(" arguments ")"] ["{" expression "}" | comparison operand]
     /// existence  := "annotation" "[" key "]"
     /// arguments  := argument ("," argument)*
-    /// argument   := [label ":"] operand
+    /// argument   := [label ":"] operand | id
     /// operand    := text | number | boolean | keyword
     /// ```
     struct Parser<'a> {
@@ -4221,7 +4228,7 @@ pub mod filter_expression {
                 return Err(self.invalid());
             };
             match function.as_str() {
-                "id" => Ok(EntitySelector::Service(self.entity_id()?)),
+                ENTITY_ID_FUNCTION => Ok(EntitySelector::Service(self.entity_id()?)),
                 "service" => {
                     self.at += 1;
                     self.expect(&Token::OpenParen)?;
@@ -4252,7 +4259,7 @@ pub mod filter_expression {
         fn entity_id(&mut self) -> Result<EntityId, Error> {
             let start = self.peek_start();
             match self.peek() {
-                Some(Token::Field(function)) if function == "id" => self.at += 1,
+                Some(Token::Field(function)) if function == ENTITY_ID_FUNCTION => self.at += 1,
                 Some(_) => return Err(self.unreadable_at(start)),
                 None => return Err(self.invalid()),
             }
@@ -4418,6 +4425,21 @@ pub mod filter_expression {
         fn arguments(&mut self) -> Result<Vec<Argument>, Error> {
             let mut arguments = Vec::new();
             loop {
+                // An argument that is itself an `id(…)` function, as in
+                // `service(id(name: "svc", type: "AWS::EC2::Instance"))`: the
+                // entity it names is read by the one reading of that function
+                // ([`Self::entity_id`]), which is what makes the two spellings of
+                // one scope the same argument list.
+                if self.names_an_entity_id() {
+                    arguments.push(Argument {
+                        label: None,
+                        value: Operand::Entity(self.entity_id()?),
+                    });
+                    if !self.eat(&Token::Comma) {
+                        break;
+                    }
+                    continue;
+                }
                 // A labelled argument, as in `id(name: "svc", type: "AWS::EC2")`.
                 // The label is a member of the keyword, not a field of its own,
                 // so it is not looked up in the catalog.
@@ -4439,6 +4461,15 @@ pub mod filter_expression {
             }
             self.expect(&Token::CloseParen)?;
             Ok(arguments)
+        }
+
+        /// Whether the walk is looking at an `id(…)` function: that keyword
+        /// followed by its own opening parenthesis, which is what tells it apart
+        /// from the bare `id` keyword an argument may also name.
+        fn names_an_entity_id(&self) -> bool {
+            matches!(self.peek(), Some(Token::Field(function)) if function == ENTITY_ID_FUNCTION)
+                && self.tokens.get(self.at + 1).map(|spanned| &spanned.token)
+                    == Some(&Token::OpenParen)
         }
 
         fn operand(&mut self) -> Result<Operand, Error> {
@@ -4529,6 +4560,10 @@ pub mod filter_expression {
     pub fn validate(expression: &str) -> Result<(), Error> {
         parse(expression).map(drop)
     }
+
+    /// The keyword that names ONE entity by its labelled members, in both
+    /// productions of this language: `id(name: "…", type: "…")`.
+    const ENTITY_ID_FUNCTION: &str = "id";
 
     /// Which entities of the recorded traffic an aggregation covers.
     ///

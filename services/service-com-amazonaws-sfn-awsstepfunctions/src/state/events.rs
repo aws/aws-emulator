@@ -51,8 +51,9 @@
 //!
 //! "What the settling produced" is EVERYTHING those transitions owe another service, not
 //! the bus alone: the same settle also queues what the execution publishes about itself
-//! ([`super::observability`]), so one hand-over ([`hand_over`]) writes both. Nothing an
-//! execution owes may therefore wait for a client to call this service again — which is
+//! ([`super::observability`]) and the trace a tracing state machine's run records at X-Ray
+//! ([`super::xray_tracing`]), so one hand-over ([`hand_over`]) writes all of them. Nothing
+//! an execution owes may therefore wait for a client to call this service again — which is
 //! the only record there is of a workflow whose own reporting APIs do not serve it.
 //!
 //! Nor does it wait for the clock: a status the clock made due is written by whichever
@@ -464,7 +465,12 @@ async fn hand_over<Eng: Send + Sync + 'static>(
     callback: &smithy_server_runtime::EmbeddedEmulator,
 ) -> usize {
     let changes = drain(engine, state, callback).await;
-    changes + super::observability::publish(&**engine)
+    // The trace of a run that has ended is owed by the same settle, and for the same
+    // reason: an execution of a state machine whose tracing is enabled is recorded at
+    // X-Ray whether or not anybody calls this service again
+    // ([`super::xray_tracing`]).
+    let segments = super::xray_tracing::publish(engine, callback).await;
+    changes + segments + super::observability::publish(&**engine)
 }
 
 /// Publish what is queued onto the account's event bus, and answer how many changes went

@@ -2662,6 +2662,18 @@ pub struct ComAmazonawsSfnAwsstepfunctionsState {
     /// store's guard is released. Bounded by
     /// [`observability::MAX_PENDING_OBSERVATIONS`].
     pending_observations: observability::Pending,
+    /// The ATTEMPT of each execution whose trace has already been recorded at X-Ray,
+    /// keyed by that execution's ARN and counted by the redrives that have re-run it,
+    /// against which the next diff is taken ([`xray_tracing`]).
+    ///
+    /// Publication bookkeeping rather than a second copy of a record, pruned to the
+    /// executions the store still holds, exactly as
+    /// [`Self::published_execution_statuses`] is.
+    recorded_execution_traces: HashMap<String, i32>,
+    /// The segment documents waiting to be submitted, oldest first and bounded by
+    /// [`xray_tracing::MAX_PENDING_SEGMENTS`]: the queue [`xray_tracing::publish`]
+    /// drains with no lock held.
+    pending_trace_segments: std::collections::VecDeque<xray_tracing::Segment>,
 }
 
 // ---------------------------------------------------------------------------
@@ -4632,6 +4644,7 @@ pub use store::{
 };
 pub mod task_authorization;
 pub mod xml_answer;
+pub mod xray_tracing;
 
 /// This service's store in the shared engine: call it with a handler's `&*self.engine`.
 ///

@@ -156,6 +156,9 @@ fn set_due_instant(engine: &Arc<engine::InMemoryEngine>, workflow: &str, at: Sys
             .job_mut(REGION, &job_name)
             .and_then(|job| job.run_mut(&run_id))
         {
+            // A job run owes up to TWO states at once — the state it is in while its script
+            // runs, and the state its own execution came to — so both instants move, or the
+            // run stops half way in `RUNNING` and the composite waits for ever.
             if job_run.settles_at.is_some() {
                 job_run.settles_at = Some(at);
             }

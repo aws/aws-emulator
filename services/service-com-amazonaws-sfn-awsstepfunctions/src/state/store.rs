@@ -154,6 +154,11 @@ impl ComAmazonawsSfnAwsstepfunctionsState {
         // And every history event the steps above made reportable owes the series the
         // work it reports is counted in, recorded here for the same reason.
         self.observe_task_work();
+        // An execution of a state machine whose `tracingConfiguration` is enabled owes
+        // X-Ray the trace of the run it has now finished, recorded here for the same
+        // reason: whichever call or clock tick materialised the outcome, the trace is
+        // owed ([`super::xray_tracing`]).
+        super::xray_tracing::record_execution_traces(self);
     }
 
     // -----------------------------------------------------------------------

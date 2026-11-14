@@ -16,6 +16,12 @@
 //! Reporting a trace is NEVER part of answering the request: a submission that could not be
 //! made is traced and the call it belongs to is answered exactly as it would have been, for
 //! the same reason a management-event publication is ([`super::api_call_events`]).
+//!
+//! A producer reaches this through the EMULATOR CALLBACK rather than through an operation
+//! context, because the work a segment reports is not always work a request is in the middle
+//! of: a service whose resource finishes on its own clock records the trace of that work with
+//! no request to hang it off ([`report_segments_through`]). A handler that does have a context
+//! passes `ctx.callback()`, which is the same handle.
 
 /// The X-Ray client a service reports its own segments through, addressed to `region`.
 ///
@@ -28,10 +34,20 @@ pub fn xray_client(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
 ) -> ::aws_sdk_xray::Client {
+    xray_client_through(ctx.callback(), region)
+}
+
+/// The same client, built from the emulator CALLBACK alone — the one construction, for a
+/// producer that has no operation context to take it off.
+#[must_use]
+pub fn xray_client_through(
+    callback: &smithy_server_runtime::EmbeddedEmulator,
+    region: &str,
+) -> ::aws_sdk_xray::Client {
     let config = ::aws_sdk_xray::Config::builder()
         .behavior_version(::aws_sdk_xray::config::BehaviorVersion::latest())
-        .http_client(ctx.callback().http_client())
-        .credentials_provider(ctx.callback().aws_credentials_provider())
+        .http_client(callback.http_client())
+        .credentials_provider(callback.aws_credentials_provider())
         .region(::aws_sdk_xray::config::Region::new(region.to_string()))
         .endpoint_url(format!("https://xray.{region}.amazonaws.com"))
         .retry_config(::aws_sdk_xray::config::retry::RetryConfig::disabled())
@@ -68,10 +84,23 @@ pub async fn report_segments(
     region: &str,
     documents: Vec<String>,
 ) {
+    report_segments_through(ctx.callback(), region, documents).await;
+}
+
+/// The same submission, made through the emulator CALLBACK alone.
+///
+/// What a service reports about its own work is owed whether or not a request is in flight:
+/// a resource that finished on its own clock has segments to submit and no operation context
+/// to submit them from, so the one submission takes the callback both kinds of producer hold.
+pub async fn report_segments_through(
+    callback: &smithy_server_runtime::EmbeddedEmulator,
+    region: &str,
+    documents: Vec<String>,
+) {
     if documents.is_empty() {
         return;
     }
-    let client = xray_client(ctx, region);
+    let client = xray_client_through(callback, region);
     match client
         .put_trace_segments()
         .set_trace_segment_documents(Some(documents))

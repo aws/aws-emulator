@@ -115,6 +115,8 @@ mod execution_role_assumption;
 mod execution_role_trust_conditions;
 #[path = "all/execution_status_change_events.rs"]
 mod execution_status_change_events;
+#[path = "all/execution_xray_tracing.rs"]
+mod execution_xray_tracing;
 #[path = "all/express_execution_arn_identity.rs"]
 mod express_execution_arn_identity;
 #[path = "all/express_run_a_job_refusal.rs"]
