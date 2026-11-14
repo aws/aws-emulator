@@ -48,34 +48,34 @@ use crate::template_by_reference::{create_staging_bucket, stage, STAGING_BUCKET}
 const OTHER_REGION: &str = "us-west-2";
 
 /// A template declaring one resource, the stack a move takes its resource FROM.
-const ONE_TOPIC: &str = r#"{"Resources":{"Topic":{"Type":"AWS::SNS::Topic"}}}"#;
+pub(crate) const ONE_TOPIC: &str = r#"{"Resources":{"Topic":{"Type":"AWS::SNS::Topic"}}}"#;
 
 /// A template declaring two resources, so a move can name one of several.
-const TOPIC_AND_BUCKET: &str = r#"{"Resources":{
+pub(crate) const TOPIC_AND_BUCKET: &str = r#"{"Resources":{
     "Alpha":{"Type":"AWS::SNS::Topic"},
     "Bucket":{"Type":"AWS::S3::Bucket"}
 }}"#;
 
 /// The final state a definition submits for a stack that is to end up holding nothing of its
 /// own, which is what a template with no resources describes.
-const NO_RESOURCES: &str = r#"{"Resources":{}}"#;
+pub(crate) const NO_RESOURCES: &str = r#"{"Resources":{}}"#;
 
 /// The key the by-reference row stages its template object under.
 const STAGED_KEY: &str = "refactors/final-state.template.json";
 
 /// One `StackDefinition` a case submits.
 #[derive(Debug, Clone, Copy)]
-struct Definition {
-    stack_name: Option<&'static str>,
-    template_body: Option<&'static str>,
+pub(crate) struct Definition {
+    pub(crate) stack_name: Option<&'static str>,
+    pub(crate) template_body: Option<&'static str>,
     /// `true` where the row submits the template BY REFERENCE instead: the staged object's
     /// URL is built at call time, since it carries the bucket and Region.
-    staged: bool,
+    pub(crate) staged: bool,
 }
 
 impl Definition {
     /// A definition naming a stack and its final template inline.
-    const fn inline(stack_name: &'static str, template_body: &'static str) -> Self {
+    pub(crate) const fn inline(stack_name: &'static str, template_body: &'static str) -> Self {
         Self {
             stack_name: Some(stack_name),
             template_body: Some(template_body),
@@ -84,7 +84,7 @@ impl Definition {
     }
 
     /// A definition naming a stack whose own template the refactor does not change.
-    const fn named(stack_name: &'static str) -> Self {
+    pub(crate) const fn named(stack_name: &'static str) -> Self {
         Self {
             stack_name: Some(stack_name),
             template_body: None,
@@ -95,9 +95,9 @@ impl Definition {
 
 /// One `ResourceMapping` a case submits: where the resource is now, and where it is to end up.
 #[derive(Debug, Clone, Copy)]
-struct Mapping {
-    source: (&'static str, &'static str),
-    destination: (&'static str, &'static str),
+pub(crate) struct Mapping {
+    pub(crate) source: (&'static str, &'static str),
+    pub(crate) destination: (&'static str, &'static str),
 }
 
 /// The URL of the staged template object, in Amazon S3's documented virtual-hosted-style
@@ -153,7 +153,7 @@ fn refactor_members(
 }
 
 /// `CreateStackRefactor` with whatever the case submits.
-async fn create_stack_refactor(
+pub(crate) async fn create_stack_refactor(
     router: &MultiServiceRouter,
     description: Option<&str>,
     enable_stack_creation: Option<bool>,

@@ -68,6 +68,8 @@ pub enum PageOf {
     RelatedResources,
     /// `ListResourceScanResources`'s `Resources`.
     ScannedResources,
+    /// `ListStackRefactorActions`'s `StackRefactorActions`.
+    StackRefactorActions,
 }
 
 impl PageOf {
@@ -102,6 +104,7 @@ impl PageOf {
             Self::StackInstanceResourceDrifts => "stack-instance-resource-drifts",
             Self::RelatedResources => "related-resources",
             Self::ScannedResources => "scanned-resources",
+            Self::StackRefactorActions => "stack-refactor-actions",
         }
     }
 }

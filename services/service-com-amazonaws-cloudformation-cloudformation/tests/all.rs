@@ -489,6 +489,8 @@ mod stack_policy_by_reference;
 mod stack_published_table_data_plane;
 #[path = "all/stack_policy_enforcement.rs"]
 mod stack_policy_enforcement;
+#[path = "all/stack_refactor_actions.rs"]
+mod stack_refactor_actions;
 #[path = "all/stack_refactors.rs"]
 mod stack_refactors;
 #[path = "all/stack_refusal_wording.rs"]

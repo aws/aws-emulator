@@ -395,6 +395,10 @@ pub mod generated_template;
 /// across several stacks and `DescribeStackRefactor` reads the status of.
 pub mod stack_refactors;
 
+/// The actions one stack refactor's plan concluded: what executing it will do to the stacks
+/// and resources it covers, which `ListStackRefactorActions` reports.
+pub mod stack_refactor_actions;
+
 /// The resource-signal waits of one stack operation: the barrier an
 /// `AWS::CloudFormation::WaitCondition` or a `CreationPolicy`'s `ResourceSignal` puts in a
 /// create or an update, and the signals `SignalResource` releases it with.
@@ -2668,8 +2672,7 @@ impl ComAmazonawsCloudformationCloudformationState {
     }
 
     /// What one stack a refactor NAMES looks like in this store right now: its id, if this
-    /// Region holds a live stack of that name, and the logical resource ids it currently
-    /// holds.
+    /// Region holds a live stack of that name, and the resources it currently holds.
     ///
     /// The one place a refactor resolves a stack name, so the ids it reports and the moves it
     /// validates read the same stacks ([`stack_refactors::plan`] is what judges them).
@@ -2686,12 +2689,16 @@ impl ComAmazonawsCloudformationCloudformationState {
         stack_refactors::CoveredStack {
             stack_name: stack_name.to_string(),
             stack_id: live.map(|stack| stack.stack_id.clone()),
-            logical_resource_ids: live
+            resources: live
                 .map(|stack| {
                     stack
                         .current_resources()
                         .into_iter()
-                        .map(|resource| resource.logical_id)
+                        .map(|resource| stack_refactor_actions::CoveredResource {
+                            logical_id: resource.logical_id,
+                            resource_type: resource.resource_type,
+                            physical_resource_id: resource.physical_resource_id,
+                        })
                         .collect()
                 })
                 .unwrap_or_default(),

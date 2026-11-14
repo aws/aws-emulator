@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListStackRefactorActions
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListStackRefactorActions`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListStackRefactorActions::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! "Lists the stack refactor actions that will be taken after calling the ExecuteStackRefactor
+//! action": the actions the refactor's creation concluded
+//! ([`crate::state::stack_refactor_actions`]), read back by the `StackRefactorId`
+//! `CreateStackRefactor` handed out.
+//!
+//! A REPORTING operation — the only write is materialising the transition the clock had
+//! already made due, the refactor's own creation concluding, which was owed at the same instant
+//! whether or not anybody read it. A refactor whose creation has not concluded has no plan yet,
+//! and one whose creation FAILED has nothing to execute, so each reports no actions rather than
+//! actions nothing will carry out. A refactor this account and Region holds no record of is
+//! answered with the service's `StackRefactorNotFoundException` (HTTP 404), widened in through
+//! `extra_errors` below.
 //!
 //! ## Shape of an operation
 //!
@@ -70,9 +74,50 @@
 //!   action again and assign that token to the request object's NextToken parameter. If the
 //!   request returns all results, NextToken is set to null.
 //! * `StackRefactorActions` (StackRefactorActions) **required** — The stack refactor actions.
+//!
+//! ## Errors
+//!
+//! * `StackRefactorNotFoundException` (HTTP 404) — widened in through `extra_errors` (see
+//!   below): the SERVICE models it ("the specified stack refactor can't be found") for the one
+//!   thing this request addresses, a `StackRefactorId`, and this operation's own error list is
+//!   empty.
 
 #[allow(unused_imports)]
 use super::types::*;
+use crate::state::stack_refactor_actions::StoredRefactorAction;
+
+/// One concluded action as the modelled `StackRefactorAction`, member for member.
+///
+/// `TagResources` ("assigns one or more tags to specified resources") and `UntagResources`
+/// ("removes one or more tags to specified resources") are left out: a refactor moves resources
+/// between stacks, and nothing in what one submits assigns or removes a tag, so there is no
+/// tagging for an action to report.
+fn stack_refactor_action(stored: &StoredRefactorAction, description: Option<&str>) -> StackRefactorAction {
+    StackRefactorAction {
+        action: Some(stored.action.clone()),
+        entity: Some(stored.entity.clone()),
+        physical_resource_id: stored.physical_resource_id.clone(),
+        resource_identifier: stored.resource_identifier.clone(),
+        // "A description to help you identify the refactor" — the refactor's own, so every
+        // action of one refactor carries the description that refactor was created with, and
+        // none at all for a refactor created without one.
+        description: description.map(str::to_string),
+        detection: stored.detection.clone(),
+        detection_reason: stored.detection_reason.clone(),
+        tag_resources: None,
+        untag_resources: None,
+        resource_mapping: stored.resource_mapping.as_ref().map(|mapped| ResourceMapping {
+            source: ResourceLocation {
+                stack_name: mapped.source.stack_name.clone(),
+                logical_resource_id: mapped.source.logical_resource_id.clone(),
+            },
+            destination: ResourceLocation {
+                stack_name: mapped.destination.stack_name.clone(),
+                logical_resource_id: mapped.destination.logical_resource_id.clone(),
+            },
+        }),
+    }
+}
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -82,12 +127,19 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-cloudformation-cloudfor
 
 // The operation's MODELED errors. `#[operation_error]` accepts only variants the
 // model declares for this operation, so the scaffold's `NotImplemented` cannot live
-// here — hence the `ListStackRefactorActionsError` alias below. An operation that models no errors
-// generates an UNINHABITED enum here, which is correct and expected: there is nothing
-// to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.cloudformation#ListStackRefactorActions")]
+// here — hence the `ListStackRefactorActionsError` alias below.
+//
+// `StackRefactorNotFoundException` is widened in through `extra_errors`: this SERVICE models
+// the shape ("the specified stack refactor can't be found", `@httpError(404)`) and the read
+// that addresses a refactor by its id has to be able to say the id addresses nothing, while
+// this operation's own error list is empty.
+#[smithy_macros::operation_error(
+    "com.amazonaws.cloudformation#ListStackRefactorActions",
+    extra_errors = ["StackRefactorNotFoundException"]
+)]
 #[derive(Debug)]
 pub enum ListStackRefactorActionsErrorModeled {
+    StackRefactorNotFoundException(StackRefactorNotFoundException),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -141,18 +193,64 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListStackRefactorActions` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListStackRefactorActionsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListStackRefactorActions"))
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            // Not the shared in-memory engine: there is no refactor to read the plan of, so
+            // this answers 501 rather than an empty, truthful-looking list.
+            return Err(crate::scaffolded::Scaffolded::not_implemented(
+                "ListStackRefactorActions",
+            ));
+        };
+        let region = crate::state::request_region(ctx.parts());
+
+        let mut store = state.lock();
+        // Reporting operation: the only write is materialising a transition the clock had
+        // already made due — here the refactor's own creation concluding, which was owed at
+        // the same instant whether or not anybody read it.
+        store.settle(::std::time::SystemTime::now());
+
+        let refactor = store
+            .resolve_stack_refactor(&region, &input.stack_refactor_id)
+            .ok_or_else(|| {
+                ListStackRefactorActionsErrorModeled::StackRefactorNotFoundException(
+                    StackRefactorNotFoundException {
+                        message: Some(crate::state::stack_refactors::does_not_exist(
+                            &input.stack_refactor_id,
+                        )),
+                    },
+                )
+            })?;
+
+        // "The stack refactor actions that will be taken after calling the
+        // ExecuteStackRefactor action": the ones the creation CONCLUDED, and none at all while
+        // it has not concluded — a creation still in flight has worked out no plan yet, and
+        // one that failed leaves nothing to execute.
+        let concluded: Vec<StackRefactorAction> =
+            if refactor.status == crate::state::stack_refactors::status::CREATE_COMPLETE {
+                refactor
+                    .actions
+                    .iter()
+                    .map(|action| stack_refactor_action(action, refactor.description.as_deref()))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
+        // `@paginated(inputToken: NextToken, outputToken: NextToken, items: StackRefactorActions,
+        // pageSize: MaxResults)`: one response carries one bounded page, as large as
+        // `MaxResults` asks for. The cursor is scoped to the refactor the actions were paged
+        // under, so a token one refactor's walk handed out does not resume another's.
+        let (stack_refactor_actions, next_token) = crate::state::paginate_in_at_most(
+            crate::state::PageOf::StackRefactorActions,
+            crate::state::PageScope(&refactor.stack_refactor_id),
+            concluded,
+            input.next_token.as_deref(),
+            input.max_results.and_then(|max| usize::try_from(max).ok()),
+        )
+        .map_err(crate::scaffolded::Scaffolded::validation_error)?;
+
+        Ok(ListStackRefactorActionsOutput {
+            stack_refactor_actions,
+            next_token,
+        })
     }
 }

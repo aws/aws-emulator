@@ -9,10 +9,11 @@
 //! The refactor is a RECORD of this account and Region ([`crate::state::stack_refactors`]):
 //! this call stores the stacks the request named, the final template each one is to end up
 //! with and the moves it was asked for, resolves those stack names against the stacks the
-//! store holds, and works out whether the refactor can be carried out at all
-//! ([`crate::state::stack_refactors::plan`]). Creating it is asynchronous, so the record is
-//! answered `CREATE_IN_PROGRESS` with nothing executable and its conclusion falls due a
-//! moment later, where `DescribeStackRefactor` reads it back.
+//! store holds, and works out whether the refactor can be carried out at all and what
+//! executing it would do ([`crate::state::stack_refactors::plan`]). Creating it is
+//! asynchronous, so the record is answered `CREATE_IN_PROGRESS` with nothing executable and
+//! its conclusion falls due a moment later, where `DescribeStackRefactor` reads it back and
+//! `ListStackRefactorActions` reads the actions it concluded.
 //!
 //! ## Shape of an operation
 //!
@@ -167,6 +168,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // request waits on that lock.
         let mut definitions: Vec<refactors::RefactorStackDefinition> =
             Vec::with_capacity(input.stack_definitions.len());
+        // What each definition's template DECLARES, read here for the same reason: working out
+        // the moves nobody named is a function of these final states, and a caller-sized body
+        // is parsed outside the lock
+        // ([`crate::state::stack_refactor_actions::plan_actions`]).
+        let mut final_states: Vec<crate::state::stack_refactor_actions::FinalState> =
+            Vec::with_capacity(input.stack_definitions.len());
         for definition in &input.stack_definitions {
             // `StackDefinition$StackName` is "the name associated with the stack": a
             // definition that names no stack addresses nothing to refactor.
@@ -214,8 +221,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     .map_err(crate::scaffolded::Scaffolded::validation_error)?;
             }
             definitions.push(refactors::RefactorStackDefinition {
+                stack_name: stack_name.clone(),
+                template_body: template_body.clone(),
+            });
+            final_states.push(crate::state::stack_refactor_actions::FinalState {
                 stack_name,
-                template_body,
+                // A definition that submitted no template says nothing about what the stack is
+                // to end up holding, which is not the same as one that submitted a template
+                // declaring nothing.
+                declared: template_body.as_deref().map(declared_final_resources),
             });
         }
 
@@ -255,7 +269,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the stacks the refactor covers, and the reason it cannot be carried out if there
         // is one.
         let enable_stack_creation = input.enable_stack_creation.unwrap_or(false);
-        let plan = refactors::plan(&mappings, enable_stack_creation, &covered);
+        let plan = refactors::plan(&mappings, enable_stack_creation, &covered, &final_states);
 
         let stack_refactor_id = crate::state::new_stack_refactor_id();
         store.record_stack_refactor(refactors::StoredStackRefactor::creating(
@@ -286,6 +300,30 @@ fn stored_location(
         stack_name: location.stack_name.clone(),
         logical_resource_id: location.logical_resource_id.clone(),
     }
+}
+
+/// The resources one submitted final-state template declares, in declaration order: the
+/// logical id each resource is to be known by in that stack, and its type.
+///
+/// The body has already been read and validated by the time this runs, so a body this reader
+/// cannot parse declares nothing rather than refusing the request a second time.
+fn declared_final_resources(
+    body: &str,
+) -> Vec<crate::state::stack_refactor_actions::DeclaredFinalResource> {
+    crate::state::template::parse(body)
+        .map(|declared| {
+            declared
+                .resources
+                .into_iter()
+                .map(
+                    |resource| crate::state::stack_refactor_actions::DeclaredFinalResource {
+                        logical_id: resource.logical_id,
+                        resource_type: resource.resource_type,
+                    },
+                )
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Every stack name the refactor uses, in the order it first used one and without repeats: a

@@ -47,7 +47,8 @@
 //!
 //! [`plan`] is that conclusion, computed once by the call that creates the refactor against
 //! the stacks this store holds at that instant: the stack ids of the stacks the refactor
-//! names, and the one reason it cannot be carried out, if there is one. Two things make a
+//! names, the actions executing it will take ([`super::stack_refactor_actions`]), and the one
+//! reason it cannot be carried out, if there is one. Two things make a
 //! refactor unexecutable, and both are read off the request against the store rather than
 //! invented:
 //!
@@ -68,8 +69,11 @@
 //! held to [`crate::state::TEMPLATE_BODY_MAX_BYTES`] by the submitting operation like every
 //! other template this service stores.
 
-use std::collections::BTreeSet;
 use std::time::SystemTime;
+
+use super::stack_refactor_actions::{
+    plan_actions, CoveredResource, FinalState, StoredRefactorAction,
+};
 
 /// The modelled `StackRefactorStatus` values a refactor's own creation reports
 /// (`smithy_query(query="shape", shape="StackRefactorStatus")`).
@@ -148,7 +152,7 @@ pub struct RefactorStackDefinition {
 }
 
 /// One end of a move: "the location of the resource in a stack template".
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefactorResourceLocation {
     pub stack_name: String,
     pub logical_resource_id: String,
@@ -156,7 +160,7 @@ pub struct RefactorResourceLocation {
 
 /// One `ResourceMapping`: "the current source of the resource and the destination of where it
 /// will be moved to".
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefactorResourceMapping {
     pub source: RefactorResourceLocation,
     pub destination: RefactorResourceLocation,
@@ -203,6 +207,11 @@ pub struct StoredStackRefactor {
     pub status: String,
     /// `StatusReason`: "a detailed explanation for the stack refactor operation Status".
     pub status_reason: Option<String>,
+    /// "The stack refactor actions" executing this refactor will take, as its creation
+    /// concluded them ([`super::stack_refactor_actions`]) — what `ListStackRefactorActions`
+    /// reports. EMPTY for a creation that FAILED: a refactor with no plan has nothing to
+    /// execute.
+    pub actions: Vec<StoredRefactorAction>,
     /// [`execution_status`] — what `ExecuteStackRefactor` reports.
     pub execution_status: String,
     /// `ExecutionStatusReason`: "a detailed explanation for the stack refactor
@@ -258,6 +267,7 @@ impl StoredStackRefactor {
             stack_definitions: submitted.stack_definitions,
             resource_mappings: submitted.resource_mappings,
             stack_ids: plan.stack_ids,
+            actions: plan.actions,
             status: status::CREATE_IN_PROGRESS.to_string(),
             status_reason: None,
             execution_status: execution_status::UNAVAILABLE.to_string(),
@@ -305,9 +315,23 @@ pub struct CoveredStack {
     pub stack_name: String,
     /// The stack's own id, or `None` where this Region holds no live stack of that name.
     pub stack_id: Option<String>,
-    /// The logical resource ids that stack currently holds, which is what a move's SOURCE is
-    /// resolved against.
-    pub logical_resource_ids: BTreeSet<String>,
+    /// The resources that stack currently holds, in the order it holds them: what a move's
+    /// SOURCE is resolved against, and what says which physical instance a move acts on.
+    pub resources: Vec<CoveredResource>,
+}
+
+impl CoveredStack {
+    /// Whether the stack holds a resource under `logical_resource_id` right now.
+    pub fn holds(&self, logical_resource_id: &str) -> bool {
+        self.resource(logical_resource_id).is_some()
+    }
+
+    /// The resource the stack holds under `logical_resource_id`, if it holds one.
+    pub fn resource(&self, logical_resource_id: &str) -> Option<&CoveredResource> {
+        self.resources
+            .iter()
+            .find(|resource| resource.logical_id == logical_resource_id)
+    }
 }
 
 /// The conclusion [`plan`] computed for one refactor: the stacks it covers, and the one
@@ -316,6 +340,11 @@ pub struct CoveredStack {
 pub struct RefactorPlan {
     /// `StackIds`: "the unique ID for each stack" the refactor covers that exists.
     pub stack_ids: Vec<String>,
+    /// "The stack refactor actions that will be taken after calling the ExecuteStackRefactor
+    /// action", and EMPTY for a plan that cannot be carried out: a refactor whose creation
+    /// failed has nothing to execute, so there is nothing it will do
+    /// ([`super::stack_refactor_actions`]).
+    pub actions: Vec<StoredRefactorAction>,
     /// The `StatusReason` of a creation that concludes [`status::CREATE_FAILED`], and `None`
     /// for a refactor that can be carried out.
     pub failure: Option<String>,
@@ -326,14 +355,17 @@ pub struct RefactorPlan {
 ///
 /// `covered` carries one entry per stack the refactor NAMES — in a stack definition or at
 /// either end of a move, in the order the request first named it — so every name the request
-/// used is resolved exactly once and held to the same rule. The first reason the refactor
-/// cannot be carried out is the one reported, since the record carries one `StatusReason`; the
-/// stack ids are collected whether or not it can, because they say which stacks the refactor
-/// is about.
+/// used is resolved exactly once and held to the same rule. `final_states` carries the
+/// template each definition submitted, which is what a move nobody named is worked out from
+/// ([`super::stack_refactor_actions`]). The first reason the refactor cannot be carried out is
+/// the one reported, since the record carries one `StatusReason`; the stack ids are collected
+/// whether or not it can, because they say which stacks the refactor is about, while a
+/// refactor that cannot be carried out concludes NO actions — there is nothing to execute.
 pub fn plan(
     mappings: &[RefactorResourceMapping],
     enable_stack_creation: bool,
     covered: &[CoveredStack],
+    final_states: &[FinalState],
 ) -> RefactorPlan {
     let stack_ids = covered
         .iter()
@@ -350,6 +382,7 @@ pub fn plan(
         if let Some(stack) = uncreatable {
             return RefactorPlan {
                 stack_ids,
+                actions: Vec::new(),
                 failure: Some(stack_creation_not_enabled(&stack.stack_name)),
             };
         }
@@ -358,21 +391,22 @@ pub fn plan(
     // "The source stack StackName and LogicalResourceId for the resource being refactored":
     // a source no stack of this Region holds is a resource there is nothing to move.
     let unresolved = mappings.iter().find(|mapping| {
-        holder(&mapping.source.stack_name).is_none_or(|stack| {
-            !stack
-                .logical_resource_ids
-                .contains(&mapping.source.logical_resource_id)
-        })
+        holder(&mapping.source.stack_name)
+            .is_none_or(|stack| !stack.holds(&mapping.source.logical_resource_id))
     });
     if let Some(mapping) = unresolved {
         return RefactorPlan {
             stack_ids,
+            actions: Vec::new(),
             failure: Some(source_resource_does_not_exist(&mapping.source)),
         };
     }
 
     RefactorPlan {
         stack_ids,
+        // What executing this refactor WILL DO, concluded here with the rest of the plan: a
+        // read of the actions reports this record rather than working them out again.
+        actions: plan_actions(mappings, covered, final_states),
         failure: None,
     }
 }
