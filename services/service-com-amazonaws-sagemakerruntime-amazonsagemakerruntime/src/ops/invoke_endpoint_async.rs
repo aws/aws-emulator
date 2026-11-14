@@ -542,13 +542,15 @@ fn output_location(
 
 /// The refusal sentence for a `Filename` [`filename_is_modelled`] rejects: it names the
 /// member and the constraint it broke, which is what the caller can correct, in the
-/// wording the framework's own constraint walk uses for a pattern. The pattern itself is
-/// quoted from [`FILENAME_PATTERN`], the ONE place this crate holds it.
+/// wording the framework's own constraint walk uses for a pattern. The expression is
+/// quoted from [`FILENAME_PATTERN`] — the ONE place this crate holds it — exactly as the
+/// model declares it, anchors included, which is how every `@pattern` clause of this
+/// service quotes a member's own declaration
+/// ([`crate::service::error_envelope::constraint_envelope`]).
 fn filename_refusal(filename: &str) -> String {
     format!(
         "Filename {filename:?} failed to satisfy constraint: Member must satisfy regular \
-         expression pattern: {}",
-        FILENAME_PATTERN.trim_start_matches('^').trim_end_matches('$')
+         expression pattern: {FILENAME_PATTERN}"
     )
 }
 

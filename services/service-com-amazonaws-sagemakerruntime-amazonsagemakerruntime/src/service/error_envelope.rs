@@ -33,8 +33,9 @@
 //! and constraint walk, so the wrapper cannot refuse a different set of requests than the
 //! walk that follows it, and the envelope, the clauses and the withholding of a
 //! `@sensitive` member's value are `service-common`'s shared wording. Two choices are this
-//! service's: how a `@pattern` clause quotes its expression ([`quoted_pattern`]) and which
-//! members are withheld ([`WITHHELD_MEMBERS`], read off this service's own model).
+//! service's: which expression a `@pattern` clause quotes for the member it refuses
+//! ([`quoted_pattern`]) and which members are withheld ([`WITHHELD_MEMBERS`], read off this
+//! service's own model).
 //!
 //! # When the payload is examined
 //!
@@ -166,20 +167,57 @@ pub fn stated_refusal(refusal: &Refusal) -> Option<Refused> {
 /// endpoint runtime binds the same endpoint-name label and the same target-variant header
 /// and declares exactly this expression for both
 /// (`smithy_query(query="shape", shape="InvokeEndpointWithBidirectionalStreamInput",
-/// model_path="services/service-com-amazonaws-sagemakerruntimehttp2-amazonsagemakerruntimehttp2/smithy-model/com-amazonaws-sagemakerruntimehttp2-amazonsagemakerruntimehttp2.json")`),
-/// while this service's model exports the same expression with an end anchor appended. A
-/// clause quotes the expression the service validates against, so it quotes this form; the
-/// CHECK itself always used the expression this model declares.
+/// model_path="services/service-com-amazonaws-sagemakerruntimehttp2-amazonsagemakerruntimehttp2/smithy-model/com-amazonaws-sagemakerruntimehttp2-amazonsagemakerruntimehttp2.json")`,
+/// whose OTHER patterned members do carry an end anchor), while this service's model
+/// exports the same three members with an end anchor appended. A clause quotes the
+/// expression declared for the member it refuses, so for those three it quotes this form;
+/// the CHECK itself always used the expression this model declares.
 const RESOURCE_NAME_PATTERN: &str = "^[a-zA-Z0-9](-*[a-zA-Z0-9])*";
 
-/// `regex` as a constraint clause quotes it: the family's resource-name expression without
-/// the end anchor this model's export appends, and every other expression exactly as this
-/// model declares it — anchors included, which is how this service's refusals quote them.
-fn quoted_pattern(regex: &str) -> &str {
-    match regex.strip_suffix('$') {
-        Some(unanchored) if unanchored == RESOURCE_NAME_PATTERN => unanchored,
-        _ => regex,
+/// The members whose `@pattern` a clause quotes as [`RESOURCE_NAME_PATTERN`]: the endpoint
+/// a request addresses, the production variant it targets and the container hostname it
+/// targets, on every route that binds them.
+///
+/// The family declares the endpoint name and the production variant itself, which is the
+/// evidence for the form. The container hostname is the family's third binding of the same
+/// expression and the same kind of name, and the sibling model binds no member for it, so
+/// nothing states its declaration either way: it is carried with the other two, which is
+/// what this service answered for it before the choice became member-keyed, and it is the
+/// one entry here to re-key the moment a refusal of that member is recorded.
+///
+/// The choice is keyed on the MEMBER and never on the expression's text, because this
+/// model's export writes other members' declarations with the same characters —
+/// `SessionIdHeader` is exported as `^[a-zA-Z0-9](-*[a-zA-Z0-9])*$`, and that member's
+/// refusals quote it WITH its end anchor — and only the member says which declaration a
+/// clause is quoting.
+const RESOURCE_NAME_MEMBERS: [&str; 3] =
+    ["endpointName", "targetVariant", "targetContainerHostname"];
+
+/// The expression a clause quotes for the member at `path`, which broke the `@pattern`
+/// this model exports as `exported`: that expression VERBATIM, anchors included, except at
+/// a [`RESOURCE_NAME_MEMBERS`] member, where it is the family's own declaration of it
+/// ([`RESOURCE_NAME_PATTERN`]).
+fn quoted_pattern(path: &str, exported: &str) -> String {
+    let as_the_family_declares_it = exported.strip_suffix('$').unwrap_or(exported);
+    if RESOURCE_NAME_MEMBERS.contains(&path) && as_the_family_declares_it == RESOURCE_NAME_PATTERN {
+        return as_the_family_declares_it.to_owned();
     }
+    exported.to_owned()
+}
+
+/// `violation` with its `@pattern` requirement quoted for the member it refuses
+/// ([`quoted_pattern`]), and everything else about it — its member path, its value, its
+/// `@sensitive` half — exactly as the framework's own walk reported it.
+///
+/// The requoting happens HERE, before the shared wording states the clause, because the
+/// shared entry point is told the expression alone and this service's choice needs the
+/// member too.
+fn quoted_for_its_member(violation: &Violation) -> Violation {
+    let mut quoted = violation.clone();
+    if let ViolationKind::Pattern(exported) = &violation.kind {
+        quoted.kind = ViolationKind::Pattern(quoted_pattern(&violation.path, exported));
+    }
+    quoted
 }
 
 /// The `Message` of a constraint refusal: the AWS validation envelope
@@ -189,13 +227,16 @@ fn quoted_pattern(regex: &str) -> &str {
 ///
 /// The envelope, the clauses and the dropping of a `@sensitive` member's value half are
 /// `service-common`'s shared wording for every service on a JSON protocol, so none of them
-/// can drift per crate. This service chooses only the two things that are its own: how a
-/// `@pattern` clause quotes its expression ([`quoted_pattern`]) and which members are
-/// withheld ([`WITHHELD_MEMBERS`], read off this service's model).
+/// can drift per crate. This service chooses only the two things that are its own: which
+/// expression a `@pattern` clause quotes for the member it refuses ([`quoted_pattern`],
+/// applied by [`quoted_for_its_member`]) and which members are withheld
+/// ([`WITHHELD_MEMBERS`], read off this service's model).
 pub fn constraint_envelope(violations: &[Violation]) -> Option<String> {
+    let quoted: Vec<Violation> = violations.iter().map(quoted_for_its_member).collect();
     let stated = ::service_common::validation_message::aws_validation_refusal_withholding_with(
-        &Refusal::Invalid(violations.to_vec()),
-        |pattern| quoted_pattern(pattern).to_owned(),
+        &Refusal::Invalid(quoted),
+        // Already quoted for the member above: the shared wording states it as it stands.
+        |pattern| pattern.to_owned(),
         |path| WITHHELD_MEMBERS.withholds_value(path),
     )?;
     // The CODE that shared wording travels with is the JSON default, which this model does
@@ -582,33 +623,65 @@ mod tests {
         }
     }
 
-    /// A constraint refusal is stated in the AWS envelope, quoting the expression the
-    /// service validates against: the family's resource-name expression as the family
-    /// declares it, and every other expression as this model writes it.
+    /// A constraint refusal is stated in the AWS envelope, quoting the expression declared
+    /// for the MEMBER it refuses: the family's own declaration at a resource-name member,
+    /// and this model's export verbatim everywhere else — including at a member this model
+    /// exports with the very same characters.
     #[test]
-    fn a_pattern_clause_quotes_the_expression_the_service_validates_against() {
-        // Each row: the expression this model declares, and the one a clause quotes.
-        for (declared, quoted) in [
-            // `EndpointName`, `TargetVariantHeader`, `TargetContainerHostnameHeader` and
-            // the streamed route's `SessionIdHeader` all target this expression.
+    fn a_pattern_clause_quotes_the_expression_declared_for_its_member() {
+        // Each row: the member the violation sits at, the expression this model exports for
+        // it, and the one a clause quotes (`smithy_query(query="operation",
+        // operation="InvokeEndpoint,InvokeEndpointAsync,InvokeEndpointWithResponseStream")`).
+        for (path, exported, quoted) in [
+            // `EndpointName`, `TargetVariantHeader` and `TargetContainerHostnameHeader`:
+            // the family declares the resource-name expression anchored at the start only.
             (
+                "endpointName",
                 "^[a-zA-Z0-9](-*[a-zA-Z0-9])*$",
                 "^[a-zA-Z0-9](-*[a-zA-Z0-9])*",
             ),
-            // `SessionIdOrNewSessionConstantHeader`: an alternation, not the resource-name
-            // expression, so it is quoted as declared.
             (
+                "targetVariant",
+                "^[a-zA-Z0-9](-*[a-zA-Z0-9])*$",
+                "^[a-zA-Z0-9](-*[a-zA-Z0-9])*",
+            ),
+            (
+                "targetContainerHostname",
+                "^[a-zA-Z0-9](-*[a-zA-Z0-9])*$",
+                "^[a-zA-Z0-9](-*[a-zA-Z0-9])*",
+            ),
+            // `SessionIdHeader`, on the streamed route: the same characters as the
+            // resource-name export, declared WITH its end anchor, so quoted with it.
+            (
+                "sessionId",
+                "^[a-zA-Z0-9](-*[a-zA-Z0-9])*$",
+                "^[a-zA-Z0-9](-*[a-zA-Z0-9])*$",
+            ),
+            // `SessionIdOrNewSessionConstantHeader`: an alternation, quoted as declared.
+            (
+                "sessionId",
                 "^(NEW_SESSION)$|^[a-zA-Z0-9](-*[a-zA-Z0-9])*$",
                 "^(NEW_SESSION)$|^[a-zA-Z0-9](-*[a-zA-Z0-9])*$",
             ),
+            // `InferenceComponentHeader`: a resource name in prose, a different expression
+            // in the model, so this model's export is what a clause quotes.
+            (
+                "inferenceComponentName",
+                r"^[a-zA-Z0-9]([\-a-zA-Z0-9]*[a-zA-Z0-9])?$",
+                r"^[a-zA-Z0-9]([\-a-zA-Z0-9]*[a-zA-Z0-9])?$",
+            ),
             // `InputLocationHeader`.
-            ("^(https|s3)://([^/]+)/?(.*)$", "^(https|s3)://([^/]+)/?(.*)$"),
+            (
+                "inputLocation",
+                "^(https|s3)://([^/]+)/?(.*)$",
+                "^(https|s3)://([^/]+)/?(.*)$",
+            ),
             // `Header` (`ContentType`, `Accept`).
-            (r"^\p{ASCII}*$", r"^\p{ASCII}*$"),
+            ("accept", r"^\p{ASCII}*$", r"^\p{ASCII}*$"),
         ] {
             let stated = constraint_envelope(&[Violation {
-                path: "member".to_string(),
-                kind: ViolationKind::Pattern(declared.to_string()),
+                path: path.to_string(),
+                kind: ViolationKind::Pattern(exported.to_string()),
                 value: Some("submitted".to_string()),
                 sensitive: false,
             }])
@@ -616,10 +689,10 @@ mod tests {
             assert_eq!(
                 stated,
                 format!(
-                    "1 validation error detected: Value 'submitted' at 'member' failed to \
+                    "1 validation error detected: Value 'submitted' at '{path}' failed to \
                      satisfy constraint: Member must satisfy regular expression pattern: {quoted}"
                 ),
-                "case {declared:?}: got {stated:?}"
+                "case {path} / {exported:?}: got {stated:?}"
             );
         }
     }

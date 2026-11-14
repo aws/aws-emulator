@@ -27,6 +27,8 @@ mod invoke_endpoint;
 mod invoke_endpoint_async;
 #[path = "all/invoke_endpoint_with_response_stream.rs"]
 mod invoke_endpoint_with_response_stream;
+#[path = "all/pattern_clause_quoting.rs"]
+mod pattern_clause_quoting;
 #[path = "all/refusal_envelope.rs"]
 mod refusal_envelope;
 #[path = "all/state_roundtrip.rs"]
