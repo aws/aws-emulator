@@ -700,8 +700,9 @@ pub struct ComAmazonawsAmplifyuibuilderAmplifyuibuilderState {
     /// for a component, the key carries the (appId, environmentName) the create
     /// addressed: a token is scoped to the environment it was used in.
     pub theme_tokens: HashMap<(EnvironmentKey, String), String>,
-    /// The LIVE third-party access token of each token session `RefreshToken`
-    /// has answered, keyed by the [`ProviderTokenKey`] the request named.
+    /// The LIVE third-party access token of each token session a token operation
+    /// has answered — the session an exchange STARTED as well as the one a
+    /// refresh answered — keyed by the [`ProviderTokenKey`] naming it.
     ///
     /// One entry per session, REPLACED rather than added to when the same
     /// session is refreshed again, and dropped once its access token has run out
@@ -1944,9 +1945,14 @@ pub enum ProviderTokenRefusal {
 /// One live third-party token session: the access token this service last handed
 /// back for a refresh token, and when that access token stops being live.
 ///
-/// The refresh token itself is NOT this service's to mint — a caller holds one
-/// the provider issued — so it is held only as the key's third element, and this
-/// record states nothing further about it.
+/// The refresh token itself is the session's NAME rather than part of the record:
+/// it is held only as the third element of the [`ProviderTokenKey`] the session
+/// is stored under, and this record states nothing further about it. Where that
+/// name comes from is the token operation's own: an exchange models a `@required`
+/// `refreshToken` output, so it MINTS the one it names the session it starts by
+/// ([`mint_provider_token`] draws both tokens that answer carries), while a
+/// refresh models no token to hand out and is presented one its caller already
+/// holds. Either way, every name in this map resolves a session this store holds.
 #[derive(Clone)]
 pub struct ProviderTokenSession {
     /// The provider the session's tokens belong to (`TokenProviders`).
