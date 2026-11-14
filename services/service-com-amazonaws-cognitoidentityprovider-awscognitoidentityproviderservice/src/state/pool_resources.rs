@@ -717,6 +717,61 @@ impl UserPoolClient {
         Some(Duration::from_secs(seconds))
     }
 
+    /// Whether this app client rotates the refresh tokens it issues: the stored
+    /// `RefreshTokenRotation` has its `Feature` switched on.
+    ///
+    /// "When enabled, your app client issues new ID, access, and refresh tokens
+    /// when users renew their sessions with refresh tokens"
+    /// (`RefreshTokenRotationType` in this service's model), and the renewal that
+    /// does so is `GetTokensFromRefreshToken` — the operation whose own
+    /// `RefreshToken` is "invalidated after the request is complete and after an
+    /// optional grace period" when "refresh token rotation is active in the
+    /// requested app client".
+    pub fn rotates_refresh_tokens(&self) -> bool {
+        self.refresh_token_rotation_grace().is_some()
+    }
+
+    /// Whether a request authorized by an ACCESS TOKEN of this app client may READ
+    /// the stored user attribute `name`.
+    ///
+    /// `ReadAttributes` is "the list of user attributes that you want your app
+    /// client to have read access to. After your user authenticates in your app,
+    /// their access token authorizes them to read their own attribute value for
+    /// any attribute in this list" (`CreateUserPoolClient.ReadAttributes` in this
+    /// service's model), so a client that holds such a list authorizes the
+    /// attributes IN it and no other, and one that holds none narrows nothing.
+    /// [`SUB_ATTRIBUTE`] is the user's immutable id rather than a profile value a
+    /// client is granted, so a read reports it whatever the list says.
+    pub fn reads_attribute(&self, name: &str) -> bool {
+        name == SUB_ATTRIBUTE || permits_attribute(self.read_attributes.as_deref(), name)
+    }
+
+    /// Whether this app client's `WriteAttributes` grant admits EVERY one of
+    /// `names`.
+    ///
+    /// `WriteAttributes` is "the list of user attributes that you want your app
+    /// client to have write access to. After your user authenticates in your app,
+    /// their access token authorizes them to set or modify their own attribute
+    /// value for any attribute in this list"
+    /// (`CreateUserPoolClient.WriteAttributes` in this service's model), so a
+    /// client that holds such a list authorizes the attributes IN it and no other,
+    /// and one that holds none narrows nothing.
+    ///
+    /// The grant is collected ONCE and each requested name is looked up in it, so
+    /// a request naming many attributes costs the two lists' lengths rather than
+    /// their product — both are chosen by a caller, the request's by this one and
+    /// the grant's by whoever configured the app client.
+    pub fn writes_every_attribute<'a, I>(&self, names: I) -> bool
+    where
+        I: IntoIterator<Item = &'a str>,
+    {
+        let Some(granted) = self.write_attributes.as_deref() else {
+            return true;
+        };
+        let granted: BTreeSet<&str> = granted.iter().map(String::as_str).collect();
+        names.into_iter().all(|name| granted.contains(name))
+    }
+
     /// The access token lifetime this client issues.
     pub fn access_token_ttl(&self) -> Duration {
         token_ttl(
@@ -795,6 +850,35 @@ impl UserPoolClient {
         }
     }
 }
+
+/// Whether the attribute `name` is among the ones `permitted` grants, where an
+/// app client configured a list of them at all.
+///
+/// `ReadAttributes` names "the list of user attributes that you want your app
+/// client to have read access to" (`CreateUserPoolClient` in this service's
+/// model): where a list IS configured it is exhaustive, and a client that
+/// configured none has no narrowed set, so every attribute of the pool's schema
+/// stays within what its tokens authorize. A name is matched exactly as it is
+/// stored — which for a custom attribute is already its prefixed name — so the
+/// grant and the stored attribute cannot disagree about which attribute is meant.
+fn permits_attribute(permitted: Option<&[String]>, name: &str) -> bool {
+    permitted.is_none_or(|permitted| permitted.iter().any(|granted| granted == name))
+}
+
+/// The sentence a write of an attribute the app client's `WriteAttributes` does
+/// not grant is refused with: one fixed sentence, which names neither the
+/// attribute, the app client nor the user — so a caller learns that the write was
+/// not authorized and nothing about the configuration that refused it.
+pub const UNAUTHORIZED_ATTRIBUTE_WRITE_MESSAGE: &str =
+    "A client attempted to write unauthorized attribute";
+
+/// The sentence the sign-in refuses the legacy refresh flow with on an app client
+/// that ROTATES its refresh tokens: one fixed sentence, which names neither the
+/// app client nor the flow that was asked for — a rotating client renews a
+/// session through `GetTokensFromRefreshToken`, and this is the API that does not
+/// do it.
+pub const ROTATION_UNSUPPORTED_BY_FLOW_MESSAGE: &str =
+    "This API does not support refresh token rotation";
 
 /// Why a `SecretHash` a request presented is not the one its app client requires
 /// ([`UserPoolClient::secret_hash_defect`]).

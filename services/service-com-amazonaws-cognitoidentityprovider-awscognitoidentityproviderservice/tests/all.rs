@@ -327,5 +327,13 @@ mod web_authn_refusal_wording;
 mod web_authn_registration;
 #[path = "all/zz_probe.rs"]
 mod zz_probe;
+#[path = "all/zz_probe2.rs"]
+mod zz_probe2;
 #[path = "all/identity_token_attribute_claims.rs"]
 mod identity_token_attribute_claims;
+#[path = "all/app_client_attribute_grants.rs"]
+mod app_client_attribute_grants;
+#[path = "all/group_claim_precedence_order.rs"]
+mod group_claim_precedence_order;
+#[path = "all/refresh_token_rotation_lineage.rs"]
+mod refresh_token_rotation_lineage;

@@ -5,7 +5,12 @@
 //! names the user, resolved through
 //! [`crate::state::ComAmazonawsCognitoidentityproviderAwscognitoidentityproviderserviceState::signed_in_user`],
 //! and the attributes, MFA options and MFA settings are rendered from the STORED
-//! user. A pure read: nothing is written, so a later caller sees what this one saw.
+//! user. The attributes the response carries are the ones the app client that
+//! issued the token has READ ACCESS to — "their access token authorizes them to
+//! read their own attribute value for any attribute in this list"
+//! (`CreateUserPoolClient.ReadAttributes`) — so a client configured with a
+//! narrower list is answered with that much of the stored profile and no more.
+//! A pure read: nothing is written, so a later caller sees what this one saw.
 //!
 //! ## Shape of an operation
 //!
@@ -187,15 +192,36 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let now = ::std::time::SystemTime::now();
 
         let guard = state.lock();
-        let (_pool, user) = guard
+        let (pool, user) = guard
             .signed_in_user(&input.access_token, now)
             .map_err(token_rejected)?;
+
+        // The app client the access token was issued for is what bounds the
+        // attributes this read reports: `ReadAttributes` authorizes the signed-in
+        // user "to read their own attribute value for any attribute in this list"
+        // (`CreateUserPoolClient.ReadAttributes` in this service's model), so an
+        // attribute outside the list the client holds is withheld from the
+        // response ([`crate::state::UserPoolClient::reads_attribute`]). The
+        // configuration is read as it stands NOW, so narrowing a client takes the
+        // attributes out of the next read made with a token it had already issued.
+        // The administrative read of the same user names no app client and is
+        // bounded by none.
+        let client = guard
+            .token(&input.access_token)
+            .and_then(|record| pool.clients.get(&record.client_id));
+        let user_attributes = user
+            .attribute_list()
+            .into_iter()
+            .filter(|attribute| {
+                client.is_none_or(|client| client.reads_attribute(&attribute.name))
+            })
+            .collect();
 
         // Rendered from the STORED user: every member is what a later read of the same
         // user reports, and nothing here writes.
         Ok(GetUserOutput {
             username: user.username.clone(),
-            user_attributes: user.attribute_list(),
+            user_attributes,
             // A user with no MFA option carries none rather than an empty list.
             mfa_options: (!user.mfa_options.is_empty()).then(|| user.mfa_options.clone()),
             preferred_mfa_setting: user.preferred_mfa_setting.clone(),

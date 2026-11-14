@@ -271,6 +271,32 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 let (pool, user) = guard
                     .signed_in_user(&input.access_token, now)
                     .map_err(token_rejected)?;
+                // The app client the access token was issued for is what bounds
+                // the attributes this update may set: `WriteAttributes`
+                // authorizes the signed-in user "to set or modify their own
+                // attribute value for any attribute in this list"
+                // (`CreateUserPoolClient.WriteAttributes` in this service's
+                // model), so an attribute outside the list the client holds is
+                // not this caller's to write and the whole update is refused —
+                // before anything is stored, so none of the other attributes it
+                // named is written either
+                // ([`crate::state::UserPoolClient::writes_every_attribute`]).
+                if !guard
+                    .token(&input.access_token)
+                    .and_then(|record| pool.clients.get(&record.client_id))
+                    .is_none_or(|client| {
+                        client.writes_every_attribute(
+                            input
+                                .user_attributes
+                                .iter()
+                                .map(|attribute| attribute.name.as_str()),
+                        )
+                    })
+                {
+                    return Err(not_authorized(
+                        crate::state::UNAUTHORIZED_ATTRIBUTE_WRITE_MESSAGE,
+                    ));
+                }
                 crate::state::plan_attribute_update(
                     pool,
                     user,

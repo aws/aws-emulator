@@ -188,6 +188,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             let (pool, user) = guard
                 .signed_in_user(&input.access_token, now)
                 .map_err(token_rejected)?;
+            // Removing a value is modifying it, so the same `WriteAttributes`
+            // grant that bounds what an update may SET bounds what this
+            // deletion may remove: a name outside the list the app client the
+            // access token was issued for holds is not this caller's to write,
+            // and the deletion is refused before anything is removed
+            // ([`crate::state::UserPoolClient::writes_every_attribute`]).
+            if !guard
+                .token(&input.access_token)
+                .and_then(|record| pool.clients.get(&record.client_id))
+                .is_none_or(|client| {
+                    client.writes_every_attribute(
+                        input.user_attribute_names.iter().map(String::as_str),
+                    )
+                })
+            {
+                return Err(not_authorized(
+                    crate::state::UNAUTHORIZED_ATTRIBUTE_WRITE_MESSAGE,
+                ));
+            }
             crate::state::plan_attribute_deletion(pool, user, &input.user_attribute_names)
                 .map_err(invalid_parameter)?
         };

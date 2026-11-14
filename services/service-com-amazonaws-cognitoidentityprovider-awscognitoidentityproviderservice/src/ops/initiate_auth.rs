@@ -1069,6 +1069,24 @@ async fn refresh_sign_in(
             .clients
             .get(client_id)
             .ok_or_else(|| client_not_found(client_id))?;
+        // An app client that ROTATES its refresh tokens renews a session through
+        // `GetTokensFromRefreshToken` — the operation that "issues a new refresh
+        // token and invalidates the original refresh token after an optional
+        // grace period when refresh token rotation is enabled" (that operation in
+        // this service's model) — while this flow "receive[s] new ID and access
+        // tokens" and leaves the submitted refresh token in force
+        // (`InitiateAuth.AuthFlow`), which is not what a rotating client does
+        // with one. So this flow is not available on such a client:
+        // `UnsupportedOperationException` is "thrown when you attempt to perform
+        // an operation that isn't enabled for the user pool client" (this
+        // service's model). Asked before the `ExplicitAuthFlows` gate below,
+        // because what the rotation withdraws is the flow itself, however the
+        // client's flow list is configured.
+        if client.rotates_refresh_tokens() {
+            return Err(unsupported_operation(
+                crate::state::ROTATION_UNSUPPORTED_BY_FLOW_MESSAGE,
+            ));
+        }
         if !client.allows_refresh_token_auth() {
             return Err(invalid_parameter(
                 crate::state::auth_flow_not_enabled_message(auth_flow),
@@ -1238,6 +1256,16 @@ fn refresh_token_revoked() -> InitiateAuthError {
 /// This operation's `NotAuthorizedException`, carrying `message`.
 fn not_authorized(message: &str) -> InitiateAuthError {
     InitiateAuthErrorModeled::NotAuthorizedException(NotAuthorizedException {
+        message: Some(message.to_string()),
+    })
+    .into()
+}
+
+/// This operation's `UnsupportedOperationException`, carrying `message`: the
+/// refusal for a flow the app client the request names is not configured to
+/// serve at all.
+fn unsupported_operation(message: &str) -> InitiateAuthError {
+    InitiateAuthErrorModeled::UnsupportedOperationException(UnsupportedOperationException {
         message: Some(message.to_string()),
     })
     .into()

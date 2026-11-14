@@ -1978,6 +1978,43 @@ impl ComAmazonawsCognitoidentityproviderAwscognitoidentityproviderserviceState {
         }
     }
 
+    /// Record that every refresh token of the sign-in `lineage` OTHER than
+    /// `submitted` stops authorizing a token refresh at `invalid_from`, because a
+    /// RETRY of the refresh those tokens came from has replaced them.
+    ///
+    /// The retry grace period is there so that "the original refresh token that
+    /// you're rotating out can remain valid for a period of time ... This allows
+    /// for client-side retries"
+    /// (`RefreshTokenRotationType.RetryGracePeriodSeconds` in this service's
+    /// model): a caller retries because it did not get the first attempt's
+    /// answer, so the refresh token that attempt issued is one nobody holds. The
+    /// retry issues the token that takes its place, and that earlier successor is
+    /// superseded the instant it does — leaving ONE refresh token of the sign-in
+    /// authorizing a refresh, so a replay of a superseded one is answered as the
+    /// reuse it is instead of renewing a second session in parallel. The
+    /// `submitted` token is left out: the grace period it is still inside is its
+    /// own.
+    pub fn supersede_refresh_token_lineage(
+        &mut self,
+        lineage: &str,
+        submitted: &str,
+        invalid_from: SystemTime,
+    ) {
+        let superseded: Vec<String> = self
+            .issued_tokens
+            .iter()
+            .filter(|(token, record)| {
+                record.kind == TokenKind::Refresh
+                    && record.origin == lineage
+                    && token.as_str() != submitted
+            })
+            .map(|(token, _)| token.clone())
+            .collect();
+        for token in superseded {
+            self.rotate_out_refresh_token(&token, invalid_from);
+        }
+    }
+
     /// The stored pool and user that an ACCESS token identifies as the currently
     /// signed-in user, as of `now`.
     ///
@@ -2331,8 +2368,20 @@ impl ComAmazonawsCognitoidentityproviderAwscognitoidentityproviderserviceState {
                 issuer: pool.issuer(&served_endpoint(parts, &pool.region)),
                 sub: user.sub.clone(),
                 stored_username: user.username.clone(),
-                attribute_claims: tokens::attribute_claims(&user.attributes),
-                groups: pool.user_group_names(user),
+                // The attributes this app client has READ ACCESS to are the ones
+                // its identity tokens state: `ReadAttributes` authorizes the
+                // signed-in user to "read their own attribute value for any
+                // attribute in this list"
+                // (`CreateUserPoolClient.ReadAttributes` in this service's
+                // model), and an identity token is where that value is read —
+                // so a client configured with a narrower list issues tokens
+                // carrying that much of the profile and no more, exactly as its
+                // `GetUser` reports that much of it.
+                attribute_claims: tokens::attribute_claims(&user.attributes)
+                    .into_iter()
+                    .filter(|(name, _claim)| client.reads_attribute(name))
+                    .collect(),
+                groups: pool.user_group_claim_names(user),
                 role_claims: pool.user_group_role_claims(user),
                 signing_keys: pool.signing_keys.clone(),
                 access_ttl: client.access_token_ttl(),

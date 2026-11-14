@@ -287,6 +287,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> GetTokensFromRefr
                 // could be a record that is no longer there, leaving the rotated-out
                 // token still usable.
                 let invalid_from = now.checked_add(grace).ok_or_else(internal_error)?;
+                // A refresh made with a token an earlier rotation ALREADY rotated
+                // out is the client-side retry the grace period exists for: the
+                // token that earlier attempt issued is one nobody holds, so the
+                // token this retry issues replaces it and it is superseded here
+                // and now — leaving one refresh token of the sign-in in force
+                // ([`crate::state::ComAmazonawsCognitoidentityproviderAwscognitoidentityproviderserviceState::supersede_refresh_token_lineage`]).
+                if let Some(lineage) = guard
+                    .token(&input.refresh_token)
+                    .filter(|record| record.rotated_out_at.is_some())
+                    .map(|record| record.origin.clone())
+                {
+                    guard.supersede_refresh_token_lineage(&lineage, &input.refresh_token, now);
+                }
                 guard.rotate_out_refresh_token(&input.refresh_token, invalid_from);
                 guard
                     .issue_rotated_tokens(
@@ -535,11 +548,16 @@ fn not_authorized(message: &str) -> GetTokensFromRefreshTokenError {
     .into()
 }
 
+/// The message a refresh token refresh-token rotation has already invalidated is
+/// refused with: the fixed sentence Amazon Cognito answers, which names neither
+/// the token presented nor the app client it was presented to.
+const REFRESH_TOKEN_REUSE_MESSAGE: &str = "Refresh token reuse detected";
+
 /// This operation's `RefreshTokenReuseException` for a refresh token an earlier rotation
 /// already invalidated.
 fn refresh_token_reuse() -> GetTokensFromRefreshTokenError {
     GetTokensFromRefreshTokenErrorModeled::RefreshTokenReuseException(RefreshTokenReuseException {
-        message: Some("Refresh token has been invalidated by refresh token rotation.".to_string()),
+        message: Some(REFRESH_TOKEN_REUSE_MESSAGE.to_string()),
     })
     .into()
 }

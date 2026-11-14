@@ -682,6 +682,32 @@ impl UserPool {
             .collect()
     }
 
+    /// The names of this pool's groups `user` belongs to as a TOKEN CLAIM carries
+    /// them: ordered by ascending `Precedence`, which is the order the group
+    /// claim's own precedence rule states.
+    ///
+    /// `CreateGroup`'s `Precedence` (this service's model): "Zero is the highest
+    /// precedence value. Groups with lower `Precedence` values take precedence
+    /// over groups with higher or null `Precedence` values", and the claim is what
+    /// that precedence is read out of — "Amazon Cognito ID tokens have a
+    /// `cognito:preferred_role` claim that presents the highest-precedence group
+    /// that a user belongs to. Both ID and access tokens also contain a
+    /// `cognito:groups` claim" — so the list is ordered by precedence, best first,
+    /// with a group that states none behind every group that states one
+    /// ([`precedence_rank`]). The sort is STABLE, so groups tied at one precedence
+    /// keep the stored (name) order [`UserPool::user_group_names`] reports them in
+    /// and a second sign-in renders the same list.
+    pub fn user_group_claim_names(&self, user: &User) -> Vec<String> {
+        let mut ranked: Vec<(PrecedenceRank, String)> = user
+            .groups
+            .iter()
+            .filter_map(|name| self.groups.get(name))
+            .map(|group| (precedence_rank(group.precedence), group.group_name.clone()))
+            .collect();
+        ranked.sort_by_key(|(rank, _)| *rank);
+        ranked.into_iter().map(|(_, name)| name).collect()
+    }
+
     /// The role claims this pool's groups put in `user`'s identity token: every role its
     /// groups grant, best precedence first, and the ONE role the best-precedence group
     /// prefers where the groups name it unambiguously.

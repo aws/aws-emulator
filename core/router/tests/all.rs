@@ -1956,7 +1956,6 @@ mod redshift_health_alarms_evaluate;
 // appended here as well while two branches were landing at once.)
 // (`zz_probe` is declared ONCE, further up this tail.)
 // (`cloudformation_metric_stream_filter_update` is declared in the head region above: a module
-// may be declared only once.)
 // (`zz_probe` is declared further up this tail already: a module may be declared only once.)
 // (`zz_probe` is declared once further up this tail: a module may be declared only once.)
 // (`zz_probe` is declared ONCE, further up this tail: it was appended here as well while two
@@ -2044,7 +2043,6 @@ mod cloudformation_domain_endpoint_is_dialled_by_consumers;
 // well while two branches were landing at once.)
 // (The metric-stream estate suite and the other CloudFormation suites of this window
 // (`https_front_door_concurrent_pooled_producer` is declared further up this tail already: a
-// module may be declared only once.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared further up this tail
 // already: a module may be declared only once.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared once, above.)
@@ -2075,7 +2073,6 @@ mod cognito_rules_role_mapping;
 // crate's own test target can ask it.
 #[path = "all/iam_secretsmanager_denial_envelope_by_protocol.rs"]
 mod iam_secretsmanager_denial_envelope_by_protocol;
-// (`zz_probe` is declared once, further up this tail: a module may be declared only once.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared once, further up this
 // file: a module may be declared only once.)
 // (That suite is declared ONCE, in the sorted span at the head of this file: a module may be
@@ -2116,9 +2113,7 @@ mod lambda_durable_execution_status_events_reach_sqs;
 // (`cloudformation_stack_clock` and `elbv2_lambda_target_published_address` are each declared
 // once in the spans above: a module declared twice in this file compiles its suite twice.)
 // are declared once each, further up this tail, for the same reason.)
-// (`apigateway_cognito_authorizer_app_client_audience` is declared once, in the head region
 // above, for the reason the note above records.)
-// (`cloudwatch_alarm_ssm_ops_item_action` is declared once, in the head region above: a
 // (`zz_probe` is declared once, in the span above.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared once, in the span above.)
 // above: two branches landing at once appended it here as well, which declared it twice and
@@ -2198,7 +2193,6 @@ mod ses_delivery_event_advances_the_subscribed_queue;
 // Declared ONCE, in the head region above beside the other API Gateway suites: it was
 // appended here as well while two branches were landing at once, which declared it a second
 // time and compiled neither.
-// above, and `cloudformation_metric_stream_estate_is_drainable` once further down this tail:
 // (The API Gateway/Cognito authorizer-audience suite and the metric-stream estate suite are
 // declared ONCE each, in the sorted span above: both were appended here as well while two
 // branches were landing at once, which declared each a second time and compiled neither.)
@@ -2209,11 +2203,6 @@ mod ses_delivery_event_advances_the_subscribed_queue;
 // (`zz_probe` is declared once, in the head region above: a module may be declared only
 // once, and two branches landing at once had appended a second declaration of it here.)
 // above: two branches landing at once had appended a second declaration of it here.)
-// (The Amazon Cognito authorizer suite is declared ONCE, in the head region above: a module
-// may be declared only once, and two branches landing at once appended it here as well.)
-// Declared ONCE, in the head region above beside the other API Gateway suites: it was
-// appended here as well while two branches were landing at once, which declared it a second
-// time and compiled neither.
 // (The suite that reads which app client's token a COGNITO_USER_POOLS authorizer admits is
 // declared in the head region at the top of this file already: a module may be declared only
 // once.)
@@ -2224,11 +2213,6 @@ mod ses_delivery_event_advances_the_subscribed_queue;
 // probe for the pre-existing stack overflow in
 // `all/s3_notification_invokes_its_lambda_target.rs` — neither the probe nor that standing
 // abort is touched here.)
-// (The Amazon Cognito authorizer suite is declared ONCE, in the head region above: a module
-// may be declared only once, and two branches landing at once appended it here as well.)
-// Declared ONCE, in the head region above beside the other API Gateway suites: it was
-// appended here as well while two branches were landing at once, which declared it a second
-// time and compiled neither.
 // (The declaration itself is the one in the sorted span at the top of this file: a module may
 // be declared only once, and two branches landing at once declared it twice.)
 // (`zz_probe` is declared ONCE, in the head region above: a module may be declared only
@@ -2319,7 +2303,6 @@ mod route53_health_check_string_match;
 // own test target can drive the transition and then read what it opened.)
 // (`cloudformation_metric_stream_estate_is_drainable` is declared ONCE, further up this
 // (`codebuild_s3_build_output` is declared ONCE, in the span above: a module may be declared
-// only once.)
 // (`lambda_signed_write_to_an_aoss_collection_endpoint` is declared ONCE, further up this
 // (`cloudformation_domain_endpoint_is_dialled_by_consumers` is declared ONCE, in the span
 // (`apigateway_sns_service_integration` is declared ONCE, further up this tail: two branches
@@ -2359,3 +2342,4 @@ mod route53_health_check_string_match;
 // deploy the pipeline and then watch the dead-letter queue.
 #[path = "all/cloudformation_sqs_redrive_policy_dead_letters_a_failing_consumer.rs"]
 mod cloudformation_sqs_redrive_policy_dead_letters_a_failing_consumer;
+// (`cloudformation_metric_stream_filter_update` is declared ONCE, in the head region above: a

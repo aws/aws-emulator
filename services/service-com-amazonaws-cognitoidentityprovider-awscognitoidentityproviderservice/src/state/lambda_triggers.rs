@@ -342,13 +342,14 @@ pub fn pre_token_generation(
     let mut members = Map::new();
     // "groupConfiguration — The input object containing the current group configuration":
     // the groups the pool holds this user in, the roles those groups grant and the one role
-    // they prefer — the very claims the tokens this generation mints would otherwise carry
-    // (`crate::state::UserPool::user_group_names` and `user_group_role_claims`).
+    // they prefer — the very claims the tokens this generation mints would otherwise carry,
+    // in the order those claims carry them
+    // (`crate::state::UserPool::user_group_claim_names` and `user_group_role_claims`).
     let role_claims = pool.user_group_role_claims(user);
     let mut group_configuration = Map::new();
     group_configuration.insert(
         "groupsToOverride".to_string(),
-        text_list(pool.user_group_names(user)),
+        text_list(pool.user_group_claim_names(user)),
     );
     group_configuration.insert(
         "iamRolesToOverride".to_string(),

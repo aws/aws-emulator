@@ -371,20 +371,35 @@ async fn access_token_revoked(router: &MultiServiceRouter, case: &str, access_to
 /// Assert that `refresh_token` cannot be exchanged for fresh tokens, by either of the
 /// two operations a refresh token authorizes: the refresh flow of `InitiateAuth` and
 /// `GetTokensFromRefreshToken`.
+///
+/// `rotates` says whether the app client rotates its refresh tokens, because such a
+/// client does not serve the `InitiateAuth` flow at all — it "isn't enabled for the user
+/// pool client" (`UnsupportedOperationException` in this service's model) — so there the
+/// flow is withdrawn before any token is resolved and the revocation is reported by
+/// `GetTokensFromRefreshToken` alone.
 async fn refresh_token_revoked(
     router: &MultiServiceRouter,
     case: &str,
     fixture: &Fixture,
     refresh_token: &str,
+    rotates: bool,
 ) {
+    let (code, message) = if rotates {
+        (
+            "UnsupportedOperationException",
+            "This API does not support refresh token rotation",
+        )
+    } else {
+        ("NotAuthorizedException", "Refresh Token has been revoked")
+    };
     refused(
         router,
         case,
         "InitiateAuth",
         &refresh_sign_in_body(fixture, refresh_token),
         400,
-        "NotAuthorizedException",
-        "Refresh Token has been revoked",
+        code,
+        message,
     )
     .await;
     refused(
@@ -529,7 +544,7 @@ async fn revoking_a_refresh_token_revokes_its_whole_sign_in() {
             access_token_revoked(&router, case, access_token).await;
         }
         for refresh_token in &refresh_tokens {
-            refresh_token_revoked(&router, case, &fixture, refresh_token).await;
+            refresh_token_revoked(&router, case, &fixture, refresh_token, row.rotates).await;
         }
     }
 }
@@ -574,6 +589,7 @@ async fn a_revocation_reaches_only_the_sign_in_it_names() {
         case,
         &fixture,
         &token(case, &revoked_sign_in, "RefreshToken"),
+        false,
     )
     .await;
 
@@ -628,7 +644,7 @@ async fn a_second_revocation_of_the_same_token_still_succeeds() {
             "case {case:?}: attempt {attempt} must answer the empty response, got {answer}"
         );
     }
-    refresh_token_revoked(&router, case, &fixture, &refresh_token).await;
+    refresh_token_revoked(&router, case, &fixture, &refresh_token, false).await;
 }
 
 /// Which token a row of the token-type table presents.
@@ -821,6 +837,7 @@ async fn the_app_client_must_authenticate_and_serve_revocation() {
         "a client that holds a secret",
         &with_secret,
         &refresh_token,
+        false,
     )
     .await;
 

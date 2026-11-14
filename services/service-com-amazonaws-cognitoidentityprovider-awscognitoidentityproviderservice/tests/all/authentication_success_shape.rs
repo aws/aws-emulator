@@ -827,14 +827,17 @@ async fn an_issued_refresh_token_is_an_opaque_credential() {
     }
 
     // An opaque credential is still a credential: the refresh token of the first
-    // sign-in exchanges for a fresh pair.
+    // sign-in exchanges for a fresh pair. This app client ROTATES its refresh
+    // tokens, so the renewal is the operation that rotates one — the
+    // `InitiateAuth` refresh flow "isn't enabled for the user pool client"
+    // (`UnsupportedOperationException` in this service's model) where rotation is
+    // switched on.
     let refreshed = ok(
         &router,
-        "InitiateAuth",
+        "GetTokensFromRefreshToken",
         &json!({
             "ClientId": fixture.client_id,
-            "AuthFlow": "REFRESH_TOKEN_AUTH",
-            "AuthParameters": { "REFRESH_TOKEN": results[1].1["RefreshToken"] },
+            "RefreshToken": results[1].1["RefreshToken"],
         }),
     )
     .await;
