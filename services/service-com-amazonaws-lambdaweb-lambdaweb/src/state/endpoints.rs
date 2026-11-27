@@ -627,6 +627,13 @@ impl ComAmazonawsLambdawebLambdawebState {
     /// revision, so it is ready one [`PROVISIONING_DELAY`] after that revision is
     /// itself ready — one span per dependency level, and never zero, so a caller
     /// reading straight back still sees the transient state.
+    ///
+    /// An endpoint stored in the [`AUTO_DEPLOYMENT_MODE_LATEST_REVISION`] mode serves the
+    /// newest revision that has built, so the switch the clock owes every endpoint in
+    /// that mode is taken here, exactly as it is where an update writes
+    /// ([`Self::update_endpoint`]) — a create that asks for the mode routes the endpoint
+    /// onto that revision at once instead of at whatever call comes next, so the routing
+    /// the create reports is the routing every later reader of the endpoint reports.
     pub fn add_endpoint(
         &mut self,
         function_name: &str,
@@ -670,6 +677,7 @@ impl ComAmazonawsLambdawebLambdawebState {
         let endpoint_name = endpoint.endpoint_name.clone();
         function.endpoints.insert(endpoint_name.clone(), endpoint);
         function.updated_at = now;
+        function.deploy_latest_revision();
         Some(endpoint_name)
     }
 

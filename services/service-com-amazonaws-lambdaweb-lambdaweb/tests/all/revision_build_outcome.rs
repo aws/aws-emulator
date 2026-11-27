@@ -11,7 +11,9 @@
 //! object, or serves bytes that are no zip archive, the build FAILS — the revision settles
 //! `Failed` ("the revision build failed") carrying the build's own reason. An endpoint
 //! whose `autoDeploymentMode` is `LatestRevision` then serves the newest revision that
-//! BUILT, so a revision that failed never takes traffic.
+//! BUILT, so a revision that failed never takes traffic — and that routing is settled
+//! where the endpoint's mode is WRITTEN, by its create as much as by its update, so a
+//! write reports the routing every later reader of the same endpoint reports.
 //!
 //! Each test states that rule over a SET of inputs: the rows differ in WHAT the object is
 //! (an archive, an archive with several entries, bytes that are no archive, no bytes at
@@ -1408,4 +1410,330 @@ async fn deleting_the_newest_revision_moves_the_latest_revision_back() {
         "the endpoint serves the newest revision the store holds, got {:?}",
         accepted.body
     );
+}
+
+/// `PUT /web-functions/{name}/endpoints` — `CreateWebFunctionEndpoint` (model:
+/// `smithy_query(query="operation", operation="CreateWebFunctionEndpoint")`).
+async fn create_endpoint(emulator: &Emulator, name: &str, body: Value) -> Reply {
+    emulator
+        .send(
+            "PUT",
+            &format!("/web-functions/{name}/endpoints"),
+            REGION,
+            Some(body),
+        )
+        .await
+}
+
+/// The `revisionWeights` member of an endpoint object — the whole list, revision ids and
+/// weights, which is what a reader of the endpoint is served.
+fn weights_of(endpoint: &Value) -> Value {
+    endpoint
+        .get("revisionWeights")
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+/// A function with an initial revision built from `BUILT_PACKAGE` and one more revision
+/// per entry of `later` (the object key it builds from, and the state its build has to
+/// settle in), every build settled. Reports the revision ids in creation order, oldest
+/// first.
+async fn function_with_settled_revisions(
+    emulator: &Emulator,
+    name: &str,
+    later: &[(&str, &str)],
+) -> Vec<String> {
+    let created = create_function(emulator, name, BUILT_PACKAGE).await;
+    assert_eq!(
+        created.status, 202,
+        "{name}: CreateWebFunction expected 202, got {} with {:?}",
+        created.status, created.body
+    );
+    let mut revisions = vec![text(
+        created.field("revision").unwrap_or(&Value::Null),
+        "revisionId",
+    )];
+    for (key, _) in later {
+        let reply = create_revision(emulator, name, key).await;
+        assert_eq!(
+            reply.status, 202,
+            "{name}: CreateWebFunctionRevision expected 202, got {} with {:?}",
+            reply.status, reply.body
+        );
+        revisions.push(text(&reply.body, "revisionId"));
+    }
+    let settles = std::iter::once("Active").chain(later.iter().map(|(_, state)| *state));
+    for (revision_id, expected) in revisions.iter().zip(settles) {
+        let settled = poll_until_settled(emulator, name, revision_id).await;
+        assert_eq!(
+            settled, expected,
+            "{name}/{revision_id}: expected the build to settle {expected}, got {settled}"
+        );
+    }
+    revisions
+}
+
+/// The package every revision that BUILDS below is built from.
+const BUILT_PACKAGE: &str = "create-mode-built.zip";
+
+/// The package a revision whose build FAILS below is built from: bytes that are no
+/// archive.
+const BROKEN_PACKAGE: &str = "create-mode-broken.zip";
+
+/// One row of the create table: the mode the request asks for, the weights it names and
+/// the routing the stored endpoint has to serve. Each is built from the function's
+/// revision ids, oldest first.
+struct CreateRow {
+    case: &'static str,
+    /// The `autoDeploymentMode` the request carries, or `None` when it names none — the
+    /// documented default is `Disabled`.
+    mode: Option<&'static str>,
+    /// The `revisionWeights` the request carries, or `None` when it names none.
+    requested: fn(&[String]) -> Option<Value>,
+    /// The `revisionWeights` the endpoint has to serve.
+    expected: fn(&[String]) -> Value,
+}
+
+/// The request body one row sends under `endpoint_name`.
+fn create_endpoint_body(row: &CreateRow, endpoint_name: &str, revisions: &[String]) -> Value {
+    let mut body = json!({
+        "endpointName": endpoint_name,
+        "endpointType": "HomeRegion",
+        "authType": "IamAuth",
+    });
+    if let Some(mode) = row.mode {
+        body["autoDeploymentMode"] = json!(mode);
+    }
+    if let Some(weights) = (row.requested)(revisions) {
+        body["revisionWeights"] = weights;
+    }
+    body
+}
+
+/// RULE, on the CREATE path: an endpoint in the `LatestRevision` auto-deployment mode
+/// serves the newest revision that BUILT with all of the traffic, and that routing is
+/// settled where the endpoint's mode and weights are WRITTEN — so a create in that mode
+/// stores, and reports, that revision whatever `revisionWeights` the request named, while
+/// a create in the `Disabled` mode, where "revision routing stays fixed until you change
+/// it", stores and reports exactly the weights it was given. Either way the create's own
+/// answer is the routing every later reader of the same endpoint reports.
+#[tokio::test]
+async fn a_create_stores_the_routing_its_auto_deployment_mode_serves() {
+    let emulator = Emulator::with_object_store();
+    create_bucket(&emulator).await;
+    stage_object(
+        &emulator,
+        BUILT_PACKAGE,
+        archive(&[("index.mjs", b"export const handler = () => 'built';")]),
+    )
+    .await;
+
+    let name = "create-auto-deployment-mode";
+    // Two revisions, both ready to serve traffic: the newest is the one the mode follows.
+    let revisions =
+        function_with_settled_revisions(&emulator, name, &[(BUILT_PACKAGE, "Active")]).await;
+    assert_ne!(
+        revisions[0], revisions[1],
+        "two revisions of one function must not share an id, got {revisions:?}"
+    );
+
+    // The rows span what the rule generalises over: the mode asked for, how many
+    // revisions the requested weights name and with what split, and whether they name the
+    // newest revision at all.
+    let rows: [CreateRow; 7] = [
+        CreateRow {
+            // The recorded case: the mode on, one OLDER revision at full weight.
+            case: "the mode on, the older revision at full weight",
+            mode: Some("LatestRevision"),
+            requested: |revisions| Some(json!([{ "revisionId": revisions[0], "weight": 100 }])),
+            expected: |revisions| json!([{ "revisionId": revisions[1], "weight": 100 }]),
+        },
+        CreateRow {
+            case: "the mode on, the traffic split evenly across both revisions",
+            mode: Some("LatestRevision"),
+            requested: |revisions| {
+                Some(json!([
+                    { "revisionId": revisions[0], "weight": 50 },
+                    { "revisionId": revisions[1], "weight": 50 },
+                ]))
+            },
+            expected: |revisions| json!([{ "revisionId": revisions[1], "weight": 100 }]),
+        },
+        CreateRow {
+            case: "the mode on, a canary split that names the newest revision",
+            mode: Some("LatestRevision"),
+            requested: |revisions| {
+                Some(json!([
+                    { "revisionId": revisions[0], "weight": 99 },
+                    { "revisionId": revisions[1], "weight": 1 },
+                ]))
+            },
+            expected: |revisions| json!([{ "revisionId": revisions[1], "weight": 100 }]),
+        },
+        CreateRow {
+            case: "the mode on, the newest revision already at full weight",
+            mode: Some("LatestRevision"),
+            requested: |revisions| Some(json!([{ "revisionId": revisions[1], "weight": 100 }])),
+            expected: |revisions| json!([{ "revisionId": revisions[1], "weight": 100 }]),
+        },
+        CreateRow {
+            case: "the mode on, no weights named at all",
+            mode: Some("LatestRevision"),
+            requested: |_| None,
+            expected: |revisions| json!([{ "revisionId": revisions[1], "weight": 100 }]),
+        },
+        CreateRow {
+            case: "the mode off, the older revision at full weight",
+            mode: Some("Disabled"),
+            requested: |revisions| Some(json!([{ "revisionId": revisions[0], "weight": 100 }])),
+            expected: |revisions| json!([{ "revisionId": revisions[0], "weight": 100 }]),
+        },
+        CreateRow {
+            case: "no mode named, an uneven split across both revisions",
+            mode: None,
+            requested: |revisions| {
+                Some(json!([
+                    { "revisionId": revisions[0], "weight": 70 },
+                    { "revisionId": revisions[1], "weight": 30 },
+                ]))
+            },
+            expected: |revisions| {
+                json!([
+                    { "revisionId": revisions[0], "weight": 70 },
+                    { "revisionId": revisions[1], "weight": 30 },
+                ])
+            },
+        },
+    ];
+
+    for (index, row) in rows.iter().enumerate() {
+        let case = row.case;
+        let endpoint_name = format!("created-{index}");
+        let created = create_endpoint(
+            &emulator,
+            name,
+            create_endpoint_body(row, &endpoint_name, &revisions),
+        )
+        .await;
+        assert_eq!(
+            created.status, 202,
+            "case {case:?}: CreateWebFunctionEndpoint expected 202, got {} with {:?}",
+            created.status, created.body
+        );
+        let expected_mode = row.mode.unwrap_or("Disabled");
+        assert_eq!(
+            text(&created.body, "autoDeploymentMode"),
+            expected_mode,
+            "case {case:?}: expected the mode {expected_mode:?}, got {:?}",
+            created.body
+        );
+        let expected = (row.expected)(&revisions);
+        assert_eq!(
+            weights_of(&created.body),
+            expected,
+            "case {case:?}: expected the create to report {expected:?}, got {:?}",
+            created.body
+        );
+
+        // The read-back, which is what the create's answer is held to: the next call to
+        // this service must report the routing the create reported.
+        let read = get_endpoint(&emulator, name, &endpoint_name).await;
+        assert_eq!(
+            weights_of(&read),
+            expected,
+            "case {case:?}: expected the stored endpoint to serve {expected:?}, got {read:?}"
+        );
+        assert_eq!(
+            text(&read, "autoDeploymentMode"),
+            expected_mode,
+            "case {case:?}: the read reports another mode than the create did, got {read:?}"
+        );
+
+        // And a further read reports the same routing: nothing about the endpoint moves
+        // because somebody looked at it.
+        let again = get_endpoint(&emulator, name, &endpoint_name).await;
+        assert_eq!(
+            weights_of(&again),
+            expected,
+            "case {case:?}: the weights moved between two reads, got {again:?}"
+        );
+    }
+}
+
+/// RULE, where the newest revision is not one an endpoint can serve: only a revision the
+/// service reports `Active` is "ready to serve traffic", so a create in the
+/// `LatestRevision` mode stores the newest revision that BUILT — never one whose build
+/// failed, even when the create's own weights named it.
+#[tokio::test]
+async fn a_create_in_the_auto_deployment_mode_never_routes_onto_a_failed_revision() {
+    let emulator = Emulator::with_object_store();
+    create_bucket(&emulator).await;
+    stage_object(
+        &emulator,
+        BUILT_PACKAGE,
+        archive(&[("index.mjs", b"export const handler = () => 'built';")]),
+    )
+    .await;
+    stage_object(&emulator, BROKEN_PACKAGE, b"not a zip archive".to_vec()).await;
+
+    let name = "create-auto-deployment-mode-failed";
+    // The newest revision's build fails, so the newest revision that BUILT is the older
+    // one — the only revision an endpoint of this function can serve.
+    let revisions =
+        function_with_settled_revisions(&emulator, name, &[(BROKEN_PACKAGE, "Failed")]).await;
+
+    // (case, the weights the create names, the routing the endpoint has to serve)
+    let rows: [(&str, Value, Value); 3] = [
+        (
+            "the weights name the revision whose build failed",
+            json!([{ "revisionId": revisions[1], "weight": 100 }]),
+            json!([{ "revisionId": revisions[0], "weight": 100 }]),
+        ),
+        (
+            "the weights split across the built and the failed revision",
+            json!([
+                { "revisionId": revisions[0], "weight": 80 },
+                { "revisionId": revisions[1], "weight": 20 },
+            ]),
+            json!([{ "revisionId": revisions[0], "weight": 100 }]),
+        ),
+        (
+            "the weights name only the revision that built",
+            json!([{ "revisionId": revisions[0], "weight": 100 }]),
+            json!([{ "revisionId": revisions[0], "weight": 100 }]),
+        ),
+    ];
+
+    for (index, (case, requested, expected)) in rows.into_iter().enumerate() {
+        let endpoint_name = format!("failed-newest-{index}");
+        let created = create_endpoint(
+            &emulator,
+            name,
+            json!({
+                "endpointName": endpoint_name,
+                "endpointType": "HomeRegion",
+                "authType": "IamAuth",
+                "autoDeploymentMode": "LatestRevision",
+                "revisionWeights": requested,
+            }),
+        )
+        .await;
+        assert_eq!(
+            created.status, 202,
+            "case {case:?}: CreateWebFunctionEndpoint expected 202, got {} with {:?}",
+            created.status, created.body
+        );
+        assert_eq!(
+            weights_of(&created.body),
+            expected,
+            "case {case:?}: expected the create to report {expected:?}, got {:?}",
+            created.body
+        );
+        let read = get_endpoint(&emulator, name, &endpoint_name).await;
+        assert_eq!(
+            weights_of(&read),
+            expected,
+            "case {case:?}: expected the stored endpoint to serve {expected:?}, got {read:?}"
+        );
+    }
 }

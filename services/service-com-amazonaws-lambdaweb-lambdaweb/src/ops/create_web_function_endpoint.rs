@@ -12,6 +12,12 @@
 //! anything is stored so no endpoint is ever stored announcing a domain nothing
 //! serves. Every member of the response is read back out of the stored record.
 //!
+//! An endpoint asked for in the auto-deployment mode serves the newest revision that has
+//! built, and that routing is settled where the endpoint is WRITTEN
+//! ([`crate::state::ComAmazonawsLambdawebLambdawebState::add_endpoint`]) rather than at
+//! whatever call comes next — so the `revisionWeights` this create reports are the ones
+//! every later reader of the same endpoint reports.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
