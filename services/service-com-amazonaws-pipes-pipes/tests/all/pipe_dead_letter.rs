@@ -31,10 +31,16 @@
 //!    written behind it are attempted in their turn and pointed at by their own dead letter.
 //! 5. The pointer is reported under the member of the SOURCE KIND it was read from, so a
 //!    DynamoDB-stream batch is never described as a Kinesis one.
+//! 6. The record of a discarded batch is ATTRIBUTED to the pipe that gave up on it: its
+//!    `context` names that pipe's OWN ARN beside the condition it gave up under and nothing
+//!    else, so pipes sharing one destination are told apart by that member and each record
+//!    points into the source of the pipe it names. The rows differ along the pipe's own name,
+//!    the stage that failed and the retries it allowed.
 //!
 //! The member names are the model's own
 //! (`smithy_query(query="shape", shape="PipeSourceKinesisStreamParameters,PipeSourceDynamoDBStreamParameters,DeadLetterConfig")`).
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -760,5 +766,177 @@ async fn a_dynamodb_stream_batch_is_pointed_at_under_its_own_member() {
     assert!(
         !letter.to_string().contains(payload),
         "case {case:?}: a dead letter carries no item image, got {letter}"
+    );
+}
+
+/// One pipe of the shared-destination table: its own NAME — which is what makes its ARN its
+/// own — what makes it give up on a batch, and the retries it allows before it does.
+struct Attributed {
+    case: &'static str,
+    /// The pipe's name, and the stem of the resources the row creates for it.
+    pipe: &'static str,
+    failure: Failure,
+    /// `MaximumRetryAttempts`: the attempts the pipe allows BEYOND the first.
+    retries: i64,
+}
+
+/// RULE 6: the record of a discarded batch is ATTRIBUTED to the pipe that gave up on it —
+/// its `context` names THAT pipe's own ARN, the one the pipe itself reports, beside the
+/// condition it gave up under and nothing else — so pipes dead-lettering to ONE destination
+/// are told apart by that member, and the batch each record points at is a batch of the
+/// source of the pipe it names.
+///
+/// The rows differ along the pipe's own name (so along the ARN the attribution has to carry),
+/// the stage that gives up and why, and the retries the pipe allows, which is what the rule
+/// generalises over: none of those reaches the context object, and the ARN in it is the
+/// letter's own pipe's in every row.
+#[tokio::test]
+async fn pipes_sharing_one_destination_are_told_apart_by_their_own_letters() {
+    let rows: [Attributed; 3] = [
+        Attributed {
+            case: "an enrichment that always raises",
+            pipe: "Shared_Raising.Enrichment-1",
+            failure: Failure::EnrichmentRaises,
+            retries: 0,
+        },
+        Attributed {
+            // A name of the shortest length `PipeName` admits.
+            case: "an enrichment that cannot be invoked, one retry",
+            pipe: "s",
+            failure: Failure::EnrichmentAbsent,
+            retries: 1,
+        },
+        Attributed {
+            // And one of the longest: 64 characters, the maximum `PipeName` admits
+            // (`smithy_query(query="shape", shape="PipeName")`).
+            case: "a target that cannot be invoked",
+            pipe: "shared-dead-letter-attribution-pipe-with-a-maximum-length-name-3",
+            failure: Failure::TargetAbsent,
+            retries: 0,
+        },
+    ];
+
+    let router = emulator();
+    // The ONE destination every pipe of the table dead-letters to.
+    let (dlq_url, dlq_arn) = given_queue(&router, "shared-dead-letters").await;
+    // The target of the rows whose batch never gets that far: nothing may arrive on it.
+    let (quiet_url, quiet_arn) = given_queue(&router, "shared-dead-letter-target").await;
+    let raising = given_function(
+        &router,
+        "pipes sharing one dead-letter queue",
+        "shared-dlq-enrichment",
+        ALWAYS_RAISES,
+        json!({}),
+    )
+    .await;
+
+    // What each pipe's own record of its discarded batch has to say — the row it belongs to,
+    // the source that pipe reads and the sequence number of the record it gave up on — keyed
+    // by the ARN the pipe itself reports.
+    let mut expected: BTreeMap<String, (&str, String, String)> = BTreeMap::new();
+    for (index, row) in rows.iter().enumerate() {
+        let case = row.case;
+        let stream = given_stream(&router, &format!("attribution-source-{index}")).await;
+        let (enrichment, target) = match row.failure {
+            Failure::EnrichmentRaises => (Some(raising.clone()), quiet_arn.clone()),
+            Failure::EnrichmentAbsent => (
+                Some(format!(
+                    "arn:aws:lambda:{REGION}:000000000000:function:absent-enrichment-{index}"
+                )),
+                quiet_arn.clone(),
+            ),
+            Failure::TargetAbsent => (
+                None,
+                format!(
+                    "arn:aws:lambda:{REGION}:000000000000:function:absent-target-{index}"
+                ),
+            ),
+        };
+        let mut body = json!({
+            "Source": stream,
+            "Target": target,
+            "RoleArn": ROLE,
+            "DesiredState": "RUNNING",
+            "SourceParameters": kinesis_source_parameters(Some(&dlq_arn), Some(row.retries)),
+        });
+        if let Some(enrichment) = &enrichment {
+            body["Enrichment"] = json!(enrichment);
+        }
+        let pipe_arn = running_pipe(&router, row.pipe, body).await;
+        // The ARN the attribution has to carry is the one the pipe itself reports.
+        let described = describe(&router, row.pipe).await;
+        assert_eq!(
+            described.string("Arn"),
+            pipe_arn,
+            "case {case:?}: expected the pipe to report the ARN it was created with, got {:?}",
+            described.body
+        );
+        let sequence = put_record(&router, &stream, case, &format!("payload-of-{index}")).await;
+        assert!(
+            expected
+                .insert(pipe_arn.clone(), (case, stream, sequence))
+                .is_none(),
+            "case {case:?}: every row is a pipe of its own, got {pipe_arn} twice"
+        );
+    }
+
+    let letters = dead_letters(
+        &router,
+        &dlq_url,
+        "pipes sharing one dead-letter queue",
+        rows.len(),
+    )
+    .await;
+    let mut attributed: BTreeMap<String, Value> = BTreeMap::new();
+    for letter in &letters {
+        let named = letter["context"]["partnerResourceArn"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a dead letter names the pipe that gave up: {letter}"))
+            .to_string();
+        let (case, stream, sequence) = expected.get(&named).unwrap_or_else(|| {
+            panic!("a dead letter names a pipe of this table, got {named:?}: {letter}")
+        });
+        // The WHOLE of the context object: the pipe that gave up and the condition it gave up
+        // under, and no member beside them.
+        assert_eq!(
+            letter["context"],
+            json!({ "partnerResourceArn": named, "condition": RETRIES_EXHAUSTED }),
+            "case {case:?}: expected the pipe that gave up and why, got {letter}"
+        );
+        let pointer = &letter[KINESIS_BATCH_INFO];
+        assert_eq!(
+            pointer["streamArn"],
+            json!(stream),
+            "case {case:?}: the letter naming {named} must point into that pipe's own source, \
+             got {letter}"
+        );
+        assert_eq!(
+            pointer["startSequenceNumber"],
+            json!(sequence),
+            "case {case:?}: expected the record that pipe gave up on, got {letter}"
+        );
+        // The pipe is named ONCE in the whole document, and under that member alone.
+        assert_eq!(
+            letter.to_string().matches(named.as_str()).count(),
+            1,
+            "case {case:?}: a pipe is named by its context's partnerResourceArn alone, got \
+             {letter}"
+        );
+        assert!(
+            attributed.insert(named.clone(), letter.clone()).is_none(),
+            "case {case:?}: one discarded batch is one record of it, got a second: {letter}"
+        );
+    }
+    assert_eq!(
+        attributed.keys().collect::<Vec<_>>(),
+        expected.keys().collect::<Vec<_>>(),
+        "expected one dead letter per pipe of the table, got {attributed:?}"
+    );
+    // A batch a pipe gave up on is delivered nowhere: the rows that never reached their
+    // target left nothing on it.
+    let delivered = collect_during(&router, &quiet_url, QUIET).await;
+    assert!(
+        delivered.is_empty(),
+        "a discarded batch is delivered nowhere, got {delivered:?}"
     );
 }
