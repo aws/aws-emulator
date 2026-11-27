@@ -1,0 +1,52 @@
+Issue-Severity: HIGH
+Issue-Corpus: simparity-behavioral-aws-v1
+Issue-Corpus-Kind: behavioral
+Issue-Trace-Ids: lambda__mq.e2e-rabbitmq-esm-absent-queue-delivers-nothing-lifecycle
+Issue-Key: lambda__mq.e2e-rabbitmq-esm-absent-queue-delivers-nothing-lifecycle|_poll#5|Timeout|time.sleep(interval_s)
+Issue-Commit: 11892c8a0fd001958f088427b8ee0a7691e93494
+
+# lambda__mq: the CloudFormation-deployed RabbitMQ broker + Lambda event-source-mapping estate never reaches a graded verdict — the check is killed at the 60 s cap (1 cause)
+
+> _Note: this issue was identified against the code base at commit `11892c8a0fd001958f088427b8ee0a7691e93494`. If you are an issue fixer working on this, the code base you are currently working in can have drifted, so you might need to trace the issue back to the current code base._
+
+## Operation
+GetEventSourceMapping
+
+## Description
+Cause 1 of 1: a CloudFormation-deployed estate of a SecretsManager secret, an AWS::AmazonMQ::Broker (RabbitMQ), an IAM role, a Lambda function and an AWS::Lambda::EventSourceMapping whose Queues names a queue that was never declared never progresses far enough for the behavioral check to reach any assertion — the replay is killed at the harness cap with no graded phase.
+
+AWS: the check `e2e-rabbitmq-esm-absent-queue-delivers-nothing-lifecycle` (GROUP `deploy-e2e-lifecycle`, PHASES deploy/solve/cleanup/destroy) drives a chain real AWS completes end to end:
+  * CloudFormation `CreateStack` (Capabilities=[CAPABILITY_NAMED_IAM], Parameters BrokerName/SecretName/FunctionName/RoleName) followed by `DescribeStacks` polling must reach a terminal `CREATE_COMPLETE` and publish the template's Outputs (BrokerId, FunctionName, FunctionArn, QueueName, EventSourceMappingId), and `DescribeStackResources` must report every logical resource (BrokerSecret, RabbitMqBroker, ConsumerRole, RabbitMqConsumer, RabbitMQEventSource) as CREATE_COMPLETE, with the mapping's PhysicalResourceId equal to the mapping UUID the stack outputs.
+  * mq `DescribeBroker` must report the broker as `BrokerState` RUNNING and `EngineType` spelled `RabbitMQ` in the response (the request enum is `RABBITMQ`) — recorded behavior only for that response spelling.
+  * lambda `GetEventSourceMapping`/`ListEventSourceMappings` must report that mapping (Smithy: EventSourceMappingConfiguration.UUID @length 36; Queues @length 1..1, documented "(Amazon MQ) The name of the Amazon MQ broker destination queue to consume"; State documented as one of Creating/Enabling/Enabled/Disabling/Disabled/Updating/Deleting; LastProcessingResult documented "The result of the event source mapping's last processing attempt"). For a RUNNING broker whose queue was never declared, the mapping settles at `State` "Enabled" and `LastProcessingResult` exactly `PROBLEM: Failed to connect with event source.` — recorded behavior: measured Creating → Enabled with that LastProcessingResult about 75 s after creation, unchanged over the next 600 s.
+  * The broker's RabbitMQ management API must then answer: 200 for `GET /api/queues/<vhost>` with the undeclared queue absent, 404 for `GET /api/queues/<vhost>/<queue>`, an empty `GET /api/connections`, 201 for `PUT /api/queues/<vhost>/<queue>`, `{"routed": true}` for `POST /api/exchanges/<vhost>/amq.default/publish`, and 204 for the queue's DELETE; after the declare, the same Enabled mapping must deliver the published message so the consumer's `/aws/lambda/<FunctionName>` log group holds a line `Queue: <queue>::<vhost> Message: <marker>` (keys of rmqMessagesByQueue are `<queue>::<vhost>`).
+  * Finally `DeleteStack` must reach DELETE_COMPLETE and `DescribeStackResources` on the deleted stack must be refused with code `ValidationError` and message `Stack with id <stack-name> does not exist` (fixed text `Stack with id ` + the StackName from the request + ` does not exist`).
+Recorded behavior only for the per-stage budgets the check carries: 1200 s for stack convergence, 300 s for the mapping to record its connect failure, 480 s from publish to the log line, 450 s for destroy — i.e. on AWS each stage converges rather than hanging.
+
+Emulator: the replay reaches none of those assertions. The verdict is `[mismatch]` whose only detail is `Error: Check timed out after 60.0s`: the check is killed at the harness cap while still inside a poll loop, so no PHASES entry completes and nothing is graded. Hypothesis (neither the model nor the replay output narrows it, the report carries no phase journal): the block is in one of the two polls the deploy phase enters first — `DescribeStacks` never reporting a terminal `CREATE_COMPLETE` for this template (an AWS::AmazonMQ::Broker plus an AWS::Lambda::EventSourceMapping), or `GetEventSourceMapping` never populating `LastProcessingResult` with a `PROBLEM: ...` record for an Amazon MQ source, so the mapping never settles into the faulted state the scenario needs. Both stages are independently weak here: this run's own mq failures and the open issues `20261115T175651Z-cloudformation-mq-mq-accepts-an-engineversion-amazon-mq.md` and `20261118T104000Z-cloudformation-mq-a-stack-that-rolls-back-records.md` cover CloudFormation/mq stack behavior, and Lambda event-source mappings that never poll or settle are carried by `20261126T064332Z-lambda-6-net-new-causes-event-source-mapping.md`, `20261125T165255Z-kafka-lambda-an-msk-event-source-mapping-never-8a3845.md` and `20261125T162859Z-events-lambda-sqs-an-sqs-event-source-mapping--r4.md`. None of those issues carries this check's replay key and none concerns an Amazon MQ (RabbitMQ) source, so none covers it.
+
+Why: a client deploying this shape gets no usable emulator at all. A deploy loop polling `DescribeStacks` for `CREATE_COMPLETE`, or an operator polling `GetEventSourceMapping` to learn why a RabbitMQ consumer is not firing, hangs indefinitely instead of converging; on AWS both settle and every subsequent read (Outputs, the mapping's Enabled/PROBLEM record, the broker's management API, FilterLogEvents, the ValidationError after delete) answers. A hang is strictly worse than a wrong answer: there is no status or error code for the client to branch on, and the RabbitMQ delivery path (undeclared queue → no invocation, declared queue → delivery) is left entirely unexercised.
+
+Fix: the CloudFormation stack-progression state machine for this resource set (AWS::SecretsManager::Secret, AWS::AmazonMQ::Broker, AWS::IAM::Role, AWS::Lambda::Function, AWS::Lambda::EventSourceMapping) must drive the stack to a terminal CREATE_COMPLETE and publish its Outputs; and the Lambda event-source-mapping state machine and poller for an Amazon MQ source must settle the mapping at State "Enabled" with LastProcessingResult "PROBLEM: Failed to connect with event source." while its queue is undeclared, and deliver rmqMessagesByQueue batches to the function once the queue exists. Re-run this check with a cap above its own budgets and the per-phase journal enabled to pin which of the two stages blocks before changing either.
+
+Traces: lambda__mq.e2e-rabbitmq-esm-absent-queue-delivers-nothing-lifecycle — `[mismatch] ... Error: Check timed out after 60.0s`.
+
+## Evidence
+Suite report, section `### lambda__mq`:
+
+  #### [mismatch] lambda__mq.e2e-rabbitmq-esm-absent-queue-delivers-nothing-lifecycle
+  Error: Check timed out after 60.0s
+
+Run totals: 27/33 passed; every other failing check in the run is marked OWNED by an already-filed issue (cloudformation__mq ×2 and iam__mq__scheduler ×2 by 20261115T175651Z-… / 20261127T094848Z-…, mq.create-configuration-duplicate-name-conflict-rejected by 20261127T094848Z-mq-updateconfiguration-s-notfoundexception-…). This check is marked neither ALREADY FILED nor OWNED, and no open issue carries its replay key.
+
+Expected (AWS): all four phases complete — the stack reaches CREATE_COMPLETE with all five resources CREATE_COMPLETE and the mapping's PhysicalResourceId equal to the output EventSourceMappingId; DescribeBroker reports BrokerState RUNNING and EngineType "RabbitMQ"; GetEventSourceMapping reports State "Enabled" with LastProcessingResult exactly "PROBLEM: Failed to connect with event source."; the broker's management API answers 200 for the vhost queue list (undeclared queue absent), 404 for the queue, [] for connections, 201 for the declare, {"routed": true} for the publish and 204 for the delete; the function's log group does not exist before the fix and afterwards holds "Queue: <queue>::<vhost> Message: <marker>"; the mapping is still "Enabled" after delivering; DeleteStack reaches DELETE_COMPLETE and DescribeStackResources on the deleted stack is refused ValidationError "Stack with id <stack> does not exist".
+
+Actual (emulator): no phase completes. The harness kills the check at its 60 s cap while still inside a poll loop, with no phase verdict and no assertion reached. The check's own budgets are 1200 s (stack), 300 s (mapping fault record), 480 s (delivery) and 450 s (destroy), so it is sitting in one of those polls when the cap ends it.
+
+## Steps to Reproduce
+1. Boot the emulator and replay the behavioral suite.
+2. Run the single check `lambda__mq.e2e-rabbitmq-esm-absent-queue-delivers-nothing-lifecycle` (deployments/rabbitmq-consumer-absent-queue/template.json) with a cap above the check's own budgets (> ~2000 s) so it can reach a real verdict rather than the harness cap.
+3. Observe the `deploy` phase: `CreateStack` (Capabilities=[CAPABILITY_NAMED_IAM]; Parameters BrokerName/SecretName/FunctionName/RoleName), then poll `DescribeStacks` for a terminal StackStatus. Expect CREATE_COMPLETE plus Outputs BrokerId/FunctionName/FunctionArn/QueueName/EventSourceMappingId, and DescribeStackResources reporting BrokerSecret, RabbitMqBroker, ConsumerRole, RabbitMqConsumer and RabbitMQEventSource all CREATE_COMPLETE.
+4. If the stack settles, poll `lambda GetEventSourceMapping(UUID=<EventSourceMappingId>)` every 10 s. Expect it to reach State "Enabled" with LastProcessingResult "PROBLEM: Failed to connect with event source." while the queue named in Queues has never been declared.
+5. If the mapping settles, exercise the broker's management API (GET /api/queues/<vhost>, GET /api/queues/<vhost>/<queue>, GET /api/connections, PUT the queue, POST to amq.default/publish) and read `/aws/lambda/<FunctionName>` with FilterLogEvents for the `Queue: <queue>::<vhost> Message: <marker>` line.
+6. Whichever of steps 3, 4 and 5 does not converge is the blocked stage; the phase journal (registered first, so it dumps even after a timeout) names it.
