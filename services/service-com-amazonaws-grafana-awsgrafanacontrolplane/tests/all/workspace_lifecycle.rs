@@ -54,11 +54,10 @@ const SIGNED_FOR_EU_WEST_1: &str = "AWS4-HMAC-SHA256 \
 /// The endpoint host every request below reaches this emulator on.
 const EMULATOR_HOST: &str = "127.0.0.1:9297";
 
-/// The endpoint the workspace `id` is announced at: the address every request below reaches
-/// this emulator on, with the workspace's own path beneath it, spelled out here
-/// independently of the crate's own constants.
-fn expected_endpoint(id: &str) -> String {
-    format!("{EMULATOR_HOST}/_aws/grafana/{id}")
+/// The endpoint a workspace is announced at: the address every request below reaches this
+/// emulator on, spelled out here independently of the crate's own constants.
+fn expected_endpoint() -> String {
+    EMULATOR_HOST.to_string()
 }
 
 /// A create request with only the three required members, for a case that is about
@@ -318,9 +317,9 @@ async fn a_created_workspace_is_described_from_what_was_stored() {
         );
         assert_eq!(
             at(created.workspace(), "/endpoint"),
-            json!(expected_endpoint(&id)),
+            json!(expected_endpoint()),
             "case {case:?}: the endpoint must be an address this emulator is reached at, \
-             naming this workspace, got {:?}",
+             got {:?}",
             at(created.workspace(), "/endpoint")
         );
         assert_eq!(

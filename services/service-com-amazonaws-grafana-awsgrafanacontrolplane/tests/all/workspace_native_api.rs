@@ -5,13 +5,14 @@
 //! emulator answers that workspace's Grafana HTTP API on.
 //!
 //! The rule under test: `WorkspaceDescription$endpoint` and `WorkspaceSummary$endpoint`
-//! carry an ADDRESS this emulator is reached at — the `host[:port]` the request arrived on,
-//! port included — with the addressed workspace's own path beneath it, and never a host in
-//! a zone Amazon Web Services publishes its own endpoints in, which nothing here answers
-//! for. Every operation that reports a workspace reports that one value for it, two
-//! workspaces never share one, and a client that splices a Grafana route onto the value
-//! (`https://<endpoint>/api/org`, the splice the member's own documentation invites) reaches
-//! that workspace's Grafana HTTP API rather than leaving this emulator.
+//! carry an ADDRESS this emulator is reached at — the bare `host[:port]` the request arrived
+//! on, port included, with no scheme and no path — and never a host in a zone Amazon Web
+//! Services publishes its own endpoints in, which nothing here answers for. Every operation
+//! that reports a workspace reports that one value for it, every workspace of one emulator
+//! is announced at the one address it answers on, and a client that splices a Grafana route
+//! onto the value (`https://<endpoint>/api/org`, the splice the member's own documentation
+//! invites) reaches the Grafana HTTP API of the workspace its credential names rather than
+//! leaving this emulator.
 //!
 //! The rows differ along the address the control-plane call reached this emulator at
 //! (loopback by address on two ports, loopback by name, an IPv6 literal, a routable private
@@ -67,10 +68,17 @@ fn signed_for(region: &str) -> String {
     )
 }
 
-/// The endpoint a workspace `id` is announced at by an emulator reached at `authority`,
-/// spelled out here independently of the crate's own constants: the authority the request
-/// arrived on, and the workspace's own path beneath the reserved namespace segment.
-fn expected_endpoint(authority: &str, id: &str) -> String {
+/// The endpoint a workspace is announced at by an emulator reached at `authority`, spelled
+/// out here independently of the crate's own constants: the authority the request arrived
+/// on, and nothing else.
+fn expected_endpoint(authority: &str) -> String {
+    authority.to_string()
+}
+
+/// The endpoint PATH this emulator also answers a workspace's Grafana API at — the
+/// addressing that names the workspace in the address rather than through the credential a
+/// request presents.
+fn workspace_path_endpoint(authority: &str, id: &str) -> String {
     format!("{authority}/_aws/grafana/{id}")
 }
 
@@ -219,9 +227,10 @@ async fn await_active(
 
 /// The addresses a client reaches this emulator at, and the authority each one is announced
 /// as: the address itself, except where the request named no address of this emulator — no
-/// `Host` at all, or the real service's own endpoint host, which names a service and not
-/// this process — where the base of an emulator served on no port is announced.
-fn client_addresses() -> [(&'static str, &'static str, &'static str); 7] {
+/// `Host` at all, the real service's own endpoint host, or a name of an operator's own,
+/// each of which names a service or nothing of this process — where the base of an emulator
+/// served on no port is announced.
+fn client_addresses() -> [(&'static str, &'static str, &'static str); 8] {
     [
         (
             "loopback by address, the default port",
@@ -241,6 +250,11 @@ fn client_addresses() -> [(&'static str, &'static str, &'static str); 7] {
             "10.1.2.3:8443",
         ),
         (
+            "a name of an operator's own",
+            "emu.internal.example:8443",
+            UNSERVED_AUTHORITY,
+        ),
+        (
             "the real service's own endpoint host",
             "grafana.us-west-2.amazonaws.com",
             UNSERVED_AUTHORITY,
@@ -258,23 +272,24 @@ async fn every_projection_reports_the_one_endpoint_the_workspace_is_announced_at
         let region = regions[index % regions.len()];
         let router = emulator();
 
-        // Two workspaces, so a projection reporting a constant or the other record's
-        // address cannot pass.
+        // Two workspaces, so a projection reporting the other record's address cannot
+        // pass; one emulator answers both at the one address it is reached at.
         let (first_id, first_created_endpoint) =
             create_workspace(&router, region, host, "monitoring").await;
         let (second_id, second_created_endpoint) =
             create_workspace(&router, region, host, "reporting").await;
-        assert_ne!(
+        assert_eq!(
             first_created_endpoint, second_created_endpoint,
-            "case {case:?} in {region:?}: each workspace must announce its own endpoint, \
-             both got {first_created_endpoint:?}"
+            "case {case:?} in {region:?}: both workspaces are announced at the one address \
+             this emulator answers on, got {first_created_endpoint:?} and \
+             {second_created_endpoint:?}"
         );
 
         for (which, id, created_endpoint) in [
             ("the first workspace", &first_id, &first_created_endpoint),
             ("the second workspace", &second_id, &second_created_endpoint),
         ] {
-            let want = expected_endpoint(authority, id);
+            let want = expected_endpoint(authority);
             assert_eq!(
                 created_endpoint, &want,
                 "case {case:?}/{which:?} in {region:?}: CreateWorkspace must announce an \
@@ -309,9 +324,17 @@ async fn every_projection_reports_the_one_endpoint_the_workspace_is_announced_at
             );
 
             // And the announced address is one this emulator answers that workspace's
-            // Grafana HTTP API on: the request is refused by the Grafana API for want of a
-            // credential, not by the router for naming nothing it serves.
-            let unauthenticated = native(&router, created_endpoint, "/api/org", None).await;
+            // Grafana HTTP API on: addressed with the workspace's own path beneath that
+            // same authority, where the address names the workspace, the request is refused
+            // by the Grafana API for want of a credential rather than by the router for
+            // naming nothing it serves.
+            let unauthenticated = native(
+                &router,
+                &workspace_path_endpoint(created_endpoint, id),
+                "/api/org",
+                None,
+            )
+            .await;
             assert_eq!(
                 unauthenticated.status, 401,
                 "case {case:?}/{which:?} in {region:?}: the announced endpoint must serve the \
@@ -387,66 +410,83 @@ async fn every_projection_reports_the_one_endpoint_the_workspace_is_announced_at
 }
 
 /// The announced endpoint serves the workspace's Grafana HTTP API end to end: a credential
-/// the control plane minted for that workspace, presented at the announced address, is
-/// answered from the workspace record.
+/// the control plane minted for a workspace, presented at the announced address, is answered
+/// from that workspace's record — and since one emulator announces one address, the
+/// credential is what says which workspace a request there addresses.
 ///
 /// This is the flow a client that reads `endpoint` performs, and the rows differ along the
-/// address the client reached this emulator at — every one of which must lead back here.
+/// address the client reached this emulator at — every one of which must lead back here —
+/// and along which of the two workspaces' credentials is presented.
 #[tokio::test]
 async fn a_client_following_the_announced_endpoint_reaches_the_workspaces_grafana_api() {
     for (case, host, authority) in client_addresses() {
         let router = emulator();
         let region = "us-west-2";
         let (id, endpoint) = create_workspace(&router, region, host, "observability").await;
+        let (other_id, other_endpoint) = create_workspace(&router, region, host, "reporting").await;
         assert_eq!(
             endpoint,
-            expected_endpoint(authority, &id),
+            expected_endpoint(authority),
             "case {case:?}: the create must announce an address of this emulator, got \
              {endpoint:?}"
         );
+        assert_eq!(
+            other_endpoint, endpoint,
+            "case {case:?}: one emulator announces one address, got {endpoint:?} and \
+             {other_endpoint:?}"
+        );
         await_active(&router, region, host, &id).await;
+        await_active(&router, region, host, &other_id).await;
 
-        let key = call(
-            &router,
-            region,
-            host,
-            "POST",
-            &format!("/workspaces/{id}/apikeys"),
-            Some(json!({"keyName": "dashboards", "keyRole": "ADMIN", "secondsToLive": 3_600})),
-        )
-        .await;
-        assert_eq!(
-            key.status, 200,
-            "case {case:?}: CreateWorkspaceApiKey must mint the key, got {} with {:?}",
-            key.status, key.body
-        );
-        let secret = key.body["key"].as_str().unwrap_or_default().to_string();
+        for (which, workspace_id, organization) in [
+            ("the first workspace", &id, "observability"),
+            ("the second workspace", &other_id, "reporting"),
+        ] {
+            let key = call(
+                &router,
+                region,
+                host,
+                "POST",
+                &format!("/workspaces/{workspace_id}/apikeys"),
+                Some(
+                    json!({"keyName": "dashboards", "keyRole": "ADMIN", "secondsToLive": 3_600}),
+                ),
+            )
+            .await;
+            assert_eq!(
+                key.status, 200,
+                "case {case:?}/{which}: CreateWorkspaceApiKey must mint the key, got {} with \
+                 {:?}",
+                key.status, key.body
+            );
+            let secret = key.body["key"].as_str().unwrap_or_default().to_string();
 
-        let org = native(
-            &router,
-            &endpoint,
-            "/api/org",
-            Some(&format!("Bearer {secret}")),
-        )
-        .await;
-        assert_eq!(
-            org.status, 200,
-            "case {case:?}: the minted key must authenticate at the announced endpoint \
-             {endpoint:?}, got {} with {:?}",
-            org.status, org.body
-        );
-        assert_eq!(
-            org.body["id"],
-            json!(1),
-            "case {case:?}: the organization must report its id, got {:?}",
-            org.body
-        );
-        assert_eq!(
-            org.body["name"],
-            json!("observability"),
-            "case {case:?}: the organization name must be read off the workspace record, got \
-             {:?}",
-            org.body
-        );
+            let org = native(
+                &router,
+                &endpoint,
+                "/api/org",
+                Some(&format!("Bearer {secret}")),
+            )
+            .await;
+            assert_eq!(
+                org.status, 200,
+                "case {case:?}/{which}: the minted key must authenticate at the announced \
+                 endpoint {endpoint:?}, got {} with {:?}",
+                org.status, org.body
+            );
+            assert_eq!(
+                org.body["id"],
+                json!(1),
+                "case {case:?}/{which}: the organization must report its id, got {:?}",
+                org.body
+            );
+            assert_eq!(
+                org.body["name"],
+                json!(organization),
+                "case {case:?}/{which}: the credential must reach the organization \
+                 {organization:?}, read off the workspace record, got {:?}",
+                org.body
+            );
+        }
     }
 }

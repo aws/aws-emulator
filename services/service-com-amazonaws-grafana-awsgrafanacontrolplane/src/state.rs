@@ -560,6 +560,71 @@ impl Workspace {
         }
     }
 
+    /// Whether `digest` is the [`bearer_token_digest`] of a LIVE bearer credential of this
+    /// workspace: one of its API keys, or a token of one of its enabled service accounts —
+    /// the two credentials the control plane mints for calling the workspace's Grafana HTTP
+    /// API.
+    ///
+    /// The reading that says which workspace a request to the announced endpoint addresses
+    /// ([`ComAmazonawsGrafanaAwsgrafanacontrolplaneState::workspace_holding_bearer_token`]),
+    /// and it changes nothing: authorizing with the credential is
+    /// [`Workspace::authorize_bearer_digest`].
+    ///
+    /// Every expiry is read HERE rather than trusted to have been pruned: an API key past
+    /// its `secondsToLive` is dropped from the record by [`Workspace::settle`] as well, and
+    /// a service-account token is KEPT past its expiry — `ServiceAccountTokenSummary$expiresAt`
+    /// is what a report says about it — so the one thing both readings depend on is the
+    /// instant, not on which caller settled the record first.
+    ///
+    /// The workspace's own STATUS is not read here: whether a workspace's Grafana server is
+    /// serving at all is the caller's question, answered once for every addressing by
+    /// `crate::service::workspace_api::serve` (which answers a non-`ACTIVE` workspace 503),
+    /// and a credential of such a workspace still names it — that is what makes the 503
+    /// observable instead of a refusal that says nothing.
+    pub fn holds_live_bearer_digest(&self, digest: &str, now: SystemTime) -> bool {
+        self.api_keys
+            .values()
+            .any(|key| now < key.expires && same_token_digest(&key.token_digest, digest))
+            || self.service_accounts.iter().any(|account| {
+                !account.disabled
+                    && account.tokens.iter().any(|token| {
+                        now < token.expires && same_token_digest(&token.token_digest, digest)
+                    })
+            })
+    }
+
+    /// Authorize the bearer credential `digest` against this workspace: whether it is a
+    /// live credential of it ([`Workspace::holds_live_bearer_digest`]), and — for a
+    /// service-account token — the USE of it.
+    ///
+    /// A service-account token that authorizes has its `lastUsedAt` set to `now`:
+    /// `ServiceAccountTokenSummary$lastUsedAt` is "[t]he last time the token was used to
+    /// authorize a Grafana HTTP API", and this is that use.
+    ///
+    /// Both expiries are read against `now` here, exactly as in the reading above, so
+    /// neither decision depends on the record having been settled first.
+    pub fn authorize_bearer_digest(&mut self, digest: &str, now: SystemTime) -> bool {
+        if self
+            .api_keys
+            .values()
+            .any(|key| now < key.expires && same_token_digest(&key.token_digest, digest))
+        {
+            return true;
+        }
+        for account in &mut self.service_accounts {
+            if account.disabled {
+                continue;
+            }
+            for token in &mut account.tokens {
+                if now < token.expires && same_token_digest(&token.token_digest, digest) {
+                    token.last_used = Some(now);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// This workspace's tags, as the `TagMap` every operation that reports them
     /// serialises: `WorkspaceDescription$tags`, `WorkspaceSummary$tags` and
     /// `ListTagsForResourceResponse$tags` are all this one map.
@@ -574,15 +639,14 @@ impl Workspace {
     /// operations return, announced on an emulator reached at `authority`.
     ///
     /// The endpoint is composed per read rather than stored, because what it has to name is
-    /// an address the client READING it can dial ([`announced_endpoint`]); the workspace's
-    /// own identity in it is the stored part.
+    /// an address the client READING it can dial ([`announced_endpoint`]).
     pub fn to_description(&self, authority: &str) -> WorkspaceDescription {
         WorkspaceDescription {
             account_access_type: Some(self.account_access_type.clone()),
             created: ::aws_smithy_types::DateTime::from(self.created),
             data_sources: self.data_sources.clone(),
             description: self.description.clone(),
-            endpoint: workspace_endpoint(authority, &self.id),
+            endpoint: workspace_endpoint(authority),
             grafana_version: self.grafana_version.clone(),
             id: self.id.clone(),
             modified: ::aws_smithy_types::DateTime::from(self.modified),
@@ -621,7 +685,7 @@ impl Workspace {
         WorkspaceSummary {
             created: ::aws_smithy_types::DateTime::from(self.created),
             description: self.description.clone(),
-            endpoint: workspace_endpoint(authority, &self.id),
+            endpoint: workspace_endpoint(authority),
             grafana_version: self.grafana_version.clone(),
             id: self.id.clone(),
             modified: ::aws_smithy_types::DateTime::from(self.modified),
@@ -809,6 +873,33 @@ impl ComAmazonawsGrafanaAwsgrafanacontrolplaneState {
         for workspace in self.workspaces.values_mut() {
             workspace.settle(now);
         }
+    }
+
+    /// The workspace holding the live bearer credential `token`, or `None` when no
+    /// workspace of this store holds it.
+    ///
+    /// This is what says WHICH workspace a Grafana HTTP API request to the announced
+    /// endpoint addresses ([`announced_endpoint`]): that endpoint is the one address this
+    /// process answers on, so the workspace cannot travel in its host, and the credential
+    /// the request presents — minted by `CreateWorkspaceApiKey` or
+    /// `CreateWorkspaceServiceAccountToken` for ONE workspace — is what names it.
+    ///
+    /// Everything the clock owes is materialised first ([`Self::settle_all`]), so a
+    /// credential of a workspace that has been released, and a key past its
+    /// `secondsToLive`, names no workspace even if no control-plane call has run since.
+    /// The store is otherwise unchanged: the USE of the credential is
+    /// [`Workspace::authorize_bearer_digest`].
+    pub fn workspace_holding_bearer_token(
+        &mut self,
+        token: &str,
+        now: SystemTime,
+    ) -> Option<String> {
+        self.settle_all(now);
+        let digest = bearer_token_digest(token);
+        self.workspaces
+            .values()
+            .find(|workspace| workspace.holds_live_bearer_digest(&digest, now))
+            .map(|workspace| workspace.id.clone())
     }
 
     /// Release every workspace whose accepted deletion has fallen due by `now`,

@@ -50,9 +50,11 @@
 //! Grafana console in the workspace", so it is a promise that a caller can follow it:
 //! reading the field and calling Grafana's own REST API under it is what a client that
 //! minted a workspace API key or a service-account token does with it. That API is not
-//! in the Smithy model, so it is claimed by the ADDRESS the request names — the announced
-//! endpoint's path, or the host the real service publishes for a workspace — and served
-//! from the two seams below; [`workspace_api`] is the module that answers it.
+//! in the Smithy model, so it is claimed by the ADDRESS the request names and the
+//! CREDENTIAL it presents — this emulator's own announced endpoint with a bearer key that
+//! names the workspace, the announced endpoint's workspace path, or the host the real
+//! service publishes for a workspace — and served from the two seams below;
+//! [`workspace_api`] is the module that answers it.
 
 use smithy_server_runtime::{
     http, ErasedOperation, Refusal, Refused, Service, Violation, ViolationKind,
@@ -218,13 +220,14 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
             return true;
         }
         // And a request to a workspace's own Grafana HTTP API, which is claimed by
-        // the ADDRESS it names because that is the only thing that identifies it:
-        // a client holding a workspace API key or a service-account token presents
-        // it as a bearer token, with no SigV4 credential and no `X-Amz-Target`, and
-        // addresses the endpoint the control plane announced for the workspace (this
-        // emulator's own authority with the workspace's path beneath it) or the host
-        // the real service publishes for it. Without this the router answers
-        // `UnknownService` for an endpoint this service handed out.
+        // the ADDRESS it names and the CREDENTIAL it presents, because that is all
+        // that identifies it: a client holding a workspace API key or a
+        // service-account token presents it as a bearer token, with no SigV4
+        // credential and no `X-Amz-Target`, and addresses the endpoint the control
+        // plane announced for the workspace (this emulator's own authority, where the
+        // credential names the workspace), the workspace's path beneath that
+        // authority, or the host the real service publishes for it. Without this the
+        // router answers `UnknownService` for an endpoint this service handed out.
         let host = workspace_api::addressed_host(
             parts
                 .headers
@@ -234,7 +237,17 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         );
         // `http::Uri::path` already strips the scheme, the authority and the
         // query, for an origin-form request line and an absolute-form one alike.
-        workspace_api::route(parts.method.as_str(), host, parts.uri.path()).is_some()
+        workspace_api::route(&workspace_api::Dialled {
+            method: parts.method.as_str(),
+            host,
+            path: parts.uri.path(),
+            authorization: parts
+                .headers
+                .get(::http::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            this_service: self.entry.identity().signing_name(),
+        })
+        .is_some()
     }
 
     fn override_operation(
@@ -295,11 +308,17 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
                 .and_then(::http::Uri::authority)
                 .map(::http::uri::Authority::as_str),
         );
-        let request = workspace_api::route(req.method(), host, &path)?;
+        let authorization = req.headers().get("authorization");
+        let request = workspace_api::route(&workspace_api::Dialled {
+            method: req.method(),
+            host,
+            path: &path,
+            authorization,
+            this_service: self.entry.identity().signing_name(),
+        })?;
         let now = ::std::time::SystemTime::now();
         let response = match crate::state::service_state(&*self.engine) {
             Some(state) => {
-                let authorization = req.headers().get("authorization");
                 workspace_api::serve(&mut state.lock(), &request, authorization, now)
             }
             // The store was not mounted, so nothing can be said about the

@@ -7,8 +7,8 @@
 //! takes.
 //!
 //! The rule under test: the `endpoint` the control plane reports for a workspace
-//! is an address THIS emulator is reached at — the `host[:port]` the control-plane
-//! request arrived on, with the workspace's own path beneath it — and this emulator
+//! is an address THIS emulator is reached at — the bare `host[:port]` the
+//! control-plane request arrived on, with no scheme and no path — and this emulator
 //! serves that workspace's Grafana HTTP API there: a request spliced onto the
 //! announced endpoint carrying `Authorization: Bearer <credential the control plane
 //! minted for that workspace>` is answered from the workspace record, and a
@@ -29,10 +29,17 @@ use smithy_server_runtime::MultiServiceRouter;
 /// announces.
 const REGION: &str = "eu-west-1";
 
-/// The endpoint the workspace `id` is announced at for a client that reached this emulator
-/// at `authority`, spelled out here independently of the crate's own constants so a wrong
-/// composition in `src/state/` fails.
-fn expected_endpoint(authority: &str, id: &str) -> String {
+/// The endpoint a workspace is announced at for a client that reached this emulator at
+/// `authority`: that authority itself, spelled out here independently of the crate's own
+/// constants so a wrong composition in `src/state/` fails.
+fn expected_endpoint(authority: &str) -> String {
+    authority.to_string()
+}
+
+/// The endpoint PATH this emulator also answers a workspace's Grafana API at — the
+/// addressing for a client that names the workspace in the address rather than through the
+/// credential it presents.
+fn workspace_path_endpoint(authority: &str, id: &str) -> String {
     format!("{authority}/_aws/grafana/{id}")
 }
 
@@ -309,31 +316,40 @@ fn bearer(token: &str) -> String {
     format!("Bearer {token}")
 }
 
-/// Both addressings of a workspace reach its Grafana API: the endpoint the control plane
-/// ANNOUNCES — the address this emulator is reached at, with the workspace's own path
-/// beneath it — and the host Amazon Managed Grafana itself publishes for the workspace,
-/// which this emulator also answers for a client whose own resolver points it here.
+/// Every addressing of a workspace reaches its Grafana API: the endpoint the control plane
+/// ANNOUNCES — the bare address this emulator is reached at, where the credential the
+/// request presents names the workspace — the workspace's own path beneath that address,
+/// and the host Amazon Managed Grafana itself publishes for the workspace, which this
+/// emulator also answers for a client whose own resolver points it here.
 ///
-/// The rows differ along the addressing, and each is exercised both with a credential the
-/// control plane minted for that workspace and with none at all, so an address that reached
-/// the router's own refusal instead of the Grafana API fails here.
+/// The rows differ along the addressing, and each is exercised with a credential the
+/// control plane minted for that workspace, so an address that reached the router's own
+/// refusal instead of the Grafana API fails here. The two addressings that name the
+/// workspace in the ADDRESS are exercised with no credential at all as well: there the
+/// workspace is known without one, so the Grafana API itself refuses the request.
 #[tokio::test]
-async fn both_addressings_of_a_workspace_reach_its_grafana_api() {
+async fn every_addressing_of_a_workspace_reaches_its_grafana_api() {
     let emulator = emulator();
     let (id, endpoint) = active_workspace(&emulator, EMULATOR_HOST, Some("addressing"), None).await;
-    let expected = expected_endpoint(EMULATOR_HOST, &id);
+    let expected = expected_endpoint(EMULATOR_HOST);
     assert_eq!(
         endpoint, expected,
-        "the announced endpoint must be the address this emulator was reached at with the \
-         workspace's own path, expected {expected:?}, got {endpoint:?}"
+        "the announced endpoint must be the address this emulator was reached at, expected \
+         {expected:?}, got {endpoint:?}"
     );
     let key = api_key(&emulator, EMULATOR_HOST, &id, "addressing", "ADMIN", 3_600).await;
 
-    for (case, address) in [
-        ("the announced endpoint", endpoint.clone()),
+    for (case, address, names_the_workspace) in [
+        ("the announced endpoint", endpoint.clone(), false),
+        (
+            "the workspace's path beneath it",
+            workspace_path_endpoint(EMULATOR_HOST, &id),
+            true,
+        ),
         (
             "the host Amazon Managed Grafana publishes",
             aws_published_host(&id),
+            true,
         ),
     ] {
         let org = native(&emulator, &address, "/api/org", Some(&bearer(&key))).await;
@@ -350,9 +366,12 @@ async fn both_addressings_of_a_workspace_reach_its_grafana_api() {
             org.body
         );
 
-        // And an unauthenticated request is refused by the workspace's Grafana API rather
-        // than by the router, which is what an address naming nothing this emulator serves
-        // would answer.
+        // And where the ADDRESS names the workspace, an unauthenticated request is refused
+        // by the workspace's Grafana API rather than by the router, which is what an
+        // address naming nothing this emulator serves would answer.
+        if !names_the_workspace {
+            continue;
+        }
         let answered = native(&emulator, &address, "/api/org", None).await;
         assert_eq!(
             answered.status, 401,
@@ -516,8 +535,8 @@ async fn a_minted_api_key_authenticates_at_the_endpoint_until_it_is_deleted() {
     }
 }
 
-/// Only a live bearer credential of THAT workspace is accepted; everything else is
-/// refused with 401 and the organization is not reported.
+/// Where the ADDRESS names the workspace, only a live bearer credential of THAT workspace
+/// is accepted; everything else is refused with 401 and the organization is not reported.
 ///
 /// The rows differ along the form of the `Authorization` header (absent, empty,
 /// scheme-only, another scheme, a token with no scheme, a lower-cased scheme) and
@@ -526,10 +545,13 @@ async fn a_minted_api_key_authenticates_at_the_endpoint_until_it_is_deleted() {
 #[tokio::test]
 async fn only_a_live_bearer_credential_of_that_workspace_is_accepted() {
     let emulator = emulator();
-    let (id, endpoint) = active_workspace(&emulator, EMULATOR_HOST, Some("mine"), None).await;
+    let (id, _) = active_workspace(&emulator, EMULATOR_HOST, Some("mine"), None).await;
     let (other_id, _) = active_workspace(&emulator, EMULATOR_HOST, Some("theirs"), None).await;
     let mine = api_key(&emulator, EMULATOR_HOST, &id, "mine", "ADMIN", 3_600).await;
     let theirs = api_key(&emulator, EMULATOR_HOST, &other_id, "theirs", "ADMIN", 3_600).await;
+    // The addressing that names the workspace itself, so a request carrying no usable
+    // credential is still known to address this workspace and is refused by its Grafana API.
+    let addressed = workspace_path_endpoint(EMULATOR_HOST, &id);
 
     let cases: Vec<(&str, Option<String>, u16)> = vec![
         ("no Authorization header at all", None, 401),
@@ -562,7 +584,7 @@ async fn only_a_live_bearer_credential_of_that_workspace_is_accepted() {
     ];
 
     for (case, authorization, expected) in cases {
-        let answered = native(&emulator, &endpoint, "/api/org", authorization.as_deref()).await;
+        let answered = native(&emulator, &addressed, "/api/org", authorization.as_deref()).await;
         assert_eq!(
             answered.status, expected,
             "case {case:?}: expected HTTP {expected} from the workspace's Grafana API, got \
@@ -576,6 +598,91 @@ async fn only_a_live_bearer_credential_of_that_workspace_is_accepted() {
                 answered.body
             );
         }
+    }
+}
+
+/// At the ANNOUNCED endpoint — the bare address this emulator is reached at, which names no
+/// workspace — the credential the request presents is what names the workspace: each
+/// workspace's own live key reaches that workspace's organization, a credential this
+/// emulator never minted is refused with 401, and a request carrying no bearer credential
+/// at all names no workspace and reports no organization.
+///
+/// The rows differ along whose credential is presented and the form it is presented in.
+#[tokio::test]
+async fn at_the_announced_endpoint_the_credential_names_the_workspace() {
+    let emulator = emulator();
+    let (id, endpoint) = active_workspace(&emulator, EMULATOR_HOST, Some("mine"), None).await;
+    let (other_id, other_endpoint) =
+        active_workspace(&emulator, EMULATOR_HOST, Some("theirs"), None).await;
+    assert_eq!(
+        endpoint, other_endpoint,
+        "two workspaces of one emulator are announced at the one address it answers on, \
+         got {endpoint:?} and {other_endpoint:?}"
+    );
+    let mine = api_key(&emulator, EMULATOR_HOST, &id, "mine", "ADMIN", 3_600).await;
+    let theirs = api_key(&emulator, EMULATOR_HOST, &other_id, "theirs", "ADMIN", 3_600).await;
+
+    // (case, the Authorization header presented, the organization name it must reach)
+    let reaches: Vec<(&str, String, &str)> = vec![
+        ("this workspace's key", bearer(&mine), "mine"),
+        ("the other workspace's key", bearer(&theirs), "theirs"),
+        (
+            "this workspace's key, lower-cased scheme",
+            format!("bearer {mine}"),
+            "mine",
+        ),
+    ];
+    for (case, authorization, organization) in reaches {
+        let org = native(&emulator, &endpoint, "/api/org", Some(&authorization)).await;
+        assert_eq!(
+            org.status, 200,
+            "case {case:?}: the announced endpoint must serve the workspace the credential \
+             names, got {} with {:?}",
+            org.status, org.body
+        );
+        assert_eq!(
+            org.body["name"],
+            json!(organization),
+            "case {case:?}: expected the organization {organization:?}, got {:?}",
+            org.body
+        );
+    }
+
+    // A bearer credential no workspace of this emulator holds is refused by the Grafana
+    // API, which is what makes a revoked credential observable at the address it was used
+    // at.
+    let unknown = native(
+        &emulator,
+        &endpoint,
+        "/api/org",
+        Some(&bearer("not-a-token-this-emulator-minted")),
+    )
+    .await;
+    assert_eq!(
+        unknown.status, 401,
+        "a credential this emulator never minted must be refused with 401, got {} with {:?}",
+        unknown.status, unknown.body
+    );
+
+    // And a request that presents no bearer credential names no workspace at this address,
+    // so nothing of a workspace is reported for it.
+    for (case, authorization) in [
+        ("no Authorization header at all", None),
+        ("another authentication scheme", Some(format!("Basic {mine}"))),
+    ] {
+        let answered = native(&emulator, &endpoint, "/api/org", authorization.as_deref()).await;
+        assert_ne!(
+            answered.status, 200,
+            "case {case:?}: a request naming no workspace must not be served, got {} with \
+             {:?}",
+            answered.status, answered.body
+        );
+        assert!(
+            answered.body.get("id").is_none(),
+            "case {case:?}: a request naming no workspace must report no organization, got \
+             {:?}",
+            answered.body
+        );
     }
 }
 
@@ -785,7 +892,7 @@ async fn the_endpoint_answers_only_for_a_live_active_workspace() {
 
     // An endpoint whose workspace id names no workspace, and the endpoint of a
     // workspace that has been deleted: neither is served.
-    let unknown = expected_endpoint(EMULATOR_HOST, "g-0123456789");
+    let unknown = workspace_path_endpoint(EMULATOR_HOST, "g-0123456789");
     let absent = native(&emulator, &unknown, "/api/org", Some(&bearer(&key))).await;
     assert_eq!(
         absent.status, 404,
@@ -817,7 +924,7 @@ async fn the_endpoint_answers_only_for_a_live_active_workspace() {
     );
     let gone = await_native_status(
         &emulator,
-        &endpoint,
+        &workspace_path_endpoint(EMULATOR_HOST, &id),
         "/api/org",
         Some(&bearer(&key)),
         404,
@@ -828,6 +935,15 @@ async fn the_endpoint_answers_only_for_a_live_active_workspace() {
         gone.status, 404,
         "a removed workspace serves nothing at its endpoint, got {} with {:?}",
         gone.status, gone.body
+    );
+    // Its credential went with the record, so at the announced endpoint — where the
+    // credential is what names the workspace — it now names none.
+    let revoked = native(&emulator, &endpoint, "/api/org", Some(&bearer(&key))).await;
+    assert_eq!(
+        revoked.status, 401,
+        "a credential of a removed workspace names no workspace at the announced endpoint, \
+         got {} with {:?}",
+        revoked.status, revoked.body
     );
 }
 
@@ -841,7 +957,9 @@ async fn a_route_the_emulator_does_not_serve_answers_501() {
     let key = api_key(&emulator, EMULATOR_HOST, &id, "routes", "ADMIN", 3_600).await;
 
     // Rows: real Grafana HTTP API routes this emulator has not written, the
-    // endpoint root, and a route differing only in trailing slash or casing.
+    // endpoint root, and a route differing only in trailing slash or casing. The
+    // addressing that names the workspace carries the endpoint root too, which at the
+    // bare announced endpoint is no Grafana route at all.
     let unserved = [
         "/api/dashboards/home",
         "/api/datasources",
@@ -851,60 +969,105 @@ async fn a_route_the_emulator_does_not_serve_answers_501() {
         "/api/ORG",
         "",
     ];
+    let addressed = workspace_path_endpoint(EMULATOR_HOST, &id);
     for route in unserved {
-        let answered = native(&emulator, &endpoint, route, Some(&bearer(&key))).await;
-        assert_eq!(
-            answered.status, 501,
-            "route {route:?} is not implemented and must answer 501, got {} with {:?}",
-            answered.status, answered.body
-        );
-        assert!(
-            answered.body["message"].is_string(),
-            "route {route:?}: the refusal must say what is not implemented, got {:?}",
-            answered.body
-        );
+        for (addressing, address) in [
+            ("the workspace's path", &addressed),
+            ("the announced endpoint", &endpoint),
+        ] {
+            // The endpoint root is the Grafana API's own root only where the address
+            // names the workspace; at the announced endpoint it names nothing of this
+            // plane's.
+            if route.is_empty() && addressing == "the announced endpoint" {
+                continue;
+            }
+            let answered = native(&emulator, address, route, Some(&bearer(&key))).await;
+            assert_eq!(
+                answered.status, 501,
+                "route {route:?} under {addressing} is not implemented and must answer 501, \
+                 got {} with {:?}",
+                answered.status, answered.body
+            );
+            assert!(
+                answered.body["message"].is_string(),
+                "route {route:?} under {addressing}: the refusal must say what is not \
+                 implemented, got {:?}",
+                answered.body
+            );
+        }
     }
 
     // And an address that only looks like one of the workspace's: a host whose first label
     // must satisfy `WorkspaceId`'s ^g-[0-9a-f]{10}$ with the labels a published workspace
     // host carries after it, and a path under another plane or naming no workspace id — or
-    // this service claims nothing and the router answers its own refusal.
-    let unclaimed: Vec<(String, String)> = vec![
+    // this service claims nothing and the router answers its own refusal. Each row is
+    // asserted with the credential it would be dialled with: a host Amazon Web Services
+    // publishes another endpoint at is never this plane's, whatever credential is
+    // presented, while a host outside those zones is an address this emulator may be
+    // served at, so there it is the absence of a credential that leaves the request
+    // unclaimed.
+    let unclaimed: Vec<(String, String, Option<String>)> = vec![
         (
             format!("not-a-workspace.grafana-workspace.{REGION}.amazonaws.com"),
             "/api/org".to_string(),
+            Some(bearer(&key)),
         ),
         (
             format!("g-0123456789abc.grafana-workspace.{REGION}.amazonaws.com"),
             "/api/org".to_string(),
+            Some(bearer(&key)),
         ),
         (
             format!("{id}.grafana.{REGION}.amazonaws.com"),
             "/api/org".to_string(),
+            Some(bearer(&key)),
         ),
         (
             format!("{id}.grafana-workspace.{REGION}.amazonaws.com.example.test"),
             "/api/org".to_string(),
+            None,
         ),
         (
             format!("{id}.grafana-workspace.amazonaws.com"),
             "/api/org".to_string(),
+            Some(bearer(&key)),
         ),
         (
             EMULATOR_HOST.to_string(),
             format!("/_aws/athena/{id}/api/org"),
+            Some(bearer(&key)),
         ),
         (
             EMULATOR_HOST.to_string(),
             "/_aws/grafana/not-a-workspace/api/org".to_string(),
+            Some(bearer(&key)),
         ),
         (
             EMULATOR_HOST.to_string(),
             format!("/grafana/{id}/api/org"),
+            Some(bearer(&key)),
+        ),
+        // Another service's traffic at this emulator's own authority, under the same path
+        // prefix: a request routed by its own SigV4 credential scope presents no bearer
+        // credential, and one that presents none at all names no workspace here.
+        (
+            EMULATOR_HOST.to_string(),
+            "/api/v2/clusters".to_string(),
+            Some(
+                "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260101/eu-west-1/kafka/aws4_request, \
+                 SignedHeaders=host, Signature=abc"
+                    .to_string(),
+            ),
+        ),
+        (
+            EMULATOR_HOST.to_string(),
+            "/api/v1/namespaces".to_string(),
+            None,
         ),
     ];
-    for (host, path) in unclaimed {
-        let answered = request(&emulator, "GET", &path, &host, Some(&bearer(&key)), None).await;
+    for (host, path, authorization) in unclaimed {
+        let answered =
+            request(&emulator, "GET", &path, &host, authorization.as_deref(), None).await;
         assert_ne!(
             answered.status, 200,
             "{host}{path} is no workspace endpoint, so this service must not serve the \

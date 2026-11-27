@@ -2,26 +2,39 @@
 
 //! WHERE a workspace's Grafana console and native Grafana HTTP API are ANNOUNCED: the
 //! value `WorkspaceDescription$endpoint` / `WorkspaceSummary$endpoint` carries, and the
-//! addressing [`crate::service::workspace_api`] reads back off a request.
+//! addressings [`crate::service::workspace_api`] reads back off a request.
 //!
 //! # The rule this module implements
 //!
 //! `endpoint` is "The URL that users can use to access the Grafana console in the
 //! workspace" (`smithy_query(query="shape", shape="WorkspaceDescription")`), so it is not a
 //! label a client displays but an ADDRESS it dials: it splices it into a request of its own
-//! (`https://<endpoint>/api/org`) to reach that workspace's Grafana HTTP API. The only
-//! value that can carry is an address THIS emulator answers on — the `host[:port]` a
-//! request reached it at ([`announced_authority`]), with the workspace's own identity in
-//! the PATH ([`workspace_endpoint_path`]), because this process serves its whole surface at
-//! one endpoint and the path is where a per-resource address can still be distinct.
+//! (`https://<endpoint>/api/org`) to reach that workspace's Grafana HTTP API, or hands it
+//! to something that takes a host and nothing else (a resolver, SNI, a `Host` header, an
+//! allow-list). So it is a bare `host[:port]` — no scheme and no path, the form the real
+//! service's own value is in — and the host is one THIS emulator answers on: the address a
+//! request reached it at ([`announced_authority`]).
 //!
 //! A name in a zone Amazon Web Services publishes its own endpoints in resolves nowhere
 //! near this process, or at genuine infrastructure: a client handed one leaves the emulated
 //! environment carrying the credentials it holds and reaches no workspace at all. So no
 //! such name is announced, however the real service spells its own.
 //!
-//! The value carries no scheme, exactly as the one the real service announces carries none,
-//! so the splice a client already performs on it keeps working unchanged.
+//! # Which workspace a request at that address addresses
+//!
+//! The real service gives each workspace a host of its own, and this process serves its
+//! whole surface at ONE endpoint, so the announced address cannot carry the workspace in
+//! its host. What a Grafana request to it carries instead is the CREDENTIAL the control
+//! plane minted for one workspace — an API key or a service-account token, presented as a
+//! bearer token, which is the only thing such a request has — and that credential says
+//! which workspace it addresses (`crate::state::workspace_holding_bearer_token`), exactly
+//! as the per-workspace host does on the real service.
+//!
+//! Beside it, a client that wants to name a workspace in the ADDRESS has the path this
+//! emulator also answers ([`workspace_endpoint_path`], read back by
+//! [`workspace_at_announced_path`]), and a client whose own resolver points the real
+//! service's published host at this process is answered there too
+//! ([`crate::state::workspace_id_at_endpoint_host`]).
 //!
 //! Nothing here opens a connection or resolves a name: every function reads request parts
 //! or a string and returns a string.
@@ -57,25 +70,28 @@ pub fn announced_authority(ctx: &OperationContext<'_>) -> String {
         .unwrap_or_else(|| addressing::emulator_endpoint_authority(ctx))
 }
 
-/// The endpoint announced for the workspace `workspace_id` on an emulator reached at
-/// `authority`: that authority and the workspace's own path beneath it.
+/// The endpoint announced for a workspace on an emulator reached at `authority`: that
+/// authority itself, as a bare `host[:port]`.
 ///
-/// It is what every projection of a workspace reports, so two workspaces never share one
-/// address and the address a client reads is one it can dial.
+/// It is what every projection of a workspace reports, so the address a create publishes
+/// and the address every later read reports cannot drift from one another — and it is an
+/// address the client reading it can dial, with the Grafana route spliced straight onto it.
+/// WHICH workspace such a request addresses is said by the credential it presents (see the
+/// module docs), not by the address.
+///
+/// Any trailing `/` is dropped, because the value carries no path at all and a client
+/// splices its own route onto it.
 #[must_use]
-pub fn workspace_endpoint(authority: &str, workspace_id: &str) -> String {
-    format!(
-        "{}{}",
-        authority.trim_end_matches('/'),
-        workspace_endpoint_path(workspace_id)
-    )
+pub fn workspace_endpoint(authority: &str) -> String {
+    authority.trim_end_matches('/').to_string()
 }
 
-/// The path a workspace's Grafana HTTP API is served under on this emulator's own endpoint:
-/// `/_aws/grafana/<workspaceId>`.
+/// The path a workspace's Grafana HTTP API is also served under on this emulator's own
+/// endpoint: `/_aws/grafana/<workspaceId>`.
 ///
-/// It carries what the real service's published host carries — WHICH workspace is addressed
-/// — moved out of a name this process cannot answer on and into the path.
+/// The addressing for a client that names the workspace in the ADDRESS rather than through
+/// the credential it presents: it carries what the real service's published host carries —
+/// WHICH workspace is addressed — in a path, since this process answers on one host.
 #[must_use]
 pub fn workspace_endpoint_path(workspace_id: &str) -> String {
     format!(
@@ -84,14 +100,13 @@ pub fn workspace_endpoint_path(workspace_id: &str) -> String {
     )
 }
 
-/// The workspace an announced endpoint path addresses, and the Grafana route beneath it —
-/// and `None` for a path that is not an endpoint this service announces.
+/// The workspace an endpoint path addresses, and the Grafana route beneath it — and `None`
+/// for a path that is not a workspace endpoint of this service.
 ///
-/// The inverse of [`workspace_endpoint_path`], and the reader of the addressing this service
-/// publishes: the first label of the real service's host travels in a path segment here, so
-/// the segment must satisfy `WorkspaceId` ([`crate::state::is_workspace_id`]) exactly as
-/// that label does. A request that named no route under the endpoint addresses the Grafana
-/// API's own root (`/`).
+/// The inverse of [`workspace_endpoint_path`]: the first label of the real service's host
+/// travels in a path segment here, so the segment must satisfy `WorkspaceId`
+/// ([`crate::state::is_workspace_id`]) exactly as that label does. A request that named no
+/// route under the endpoint addresses the Grafana API's own root (`/`).
 #[must_use]
 pub fn workspace_at_announced_path(path: &str) -> Option<(String, String)> {
     let (namespace, rest) = addressing::first_segment(path)?;
@@ -111,46 +126,80 @@ pub fn workspace_at_announced_path(path: &str) -> Option<(String, String)> {
 mod tests {
     use super::*;
 
-    /// RULE: an announced endpoint is an authority this emulator answers on plus the
-    /// addressed workspace's own path, and it reads back as exactly that workspace.
+    /// RULE: an announced endpoint is the address this emulator is reached at and nothing
+    /// else — a bare `host[:port]`, carrying no scheme, no path and no name of Amazon Web
+    /// Services' own — and it is the same value for every workspace of that emulator.
     ///
     /// The rows span the forms an emulator's address takes: loopback by address with a
     /// port, loopback by name, a bracketed IPv6 literal, a routable address, a name with no
     /// port, and the base of an emulator served on no port at all.
     #[test]
-    fn an_announced_endpoint_is_an_address_of_this_emulator_naming_the_workspace() {
-        let rows: &[(&str, &str, &str)] = &[
-            ("loopback with a port", "127.0.0.1:9297", "g-0123456789"),
-            ("loopback by name", "localhost:39355", "g-abcdef0123"),
-            ("a bracketed IPv6 literal", "[::1]:8443", "g-00000000ff"),
-            ("a routable address", "198.51.100.7:8443", "g-deadbeef01"),
-            ("a name with no port", "emulator-host", "g-0000000001"),
-            ("an emulator served nowhere", "emulator.invalid", "g-1234567890"),
+    fn an_announced_endpoint_is_the_address_this_emulator_is_reached_at() {
+        let rows: &[(&str, &str)] = &[
+            ("loopback with a port", "127.0.0.1:9297"),
+            ("loopback by name", "localhost:39355"),
+            ("a bracketed IPv6 literal", "[::1]:8443"),
+            ("a routable address", "198.51.100.7:8443"),
+            ("a name with no port", "emulator-host"),
+            ("an emulator served nowhere", "emulator.invalid"),
         ];
-        for (case, authority, workspace_id) in rows {
-            let announced = workspace_endpoint(authority, workspace_id);
-            let want = format!("{authority}/_aws/grafana/{workspace_id}");
+        for (case, authority) in rows {
+            let announced = workspace_endpoint(authority);
             assert_eq!(
-                announced, want,
-                "case {case:?}: expected {want:?}, got {announced:?}"
+                announced, *authority,
+                "case {case:?}: expected {authority:?}, got {announced:?}"
             );
-            let read_back = workspace_at_announced_path(&format!(
-                "{}/api/org",
-                workspace_endpoint_path(workspace_id)
-            ));
+            assert!(
+                !announced.contains('/') && !announced.contains("://"),
+                "case {case:?}: an announced endpoint carries no scheme and no path, got \
+                 {announced:?}"
+            );
+            assert!(
+                !addressing::addresses_an_aws_endpoint(&announced),
+                "case {case:?}: an announced endpoint names no host Amazon Web Services \
+                 publishes its own endpoints at, got {announced:?}"
+            );
+            // A trailing `/` on the address this emulator reports is not part of the host.
+            let slashed = workspace_endpoint(&format!("{authority}/"));
+            assert_eq!(
+                slashed, *authority,
+                "case {case:?}: expected {authority:?} from a trailing slash, got {slashed:?}"
+            );
+        }
+    }
+
+    /// RULE: the path addressing names its workspace and the Grafana route beneath it, and
+    /// reads back as exactly that workspace.
+    #[test]
+    fn the_path_addressing_reads_back_as_the_workspace_it_names() {
+        let rows: &[(&str, &str)] = &[
+            ("a minted id", "g-0123456789"),
+            ("an id of hex letters", "g-abcdef0123"),
+            ("an id ending in letters", "g-00000000ff"),
+            ("the lowest id", "g-0000000000"),
+        ];
+        for (case, workspace_id) in rows {
+            let path = workspace_endpoint_path(workspace_id);
+            let want = format!("/_aws/grafana/{workspace_id}");
+            assert_eq!(
+                path, want,
+                "case {case:?}: expected {want:?}, got {path:?}"
+            );
+            let read_back = workspace_at_announced_path(&format!("{path}/api/org"));
             assert_eq!(
                 read_back,
                 Some(((*workspace_id).to_string(), "/api/org".to_string())),
-                "case {case:?}: the announced path must read back as its workspace and \
+                "case {case:?}: the endpoint path must read back as its workspace and \
                  route, got {read_back:?}"
             );
         }
     }
 
     /// RULE: only a path under this service's own plane segment that names a `WorkspaceId`
-    /// is an announced endpoint of this service; everything else is claimed by nothing here.
+    /// is a workspace endpoint path of this service; everything else is claimed by nothing
+    /// here.
     #[test]
-    fn a_path_that_is_no_announced_endpoint_names_no_workspace() {
+    fn a_path_that_is_no_workspace_endpoint_names_no_workspace() {
         /// One row: the case, the path, and the workspace and route it names.
         type Row = (&'static str, &'static str, Option<(&'static str, &'static str)>);
         let rows: &[Row] = &[

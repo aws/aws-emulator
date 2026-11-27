@@ -12,20 +12,25 @@
 //! smart-HTTP transport.
 //!
 //! The address it answers on is the one [`crate::state::announced_endpoint`] announces: the
-//! `host[:port]` a control-plane request reached this emulator at, with the workspace's own
-//! path beneath it (`/_aws/grafana/<workspaceId>`), which the control plane reports as
-//! `WorkspaceDescription$endpoint`. A client that reads `endpoint` and appends a Grafana
-//! route to it reaches this module:
+//! `host[:port]` a control-plane request reached this emulator at, which the control plane
+//! reports as `WorkspaceDescription$endpoint`. A client that reads `endpoint` and appends a
+//! Grafana route to it reaches this module:
 //!
 //! | request | meaning |
 //! |---|---|
 //! | `GET https://<endpoint>/api/org` | the workspace's organization: its `id` and `name` |
 //!
-//! A request whose `Host` is the host Amazon Managed Grafana itself publishes for a
-//! workspace addresses the same workspace
-//! ([`crate::state::workspace_id_at_endpoint_host`]), for a client whose own resolver points
-//! that name at this process; there the whole path is the Grafana route, because such a host
-//! carries no path.
+//! That address names no workspace — this process answers its whole surface on one host —
+//! so WHICH workspace such a request addresses is said by the CREDENTIAL it presents, the
+//! bearer key the control plane minted for one workspace
+//! ([`crate::state::ComAmazonawsGrafanaAwsgrafanacontrolplaneState::workspace_holding_bearer_token`]).
+//!
+//! Two further addressings name a workspace in the ADDRESS itself and reach the same API: a
+//! path under this emulator's own endpoint ([`crate::state::workspace_at_announced_path`],
+//! `/_aws/grafana/<workspaceId>`), and the host Amazon Managed Grafana itself publishes for
+//! a workspace ([`crate::state::workspace_id_at_endpoint_host`]), for a client whose own
+//! resolver points that name at this process; there the whole path is the Grafana route,
+//! because such a host carries no path.
 //!
 //! Every other route under the endpoint is answered with **501**, never an empty
 //! 200: a client cannot tell an unimplemented route from an implemented one that
@@ -66,11 +71,52 @@ const WORKSPACE_ORG_ID: u64 = 1;
 /// What one request to a workspace's Grafana HTTP API named.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
-    /// The workspace whose endpoint was addressed.
-    pub workspace_id: String,
+    /// How the request said which workspace it addresses.
+    pub addressed: Addressed,
     /// The route it asked for.
     pub route: Route,
 }
+
+/// How one request said WHICH workspace of this service it addresses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Addressed {
+    /// The workspace the ADDRESS named: the endpoint path under this emulator's own
+    /// endpoint, or the host the real service publishes for that workspace.
+    Workspace(String),
+    /// The workspace the CREDENTIAL names. A request to the announced endpoint is addressed
+    /// to this emulator's own `host[:port]`, which names no workspace, so the bearer key it
+    /// presents — minted for ONE workspace — is what names the one it addresses
+    /// ([`crate::state::ComAmazonawsGrafanaAwsgrafanacontrolplaneState::workspace_holding_bearer_token`]).
+    Credential,
+}
+
+/// The parts of one request this plane reads to decide whether it is addressed to a
+/// workspace of this service, and to which.
+#[derive(Debug, Clone, Copy)]
+pub struct Dialled<'a> {
+    /// The request's method, which decides the route it names.
+    pub method: &'a str,
+    /// The `host[:port]` it addressed, as [`addressed_host`] reads it.
+    pub host: Option<&'a str>,
+    /// Its path, with no query string.
+    pub path: &'a str,
+    /// Its `Authorization` header, which is where a bearer credential travels.
+    pub authorization: Option<&'a str>,
+    /// The signing name of THIS service, so a request addressed to a host the front door
+    /// resolves to ANOTHER service is left to that service.
+    pub this_service: &'a str,
+}
+
+/// The path every route of the Grafana HTTP API sits beneath: Grafana serves its whole HTTP
+/// API under `/api` (`/api/org`, `/api/datasources`, …), which is what a client splices onto
+/// the announced endpoint.
+///
+/// It is what makes a credential-addressed request recognisable at an address that names no
+/// workspace: a request to this emulator's own endpoint under this prefix presenting a
+/// BEARER credential — which a SigV4-signed request of any service does not
+/// ([`bearer_token`] takes the `Bearer` scheme alone) — is a Grafana request and nothing
+/// else.
+pub const GRAFANA_API_PREFIX: &str = "/api";
 
 /// Which route of the native API a request named.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,49 +138,84 @@ pub struct Response {
 /// The content type every answer below carries.
 pub const CONTENT_TYPE: &str = "application/json";
 
-/// The request a `method`, `host` and `path` name, or `None` when the request is
-/// not addressed to a workspace endpoint this service serves.
+/// The request `dialled` names, or `None` when it is not addressed to a workspace of this
+/// service at all.
 ///
-/// A request is this data plane's when it addresses a workspace
-/// ([`addressed_workspace`]) — the address the control plane announced for it. That is the
-/// one thing that identifies such a request: a Grafana client sends no SigV4 credential and
-/// no `X-Amz-Target`, so it is also what
+/// A request is this data plane's when it addresses a workspace ([`addressed_workspace`]).
+/// That is the one thing that identifies such a request: a Grafana client sends no SigV4
+/// credential and no `X-Amz-Target`, so it is also what
 /// [`crate::service::EmulatedService::can_handle`] claims on.
-pub fn route(method: &str, host: Option<&str>, path: &str) -> Option<Request> {
-    let (workspace_id, route_path) = addressed_workspace(host, path)?;
-    let route = if method.eq_ignore_ascii_case("GET") && route_path == "/api/org" {
+pub fn route(dialled: &Dialled<'_>) -> Option<Request> {
+    let (addressed, route_path) = addressed_workspace(dialled)?;
+    let route = if dialled.method.eq_ignore_ascii_case("GET") && route_path == "/api/org" {
         Route::Org
     } else {
         Route::Unserved {
-            method: method.to_string(),
+            method: dialled.method.to_string(),
             path: route_path,
         }
     };
-    Some(Request {
-        workspace_id,
-        route,
-    })
+    Some(Request { addressed, route })
 }
 
-/// WHICH workspace a request addresses, and the Grafana route beneath its endpoint — and
-/// `None` for a request that addresses no workspace of this service.
+/// HOW a request says which workspace it addresses, and the Grafana route beneath that
+/// workspace's endpoint — and `None` for a request that addresses no workspace of this
+/// service.
 ///
-/// Two addressings reach one workspace, because a client reaches this emulator either at
-/// the address the control plane announced or at the name the real service publishes:
+/// Three addressings reach one workspace, because a client reaches this emulator either at
+/// the address the control plane announced or at a name that carries the workspace itself:
 ///
-/// * the announced endpoint, whose PATH carries the workspace
-///   ([`crate::state::workspace_at_announced_path`]), with the Grafana route beneath it —
-///   the address every projection of a workspace reports, and the only one a client on this
-///   machine can dial;
+/// * the ANNOUNCED endpoint ([`crate::state::workspace_endpoint`]) — this emulator's own
+///   `host[:port]`, which names no workspace — under the Grafana HTTP API's own path
+///   ([`GRAFANA_API_PREFIX`]), presenting a bearer credential: the credential names the
+///   workspace ([`Addressed::Credential`]). Both of those are required, because at such an
+///   address nothing else distinguishes a Grafana request from any other request this
+///   emulator serves: a request carrying no bearer credential names no workspace, and one
+///   outside Grafana's own API path is not a Grafana request. A host Amazon Web Services
+///   publishes ANOTHER service's endpoints at is left to that service for the same reason.
+///
+///   What that leaves unclaimed is every other plane's traffic: a request another service
+///   is routed by its SigV4 credential scope, an `X-Amz-Target` or its own endpoint host
+///   carries no `Bearer` credential ([`bearer_token`] takes that scheme alone), and a plane
+///   of another service that does serve bearer-authenticated requests under the same prefix
+///   is served on a SOCKET OF ITS OWN rather than at this endpoint — the Kubernetes API of
+///   `service-com-amazonaws-eks-awswesleyfrontend` (`state::kubernetes_api`) and the InfluxDB
+///   plane of `service-com-amazonaws-timestreaminfluxdb-amazontimestreaminfluxdb`
+///   (`state::influx_data_plane`) both open one through the core, so no request of theirs
+///   reaches this reading;
+/// * the endpoint PATH ([`crate::state::workspace_at_announced_path`]), with the Grafana
+///   route beneath it, for a client that names the workspace in the address;
 /// * the host the real service publishes for the workspace
 ///   ([`crate::state::workspace_id_at_endpoint_host`]), for a client whose own resolver
 ///   points that name here; such a host carries no path, so the whole path is the route.
-fn addressed_workspace(host: Option<&str>, path: &str) -> Option<(String, String)> {
-    if let Some(addressed) = crate::state::workspace_at_announced_path(path) {
-        return Some(addressed);
+fn addressed_workspace(dialled: &Dialled<'_>) -> Option<(Addressed, String)> {
+    use ::service_common::data_plane_addressing as addressing;
+
+    if let Some((workspace_id, route)) = crate::state::workspace_at_announced_path(dialled.path)
+    {
+        return Some((Addressed::Workspace(workspace_id), route));
     }
-    let workspace_id = crate::state::workspace_id_at_endpoint_host(host?)?;
-    Some((workspace_id, path.to_string()))
+    if let Some(workspace_id) = dialled
+        .host
+        .and_then(crate::state::workspace_id_at_endpoint_host)
+    {
+        return Some((
+            Addressed::Workspace(workspace_id),
+            dialled.path.to_string(),
+        ));
+    }
+    let on_a_grafana_route = dialled.path == GRAFANA_API_PREFIX
+        || dialled
+            .path
+            .starts_with(&format!("{GRAFANA_API_PREFIX}/"));
+    let presents_a_credential = bearer_token(dialled.authorization).is_some();
+    let addresses_another_service = dialled.host.is_some_and(|host| {
+        addressing::addresses_an_aws_endpoint(host)
+            && addressing::service_named_by_host(host)
+                .is_some_and(|named| named != dialled.this_service)
+    });
+    (on_a_grafana_route && presents_a_credential && !addresses_another_service)
+        .then(|| (Addressed::Credential, dialled.path.to_string()))
 }
 
 /// The authority a request addresses: its `Host` header, or — on HTTP/2 and an
@@ -186,15 +267,27 @@ pub fn serve(
     authorization: Option<&str>,
     now: SystemTime,
 ) -> Response {
-    let Some(workspace) = store.settled_mut(&request.workspace_id, now) else {
+    let presented = bearer_token(authorization);
+    let workspace_id = match &request.addressed {
+        Addressed::Workspace(id) => id.clone(),
+        // The address named no workspace, so the credential does: a bearer key that names
+        // none authenticates nothing, which is the same answer a wrong key gets below.
+        Addressed::Credential => {
+            let Some(presented) = presented.as_deref() else {
+                return json(401, UNAUTHORIZED);
+            };
+            match store.workspace_holding_bearer_token(presented, now) {
+                Some(id) => id,
+                None => return json(401, UNAUTHORIZED),
+            }
+        }
+    };
+    let Some(workspace) = store.settled_mut(&workspace_id, now) else {
         // The address exists (it is this emulator's own), but no workspace
         // answers on it: one that was never created, or has been deleted.
         return json(
             404,
-            &format!(
-                "no workspace {} is served at this endpoint",
-                request.workspace_id
-            ),
+            &format!("no workspace {workspace_id} is served at this endpoint"),
         );
     };
 
@@ -211,11 +304,11 @@ pub fn serve(
         );
     }
 
-    let Some(presented) = bearer_token(authorization) else {
-        return json(401, "Unauthorized");
+    let Some(presented) = presented else {
+        return json(401, UNAUTHORIZED);
     };
-    if !authenticates(workspace, &presented, now) {
-        return json(401, "Unauthorized");
+    if !workspace.authorize_bearer_digest(&crate::state::bearer_token_digest(&presented), now) {
+        return json(401, UNAUTHORIZED);
     }
 
     match &request.route {
@@ -249,44 +342,11 @@ fn bearer_token(authorization: Option<&str>) -> Option<String> {
     (!token.is_empty()).then(|| token.to_string())
 }
 
-/// Whether `presented` is a live bearer credential of this workspace: one of its
-/// API keys, or a token of one of its service accounts — the two credentials the
-/// control plane mints for calling the workspace's Grafana HTTP API.
-///
-/// A service-account token that authorizes has its `lastUsedAt` set to `now`:
-/// `ServiceAccountTokenSummary$lastUsedAt` is "[t]he last time the token was used
-/// to authorize a Grafana HTTP API", and this is that use.
-fn authenticates(workspace: &mut Workspace, presented: &str, now: SystemTime) -> bool {
-    let digest = crate::state::bearer_token_digest(presented);
-
-    // `settle` has already dropped every API key past its `secondsToLive`, so a
-    // key still on the record is a live key.
-    if workspace
-        .api_keys
-        .values()
-        .any(|key| crate::state::same_token_digest(&key.token_digest, &digest))
-    {
-        return true;
-    }
-
-    // A service-account token is kept past its expiry (its `expiresAt` is
-    // reported), so expiry is checked here rather than by removal; a disabled
-    // account authorizes nothing either.
-    for account in &mut workspace.service_accounts {
-        if account.disabled {
-            continue;
-        }
-        for token in &mut account.tokens {
-            if now < token.expires
-                && crate::state::same_token_digest(&token.token_digest, &digest)
-            {
-                token.last_used = Some(now);
-                return true;
-            }
-        }
-    }
-    false
-}
+/// The message the Grafana HTTP API states a refused credential in: a request with no
+/// bearer key, with one no workspace of this emulator holds, or with one that is not a live
+/// credential of the workspace it addressed, is answered 401 and nothing is said about which
+/// of those it was.
+const UNAUTHORIZED: &str = "Unauthorized";
 
 /// `GET /api/org`: the organization of this workspace, read off the workspace
 /// record.
