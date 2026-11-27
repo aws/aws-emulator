@@ -3,7 +3,7 @@
 //! End-to-end tests for how this service PROJECTS its persisted records, driven over
 //! the wire through the harness in [`super::accelerator_lifecycle`].
 //!
-//! Four rules, each stated once and asserted over a SET of inputs (a recorded request
+//! Five rules, each stated once and asserted over a SET of inputs (a recorded request
 //! is one row):
 //!
 //! 1. Every `IpSet` an accelerator is projected into reports one `IpAddressDetails`
@@ -15,6 +15,10 @@
 //!    ARNs carry: 8 for a listener, 12 for an endpoint group.
 //! 4. Every DNS name an accelerator is projected with announces the host THIS emulator
 //!    answers on.
+//! 5. For an enumerated member a resource carries, EVERY value the MODEL admits for it
+//!    is accepted and projected back unchanged by the read of that resource — the value
+//!    sets come from the model's own rendered constants, never from a list written here,
+//!    so a value set the upstream model gains or loses is exercised as it stands.
 
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
@@ -22,6 +26,12 @@ use smithy_server_runtime::MultiServiceRouter;
 use super::accelerator_lifecycle::{
     arn_of, call, call_on_host, create_accelerator, emulator, emulator_served_at, error_code, ok,
     AWS_ENDPOINT_HOST, UNSERVED_HOST,
+};
+// Rule 5 reads every value set off the constants this crate RENDERS from its own model, so
+// no value is written out here: the rule follows the model rather than a copy of it.
+use service_com_amazonaws_globalaccelerator_globalaccelerator_v20180706::ops::types::{
+    CLIENT_AFFINITY_VALUES, CUSTOM_ROUTING_PROTOCOL_VALUES, HEALTH_CHECK_PROTOCOL_VALUES,
+    IP_ADDRESS_FAMILY_VALUES, IP_ADDRESS_TYPE_VALUES, PROTOCOL_VALUES,
 };
 
 /// `NetworkZone`'s modelled constraint: `@length(min: 0, max: 24)` on
@@ -808,4 +818,320 @@ async fn an_announced_dns_name_is_the_host_the_emulator_answers_on() {
         on_served["DnsName"].as_str().unwrap_or_default(),
         "127.0.0.1",
     );
+}
+
+// ---------------------------------------------------------------------------
+// Rule 5: the value sets a resource is projected with are the MODEL's.
+// ---------------------------------------------------------------------------
+
+/// Amazon Web Services Region codes, used one per endpoint group because a listener holds
+/// at most one endpoint group per Region (`EndpointGroup` doc). Real Region codes rather
+/// than made-up strings, so a row reads like a call a client makes; `EndpointGroupRegion`
+/// is a `GenericString` (len 0..255), so the service constrains none of them. Six of them,
+/// which leaves room under the documented per-accelerator quota of ten endpoint groups for
+/// a value set the model grows.
+const PROJECTION_REGIONS: [&str; 6] = [
+    "us-east-1",
+    "us-west-2",
+    "eu-west-1",
+    "eu-central-1",
+    "ap-southeast-2",
+    "ap-northeast-1",
+];
+
+/// The ARN member `member` of a projected resource.
+fn arn_member(resource: &Value, member: &str) -> String {
+    resource[member]
+        .as_str()
+        .unwrap_or_else(|| panic!("{member} missing from {resource}"))
+        .to_string()
+}
+
+/// Rule 5, over the two enumerated members a listener carries: `Protocol` and
+/// `ClientAffinity`.
+///
+/// The rows are the CROSS PRODUCT of the two value sets the model declares for them, so
+/// each value of each member is exercised beside every value of the other; a value set the
+/// upstream model grows adds its rows here without this file naming a value.
+#[tokio::test]
+async fn every_modelled_listener_value_set_is_projected_back() {
+    let router = emulator();
+    let accelerator = arn_of(&create_accelerator(&router, "listener-value-sets", "lvs").await);
+
+    assert!(
+        !PROTOCOL_VALUES.is_empty() && !CLIENT_AFFINITY_VALUES.is_empty(),
+        "expected the model's own value sets, got {PROTOCOL_VALUES:?} and \
+         {CLIENT_AFFINITY_VALUES:?}"
+    );
+
+    for (protocol_index, protocol) in PROTOCOL_VALUES.iter().enumerate() {
+        for (affinity_index, affinity) in CLIENT_AFFINITY_VALUES.iter().enumerate() {
+            let case = format!("{protocol}/{affinity}");
+            // A port of its own per row, so no row depends on another's listener.
+            let port = 5000 + (protocol_index * CLIENT_AFFINITY_VALUES.len() + affinity_index);
+            let created = ok(
+                &router,
+                "CreateListener",
+                json!({
+                    "AcceleratorArn": accelerator,
+                    "PortRanges": [{ "FromPort": port, "ToPort": port }],
+                    "Protocol": protocol,
+                    "ClientAffinity": affinity,
+                    "IdempotencyToken": format!("lvs-{port}"),
+                }),
+            )
+            .await["Listener"]
+                .clone();
+            assert_eq!(
+                created["Protocol"],
+                json!(protocol),
+                "case {case}: expected the Protocol the request named, got {created}"
+            );
+            assert_eq!(
+                created["ClientAffinity"],
+                json!(affinity),
+                "case {case}: expected the ClientAffinity the request named, got {created}"
+            );
+
+            let listener_arn = arn_member(&created, "ListenerArn");
+            let described = ok(
+                &router,
+                "DescribeListener",
+                json!({ "ListenerArn": listener_arn }),
+            )
+            .await["Listener"]
+                .clone();
+            assert_eq!(
+                described, created,
+                "case {case}: expected the read to project what the create persisted, got \
+                 {described}"
+            );
+        }
+    }
+}
+
+/// Rule 5, over the enumerated member an endpoint group carries: `HealthCheckProtocol`.
+///
+/// One row per value the model declares for it, each in a Region of its own because a
+/// listener holds at most one endpoint group per Region.
+#[tokio::test]
+async fn every_modelled_health_check_protocol_is_projected_back() {
+    let router = emulator();
+    let accelerator = arn_of(&create_accelerator(&router, "health-value-sets", "hvs").await);
+    let listener_arn = arn_member(
+        &ok(
+            &router,
+            "CreateListener",
+            json!({
+                "AcceleratorArn": accelerator,
+                "PortRanges": [{ "FromPort": 80, "ToPort": 80 }],
+                "Protocol": "TCP",
+                "IdempotencyToken": "hvs-listener",
+            }),
+        )
+        .await["Listener"],
+        "ListenerArn",
+    );
+
+    assert!(
+        !HEALTH_CHECK_PROTOCOL_VALUES.is_empty()
+            && HEALTH_CHECK_PROTOCOL_VALUES.len() <= PROJECTION_REGIONS.len(),
+        "expected one Region per value the model admits, got {HEALTH_CHECK_PROTOCOL_VALUES:?} \
+         over {PROJECTION_REGIONS:?}"
+    );
+
+    for (index, protocol) in HEALTH_CHECK_PROTOCOL_VALUES.iter().enumerate() {
+        let region = PROJECTION_REGIONS[index];
+        let created = ok(
+            &router,
+            "CreateEndpointGroup",
+            json!({
+                "ListenerArn": listener_arn,
+                "EndpointGroupRegion": region,
+                "HealthCheckProtocol": protocol,
+                "IdempotencyToken": format!("hvs-{index}"),
+            }),
+        )
+        .await["EndpointGroup"]
+            .clone();
+        assert_eq!(
+            created["HealthCheckProtocol"],
+            json!(protocol),
+            "case {protocol}: expected the HealthCheckProtocol the request named, got {created}"
+        );
+
+        let group_arn = arn_member(&created, "EndpointGroupArn");
+        let described = ok(
+            &router,
+            "DescribeEndpointGroup",
+            json!({ "EndpointGroupArn": group_arn }),
+        )
+        .await["EndpointGroup"]
+            .clone();
+        assert_eq!(
+            described, created,
+            "case {protocol}: expected the read to project what the create persisted, got \
+             {described}"
+        );
+    }
+}
+
+/// Rule 5, over the enumerated member an accelerator carries: `IpAddressType`, and the
+/// `IpAddressFamily` every address set it is projected with reports.
+///
+/// One row per value the model admits for the type; the families are not enumerated here
+/// either — each projected set must report one of the families the model declares.
+#[tokio::test]
+async fn every_modelled_ip_address_type_is_projected_back() {
+    let router = emulator();
+
+    assert!(
+        !IP_ADDRESS_TYPE_VALUES.is_empty() && !IP_ADDRESS_FAMILY_VALUES.is_empty(),
+        "expected the model's own value sets, got {IP_ADDRESS_TYPE_VALUES:?} and \
+         {IP_ADDRESS_FAMILY_VALUES:?}"
+    );
+
+    for (index, ip_address_type) in IP_ADDRESS_TYPE_VALUES.iter().enumerate() {
+        let created = ok(
+            &router,
+            "CreateAccelerator",
+            json!({
+                "Name": format!("ip-type-{index}"),
+                "IpAddressType": ip_address_type,
+                "IdempotencyToken": format!("ip-type-{index}"),
+            }),
+        )
+        .await["Accelerator"]
+            .clone();
+        assert_eq!(
+            created["IpAddressType"],
+            json!(ip_address_type),
+            "case {ip_address_type}: expected the IpAddressType the request named, got {created}"
+        );
+
+        let sets = created["IpSets"].as_array().cloned().unwrap_or_default();
+        assert!(
+            !sets.is_empty(),
+            "case {ip_address_type}: expected at least one IpSet, got {created}"
+        );
+        for set in &sets {
+            let family = set["IpAddressFamily"].as_str().unwrap_or_default();
+            assert!(
+                IP_ADDRESS_FAMILY_VALUES.contains(&family),
+                "case {ip_address_type}: expected an IpAddressFamily the model admits \
+                 ({IP_ADDRESS_FAMILY_VALUES:?}), got {family:?} in {set}"
+            );
+        }
+
+        // The read projects the same type and the same address sets; `Status` is owed by
+        // the clock rather than by this rule, so it is not part of the comparison.
+        let described = ok(
+            &router,
+            "DescribeAccelerator",
+            json!({ "AcceleratorArn": arn_of(&created) }),
+        )
+        .await["Accelerator"]
+            .clone();
+        assert_eq!(
+            described["IpAddressType"], created["IpAddressType"],
+            "case {ip_address_type}: expected the read to project the persisted type, got \
+             {described}"
+        );
+        assert_eq!(
+            described["IpSets"], created["IpSets"],
+            "case {ip_address_type}: expected the read to project the persisted address sets, \
+             got {described}"
+        );
+    }
+}
+
+/// Rule 5, over the enumerated member a custom routing endpoint group's destinations carry:
+/// the `Protocols` a destination accepts client traffic on.
+///
+/// One row per value the model declares, plus one naming the whole set at once, since a
+/// destination accepts a LIST of protocols.
+#[tokio::test]
+async fn every_modelled_custom_routing_protocol_is_projected_back() {
+    let router = emulator();
+    let accelerator = arn_of(
+        &ok(
+            &router,
+            "CreateCustomRoutingAccelerator",
+            json!({ "Name": "cr-value-sets", "IdempotencyToken": "crvs" }),
+        )
+        .await["Accelerator"],
+    );
+    let listener_arn = arn_member(
+        &ok(
+            &router,
+            "CreateCustomRoutingListener",
+            json!({
+                "AcceleratorArn": accelerator,
+                "PortRanges": [{ "FromPort": 7000, "ToPort": 7010 }],
+                "IdempotencyToken": "crvs-listener",
+            }),
+        )
+        .await["Listener"],
+        "ListenerArn",
+    );
+
+    let mut rows: Vec<(String, Vec<&str>)> = CUSTOM_ROUTING_PROTOCOL_VALUES
+        .iter()
+        .map(|protocol| ((*protocol).to_string(), vec![*protocol]))
+        .collect();
+    rows.push((
+        "every modelled protocol at once".to_string(),
+        CUSTOM_ROUTING_PROTOCOL_VALUES.to_vec(),
+    ));
+    assert!(
+        rows.len() > 1 && rows.len() <= PROJECTION_REGIONS.len(),
+        "expected one Region per row, got {rows:?} over {PROJECTION_REGIONS:?}"
+    );
+
+    for (index, (case, protocols)) in rows.iter().enumerate() {
+        // A destination port of its own per row: the port a destination accepts traffic on
+        // is independent of the listener's own range.
+        let port = 8000 + index;
+        let created = ok(
+            &router,
+            "CreateCustomRoutingEndpointGroup",
+            json!({
+                "ListenerArn": listener_arn,
+                "EndpointGroupRegion": PROJECTION_REGIONS[index],
+                "DestinationConfigurations": [
+                    { "FromPort": port, "ToPort": port, "Protocols": protocols },
+                ],
+                "IdempotencyToken": format!("crvs-{index}"),
+            }),
+        )
+        .await["EndpointGroup"]
+            .clone();
+        let destinations = created["DestinationDescriptions"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            destinations.len(),
+            1,
+            "case {case}: expected the one destination the request configured, got {created}"
+        );
+        assert_eq!(
+            destinations[0]["Protocols"],
+            json!(protocols),
+            "case {case}: expected the Protocols the request named, got {created}"
+        );
+
+        let group_arn = arn_member(&created, "EndpointGroupArn");
+        let described = ok(
+            &router,
+            "DescribeCustomRoutingEndpointGroup",
+            json!({ "EndpointGroupArn": group_arn }),
+        )
+        .await["EndpointGroup"]
+            .clone();
+        assert_eq!(
+            described, created,
+            "case {case}: expected the read to project what the create persisted, got {described}"
+        );
+    }
 }
