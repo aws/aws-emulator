@@ -74,6 +74,12 @@ const NO_SCHEDULE_FOUND: &str = "No schedule found.";
 /// holds.
 const CATALOG_NOT_FOUND: &str = "Catalog not found.";
 
+/// A `CatalogID` that is outside the catalog-id grammar, so it addresses no Data Catalog any
+/// account could hold: fixed text stating the grammar.
+const CATALOG_ID_INVALID: &str = "Catalog id is invalid. The catalog id must be prepended \
+     with the account id prefix and can only contain lowercase letters, numbers, \
+     underscores, and slashes.";
+
 /// The body that addresses one table's schedule, plus whatever `extra` adds — the same three
 /// members both operations take (`DatabaseName`, `TableName`, the optional `CatalogID`).
 /// `pub(crate)` for the reason [`SCHEDULE_OPERATIONS`] is.
@@ -443,16 +449,18 @@ async fn an_address_that_holds_no_schedule_is_refused() {
             expected_message: Some(CATALOG_NOT_FOUND.to_string()),
         },
         RefusalCase {
-            // An id carrying no account-id prefix is no catalog id at all, so it names no
-            // catalog this account holds and none any account could: a miss, for both
-            // operations, before the address is resolved against the store.
+            // An id carrying no account-id prefix is no catalog id at all: it addresses no
+            // Data Catalog any account could hold, which no create can change, so both
+            // operations refuse it on the request — the grammar sentence as the
+            // `InvalidInputException` each models — before the address is resolved against
+            // the store.
             case: "an id that is no catalog id at all",
             database: "refusal_db",
             table: "scheduled",
             extra: json!({ "CatalogID": "no_such_catalog" }),
-            start_code: "EntityNotFoundException",
-            stop_code: "EntityNotFoundException",
-            expected_message: Some(CATALOG_NOT_FOUND.to_string()),
+            start_code: "InvalidInputException",
+            stop_code: "InvalidInputException",
+            expected_message: Some(CATALOG_ID_INVALID.to_string()),
         },
     ];
 

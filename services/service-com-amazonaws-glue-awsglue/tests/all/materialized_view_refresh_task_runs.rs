@@ -310,7 +310,7 @@ async fn the_catalog_is_resolved_before_the_run_is_looked_up() {
         (
             "an id carrying no account-id prefix, which is no catalog id at all",
             "never-created".to_string(),
-            "EntityNotFoundException",
+            "InvalidInputException",
         ),
     ] {
         let (status, body) = call(

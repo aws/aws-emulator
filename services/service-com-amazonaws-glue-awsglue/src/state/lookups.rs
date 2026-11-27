@@ -501,10 +501,11 @@ pub enum CatalogRefusal {
     /// selects a Data Catalog is ([`is_data_catalog_id`]), so it selects nothing the store
     /// could hold and nothing any create could make. Carries the grammar sentence
     /// ([`messages::CATALOG_ID_INVALID`]), to be answered as the operation's own
-    /// `InvalidInputException` — the contract of the operations whose own SUBJECT is a
-    /// catalog or its settings, which read the grammar themselves
-    /// ([`invalid_data_catalog_id`]); the operations that address an ENTITY of a catalog
-    /// report such an id as the catalog being absent ([`catalog_refusal`]).
+    /// `InvalidInputException` — the verdict every surface that resolves a `CatalogId`
+    /// states, whether its subject is the catalog itself ([`invalid_data_catalog_id`]) or
+    /// an ENTITY inside it ([`catalog_refusal`]). Only an operation that models no
+    /// `InvalidInputException` answers something else, because an error code outside an
+    /// operation's modelled set is one no strongly typed client can map.
     Invalid(String),
     /// `catalog_id` names no Data Catalog at all: it is not an Amazon Web Services account
     /// number, so it addresses no account's Data Catalog, and it names no catalog this
@@ -522,7 +523,7 @@ pub enum CatalogRefusal {
 /// the account's own Data Catalog ([`is_known_catalog`]) or a catalog resource a
 /// `CreateCatalog` registered in it ([`ComAmazonawsGlueAwsglueState::catalog_definition`]).
 ///
-/// The two refusals answer two different faults, and WHICH one an id earns is decided
+/// The three refusals answer three different faults, and WHICH one an id earns is decided
 /// by what the id addresses rather than by what the store happens to hold:
 ///
 /// * An id that is an account number other than this endpoint's own addresses that
@@ -534,17 +535,22 @@ pub enum CatalogRefusal {
 ///   `PutResourcePolicy` attaches a policy only to a resource of the account this endpoint
 ///   serves ([`resolve_policy_resource_arn`]) — so no such grant can exist here and every
 ///   cross-account request is refused.
-/// * Every OTHER id names NOTHING: one that addresses no account's Data Catalog and no
-///   catalog of this account, and equally one that is not spelled the way a Data Catalog id
-///   is at all ([`is_data_catalog_id`]). A request naming nothing is a miss: the catalog
-///   does not exist, so authorization over it is not a question the service can even reach,
-///   and reporting one would send a client to write IAM policy for a catalog that is absent.
+/// * A WELL-FORMED id of this account that names no catalog of it names NOTHING, so it is a
+///   miss: the catalog does not exist, so authorization over it is not a question the
+///   service can even reach, and reporting one would send a client to write IAM policy for
+///   a catalog that is absent.
+/// * An id that is not spelled the way a Data Catalog id is at all ([`is_data_catalog_id`])
+///   is neither of those: it addresses no Data Catalog any account could hold, and no
+///   create can make one it would address, so it is a verdict on the REQUEST — invalid
+///   input stating the grammar ([`messages::CATALOG_ID_INVALID`]) — rather than a catalog
+///   that happens to be absent. Told the miss, a client concludes the catalog has yet to be
+///   created and provisions one, which can never make the call succeed.
 ///
 /// `action` is the operation's own name, which the authorization refusal names as the IAM
 /// action ([`IAM_ACTION_PREFIX`]) the caller may not perform.
 ///
 /// An operation whose modelled error set carries no `InvalidInputException` cannot report
-/// the first of those: an error code outside an operation's modelled set is one no strongly
+/// the grammar verdict: an error code outside an operation's modelled set is one no strongly
 /// typed client can map, so such an operation keeps answering its catalog miss.
 pub fn catalog_refusal(
     store: &ComAmazonawsGlueAwsglueState,
@@ -553,16 +559,15 @@ pub fn catalog_refusal(
     action: &str,
 ) -> Option<CatalogRefusal> {
     // An id that is not spelled the way a Data Catalog id is ([`is_data_catalog_id`]) is
-    // read FIRST — it names no account, so the authorization decision below could not be
-    // reached for it — and what it earns is the MISS: a request that addresses an ENTITY of
-    // a Data Catalog needs that catalog to exist for the entity to live in, and an id that
-    // selects no catalog any account could hold selects no catalog here either, which is the
-    // catalog being absent rather than a verdict on the request. The operations whose own
-    // SUBJECT is a catalog or its settings read the grammar themselves and refuse it as
-    // invalid input ([`invalid_data_catalog_id`]), which is their recorded contract.
+    // read FIRST — it names no account, so neither the authorization decision below nor the
+    // catalog resolution after it could be reached for it — and what it earns is a verdict
+    // on the REQUEST: the id addresses no Data Catalog any account could hold, which no
+    // create can change, so it is refused as invalid input with the grammar sentence
+    // ([`messages::CATALOG_ID_INVALID`]) rather than reported as a catalog that is merely
+    // absent. The MISS is what a WELL-FORMED id naming no catalog earns, below.
     if !is_data_catalog_id(catalog_id) {
-        return Some(CatalogRefusal::NotFound(
-            messages::CATALOG_NOT_FOUND.to_string(),
+        return Some(CatalogRefusal::Invalid(
+            messages::CATALOG_ID_INVALID.to_string(),
         ));
     }
     if is_known_catalog(catalog_id) {

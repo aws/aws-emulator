@@ -10,24 +10,24 @@
 //! constrained identifier, not a free-form name — the holding account's own twelve-digit
 //! number, alone or followed by the path of a catalog inside it written in the characters a
 //! catalog id carries (lowercase letters, digits, underscores, hyphens and the nesting
-//! separator) — so an id outside that form selects no catalog any account could hold. WHICH
-//! refusal it earns follows the surface's own contract, and both are decided BEFORE the
-//! cross-account authorization decision and before the entity lookup: a surface that
-//! resolves the catalog an ENTITY lives in reports the catalog ABSENT (HTTP 400
-//! `EntityNotFoundException` with the catalog-miss sentence) — the catalog the entity would
-//! have to live in is not there — while the operations that read the grammar themselves,
-//! whose subject is the catalog or its own settings, refuse it as invalid input with the
-//! service's fixed grammar sentence. An id that IS of the catalog-id form keeps the answer its
-//! target earns: the account's own catalog serves the entity, another account's catalog is the
-//! authorization refusal, and a well-formed id this account holds no catalog under is the
-//! catalog miss.
+//! separator) — so an id outside that form selects no catalog any account could hold, now or
+//! after any create. That makes it a verdict on the REQUEST: every surface that resolves a
+//! `CatalogId` refuses such an id as invalid input (HTTP 400 `InvalidInputException` with the
+//! service's fixed grammar sentence), decided BEFORE the cross-account authorization decision
+//! and before the entity lookup, and only an operation whose model declares no
+//! `InvalidInputException` answers otherwise — it keeps its own catalog miss, an error code
+//! outside an operation's modelled set being one no typed client can map. An id that IS of
+//! the catalog-id form keeps the answer its target earns: the account's own catalog serves
+//! the entity, another account's catalog is the authorization refusal, and a well-formed id
+//! this account holds no catalog under is the catalog miss (HTTP 400
+//! `EntityNotFoundException` with the catalog-miss sentence).
 //!
 //! The rows differ along HOW an id leaves the grammar (no account-id prefix, too few or too
 //! many digits, upper case, a character outside the id's set, an empty path, a whole ARN)
 //! and along the form a WELL-FORMED id takes (the bare account, a named catalog, a nested
 //! path, another account's), each crossed with operations from both resolution paths — the
-//! ones that tell a missing catalog from a foreign one and the ones that can report only the
-//! authorization refusal.
+//! ones that tell a missing catalog from a foreign one, the ones that can report only the
+//! authorization refusal, and one that models no invalid-input error at all.
 //!
 //! [`crate::catalog_id_grammar`] pins the OTHER grammar an id is measured against: the
 //! catalog-NAME pattern the operations that address a catalog RESOURCE by its name use.
@@ -75,39 +75,44 @@ async fn emulator_with_entities() -> MultiServiceRouter {
 /// The requests a row is asked of: one per operation that resolves a `CatalogId` before it
 /// looks anything up, drawn from both resolution paths — reads and writes of databases and
 /// tables, the listings, a connection read, the search and the catalog's encryption
-/// settings. The flag says whether the operation reads the catalog-id GRAMMAR itself — the
-/// ones whose subject is the catalog or its own settings, which refuse an id outside it as
-/// invalid input — against the ones that resolve the catalog an ENTITY lives in, which report
-/// such an id as the catalog being absent.
+/// settings. The flag says whether the operation's modelled error set carries
+/// `InvalidInputException` (`smithy_query query="operation" operation="GetDatabase,DeleteConnection"`):
+/// every one that does states the grammar verdict, while `DeleteConnection`, which models
+/// only the entity miss and the timeout, keeps answering its catalog miss.
 fn catalog_addressed_requests() -> Vec<(&'static str, Value, bool)> {
     vec![
-        ("GetDatabase", json!({ "Name": DATABASE }), false),
-        ("GetDatabases", json!({}), false),
+        ("GetDatabase", json!({ "Name": DATABASE }), true),
+        ("GetDatabases", json!({}), true),
         (
             "GetTable",
             json!({ "DatabaseName": DATABASE, "Name": TABLE }),
-            false,
+            true,
         ),
-        ("GetTables", json!({ "DatabaseName": DATABASE }), false),
+        ("GetTables", json!({ "DatabaseName": DATABASE }), true),
         (
             "GetTableVersions",
             json!({ "DatabaseName": DATABASE, "TableName": TABLE }),
-            false,
+            true,
         ),
         (
             "UpdateDatabase",
             json!({ "Name": DATABASE, "DatabaseInput": { "Name": DATABASE } }),
-            false,
+            true,
         ),
-        ("DeleteDatabase", json!({ "Name": DATABASE }), false),
+        ("DeleteDatabase", json!({ "Name": DATABASE }), true),
         (
             "CreateDatabase",
             json!({ "DatabaseInput": { "Name": "written_db" } }),
             true,
         ),
-        ("GetConnection", json!({ "Name": "no-such-connection" }), false),
+        ("GetConnection", json!({ "Name": "no-such-connection" }), true),
         ("SearchTables", json!({}), true),
         ("GetDataCatalogEncryptionSettings", json!({}), true),
+        (
+            "DeleteConnection",
+            json!({ "ConnectionName": "no-such-connection" }),
+            false,
+        ),
     ]
 }
 
@@ -166,17 +171,17 @@ fn malformed_catalog_ids() -> Vec<(&'static str, String)> {
 }
 
 /// The grammar verdict is the same on every surface that resolves a `CatalogId`, and it is
-/// the WHOLE answer: HTTP 400 and the refusal that surface's own contract states — the
-/// grammar sentence where the operation reads the grammar itself, the catalog miss where it
-/// resolves the catalog an entity lives in.
+/// the WHOLE answer: HTTP 400 with the grammar sentence as the operation's own
+/// `InvalidInputException` — except on an operation that models no such error, which keeps
+/// answering its catalog miss.
 #[tokio::test]
 async fn an_id_outside_the_catalog_id_grammar_is_refused() {
     let router = emulator_with_entities().await;
 
     for (case, catalog_id) in malformed_catalog_ids() {
-        for (operation, request, reads_the_grammar) in catalog_addressed_requests() {
+        for (operation, request, models_invalid_input) in catalog_addressed_requests() {
             let label = format!("{case} ({catalog_id:?}) via {operation}");
-            let (expected_code, expected_message) = if reads_the_grammar {
+            let (expected_code, expected_message) = if models_invalid_input {
                 ("InvalidInputException", CATALOG_ID_INVALID)
             } else {
                 ("EntityNotFoundException", CATALOG_NOT_FOUND)
@@ -240,14 +245,14 @@ async fn the_grammar_precedes_the_cross_account_decision() {
         (
             "a catalog of another account in upper case",
             format!("{foreign_account}:Analytics"),
-            "EntityNotFoundException",
-            Some(CATALOG_NOT_FOUND),
+            "InvalidInputException",
+            Some(CATALOG_ID_INVALID),
         ),
         (
             "another account's number with a digit too few",
             "21098765432".to_string(),
-            "EntityNotFoundException",
-            Some(CATALOG_NOT_FOUND),
+            "InvalidInputException",
+            Some(CATALOG_ID_INVALID),
         ),
     ] {
         let (status, body) = call(
@@ -294,9 +299,8 @@ async fn the_grammar_is_decided_without_reading_the_store() {
     .await;
     assert_eq!(
         error_message(&before.1),
-        CATALOG_NOT_FOUND,
-        "case before the create: a malformed id names no catalog for the entity to live in, \
-         got {:?}",
+        CATALOG_ID_INVALID,
+        "case before the create: a malformed id is refused on its spelling alone, got {:?}",
         before.1
     );
 
@@ -426,4 +430,114 @@ async fn a_well_formed_catalog_id_keeps_its_answer() {
             "case {case}: expected the catalog miss for {catalog_id:?}, got {body}"
         );
     }
+}
+
+/// The two verdicts stay DISTINCT, and the only thing that decides between them is the
+/// spelling of the id: an id outside the grammar is the input refusal stating the grammar,
+/// while the well-formed id it would be if it were spelled as one is the catalog miss.
+///
+/// Each row is a PAIR differing only along one axis of the grammar — the account-id prefix,
+/// the case of the path, the characters of the path, an empty path — asked of the operations
+/// that resolve the catalog an entity lives in, so neither verdict can drift into the other
+/// on any of them. A typed client branches on the code alone, and the two codes mean
+/// opposite things: one says the id can never name a catalog, the other that none has been
+/// created yet.
+#[tokio::test]
+async fn the_grammar_refusal_and_the_catalog_miss_stay_distinct() {
+    let router = emulator_with_entities().await;
+
+    let operations: [(&str, Value); 5] = [
+        ("GetDatabase", json!({ "Name": DATABASE })),
+        ("GetDatabases", json!({})),
+        (
+            "GetTable",
+            json!({ "DatabaseName": DATABASE, "Name": TABLE }),
+        ),
+        ("GetTables", json!({ "DatabaseName": DATABASE })),
+        ("DeleteDatabase", json!({ "Name": DATABASE })),
+    ];
+
+    for (axis, malformed, well_formed) in [
+        (
+            "the account-id prefix",
+            "analytics".to_string(),
+            format!("{ACCOUNT_ID}:analytics"),
+        ),
+        (
+            "the case of the path",
+            format!("{ACCOUNT_ID}:Analytics"),
+            format!("{ACCOUNT_ID}:analytics"),
+        ),
+        (
+            "the characters of the path",
+            format!("{ACCOUNT_ID}:ana.lytics"),
+            format!("{ACCOUNT_ID}:ana_lytics"),
+        ),
+        (
+            // A hyphen is in BOTH halves of this pair: a catalog's own name may carry one
+            // (the service's own catalog-name grammar sentence: "Only lowercase letters,
+            // numbers, underscores and hyphens are allowed for catalog name"), and the path
+            // segments of an id are catalog names, so the prefix is what this pair differs
+            // along.
+            "the account-id prefix on a Region-shaped path",
+            REGION.to_string(),
+            format!("{ACCOUNT_ID}:{REGION}"),
+        ),
+        (
+            "an empty path",
+            format!("{ACCOUNT_ID}:"),
+            format!("{ACCOUNT_ID}:inner"),
+        ),
+    ] {
+        for (operation, request) in &operations {
+            for (verdict, catalog_id, expected_code, expected_message) in [
+                (
+                    "outside the grammar",
+                    &malformed,
+                    "InvalidInputException",
+                    CATALOG_ID_INVALID,
+                ),
+                (
+                    "well formed, naming no catalog",
+                    &well_formed,
+                    "EntityNotFoundException",
+                    CATALOG_NOT_FOUND,
+                ),
+            ] {
+                let label = format!("{axis}, {verdict} ({catalog_id:?}) via {operation}");
+                let (status, body) =
+                    call(&router, operation, &addressed_at(request, catalog_id)).await;
+                assert_eq!(
+                    status, 400,
+                    "case {label}: expected 400, got {status} with {body}"
+                );
+                assert!(
+                    error_code(&body).ends_with(expected_code),
+                    "case {label}: expected {expected_code}, got {} in {body}",
+                    error_code(&body)
+                );
+                assert_eq!(
+                    error_message(&body),
+                    expected_message,
+                    "case {label}: expected {expected_message:?}, got {:?}",
+                    error_message(&body)
+                );
+            }
+        }
+    }
+
+    // Not one of those refused calls touched the store: the database is still served out of
+    // the account's own Data Catalog, with the table it was created holding.
+    let served = ok(&router, "GetDatabase", &json!({ "Name": DATABASE })).await;
+    assert_eq!(
+        served["Database"]["Name"].as_str(),
+        Some(DATABASE),
+        "a refused call must leave the database as it was, got {served}"
+    );
+    let tables = ok(&router, "GetTables", &json!({ "DatabaseName": DATABASE })).await;
+    assert_eq!(
+        tables["TableList"][0]["Name"].as_str(),
+        Some(TABLE),
+        "a refused call must leave the table as it was, got {tables}"
+    );
 }

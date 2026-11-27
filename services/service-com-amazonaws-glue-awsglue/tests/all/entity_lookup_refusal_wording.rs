@@ -20,8 +20,9 @@
 //! 3. A run read addresses a run by the (job name, run id) PAIR, so either half being
 //!    unknown is the one fixed RUN miss and never the job-definition miss.
 //! 4. A `CatalogId` that names no catalog this endpoint serves is a MISS, decided before
-//!    any authorization decision; only a catalog id of ANOTHER account is the
-//!    authorization refusal.
+//!    any authorization decision; a catalog id of ANOTHER account is the authorization
+//!    refusal, and an id outside the catalog-id grammar is the INPUT refusal, decided from
+//!    the request ahead of both.
 //! 5. The schema read takes a COMPLETE reference — a schema ARN, or a registry and a
 //!    schema name together — and resolves the registry before the schema set, so an
 //!    absent registry is reported as the registry.
@@ -52,6 +53,12 @@ const JOB_RUN_NOT_FOUND: &str = "Job run not found for the given job name and ru
 
 /// The whole `Message` a request addressed to a catalog that does not exist earns.
 const CATALOG_NOT_FOUND: &str = "Catalog not found.";
+
+/// The whole `Message` a request whose `CatalogId` is outside the catalog-id grammar earns:
+/// fixed text stating the grammar, interpolating no part of the request.
+const CATALOG_ID_INVALID: &str = "Catalog id is invalid. The catalog id must be prepended \
+     with the account id prefix and can only contain lowercase letters, numbers, \
+     underscores, and slashes.";
 
 /// The whole `Message` the schema read answers for a `SchemaId` that addresses no schema
 /// set completely.
@@ -390,7 +397,7 @@ async fn a_run_read_answers_the_run_miss_for_either_half_of_the_pair() {
 /// Rule 4: a `CatalogId` naming no catalog this endpoint serves is the catalog MISS,
 /// answered before any authorization decision, while a catalog id of another account stays
 /// the authorization refusal and an id that is no catalog id at all is the INPUT refusal
-/// answered ahead of both.
+/// answered ahead of both, stating the grammar.
 ///
 /// The miss rows differ along the SHAPE of the id a well-formed address can take — a name
 /// this account holds no catalog under, a nested path, a name in another casing — and the
@@ -444,12 +451,11 @@ async fn a_catalog_id_naming_no_catalog_is_a_miss_before_authorization() {
         }
     }
 
-    // An id that is no catalog id at all names no Data Catalog any account could hold, so on
-    // a surface that resolves the catalog an ENTITY lives in there is no catalog for the
-    // entity to live in: the catalog is reported ABSENT, with the whole sentence fixed,
-    // naming no part of the request. (The operations whose own subject is a catalog or its
-    // settings read the grammar themselves and refuse such an id as invalid input, which
-    // `crate::data_catalog_id_grammar` tables.)
+    // An id that is no catalog id at all names no Data Catalog any account could hold, and no
+    // create could ever make one it addresses, so it is a verdict on the REQUEST: the input
+    // refusal stating the grammar, with the whole sentence fixed, naming no part of the
+    // request. (`crate::data_catalog_id_grammar` tables that verdict across the surfaces that
+    // resolve a `CatalogId`.)
     let malformed = [
         ("a bare name nothing created", "never-created".to_string()),
         ("too few digits for an account number", "12345".to_string()),
@@ -470,13 +476,13 @@ async fn a_catalog_id_naming_no_catalog_is_a_miss_before_authorization() {
                 &label,
                 operation,
                 &body,
-                ENTITY_NOT_FOUND,
-                CATALOG_NOT_FOUND,
+                INVALID_INPUT,
+                CATALOG_ID_INVALID,
             )
             .await;
             assert!(
                 !error_message(&answer).contains(catalog_id.as_str()),
-                "case {label}: the catalog miss carries no part of the request, got {:?}",
+                "case {label}: the grammar refusal carries no part of the request, got {:?}",
                 error_message(&answer)
             );
         }
@@ -533,8 +539,8 @@ async fn a_catalog_id_naming_no_catalog_is_a_miss_before_authorization() {
     // A catalog this account DOES hold is resolved from its account-qualified id, so the
     // miss above is decided from stored state: the request reaches the entity lookup and
     // earns the ENTITY's miss. The same catalog named WITHOUT the account-id prefix is no
-    // catalog id at all, so it names no catalog the entity could live in and earns the
-    // CATALOG's miss however many catalogs the store holds.
+    // catalog id at all, so it is refused on the request's own spelling however many
+    // catalogs the store holds.
     assert_refusal(
         &router,
         "a stored catalog addressed by its account-qualified id",
@@ -552,8 +558,8 @@ async fn a_catalog_id_naming_no_catalog_is_a_miss_before_authorization() {
         "a stored catalog addressed by its bare name",
         "GetDatabase",
         &json!({ "CatalogId": "stored-catalog", "Name": "present_db" }),
-        ENTITY_NOT_FOUND,
-        CATALOG_NOT_FOUND,
+        INVALID_INPUT,
+        CATALOG_ID_INVALID,
     )
     .await;
 
