@@ -52,9 +52,10 @@ pub(super) async fn delete_pass(
     // exactly that reason.
     let mut refused: Vec<String> = Vec::new();
     let mut still_needed: BTreeSet<String> = left_alone.clone();
-    // Newest first, over the indices of the set being reported back, so each resource's
-    // record is updated in place as its deletion succeeds.
-    for index in (0..outcome.resources.len()).rev() {
+    // Newest first and, where the relation says so, a resource AFTER everything that depends
+    // on it ([`teardown_order`]) — over the indices of the set being reported back, so each
+    // resource's record is updated in place as its deletion succeeds.
+    for index in teardown_order(&outcome.resources, needs) {
         let resource = &outcome.resources[index];
         if still_needed.contains(&resource.logical_id) {
             // A resource that one the owning service would not delete still needs: deleting
@@ -334,6 +335,66 @@ pub(super) async fn delete_pass(
     }
     outcome.refused = refused;
     outcome
+}
+
+/// The order one pass of [`delete_pass`] asks the owning services in: REVERSE DEPENDENCY
+/// order, as indices into `resources`.
+///
+/// "CloudFormation deletes the resources in reverse order": a resource that depends on another
+/// — through `DependsOn` or through an intrinsic reference to it — is deleted BEFORE the
+/// resource it depends on, because the service that owns a resource refuses to delete it while
+/// something of its own still references it (AWS AppSync refuses `DeleteDataSource` while a
+/// resolver of the API still resolves against that data source). So the order is not the one
+/// the records happen to be held in: it is the one the relation ([`Dependencies`]) states.
+///
+/// Newest first among resources with no dependency between them, which is the records' own
+/// order reversed — so a set the relation says nothing about, and one whose records are already
+/// held in creation order, is asked about exactly as before. A resource still needed by one
+/// this pass has not reached yet is held back and asked about once that one has been; a
+/// relation with a cycle in it (which no deployable template has) leaves the resources it holds
+/// in that same newest-first order rather than dropping them.
+fn teardown_order(resources: &[StoredResource], needs: &Dependencies) -> Vec<usize> {
+    let newest_first = || (0..resources.len()).rev();
+    if needs.is_empty() {
+        return newest_first().collect();
+    }
+    // Who depends on each resource: the relation inverted, over the records being walked, so
+    // the question "has everything that needs this one been deleted yet" costs one lookup.
+    let mut dependents: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for (index, resource) in resources.iter().enumerate() {
+        for needed in needs.get(&resource.logical_id).into_iter().flatten() {
+            dependents.entry(needed.as_str()).or_default().push(index);
+        }
+    }
+    let mut pending = vec![true; resources.len()];
+    let mut ordered: Vec<usize> = Vec::with_capacity(resources.len());
+    // One pass per resource at most: each pass takes every resource nothing pending depends
+    // on, newest first.
+    for _ in 0..resources.len() {
+        let taken = ordered.len();
+        for index in newest_first() {
+            if !pending[index] {
+                continue;
+            }
+            let still_needed = dependents
+                .get(resources[index].logical_id.as_str())
+                .is_some_and(|dependents| {
+                    dependents
+                        .iter()
+                        .any(|&dependent| dependent != index && pending[dependent])
+                });
+            if !still_needed {
+                pending[index] = false;
+                ordered.push(index);
+            }
+        }
+        if ordered.len() == taken {
+            break;
+        }
+    }
+    // Anything a cycle held back, newest first.
+    ordered.extend(newest_first().filter(|&index| pending[index]));
+    ordered
 }
 
 /// How many times the UNWIND of a failed operation asks the owning services to delete
