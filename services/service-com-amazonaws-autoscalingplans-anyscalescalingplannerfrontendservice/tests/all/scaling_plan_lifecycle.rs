@@ -189,6 +189,25 @@ impl Emulator {
         });
     }
 
+    /// Hold a plan's staged update open, so the window in which it is asked for but not
+    /// applied is deterministic.
+    ///
+    /// `pub(crate)` so a suite that reads a plan between an update and its application
+    /// holds it open the same way rather than racing the real span.
+    pub(crate) fn hold_staged(&self, name: &str) {
+        self.with_state(|state| {
+            let plan = state
+                .scaling_plans
+                .get_mut(name)
+                .unwrap_or_else(|| panic!("no stored plan named {name:?}"));
+            let staged = plan
+                .staged
+                .as_mut()
+                .unwrap_or_else(|| panic!("plan {name:?} has no staged update"));
+            staged.due_at = SystemTime::now() + Duration::from_secs(3600);
+        });
+    }
+
     /// What was published at each hour of the day, by hour of day in UTC.
     ///
     /// `pub(crate)` so a suite that chooses its own history reads it back by the same index.
@@ -283,12 +302,19 @@ impl Emulator {
     }
 
     /// Make every plan's pending transition due, so the next call settles it.
+    ///
+    /// Everything the clock owes a plan is moved into the past: its status transition AND
+    /// the configuration a staged update asked for, so a test that drives a mutation to
+    /// its settled state sees the whole of it rather than the half the status carries.
     pub(crate) fn make_all_due(&self) {
         self.with_state(|state| {
             let past = SystemTime::now() - Duration::from_secs(1);
             for plan in state.scaling_plans.values_mut() {
                 if let Some(pending) = plan.pending.as_mut() {
                     pending.due_at = past;
+                }
+                if let Some(staged) = plan.staged.as_mut() {
+                    staged.due_at = past;
                 }
             }
         });

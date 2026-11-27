@@ -13,12 +13,22 @@
 //! policy-retention control, and it governs only "a resource's externally created scaling
 //! policies", so no member of the request is held back from the configuration in force.
 //!
+//! That replacement is APPLIED rather than instant. A plan reports the configuration it
+//! has applied to the resources it covers, and this operation's output shape is empty, so
+//! the read-back is the only place an update is observable: the members the request
+//! carries are staged and the plan converges on them when the clock says it has applied
+//! them (`crate::state::ScalingPlanRecord::begin_update`, `apply_staged` and
+//! `crate::state::APPLY_AFTER`). Until then every read reports the configuration still in
+//! force, under the narrative of the application in force, which is what lets a caller
+//! tell an update that has taken from one that has not. The policies the plan asks the
+//! service that owns them for are put when the request is accepted, as a create's are.
+//!
 //! Neither `ScalingPlanVersion` ("This value is always 1") nor `CreationTime` moves on an
 //! update, so the plan's status narrative is what tells a caller the update was applied:
 //! a successful update leaves the plan in `UpdateInProgress`, with the move back to
-//! `Active` already owed on the clock, and the applied status it comes back to reports the
-//! update rather than the create — whenever the update CHANGED what the plan applies
-//! (`crate::state::ScalingPlanRecord::begin_update`).
+//! `Active` already owed on the clock, and the applied status reports the update rather
+//! than the create once the plan has applied what the request asked for — whenever that
+//! CHANGED what the plan applies (`crate::state::ScalingPlanRecord::apply_staged`).
 //!
 //! An `ApplicationSource` the request carries is held to the same rule a create is:
 //! "You can create one scaling plan per application source", so a source another
@@ -247,33 +257,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 ));
             }
 
-            // Replace only what the request carries; everything else stays as stored. The
-            // instruction set it carries is the plan's whole instruction set, so it is
-            // written over the one in force verbatim, member for member.
-            let mut applied_change = false;
-            if let Some(source) = input.application_source {
-                applied_change |= source != plan.application_source;
-                plan.application_source = source;
-            }
-            let replaced = plan.scaling_instructions.clone();
-            let applied_before = plan.applied_footprint(&replaced);
-            if let Some(instructions) = input.scaling_instructions {
-                plan.scaling_instructions = instructions;
-            }
-            applied_change |= plan.applied_footprint(&plan.scaling_instructions) != applied_before;
-            // The plan goes back to the applied status, whose narrative reports an UPDATE
-            // once this one changed what the plan applies — which, the version and the
-            // creation time staying put, is what makes such an update observable to a
-            // caller reading the plan back. An update that left the applied configuration
-            // exactly as it was applied nothing, so it does not re-narrate the plan.
-            plan.begin_update(applied_change, now);
-            (replaced, plan.scaling_instructions.clone())
+            // Stage only what the request carries; everything else stays as stored. The
+            // instruction set it carries is the plan's whole instruction set, so it is the
+            // one in force once the plan has applied it, verbatim, member for member.
+            //
+            // What the plan ASKS its resources for moves now — the policies below are
+            // installed from it — while what the plan REPORTS as applied moves when the
+            // application comes due on the clock, which is what
+            // `crate::state::ScalingPlanRecord::begin_update` stages and
+            // `apply_staged` puts in force.
+            let replaced = plan.requested_instructions().to_vec();
+            plan.begin_update(input.application_source, input.scaling_instructions, now);
+            let installed = plan.requested_instructions().to_vec();
+            (replaced, installed)
         };
 
         // The target tracking scaling policies the plan has installed in the service that
-        // owns them follow the instruction set now in force: a policy the replaced set
-        // installed and this one does not ask for is deleted, and every policy this one
-        // asks for is put (`crate::state::application_auto_scaling`).
+        // owns them follow the instruction set the plan now ASKS for: a policy the
+        // replaced set installed and this one does not ask for is deleted, and every
+        // policy this one asks for is put (`crate::state::application_auto_scaling`). The
+        // plan asks for them when it accepts the request, as a create does, and reports
+        // the configuration as applied once the application comes due.
         crate::state::application_auto_scaling::install(
             ctx.callback(),
             &region,

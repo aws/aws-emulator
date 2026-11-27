@@ -258,6 +258,9 @@ async fn a_listed_statistic_is_judged_by_the_members_own_rule() {
             let load_request = write_request(operation, with_load_statistic(statistic));
             if *statistic == LOAD_STATISTIC {
                 emulator.ok(operation, load_request).await;
+                // A write is read back once the plan has APPLIED it: a create settles and
+                // an update's configuration comes into force on the lifecycle clock.
+                emulator.make_all_due();
                 let read = emulator
                     .ok(
                         "DescribeScalingPlans",
@@ -298,6 +301,7 @@ async fn a_listed_statistic_is_judged_by_the_members_own_rule() {
                 "case {case:?} / the scaling metric: expected HTTP 200, got {status} with \
                  {body}"
             );
+            emulator.make_all_due();
             let stored = stored_scaling_statistics(&emulator, operation).await;
             assert!(
                 stored.iter().any(|value| value == statistic),

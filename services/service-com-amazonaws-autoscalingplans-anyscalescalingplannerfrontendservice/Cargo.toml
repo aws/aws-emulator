@@ -40,6 +40,9 @@ emulator-core-build-support = { workspace = true }
 # `time` is a TEST-only feature: one integration test waits out the real lifecycle
 # settle span with `tokio::time::sleep`. The production build does not need it.
 tokio = { workspace = true, features = ["time"] }
+# One integration-test target rooted at `tests/all/main.rs`: `automod::dir!` declares one
+# module per `tests/all/<name>.rs`, so a new suite is a new file and nothing else.
+automod = { workspace = true }
 
 [lints]
 workspace = true

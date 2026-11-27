@@ -182,7 +182,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     crate::state::PlanMutationRefusal::InProgress => concurrent_update(),
                 })?;
 
-            let retired = plan.scaling_instructions.clone();
+            let retired = plan.requested_instructions().to_vec();
             plan.begin(
                 crate::state::STATUS_DELETION_IN_PROGRESS,
                 crate::state::PendingOutcome::Removed,

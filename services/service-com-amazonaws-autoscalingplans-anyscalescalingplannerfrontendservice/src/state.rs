@@ -54,6 +54,21 @@ pub const MAX_RESULTS_MAX: i32 = 50;
 /// status and the state errors that go with it.
 pub const SETTLE_AFTER: Duration = Duration::from_millis(500);
 
+/// How long after an in-place update the plan has APPLIED the configuration that request
+/// asked for.
+///
+/// CHOSEN, not documented: AWS publishes no duration for applying a new configuration to
+/// the resources a plan covers, so this emulator owes it on the clock at a fixed span of a
+/// few seconds from the request. The span is an order of magnitude longer than
+/// [`SETTLE_AFTER`], the span of the plan's OWN status transition, because the two are
+/// different things: the plan is back in its applied status as soon as the request it
+/// accepted is in flight, while what it reports as applied is what has reached the
+/// resources it covers. A caller reading the plan after an update — even one that waited
+/// for the plan to be applied again — therefore still sees the configuration in force,
+/// under the narrative of the application in force, and converges on what it asked for
+/// only once the plan has applied it.
+pub const APPLY_AFTER: Duration = Duration::from_secs(5);
+
 /// The most scaling plans this emulator will hold at once, enforced through the
 /// modelled `LimitExceededException` ("Your account exceeded a limit. This exception
 /// is thrown when a per-account resource limit is exceeded.").
@@ -143,6 +158,11 @@ const APPLIED_STATUS: ReportedStatus = ReportedStatus {
 /// status and both resource narratives are the applied ones
 /// ([`APPLIED_STATUS`]): what the update changed is the configuration in force, not what
 /// has reached the resources.
+///
+/// It is reported only once the plan HAS applied what the update asked for
+/// ([`ScalingPlanRecord::apply_staged`]) — the narrative explains the application in
+/// force, so until the requested configuration is in force the plan still reports the
+/// narrative of the application that is.
 const APPLIED_AFTER_UPDATE_MESSAGE: &str = "Scaling plan has been updated successfully.";
 
 /// What a plan reports in a status this emulator never sets.
@@ -240,6 +260,25 @@ pub struct PendingTransition {
     pub outcome: PendingOutcome,
 }
 
+/// The configuration an in-place update ASKED a plan for, which the plan has not applied
+/// yet.
+///
+/// `UpdateScalingPlan`'s output shape is empty, so what an update took is observable only
+/// through the plan's own read-back — and what that read reports is what the plan has
+/// applied. The members a request carried therefore wait here until the application the
+/// clock owes comes due ([`APPLY_AFTER`], [`ScalingPlanRecord::apply_staged`]); a member
+/// the request did not carry is `None` and leaves what is in force alone, exactly as the
+/// request left it.
+#[derive(Debug, Clone)]
+pub struct StagedConfiguration {
+    /// The `ApplicationSource` the update asked for, if it carried one.
+    pub application_source: Option<ApplicationSource>,
+    /// The `ScalingInstructions` the update asked for, if it carried them.
+    pub scaling_instructions: Option<Vec<ScalingInstruction>>,
+    /// The instant the application became (or becomes) due.
+    pub due_at: SystemTime,
+}
+
 /// One stored scaling plan: the members the `ScalingPlan` structure reports, so
 /// `DescribeScalingPlans` is a pure projection of this record. That structure carries one
 /// member the published shape does not declare — the last-mutating-request instant below
@@ -250,9 +289,12 @@ pub struct ScalingPlanRecord {
     pub name: String,
     /// `ScalingPlanVersion`; always [`ONLY_VERSION`].
     pub version: i64,
-    /// `ApplicationSource` in force, stored as the caller supplied it.
+    /// `ApplicationSource` in force — the one the plan has APPLIED, stored as the caller
+    /// supplied it.
     pub application_source: ApplicationSource,
-    /// `ScalingInstructions` in force, stored as the caller supplied them.
+    /// `ScalingInstructions` in force — the ones the plan has APPLIED to the resources it
+    /// covers, stored as the caller supplied them. What a later update asks for waits in
+    /// [`Self::staged`] until the plan applies it.
     pub scaling_instructions: Vec<ScalingInstruction>,
     /// `StatusCode` — a `ScalingPlanStatusCode` value.
     pub status_code: String,
@@ -271,6 +313,8 @@ pub struct ScalingPlanRecord {
     pub applied_mutation: AppliedMutation,
     /// The clock-owed transition out of a non-terminal `status_code`, if any.
     pub pending: Option<PendingTransition>,
+    /// What an update asked this plan for and the plan has not applied yet, if anything.
+    pub staged: Option<StagedConfiguration>,
 }
 
 impl ScalingPlanRecord {
@@ -296,6 +340,7 @@ impl ScalingPlanRecord {
                 due_at: now + SETTLE_AFTER,
                 outcome: PendingOutcome::Active,
             }),
+            staged: None,
         }
     }
 
@@ -307,6 +352,11 @@ impl ScalingPlanRecord {
     /// ComAmazonawsAutoscalingplansAnyscalescalingplannerfrontendserviceState::settle_due`])
     /// goes nowhere near it: a transition coming due is not a request.
     pub fn begin(&mut self, status: &str, outcome: PendingOutcome, now: SystemTime) {
+        if outcome == PendingOutcome::Removed {
+            // A plan being withdrawn applies nothing further: a configuration an update
+            // asked for and the plan never applied goes with the plan.
+            self.staged = None;
+        }
         self.status_code = status.to_string();
         self.status_start_time = now;
         self.last_mutating_request_time = now;
@@ -316,24 +366,108 @@ impl ScalingPlanRecord {
         });
     }
 
-    /// Begin applying an in-place UPDATE of this plan.
+    /// Begin applying an in-place UPDATE of this plan: the members the request carried are
+    /// STAGED, to be applied when the clock says the plan has applied them.
     ///
-    /// The members the request carried are already written; what this adds to
-    /// [`Self::begin`] is that the applied status the plan comes back to reports the
-    /// update ([`APPLIED_AFTER_UPDATE_MESSAGE`]) rather than the create, which — since an
-    /// update moves neither `ScalingPlanVersion` nor `CreationTime` — is what makes the
-    /// update observable to a caller reading the plan back.
+    /// A plan reports the configuration it has APPLIED to the resources it covers, so the
+    /// members a request carries do not become the configuration in force at the instant
+    /// the request is accepted: they wait in [`Self::staged`] until
+    /// [`Self::apply_staged`] puts them in force, which this owes at `now + APPLY_AFTER`.
+    /// Until then every read of the plan — its instruction set, its application source and
+    /// the narrative of its status alike — reports the application in force, which is what
+    /// lets a caller tell an update that has taken from one that has not.
     ///
-    /// `applied_change` says whether this update changed what the plan APPLIES to its
-    /// resources. `ScalingPlan$StatusMessage` is "A simple message about the current
-    /// status of the scaling plan", and the applied status is reached by applying a
-    /// configuration, so an update that left the configuration in force exactly as it was
-    /// applied nothing and leaves the narrative of the application in force alone.
-    pub fn begin_update(&mut self, applied_change: bool, now: SystemTime) {
+    /// A member this request does not carry leaves what an earlier staged update asked for
+    /// alone, exactly as it leaves what is in force alone: the configuration the plan is
+    /// converging on is what the latest request to carry each member asked for.
+    pub fn begin_update(
+        &mut self,
+        application_source: Option<ApplicationSource>,
+        scaling_instructions: Option<Vec<ScalingInstruction>>,
+        now: SystemTime,
+    ) {
+        let superseded = self.staged.take();
+        self.staged = Some(StagedConfiguration {
+            application_source: application_source.or_else(|| {
+                superseded
+                    .as_ref()
+                    .and_then(|staged| staged.application_source.clone())
+            }),
+            scaling_instructions: scaling_instructions.or_else(|| {
+                superseded
+                    .as_ref()
+                    .and_then(|staged| staged.scaling_instructions.clone())
+            }),
+            due_at: now + APPLY_AFTER,
+        });
+        self.begin(STATUS_UPDATE_IN_PROGRESS, PendingOutcome::Active, now);
+    }
+
+    /// Put the configuration a staged update asked for in force, as the clock owes at
+    /// [`StagedConfiguration::due_at`].
+    ///
+    /// This is where an in-place update TAKES: the members the request carried replace
+    /// what the plan applies, the ones it omitted are left intact, and the narrative of
+    /// the applied status reports the update ([`APPLIED_AFTER_UPDATE_MESSAGE`]) rather
+    /// than the create — which, since an update moves neither `ScalingPlanVersion` nor
+    /// `CreationTime`, is what makes the update observable to a caller reading the plan
+    /// back.
+    ///
+    /// `ScalingPlan$StatusMessage` is "A simple message about the current status of the
+    /// scaling plan", and the applied status is reached by applying a configuration, so an
+    /// update that left the configuration in force exactly as it was applied nothing and
+    /// leaves the narrative of the application in force alone
+    /// ([`Self::applied_footprint`]).
+    pub fn apply_staged(&mut self) {
+        let Some(staged) = self.staged.take() else {
+            return;
+        };
+        let applied_before = self.applied_footprint(&self.scaling_instructions);
+        let mut applied_change = false;
+        if let Some(source) = staged.application_source {
+            applied_change |= source != self.application_source;
+            self.application_source = source;
+        }
+        if let Some(instructions) = staged.scaling_instructions {
+            self.scaling_instructions = instructions;
+        }
+        applied_change |= self.applied_footprint(&self.scaling_instructions) != applied_before;
         if applied_change {
             self.applied_mutation = AppliedMutation::Updated;
         }
-        self.begin(STATUS_UPDATE_IN_PROGRESS, PendingOutcome::Active, now);
+    }
+
+    /// The instruction set the plan has last ASKED the resources it covers for: the one a
+    /// staged update carries, or the one in force when nothing is staged.
+    ///
+    /// This is what the plan has installed in the service that owns its target tracking
+    /// scaling policies ([`application_auto_scaling`]) — the plan asks for a policy when
+    /// it accepts the request, and reports the configuration as applied once the
+    /// application comes due — so it is also the set a further install diffs against, and
+    /// the set a delete retires.
+    pub fn requested_instructions(&self) -> &[ScalingInstruction] {
+        self.staged
+            .as_ref()
+            .and_then(|staged| staged.scaling_instructions.as_deref())
+            .unwrap_or(&self.scaling_instructions)
+    }
+
+    /// Whether this plan claims the application source whose identity is `source_key`:
+    /// the source in force, or one a staged update has asked for and the plan has not
+    /// applied yet.
+    ///
+    /// "You can create one scaling plan per application source", so a source this plan is
+    /// converging on is no more claimable by another plan than the one it applies now.
+    pub fn claims_source(&self, source_key: &str) -> bool {
+        [
+            Some(&self.application_source),
+            self.staged
+                .as_ref()
+                .and_then(|staged| staged.application_source.as_ref()),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|source| application_source_key(source).is_some_and(|key| key == source_key))
     }
 
     /// True while the plan is being created, updated or deleted — the state in which
@@ -450,7 +584,7 @@ impl ScalingPlanRecord {
     /// `instructions`: per resource, the capacity band the plan registered for it and the
     /// target tracking scaling policies it put on it.
     ///
-    /// This is what an update is compared against ([`Self::begin_update`]): the narrative
+    /// This is what an update is compared against ([`Self::apply_staged`]): the narrative
     /// of the applied status reports what the plan last applied to its resources, so an
     /// update that leaves this footprint exactly as it was is not reported as having
     /// updated the plan, however the request spelled the instructions it re-sent.
@@ -603,6 +737,11 @@ impl ComAmazonawsAutoscalingplansAnyscalescalingplannerfrontendserviceState {
     /// This is the ONLY write a reporting operation makes: the work was due at `now`
     /// whether or not anybody called, so running it here cannot make a read change
     /// what a later caller sees.
+    ///
+    /// A plan's own status transition is settled before the configuration a staged update
+    /// asked for is put in force ([`ScalingPlanRecord::apply_staged`]): the application
+    /// reaches the resources the plan covers after the plan is back in its applied status,
+    /// so the two come due in that order and are settled in it.
     pub fn settle_due(&mut self, now: SystemTime) {
         let due: Vec<(String, PendingOutcome, SystemTime)> = self
             .scaling_plans
@@ -627,6 +766,21 @@ impl ComAmazonawsAutoscalingplansAnyscalescalingplannerfrontendserviceState {
                         plan.pending = None;
                     }
                 }
+            }
+        }
+        let applying: Vec<String> = self
+            .scaling_plans
+            .values()
+            .filter(|plan| {
+                plan.staged
+                    .as_ref()
+                    .is_some_and(|staged| staged.due_at <= now)
+            })
+            .map(|plan| plan.name.clone())
+            .collect();
+        for name in applying {
+            if let Some(plan) = self.scaling_plans.get_mut(&name) {
+                plan.apply_staged();
             }
         }
     }
@@ -683,16 +837,16 @@ impl ComAmazonawsAutoscalingplansAnyscalescalingplannerfrontendserviceState {
     ///
     /// A plan whose removal is only OWED still counts: it is still stored, and both
     /// Describe operations still report it, so its source is claimable again only once
-    /// the clock has actually removed it (callers run [`Self::settle_due`] first).
+    /// the clock has actually removed it (callers run [`Self::settle_due`] first). So does
+    /// a source a staged update has asked for and the plan has not applied yet
+    /// ([`ScalingPlanRecord::claims_source`]): the plan is converging on it.
     pub fn plan_covering_source(
         &self,
         source_key: &str,
         excluding: Option<&str>,
     ) -> Option<&ScalingPlanRecord> {
         self.scaling_plans.values().find(|plan| {
-            excluding != Some(plan.name.as_str())
-                && application_source_key(&plan.application_source)
-                    .is_some_and(|key| key == source_key)
+            excluding != Some(plan.name.as_str()) && plan.claims_source(source_key)
         })
     }
 }

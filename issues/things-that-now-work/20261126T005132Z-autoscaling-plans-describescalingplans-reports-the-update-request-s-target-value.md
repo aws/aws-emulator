@@ -67,3 +67,12 @@ Source of the emulator behavior, in the checkout:
    b. Wait for the plan to reach the applied status, then UpdateScalingPlan (same ScalingPlanName, ScalingPlanVersion 1) re-sending that instruction with TargetTrackingConfigurations[0].TargetValue = V2 (75.0 in the fixture).
    c. DescribeScalingPlans with that ScalingPlanNames entry once the plan is back in the applied status.
 3. Observe on ScalingPlans[0]: StatusMessage is "Scaling plan has been updated successfully." instead of the recorded "Scaling plan has been created and applied to all resources.", and ScalingInstructions[0].TargetTrackingConfigurations[0].TargetValue is V2 (the requested value) where the recording reports the applied value V1.
+
+## Resolution
+
+Both symptoms are fixed by the one root cause they share, and the recorded fixture replays clean (11 of 11 steps).
+
+The rule: a scaling plan reports the configuration it has APPLIED to the resources it covers, so the members an in-place update asks for — its `ScalingInstructions`, its `ApplicationSource` and the narrative of its applied status alike — become what a read reports only once the plan has applied them, which the lifecycle clock owes after the request. `UpdateScalingPlan` answers an empty body, so the read-back is the only place a caller learns what an update took; a read that echoed the request could never tell an update that has been applied from one that has not.
+
+The stored plan now keeps what an update ASKED for (`ScalingPlanRecord::staged`) apart from what it has applied: `UpdateScalingPlan` stages the members the request carries and the clock puts them in force (`ScalingPlanRecord::apply_staged`, `APPLY_AFTER`), where the applied-footprint comparison that drives the status narrative also happens. `DescribeScalingPlans` is unchanged — it was already a pure projection of the applied record. Cause 1's narrative is therefore not removed: a plan that HAS applied an update still reports "Scaling plan has been updated successfully." (the behaviour recorded in 20261115T121354Z, where a poller converges on it), while a read taken before the application reports the narrative of the application in force, which is what this recording shows.
+

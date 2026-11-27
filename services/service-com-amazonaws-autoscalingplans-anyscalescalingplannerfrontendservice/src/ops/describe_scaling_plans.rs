@@ -300,6 +300,12 @@ const CURSOR_KIND: &str = "plans";
 /// The stored record as the `ScalingPlan` output shape — a pure projection:
 /// every member comes from state, none from the request.
 ///
+/// What it reports is what the plan has APPLIED: `ApplicationSource`,
+/// `ScalingInstructions` and the narrative of `StatusCode` are the configuration in force
+/// on the resources the plan covers, not the one a request has asked for and the plan has
+/// not applied yet (`crate::state::ScalingPlanRecord::apply_staged`) — `UpdateScalingPlan`
+/// answers an empty body, so this read is where a caller learns what an update took.
+///
 /// `LastMutatingRequestTime` is reported on EVERY entry, in every lifecycle phase, from
 /// the instant the plan's own record stamped when it was last written: it is what a
 /// caller polling the plan compares against the time of its own Create/Update/Delete to
