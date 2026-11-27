@@ -17,16 +17,17 @@
 //! > serves an api's data plane at — so appending `/{stageName}/{routePath}` to the published
 //! > value reaches the api's route.
 //!
-//! The rows span what the rule generalises over: the Region the api is created in (including
+//! The rows span what the rule generalises over: the Region the api was created in (including
 //! the emulator's own default, so no row can pass on a hardcoded Region), the operation that
-//! MINTED the api (`CreateApi`, `ImportApi`) and the operation that REPORTS the value back
-//! (`CreateApi`/`ImportApi`, `GetApi`, `GetApis`). The recorded case is ONE row.
+//! MINTED the api (`CreateApi`, `ImportApi`) and the stage the invoke URL names (the reserved
+//! `$default` stage that serves the api's root and a named one). The recorded case is ONE row.
 //!
 //! The other half of the same rule: `zz_temp_resolution_probe` holds that the published value
 //! needs no resolution at all and that the api is SERVED under it. What the socket decides for
 //! a request arriving there — the stage, the route, the gateway's own refusals — is
 //! `published_invoke_socket_front_door`'s, and what the addressing AWS documents reaches at
-//! every front door is `execute_api_documented_authority`'s.
+//! every front door is `execute_api_documented_authority`'s; the DOCUMENTED host being answered
+//! for at this very address, over these same rows, is `published_endpoint_dialable_address`'s.
 
 use serde_json::{json, Value};
 use smithy_server_runtime::{EndpointUrl, MultiServiceRouter};
@@ -491,3 +492,4 @@ async fn the_published_path_carries_the_apis_own_id() {
         "case {case:?}: a rename must keep the published endpoint, got {updated}"
     );
 }
+

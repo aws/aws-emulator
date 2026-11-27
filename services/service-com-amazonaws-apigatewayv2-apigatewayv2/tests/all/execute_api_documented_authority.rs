@@ -224,8 +224,7 @@ async fn the_published_address_serves_the_documented_execute_api_authority() {
             .as_str(),
             format!("/_aws/execute-api/{}", deployed.api_id).as_str()
         ),
-        "case {case:?}: the published endpoint must name the api on an address of this \
-         emulator, got {:?}",
+        "case {case:?}: the published endpoint must name an address of this emulator, got {:?}",
         deployed.api_endpoint
     );
 

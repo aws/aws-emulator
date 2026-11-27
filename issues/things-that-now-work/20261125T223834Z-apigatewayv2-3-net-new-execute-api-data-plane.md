@@ -92,3 +92,42 @@ Cause 3 (Origin-bearing request on a CFN-deployed CORS API):
 4. OPTIONS the same url with Origin + Access-Control-Request-Method: GET + Access-Control-Request-Headers: content-type — expect 204 with the origin echoed, GET in access-control-allow-methods and access-control-max-age: 300.
 5. Update the stack removing CorsConfiguration and changing Description: expect a Modify with Replacement False on the Api resource, the same ApiId, GetApi without CorsConfiguration, the preflight now 404 with no access-control-* header, and GET /a still 200 with the marker and no CORS headers.
 6. Re-replay apigatewayv2.deploy-apigatewayv2-1-http-api-cors-removed-in-place-then-api-replaced.
+
+## Resolution
+
+The ONE defect found behind all three causes: the invoke address the control plane PUBLISHED was
+not an address this emulator answers on, so no request of any of these checks reached the data
+plane at all. `Api$ApiEndpoint` was announced as `{api-id}.execute-api.{region}.localhost:{port}`
+— a NAME whose resolution the caller's own resolver has to supply, which the replay harness
+refuses outright ("PublishedUrlRejected: … its host is not one of the emulator's own hosts").
+An HTTP api's data plane is now published as the ADDRESS the core's listener for that plane landed
+on, with the api's own id behind the reserved data-plane path (`/_aws/execute-api/{api-id}`), so a
+client dials the value as it stands and appending `/{stage}/{route-path}` to it is the whole invoke
+path. The api's own documented `execute-api` host is still served at every front door, that socket
+included, for a client that does resolve it. (The same fix landed on mainline from the sibling
+issue 20261126T140544Z while this one was in review; that form is the one kept.)
+
+The three causes' behaviours were already implemented in this tree and are now driven END TO END
+at the published address, over a real socket, on an emulator STARTED from the built binary, by
+`core/router/tests/all/apigatewayv2_published_endpoint_enforcements_on_a_started_emulator.rs`:
+
+* cause 1 — an api whose `DisableExecuteApiEndpoint` is set answers `404`
+  `{"message":"Not Found"}` on its published address with nothing of the integration in it, the
+  twin api over the same function is served by it in the same instant, and clearing the member
+  restores serving on the same address;
+* cause 2 — a route the serving stage's `RouteSettings` meter sheds the excess of a burst with
+  `429` `{"message":"Too Many Requests"}` without reaching the integration, the twin route under
+  the stage's `DefaultRouteSettings` sheds nothing, the metered route is served again as its rate
+  refills the bucket, and `DeleteRouteSettings` returns it to those defaults;
+* cause 3 — an `Origin` decides nothing but the `Access-Control-*` decoration: the route answers
+  the integration's body with an admitted origin, with a foreign one and with none, a preflight no
+  route matches is the gateway's own `204` carrying the configured `MaxAge`, and after
+  `DeleteCorsConfiguration` the preflight falls through to `404` `{"message":"Not Found"}` with no
+  decoration while the GET keeps being served without one.
+
+The three checks still end as `Check timed out after 60.0s` with no frame, no status and no value:
+three different published forms (the documented name, the socket's address with the api in the
+path, and the socket's address alone) produce byte-identical replay verdicts, while the same three
+behaviours answer correctly at the published address on the started binary, so nothing in this tree
+explains what the harness is waiting for. A later reader should treat the three checks as ungraded
+rather than as passing.

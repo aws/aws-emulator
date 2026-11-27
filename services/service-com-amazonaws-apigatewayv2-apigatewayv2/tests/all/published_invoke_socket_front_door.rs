@@ -196,7 +196,7 @@ pub(crate) async fn request(
 }
 
 /// The PORT a client dials `authority` on: the port the published authority names, which is
-/// the one the socket this plane is published on landed on.
+/// the one the socket that api is published on landed on.
 ///
 /// A published authority is the ADDRESS that socket landed on (`127.0.0.1:{port}`,
 /// [`announced_parts`]) rather than a name, so a client dials it as it stands and no resolver

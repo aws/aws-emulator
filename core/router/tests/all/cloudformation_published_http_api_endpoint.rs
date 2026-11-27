@@ -358,6 +358,7 @@ fn assert_published_host(case: &str, authority: &str) {
     );
 }
 
+
 /// One output of the settled stack, which every api of the table publishes two of.
 fn output(case: &str, outputs: &BTreeMap<String, String>, key: &str) -> String {
     outputs

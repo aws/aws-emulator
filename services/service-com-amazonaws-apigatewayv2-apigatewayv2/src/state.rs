@@ -4598,10 +4598,9 @@ pub fn execute_api_host(api_id: &str, region: &str) -> String {
 ///
 /// WHICH zone the name is written in is the caller's to say: AWS's own
 /// ([`EXECUTE_API_DNS_ZONE`]) for the name AWS itself answers for ([`execute_api_host`]), and
-/// the zone this emulator may announce a name of its own in for the address an api is
-/// ANNOUNCED at ([`invoke_plane_transport::announced_endpoint`], which folds each label it
-/// fills in to one DNS label first, so no value a request carried can make an announced
-/// address name an authority the caller chose).
+/// the loopback zone for the same name written so that it resolves to the interface the core
+/// binds on, which is the other zone this emulator's data planes read such a host in
+/// ([`serves_execute_api_zone`]).
 pub fn execute_api_host_in_zone(api_id: &str, region: &str, zone: &str) -> String {
     format!("{api_id}.{EXECUTE_API_LABEL}.{region}.{zone}")
 }
@@ -4615,8 +4614,8 @@ pub const EXECUTE_API_DNS_ZONE: &str = "amazonaws.com";
 /// Whether `zone` is a zone an api's own `execute-api` host is SERVED under here: the zone
 /// AWS publishes that endpoint in ([`EXECUTE_API_DNS_ZONE`]), and the loopback zone RFC 6761
 /// reserves for the interface the core binds its listeners on
-/// (`service_common::data_plane_addressing::LOOPBACK_ZONE`), which is the zone this emulator
-/// ANNOUNCES an api's endpoint in ([`invoke_plane_transport::announced_endpoint`]).
+/// (`service_common::data_plane_addressing::LOOPBACK_ZONE`), which is where a client that
+/// rewrote the documented name so that it resolves to this process writes it.
 ///
 /// The two zones a name of this form can only lead back to: AWS answers for one and nobody
 /// else may, and the other is reserved against resolution anywhere but the loopback
