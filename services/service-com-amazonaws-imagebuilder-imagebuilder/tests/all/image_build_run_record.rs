@@ -17,8 +17,8 @@
 //!   which is a property of that base image;
 //! * `workflows` is "the build, test, and distribution workflow configurations that are
 //!   associated with the image": the ones the request named, which "replace the default
-//!   workflows that Image Builder otherwise runs for the build", or the service-owned
-//!   workflows the build ran when it named none;
+//!   workflows that Image Builder otherwise runs for the build", or else every service-owned
+//!   workflow of the build's output kind, one per stage and each at its own published build;
 //! * `executionRole` is the role the build assumed, and "if you don't provide a role, Image
 //!   Builder uses the Image Builder service-linked role in your account";
 //! * `executionId` names the execution that produced the build version.
@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Map, Value};
 use service_com_amazonaws_imagebuilder_imagebuilder::state::{
-    MANAGED_IMAGE_OWNER, MANAGED_IMAGE_VERSION, SERVICE_OWNED_WORKFLOW_VERSION,
+    MANAGED_IMAGE_OWNER, MANAGED_IMAGE_VERSION,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -353,13 +353,45 @@ fn managed_build_arn(name: &str) -> String {
     managed_image_arn(name, &format!("{MANAGED_IMAGE_VERSION}/1"))
 }
 
-/// The build version ARN of the `stage` workflow AWS itself owns under `name`, as a build that
-/// ran it names it: AWS's own owner field, and the published version this emulator reports.
-fn service_owned_workflow_arn(stage: &str, name: &str) -> String {
+/// One service-owned workflow of the default set, as `(stage, name, published version)`.
+///
+/// AWS versions each of its own workflows independently — a new build of one line is published
+/// as that line's document changes — so each entry carries its OWN version node, and the
+/// catalogue is not one version shared across the set. The entries below are the service-owned
+/// workflow catalogue this emulator publishes
+/// (`SERVICE_OWNED_WORKFLOWS` in the crate's `state::image_build_run`), one per stage of each
+/// output kind — restated here by hand ON PURPOSE: reading the crate's own catalogue would make
+/// the version assertions re-assert the implementation's literals, so they could not fail.
+type ServiceOwnedWorkflow = (&'static str, &'static str, &'static str);
+
+/// The default workflow set of a build whose output is an AMI, in the order a build runs them.
+const AMI_WORKFLOWS: &[ServiceOwnedWorkflow] = &[
+    ("build", "build-image", "1.0.1"),
+    ("test", "test-image", "1.0.3"),
+];
+
+/// The default workflow set of a build whose output is a container image.
+const CONTAINER_WORKFLOWS: &[ServiceOwnedWorkflow] = &[
+    ("build", "build-container", "1.0.1"),
+    ("test", "test-container", "1.0.1"),
+];
+
+/// The build version ARN of the `stage` workflow AWS itself owns under `name`, published at
+/// `version`, as a build that ran it names it: AWS's own owner field, the stage segment the
+/// workflow's type carries, and a version assigned down to the build node.
+fn service_owned_workflow_arn(stage: &str, name: &str, version: &str) -> String {
     format!(
         "arn:aws:imagebuilder:{REGION}:{MANAGED_IMAGE_OWNER}:workflow/{stage}/{name}/\
-         {SERVICE_OWNED_WORKFLOW_VERSION}/1"
+         {version}/1"
     )
+}
+
+/// The build version ARN of every workflow in `catalogue`, in order.
+fn service_owned_workflow_arns(catalogue: &[ServiceOwnedWorkflow]) -> Vec<String> {
+    catalogue
+        .iter()
+        .map(|(stage, name, version)| service_owned_workflow_arn(stage, name, version))
+        .collect()
 }
 
 /// The `workflowArn` of each configuration the image reports, in order.
@@ -590,11 +622,11 @@ struct Run<'a> {
     role: String,
 }
 
-/// RULE: a read of an image reports the workflows the build RAN — the ones its request named,
-/// which replace the defaults, or the service-owned workflows of the build's output kind, the
-/// test workflow among them only when the build tests the image — and the role the build
-/// ASSUMED, which is this account's Image Builder service-linked role when the request named
-/// none.
+/// RULE: a read of an image reports the workflows the build is CONFIGURED with — the ones its
+/// request named, which replace the defaults, or else every service-owned workflow of the
+/// build's output kind, one per stage and whatever the build's test settings say — and the role
+/// the build ASSUMED, which is this account's Image Builder service-linked role when the
+/// request named none.
 ///
 /// The rows differ along whether the request named workflows and a role, the form the role was
 /// named in, whether the build tests the image, and the kind of recipe the build builds (which
@@ -640,15 +672,13 @@ async fn a_build_records_the_workflows_it_ran_and_the_role_it_assumed() {
             recipe_member: "imageRecipeArn",
             recipe: &recipe,
             named: Vec::new(),
-            workflows: vec![
-                service_owned_workflow_arn("build", "build-image"),
-                service_owned_workflow_arn("test", "test-image"),
-            ],
+            workflows: service_owned_workflow_arns(AMI_WORKFLOWS),
             role: service_linked.clone(),
         },
         Run {
-            // "Defines if tests should be executed when building this image": a build that
-            // does not test the image ran no test workflow.
+            // "Specifies whether tests run after building the image" governs whether the test
+            // stage RUNS, not which workflows the image is associated with: a build that
+            // skips its tests is still associated with the whole default set.
             case: "a build that does not test the image",
             recipe_member: "imageRecipeArn",
             recipe: &recipe,
@@ -656,7 +686,7 @@ async fn a_build_records_the_workflows_it_ran_and_the_role_it_assumed() {
                 "imageTestsConfiguration",
                 json!({ "imageTestsEnabled": false }),
             )],
-            workflows: vec![service_owned_workflow_arn("build", "build-image")],
+            workflows: service_owned_workflow_arns(AMI_WORKFLOWS),
             role: service_linked.clone(),
         },
         Run {
@@ -667,10 +697,7 @@ async fn a_build_records_the_workflows_it_ran_and_the_role_it_assumed() {
                 "imageTestsConfiguration",
                 json!({ "imageTestsEnabled": true, "timeoutMinutes": 90 }),
             )],
-            workflows: vec![
-                service_owned_workflow_arn("build", "build-image"),
-                service_owned_workflow_arn("test", "test-image"),
-            ],
+            workflows: service_owned_workflow_arns(AMI_WORKFLOWS),
             role: service_linked.clone(),
         },
         Run {
@@ -704,11 +731,37 @@ async fn a_build_records_the_workflows_it_ran_and_the_role_it_assumed() {
             recipe_member: "containerRecipeArn",
             recipe: &container_recipe,
             named: Vec::new(),
-            workflows: vec![
-                service_owned_workflow_arn("build", "build-container"),
-                service_owned_workflow_arn("test", "test-container"),
-            ],
+            workflows: service_owned_workflow_arns(CONTAINER_WORKFLOWS),
             role: service_linked.clone(),
+        },
+        Run {
+            // The test settings do not change the set for a container build either.
+            case: "a container build that does not test the image",
+            recipe_member: "containerRecipeArn",
+            recipe: &container_recipe,
+            named: vec![(
+                "imageTestsConfiguration",
+                json!({ "imageTestsEnabled": false }),
+            )],
+            workflows: service_owned_workflow_arns(CONTAINER_WORKFLOWS),
+            role: service_linked.clone(),
+        },
+        Run {
+            // A request that names workflows replaces the whole default set, whatever its
+            // test settings say.
+            case: "a build that named one workflow and does not test the image",
+            recipe_member: "imageRecipeArn",
+            recipe: &recipe,
+            named: vec![
+                ("executionRole", json!(role_name)),
+                ("workflows", json!([{ "workflowArn": workflow }])),
+                (
+                    "imageTestsConfiguration",
+                    json!({ "imageTestsEnabled": false }),
+                ),
+            ],
+            workflows: vec![workflow.clone()],
+            role: role_name.clone(),
         },
     ];
 
@@ -737,6 +790,143 @@ async fn a_build_records_the_workflows_it_ran_and_the_role_it_assumed() {
             "case {case:?}: expected the executionRole {:?}, got {reported_role:?}",
             expected.role
         );
+    }
+}
+
+/// The nodes of a service-owned workflow's build version ARN, as a configuration that names it
+/// carries them: the Region and owner fields, and the stage, name, version and build of the
+/// resource (`WorkflowConfiguration.workflowArn`,
+/// `smithy_query(query="shape",shape="WorkflowConfiguration")`).
+struct WorkflowArnNodes {
+    region: String,
+    owner: String,
+    stage: String,
+    name: String,
+    version: String,
+    build: String,
+}
+
+/// The nodes of `arn`, which must be a fully assigned workflow build version ARN.
+fn workflow_arn_nodes(case: &str, arn: &str) -> WorkflowArnNodes {
+    let fields: Vec<&str> = arn.splitn(6, ':').collect();
+    assert_eq!(
+        fields.len(),
+        6,
+        "case {case:?}: expected the six fields of an ARN, got {arn:?}"
+    );
+    let resource: Vec<&str> = fields[5].split('/').collect();
+    assert_eq!(
+        resource.len(),
+        5,
+        "case {case:?}: expected workflow/<stage>/<name>/<version>/<build>, got {arn:?}"
+    );
+    assert_eq!(
+        resource[0], "workflow",
+        "case {case:?}: expected a workflow resource, got {arn:?}"
+    );
+    WorkflowArnNodes {
+        region: fields[3].to_string(),
+        owner: fields[4].to_string(),
+        stage: resource[1].to_string(),
+        name: resource[2].to_string(),
+        version: resource[3].to_string(),
+        build: resource[4].to_string(),
+    }
+}
+
+/// RULE: the default workflow set a build whose request named no `workflows` is associated with
+/// holds ONE service-owned workflow per stage of the build's output kind, each named by a fully
+/// assigned build-version ARN owned by AWS and carrying THAT workflow's own published semantic
+/// version — AWS publishes each of its workflows on its own schedule, so no single version
+/// describes the set.
+///
+/// The rows differ along the kind of recipe the build builds, which decides the output kind and
+/// so which service-owned workflows the default set holds.
+#[tokio::test]
+async fn the_default_workflow_set_names_each_service_owned_workflow_at_its_own_published_build() {
+    let router = emulator();
+    let component = create_component(&router, "Default Set Component").await;
+    let configuration = create_configuration(&router, "Default Set Infra").await;
+    let recipe = create_recipe(
+        &router,
+        "Default Set Recipe",
+        "ami-0123456789abcdef0",
+        &component,
+    )
+    .await;
+    let container_recipe = create_container_recipe(
+        &router,
+        "Default Set Container Recipe",
+        "amazonlinux:latest",
+        &component,
+    )
+    .await;
+
+    // (case, the recipe member, the recipe, the catalogue of that output kind)
+    let rows: &[(&str, &str, &str, &[ServiceOwnedWorkflow])] = &[
+        (
+            "a build whose output is an AMI",
+            "imageRecipeArn",
+            recipe.as_str(),
+            AMI_WORKFLOWS,
+        ),
+        (
+            "a build whose output is a container image",
+            "containerRecipeArn",
+            container_recipe.as_str(),
+            CONTAINER_WORKFLOWS,
+        ),
+    ];
+
+    for (row, (case, recipe_member, recipe, catalogue)) in rows.iter().enumerate() {
+        let arn = create_image(
+            &router,
+            recipe_member,
+            recipe,
+            &configuration,
+            &format!("default-set-{row}"),
+            &[],
+        )
+        .await;
+        let image = image_of(&router, case, &arn).await;
+        let reported = reported_workflows(case, &image);
+        assert_eq!(
+            reported.len(),
+            catalogue.len(),
+            "case {case:?}: expected one configuration per service-owned workflow stage \
+             ({}), got {reported:?}",
+            catalogue.len()
+        );
+        for (entry, (stage, name, version)) in reported.iter().zip(catalogue.iter()) {
+            let nodes = workflow_arn_nodes(case, entry);
+            assert_eq!(
+                nodes.region, REGION,
+                "case {case:?}: expected the Region the build ran in, got {entry:?}"
+            );
+            assert_eq!(
+                nodes.owner, MANAGED_IMAGE_OWNER,
+                "case {case:?}: expected a workflow AWS owns, got {entry:?}"
+            );
+            assert_eq!(
+                nodes.stage, *stage,
+                "case {case:?}: expected the {stage:?} stage, got {entry:?}"
+            );
+            assert_eq!(
+                nodes.name, *name,
+                "case {case:?}: expected the workflow {name:?}, got {entry:?}"
+            );
+            // Each stage's own published version: the build stage and the test stage of one
+            // output kind carry the versions their own lines were published at.
+            assert_eq!(
+                nodes.version, *version,
+                "case {case:?}: expected {name:?} at its published version {version:?}, got \
+                 {entry:?}"
+            );
+            assert_eq!(
+                nodes.build, "1",
+                "case {case:?}: expected the build node of the published build, got {entry:?}"
+            );
+        }
     }
 }
 

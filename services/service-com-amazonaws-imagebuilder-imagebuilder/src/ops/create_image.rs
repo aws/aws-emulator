@@ -379,9 +379,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> CreateImage<Eng> 
             &region,
             input.workflows.as_deref(),
             input.execution_role.as_deref(),
-            image_tests_configuration
-                .image_tests_enabled
-                .unwrap_or(crate::state::DEFAULT_IMAGE_TESTS_ENABLED),
             queued_at,
         );
 

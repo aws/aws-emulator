@@ -324,9 +324,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> StartImagePipelin
             &region,
             workflows.as_deref(),
             execution_role.as_deref(),
-            image_tests_configuration
-                .image_tests_enabled
-                .unwrap_or(crate::state::DEFAULT_IMAGE_TESTS_ENABLED),
             queued_at,
         );
 

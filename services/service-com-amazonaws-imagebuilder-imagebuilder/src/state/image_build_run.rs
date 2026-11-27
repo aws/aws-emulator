@@ -25,12 +25,12 @@
 //!   the operating system of each image it holds ([`super::ManagedImage::os_version`]), and an
 //!   image this account built carries the one its own build recorded, so a chain of builds
 //!   keeps reporting it;
-//! * the WORKFLOWS the build ran, which is `Image`'s `workflows`: "the build, test, and
-//!   distribution workflow configurations that are associated with the image". A request may
-//!   name them, and then "they replace the default workflows that Image Builder otherwise runs
-//!   for the build" (`CreateImage`'s `workflows`); a request that names none ran those default
-//!   workflows, which are AWS's own workflow resources ([`SERVICE_OWNED_WORKFLOWS`]) rather
-//!   than resources this account created;
+//! * the WORKFLOWS the build was configured with, which is `Image`'s `workflows`: "the build,
+//!   test, and distribution workflow configurations that are associated with the image". A
+//!   request may name them, and then "they replace the default workflows that Image Builder
+//!   otherwise runs for the build" (`CreateImage`'s `workflows`); a request that names none was
+//!   configured with those default workflows, which are AWS's own workflow resources
+//!   ([`SERVICE_OWNED_WORKFLOWS`]) rather than resources this account created;
 //! * the IDENTITY the build assumed, which is `Image`'s `executionRole`: "the name or Amazon
 //!   Resource Name (ARN) for the IAM role you create that grants Image Builder access to
 //!   perform workflow actions" — and "if you don't provide a role, Image Builder uses the Image
@@ -77,32 +77,41 @@ pub fn service_linked_execution_role() -> String {
     )
 }
 
-/// The semantic version every service-owned workflow this emulator reports is published at,
-/// and the build of it that ran.
+/// ONE build of a workflow AWS itself publishes: the name AWS publishes it under, and the
+/// semantic version of the build this emulator reports of it.
 ///
 /// A workflow AWS owns is versioned exactly as one an account creates is, and AWS publishes a
-/// new build of each as its document changes. WHICH versions it has published is AWS's to say
-/// and nothing here can derive one, so — exactly as the published image catalog does for its
-/// own dated builds ([`super::MANAGED_IMAGE_VERSION`]) — this emulator reports ONE build of
-/// each service-owned workflow, at the version recorded here, and says so rather than implying
-/// a catalog it does not hold.
-pub const SERVICE_OWNED_WORKFLOW_VERSION: &str = "1.0.1";
+/// new build of EACH of its workflows as that workflow's own document changes — so the lines
+/// move independently and no one version describes the set. WHICH versions AWS has published
+/// is AWS's to say and nothing here can derive one, so — exactly as the published image
+/// catalog does for its own dated builds ([`super::MANAGED_IMAGE_VERSION`]) — this catalogue
+/// records ONE build of each published workflow, each carrying its OWN version, and says so
+/// rather than implying a catalog it does not hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublishedWorkflow {
+    /// The name AWS publishes the workflow under.
+    pub name: &'static str,
+    /// The semantic version of the build of it this catalogue records.
+    pub version: &'static str,
+}
 
-/// One workflow AWS itself owns: the stage it runs in and the name AWS publishes it under for
-/// the kind of output the build produces.
+/// One workflow AWS itself owns: the stage it runs in, and the build AWS publishes of it for
+/// each kind of output a build produces.
 ///
 /// The names are AWS's own service-owned workflow resources, which the Image Builder user
 /// guide lists per output kind: a build that produces an AMI runs the image workflows, and one
-/// that produces a container image runs the container workflows.
+/// that produces a container image runs the container workflows. Each of those is a workflow
+/// resource in its own right, so each carries its own published build
+/// ([`PublishedWorkflow`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServiceOwnedWorkflow {
     /// The value of the modelled `WorkflowType` enum this workflow belongs to, which its ARN
     /// carries as its stage ([`super::workflow_stage`]).
     pub workflow_type: &'static str,
-    /// The name AWS publishes it under for a build whose output is an AMI.
-    pub image_name: &'static str,
-    /// The name AWS publishes it under for a build whose output is a container image.
-    pub container_name: &'static str,
+    /// The build AWS publishes of it for a build whose output is an AMI.
+    pub image: PublishedWorkflow,
+    /// The build AWS publishes of it for a build whose output is a container image.
+    pub container: PublishedWorkflow,
 }
 
 /// The workflows a build runs when its request named none, in the order a build runs them:
@@ -113,24 +122,38 @@ pub struct ServiceOwnedWorkflow {
 pub const SERVICE_OWNED_WORKFLOWS: &[ServiceOwnedWorkflow] = &[
     ServiceOwnedWorkflow {
         workflow_type: "BUILD",
-        image_name: "build-image",
-        container_name: "build-container",
+        image: PublishedWorkflow {
+            name: "build-image",
+            version: "1.0.1",
+        },
+        container: PublishedWorkflow {
+            name: "build-container",
+            version: "1.0.1",
+        },
     },
     ServiceOwnedWorkflow {
-        workflow_type: TEST_WORKFLOW_TYPE,
-        image_name: "test-image",
-        container_name: "test-container",
+        // The value of the modelled `WorkflowType` enum the TEST stage carries
+        // (`smithy_query(query="shape",shape="WorkflowType")`).
+        workflow_type: "TEST",
+        image: PublishedWorkflow {
+            name: "test-image",
+            version: "1.0.3",
+        },
+        container: PublishedWorkflow {
+            name: "test-container",
+            version: "1.0.1",
+        },
     },
 ];
 
 impl ServiceOwnedWorkflow {
-    /// The name AWS publishes this workflow under for a build whose output is `image_type`.
+    /// The build AWS publishes of this workflow for a build whose output is `image_type`.
     #[must_use]
-    pub fn name(&self, image_type: &str) -> &'static str {
+    pub fn published(&self, image_type: &str) -> PublishedWorkflow {
         if image_type == IMAGE_TYPE_AMI {
-            self.image_name
+            self.image
         } else {
-            self.container_name
+            self.container
         }
     }
 
@@ -139,43 +162,41 @@ impl ServiceOwnedWorkflow {
     ///
     /// The owner field is AWS's own rather than this account
     /// ([`MANAGED_IMAGE_OWNER`]) — the workflow is a resource AWS owns, not one this account
-    /// created — and the version is fully assigned, down to the build node, since the modelled
+    /// created — the version is the one this catalogue records that workflow's own published
+    /// build at, and it is fully assigned, down to the build node, since the modelled
     /// `WorkflowConfiguration.workflowArn` admits a wildcard version or a build version and
     /// what RAN was one build.
     #[must_use]
     pub fn build_version_arn(&self, partition: &str, region: &str, image_type: &str) -> String {
+        let published = self.published(image_type);
         format!(
             "arn:{partition}:{ARN_SERVICE}:{region}:{MANAGED_IMAGE_OWNER}:{WORKFLOW_ARN_PREFIX}{}/\
-             {}/{SERVICE_OWNED_WORKFLOW_VERSION}/{FIRST_BUILD_VERSION}",
+             {}/{}/{FIRST_BUILD_VERSION}",
             workflow_stage(self.workflow_type),
-            self.name(image_type),
+            published.name,
+            published.version,
         )
     }
 }
 
-/// The value of the modelled `WorkflowType` enum the TEST stage carries
-/// (`smithy_query(query="shape",shape="WorkflowType")`), which is the stage a build runs only
-/// when it tests the image.
-const TEST_WORKFLOW_TYPE: &str = "TEST";
-
 /// The workflows a build of `image_type` in `region` ran when its request named none: one
-/// configuration per service-owned workflow the build stage sequence covers.
+/// configuration per service-owned workflow of that output kind, in stage order.
 ///
-/// A build that does not test runs no test workflow: `imageTestsConfiguration`'s
-/// `imageTestsEnabled` "defines if tests should be executed when building this image", so the
-/// test stage is part of the run only when it is on. Each configuration names the workflow and
-/// nothing else: the parameters, the parallel group and the failure action are what a CALLER
-/// sets on a workflow it configures, and a default run set none.
+/// EVERY stage of the default set is associated with the image, whatever the build's test
+/// settings say: `Image`'s `workflows` is "the build, test, and distribution workflow
+/// configurations that are associated with the image", and `imageTestsConfiguration`'s
+/// `imageTestsEnabled` "specifies whether tests run after building the image" — it governs
+/// whether the test stage RUNS, not which workflows the build is configured with, so a build
+/// that skips its tests is still the default workflow set.
+///
+/// Each configuration names the workflow and nothing else: the parameters, the parallel group
+/// and the failure action are what a CALLER sets on a workflow it configures, and a default
+/// run set none.
 #[must_use]
-pub fn default_build_workflows(
-    region: &str,
-    image_type: &str,
-    tests_enabled: bool,
-) -> Vec<WorkflowConfiguration> {
+pub fn default_build_workflows(region: &str, image_type: &str) -> Vec<WorkflowConfiguration> {
     let partition = super::listing_partition(region);
     SERVICE_OWNED_WORKFLOWS
         .iter()
-        .filter(|workflow| tests_enabled || workflow.workflow_type != TEST_WORKFLOW_TYPE)
         .map(|workflow| WorkflowConfiguration {
             workflow_arn: workflow.build_version_arn(&partition, region, image_type),
             parameters: None,
@@ -199,9 +220,9 @@ pub struct ImageBuildRun {
     /// The role the build assumed: the one its request named, or this account's service-linked
     /// role when it named none ([`service_linked_execution_role`]).
     pub execution_role: String,
-    /// The workflows the build ran: the ones its request named, which "replace the default
-    /// workflows that Image Builder otherwise runs for the build", or those default workflows
-    /// ([`default_build_workflows`]).
+    /// The workflows the build was configured with: the ones its request named, which "replace
+    /// the default workflows that Image Builder otherwise runs for the build", or those default
+    /// workflows ([`default_build_workflows`]).
     pub workflows: Vec<WorkflowConfiguration>,
     /// The ONE base image version the build resolved its recipe's `parentImage` to.
     pub resolved_parent_image: String,
@@ -214,9 +235,7 @@ impl ImageBuildRun {
     /// What a build of `built` in `region`, queued at `at`, records about its own run.
     ///
     /// `requested_workflows` and `requested_role` are what the request (or the pipeline whose
-    /// execution queued the build) named, and `tests_enabled` is whether the build tests the
-    /// image — the configuration the record is filed with, after this service has filled in the
-    /// documented default.
+    /// execution queued the build) named.
     #[must_use]
     pub fn observed(
         store: &ComAmazonawsImagebuilderImagebuilderState,
@@ -224,7 +243,6 @@ impl ImageBuildRun {
         region: &str,
         requested_workflows: Option<&[WorkflowConfiguration]>,
         requested_role: Option<&str>,
-        tests_enabled: bool,
         at: SystemTime,
     ) -> Self {
         let base = store.resolved_parent_image(&built.parent_image, region, at);
@@ -233,7 +251,7 @@ impl ImageBuildRun {
             execution_role: requested_role
                 .map_or_else(service_linked_execution_role, str::to_string),
             workflows: requested_workflows.map_or_else(
-                || default_build_workflows(region, built.image_type, tests_enabled),
+                || default_build_workflows(region, built.image_type),
                 <[WorkflowConfiguration]>::to_vec,
             ),
             resolved_parent_image: base.reference,
