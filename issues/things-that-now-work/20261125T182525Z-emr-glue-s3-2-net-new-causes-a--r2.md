@@ -64,3 +64,39 @@ Cause 2 (emr__glue__s3.eventbridge-rule-missing-target-permission-negative):
 5. sqs.create_queue twice; set the events.amazonaws.com SendMessage policy (Condition ArnEquals aws:SourceArn=<rule arn>) on the 'ok' queue only; events.put_targets with both queues.
 6. glue.start_job_run(JobName=<job>) and poll glue.get_job_run for a terminal JobRunState. AWS: SUCCEEDED within the window. Emulator: no accepted terminal state is ever observed and the check's budget expires here.
 7. sqs.receive_message on both queues. AWS: one matching event on 'ok', nothing on 'broken'. Emulator: neither observation is reached.
+
+## Resolution
+
+Both causes are DECLINED: every call either check waits on is served, and every state it polls for
+is reported. Nothing in either path is refused — the step's command and the run's script are
+executed, the log objects are written and the publication is delivered — so there is no refusal to
+re-word and no missing side effect to build.
+
+Measured against this emulator, one observable changed at a time:
+
+| what was changed for the measurement | where the check then stopped |
+|---|---|
+| every clock span of both services collapsed to 200 ms (`CLUSTER_PHASE_SPAN`, `STEP_RUN_SPAN`, `TRANSITION_SPAN`, `JOB_RUN_SETTLES_AFTER`) | unchanged for BOTH checks — same timeout, same statements (`run#23`, `time.sleep(2)`; `_receive_all#38`, `receive_message(…, WaitTimeSeconds=2)`) |
+| the `Glue Job State Change` publication suppressed, so no event can reach either target | cause 2's cut moves EARLIER, `_receive_all#38` -> `_receive_all#32`: with the publication in place the check gets six calls further, because the admitted queue's receives answer a message at once instead of waiting out the long poll — so the delivery it is in that window for does happen |
+
+So neither check is blocked on this emulator's clock, and cause 2's positive delivery is observed.
+Each check is killed at the harness budget inside its own fixed-duration TAIL window, past the last
+condition it polls an emulator response for: cause 1 inside the 30 s log-persistence re-read
+(`run#23`, `time.sleep(2)`), cause 2 inside the absence window it holds on the unpermissioned queue
+(`broken_received.extend(_receive_all(sqs, broken_queue_url))`). The same instrumentation for
+cause 1, recorded in `issues/things-that-now-work/20261116T201047Z-emr-glue-s3-2-net-new-causes-an.md`,
+walked its cut through all four of its polled conditions and measured ~20 s spent by its client
+before its first poll.
+
+What the two sequences cost this emulator, end to end over the whole assembled router with request
+authentication on: 8.8 s from `RunJobFlow` to `TERMINATED` with the log objects listable
+(`ReadyDateTime` 6 s after creation, the step's span 2 s, the shutdown 0.6 s), and 6.0 s from
+`StartJobRun` to `SUCCEEDED` with the event already on the admitted queue.
+
+Both halves are pinned, in the order a client observes them and with both lifecycles in flight at
+once, by `core/router/tests/all/emr_cluster_and_glue_run_converge_on_one_emulator.rs`, beside the
+suites that already cover each on its own
+(`core/router/tests/all/emr_keep_alive_cluster_log_post_mortem.rs`,
+`core/router/tests/all/glue_job_state_change_delivery_per_queue_policy.rs`,
+`services/service-com-amazonaws-emr-elasticmapreduce/tests/all/cluster_log_persistence_after_termination.rs`,
+`services/service-com-amazonaws-glue-awsglue/tests/all/job_run_state_change_events.rs`).
