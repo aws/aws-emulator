@@ -302,6 +302,25 @@ pub fn not_found_message(
     }
 }
 
+/// The `ResourceNotFoundException` message a content read answers for an IMAGE a request
+/// names inside a document, worded the way the sibling resources of the same path are
+/// ([`not_found_message`]): the kind that was not found and the identifier the request
+/// carried for it.
+///
+/// An image is EMBEDDED in a document: it exists only because a parse of the document's
+/// bytes pulled it out and recorded it beside the chunk it belongs to, which is also why a
+/// request names one by the `_media_id` a retrieval reported in that chunk's metadata.
+/// Nothing in this emulator parses a document: the fields an ingestion records about a
+/// document are the ones `agent_state::ingestion_index` names, none of them a media record
+/// ([`ingested_bytes_of`] reads every form of content one can carry, and each is the
+/// document's own bytes), and every chunk a retrieval of this plane reports is text, so no
+/// result of it carries a media id for a request to name. No document therefore holds an
+/// embedded image, and every identifier of one names an image that does not exist.
+#[must_use]
+pub fn media_not_found_message(media_id: &str) -> String {
+    format!("Media with id {media_id} does not exist")
+}
+
 /// The first path segment every address of this service's own content plane carries, which
 /// is what makes a request one that plane serves. No modelled route of any Bedrock model
 /// publishes it, so an address here cannot collide with one.

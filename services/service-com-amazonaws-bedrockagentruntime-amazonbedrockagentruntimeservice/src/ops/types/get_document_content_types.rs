@@ -17,6 +17,7 @@ pub struct GetDocumentContentInput {
     pub knowledge_base_id: String,
     pub data_source_id: String,
     pub document_id: String,
+    pub media_id: Option<String>,
     pub output_format: Option<String>,
     pub user_context: Option<UserContext>,
 }

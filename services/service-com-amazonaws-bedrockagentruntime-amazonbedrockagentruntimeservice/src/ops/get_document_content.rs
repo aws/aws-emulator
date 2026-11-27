@@ -40,6 +40,18 @@
 //! emulator does not hold is the modelled `ResourceNotFoundException` whatever rendering
 //! the request asked for.
 //!
+//! `mediaId` names one IMAGE embedded in the document, and asks for that image's address
+//! "instead of the document" — so it is a resource of its own, read after the document it
+//! belongs to has resolved:
+//!
+//! * a request naming an image may ask for no other rendering of it than the one it was
+//!   ingested in, so `mediaId` beside any `outputFormat` but `RAW` is the modelled
+//!   `ValidationException` naming both members, as the model documents the pair;
+//! * an image embedded in a document exists only because a parse of that document pulled it
+//!   out, and no document holds one here ([`crate::state::document_content`]), so a read
+//!   naming one is the modelled `ResourceNotFoundException` for that media — never the
+//!   whole document's address, which is what a read naming no media asks for.
+//!
 //! `userContext` IS served: it names the identity the read is narrowed to the authorized
 //! documents of, and that narrowing withholds nothing here, because no document of a
 //! knowledge base is ingested with an access control list and a document no ACL names is
@@ -93,6 +105,11 @@
 //!   unique identifier of the data source that contains the document.
 //! * `documentId` (DocumentId, len 1..1825, pattern ^\P{C}*$) **required** — The unique
 //!   identifier of the document to retrieve content for.
+//! * `mediaId` (MediaId, len 36..36, pattern ^[a-zA-Z0-9][a-zA-Z0-9-]{35}$) — The unique
+//!   identifier (in UUID format) of an image embedded in the specified document. Set this
+//!   parameter to the `_media_id` value in the metadata of the corresponding `Retrieve`
+//!   result. If you specify this parameter, the response contains a pre-signed URL for the
+//!   image instead of the document, and you must omit `outputFormat` or set it to `RAW`.
 //! * `knowledgeBaseId` (KnowledgeBaseIdentifier, len 10..2048, pattern
 //!   ^[0-9a-zA-Z]{10}$|^arn:aws(-[^:]+)?:bedrock:[a-z0-9-]{1,20}:[0-9]{12}:knowledge-base/[0-9a-zA-Z]{10}$)
 //!   **required** — The unique identifier of the knowledge base that contains the document.
@@ -259,12 +276,30 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         };
 
-        // Only NOW is the member that selects how the document is rendered read: it names
-        // no resource, so a leg of it this service cannot compute says nothing about which
-        // documents exist, and the resources the path names have already answered for
-        // themselves. A value the model does not define never reaches here — the boundary
-        // validator refuses one against `DocumentOutputFormat`'s value set before a handler
-        // runs — so both refusals below are about a modelled format.
+        // Only NOW are the members that select WHAT of the document is addressed read: they
+        // name no resource of the path, so a leg of them this service cannot compute says
+        // nothing about which documents exist, and the resources the path names have already
+        // answered for themselves.
+        //
+        // The two of them are PAIRED by the model: a request naming an image embedded in the
+        // document asks for that image "instead of the document", so the only rendering it
+        // may ask of it is the one the image was ingested in.
+        if let (Some(media_id), Some(format)) =
+            (input.media_id.as_deref(), input.output_format.as_deref())
+        {
+            if format != content::OUTPUT_FORMAT_RAW {
+                return Err(refuse(format!(
+                    "mediaId: a request naming the image {media_id} embedded in a document \
+                     must omit outputFormat or set it to {raw}, and this one asks for \
+                     {format}",
+                    raw = content::OUTPUT_FORMAT_RAW
+                )));
+            }
+        }
+
+        // A value the model does not define never reaches here — the boundary validator
+        // refuses one against `DocumentOutputFormat`'s value set before a handler runs — so
+        // both refusals below are about a modelled format.
         match input.output_format.as_deref() {
             None | Some(content::OUTPUT_FORMAT_RAW) => {}
             Some(content::OUTPUT_FORMAT_EXTRACTED) => {
@@ -284,6 +319,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     content::OUTPUT_FORMAT_RAW
                 )));
             }
+        }
+
+        // An image EMBEDDED in the document is a resource of its own, and this emulator
+        // holds none for any document (`crate::state::document_content`), so a read naming
+        // one is answered for the media that was not found rather than with the address of
+        // the whole document, which is what a read naming no media asks for.
+        if let Some(media_id) = input.media_id.as_deref() {
+            return Err(GetDocumentContentErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: Some(content::media_not_found_message(media_id)),
+                },
+            )
+            .into());
         }
 
         // The URL leads back to THIS emulator, signed by the framework's own signer, so the

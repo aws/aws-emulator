@@ -103,7 +103,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /knowledgebases/{knowledgeBaseId}/datasources/{dataSourceId}/documents/{documentId}/content -> 200`
 - **Traits:** @readonly
-- **Input:** `knowledgeBaseId` (string, len 10..2048, pattern ^[0-9a-zA-Z]{10}$|^arn:aws(-[^:]+)?:bedrock:[a-z0-9-]{1,20}:[0-9]{12}:knowledge-base/[0-9a-zA-Z]{10}$, @httpLabel, required), `dataSourceId` (string, len ..10, pattern ^[0-9a-zA-Z]+$, @httpLabel, required), `documentId` (string, len 1..1825, pattern ^\P{C}*$, @httpLabel, required), `outputFormat` (DocumentOutputFormat, one of: EXTRACTED | RAW), `userContext` (UserContext)
+- **Input:** `knowledgeBaseId` (string, len 10..2048, pattern ^[0-9a-zA-Z]{10}$|^arn:aws(-[^:]+)?:bedrock:[a-z0-9-]{1,20}:[0-9]{12}:knowledge-base/[0-9a-zA-Z]{10}$, @httpLabel, required), `dataSourceId` (string, len ..10, pattern ^[0-9a-zA-Z]+$, @httpLabel, required), `documentId` (string, len 1..1825, pattern ^\P{C}*$, @httpLabel, required), `mediaId` (string, len 36..36, pattern ^[a-zA-Z0-9][a-zA-Z0-9-]{35}$), `outputFormat` (DocumentOutputFormat, one of: EXTRACTED | RAW), `userContext` (UserContext)
 - **Output:** `mimeType` (string, required), `presignedUrl` (string, required), `documentContentLength` (long)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
