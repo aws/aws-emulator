@@ -105,6 +105,8 @@
 //!
 //! ## Errors
 //!
+//! * `AccessDeniedException` (HTTP 403) — The caller does not have the permissions required
+//!   to perform the operation.
 //! * `ConcurrentModificationException` (HTTP 409) — Another change to the resource is already
 //!   in progress. Retry the request.
 //! * `InvalidStateException` (HTTP 409) — The resource is not in a state that allows the
@@ -129,10 +131,11 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-eventbridgev2-awsevents
 // to construct until the model says otherwise.
 #[smithy_macros::operation_error(
     "com.amazonaws.eventbridgev2#UpdateSubscriber",
-    extra_errors = ["InternalException", "InvalidInputException"]
+    extra_errors = ["AccessDeniedException", "InternalException", "InvalidInputException"]
 )]
 #[derive(Debug)]
 pub enum UpdateSubscriberErrorModeled {
+    AccessDeniedException(AccessDeniedException),
     ConcurrentModificationException(ConcurrentModificationException),
     InternalException(InternalException),
     InvalidInputException(InvalidInputException),
@@ -319,23 +322,25 @@ fn apply(
         .into());
     }
 
-    // The TRANSFORMATION this update leaves the subscriber with — the
-    // transformer the request carries or the one the subscriber already holds,
-    // against the target configuration it leaves behind — is held to the SAME
-    // contract a create's is, so an update cannot install a transformation a
-    // create would have refused: the delivery path hands a target what the
-    // transformer produces and nothing else, so a subscriber left holding a
-    // transformation this service cannot perform would deliver nothing and say
-    // nothing about why, while its publisher kept being told its events were
+    // The TARGET CONFIGURATION and the TRANSFORMATION this update leaves the
+    // subscriber with are held to the SAME contract a create's are
+    // ([`crate::state::invoke_configuration_fault`]), so an update cannot
+    // install a configuration a create would have refused: what a subscriber
+    // invokes is fixed at creation, so the parameters member, the values it
+    // carries and the call it names are read against the target the subscriber
+    // already holds, and the delivery path hands that target what the
+    // transformer produces and nothing else — a subscriber left holding a
+    // configuration this service cannot deliver under would deliver nothing and
+    // say nothing about why, while its publisher kept being told its events were
     // accepted.
     //
     // Either member may be the one the request changes, so both are read as the
-    // update leaves them. What a caller ASKED for is what can conflict with a
-    // universal target — the request's own transformer, or the one the
-    // subscriber was configured with — while the transformer the SERVICE applies
-    // to a subscriber that configured none is not a configuration, so an update
-    // that makes such a subscriber's target universal is served and leaves it
-    // the transformation that target takes (none).
+    // update leaves them: a member the request carries REPLACES the stored one
+    // wholesale, and one it omits is the stored value. What a caller ASKED for is
+    // what can conflict with a universal target — the request's own transformer,
+    // or the one the subscriber was configured with — while the transformer the
+    // SERVICE applies to a subscriber that configured none is not a
+    // configuration a later request can be held to.
     let invoke_configuration = match input.invoke_configuration.as_ref() {
         Some(requested) => invoked(subscriber.invoke_configuration.target_arn.clone(), requested),
         None => subscriber.invoke_configuration.clone(),
@@ -348,11 +353,27 @@ fn apply(
             .filter(|held| !crate::state::is_default_transformer(held)),
     };
     if let Some(reason) =
-        crate::state::transformation_fault(&invoke_configuration, transformer.as_ref())
+        crate::state::invoke_configuration_fault(&invoke_configuration, transformer.as_ref())
     {
         return Err(UpdateSubscriberErrorModeled::InvalidInputException(
             InvalidInputException {
                 message: Some(reason),
+            },
+        )
+        .into());
+    }
+
+    // The role is the one thing a request does not merely NAME but acts under:
+    // "IAM role the service assumes to invoke the target. Must belong to the
+    // calling account", so a value naming a role of another account is one no
+    // delivery could ever be made under, and the caller may not configure it.
+    // That is a permission refusal rather than a bad parameter, which is the
+    // error class it answers in — the same reading, in the same place of the
+    // chain, as the create of a subscriber takes.
+    if crate::state::role_is_not_the_callers(&invoke_configuration.role_arn) {
+        return Err(UpdateSubscriberErrorModeled::AccessDeniedException(
+            AccessDeniedException {
+                message: Some(crate::state::ACCESS_DENIED_MESSAGE.to_string()),
             },
         )
         .into());

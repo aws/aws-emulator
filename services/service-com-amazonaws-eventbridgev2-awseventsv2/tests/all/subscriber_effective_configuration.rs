@@ -47,7 +47,8 @@ use eventsv2::ops::types::{
 use eventsv2::ops::update_subscriber::UpdateSubscriber;
 
 use crate::modelled_input_refusal::{
-    create_source, create_subscriber, rendered, with_client_token, Wire,
+    create_source, create_subscriber, refusal, rendered, with_client_token, Wire,
+    INVALID_INPUT_EXCEPTION,
 };
 
 /// The `MaxBatchSize` a subscriber that named none batches at — the service's
@@ -464,51 +465,54 @@ async fn a_subscriber_on_a_universal_target_reads_back_no_transformer() {
     );
 }
 
-/// What a caller ASKED for is what conflicts with a universal target: an update
-/// that makes the target universal is served for a subscriber carrying only the
-/// transformation the service applies to one that configured none — and leaves
-/// it the transformation such a target takes, which is none — while one
-/// carrying a transformer of its own is refused `InvalidInputException` and
-/// writes nothing.
+/// What a subscriber invokes is fixed at creation — `UpdateInvokeConfiguration`
+/// carries no `TargetArn` — so a parameters member for ANOTHER service than the
+/// stored target's is a member that target cannot be invoked through: the update
+/// is refused `InvalidInputException` (400) whatever transformation the
+/// subscriber holds, and writes nothing, so the effective configuration a read
+/// reports is the one the create left.
 #[tokio::test]
-async fn an_update_to_a_universal_target_is_refused_for_a_transformer_the_caller_asked_for() {
+async fn an_update_naming_parameters_the_stored_target_does_not_take_is_refused() {
     let wire = Wire::new();
     let bus = wire
         .active_bus("the universal switch's bus", "universal-switch-bus")
         .await;
 
-    // (case, the Transformer the create names, whether the update that makes the
-    // target universal is served)
-    let rows: [(&str, Option<&str>, bool); 3] = [
-        ("a subscriber that configured no transformer", None, true),
+    // (case, the Transformer the create names, the whole Message of the refusal)
+    let rows: [(&str, Option<&str>, Refusal); 3] = [
+        (
+            "a subscriber that configured no transformer",
+            None,
+            Refusal::ParametersMismatch,
+        ),
         (
             "a subscriber that named the transformation the service applies anyway",
             Some(DEFAULT_TRANSFORMER_TYPE),
-            true,
+            Refusal::ParametersMismatch,
         ),
         (
             "a subscriber that named a transformation of its own",
             Some("WITH_METADATA"),
-            false,
+            Refusal::TransformerOnUniversalTarget,
         ),
     ];
 
-    for (index, (case, named, served)) in rows.into_iter().enumerate() {
+    for (index, (case, named, expected)) in rows.into_iter().enumerate() {
         let mut input = create_subscriber(&format!("universal-switch-{index}"), &bus, None);
         input.transformer = named.map(|r#type| Transformer {
             r#type: Some(r#type.to_string()),
             jsonata_configuration: None,
         });
         let (arn, before) = created_and_read(&wire, case, input).await;
+        let invoked = before
+            .invoke_configuration
+            .as_ref()
+            .unwrap_or_else(|| panic!("case {case:?}: the create must report what it invokes"));
 
         let update = UpdateSubscriberInput {
             subscriber_arn: arn.clone(),
             invoke_configuration: Some(UpdateInvokeConfiguration {
-                role_arn: before
-                    .invoke_configuration
-                    .as_ref()
-                    .map(|invoked| invoked.role_arn.clone())
-                    .unwrap_or_default(),
+                role_arn: invoked.role_arn.clone(),
                 universal_target_parameters: Some(UniversalTargetParameters {
                     input: "{}".to_string(),
                     invocation_timeout_seconds: None,
@@ -520,41 +524,61 @@ async fn an_update_to_a_universal_target_is_refused_for_a_transformer_the_caller
         let (status, body) = wire
             .call::<UpdateSubscriber<InMemoryEngine>>(&update)
             .await;
+        assert_eq!(
+            status,
+            400,
+            "case {case:?}: the update must be refused 400, got {status} with {:?}",
+            rendered(&body)
+        );
+        let (code, message) = refusal(case, &body);
+        let wanted_message = match expected {
+            // The member the request named, the target it named it for, and the
+            // member that target takes instead — the target ARN read back off
+            // the created subscriber rather than written out here.
+            Refusal::ParametersMismatch => format!(
+                "UniversalTargetParameters is not supported for target {}. Expected SqsParameters",
+                invoked.target_arn
+            ),
+            Refusal::TransformerOnUniversalTarget => TRANSFORMER_ON_UNIVERSAL_TARGET.to_string(),
+        };
+        assert_eq!(
+            (code.as_str(), message.as_str()),
+            (INVALID_INPUT_EXCEPTION, wanted_message.as_str()),
+            "case {case:?}: expected {INVALID_INPUT_EXCEPTION} saying {wanted_message:?}, got \
+             {code:?} saying {message:?}"
+        );
         let after = effective_of(&read(&wire, case, &arn).await);
-        if served {
-            assert_eq!(
-                status,
-                200,
-                "case {case:?}: the update must be served, got {status} with {:?}",
-                rendered(&body)
-            );
-            let wanted = Effective {
-                transformer: None,
-                ..defaults()
-            };
-            assert_eq!(
-                after, wanted,
-                "case {case:?}: expected {wanted:?} after the update, got {after:?}"
-            );
-        } else {
-            assert_eq!(
-                status,
-                400,
-                "case {case:?}: the update must be refused 400, got {status} with {:?}",
-                rendered(&body)
-            );
-            let wanted = Effective {
-                transformer: Some(named.map(str::to_string)),
-                ..defaults()
-            };
-            assert_eq!(
-                after, wanted,
-                "case {case:?}: a refused update must write nothing, expected {wanted:?}, got \
-                 {after:?}"
-            );
-        }
+        // The transformation the create left the subscriber: the one it named,
+        // or the one the service applies where it named none.
+        let wanted = Effective {
+            transformer: Some(Some(
+                named.unwrap_or(DEFAULT_TRANSFORMER_TYPE).to_string(),
+            )),
+            ..defaults()
+        };
+        assert_eq!(
+            after, wanted,
+            "case {case:?}: a refused update must write nothing, expected {wanted:?}, got \
+             {after:?}"
+        );
     }
 }
+
+/// Which reading of the chain refuses a row of the table above: the parameters
+/// member the stored target cannot be invoked through, or — where the subscriber
+/// holds a transformation its caller asked for — that transformation against the
+/// universal parameters the request carries, which is read first.
+enum Refusal {
+    ParametersMismatch,
+    TransformerOnUniversalTarget,
+}
+
+/// The whole `Message` of the refusal a transformation on a universal target is
+/// answered with: `Transformer` is "Not applicable to universal (aws-sdk)
+/// targets, whose input transformation is UniversalTargetParameters.Input; a
+/// Transformer on such a target is rejected".
+const TRANSFORMER_ON_UNIVERSAL_TARGET: &str = "Transformer: a universal target takes its input \
+     transformation from UniversalTargetParameters.Input and accepts no Transformer";
 
 // ---------------------------------------------------------------------------
 // RULE: an update settles it again over what it leaves behind

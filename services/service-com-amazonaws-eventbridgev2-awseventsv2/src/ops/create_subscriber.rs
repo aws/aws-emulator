@@ -306,7 +306,7 @@ fn create(
     // under at all — the transformation, the target, the parameters member that
     // goes with it, the values it carries and the batching it is invoked under:
     // the ONE contract both the create and the update of a subscriber are held
-    // to ([`crate::state::configuration_fault`]).
+    // to ([`crate::state::invoke_configuration_fault`]).
     if let Some(reason) = invalid_input(input) {
         return Err(CreateSubscriberErrorModeled::InvalidInputException(
             InvalidInputException {
@@ -533,32 +533,24 @@ fn create(
 /// `crate::state`, beside the record it is about, which is what lets the update
 /// of a subscriber be held to the same rules.
 ///
-/// The readings, in the order a refusal takes them: the transformation the
-/// request asks for, against the target that is handed it
-/// ([`crate::state::transformation_fault`], the chain the update of a subscriber
-/// is held to as well), the parameters member the target takes
-/// ([`crate::state::target_parameters_fault`]), the values that member carries
-/// ([`crate::state::configured_expression_fault`],
-/// [`crate::state::invocation_timeout_fault`]), the account the target belongs
-/// to ([`crate::state::target_account_fault`]) and the call a universal target
-/// names and the request it is made with
-/// ([`crate::state::universal_target_api_fault`],
-/// [`crate::state::universal_target_input_fault`],
-/// [`crate::state::universal_target_batch_fault`]).
+/// The readings, in the order a refusal takes them: the ONE contract every call
+/// that writes a subscriber's `InvokeConfiguration` is held to
+/// ([`crate::state::invoke_configuration_fault`], which the update of a
+/// subscriber is held to as well), and then the batching a UNIVERSAL target has
+/// to state ([`crate::state::universal_target_batch_fault`]), which is about the
+/// `BatchConfiguration` this request carries rather than about the target
+/// configuration itself.
 fn invalid_input(input: &CreateSubscriberInput) -> Option<String> {
-    crate::state::transformation_fault(&input.invoke_configuration, input.transformer.as_ref())
-        .or_else(|| crate::state::target_parameters_fault(&input.invoke_configuration))
-        .or_else(|| crate::state::configured_expression_fault(&input.invoke_configuration))
-        .or_else(|| crate::state::invocation_timeout_fault(&input.invoke_configuration))
-        .or_else(|| crate::state::target_account_fault(&input.invoke_configuration))
-        .or_else(|| crate::state::universal_target_api_fault(&input.invoke_configuration))
-        .or_else(|| crate::state::universal_target_input_fault(&input.invoke_configuration))
-        .or_else(|| {
-            crate::state::universal_target_batch_fault(
-                &input.invoke_configuration,
-                input.batch_configuration.as_ref(),
-            )
-        })
+    crate::state::invoke_configuration_fault(
+        &input.invoke_configuration,
+        input.transformer.as_ref(),
+    )
+    .or_else(|| {
+        crate::state::universal_target_batch_fault(
+            &input.invoke_configuration,
+            input.batch_configuration.as_ref(),
+        )
+    })
 }
 
 /// Project a stored subscriber into `CreateSubscriberResponse`. Every member is

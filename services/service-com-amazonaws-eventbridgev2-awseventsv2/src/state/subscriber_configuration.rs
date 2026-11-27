@@ -176,6 +176,43 @@ pub fn transformation_fault(
     .or_else(|| super::classic_target_transformer_fault(invoke_configuration, transformer))
 }
 
+/// Why the TARGET CONFIGURATION a subscriber would be left with is not one this
+/// service could invoke, or `None` when it is.
+///
+/// The ONE contract every call that WRITES a subscriber's
+/// `InvokeConfiguration` is held to — the create that mints one and the update
+/// that rewrites one — so neither can leave a subscriber a configuration the
+/// other would have refused. That matters beyond the wording of a refusal: a
+/// subscriber whose configuration names a call this service cannot make
+/// delivers NOTHING and says nothing about why, while its publisher keeps being
+/// told its events were accepted.
+///
+/// The arguments are the configuration and the transformation the call leaves
+/// behind rather than the members its request happened to carry, since either of
+/// them may be the one being rewritten and an update inherits the rest from the
+/// stored subscriber.
+///
+/// The readings, in the order a refusal takes them: the transformation the
+/// configuration is handed ([`transformation_fault`]), the parameters member the
+/// target takes ([`super::target_parameters_fault`]), the values that member
+/// carries ([`super::configured_expression_fault`],
+/// [`super::invocation_timeout_fault`]), the account the target belongs to
+/// ([`super::target_account_fault`]) and the call a universal target names with
+/// the request it is made with ([`super::universal_target_api_fault`],
+/// [`super::universal_target_input_fault`]).
+pub fn invoke_configuration_fault(
+    invoke_configuration: &InvokeConfiguration,
+    transformer: Option<&Transformer>,
+) -> Option<String> {
+    transformation_fault(invoke_configuration, transformer)
+        .or_else(|| super::target_parameters_fault(invoke_configuration))
+        .or_else(|| super::configured_expression_fault(invoke_configuration))
+        .or_else(|| super::invocation_timeout_fault(invoke_configuration))
+        .or_else(|| super::target_account_fault(invoke_configuration))
+        .or_else(|| super::universal_target_api_fault(invoke_configuration))
+        .or_else(|| super::universal_target_input_fault(invoke_configuration))
+}
+
 /// Whether `transformer` is the one the SERVICE applies to a subscriber that
 /// configured none ([`effective_transformer`]) rather than one a caller asked
 /// for: the raw transformation and nothing beside it.
