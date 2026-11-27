@@ -76,8 +76,9 @@
 //!   collected metrics. Valid destinations are Amazon Managed Service for Prometheus
 //!   workspaces and CloudWatch datasets.
 //! * `exporters` (ExporterList, len ..1) — The exporter configurations for the scraper. You
-//!   can configure at most one Amazon OpenSearch Service domain. If you don't specify a
-//!   value, the scraper is created without an exporter configuration.
+//!   can configure at most one exporter, for either an Amazon OpenSearch Service domain or
+//!   an Amazon MSK cluster. If you don't specify a value, the scraper is created without an
+//!   exporter configuration.
 //! * `roleConfiguration` (RoleConfiguration) — Use this structure to enable cross-account
 //!   access, so that you can use a target account to access Prometheus metrics from source
 //!   accounts.

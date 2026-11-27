@@ -118,12 +118,21 @@ pub struct RoleConfiguration {
 #[derive(Debug, Clone)]
 pub enum ExporterConfiguration {
     openSearchConfiguration(OpenSearchExporterConfiguration),
+    kafkaConfiguration(KafkaExporterConfiguration),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.amp#OpenSearchExporterConfiguration")]
 #[derive(Debug, Clone, Default)]
 pub struct OpenSearchExporterConfiguration {
     pub domain_arn: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.amp#KafkaExporterConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct KafkaExporterConfiguration {
+    pub cluster_arn: String,
+    pub topic_filter: Option<String>,
+    pub consumer_group_filter: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.amp#ScraperStatus")]

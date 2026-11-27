@@ -15,11 +15,14 @@
 use crate::scraper_listing::{
     eks_source, listed, scraper as seeded_scraper, seed, workspace_destination,
 };
-use crate::scraper_update::{exporters_json, role_configuration_json, scrape_configuration_json};
+use crate::scraper_update::{
+    exporters_json, kafka_exporters_json, role_configuration_json, scrape_configuration_json,
+};
 use crate::workspace_lifecycle::{tags_of, text, wait_for_due_transition, Amp, Reply};
 use service_com_amazonaws_amp_amazonprometheusservice::state::{
     SCRAPERS_PER_ACCOUNT_QUOTA, SCRAPER_NOT_FOUND_MESSAGE, SCRAPER_RESOURCE_TYPE, STATUS_ACTIVE,
-    STATUS_CREATING, STATUS_DELETING, WORKSPACE_NOT_FOUND_MESSAGE, WORKSPACE_RESOURCE_TYPE,
+    STATUS_CREATING, STATUS_DELETING, VALIDATION_REASON, WORKSPACE_NOT_FOUND_MESSAGE,
+    WORKSPACE_RESOURCE_TYPE,
 };
 
 /// `POST /scrapers`, the binding the model gives this operation.
@@ -420,6 +423,261 @@ async fn a_create_persists_the_scraper_and_reports_it_from_the_record() {
         "the listing must report every created scraper, expected {expected_ids:?}, got \
          {listed_ids:?}"
     );
+}
+
+/// The `exporters` one listing reported for one scraper. `ScraperSummary` carries the
+/// member too, so the rule below is asserted through BOTH readers of the stored record.
+fn listed_exporters(body: &serde_json::Value, scraper_id: &str) -> serde_json::Value {
+    body["scrapers"]
+        .as_array()
+        .and_then(|entries| {
+            entries
+                .iter()
+                .find(|entry| text(&entry["scraperId"]) == scraper_id)
+        })
+        .map_or(serde_json::Value::Null, |entry| {
+            entry["exporters"].clone()
+        })
+}
+
+/// `exporters` is persisted exactly as the create sent it and reported back by every reader
+/// of the record. `ExporterList` is `@length(max: 1)` over the `ExporterConfiguration`
+/// union, whose variants are an Amazon OpenSearch Service domain and a managed Kafka
+/// exporter for an Amazon MSK cluster
+/// (`smithy_query(query="shape",shape="ExporterConfiguration")`): "You can configure at
+/// most one exporter, for either an Amazon OpenSearch Service domain or an Amazon MSK
+/// cluster. If you don't specify a value, the scraper is created without an exporter
+/// configuration."
+///
+/// One row per shape the member can take: omitted, the empty list, each variant of the
+/// union, and the Kafka variant with each of its optional `KafkaExporterFilter` members
+/// present, absent, and at the published maximum length of that shape (256 characters).
+/// Every row is read back through `DescribeScraper` and through `ListScrapers`.
+#[tokio::test]
+async fn every_exporter_variant_is_persisted_and_reported_by_every_reader() {
+    let region = "us-west-2";
+    let amp = Amp::new();
+    let workspace_arn = create_workspace(&amp, region).await;
+
+    // `KafkaExporterFilter` is `@length(min: 1, max: 256)` and documented as an anchored
+    // expression ("The expression must start with `^` and end with `$`"), so the row at
+    // the published maximum is an anchored expression of exactly 256 characters.
+    let longest_filter = format!("^{}$", "a".repeat(254));
+
+    // Each row: the `exporters` member the request carries — `None` when it omits it
+    // entirely — and the list every reader must report for the created scraper.
+    let cases: Vec<(&str, Option<serde_json::Value>, serde_json::Value)> = vec![
+        (
+            "the member omitted, so the scraper is created without an exporter",
+            None,
+            serde_json::json!([]),
+        ),
+        (
+            "the empty list",
+            Some(serde_json::json!([])),
+            serde_json::json!([]),
+        ),
+        (
+            "an Amazon OpenSearch Service domain",
+            Some(exporters_json("metrics-domain")),
+            exporters_json("metrics-domain"),
+        ),
+        (
+            "a managed Kafka exporter with neither filter",
+            Some(kafka_exporters_json("metrics-msk", None, None)),
+            kafka_exporters_json("metrics-msk", None, None),
+        ),
+        (
+            "a managed Kafka exporter with the topic filter alone",
+            Some(kafka_exporters_json(
+                "topics-msk",
+                Some("^orders\\..*$"),
+                None,
+            )),
+            kafka_exporters_json("topics-msk", Some("^orders\\..*$"), None),
+        ),
+        (
+            "a managed Kafka exporter with the consumer-group filter alone",
+            Some(kafka_exporters_json(
+                "groups-msk",
+                None,
+                Some("^analytics-.*$"),
+            )),
+            kafka_exporters_json("groups-msk", None, Some("^analytics-.*$")),
+        ),
+        (
+            "a managed Kafka exporter with the documented catch-all filters",
+            Some(kafka_exporters_json(
+                "catch-all-msk",
+                Some("^.*$"),
+                Some("^.*$"),
+            )),
+            kafka_exporters_json("catch-all-msk", Some("^.*$"), Some("^.*$")),
+        ),
+        (
+            "a managed Kafka exporter with both filters at the published maximum of 256",
+            Some(kafka_exporters_json(
+                "bounded-msk",
+                Some(&longest_filter),
+                Some(&longest_filter),
+            )),
+            kafka_exporters_json(
+                "bounded-msk",
+                Some(&longest_filter),
+                Some(&longest_filter),
+            ),
+        ),
+    ];
+
+    for (case, sent, expected) in cases {
+        let mut body = serde_json::json!({
+            "scrapeConfiguration": scrape_configuration_json("global: {}\n"),
+            "source": eks_source_json(region, "exporter-cluster", &["subnet-0123456789abcdef0"], &[]),
+            "destination": workspace_destination_json(&workspace_arn),
+        });
+        if let Some(exporters) = sent {
+            body["exporters"] = exporters;
+        }
+
+        let reply = create(&amp, region, &body).await;
+        assert_eq!(
+            reply.status, 202,
+            "case {case:?}: CreateScraper is modelled 202, got {reply:?}"
+        );
+        let scraper_id = text(&reply.body["scraperId"]);
+
+        let stored = describe(&amp, region, &scraper_id).await;
+        assert_eq!(
+            stored.status, 200,
+            "case {case:?}: the created scraper must be describable, got {stored:?}"
+        );
+        assert_eq!(
+            stored.body["scraper"]["exporters"], expected,
+            "case {case:?}: the describe must report the exporter the create wrote, \
+             expected {expected:?}, got {:?}",
+            stored.body["scraper"]["exporters"]
+        );
+
+        let listing = amp.call("GET", "/scrapers", region, "").await;
+        assert_eq!(
+            listing.status, 200,
+            "case {case:?}: the listing must answer 200, got {listing:?}"
+        );
+        assert_eq!(
+            listed_exporters(&listing.body, &scraper_id),
+            expected,
+            "case {case:?}: the summary must report the exporter the create wrote, \
+             expected {expected:?}, got {:?}",
+            listed_exporters(&listing.body, &scraper_id)
+        );
+    }
+}
+
+/// The constraints the model declares on `exporters` are applied at the request boundary:
+/// the list's `@length(max: 1)`, the `@pattern` of each variant's `@required` ARN member
+/// (`MskClusterArn` and `OpenSearchDomainArn`), and the `@length(min: 1, max: 256)` of
+/// `KafkaExporterFilter`. A request outside any of them is the modelled
+/// `ValidationException` (400) naming the member at fault, and nothing is persisted.
+#[tokio::test]
+async fn an_exporter_outside_its_modelled_constraints_is_refused() {
+    let region = "us-west-2";
+    let amp = Amp::new();
+    let workspace_arn = create_workspace(&amp, region).await;
+    let account = engine::emulator_account_id();
+    let too_long_filter = format!("^{}$", "a".repeat(255));
+
+    // Each row: the `exporters` member the request carries, and the member the refusal must
+    // name — the path the framework's own constraint walk reports it at, whose list segment
+    // numbers elements from one.
+    let cases: Vec<(&str, serde_json::Value, &str)> = vec![
+        (
+            "two exporters, past the list bound of one",
+            serde_json::json!([
+                exporters_json("metrics-domain")[0],
+                kafka_exporters_json("metrics-msk", None, None)[0],
+            ]),
+            "exporters",
+        ),
+        (
+            "a clusterArn that is not an Amazon MSK cluster ARN",
+            serde_json::json!([{
+                "kafkaConfiguration": {
+                    "clusterArn": format!("arn:aws:kafka:us-west-2:{account}:topic/metrics"),
+                },
+            }]),
+            "exporters.1.member.kafkaConfiguration.clusterArn",
+        ),
+        (
+            "a domainArn that is not an Amazon OpenSearch Service domain ARN",
+            serde_json::json!([{
+                "openSearchConfiguration": {
+                    "domainArn": format!("arn:aws:es:us-west-2:{account}:index/metrics"),
+                },
+            }]),
+            "exporters.1.member.openSearchConfiguration.domainArn",
+        ),
+        (
+            "a topicFilter one character past the published maximum of 256",
+            kafka_exporters_json("metrics-msk", Some(&too_long_filter), None),
+            "exporters.1.member.kafkaConfiguration.topicFilter",
+        ),
+        (
+            "an empty consumerGroupFilter, below the published minimum of 1",
+            kafka_exporters_json("metrics-msk", None, Some("")),
+            "exporters.1.member.kafkaConfiguration.consumerGroupFilter",
+        ),
+    ];
+
+    for (case, exporters, member) in cases {
+        let body = serde_json::json!({
+            "scrapeConfiguration": scrape_configuration_json("global: {}\n"),
+            "source": eks_source_json(region, "refused-cluster", &["subnet-0123456789abcdef0"], &[]),
+            "destination": workspace_destination_json(&workspace_arn),
+            "exporters": exporters,
+        });
+
+        let reply = create(&amp, region, &body).await;
+        assert_eq!(
+            reply.status, 400,
+            "case {case:?}: a value outside a modelled constraint is the modelled 400, \
+             got {reply:?}"
+        );
+        assert_eq!(
+            reply.error_code(),
+            "ValidationException",
+            "case {case:?}: expected the modelled ValidationException, got {reply:?}"
+        );
+        assert_eq!(
+            text(&reply.body["reason"]),
+            VALIDATION_REASON,
+            "case {case:?}: `reason` is @required and must name the reason aps reports, \
+             got {reply:?}"
+        );
+        let fields = reply.body["fieldList"].as_array().cloned().unwrap_or_default();
+        assert_eq!(
+            fields.len(),
+            1,
+            "case {case:?}: one member failed a constraint, so the refusal names one, \
+             got {reply:?}"
+        );
+        assert_eq!(
+            text(&fields[0]["name"]),
+            member,
+            "case {case:?}: the refusal must name the member at fault, got {reply:?}"
+        );
+        assert_eq!(
+            text(&reply.body["message"]),
+            format!("Invalid {member}: {}", text(&fields[0]["message"])),
+            "case {case:?}: the message must name the member and the requirement it \
+             failed, got {reply:?}"
+        );
+        assert_eq!(
+            stored_count(&amp, region),
+            0,
+            "case {case:?}: a refused create must persist nothing, got {} stored",
+            stored_count(&amp, region)
+        );
+    }
 }
 
 /// The identity a create mints is read from the REQUEST's region and the emulator's

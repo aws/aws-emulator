@@ -62,8 +62,9 @@
 //!   destinations are Amazon Managed Service for Prometheus workspaces and CloudWatch
 //!   datasets.
 //! * `exporters` (ExporterList, len ..1) — The exporter configurations for the scraper. You
-//!   can configure at most one Amazon OpenSearch Service domain. If you don't specify a
-//!   value, the existing exporter configuration remains unchanged.
+//!   can configure at most one exporter, for either an Amazon OpenSearch Service domain or
+//!   an Amazon MSK cluster. If you don't specify a value, the existing exporter
+//!   configuration remains unchanged. Specify an empty list to remove the exporter.
 //! * `roleConfiguration` (RoleConfiguration) — Use this structure to enable cross-account
 //!   access, so that you can use a target account to access Prometheus metrics from source
 //!   accounts.
@@ -270,6 +271,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // the stored one and a member it omits leaves the record alone — which is
             // also why `source` is absent from this input: "You can't use this function
             // to update the source from which the scraper is collecting metrics."
+            // A list the request carries replaces the stored one whatever its length, so
+            // the empty list leaves the scraper with no exporter: "Specify an empty list
+            // to remove the exporter."
             if let Some(alias) = input.alias {
                 scraper.alias = Some(alias);
             }

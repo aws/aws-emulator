@@ -75,6 +75,34 @@ pub(crate) fn exporters_json(domain: &str) -> serde_json::Value {
     }])
 }
 
+/// The ARN of one MSK cluster of this account and Region, in the form `MskClusterArn`
+/// models (`^arn:aws[-a-z]*:kafka:[-a-z0-9]+:[0-9]{12}:cluster\/.+$`) —
+/// `smithy_query(query="shape",shape="MskClusterArn")`.
+pub(crate) fn kafka_cluster_arn(cluster: &str) -> String {
+    format!(
+        "arn:aws:kafka:us-west-2:{}:cluster/{cluster}/abcd1234-1111-2222-3333-444455556666-1",
+        engine::emulator_account_id()
+    )
+}
+
+/// A managed Kafka exporter — the OTHER variant `ExporterConfiguration` declares beside
+/// the OpenSearch one. `clusterArn` is `@required`; the two `KafkaExporterFilter` members
+/// are optional, so each is carried only when the caller names it.
+pub(crate) fn kafka_exporters_json(
+    cluster: &str,
+    topic_filter: Option<&str>,
+    consumer_group_filter: Option<&str>,
+) -> serde_json::Value {
+    let mut configuration = serde_json::json!({ "clusterArn": kafka_cluster_arn(cluster) });
+    if let Some(filter) = topic_filter {
+        configuration["topicFilter"] = serde_json::json!(filter);
+    }
+    if let Some(filter) = consumer_group_filter {
+        configuration["consumerGroupFilter"] = serde_json::json!(filter);
+    }
+    serde_json::json!([{ "kafkaConfiguration": configuration }])
+}
+
 /// A cross-account role configuration, both ARNs satisfying `IamRoleArn`'s pattern
 /// `^arn:aws[-a-z]*:iam::[0-9]{12}:role/.+$`.
 pub(crate) fn role_configuration_json() -> serde_json::Value {
@@ -201,6 +229,32 @@ async fn an_update_replaces_the_members_it_carries_and_leaves_the_rest() {
             "one exporter, where the record had none",
             serde_json::json!({ "exporters": exporters_json("metrics-domain") }),
             vec![("exporters", exporters_json("metrics-domain"))],
+        ),
+        (
+            "one managed Kafka exporter, where the record had none",
+            serde_json::json!({ "exporters": kafka_exporters_json("metrics-msk", None, None) }),
+            vec![(
+                "exporters",
+                kafka_exporters_json("metrics-msk", None, None),
+            )],
+        ),
+        (
+            "one managed Kafka exporter carrying both optional filters",
+            serde_json::json!({
+                "exporters": kafka_exporters_json(
+                    "filtered-msk",
+                    Some("^orders\\..*$"),
+                    Some("^analytics-.*$"),
+                ),
+            }),
+            vec![(
+                "exporters",
+                kafka_exporters_json(
+                    "filtered-msk",
+                    Some("^orders\\..*$"),
+                    Some("^analytics-.*$"),
+                ),
+            )],
         ),
         (
             "every updatable member at once",
@@ -351,6 +405,151 @@ async fn an_update_replaces_the_members_it_carries_and_leaves_the_rest() {
                 settled.body["scraper"][member]
             );
         }
+    }
+}
+
+/// Look again until the settling the clock owes one scraper has happened: a describe is
+/// repeated until the record reports `ACTIVE`, or a deadline far past the span the emulator
+/// gives a transition has passed. The CONDITION is what is waited for — nothing here
+/// asserts how long the settling took.
+async fn wait_for_active(amp: &Amp, region: &str, scraper_id: &str, case: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let reply = describe(amp, region, scraper_id).await;
+        if text(&reply.body["scraper"]["status"]["statusCode"]) == STATUS_ACTIVE {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case:?}: the scraper never settled to {STATUS_ACTIVE}, got {reply:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// `UpdateScraper$exporters`, as the model documents it: "If you don't specify a value, the
+/// existing exporter configuration remains unchanged. Specify an empty list to remove the
+/// exporter." So a request that NAMES the member replaces whatever the scraper holds —
+/// whichever variant of the `ExporterConfiguration` union either side is — an EMPTY list
+/// leaves the scraper with no exporter at all, and a request that omits the member leaves
+/// the stored configuration exactly as it was.
+///
+/// Every exporter below is written through the operation under test and read back through
+/// `DescribeScraper`, so what is asserted is what the service PERSISTED. One row per
+/// transition the rule generalises over: each variant replaced by the other, one replaced
+/// by itself with different optional filters, and each removed by the empty list.
+#[tokio::test]
+async fn an_update_replaces_the_exporter_it_carries_and_an_empty_list_removes_it() {
+    let region = "us-west-2";
+    let scraper_id = "s-99999999-9999-9999-9999-999999999999";
+
+    // Each row: the exporter list the scraper is given first, and the list the second
+    // update carries — which is what the describe must report afterwards.
+    let cases: Vec<(&str, serde_json::Value, serde_json::Value)> = vec![
+        (
+            "an OpenSearch exporter replaced by a managed Kafka one",
+            exporters_json("metrics-domain"),
+            kafka_exporters_json("metrics-msk", Some("^orders\\..*$"), None),
+        ),
+        (
+            "a managed Kafka exporter replaced by an OpenSearch one",
+            kafka_exporters_json("metrics-msk", None, None),
+            exporters_json("metrics-domain"),
+        ),
+        (
+            "a managed Kafka exporter whose optional filters change",
+            kafka_exporters_json("metrics-msk", Some("^orders\\..*$"), Some("^analytics-.*$")),
+            kafka_exporters_json("metrics-msk", Some("^payments\\..*$"), None),
+        ),
+        (
+            "an OpenSearch exporter removed by an empty list",
+            exporters_json("metrics-domain"),
+            serde_json::json!([]),
+        ),
+        (
+            "a managed Kafka exporter removed by an empty list",
+            kafka_exporters_json("metrics-msk", Some("^.*$"), Some("^.*$")),
+            serde_json::json!([]),
+        ),
+    ];
+
+    for (case, first, second) in cases {
+        let amp = Amp::new();
+        seed(
+            &amp,
+            region,
+            &scraper(
+                scraper_id,
+                Some("baseline"),
+                STATUS_ACTIVE,
+                eks_source("exporter-cluster"),
+                workspace_destination("ws-99999999-9999-9999-9999-999999999999"),
+            ),
+        );
+
+        // The exporter the scraper starts out holding, written through the operation under
+        // test rather than seeded, so the stored shape is one this service itself wrote.
+        let configured = update(
+            &amp,
+            region,
+            scraper_id,
+            &serde_json::json!({ "exporters": first.clone() }),
+        )
+        .await;
+        assert_eq!(
+            configured.status, 202,
+            "case {case:?}: configuring the exporter must be accepted, got {configured:?}"
+        );
+        wait_for_active(&amp, region, scraper_id, case).await;
+        let before = describe(&amp, region, scraper_id).await;
+        assert_eq!(
+            before.body["scraper"]["exporters"], first,
+            "case {case:?}: the configured exporter must read back as sent, got {:?}",
+            before.body["scraper"]["exporters"]
+        );
+
+        // An update that does not name `exporters` leaves the configuration unchanged.
+        let other_member = update(
+            &amp,
+            region,
+            scraper_id,
+            &serde_json::json!({ "alias": "renamed" }),
+        )
+        .await;
+        assert_eq!(
+            other_member.status, 202,
+            "case {case:?}: an update of another member must be accepted, got \
+             {other_member:?}"
+        );
+        wait_for_active(&amp, region, scraper_id, case).await;
+        let kept = describe(&amp, region, scraper_id).await;
+        assert_eq!(
+            kept.body["scraper"]["exporters"], first,
+            "case {case:?}: a request that omits `exporters` must leave the stored \
+             configuration unchanged, expected {first:?}, got {:?}",
+            kept.body["scraper"]["exporters"]
+        );
+
+        // The replacement — or the empty list that removes the exporter.
+        let replaced = update(
+            &amp,
+            region,
+            scraper_id,
+            &serde_json::json!({ "exporters": second.clone() }),
+        )
+        .await;
+        assert_eq!(
+            replaced.status, 202,
+            "case {case:?}: replacing the exporter must be accepted, got {replaced:?}"
+        );
+        wait_for_active(&amp, region, scraper_id, case).await;
+        let after = describe(&amp, region, scraper_id).await;
+        assert_eq!(
+            after.body["scraper"]["exporters"], second,
+            "case {case:?}: `exporters` must read back as the update sent it, expected \
+             {second:?}, got {:?}",
+            after.body["scraper"]["exporters"]
+        );
     }
 }
 

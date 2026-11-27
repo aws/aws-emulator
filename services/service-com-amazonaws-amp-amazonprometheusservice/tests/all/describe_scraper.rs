@@ -19,8 +19,9 @@
 use crate::scraper_listing::{dataset_destination, eks_source, scraper, seed, workspace_destination};
 use crate::workspace_lifecycle::{text, Amp, Reply};
 use service_com_amazonaws_amp_amazonprometheusservice::ops::types::{
-    Destination, EksConfiguration, ExporterConfiguration, OpenSearchExporterConfiguration,
-    RoleConfiguration, ScrapeConfiguration, Source, VpcConfiguration, SCRAPER_STATUS_CODE_VALUES,
+    Destination, EksConfiguration, ExporterConfiguration, KafkaExporterConfiguration,
+    OpenSearchExporterConfiguration, RoleConfiguration, ScrapeConfiguration, Source,
+    VpcConfiguration, SCRAPER_STATUS_CODE_VALUES,
 };
 use service_com_amazonaws_amp_amazonprometheusservice::state::{
     Scraper, SCRAPER_NOT_FOUND_MESSAGE, SCRAPER_RESOURCE_TYPE, STATUS_ACTIVE, STATUS_CREATING,
@@ -116,6 +117,29 @@ fn exporters(domain: &str) -> Vec<ExporterConfiguration> {
     )]
 }
 
+/// One managed Kafka exporter — the OTHER variant `ExporterConfiguration` declares
+/// (`smithy_query(query="shape",shape="ExporterConfiguration")`), named by the MSK cluster
+/// ARN `KafkaExporterConfiguration$clusterArn` models
+/// (`^arn:aws[-a-z]*:kafka:[-a-z0-9]+:[0-9]{12}:cluster\/.+$`) and carrying the two
+/// OPTIONAL `KafkaExporterFilter` members, so the reported union is exercised with them
+/// present as well as absent.
+fn kafka_exporters(
+    cluster: &str,
+    topic_filter: Option<&str>,
+    consumer_group_filter: Option<&str>,
+) -> Vec<ExporterConfiguration> {
+    vec![ExporterConfiguration::kafkaConfiguration(
+        KafkaExporterConfiguration {
+            cluster_arn: format!(
+                "arn:aws:kafka:us-west-2:{}:cluster/{cluster}/abcd1234-1111-2222-3333-444455556666-1",
+                engine::emulator_account_id()
+            ),
+            topic_filter: topic_filter.map(ToString::to_string),
+            consumer_group_filter: consumer_group_filter.map(ToString::to_string),
+        },
+    )]
+}
+
 /// A cross-account role configuration, both ARNs satisfying `IamRoleArn`'s pattern
 /// `^arn:aws[-a-z]*:iam::[0-9]{12}:role/.+$`.
 fn role_configuration() -> RoleConfiguration {
@@ -182,6 +206,18 @@ fn exporters_json(configurations: &[ExporterConfiguration]) -> serde_json::Value
                 ExporterConfiguration::openSearchConfiguration(search) => serde_json::json!({
                     "openSearchConfiguration": { "domainArn": search.domain_arn },
                 }),
+                // `clusterArn` is `@required`; both filters are optional, so one the
+                // record does not carry is absent from the answer rather than defaulted.
+                ExporterConfiguration::kafkaConfiguration(kafka) => {
+                    let mut reported = serde_json::json!({ "clusterArn": kafka.cluster_arn });
+                    if let Some(filter) = &kafka.topic_filter {
+                        reported["topicFilter"] = serde_json::json!(filter);
+                    }
+                    if let Some(filter) = &kafka.consumer_group_filter {
+                        reported["consumerGroupFilter"] = serde_json::json!(filter);
+                    }
+                    serde_json::json!({ "kafkaConfiguration": reported })
+                }
             })
             .collect(),
     )
@@ -340,8 +376,9 @@ fn assert_not_found(case: &str, reply: &Reply, scraper_id: &str) {
 ///
 /// One row per thing the rule generalises over — each `Source` variant (with and without
 /// the optional security groups), each `Destination` variant, an alias or none, no tags /
-/// several / the `TagMap` bound of 50, an exporter or none, a cross-account role
-/// configuration or none, a failure reason or none, and a scrape configuration of a
+/// several / the `TagMap` bound of 50, each `ExporterConfiguration` variant (the Kafka one
+/// with its optional filters carried and omitted) or no exporter at all, a cross-account
+/// role configuration or none, a failure reason or none, and a scrape configuration of a
 /// different size each time.
 #[tokio::test]
 async fn a_describe_reports_every_member_of_the_stored_record() {
@@ -416,6 +453,38 @@ async fn a_describe_reports_every_member_of_the_stored_record() {
     failed.status_reason = Some("The scraper could not reach the cluster.".to_string());
     failed.scrape_configuration = scrape_configuration("");
     records.push(("a failed scraper, which carries a statusReason", failed));
+
+    // The exporter union's other variant, with its two optional filters carried and
+    // omitted: a describe reports whichever variant the record holds, member for member.
+    let mut kafka_filtered = scraper(
+        "s-77777777-7777-7777-7777-777777777777",
+        Some("kafka.collector"),
+        STATUS_ACTIVE,
+        eks_source("msk-cluster"),
+        workspace_destination("ws-77777777-7777-7777-7777-777777777777"),
+    );
+    kafka_filtered.exporters = kafka_exporters(
+        "metrics-msk",
+        Some("^orders\\..*$"),
+        Some("^analytics-.*$"),
+    );
+    records.push((
+        "a managed Kafka exporter carrying both filters",
+        kafka_filtered,
+    ));
+
+    let mut kafka_plain = scraper(
+        "s-88888888-8888-8888-8888-888888888888",
+        None,
+        STATUS_ACTIVE,
+        eks_source("msk-cluster-2"),
+        dataset_destination("msk-metrics"),
+    );
+    kafka_plain.exporters = kafka_exporters("plain-msk", None, None);
+    records.push((
+        "a managed Kafka exporter with neither filter",
+        kafka_plain,
+    ));
 
     for (_, record) in &records {
         seed(&amp, region, record);
