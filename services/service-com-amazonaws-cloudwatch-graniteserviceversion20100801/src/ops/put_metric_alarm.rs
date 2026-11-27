@@ -476,11 +476,21 @@ const NO_RETURNED_QUERY_REFUSAL: &str = "Exactly one element of the metrics list
 ///
 /// The expression is validated by the metrics query service this operation calls, and
 /// CloudWatch reports that call's own failure: its message is the expression error followed by
-/// this envelope, naming the service and the status it answered with. It carries no per-run
-/// value — the request id in it is empty — so it is a fixed part of the refusal's wording.
-const EXPRESSION_REFUSAL_ENVELOPE: &str = " (Service: AmazonCloudWatch; Status Code: 400; \
-                                           Error Code: ValidationException; Request ID: ; \
-                                           Proxy: null)";
+/// this envelope, naming the service, the status it answered with, the class it answered under
+/// and the REQUEST the whole refusal answers — the same id this response states in
+/// `ResponseMetadata.RequestId` and in its `x-amzn-requestid` header, so a client correlating
+/// the sentence with the response it arrived on reads one value
+/// (`service_common::query_error_envelope::served_request_id`, the id this service decided this
+/// request would be answered under before the handler ran).
+///
+/// The one place the trailer is built, so every refusal of this family closes the same way.
+fn expression_refusal(query_id: &str, detail: &str) -> String {
+    let request_id = ::service_common::query_error_envelope::served_request_id().unwrap_or_default();
+    format!(
+        "Error in expression '{query_id}': {detail} (Service: AmazonCloudWatch; Status Code: \
+         400; Error Code: ValidationException; Request ID: {request_id}; Proxy: null)"
+    )
+}
 
 /// The refusal for an alarm configuration CloudWatch would not create, or `None` when this
 /// request is one it would.
@@ -796,12 +806,7 @@ fn unresolvable_metrics(input: &PutMetricAlarmInput) -> Option<String> {
         // is one the metrics query service this operation calls would refuse too.
         let parsed = match crate::state::metric_math::parse(expression) {
             Ok(parsed) => parsed,
-            Err(error) => {
-                return Some(format!(
-                    "Error in expression '{}': {}{EXPRESSION_REFUSAL_ENVELOPE}",
-                    query.id, error.message
-                ))
-            }
+            Err(error) => return Some(expression_refusal(&query.id, &error.message)),
         };
         if let Some(unknown) = crate::state::metric_math::references(&parsed)
             .into_iter()
@@ -809,10 +814,9 @@ fn unresolvable_metrics(input: &PutMetricAlarmInput) -> Option<String> {
         {
             // Built from the request: the expression that could not be resolved, and the
             // id in it that names no query of this request.
-            return Some(format!(
-                "Error in expression '{}': ID '{unknown}' not \
-                 found{EXPRESSION_REFUSAL_ENVELOPE}",
-                query.id
+            return Some(expression_refusal(
+                &query.id,
+                &format!("ID '{unknown}' not found"),
             ));
         }
         if crate::state::metric_math::calls_function(&parsed, SEARCH_FUNCTION) {

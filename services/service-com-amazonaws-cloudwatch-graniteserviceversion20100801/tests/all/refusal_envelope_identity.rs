@@ -17,7 +17,10 @@
 //! 2. **Every refusal names the REQUEST it answers**: the `<RequestId>` element beside `<Error>`
 //!    in the query envelope, and the `x-amzn-requestid` header an SDK reads
 //!    `ResponseMetadata.RequestId` off whatever the protocol. The value is minted per call, so
-//!    only its presence and its form are asserted (`service_common::query_error_envelope`).
+//!    only its presence and its form are asserted (`service_common::query_error_envelope`) — and
+//!    where a refusal states that id in its own SENTENCE, as the backend trailer of a metric-math
+//!    expression refusal does, the two wires' sentences are compared with each answer's own id
+//!    taken out of them ([`without_request_id`]).
 //!
 //! The rows differ along what the two rules generalise over: which operation is called, which
 //! class refuses it (the request-validation class the constraint walk raises, the same class this
@@ -53,6 +56,22 @@ const BAD_PERIOD: &str = "45";
 /// (`smithy_query(query="doc",shape="PutMetricAlarmInput",member="Period")`) — the whole of the
 /// message states which periods ARE legal, so it carries no value of the request.
 const PERIOD_REFUSAL: &str = "Period must be 10, 20, 30 or a multiple of 60";
+
+/// The marker [`without_request_id`] puts in place of the id an answer names its own request by.
+const THE_ANSWERS_OWN_REQUEST: &str = "<the answer's own request>";
+
+/// `message` with `request_id` — the id the answering response named its own request by —
+/// replaced by [`THE_ANSWERS_OWN_REQUEST`].
+///
+/// Two answers to two calls name two requests, so a sentence that states its own request id is
+/// compared across the wires with that one per-call value taken out of it and every other word
+/// left exactly as the service wrote it.
+fn without_request_id(message: &str, request_id: &str) -> String {
+    if request_id.is_empty() {
+        return message.to_string();
+    }
+    message.replace(request_id, THE_ANSWERS_OWN_REQUEST)
+}
 
 /// The text of the first `<tag>` element of `body`, read with the XML reader this crate's tests
 /// read an XML wire with.
@@ -316,8 +335,12 @@ async fn a_refusal_names_its_class_by_the_protocols_own_code_and_names_the_reque
              {parsed}"
         );
         let json_message = error_message(&parsed);
+        // One class, one sentence on both wires — with the id each answer names its OWN request
+        // by taken out of it: the backend trailer of a metric-math expression refusal states
+        // that id, so two answers to two calls differ in exactly that value.
         assert_eq!(
-            json_message, query_message,
+            without_request_id(&json_message, reported),
+            without_request_id(&query_message, named.as_deref().unwrap_or_default()),
             "case {case:?}: both wires word one class with one sentence, got {json_message:?} \
              and {query_message:?}"
         );

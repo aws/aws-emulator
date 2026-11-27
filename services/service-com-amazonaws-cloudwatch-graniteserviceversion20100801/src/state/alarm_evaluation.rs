@@ -1108,6 +1108,13 @@ impl State {
         if let Some(stored) = self.alarms.get_mut(name) {
             stored.evaluation_due_secs = now_secs + EVALUATION_DELAY_SECS;
         }
+        // The anomaly detection model this alarm draws its threshold from is part of what the
+        // alarm needs to be evaluated at all, for as long as it is configured that way, so
+        // every evaluation ensures it is there: a model deleted while this alarm still draws a
+        // band from it is created again here, and a model no alarm's threshold is drawn from is
+        // never put back ([`Self::create_band_models`]). An alarm whose threshold is a number
+        // names no band, so nothing is created for it.
+        self.create_band_models(&alarm, now_secs);
         // An alarm inside its WARM-UP window is not graded at all: "During the warm-up period,
         // the alarm stays in INSUFFICIENT_DATA and does not perform alarm actions."
         // (`WarmUpConfiguration`) — so this evaluation is withheld, whichever form the alarm's
@@ -1359,14 +1366,19 @@ impl State {
     /// each metric its band is drawn from where the account holds none — pending training,
     /// exactly as a model a caller created directly is.
     ///
-    /// Nothing creates one again afterwards: `DeleteAnomalyDetector` "Deletes the specified
-    /// anomaly detection model from your account" (`DeleteAnomalyDetector`), so a model a caller
-    /// deleted is gone whatever still references it, and the alarm whose threshold was drawn from
-    /// it is evaluated with no model to draw a band from.
+    /// The model is the alarm's own standing requirement rather than something its write
+    /// creates once: an alarm needs a model for every metric its band is drawn from for as long
+    /// as it is configured that way, so each EVALUATION of such an alarm ensures the model is
+    /// there ([`Self::evaluate_metric_alarm`]) and a model deleted while an alarm still draws a
+    /// band from it is back by that alarm's next evaluation. `DeleteAnomalyDetector` "Deletes
+    /// the specified anomaly detection model from your account" (`DeleteAnomalyDetector`) and
+    /// deletes it here too — nothing but an alarm's own evaluation puts one back, so a model no
+    /// alarm's threshold is drawn from stays deleted.
     ///
     /// The model this creates carries no training configuration and no metric characteristics:
     /// the alarm names only the metric and statistic its band is drawn from. Its identifier is
-    /// minted for it like any other model's.
+    /// minted for it like any other model's, so a client can tell the model that came back from
+    /// the one it deleted.
     pub fn create_band_models(&mut self, alarm: &MetricAlarm, now_secs: f64) {
         for metric in band_model_metrics(alarm) {
             let form = super::AnomalyDetectorForm::of_series_metric(&metric);

@@ -43,6 +43,10 @@
 //! ([`naming_the_request`], `service_common::query_error_envelope::named_request`), under ONE id
 //! per answer, wrapped around this definition for the failures no operation produced and around
 //! each operation ([`ReportingTheRequestId`]) for the ones a handler or the constraint walk did.
+//! For an operation the id is DECIDED as that wrapper is entered rather than as the answer is
+//! rendered, because one refusal of this service states it in its own words — the backend trailer
+//! CloudWatch closes a metric-math expression refusal with — and a handler can only state the id
+//! it is answering under if that id already exists.
 
 use aws_smithy_runtime_api::http::{Request as RtRequest, Response as RtResponse};
 use aws_smithy_types::body::SdkBody;
@@ -262,15 +266,34 @@ pub fn naming_the_request(answered: RtResponse) -> RtResponse {
     service_common::query_error_envelope::named_request(answered).0
 }
 
+/// The same report for an answer whose request id was decided BEFORE it was served: the
+/// `<RequestId>` of the `awsQuery` error envelope and the header, both stating `request_id`
+/// (`service_common::query_error_envelope::named_request_under`).
+///
+/// One answer of this service carries its request id in the WORDS of a refusal as well — the
+/// backend trailer CloudWatch closes a metric-math expression refusal with — so the id cannot
+/// be minted as that answer is rendered: it is decided before the walk begins
+/// ([`ReportingTheRequestId`]) and read by the handler that states it
+/// (`service_common::query_error_envelope::served_request_id`). This is what reports that same
+/// id, so the message, the envelope and the header of one answer can never name different ids.
+fn naming_the_request_under(answered: RtResponse, request_id: &str) -> RtResponse {
+    service_common::query_error_envelope::named_request_under(answered, request_id)
+}
+
 /// One operation, served so that whatever failure it answers names the request it answered —
 /// the `<RequestId>` of the `awsQuery` error envelope and the header AWS reports the same id
-/// in (`service_common::query_error_envelope::with_request_id`).
+/// in ([`naming_the_request_under`]).
 ///
 /// It re-implements nothing: the wrapped operation is the one this service would have served
 /// anyway, and only the rendered answer is completed on the way out. Wrapped around each
 /// operation because a MODELLED error and a constraint refusal are both rendered inside the
 /// framework's per-request sequence, which no definition-level renderer sees; the failures no
 /// operation produced are completed by the same writer wrapped around the definition.
+///
+/// The id itself is decided as this wrapper is entered rather than as the answer is rendered,
+/// because one refusal of this service states it in its own WORDS and so has to read it while
+/// the handler is building them
+/// (`service_common::query_error_envelope::served_request_id`).
 #[derive(Debug)]
 pub struct ReportingTheRequestId<O> {
     operation: O,
@@ -293,10 +316,13 @@ where
         req: &'r RtRequest,
         ctx: &'r OperationContext<'r>,
     ) -> BoxFuture<'r, RtResponse> {
-        Box::pin(async move {
-            let answered = self.operation.run(svc, req, ctx).await;
-            naming_the_request(answered)
-        })
+        // The id is decided HERE, before the wrapped operation runs, rather than as its answer
+        // is rendered: a refusal whose own words state the request id has to be able to read
+        // it while they are being built, and the answer is then reported under that very id.
+        Box::pin(service_common::query_error_envelope::answered_under_one_request_id(
+            self.operation.run(svc, req, ctx),
+            naming_the_request_under,
+        ))
     }
 
     /// The wrapped operation's modelled auth schemes: wrapping an operation must not change

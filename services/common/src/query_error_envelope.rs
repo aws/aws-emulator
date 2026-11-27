@@ -78,6 +78,17 @@
 //! [`RequestIdEnvelopeDefinition::reporting`] — so the choice of form costs a service its
 //! minting function and nothing else.
 //!
+//! # WHEN the id is decided
+//!
+//! Every writer above decides it as the answer is rendered, which is where a correlation id
+//! belongs: it is a property of the response and nothing else holds one. A service whose
+//! recorded wording states the id inside a MESSAGE needs it sooner, while the handler is
+//! building those words, so [`answered_under_one_request_id`] decides it before the walk
+//! begins, holds it in scope for [`served_request_id`] to read, and reports it on the way out
+//! through a [`StatedReport`] ([`named_request_under`] for `awsQuery`,
+//! [`with_stated_request_id_header`] for the header alone) — so the message, the envelope and
+//! the header of one answer cannot name different ids.
+//!
 //! Only the request id is this module's business: the HTTP status, the `<Type>`, the
 //! `<Code>`, the `<Message>`, the body of a success and every other header stay with the
 //! framework renderer that owns them, so each has exactly one home. The only
@@ -228,7 +239,26 @@ fn add_request_id(body: &str, request_id: &str) -> Option<String> {
 /// mints nothing), so the success path cannot be affected. An envelope that already holds
 /// an id keeps its document, and the header reports THAT id — the two can never name
 /// different ids — or carries none when what the document holds is not a well-formed id.
-pub fn with_request_id(mut resp: RtResponse) -> RtResponse {
+pub fn with_request_id(resp: RtResponse) -> RtResponse {
+    with_stated_request_id(resp, &new_request_id())
+}
+
+/// The response with `request_id` stated as the `<RequestId>` of its `<ErrorResponse>`
+/// envelope, and the same id in the header AWS reports it in: the report for an answer whose
+/// service ALREADY knows which id it names this request by.
+///
+/// [`with_request_id`] mints the id, because for almost every call the correlation id belongs
+/// to the response alone and nothing else holds one. Where the id is decided BEFORE the answer
+/// is rendered — because the answer's own words carry it, as a service that states the id
+/// inside a message does — the envelope states THAT id instead of a second one, so a client
+/// reading the envelope, the header and the message sees one value
+/// ([`answered_under_one_request_id`]).
+///
+/// Idempotent and lossless exactly as [`with_request_id`] is: status, headers and every other
+/// byte of the body are left as the renderer wrote them, a response that is not an `awsQuery`
+/// error envelope is returned untouched, and an envelope that already holds an id keeps its
+/// document and reports that same id.
+pub fn with_stated_request_id(mut resp: RtResponse, request_id: &str) -> RtResponse {
     let (rewritten, request_id) = {
         // An error envelope is built in memory by its renderer, so the bytes are readable
         // here; a streamed body is not an error envelope and is left alone.
@@ -239,11 +269,11 @@ pub fn with_request_id(mut resp: RtResponse) -> RtResponse {
             return resp;
         };
         // Not an `awsQuery` error envelope at all: not this module's business, and no id
-        // is minted for it.
+        // is stated on it.
         if envelope_children(text).is_none() {
             return resp;
         }
-        let minted = new_request_id();
+        let minted = request_id.to_string();
         match add_request_id(text, &minted) {
             Some(rewritten) => (Some(rewritten), Some(minted)),
             // The envelope already holds an id: the document stands, and the header
@@ -538,6 +568,76 @@ pub fn named_request_as(resp: RtResponse, mint: fn() -> String) -> (RtResponse, 
     }
     let minted = mint();
     (with_stated_request_id_header(resp, &minted), minted)
+}
+
+/// One response named by the id its service ALREADY decided this request would be answered
+/// under, reported where the renderer named none.
+///
+/// [`named_request`] is the same thing for a call whose id nothing holds before the answer
+/// exists: it mints one on the way out. This states the id that was decided first, in both
+/// places that report it — the `awsQuery` envelope element and the header — so an answer whose
+/// own words carry the id cannot name one id in its message and another in its envelope.
+///
+/// Idempotent and lossless exactly as [`named_request`] is: a response that already names its
+/// request keeps the id it has (so every success keeps the id its `ResponseMetadata` carries),
+/// and the body, the status and every other header are left as the renderer wrote them.
+pub fn named_request_under(resp: RtResponse, request_id: &str) -> RtResponse {
+    if reported_request_id(&resp).is_some() {
+        return resp;
+    }
+    with_stated_request_id_header(with_stated_request_id(resp, request_id), request_id)
+}
+
+::tokio::task_local! {
+    /// The id the answer to the request this task is serving names that request by, put in
+    /// scope by [`answered_under_one_request_id`] before the request is served and read back
+    /// through [`served_request_id`].
+    ///
+    /// Owned, because the scope holds the id across the whole walk that serves the request and
+    /// a task-local cannot carry a borrow of it.
+    static SERVED_REQUEST_ID: String;
+}
+
+/// The id the answer to the request being served will name that request by, for a layer
+/// INSIDE the walk — a handler whose own words have to carry it.
+///
+/// The id a response reports belongs to the response, so it is normally decided as the
+/// response is rendered and no handler can see it. A service whose recorded wording states
+/// the id inside a MESSAGE needs it before that, which is what
+/// [`answered_under_one_request_id`] decides it for; this is how such a handler reads it, and
+/// the value is the one the same answer reports in its envelope and its header.
+///
+/// `None` outside such a scope — a response rendered by a layer no request-serving scope was
+/// opened around, where nothing has decided the id yet.
+#[must_use]
+pub fn served_request_id() -> Option<String> {
+    SERVED_REQUEST_ID.try_with(String::clone).ok()
+}
+
+/// How one response of a service reports an id DECIDED BEFORE it was rendered:
+/// [`named_request_under`] for `awsQuery`, [`with_stated_request_id_header`] for every other
+/// protocol.
+///
+/// The stated-id counterpart of [`Report`], and a function pointer for the same reason: one
+/// service's wrapper is handed the report rather than restating it.
+pub type StatedReport = fn(RtResponse, &str) -> RtResponse;
+
+/// Serve one request under ONE request id: decide the id, hold it in scope while the request
+/// is served ([`served_request_id`]), and `report` it on whatever was answered.
+///
+/// For almost every call the id belongs to the response alone and is minted as that response
+/// is rendered ([`named_request`]). A service whose recorded wording states the id inside a
+/// message cannot wait that long: the words are built by the handler, so the id has to be
+/// decided before the walk begins and the same value reported on the way out. That is the
+/// whole of what this does — the request is served by exactly the layer that would have served
+/// it, and only the id is decided earlier.
+pub async fn answered_under_one_request_id<F>(answer: F, report: StatedReport) -> RtResponse
+where
+    F: ::std::future::Future<Output = RtResponse>,
+{
+    let decided = new_request_id();
+    let answered = SERVED_REQUEST_ID.scope(decided.clone(), answer).await;
+    report(answered, &decided)
 }
 
 /// The modelled operation the service's routing table names for this request, or `None`
@@ -1489,5 +1589,87 @@ mod tests {
                 "case {case:?}: expected a second report to change nothing"
             );
         }
+    }
+
+    /// RULE: a request served under one decided id is answered under THAT id — the id a layer
+    /// inside the walk reads is the one the answer reports, wherever its protocol states it.
+    ///
+    /// The rows span what the rule generalises over: the `awsQuery` error envelope (the element
+    /// and the header), a binary-protocol error body (the header alone), a response a layer
+    /// already named its request in (which keeps the id it has), and a success document that
+    /// states its own id.
+    #[tokio::test]
+    async fn a_request_is_answered_under_the_id_decided_for_it() {
+        // (case, status, the rendered body, whether the answer names the decided id)
+        let rows = [
+            (
+                "an awsQuery error envelope",
+                400u16,
+                "<ErrorResponse><Error><Code>ValidationError</Code><Message>no</Message>\
+                 </Error></ErrorResponse>"
+                    .to_string(),
+                true,
+            ),
+            (
+                "a JSON error body",
+                400,
+                r#"{"__type":"ValidationException","message":"no"}"#.to_string(),
+                true,
+            ),
+            (
+                "a success document naming its own request",
+                200,
+                "<PutMetricAlarmResponse><ResponseMetadata><RequestId>\
+                 11112222-3333-4444-5555-666677778888</RequestId></ResponseMetadata>\
+                 </PutMetricAlarmResponse>"
+                    .to_string(),
+                false,
+            ),
+        ];
+
+        for (case, status, body, names_decided) in rows {
+            let answered = answered_under_one_request_id(
+                async {
+                    let decided = served_request_id().unwrap_or_default();
+                    assert!(
+                        is_request_id(&decided),
+                        "case {case:?}: a layer inside the walk must read the decided id, got \
+                         {decided:?}"
+                    );
+                    RtResponse::new(
+                        aws_smithy_runtime_api::http::StatusCode::try_from(status)
+                            .expect("a status"),
+                        SdkBody::from(format!("{body}<!--{decided}-->")),
+                    )
+                },
+                named_request_under,
+            )
+            .await;
+            let reported = reported_request_id(&answered).unwrap_or_default();
+            let rendered = std::str::from_utf8(answered.body().bytes().expect("bytes"))
+                .expect("utf-8")
+                .to_string();
+            assert!(
+                is_request_id(&reported),
+                "case {case:?}: expected the answer to name the request, got {reported:?}"
+            );
+            assert_eq!(
+                rendered.contains(&format!("<!--{reported}-->")),
+                names_decided,
+                "case {case:?}: expected the id the inner layer read to be the one reported: \
+                 {names_decided}, got {rendered:?} reported as {reported:?}"
+            );
+        }
+    }
+
+    /// Outside a served request — a response rendered by a layer no scope was opened around —
+    /// there is no decided id to read, rather than a panic or an empty one.
+    #[tokio::test]
+    async fn nothing_is_decided_outside_a_served_request() {
+        assert_eq!(
+            served_request_id(),
+            None,
+            "expected no decided id outside a served request"
+        );
     }
 }
