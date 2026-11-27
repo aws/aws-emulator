@@ -113,6 +113,10 @@ impl ComAmazonawsKafkaKafkaState {
         // ARN is only ever asked about under its own cluster, and this one is no
         // longer in the registry to ask about.
         self.removed_channel_arns.remove(arn);
+        // Its assessments and its topic reassignment operations are sub-resources
+        // of it in the same sense, so they leave with it too.
+        self.drop_cluster_assessments(arn);
+        self.drop_cluster_topic_reassignments(arn);
         Some(cluster)
     }
 
@@ -676,6 +680,10 @@ impl ComAmazonawsKafkaKafkaState {
             end_due: now + settling,
             source_cluster_info,
             target_cluster_info,
+            // Set by the one call that starts an upgrade from Standard brokers to
+            // Express brokers ([`Self::start_broker_type_update`]); every other
+            // operation reports none.
+            broker_type_upgrade: None,
         };
         self.file_cluster_operation(operation);
         Some(operation_arn)
@@ -732,14 +740,32 @@ impl ComAmazonawsKafkaKafkaState {
 
     /// Start a broker-type update: every broker of the cluster moves to
     /// `instance_type` once the clock owes the operation its completion.
+    ///
+    /// `topic_reassignment` is the `TopicReassignmentMode` the request named, which
+    /// matters only for the update that upgrades a cluster FROM Standard brokers TO
+    /// Express brokers: that one operation reports a `BrokerTypeUpgradeInfo`
+    /// ("present only on the operation that initiated the upgrade"), and under
+    /// `AUTO` the service starts the reassignment of every topic itself and reports
+    /// its ARN there, while under `MANUAL` — the documented default — the ARN stays
+    /// absent until the caller starts one.
     pub fn start_broker_type_update(
         &mut self,
         region: &str,
         arn: &str,
         now: SystemTime,
         instance_type: String,
+        topic_reassignment: Option<String>,
     ) -> Option<String> {
-        self.start_cluster_operation(
+        // Read BEFORE the operation is filed, off the cluster as it still is: the
+        // upgrade is from the category the brokers run now to the one the request
+        // names.
+        let initiates_express_upgrade = self.cluster_in(region, arn).is_some_and(|cluster| {
+            broker_instance_category(&cluster.broker_node_group_info.instance_type)
+                == BROKER_CATEGORY_STANDARD
+                && broker_instance_category(&instance_type) == BROKER_CATEGORY_EXPRESS
+        });
+        let target_instance_type = instance_type.clone();
+        let operation_arn = self.start_cluster_operation(
             region,
             arn,
             now,
@@ -753,7 +779,34 @@ impl ComAmazonawsKafkaKafkaState {
                     ClusterChange::BrokerType { instance_type },
                 )
             },
-        )
+        )?;
+        if initiates_express_upgrade {
+            let mode = topic_reassignment
+                .unwrap_or_else(|| TOPIC_REASSIGNMENT_MODE_MANUAL.to_string());
+            let topic_reassignment_operation_arn = match mode == TOPIC_REASSIGNMENT_MODE_AUTO {
+                true => self
+                    .start_topic_reassignment(
+                        region,
+                        arn,
+                        now,
+                        TopicReassignmentRequest {
+                            target_instance_type,
+                            topics_to_include: all_topics_patterns(),
+                            topics_to_exclude: Vec::new(),
+                            client_token: None,
+                        },
+                    )
+                    .map(|reassignment| reassignment.arn.clone()),
+                false => None,
+            };
+            if let Some(operation) = self.cluster_operations.get_mut(&operation_arn) {
+                operation.broker_type_upgrade = Some(BrokerTypeUpgrade {
+                    topic_reassignment_mode: mode,
+                    topic_reassignment_operation_arn,
+                });
+            }
+        }
+        Some(operation_arn)
     }
 
     /// Start a broker-count update: the cluster holds
@@ -1688,6 +1741,9 @@ impl ComAmazonawsKafkaKafkaState {
             end_due,
             source_cluster_info: MutableClusterInfo::default(),
             target_cluster_info: MutableClusterInfo::default(),
+            // A channel operation starts no broker-type upgrade, so it carries no
+            // topic reassignment to report.
+            broker_type_upgrade: None,
         });
     }
 

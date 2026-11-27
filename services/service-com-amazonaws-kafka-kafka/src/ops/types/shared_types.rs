@@ -68,6 +68,19 @@ pub struct UnauthorizedException {
     pub message: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.kafka#AssessmentParameters")]
+#[derive(Debug, Clone, Default)]
+pub struct AssessmentParameters {
+    pub target_instance_type: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.kafka#ConflictException")]
+#[derive(Debug, Clone, Default)]
+pub struct ConflictException {
+    pub invalid_parameter: Option<String>,
+    pub message: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.kafka#EncryptionConfiguration")]
 #[derive(Debug, Clone, Default)]
 pub struct EncryptionConfiguration {
@@ -204,13 +217,6 @@ pub struct S3 {
     pub bucket: Option<String>,
     pub enabled: bool,
     pub prefix: Option<String>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.kafka#ConflictException")]
-#[derive(Debug, Clone, Default)]
-pub struct ConflictException {
-    pub invalid_parameter: Option<String>,
-    pub message: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.kafka#BrokerNodeGroupInfo")]
@@ -700,15 +706,7 @@ kafka_schema_and_codec!(
     ClusterInfo,
     CLUSTER_INFO_SCHEMA,
     "ClusterInfo",
-    (
-        M_ACTIVE_OPERATION_ARN,
-        active_operation_arn,
-        "ActiveOperationArn",
-        "activeOperationArn",
-        0,
-        opt,
-        string
-    ),
+    (M_ACTIVE_OPERATION_ARN, active_operation_arn, "ActiveOperationArn", "activeOperationArn", 0, opt, string),
     (
         M_BROKER_NODE_GROUP_INFO,
         broker_node_group_info,
@@ -741,43 +739,11 @@ kafka_schema_and_codec!(
         struct_of(BrokerSoftwareInfo)
     ),
     (M_CURRENT_VERSION, current_version, "CurrentVersion", "currentVersion", 8, opt, string),
-    (
-        M_ENCRYPTION_INFO,
-        encryption_info,
-        "EncryptionInfo",
-        "encryptionInfo",
-        9,
-        opt,
-        struct_of(EncryptionInfo)
-    ),
-    (
-        M_ENHANCED_MONITORING,
-        enhanced_monitoring,
-        "EnhancedMonitoring",
-        "enhancedMonitoring",
-        10,
-        opt,
-        string
-    ),
-    (
-        M_OPEN_MONITORING,
-        open_monitoring,
-        "OpenMonitoring",
-        "openMonitoring",
-        11,
-        opt,
-        struct_of(OpenMonitoring)
-    ),
+    (M_ENCRYPTION_INFO, encryption_info, "EncryptionInfo", "encryptionInfo", 9, opt, struct_of(EncryptionInfo)),
+    (M_ENHANCED_MONITORING, enhanced_monitoring, "EnhancedMonitoring", "enhancedMonitoring", 10, opt, string),
+    (M_OPEN_MONITORING, open_monitoring, "OpenMonitoring", "openMonitoring", 11, opt, struct_of(OpenMonitoring)),
     (M_LOGGING_INFO, logging_info, "LoggingInfo", "loggingInfo", 12, opt, struct_of(LoggingInfo)),
-    (
-        M_NUMBER_OF_BROKER_NODES,
-        number_of_broker_nodes,
-        "NumberOfBrokerNodes",
-        "numberOfBrokerNodes",
-        13,
-        opt,
-        integer
-    ),
+    (M_NUMBER_OF_BROKER_NODES, number_of_broker_nodes, "NumberOfBrokerNodes", "numberOfBrokerNodes", 13, opt, integer),
     (M_STATE, state, "State", "state", 14, opt, string),
     (M_STATE_INFO, state_info, "StateInfo", "stateInfo", 15, opt, struct_of(StateInfo)),
     (M_TAGS, tags, "Tags", "tags", 16, opt, map_of_string),
@@ -858,6 +824,7 @@ pub struct StateInfo {
 /// `smithy_query(query="shape", shape="com.amazonaws.kafka#ClusterOperationInfo")`.
 #[derive(Debug, Clone, Default)]
 pub struct ClusterOperationInfo {
+    pub broker_type_upgrade_info: Option<BrokerTypeUpgradeInfo>,
     pub client_request_id: Option<String>,
     pub cluster_arn: Option<String>,
     pub creation_time: Option<::aws_smithy_types::DateTime>,
@@ -876,29 +843,38 @@ kafka_schema_and_codec!(
     ClusterOperationInfo,
     CLUSTER_OPERATION_INFO_SCHEMA,
     "ClusterOperationInfo",
-    (M_CLIENT_REQUEST_ID, client_request_id, "ClientRequestId", "clientRequestId", 0, opt, string),
-    (M_CLUSTER_ARN, cluster_arn, "ClusterArn", "clusterArn", 1, opt, string),
-    (M_CREATION_TIME, creation_time, "CreationTime", "creationTime", 2, opt, date_time),
-    (M_END_TIME, end_time, "EndTime", "endTime", 3, opt, date_time),
-    (M_ERROR_INFO, error_info, "ErrorInfo", "errorInfo", 4, opt, struct_of(ErrorInfo)),
-    (M_OPERATION_ARN, operation_arn, "OperationArn", "operationArn", 5, opt, string),
-    (M_OPERATION_STATE, operation_state, "OperationState", "operationState", 6, opt, string),
+    (
+        M_BROKER_TYPE_UPGRADE_INFO,
+        broker_type_upgrade_info,
+        "BrokerTypeUpgradeInfo",
+        "brokerTypeUpgradeInfo",
+        0,
+        opt,
+        struct_of(BrokerTypeUpgradeInfo)
+    ),
+    (M_CLIENT_REQUEST_ID, client_request_id, "ClientRequestId", "clientRequestId", 1, opt, string),
+    (M_CLUSTER_ARN, cluster_arn, "ClusterArn", "clusterArn", 2, opt, string),
+    (M_CREATION_TIME, creation_time, "CreationTime", "creationTime", 3, opt, date_time),
+    (M_END_TIME, end_time, "EndTime", "endTime", 4, opt, date_time),
+    (M_ERROR_INFO, error_info, "ErrorInfo", "errorInfo", 5, opt, struct_of(ErrorInfo)),
+    (M_OPERATION_ARN, operation_arn, "OperationArn", "operationArn", 6, opt, string),
+    (M_OPERATION_STATE, operation_state, "OperationState", "operationState", 7, opt, string),
     (
         M_OPERATION_STEPS,
         operation_steps,
         "OperationSteps",
         "operationSteps",
-        7,
+        8,
         opt,
         list_of_struct(ClusterOperationStep)
     ),
-    (M_OPERATION_TYPE, operation_type, "OperationType", "operationType", 8, opt, string),
+    (M_OPERATION_TYPE, operation_type, "OperationType", "operationType", 9, opt, string),
     (
         M_SOURCE_CLUSTER_INFO,
         source_cluster_info,
         "SourceClusterInfo",
         "sourceClusterInfo",
-        9,
+        10,
         opt,
         struct_of(MutableClusterInfo)
     ),
@@ -907,7 +883,7 @@ kafka_schema_and_codec!(
         target_cluster_info,
         "TargetClusterInfo",
         "targetClusterInfo",
-        10,
+        11,
         opt,
         struct_of(MutableClusterInfo)
     ),
@@ -916,11 +892,18 @@ kafka_schema_and_codec!(
         vpc_connection_info,
         "VpcConnectionInfo",
         "vpcConnectionInfo",
-        11,
+        12,
         opt,
         struct_of(VpcConnectionInfo)
     ),
 );
+
+#[smithy_macros::smithy(shape = "com.amazonaws.kafka#BrokerTypeUpgradeInfo")]
+#[derive(Debug, Clone, Default)]
+pub struct BrokerTypeUpgradeInfo {
+    pub topic_reassignment_mode: Option<String>,
+    pub topic_reassignment_operation_arn: Option<String>,
+}
 
 #[smithy_macros::smithy(shape = "com.amazonaws.kafka#ErrorInfo")]
 #[derive(Debug, Clone, Default)]
@@ -999,25 +982,9 @@ kafka_schema_and_codec!(
     VpcConnectionInfo,
     VPC_CONNECTION_INFO_SCHEMA,
     "VpcConnectionInfo",
-    (
-        M_VPC_CONNECTION_ARN,
-        vpc_connection_arn,
-        "VpcConnectionArn",
-        "vpcConnectionArn",
-        0,
-        opt,
-        string
-    ),
+    (M_VPC_CONNECTION_ARN, vpc_connection_arn, "VpcConnectionArn", "vpcConnectionArn", 0, opt, string),
     (M_OWNER, owner, "Owner", "owner", 1, opt, string),
-    (
-        M_USER_IDENTITY,
-        user_identity,
-        "UserIdentity",
-        "userIdentity",
-        2,
-        opt,
-        struct_of(UserIdentity)
-    ),
+    (M_USER_IDENTITY, user_identity, "UserIdentity", "userIdentity", 2, opt, struct_of(UserIdentity)),
     (M_CREATION_TIME, creation_time, "CreationTime", "creationTime", 3, opt, date_time),
 );
 
@@ -1059,15 +1026,7 @@ kafka_schema_and_codec!(
     Cluster,
     CLUSTER_SCHEMA,
     "Cluster",
-    (
-        M_ACTIVE_OPERATION_ARN,
-        active_operation_arn,
-        "ActiveOperationArn",
-        "activeOperationArn",
-        0,
-        opt,
-        string
-    ),
+    (M_ACTIVE_OPERATION_ARN, active_operation_arn, "ActiveOperationArn", "activeOperationArn", 0, opt, string),
     (M_CLUSTER_TYPE, cluster_type, "ClusterType", "clusterType", 1, opt, string),
     (M_CLUSTER_ARN, cluster_arn, "ClusterArn", "clusterArn", 2, opt, string),
     (M_CLUSTER_NAME, cluster_name, "ClusterName", "clusterName", 3, opt, string),
@@ -1106,8 +1065,20 @@ pub struct Serverless {
     pub connectivity_info: Option<ServerlessConnectivityInfo>,
 }
 
+/// The values `AssessmentStatus` accepts on the wire.
+pub const ASSESSMENT_STATUS_VALUES: &[&str] = &["COMPLETE", "DELETING", "FAILED", "IN_PROGRESS"];
+
+
+/// The values `AssessmentType` accepts on the wire.
+pub const ASSESSMENT_TYPE_VALUES: &[&str] = &["UPDATE_BROKER_TYPE"];
+
+
 /// The values `BrokerAZDistribution` accepts on the wire.
 pub const BROKER_A_Z_DISTRIBUTION_VALUES: &[&str] = &["DEFAULT"];
+
+
+/// The values `BrokerNodeType` accepts on the wire.
+pub const BROKER_NODE_TYPE_VALUES: &[&str] = &["EXPRESS", "STANDARD"];
 
 
 /// The values `ChannelDestinationType` accepts on the wire.
@@ -1144,6 +1115,14 @@ pub const CUSTOMER_ACTION_STATUS_VALUES: &[&str] = &["ACTION_RECOMMENDED", "CRIT
 
 /// The values `EnhancedMonitoring` accepts on the wire.
 pub const ENHANCED_MONITORING_VALUES: &[&str] = &["DEFAULT", "PER_BROKER", "PER_TOPIC_PER_BROKER", "PER_TOPIC_PER_PARTITION"];
+
+
+/// The values `FindingCategory` accepts on the wire.
+pub const FINDING_CATEGORY_VALUES: &[&str] = &["BROKER_CONFIGURATION", "CAPACITY", "HEALTH", "INFRASTRUCTURE", "TOPIC_CONFIGURATION"];
+
+
+/// The values `FindingSeverity` accepts on the wire.
+pub const FINDING_SEVERITY_VALUES: &[&str] = &["ERROR", "INFO", "WARNING"];
 
 
 /// The values `IcebergCompressionType` accepts on the wire.
@@ -1212,6 +1191,18 @@ pub const TARGET_COMPRESSION_TYPE_VALUES: &[&str] = &["GZIP", "LZ4", "NONE", "SN
 
 /// The values `TokenEndpointAuthenticationMethod` accepts on the wire.
 pub const TOKEN_ENDPOINT_AUTHENTICATION_METHOD_VALUES: &[&str] = &["BASIC", "NONE", "POST"];
+
+
+/// The values `TopicReassignment` accepts on the wire.
+pub const TOPIC_REASSIGNMENT_VALUES: &[&str] = &["AUTO", "MANUAL"];
+
+
+/// The values `TopicReassignmentMode` accepts on the wire.
+pub const TOPIC_REASSIGNMENT_MODE_VALUES: &[&str] = &["AUTO", "MANUAL"];
+
+
+/// The values `TopicReassignmentStatus` accepts on the wire.
+pub const TOPIC_REASSIGNMENT_STATUS_VALUES: &[&str] = &["COMPLETE", "FAILED", "IN_PROGRESS", "PENDING", "STOPPED", "STOPPING"];
 
 
 /// The values `TopicState` accepts on the wire.

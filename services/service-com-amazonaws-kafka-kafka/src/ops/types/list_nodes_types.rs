@@ -43,6 +43,7 @@ pub struct NodeInfo {
 pub struct BrokerNodeInfo {
     pub attached_eni_id: Option<String>,
     pub broker_id: Option<f64>,
+    pub broker_node_type: Option<String>,
     pub client_subnet: Option<String>,
     pub client_vpc_ip_address: Option<String>,
     pub current_broker_software_info: Option<BrokerSoftwareInfo>,

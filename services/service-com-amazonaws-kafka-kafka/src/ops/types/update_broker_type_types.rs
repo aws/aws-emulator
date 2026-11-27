@@ -17,6 +17,7 @@ pub struct UpdateBrokerTypeInput {
     pub cluster_arn: String,
     pub current_version: String,
     pub target_instance_type: String,
+    pub topic_reassignment: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.kafka#UpdateBrokerTypeResponse")]

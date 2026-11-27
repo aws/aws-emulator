@@ -78,6 +78,7 @@ kafka_schema_and_codec!(
 #[smithy_macros::smithy(shape = "com.amazonaws.kafka#ClusterOperationV2Provisioned")]
 #[derive(Debug, Clone, Default)]
 pub struct ClusterOperationV2Provisioned {
+    pub broker_type_upgrade_info: Option<BrokerTypeUpgradeInfo>,
     pub operation_steps: Option<Vec<ClusterOperationStep>>,
     pub source_cluster_info: Option<MutableClusterInfo>,
     pub target_cluster_info: Option<MutableClusterInfo>,
@@ -94,8 +95,8 @@ pub struct ClusterOperationV2Serverless {
 
 /// `CreationTime` targets `__timestampIso8601` (`@timestampFormat("date-time")`), so this
 /// shape's schema comes from `kafka_schema_and_codec!` — see `types/date_time_wire.rs`.
-/// Member set, order, wire names and requiredness from `smithy_query(query="shape",
-/// shape="com.amazonaws.kafka#VpcConnectionInfoServerless")`.
+/// Member set, order, wire names and requiredness from
+/// `smithy_query(query="shape", shape="com.amazonaws.kafka#VpcConnectionInfoServerless")`.
 #[derive(Debug, Clone, Default)]
 pub struct VpcConnectionInfoServerless {
     pub creation_time: Option<::aws_smithy_types::DateTime>,
@@ -110,23 +111,7 @@ kafka_schema_and_codec!(
     "VpcConnectionInfoServerless",
     (M_CREATION_TIME, creation_time, "CreationTime", "creationTime", 0, opt, date_time),
     (M_OWNER, owner, "Owner", "owner", 1, opt, string),
-    (
-        M_USER_IDENTITY,
-        user_identity,
-        "UserIdentity",
-        "userIdentity",
-        2,
-        opt,
-        struct_of(UserIdentity)
-    ),
-    (
-        M_VPC_CONNECTION_ARN,
-        vpc_connection_arn,
-        "VpcConnectionArn",
-        "vpcConnectionArn",
-        3,
-        opt,
-        string
-    ),
+    (M_USER_IDENTITY, user_identity, "UserIdentity", "userIdentity", 2, opt, struct_of(UserIdentity)),
+    (M_VPC_CONNECTION_ARN, vpc_connection_arn, "VpcConnectionArn", "vpcConnectionArn", 3, opt, string),
 );
 

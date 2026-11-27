@@ -520,6 +520,25 @@ impl Cluster {
         broker_type_cluster_info(&self.broker_node_group_info.instance_type)
     }
 
+    /// Whether `instance_type` is a broker type this cluster HAS: the one its
+    /// brokers run, or the one an accepted `UpdateBrokerType` is moving them to.
+    ///
+    /// What `StartTopicReassignmentRequest$TargetInstanceType` requires of the type
+    /// it names ("must exist in the cluster"): partitions can only be reassigned
+    /// onto brokers the cluster has, and a cluster whose broker-type update is
+    /// still rolling out has the type it is moving to as well as the one it is
+    /// moving from. Derived from the stored record and its pending change, so the
+    /// answer moves exactly when [`Self::settle`] applies that change.
+    pub fn has_broker_instance_type(&self, instance_type: &str) -> bool {
+        if self.broker_node_group_info.instance_type == instance_type {
+            return true;
+        }
+        matches!(
+            self.pending_update.as_ref().map(|pending| &pending.change),
+            Some(ClusterChange::BrokerType { instance_type: target }) if target == instance_type
+        )
+    }
+
     /// The cluster's broker count as the `MutableClusterInfo` a cluster
     /// operation reports: the one attribute an `UpdateBrokerCount` call
     /// changes, since an operation describes what it touches rather than the
@@ -1091,6 +1110,13 @@ impl Cluster {
                 // `BrokerNodeInfo$BrokerId` is a `__double` in the model, so the
                 // 1-based id travels as the number it is.
                 broker_id: Some(f64::from(broker.id)),
+                // Which broker type this node runs, read off the instance type it
+                // runs on through the one category reading of this service
+                // ([`broker_node_type`]), so an applied `UpdateBrokerType` moves
+                // what every node reports at once.
+                broker_node_type: Some(
+                    broker_node_type(&self.broker_node_group_info.instance_type).to_string(),
+                ),
                 client_subnet: Some(broker.client_subnet.clone()),
                 client_vpc_ip_address: Some(broker.client_vpc_ip_address.clone()),
                 current_broker_software_info: Some(self.broker_software_info()),

@@ -238,6 +238,16 @@ mod replicator;
 /// The same for one channel record: how it is minted, how its status settles, and
 /// the destination change an update applies to it.
 mod channel;
+/// The assessments a cluster holds: the scan `CreateAssessment` runs over a
+/// cluster, the findings it computes from this service's own state, and the
+/// clock-owed statuses that scan walks. Its own file for the reason the channel's
+/// is: this module keeps to the cluster registry.
+mod assessment;
+pub use assessment::*;
+/// The topic reassignment operations a cluster holds: what each one was asked to
+/// move, and the status and progress derived from the instants it holds.
+mod topic_reassignment;
+pub use topic_reassignment::*;
 /// The service's published Apache Kafka version catalog: the rows the listing
 /// pages, and every version-aware answer derived from them.
 mod kafka_versions;
@@ -260,9 +270,11 @@ use std::time::{Duration, SystemTime};
 use regex::RegexSet;
 
 use crate::ops::types::{
+    AssessmentFinding, AssessmentInfo, AssessmentParameters, AssessmentSummary,
     BadRequestException, BrokerCountUpdateInfo, BrokerEBSVolumeInfo, BrokerNodeGroupInfo,
     BrokerNodeInfo,
     BrokerSoftwareInfo,
+    BrokerTypeUpgradeInfo,
     ChannelInfo, ChannelLoggingInfo, ClientAuthentication, ClientVpcConnection, ClusterInfo,
     ClusterOperationInfo,
     ClusterOperationV2,
@@ -270,10 +282,14 @@ use crate::ops::types::{
     ClusterOperationV2Summary,
     ConflictException, Configuration,
     ConfigurationInfo, ConfigurationRevision, ConnectivityInfo, ConsumerGroupReplicationUpdate,
+    CreateAssessmentInput,
     CreateChannelInput,
     CreateClusterInput, CreateConfigurationInput, CreateReplicatorInput, CreateVpcConnectionInput,
-    DescribeChannelOutput, EBSStorageInfo, EncryptionAtRest, EncryptionConfiguration,
-    EncryptionInTransit, EncryptionInfo, IcebergDestinationConfiguration, JmxExporter,
+    DescribeAssessmentOutput,
+    DescribeChannelOutput, DescribeTopicReassignmentOutput, EBSStorageInfo, EncryptionAtRest,
+    EncryptionConfiguration,
+    EncryptionInTransit, EncryptionInfo, FindingRemediation, IcebergDestinationConfiguration,
+    JmxExporter,
     JmxExporterInfo, KafkaCluster, KafkaClusterDescription, KafkaClusterSummary, LogDelivery,
     LoggingInfo, MutableClusterInfo, NodeExporter, NodeExporterInfo, NodeInfo, OpenMonitoring,
     OpenMonitoringInfo, Prometheus, PrometheusInfo, Provisioned, ProvisionedRequest,
@@ -281,7 +297,8 @@ use crate::ops::types::{
     ReplicationInfoSummary, ReplicationStartingPosition, ReplicationStateInfo,
     ReplicationTopicNameConfiguration, ReplicatorSummary, S3DestinationConfiguration, Serverless,
     ServerlessClientAuthentication, ServerlessConnectivityInfo, ServerlessRequest, StorageInfo,
-    TopicConfiguration, TopicInfo, TopicReplication, TopicReplicationUpdate, VpcConfig,
+    TopicConfiguration, TopicInfo, TopicReassignmentInfo, TopicReplication, TopicReplicationUpdate,
+    VpcConfig,
     ZookeeperAccess,
 };
 
@@ -1591,6 +1608,39 @@ pub struct ClusterOperation {
     pub source_cluster_info: MutableClusterInfo,
     /// The same attributes, as the operation sets them.
     pub target_cluster_info: MutableClusterInfo,
+    /// How the topics of the cluster reach the target broker type, for the
+    /// `UpdateBrokerType` operation that started an upgrade from Standard brokers
+    /// to Express brokers: the mode that call asked for, and the reassignment the
+    /// service started for it once one has started.
+    ///
+    /// `None` on every other operation — `BrokerTypeUpgradeInfo` is "present only
+    /// on the operation that initiated the upgrade".
+    pub broker_type_upgrade: Option<BrokerTypeUpgrade>,
+}
+
+/// The topic reassignment of one `UpdateBrokerType` operation that upgrades a
+/// cluster from Standard brokers to Express brokers.
+#[derive(Debug, Clone)]
+pub struct BrokerTypeUpgrade {
+    /// A `TopicReassignmentMode` value: how the topics reach the Express brokers,
+    /// as `UpdateBrokerTypeRequest$TopicReassignment` asked for it.
+    pub topic_reassignment_mode: String,
+    /// The ARN of the topic reassignment Amazon MSK started for this upgrade,
+    /// "present once that reassignment has started" — which is what `AUTO` makes
+    /// the service do for itself and what `MANUAL` leaves to the caller's own
+    /// `StartTopicReassignment`.
+    pub topic_reassignment_operation_arn: Option<String>,
+}
+
+impl BrokerTypeUpgrade {
+    /// The upgrade as the `BrokerTypeUpgradeInfo` both cluster-operation readers
+    /// report.
+    pub fn to_broker_type_upgrade_info(&self) -> BrokerTypeUpgradeInfo {
+        BrokerTypeUpgradeInfo {
+            topic_reassignment_mode: Some(self.topic_reassignment_mode.clone()),
+            topic_reassignment_operation_arn: self.topic_reassignment_operation_arn.clone(),
+        }
+    }
 }
 
 impl ClusterOperation {
@@ -1633,6 +1683,10 @@ impl ClusterOperation {
     /// operation still running has not ended.
     pub fn to_cluster_operation_info(&self, now: SystemTime) -> ClusterOperationInfo {
         ClusterOperationInfo {
+            broker_type_upgrade_info: self
+                .broker_type_upgrade
+                .as_ref()
+                .map(BrokerTypeUpgrade::to_broker_type_upgrade_info),
             // The id of the API request that triggered the operation is the
             // caller's, and this emulator mints none.
             client_request_id: None,
@@ -1679,6 +1733,10 @@ impl ClusterOperation {
             operation_type: Some(self.operation_type.clone()),
             provisioned: (self.cluster_type == CLUSTER_TYPE_PROVISIONED).then(|| {
                 ClusterOperationV2Provisioned {
+                    broker_type_upgrade_info: self
+                        .broker_type_upgrade
+                        .as_ref()
+                        .map(BrokerTypeUpgrade::to_broker_type_upgrade_info),
                     // No step list, for the reason the V1 view reports none:
                     // this emulator runs no broker-by-broker steps.
                     operation_steps: None,
@@ -2540,11 +2598,23 @@ pub struct TopicFilter {
 impl TopicFilter {
     /// The filter a stored `TopicReplication` describes.
     pub fn of(topic_replication: &TopicReplication) -> Self {
+        Self::from_patterns(
+            &topic_replication.topics_to_replicate,
+            topic_replication.topics_to_exclude.as_deref().unwrap_or(&[]),
+        )
+    }
+
+    /// The filter an include list and an exclude list of topic-selection patterns
+    /// describe, whichever operation's members they came from: a topic is covered
+    /// when some include pattern describes it and no exclude pattern does.
+    ///
+    /// The ONE selection of this service, so a replication flow's
+    /// `TopicsToReplicate`/`TopicsToExclude` and a reassignment's
+    /// `TopicsToInclude`/`TopicsToExclude` select topics by one rule.
+    pub fn from_patterns(include: &[String], exclude: &[String]) -> Self {
         Self {
-            replicate: compile_topic_patterns(&topic_replication.topics_to_replicate),
-            exclude: compile_topic_patterns(
-                topic_replication.topics_to_exclude.as_deref().unwrap_or(&[]),
-            ),
+            replicate: compile_topic_patterns(include),
+            exclude: compile_topic_patterns(exclude),
         }
     }
 
@@ -2945,19 +3015,32 @@ impl Topic {
         }
     }
 
-    /// The topic as the `TopicInfo` `ListTopics` reports: its identity and the
-    /// counts it was created with.
+    /// The broker ids this topic's partition replicas sit on, as the one
+    /// placement rule of this service puts them there
+    /// ([`topic_replica_broker_ids`]): `broker_ids` is the cluster's own broker
+    /// node list ([`ComAmazonawsKafkaKafkaState::broker_node_ids`]).
+    ///
+    /// Derived rather than stored, so the brokers a topic reports as hosting its
+    /// replicas are the brokers the cluster's own metadata names for its
+    /// partitions.
+    pub fn replica_ids(&self, broker_ids: &[i32]) -> Vec<i32> {
+        topic_replica_broker_ids(self.partition_count, self.replication_factor, broker_ids)
+    }
+
+    /// The topic as the `TopicInfo` `ListTopics` reports: its identity, the
+    /// counts it was created with, and the brokers its replicas sit on.
     ///
     /// `OutOfSyncReplicaCount` is 0 because every replica of an emulated topic is
     /// in sync: nothing here can put a broker behind, so the count is computed
     /// from that fact rather than invented.
-    pub fn to_topic_info(&self) -> TopicInfo {
+    pub fn to_topic_info(&self, broker_ids: &[i32]) -> TopicInfo {
         TopicInfo {
             topic_arn: Some(self.arn.clone()),
             topic_name: Some(self.name.clone()),
             replication_factor: Some(self.replication_factor),
             partition_count: Some(self.partition_count),
             out_of_sync_replica_count: Some(0),
+            replica_ids: Some(self.replica_ids(broker_ids)),
         }
     }
 }
@@ -3089,6 +3172,23 @@ pub struct ComAmazonawsKafkaKafkaState {
     /// readers have one total order to walk. Released with the cluster.
     pub producer_transactions:
         BTreeMap<(String, String), broker_plane::transactions::ProducerTransaction>,
+    /// Every assessment of every cluster, keyed by its own ARN. `BTreeMap` so the
+    /// readers have one total order to walk. An assessment is a sub-resource of
+    /// one cluster, so it is only ever resolved through that cluster and is
+    /// dropped with it; the per-cluster count is bounded by
+    /// [`MAX_ASSESSMENTS_PER_CLUSTER`].
+    pub assessments: BTreeMap<String, Assessment>,
+    /// Monotonic counter feeding each assessment's ARN, so every assessment gets
+    /// a distinct identity.
+    pub next_assessment_suffix: u64,
+    /// Every topic reassignment operation of every cluster, keyed by its own ARN.
+    /// `BTreeMap` for the reason the assessments are, and bounded per cluster by
+    /// [`MAX_TOPIC_REASSIGNMENTS_PER_CLUSTER`] the way a cluster's operation
+    /// history is.
+    pub topic_reassignments: BTreeMap<String, TopicReassignment>,
+    /// Monotonic counter feeding each reassignment's ARN, so every operation gets
+    /// a distinct identity.
+    pub next_topic_reassignment_suffix: u64,
 }
 
 impl VpcConnection {

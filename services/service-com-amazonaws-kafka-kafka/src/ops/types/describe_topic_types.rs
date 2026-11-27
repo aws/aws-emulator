@@ -27,5 +27,6 @@ pub struct DescribeTopicOutput {
     pub partition_count: Option<i32>,
     pub configs: Option<String>,
     pub status: Option<String>,
+    pub replica_ids: Option<Vec<i32>>,
 }
 

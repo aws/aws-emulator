@@ -605,6 +605,29 @@ pub fn broker_instance_category(instance_type: &str) -> &'static str {
     }
 }
 
+/// The `BrokerNodeType` a broker running on `instance_type` reports itself as:
+/// the two values the model's `BrokerNodeType` enum names, chosen by the
+/// instance type's own category ([`broker_instance_category`]).
+///
+/// The same reading of an instance type as the category above, so what a node
+/// reports as its broker type and what the version gate calls that node's
+/// category cannot disagree — a cluster whose brokers run an `express.*` type
+/// runs Express brokers.
+pub fn broker_node_type(instance_type: &str) -> &'static str {
+    match broker_instance_category(instance_type) {
+        BROKER_CATEGORY_EXPRESS => BROKER_NODE_TYPE_EXPRESS,
+        _ => BROKER_NODE_TYPE_STANDARD,
+    }
+}
+
+/// The `BrokerNodeType` value of an Express broker node, as the model's enum
+/// spells it.
+pub const BROKER_NODE_TYPE_EXPRESS: &str = "EXPRESS";
+
+/// The `BrokerNodeType` value of a Standard broker node, as the model's enum
+/// spells it.
+pub const BROKER_NODE_TYPE_STANDARD: &str = "STANDARD";
+
 /// The Apache Kafka versions Amazon MSK builds no new STANDARD-broker cluster on
 /// although its catalog publishes an `ACTIVE` row for them: the newest KRaft line,
 /// which MSK offers the EXPRESS brokers alone.

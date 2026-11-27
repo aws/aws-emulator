@@ -111,6 +111,62 @@ pub fn create_instance_type_violation(instance_type: &str) -> Option<String> {
     (!is_catalogued_broker_instance_type(instance_type)).then(unsupported_instance_type_message)
 }
 
+/// The broker types of the Express category, in the order
+/// [`BROKER_INSTANCE_TYPE_CATALOG`] offers them — which is ascending by size.
+fn express_instance_types() -> &'static [&'static str] {
+    static EXPRESS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
+        BROKER_INSTANCE_TYPE_CATALOG
+            .iter()
+            .filter(|instance_type| instance_type.starts_with("express."))
+            .copied()
+            .collect()
+    });
+    &EXPRESS
+}
+
+/// The EC2 instance SIZES the broker catalog names, smallest first.
+///
+/// Source: the size segments of [`BROKER_INSTANCE_TYPE_CATALOG`] itself, in the
+/// order EC2 orders those names in; written out because the order of two size
+/// names is not something their text implies (`2xlarge` sorts before `large`).
+const BROKER_INSTANCE_SIZES: &[&str] = &[
+    "small", "large", "xlarge", "2xlarge", "4xlarge", "8xlarge", "12xlarge", "16xlarge",
+    "24xlarge",
+];
+
+/// Where `instance_type`'s size sits on [`BROKER_INSTANCE_SIZES`], or `None` for
+/// a type whose size the catalog does not name.
+fn instance_size_rank(instance_type: &str) -> Option<usize> {
+    let size = instance_type.rsplit('.').next()?;
+    BROKER_INSTANCE_SIZES
+        .iter()
+        .position(|known| *known == size)
+}
+
+/// The Express broker type a cluster running `instance_type` would move to: the
+/// Express type of the SAME size when the Express category offers that size, and
+/// otherwise the nearest size it does offer — its largest for a size above the
+/// Express range, its smallest for one below.
+///
+/// One function of the catalog, so a recommendation can only ever name a type the
+/// service really offers ([`is_catalogued_broker_instance_type`]). `None` for a
+/// value that is not a broker type at all: there is no size to match.
+pub fn express_instance_type_for(instance_type: &str) -> Option<&'static str> {
+    let rank = instance_size_rank(instance_type)?;
+    let express = express_instance_types();
+    if let Some(same_size) = express
+        .iter()
+        .find(|candidate| instance_size_rank(candidate) == Some(rank))
+    {
+        return Some(same_size);
+    }
+    let largest = express.last().copied()?;
+    match instance_size_rank(largest) {
+        Some(largest_rank) if rank > largest_rank => Some(largest),
+        _ => express.first().copied(),
+    }
+}
+
 /// What Amazon MSK answers a list that names the same item twice.
 ///
 /// Entirely fixed text: neither the repeated value nor the member carrying it is

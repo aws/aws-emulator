@@ -2432,21 +2432,22 @@ fn topic_metadata(
         true => vec![BROKER_NODE_ID],
         false => broker_ids.to_vec(),
     };
-    let replicas = usize::try_from(topic.replication_factor)
-        .unwrap_or(1)
-        .clamp(1, nodes.len());
     MetadataResponseTopic::default()
         .with_error_code(error_code)
         .with_name(Some(TopicName(StrBytes::from_string(topic.name.clone()))))
         .with_partitions(
             (0..topic.partitions)
                 .map(|index| {
-                    let placed: Vec<BrokerId> = (0..replicas)
-                        .map(|replica| {
-                            let at = usize::try_from(index).unwrap_or(0).saturating_add(replica);
-                            BrokerId(nodes[at % nodes.len()])
-                        })
-                        .collect();
+                    // The service's ONE placement rule, the same one the control
+                    // plane reports a topic's `ReplicaIds` from.
+                    let placed: Vec<BrokerId> = crate::state::partition_replica_broker_ids(
+                        index,
+                        topic.replication_factor,
+                        &nodes,
+                    )
+                    .into_iter()
+                    .map(BrokerId)
+                    .collect();
                     let leader = placed.first().copied().unwrap_or(BrokerId(BROKER_NODE_ID));
                     MetadataResponsePartition::default()
                         .with_partition_index(index)

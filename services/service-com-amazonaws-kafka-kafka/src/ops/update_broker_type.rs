@@ -10,6 +10,16 @@
 //! caller reading the cluster straight afterwards still sees `UPDATING` and its
 //! `ActiveOperationArn`.
 //!
+//! The request's `TopicReassignment` ("controls automatic topic reassignment when
+//! entering mixed broker mode … when set to MANUAL (default), customers manage
+//! topic reassignment using the StartTopicReassignment API") travels with the
+//! change: the one operation that upgrades a cluster FROM Standard brokers TO
+//! Express brokers reports it as `BrokerTypeUpgradeInfo`, and under `AUTO` the
+//! service starts the reassignment of every topic itself and reports its ARN there
+//! ([`crate::state::ComAmazonawsKafkaKafkaState::start_broker_type_update`]).
+//! The modelled contract below predates that member, so the model is what to read
+//! for it.
+//!
 //! Authentication is NOT this handler's business: the emulator verifies every
 //! request signature centrally (see `AGENTS.md`), so the modelled
 //! `UnauthorizedException`/`ForbiddenException` are raised by that path and never
@@ -234,6 +244,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         }
 
+        // `TopicReassignment` is an enum shape, and the mode is stored on the
+        // operation and reported back by both cluster-operation readers, so only a
+        // value the model's enum names may be stored: the catalog is the generated
+        // `TOPIC_REASSIGNMENT_VALUES`, never a literal list here.
+        if let Some(mode) = input.topic_reassignment.as_deref() {
+            if !TOPIC_REASSIGNMENT_VALUES.contains(&mode) {
+                return Err(bad_request(
+                    "topicReassignment",
+                    format!(
+                        "TopicReassignment must be one of {}, not {mode}.",
+                        TOPIC_REASSIGNMENT_VALUES.join(", ")
+                    ),
+                ));
+            }
+        }
+
         // A `CurrentVersion` is a token the SERVICE mints and the caller quotes
         // back, so a value outside that shape
         // ([`crate::state::is_current_version_token`]) names no version of this
@@ -272,12 +298,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The registry starts the operation: it records what changes, moves the
         // cluster to UPDATING and stores the instant the change comes due — the
         // same path the sibling update operations start their own through, so one
-        // cluster holds one in-flight update whatever began it.
+        // cluster holds one in-flight update whatever began it. The mode the
+        // request named travels with it: an upgrade from Standard brokers to
+        // Express brokers is the one operation that reports how its topics reach
+        // the new brokers, and `AUTO` is what has the service reassign them
+        // itself.
         let Some(operation_arn) = state.start_broker_type_update(
             &region,
             &input.cluster_arn,
             now,
             input.target_instance_type,
+            input.topic_reassignment,
         ) else {
             return Err(
                 UpdateBrokerTypeErrorModeled::InternalServerErrorException(

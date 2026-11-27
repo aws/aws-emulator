@@ -454,6 +454,67 @@ pub fn is_channel_arn(value: &str) -> bool {
     matches!(identity.len(), 3 | 4) && identity.iter().all(|segment| !segment.is_empty())
 }
 
+/// Whether `value` is shaped like an MSK ASSESSMENT ARN —
+/// `arn:<partition>:kafka:<region>:<account>:assessment/<cluster>/<cluster-id>/<id>`,
+/// the form [`ComAmazonawsKafkaKafkaState::scanned_assessment`] mints: an
+/// assessment is a sub-resource of the cluster it was run against, so its ARN
+/// names that cluster and then the assessment.
+///
+/// Same division of labour as [`is_cluster_arn`]: a value that is not an ARN of
+/// this kind is a `BadRequestException`, and `NotFoundException` is reserved for
+/// a well-formed ARN no stored assessment holds.
+pub fn is_assessment_arn(value: &str) -> bool {
+    is_kafka_cluster_sub_resource_arn(value, ASSESSMENT_RESOURCE_TYPE)
+}
+
+/// Whether `value` is shaped like an MSK TOPIC REASSIGNMENT ARN —
+/// `arn:<partition>:kafka:<region>:<account>:topic-reassignment/<cluster>/<cluster-id>/<id>`,
+/// the form [`ComAmazonawsKafkaKafkaState::start_topic_reassignment`] mints.
+/// Same shape, and the same division of labour, as [`is_assessment_arn`].
+pub fn is_topic_reassignment_arn(value: &str) -> bool {
+    is_kafka_cluster_sub_resource_arn(value, TOPIC_REASSIGNMENT_RESOURCE_TYPE)
+}
+
+/// Whether `value`'s resource part is `<kind>/<cluster name>/<cluster id>/<id>` —
+/// the shape every ARN this service mints for a sub-resource OF ONE CLUSTER takes,
+/// so the predicates over those kinds cannot disagree about what a well-formed one
+/// is.
+fn is_kafka_cluster_sub_resource_arn(value: &str, kind: &str) -> bool {
+    let Some(resource) = kafka_arn_resource(value) else {
+        return false;
+    };
+    let mut segments = resource.split('/');
+    matches!(
+        (
+            segments.next(),
+            segments.next(),
+            segments.next(),
+            segments.next(),
+            segments.next()
+        ),
+        (Some(found), Some(cluster), Some(cluster_id), Some(id), None)
+            if found == kind
+                && !cluster.is_empty()
+                && !cluster_id.is_empty()
+                && !id.is_empty()
+    )
+}
+
+/// The resource type an assessment's ARN carries.
+pub const ASSESSMENT_RESOURCE_TYPE: &str = "assessment";
+
+/// The resource type a topic reassignment operation's ARN carries.
+pub const TOPIC_REASSIGNMENT_RESOURCE_TYPE: &str = "topic-reassignment";
+
+/// The member the assessment operations carry an assessment's ARN in, named as
+/// the API documents it on the wire — the camelCase spelling, like every other
+/// member a refusal of this service names.
+pub const ASSESSMENT_ARN_MEMBER: &str = "assessmentArn";
+
+/// The member the topic reassignment operations carry an operation's ARN in,
+/// named the same way.
+pub const TOPIC_REASSIGNMENT_OPERATION_ARN_MEMBER: &str = "topicReassignmentOperationArn";
+
 /// Whether `value` is an EC2 resource id of `kind` (`"vpc"`, `"subnet"`,
 /// `"sg"`): the prefix, a hyphen, and then either 8 or 17 lowercase
 /// hexadecimal digits — the two published EC2 resource-id forms, the original

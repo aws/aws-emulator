@@ -227,6 +227,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // whether or not anybody called. The lookup answers from the one
         // derivation `ListTopics` pages, so a topic a running replicator carries
         // onto this cluster reads back here exactly while the listing reports it.
+        //
+        // The cluster's broker node list is read first, since the lookup below
+        // borrows the registry again: it is what this topic's replica placement
+        // is reported over.
+        let broker_ids = state.broker_node_ids(&region, &input.cluster_arn);
         let Some(topic) = state.observable_topic_in(
             &input.cluster_arn,
             &input.topic_name,
@@ -241,6 +246,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         };
         Ok(DescribeTopicOutput {
+            replica_ids: Some(topic.replica_ids(&broker_ids)),
             topic_arn: Some(topic.arn),
             topic_name: Some(topic.name),
             replication_factor: Some(topic.replication_factor),

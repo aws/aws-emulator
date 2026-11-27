@@ -35,5 +35,6 @@ pub struct TopicInfo {
     pub replication_factor: Option<i32>,
     pub partition_count: Option<i32>,
     pub out_of_sync_replica_count: Option<i32>,
+    pub replica_ids: Option<Vec<i32>>,
 }
 

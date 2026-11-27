@@ -33,6 +33,72 @@ pub fn replication_factor_shortfall_message(
     )
 }
 
+/// The broker ids ONE partition's replicas sit on: as many brokers as the
+/// replication factor names, starting at the broker the partition's own index
+/// falls on and taken in order from there, which is how Apache Kafka lays a
+/// topic's partitions out over the brokers available to it.
+///
+/// `broker_ids` is the cluster's own broker node list, in id order, and a
+/// partition cannot be placed on more brokers than the cluster has, so the
+/// factor is read within that count. The leader is the first of them. Empty for
+/// a cluster that publishes no broker ids at all: there is nothing to place a
+/// replica on.
+///
+/// The ONE placement of this service, so the brokers the cluster's own metadata
+/// names for a partition and the brokers its control plane reports as that
+/// topic's replicas ([`topic_replica_broker_ids`]) are the same brokers.
+pub fn partition_replica_broker_ids(
+    partition_index: i32,
+    replication_factor: i32,
+    broker_ids: &[i32],
+) -> Vec<i32> {
+    if broker_ids.is_empty() {
+        return Vec::new();
+    }
+    let replicas = usize::try_from(replication_factor)
+        .unwrap_or(1)
+        .clamp(1, broker_ids.len());
+    let first = usize::try_from(partition_index).unwrap_or(0);
+    (0..replicas)
+        .map(|replica| broker_ids[first.saturating_add(replica) % broker_ids.len()])
+        .collect()
+}
+
+/// The broker ids a WHOLE topic's partition replicas sit on, each reported once
+/// and in id order: the union of [`partition_replica_broker_ids`] over the
+/// topic's partitions.
+///
+/// This is what `TopicInfo$ReplicaIds` and `DescribeTopicResponse$ReplicaIds`
+/// report ("The broker IDs hosting replicas of this topic's partitions"), so it
+/// is derived from the one placement rather than stored a second time: a topic
+/// of a cluster whose brokers change reports the brokers it is placed on now.
+///
+/// The walk is bounded by the cluster's BROKER COUNT rather than by the topic's
+/// partition count, which a request chooses: the placement moves one broker per
+/// partition, so after as many partitions as the cluster has brokers the union is
+/// every broker and no further partition can add to it. A topic of a million
+/// partitions therefore costs the same walk as one of ten.
+pub fn topic_replica_broker_ids(
+    partition_count: i32,
+    replication_factor: i32,
+    broker_ids: &[i32],
+) -> Vec<i32> {
+    let covering = i32::try_from(broker_ids.len()).unwrap_or(i32::MAX);
+    let mut hosting: std::collections::BTreeSet<i32> = std::collections::BTreeSet::new();
+    for partition in 0..partition_count.max(0).min(covering) {
+        hosting.extend(partition_replica_broker_ids(
+            partition,
+            replication_factor,
+            broker_ids,
+        ));
+        // Every broker already holds a replica, so no later partition can add one.
+        if hosting.len() == broker_ids.len() {
+            break;
+        }
+    }
+    hosting.into_iter().collect()
+}
+
 /// Why `replication_factor` replicas of a partition cannot be placed on the
 /// brokers a cluster has available, or `None` when they can.
 ///

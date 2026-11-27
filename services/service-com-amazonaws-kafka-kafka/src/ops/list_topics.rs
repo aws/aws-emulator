@@ -283,6 +283,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // already owes is simply not reported, which is what every other reader
         // says about it too.
         let now = std::time::SystemTime::now();
+        // The cluster's own broker node list, which every topic of it reports its
+        // replica placement over.
+        let broker_ids = state.broker_node_ids(&region, &input.cluster_arn);
         let observable = state.observable_topics_in(&input.cluster_arn, now);
         let mut page: Vec<TopicInfo> = Vec::with_capacity(page_size);
         let mut last_name: Option<String> = None;
@@ -303,7 +306,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 more_remain = true;
                 break;
             }
-            page.push(topic.to_topic_info());
+            page.push(topic.to_topic_info(&broker_ids));
             last_name = Some(topic.name.clone());
         }
 

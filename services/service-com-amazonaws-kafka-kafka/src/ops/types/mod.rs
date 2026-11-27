@@ -14,15 +14,17 @@
 //! here named after an operation would make that operation's own module name
 //! ambiguous inside `ops` (`E0659`).
 
-// The schema/codec macros every structure with a `@timestampFormat("date-time")` member
-// uses, because the vendored codegen drops that trait. Hand-added, not generated; see the
-// module's own note. `#[macro_use]`, and declared FIRST, so the macros are in the textual
-// scope of every `*_types` module below.
+// The schema/codec macros one structure needs when a member of it carries
+// `@timestampFormat("date-time")`, which the vendored codegen cannot emit. They are
+// `macro_rules!`, so they are in scope only for what follows this declaration
+// textually: it stays ahead of every `_types` module that invokes them. See
+// `date_time_wire.rs` for why the module exists and when it goes away.
 #[macro_use]
-pub mod date_time_wire;
+mod date_time_wire;
 
 pub mod batch_associate_scram_secret_types;
 pub mod batch_disassociate_scram_secret_types;
+pub mod create_assessment_types;
 pub mod create_channel_types;
 pub mod create_cluster_types;
 pub mod create_cluster_v2_types;
@@ -30,6 +32,7 @@ pub mod create_configuration_types;
 pub mod create_replicator_types;
 pub mod create_topic_types;
 pub mod create_vpc_connection_types;
+pub mod delete_assessment_types;
 pub mod delete_channel_types;
 pub mod delete_cluster_policy_types;
 pub mod delete_cluster_types;
@@ -37,6 +40,7 @@ pub mod delete_configuration_types;
 pub mod delete_replicator_types;
 pub mod delete_topic_types;
 pub mod delete_vpc_connection_types;
+pub mod describe_assessment_types;
 pub mod describe_channel_types;
 pub mod describe_cluster_operation_types;
 pub mod describe_cluster_operation_v2_types;
@@ -46,11 +50,14 @@ pub mod describe_configuration_revision_types;
 pub mod describe_configuration_types;
 pub mod describe_replicator_types;
 pub mod describe_topic_partitions_types;
+pub mod describe_topic_reassignment_types;
 pub mod describe_topic_types;
 pub mod describe_vpc_connection_types;
 pub mod get_bootstrap_brokers_types;
 pub mod get_cluster_policy_types;
 pub mod get_compatible_kafka_versions_types;
+pub mod list_assessment_findings_types;
+pub mod list_assessments_types;
 pub mod list_channels_types;
 pub mod list_client_vpc_connections_types;
 pub mod list_cluster_operations_types;
@@ -64,12 +71,15 @@ pub mod list_nodes_types;
 pub mod list_replicators_types;
 pub mod list_scram_secrets_types;
 pub mod list_tags_for_resource_types;
+pub mod list_topic_reassignments_types;
 pub mod list_topics_types;
 pub mod list_vpc_connections_types;
 pub mod put_cluster_policy_types;
 pub mod reboot_broker_types;
 pub mod reject_client_vpc_connection_types;
 pub mod shared_types;
+pub mod start_topic_reassignment_types;
+pub mod stop_topic_reassignment_types;
 pub mod tag_resource_types;
 pub mod untag_resource_types;
 pub mod update_broker_count_types;
@@ -92,6 +102,8 @@ pub use batch_associate_scram_secret_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use batch_disassociate_scram_secret_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_assessment_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_channel_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_cluster_types::*;
@@ -106,6 +118,8 @@ pub use create_topic_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_vpc_connection_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_assessment_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_channel_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_cluster_policy_types::*;
@@ -119,6 +133,8 @@ pub use delete_replicator_types::*;
 pub use delete_topic_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_vpc_connection_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use describe_assessment_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_channel_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -138,6 +154,8 @@ pub use describe_replicator_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_topic_partitions_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use describe_topic_reassignment_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_topic_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_vpc_connection_types::*;
@@ -147,6 +165,10 @@ pub use get_bootstrap_brokers_types::*;
 pub use get_cluster_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_compatible_kafka_versions_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_assessment_findings_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_assessments_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_channels_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -174,6 +196,8 @@ pub use list_scram_secrets_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_tags_for_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_topic_reassignments_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_topics_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_vpc_connections_types::*;
@@ -185,6 +209,10 @@ pub use reboot_broker_types::*;
 pub use reject_client_vpc_connection_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use start_topic_reassignment_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use stop_topic_reassignment_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use tag_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
