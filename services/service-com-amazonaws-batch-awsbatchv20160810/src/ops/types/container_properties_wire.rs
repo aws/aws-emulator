@@ -45,8 +45,43 @@ use super::*;
 
 /// The namespace an unmodelled member's shape id sits in: not this service's own, so a member
 /// the model does not declare cannot claim to be modelled. The modelled members go through
-/// [`super::member_schema`], which puts their shape ids in this service's own namespace.
+/// [`member_schema`], which puts their shape ids in this service's own namespace.
 const RECORDED: &str = "com.amazonaws.batch.recorded";
+
+/// This service's own namespace: where every member the model DOES declare has its shape id.
+const MODELLED: &str = "com.amazonaws.batch";
+
+/// One modelled member's schema, as the derive emits it for one: the member's shape id in this
+/// service's own namespace, its shape type, its wire name and its index in the member list.
+///
+/// `pub` because the other hand-written shape declarations of this service's `types/` modules
+/// spell their member schemas with it too: `types/mod.rs` re-exports this module, so a sibling
+/// module's `use super::*` resolves it from here.
+pub const fn member_schema(
+    shape_id: &'static str,
+    wire_name: &'static str,
+    shape_type: ::aws_smithy_schema::ShapeType,
+    index: usize,
+) -> ::aws_smithy_schema::Schema {
+    member_schema_in(MODELLED, shape_id, wire_name, shape_type, index)
+}
+
+/// The same, for a member whose shape id sits in another namespace — which is what a member
+/// the model does not declare at all gets (see [`RECORDED`]).
+pub const fn member_schema_in(
+    namespace: &'static str,
+    shape_id: &'static str,
+    wire_name: &'static str,
+    shape_type: ::aws_smithy_schema::ShapeType,
+    index: usize,
+) -> ::aws_smithy_schema::Schema {
+    ::aws_smithy_schema::Schema::new_member(
+        ::aws_smithy_schema::ShapeId::from_static(shape_id, namespace, wire_name),
+        shape_type,
+        wire_name,
+        index,
+    )
+}
 
 /// `NetworkConfiguration$assignPublicIp`'s constraint traits: the value set of
 /// `AssignPublicIp` (`smithy_query(query="shape", shape="AssignPublicIp")`), which the

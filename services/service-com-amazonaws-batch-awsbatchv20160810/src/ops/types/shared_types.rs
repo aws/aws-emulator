@@ -11,42 +11,6 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-batch-awsbatchv20160810.json");
 
-/// One member schema of a hand-written structure of this service, at `index` in that
-/// structure's member list.
-///
-/// A shape whose serializer has to omit a `@required` + `@clientOptional` member carries
-/// its schema written out rather than derived (see `JobDetail` in
-/// `describe_jobs_types`, and `DescribeServiceJobOutput` in `describe_service_job_types`).
-/// Every shape of this service lives in the one namespace, so only the member's own shape
-/// id, wire name, kind and position differ, and that is all this takes.
-pub const fn member_schema(
-    shape_id: &'static str,
-    name: &'static str,
-    shape_type: ::aws_smithy_schema::ShapeType,
-    index: usize,
-) -> ::aws_smithy_schema::Schema {
-    member_schema_in("com.amazonaws.batch", shape_id, name, shape_type, index)
-}
-
-/// The same, for a member whose shape id sits in a namespace OTHER than this service's own:
-/// a member the on-disk model does not declare at all, which is given a namespace of its own
-/// so it can neither claim to be modelled nor collide with a member a later model refresh
-/// declares (see `crate::ops::types::container_properties_wire`).
-pub const fn member_schema_in(
-    namespace: &'static str,
-    shape_id: &'static str,
-    name: &'static str,
-    shape_type: ::aws_smithy_schema::ShapeType,
-    index: usize,
-) -> ::aws_smithy_schema::Schema {
-    ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(shape_id, namespace, name),
-        shape_type,
-        name,
-        index,
-    )
-}
-
 #[smithy_macros::smithy(shape = "com.amazonaws.batch#ClientException")]
 #[derive(Debug, Clone, Default)]
 pub struct ClientException {
@@ -296,9 +260,14 @@ pub struct EvaluateOnExit {
     pub action: String,
 }
 
-// `ContainerProperties` is declared in `container_properties_wire`, where its schema and
-// codec are written out rather than derived: AWS Batch reports the two deprecated resource
-// reservations whatever the registration supplied, which a derived member cannot express.
+// `ContainerProperties` is NOT declared here, although `JobDefinition`,
+// `NodeRangeProperty` and `RegisterJobDefinitionInput` all reach it: AWS answers
+// a read of a container job definition with a member set this shape's derive
+// cannot write (the two deprecated resource reservations as an explicit null),
+// so the shape is declared in `container_properties_wire` with its schema and
+// codecs written out instead (see that module's own notes). `types/mod.rs`
+// re-exports it, so `use super::types::*` resolves it from here as it does any
+// other shape.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.batch#Volume")]
 #[derive(Debug, Clone, Default)]
@@ -413,9 +382,10 @@ pub struct Secret {
     pub value_from: String,
 }
 
-// `NetworkConfiguration` is declared in `container_properties_wire` for the same reason:
-// AWS Batch reports an interface-configuration list on it that the on-disk model does not
-// declare.
+// `NetworkConfiguration` is NOT declared here either, for the same reason: AWS
+// answers with its interface-configuration list, which the published model
+// snapshot does not declare at all, so `container_properties_wire` declares the
+// shape and `types/mod.rs` re-exports it.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.batch#FargatePlatformConfiguration")]
 #[derive(Debug, Clone, Default)]
@@ -546,6 +516,7 @@ pub struct EksPodProperties {
     pub volumes: Option<Vec<EksVolume>>,
     pub metadata: Option<EksMetadata>,
     pub share_process_namespace: Option<bool>,
+    pub security_context: Option<EksPodSecurityContext>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.batch#ImagePullSecret")]
@@ -600,6 +571,22 @@ pub struct EksContainerSecurityContext {
     pub allow_privilege_escalation: Option<bool>,
     pub read_only_root_filesystem: Option<bool>,
     pub run_as_non_root: Option<bool>,
+    pub capabilities: Option<EksContainerLinuxCapabilities>,
+    pub seccomp_profile: Option<EksSeccompProfile>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.batch#EksContainerLinuxCapabilities")]
+#[derive(Debug, Clone, Default)]
+pub struct EksContainerLinuxCapabilities {
+    pub add: Option<Vec<String>>,
+    pub drop: Option<Vec<String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.batch#EksSeccompProfile")]
+#[derive(Debug, Clone, Default)]
+pub struct EksSeccompProfile {
+    pub r#type: String,
+    pub localhost_profile: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.batch#EksVolume")]
@@ -645,6 +632,16 @@ pub struct EksMetadata {
     pub labels: Option<std::collections::HashMap<String, String>>,
     pub annotations: Option<std::collections::HashMap<String, String>>,
     pub namespace: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.batch#EksPodSecurityContext")]
+#[derive(Debug, Clone, Default)]
+pub struct EksPodSecurityContext {
+    pub run_as_user: Option<i64>,
+    pub run_as_group: Option<i64>,
+    pub run_as_non_root: Option<bool>,
+    pub seccomp_profile: Option<EksSeccompProfile>,
+    pub fs_group: Option<i64>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.batch#ConsumableResourceProperties")]
@@ -767,6 +764,10 @@ pub const EKS_ACCESS_ENTRY_DESIRED_STATE_VALUES: &[&str] = &["DISABLED", "ENABLE
 
 /// The values `EksAccessEntryStatus` accepts on the wire.
 pub const EKS_ACCESS_ENTRY_STATUS_VALUES: &[&str] = &["ACTIVE", "INACTIVE"];
+
+
+/// The values `EksSeccompProfileType` accepts on the wire.
+pub const EKS_SECCOMP_PROFILE_TYPE_VALUES: &[&str] = &["Localhost", "RuntimeDefault", "Unconfined"];
 
 
 /// The values `FirelensConfigurationType` accepts on the wire.

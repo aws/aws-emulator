@@ -17,87 +17,35 @@ pub struct DescribeJobsInput {
     pub jobs: Vec<String>,
 }
 
-/// `DescribeJobsResponse`: "The list of jobs."
-///
-/// Written out rather than derived for one reason only — the derive's generated
-/// serializer for this shape writes each element against [`JobDetail`]'s own
-/// `SerializableStruct` impl, and that impl is hand-written here (see the note on
-/// [`JobDetail`]). The member set, its order, its `member_index` and its wire kind are
-/// the model's.
-///
-/// The derive's `DeserializableStruct` impl is deliberately not reproduced: this shape is
-/// an operation OUTPUT, which the server only ever serializes
-/// (`Operation::Output` requires `SerializableStruct`; only `Input` is deserialized).
+#[smithy_macros::smithy(shape = "com.amazonaws.batch#DescribeJobsResponse")]
 #[derive(Debug, Clone, Default)]
 pub struct DescribeJobsOutput {
     pub jobs: Option<Vec<JobDetail>>,
 }
 
-#[allow(non_upper_case_globals)]
-impl DescribeJobsOutput {
-    const M_JOBS: ::aws_smithy_schema::Schema = member_schema(
-        "com.amazonaws.batch#DescribeJobsResponse$jobs",
-        "jobs",
-        ::aws_smithy_schema::ShapeType::List,
-        0,
-    );
-
-    pub const SCHEMA: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_struct(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.batch#DescribeJobsResponse",
-            "com.amazonaws.batch",
-            "DescribeJobsResponse",
-        ),
-        ::aws_smithy_schema::ShapeType::Structure,
-        &[&Self::M_JOBS],
-    );
-}
-
-pub static DESCRIBE_JOBS_OUTPUT_SCHEMA: &::aws_smithy_schema::Schema = &DescribeJobsOutput::SCHEMA;
-
-impl ::aws_smithy_schema::serde::SerializableStruct for DescribeJobsOutput {
-    fn serialize_members(
-        &self,
-        s: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        if let Some(jobs) = self.jobs.as_ref() {
-            s.write_list(&Self::M_JOBS, &|items| {
-                for job in jobs.iter() {
-                    // A list of structures writes each element against the ELEMENT
-                    // shape's own schema, as the generator does.
-                    items.write_struct(&JobDetail::SCHEMA, job)?;
-                }
-                Ok(())
-            })?;
-        }
-        Ok(())
-    }
-}
-
-/// `JobDetail`: "An object that represents an Batch job."
+/// `JobDetail`: "an object that represents an Batch job."
 ///
-/// Written out rather than derived, with its member schemas and its serializer spelled
-/// here. WHY: `startedAt` is modelled `@required` AND `@clientOptional`
-/// (`smithy_query(query="shape",shape="JobDetail")`) — Smithy's statement that the member
-/// is not always on the wire — and it is "the Unix timestamp (in milliseconds) for when
-/// the job was started. More specifically, it's when the job transitioned from the
-/// `STARTING` state to the `RUNNING` state". A job that has made no such transition has no
-/// such instant, and the difference is observable: the derive refuses an `Option<T>` field
-/// for a `@required` member and writes the member unconditionally, so a job that has only
-/// been accepted into a queue reported `startedAt` as the Long default, 0 — the epoch read
-/// as a start time, which makes the queue wait (`startedAt - createdAt`) hugely negative
-/// and the runtime (`stoppedAt - startedAt`) decades long. So the member is held as an
-/// `Option` here and written only once the record carries the instant the run began —
-/// exactly as `stoppedAt` (plainly optional) and as the `Batch Job State Change` detail
-/// rendered from the same record already do (`crate::state::job_state_change_detail`).
+/// Written out rather than derived, with its member schemas and its serializer spelled here.
+/// WHY: `startedAt` is modelled `@required` AND `@clientOptional`
+/// (`smithy_query(query="shape",shape="JobDetail")`) — Smithy's statement that the member is
+/// not always on the wire — and it is "the Unix timestamp (in milliseconds) for when the job
+/// was started. More specifically, it's when the job transitioned from the `STARTING` state to
+/// the `RUNNING` state". A job that made no such transition has no such instant, and the
+/// difference is observable: the derive refuses an `Option<T>` field for a `@required` member
+/// and writes the member unconditionally, so a job that has only been queued would report
+/// `startedAt` as the Long default, 0 — the epoch read as a start time, which makes the queue
+/// wait (`startedAt - createdAt`) hugely negative. So the member is held as an `Option` here
+/// and written only once the record carries the instant the run began, exactly as `stoppedAt`
+/// (plainly optional) already is. `DescribeServiceJobResponse$startedAt` is the same member of
+/// the service-job shape and is declared the same way, in `describe_service_job_types`.
 ///
-/// Everything else mirrors the derive exactly: the member order and `member_index` values,
-/// the shape ids, and the write call per member kind. Constraint traits are deliberately
-/// NOT carried: they are read only by the request-path validating walk, which validates an
-/// operation's `INPUT_SCHEMA`, and this shape appears in no operation input.
-///
-/// The derive's `DeserializableStruct` impl is deliberately not reproduced, for the reason
-/// given on [`DescribeJobsOutput`].
+/// Everything else mirrors the derive exactly: the member order and `member_index` values, the
+/// shape ids, and the write call per member kind. Constraint traits are deliberately NOT
+/// carried: they are read only by the request-path validating walk, which validates an
+/// operation's `INPUT_SCHEMA`, and this shape appears in no operation input. The derive's
+/// `DeserializableStruct` impl is deliberately not reproduced either: this shape is an
+/// operation OUTPUT, which the server only ever serializes (`Operation::Output` requires
+/// `SerializableStruct`; only `Input` is deserialized).
 #[derive(Debug, Clone, Default)]
 pub struct JobDetail {
     pub job_arn: Option<String>,
@@ -112,8 +60,8 @@ pub struct JobDetail {
     pub created_at: Option<i64>,
     pub retry_strategy: Option<RetryStrategy>,
     /// "When the job transitioned from the `STARTING` state to the `RUNNING` state": the
-    /// instant the run of this job's container began, or `None` for a job whose container
-    /// has not started one — which is how the member reaches the wire absent.
+    /// instant the run of this job's work began, or `None` for a job nothing has started one
+    /// for — which is how the member reaches the wire absent.
     pub started_at: Option<i64>,
     pub stopped_at: Option<i64>,
     pub depends_on: Option<Vec<JobDependency>>,
@@ -137,9 +85,10 @@ pub struct JobDetail {
 
 #[allow(non_upper_case_globals)]
 impl JobDetail {
-    // Associated member-schema consts, in the model's own member order.
-    // `tests/all/job_execution_timestamps.rs` pins the member set this shape reports
-    // against the model, so this hand-written block cannot drift from it silently.
+    // Associated member-schema consts, in the model's own member order. An enum-targeted
+    // member takes the String shape type, as the derive does for one.
+    // `tests/all/job_execution_timestamps.rs` pins the member set this shape reports against
+    // the model, so this hand-written block cannot drift from it silently.
     const M_JOB_ARN: ::aws_smithy_schema::Schema = member_schema(
         "com.amazonaws.batch#JobDetail$jobArn",
         "jobArn",
@@ -206,8 +155,8 @@ impl JobDetail {
         ::aws_smithy_schema::ShapeType::Structure,
         10,
     );
-    /// THE reason this schema is hand-written: `@required` + `@clientOptional`, so the
-    /// member is written only for a job whose container started (see [`JobDetail`]).
+    /// THE reason this schema is hand-written: `@required` + `@clientOptional`, so the member
+    /// is written only for a job whose run began (see [`JobDetail`]).
     const M_STARTED_AT: ::aws_smithy_schema::Schema = member_schema(
         "com.amazonaws.batch#JobDetail$startedAt",
         "startedAt",
@@ -388,6 +337,8 @@ impl ::aws_smithy_schema::serde::SerializableStruct for JobDetail {
         if let Some(v) = self.attempts.as_ref() {
             s.write_list(&Self::M_ATTEMPTS, &|items| {
                 for attempt in v.iter() {
+                    // A list of structures writes each element against the ELEMENT shape's
+                    // own schema, as the generator does.
                     items.write_struct(&AttemptDetail::SCHEMA, attempt)?;
                 }
                 Ok(())
@@ -402,7 +353,7 @@ impl ::aws_smithy_schema::serde::SerializableStruct for JobDetail {
         if let Some(v) = self.retry_strategy.as_ref() {
             s.write_struct(&Self::M_RETRY_STRATEGY, v)?;
         }
-        // The two execution instants: each is written only for the transition the record
+        // The instants of this job's run: each is written only for the transition the record
         // says the job made, so a job nothing has started reports neither.
         if let Some(v) = self.started_at {
             s.write_long(&Self::M_STARTED_AT, v)?;
@@ -487,6 +438,135 @@ impl ::aws_smithy_schema::serde::SerializableStruct for JobDetail {
             s.write_struct(&Self::M_CONSUMABLE_RESOURCE_PROPERTIES, v)?;
         }
         Ok(())
+    }
+}
+
+/// The read half of the shape, as the derive emits it: the enclosing `DescribeJobsOutput` is
+/// derived, and the derive's own `DeserializableStruct` impl for it reads this member's type,
+/// so the pair has to be complete. Nothing on the request path reaches it — this shape appears
+/// in no operation input — so the derive's per-member error attribution, which exists to word
+/// a refusal of a REQUEST, is not reproduced.
+impl ::aws_smithy_schema_server::DeserializableStruct for JobDetail {
+    fn deserialize(
+        d: &mut dyn ::aws_smithy_schema::serde::ShapeDeserializer,
+    ) -> ::std::result::Result<Self, ::aws_smithy_schema::serde::SerdeError> {
+        let mut detail = Self::default();
+        // The `@required` members, held apart so one absent from the document is refused by
+        // name rather than silently defaulted.
+        let mut job_name: Option<String> = None;
+        let mut job_id: Option<String> = None;
+        let mut job_queue: Option<String> = None;
+        let mut status: Option<String> = None;
+        let mut job_definition: Option<String> = None;
+        d.read_struct(&Self::SCHEMA, &mut |member, d| {
+            match member.member_index() {
+                Some(0) => detail.job_arn = Some(d.read_string(member)?),
+                Some(1) => job_name = Some(d.read_string(member)?),
+                Some(2) => job_id = Some(d.read_string(member)?),
+                Some(3) => job_queue = Some(d.read_string(member)?),
+                Some(4) => status = Some(d.read_string(member)?),
+                Some(5) => detail.share_identifier = Some(d.read_string(member)?),
+                Some(6) => detail.scheduling_priority = Some(d.read_integer(member)?),
+                Some(7) => {
+                    let mut entries: Vec<AttemptDetail> = Vec::new();
+                    d.read_list(member, &mut |entry| {
+                        entries.push(<AttemptDetail as ::aws_smithy_schema_server::DeserializableStruct>::deserialize(entry)?);
+                        Ok(())
+                    })?;
+                    detail.attempts = Some(entries);
+                }
+                Some(8) => detail.status_reason = Some(d.read_string(member)?),
+                Some(9) => detail.created_at = Some(d.read_long(member)?),
+                Some(10) => {
+                    detail.retry_strategy = Some(<RetryStrategy as ::aws_smithy_schema_server::DeserializableStruct>::deserialize(d)?);
+                }
+                Some(11) => detail.started_at = Some(d.read_long(member)?),
+                Some(12) => detail.stopped_at = Some(d.read_long(member)?),
+                Some(13) => {
+                    let mut entries: Vec<JobDependency> = Vec::new();
+                    d.read_list(member, &mut |entry| {
+                        entries.push(<JobDependency as ::aws_smithy_schema_server::DeserializableStruct>::deserialize(entry)?);
+                        Ok(())
+                    })?;
+                    detail.depends_on = Some(entries);
+                }
+                Some(14) => job_definition = Some(d.read_string(member)?),
+                Some(15) => {
+                    let mut entries: std::collections::HashMap<String, String> =
+                        std::collections::HashMap::new();
+                    d.read_map(member, &mut |key, value| {
+                        entries.insert(key, value.read_string(member)?);
+                        Ok(())
+                    })?;
+                    detail.parameters = Some(entries);
+                }
+                Some(16) => {
+                    detail.container = Some(<ContainerDetail as ::aws_smithy_schema_server::DeserializableStruct>::deserialize(d)?);
+                }
+                Some(17) => {
+                    detail.node_details = Some(<NodeDetails as ::aws_smithy_schema_server::DeserializableStruct>::deserialize(d)?);
+                }
+                Some(18) => {
+                    detail.node_properties = Some(<NodeProperties as ::aws_smithy_schema_server::DeserializableStruct>::deserialize(d)?);
+                }
+                Some(19) => {
+                    detail.array_properties = Some(<ArrayPropertiesDetail as ::aws_smithy_schema_server::DeserializableStruct>::deserialize(d)?);
+                }
+                Some(20) => {
+                    detail.timeout = Some(<JobTimeout as ::aws_smithy_schema_server::DeserializableStruct>::deserialize(d)?);
+                }
+                Some(21) => {
+                    let mut entries: std::collections::HashMap<String, String> =
+                        std::collections::HashMap::new();
+                    d.read_map(member, &mut |key, value| {
+                        entries.insert(key, value.read_string(member)?);
+                        Ok(())
+                    })?;
+                    detail.tags = Some(entries);
+                }
+                Some(22) => detail.propagate_tags = Some(d.read_boolean(member)?),
+                Some(23) => {
+                    let mut entries: Vec<String> = Vec::new();
+                    d.read_list(member, &mut |entry| {
+                        entries.push(entry.read_string(member)?);
+                        Ok(())
+                    })?;
+                    detail.platform_capabilities = Some(entries);
+                }
+                Some(24) => {
+                    detail.eks_properties = Some(<EksPropertiesDetail as ::aws_smithy_schema_server::DeserializableStruct>::deserialize(d)?);
+                }
+                Some(25) => {
+                    let mut entries: Vec<EksAttemptDetail> = Vec::new();
+                    d.read_list(member, &mut |entry| {
+                        entries.push(<EksAttemptDetail as ::aws_smithy_schema_server::DeserializableStruct>::deserialize(entry)?);
+                        Ok(())
+                    })?;
+                    detail.eks_attempts = Some(entries);
+                }
+                Some(26) => {
+                    detail.ecs_properties = Some(<EcsPropertiesDetail as ::aws_smithy_schema_server::DeserializableStruct>::deserialize(d)?);
+                }
+                Some(27) => detail.is_cancelled = Some(d.read_boolean(member)?),
+                Some(28) => detail.is_terminated = Some(d.read_boolean(member)?),
+                Some(29) => {
+                    detail.consumable_resource_properties = Some(<ConsumableResourceProperties as ::aws_smithy_schema_server::DeserializableStruct>::deserialize(d)?);
+                }
+                _ => {}
+            }
+            Ok(())
+        })?;
+        detail.job_name =
+            job_name.ok_or_else(|| ::aws_smithy_schema_server::missing_member("jobName"))?;
+        detail.job_id =
+            job_id.ok_or_else(|| ::aws_smithy_schema_server::missing_member("jobId"))?;
+        detail.job_queue =
+            job_queue.ok_or_else(|| ::aws_smithy_schema_server::missing_member("jobQueue"))?;
+        detail.status =
+            status.ok_or_else(|| ::aws_smithy_schema_server::missing_member("status"))?;
+        detail.job_definition = job_definition
+            .ok_or_else(|| ::aws_smithy_schema_server::missing_member("jobDefinition"))?;
+        Ok(detail)
     }
 }
 
@@ -608,6 +688,7 @@ pub struct EksPodPropertiesDetail {
     pub node_name: Option<String>,
     pub metadata: Option<EksMetadata>,
     pub share_process_namespace: Option<bool>,
+    pub security_context: Option<EksPodSecurityContext>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.batch#EksContainerDetail")]
