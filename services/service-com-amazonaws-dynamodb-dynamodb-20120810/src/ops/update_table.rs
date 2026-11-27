@@ -103,9 +103,18 @@
 //! table's on-demand capacity ceilings, each through the same member
 //! ([`crate::state::OnDemandCeilings`]).
 //!
-//! Members this slice does not store (witnesses, a PER-INDEX on-demand or warm
-//! throughput, multi-region consistency, the settings replication mode and disassociation
-//! protection) are refused with the scaffold's 501 and are their own gap issues.
+//! `MultiRegionConsistency` and `GlobalTableWitnessUpdates` configure the replication GROUP
+//! the request's `Create` actions establish: the mode and the witness Regions are recorded
+//! on every regional table of the group, which is what each one's description then reports
+//! under `MultiRegionConsistency` and `GlobalTableWitnesses`. A configuration multi-Region
+//! strong consistency is not offered for — a group that would not span three Regions, a
+//! witness in a replica's Region, or a table carrying a local secondary index — is refused
+//! with the 400 `ValidationException` it is, before anything is provisioned
+//! ([`crate::state::unsupported_consistency_configuration`]).
+//!
+//! Members this slice does not store (a PER-INDEX on-demand or warm throughput, the
+//! settings replication mode and disassociation protection) are refused with the scaffold's
+//! 501 and are their own gap issues.
 //!
 //! ## Shape of an operation
 //!
@@ -417,6 +426,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the whole update, the way the same identifier on an `SSESpecification` does.
         crate::state::resolve_replica_keys(&*self.engine, &mut replica_actions)
             .map_err(sse_unresolved)?;
+        // What the request's `GlobalTableWitnessUpdates` ask for, read here for the same
+        // reason: the entry count and the form of each entry are rules about the REQUEST, so
+        // they are decided before the store lock is taken and no loop whose length the
+        // request chooses runs inside the critical section
+        // ([`crate::state::validated_witness_updates`]).
+        let witness_actions =
+            crate::state::validated_witness_updates(input.global_table_witness_updates.as_ref())
+                .map_err(lift)?;
         // Each on-demand ceiling the request names is held to the values that member takes:
         // 1 or more SETS a maximum, -1 removes one.
         crate::state::check_on_demand_ceiling_values(input.on_demand_throughput.as_ref())
@@ -521,12 +538,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         // What `MultiRegionConsistency` and `GlobalTableWitnessUpdates` ask for, held to
         // the configurations multi-Region strong consistency is offered for: a combination
-        // AWS does not serve is a bad REQUEST and is refused as one, ahead of the
-        // scaffold's 501 for the members this slice does not store
-        // ([`crate::state::unsupported_consistency_configuration`]).
+        // AWS does not serve is a bad REQUEST and is refused as one, with AWS's own sentence
+        // for that refusal ([`crate::state::unsupported_consistency_configuration`]).
         if let Some(refusal) = crate::state::unsupported_consistency_configuration(
             input.multi_region_consistency.as_deref(),
-            input.global_table_witness_updates.as_ref(),
+            &witness_actions,
             &replica_actions,
             stored,
         ) {
@@ -828,6 +844,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Region, and every regional table of the group records it
         // ([`crate::state::ComAmazonawsDynamodbDynamodb20120810State::apply_replica_actions`]).
         store.apply_replica_actions(&region, &name, &replica_actions, &replica_streams, now);
+        // ...and the multi-Region consistency configuration beside them, which is a
+        // configuration of the whole GROUP: it is recorded on the local table and on every
+        // replica of the group, the ones this request just created included
+        // ([`crate::state::ComAmazonawsDynamodbDynamodb20120810State::apply_consistency_configuration`]).
+        store.apply_consistency_configuration(
+            &region,
+            &name,
+            input.multi_region_consistency.as_deref(),
+            &witness_actions,
+            now,
+        );
 
         // The description answers from the stored table, read back after every write this
         // update made — including the ones the replica actions made to it.
@@ -1154,7 +1181,9 @@ const EMPTY_UPDATE_MESSAGE: &str = "At least one of ProvisionedThroughput, Billi
 /// a table in ANOTHER Region — "this request invokes the `CreateTableReplica` action in
 /// the destination Region" — whose own `CREATING`/`DELETING` span is the replica's; and an
 /// `SSESpecification` re-encrypts the table, which is why `SSEDescription` has an
-/// `UPDATING` status of its own.
+/// `UPDATING` status of its own. A `GlobalTableWitnessUpdates` entry is the same kind of
+/// work in a Region of its own, which is why a witness has a `CREATING`/`DELETING` span too
+/// (`WitnessStatus`).
 ///
 /// Deletion protection and the on-demand ceilings are settings with nothing behind them:
 /// the service applies each with the call and answers with the table still `ACTIVE`, so
@@ -1170,6 +1199,7 @@ fn asks_for_asynchronous_work(input: &UpdateTableInput) -> bool {
         || list_named(input.global_secondary_index_updates.as_ref())
         || list_named(input.vector_index_updates.as_ref())
         || list_named(input.replica_updates.as_ref())
+        || list_named(input.global_table_witness_updates.as_ref())
 }
 
 /// Whether this request moves PROVISIONED CAPACITY — the read and write units the table
@@ -1259,16 +1289,6 @@ fn requested_capacities(input: &UpdateTableInput) -> impl Iterator<Item = &Provi
 
 /// The first input member present that this slice does not store, if any.
 fn unsupported_member(input: &UpdateTableInput) -> Option<&'static str> {
-    if input
-        .global_table_witness_updates
-        .as_ref()
-        .is_some_and(|updates| !updates.is_empty())
-    {
-        return Some("GlobalTableWitnessUpdates");
-    }
-    if input.multi_region_consistency.is_some() {
-        return Some("MultiRegionConsistency");
-    }
     if input.global_table_settings_replication_mode.is_some() {
         return Some("GlobalTableSettingsReplicationMode");
     }

@@ -164,6 +164,10 @@ pub fn mint_table(minted: MintedTable) -> Table {
         // A created table is a regional table of its own: a replication group is established
         // by `UpdateTable`'s `ReplicaUpdates`, so it has no replica and is no global table.
         replicas: Vec::new(),
+        // ...and no multi-Region consistency configuration either: both members that state
+        // one belong to `UpdateTable`, which is what establishes the group they configure.
+        multi_region_consistency: None,
+        witnesses: Vec::new(),
         encryption,
         on_demand_throughput,
         // Nothing scales a new table's capacities.

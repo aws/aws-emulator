@@ -1078,9 +1078,11 @@ async fn a_multi_region_consistency_configuration_aws_does_not_serve_is_refused(
     create_table(&router, "Replicated.Consistency").await;
     settle().await;
 
-    /// How a group of the wrong shape is refused, as the model states the rule.
-    const WRONG_SHAPE: &str = "A MRSC global table can be configured with either three replicas, \
-                               or with two replicas and one witness";
+    /// How a group whose Regions are not one of the two shapes an MRSC group takes is
+    /// refused: AWS's own sentence for it, which carries nothing of the request.
+    const WRONG_SHAPE: &str =
+        "Unsupported replica count for global tables with MultiRegionConsistency set to \
+         STRONG.";
 
     // Rows differ in WHICH part of the configuration AWS does not serve: the number of
     // Regions the group would span (two, and four), the member sent by a request that

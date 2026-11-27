@@ -24,8 +24,8 @@ use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};
 
 use crate::ops::types::{
-    GlobalTableWitnessGroupUpdate, ReplicaDescription, ReplicationGroupUpdate, TableClassSummary,
-    TableWarmThroughputDescription,
+    GlobalTableWitnessDescription, GlobalTableWitnessGroupUpdate, ReplicaDescription,
+    ReplicationGroupUpdate, TableClassSummary, TableWarmThroughputDescription,
 };
 
 use super::{
@@ -179,8 +179,28 @@ impl ReplicaChange {
 }
 
 /// "`ACTIVE` - The replica is ready for use" (`ReplicaDescription$ReplicaStatus`): what a
-/// replica with no change in flight reports.
+/// replica with no change in flight reports. The witness statuses are the same three words
+/// over the same clock (`WitnessStatus`), so one member of a replication group reports its
+/// status exactly as another does ([`member_status`]).
 pub const REPLICA_ACTIVE: &str = "ACTIVE";
+
+/// Where a member of a replication group stands at `now`: the change in flight while it is
+/// still owed, and the settled status once the clock has made it due.
+///
+/// One reading for every member of a group — a replica and a witness alike — so the two can
+/// never disagree about what the clock has already made due.
+fn member_status(pending: Option<&PendingReplicaChange>, now: SystemTime) -> &'static str {
+    match pending {
+        Some(pending) if now < pending.due_at => pending.kind.as_str(),
+        _ => REPLICA_ACTIVE,
+    }
+}
+
+/// Whether the clock has made a group member's REMOVAL due, so the record and whatever
+/// stands behind it are gone.
+fn member_removal_due(pending: Option<&PendingReplicaChange>, now: SystemTime) -> bool {
+    pending.is_some_and(|pending| pending.kind == ReplicaChange::Deleting && now >= pending.due_at)
+}
 
 impl TableReplica {
     /// A replica as the call that asked for it leaves it: the settings it named, and the
@@ -209,18 +229,13 @@ impl TableReplica {
     /// Where this replica stands at `now`: the change in flight while it is still owed,
     /// and `ACTIVE` once the clock has made it due.
     pub fn status(&self, now: SystemTime) -> &str {
-        match self.pending.as_ref() {
-            Some(pending) if now < pending.due_at => pending.kind.as_str(),
-            _ => REPLICA_ACTIVE,
-        }
+        member_status(self.pending.as_ref(), now)
     }
 
     /// Whether the clock has made this replica's REMOVAL due, so the record and the
     /// regional table behind it are gone.
     pub fn removal_due(&self, now: SystemTime) -> bool {
-        self.pending.as_ref().is_some_and(|pending| {
-            pending.kind == ReplicaChange::Deleting && now >= pending.due_at
-        })
+        member_removal_due(self.pending.as_ref(), now)
     }
 
     /// Start a change on this replica, with the settings it asks for: the clock owes the
@@ -734,15 +749,15 @@ pub fn not_a_global_table(name: &str) -> RequestError {
 // MULTI-REGION CONSISTENCY
 //
 // Which replication groups multi-Region STRONG consistency (MRSC) is offered for: the
-// `MultiRegionConsistency` member states the mode, and `GlobalTableWitnessUpdates` adds or
-// removes the WITNESS a group can stand in for its third replica.
+// `MultiRegionConsistency` member states the mode the group is configured for, and
+// `GlobalTableWitnessUpdates` adds or removes the WITNESS that stands in for the group's
+// third replica. Both are recorded on every regional table of the group, which is what
+// each one's description then reports.
 //
-// Each refusal below states its rule in the MODEL's own words, inside the clause this
-// service opens every refusal of an invalid parameter value with. WHAT AWS WORDS EACH OF
-// THEM WITH is not recorded anywhere this crate can read: the sentences here are therefore
-// the documented rule rather than the observed text, and the wording of this family is
-// filed as its own gap issue, the way the consistency mode and the witness this slice does
-// not store yet are.
+// A configuration the service does not serve is refused with AWS's OWN sentence for that
+// refusal, which is fixed text carrying nothing of the request. The few refusals in this
+// family no recording shows the wording of state the rule in the MODEL's own words, inside
+// the clause this service opens every refusal of an invalid parameter value with.
 // =============================================================================
 
 /// The value of `MultiRegionConsistency` that asks for multi-Region STRONG consistency:
@@ -755,6 +770,122 @@ pub const MULTI_REGION_CONSISTENCY_STRONG: &str = "STRONG";
 /// (`CreateGlobalTableWitnessGroupMemberAction`) — three Regions either way, of which at
 /// most one is a witness.
 pub const MRSC_GROUP_REGIONS: usize = 3;
+
+/// How many of those Regions may be a WITNESS rather than a full replica: one, in the
+/// second of the two configurations that sentence states.
+pub const MRSC_GROUP_WITNESSES: usize = 1;
+
+/// One WITNESS Region of a replication group: "a witness provides a cost-effective
+/// alternative to a full replica in a MRSC global table by maintaining replicated change
+/// data written to global table replicas. You cannot perform read or write operations on a
+/// witness" (`UpdateTable$GlobalTableWitnessUpdates`).
+///
+/// A witness is therefore a Region of the group that holds NO table of the group's name —
+/// which is why it is recorded as a member of the group here rather than as a
+/// [`TableReplica`], and why nothing is created in its Region.
+#[derive(Debug, Clone)]
+pub struct TableWitness {
+    /// "The name of the Amazon Web Services Region that serves as a witness for the MRSC
+    /// global table" (`GlobalTableWitnessDescription$RegionName`).
+    pub region: String,
+    /// The change the clock still owes this witness, and when it falls due — `None` for a
+    /// settled witness, which is `ACTIVE`. A witness carries no settings of its own, so the
+    /// only changes it is ever in the middle of are its creation and its removal.
+    pub pending: Option<PendingReplicaChange>,
+}
+
+impl TableWitness {
+    /// A witness as the call that asked for it leaves it: the clock owes the end of the
+    /// change a span from `now`, exactly as it does for a replica
+    /// ([`TableReplica::starting`]).
+    pub fn starting(region: String, kind: ReplicaChange, now: SystemTime) -> Self {
+        Self {
+            region,
+            pending: Some(PendingReplicaChange {
+                kind,
+                due_at: now + STATUS_TRANSITION,
+            }),
+        }
+    }
+
+    /// Where this witness stands at `now` — "`CREATING`", "`DELETING`" or "`ACTIVE`"
+    /// (`WitnessStatus`), read off the clock the way every member of a group's status is
+    /// ([`member_status`]).
+    pub fn status(&self, now: SystemTime) -> &str {
+        member_status(self.pending.as_ref(), now)
+    }
+
+    /// Whether the clock has made this witness's REMOVAL due, so the group no longer holds
+    /// it.
+    pub fn removal_due(&self, now: SystemTime) -> bool {
+        member_removal_due(self.pending.as_ref(), now)
+    }
+
+    /// Start a change on this witness: the clock owes its end a span from `now`.
+    pub fn begin(&mut self, kind: ReplicaChange, now: SystemTime) {
+        self.pending = Some(PendingReplicaChange {
+            kind,
+            due_at: now + STATUS_TRANSITION,
+        });
+    }
+
+    /// This witness as `GlobalTableWitnessDescription` reports it: the Region it serves as a
+    /// witness for and the status the clock gives it.
+    pub fn describe(&self, now: SystemTime) -> GlobalTableWitnessDescription {
+        GlobalTableWitnessDescription {
+            region_name: Some(self.region.clone()),
+            witness_status: Some(self.status(now).to_string()),
+        }
+    }
+}
+
+/// One action a `GlobalTableWitnessUpdates` entry asks for, after the request has been held
+/// to the rules that do not need the stored group ([`validated_witness_updates`]).
+#[derive(Debug, Clone)]
+pub enum WitnessAction {
+    /// "A new witness to be added to a new global table."
+    Create(String),
+    /// "An existing witness to be removed from an existing global table."
+    Delete(String),
+}
+
+impl WitnessAction {
+    /// The Region this action addresses.
+    pub fn region(&self) -> &str {
+        match self {
+            Self::Create(region) | Self::Delete(region) => region,
+        }
+    }
+}
+
+/// Read a request's `GlobalTableWitnessUpdates` into the actions they ask for, refusing the
+/// contradictions that are in the REQUEST rather than in the stored group: an entry states
+/// exactly one action ([`ONE_WITNESS_ACTION_MESSAGE`]), and the Region it names has the form
+/// a Region code takes ([`checked_region`]).
+///
+/// How MANY entries the member carries is the model's own `@length min 1, max 1`, which the
+/// request walk holds the list to before this runs — "you can create or delete only one
+/// witness per UpdateTable operation" (that member's doc) — so the walk below is over at
+/// most one entry.
+pub fn validated_witness_updates(
+    updates: Option<&Vec<GlobalTableWitnessGroupUpdate>>,
+) -> Result<Vec<WitnessAction>, RequestError> {
+    let entries: &[GlobalTableWitnessGroupUpdate] =
+        updates.map_or(&[], |updates| updates.as_slice());
+    let mut actions: Vec<WitnessAction> = Vec::with_capacity(entries.len());
+    for update in entries {
+        actions.push(match (update.create.as_ref(), update.delete.as_ref()) {
+            (Some(create), None) => WitnessAction::Create(checked_region(&create.region_name)?),
+            (None, Some(delete)) => WitnessAction::Delete(checked_region(&delete.region_name)?),
+            _ => {
+                return Err(RequestError::Validation(
+                    ONE_WITNESS_ACTION_MESSAGE.to_string(),
+                ))
+            }
+        });
+    }
+    Ok(actions)
+}
 
 /// How an entry of `GlobalTableWitnessUpdates` that does not state exactly one action is
 /// refused: the entry "represents one of the following: a new witness to be added ... an
@@ -779,12 +910,17 @@ pub const WITNESS_WITHOUT_MRSC_MESSAGE: &str =
     "One or more parameter values were invalid: A witness Region can only be added when creating \
      a global table with MultiRegionConsistency STRONG";
 
-/// How a configuration that is not one of the two an MRSC group takes is refused: the rule
-/// as the model itself states it, inside the clause this service opens every refusal of an
-/// invalid parameter value with (the wording its `ReplicaUpdates` refusals share).
-pub const MRSC_GROUP_SHAPE_MESSAGE: &str =
-    "One or more parameter values were invalid: A MRSC global table can be configured with \
-     either three replicas, or with two replicas and one witness";
+/// How a configuration whose Regions are not one of the two shapes an MRSC group takes is
+/// refused: AWS's own sentence for it, which is fixed text carrying nothing of the request.
+pub const UNSUPPORTED_REPLICA_COUNT_MESSAGE: &str =
+    "Unsupported replica count for global tables with MultiRegionConsistency set to STRONG.";
+
+/// How a table that carries a LOCAL secondary index is refused MRSC: AWS's own sentence for
+/// it, fixed text like the one above — a local secondary index is declared with the table
+/// and shares its partition key, and such a table is not one an MRSC group admits.
+pub const MRSC_LOCAL_SECONDARY_INDEX_MESSAGE: &str =
+    "Local secondary indexes are not supported for global tables with MultiRegionConsistency \
+     set to STRONG.";
 
 /// How a witness `Delete` naming a witness the group does not hold is refused: the action
 /// addresses "an existing witness to be removed from an existing global table"
@@ -811,48 +947,44 @@ pub fn witness_region_is_a_replica(region: &str) -> RequestError {
 ///
 /// Both members state a configuration of the REPLICATION GROUP, so what they ask for is
 /// decided against the group the request would leave behind: the local table, the replicas
-/// it already has and the ones this request creates, plus the witness it adds. The rules are
-/// the model's own:
+/// it already has and the ones this request creates or deletes, plus the witnesses it holds
+/// and the one this request adds or removes. The rules are the model's own:
 ///
-/// * an entry of `GlobalTableWitnessUpdates` states exactly one action
-///   ([`ONE_WITNESS_ACTION_MESSAGE`]), and a `Delete` addresses a witness the group holds
-///   ([`witness_not_in_group`]);
+/// * a witness `Delete` addresses a witness the group holds ([`witness_not_in_group`]);
 /// * `MultiRegionConsistency` "is only valid when you create a global table by specifying
 ///   one or more Create actions in the ReplicaUpdates action list"
 ///   ([`CONSISTENCY_WITHOUT_CREATE_MESSAGE`]), and a witness belongs to the MRSC group that
 ///   create establishes ([`WITNESS_WITHOUT_MRSC_MESSAGE`]);
-/// * an MRSC group is "either three replicas, or ... two replicas and one witness"
-///   ([`MRSC_GROUP_SHAPE_MESSAGE`]), whose witness is in a Region of its own
-///   ([`witness_region_is_a_replica`]).
+/// * an MRSC group spans three Regions, "either three replicas, or ... two replicas and one
+///   witness" ([`UNSUPPORTED_REPLICA_COUNT_MESSAGE`]), whose witness is in a Region of its
+///   own ([`witness_region_is_a_replica`]);
+/// * and the table the group is formed from carries no LOCAL secondary index
+///   ([`MRSC_LOCAL_SECONDARY_INDEX_MESSAGE`]).
 ///
 /// A request naming neither member asks for no such configuration and is left alone.
 pub fn unsupported_consistency_configuration(
     consistency: Option<&str>,
-    witness_updates: Option<&Vec<GlobalTableWitnessGroupUpdate>>,
+    witnesses: &[WitnessAction],
     actions: &[ReplicaAction],
     table: &Table,
 ) -> Option<RequestError> {
-    let witnesses: &[GlobalTableWitnessGroupUpdate] =
-        witness_updates.map_or(&[], |updates| updates.as_slice());
-    for update in witnesses {
-        let named = usize::from(update.create.is_some()) + usize::from(update.delete.is_some());
-        if named != 1 {
-            return Some(RequestError::Validation(
-                ONE_WITNESS_ACTION_MESSAGE.to_string(),
-            ));
-        }
-        // This store holds no witness for any table, so every `Delete` addresses one the
-        // group does not have.
-        if let Some(delete) = update.delete.as_ref() {
-            return Some(witness_not_in_group(&delete.region_name));
+    for action in witnesses {
+        // A `Delete` addresses "an existing witness to be removed from an existing global
+        // table", so a Region this group holds no witness in addresses nothing.
+        if let WitnessAction::Delete(region) = action {
+            if table.witness(region).is_none() {
+                return Some(witness_not_in_group(region));
+            }
         }
     }
     let added: Vec<&str> = witnesses
         .iter()
-        .filter_map(|update| update.create.as_ref())
-        .map(|create| create.region_name.as_str())
+        .filter_map(|action| match action {
+            WitnessAction::Create(region) => Some(region.as_str()),
+            WitnessAction::Delete(_) => None,
+        })
         .collect();
-    if consistency.is_none() && added.is_empty() {
+    if consistency.is_none() && witnesses.is_empty() {
         return None;
     }
     let creates = actions
@@ -866,23 +998,43 @@ pub fn unsupported_consistency_configuration(
     }
     let strong = consistency == Some(MULTI_REGION_CONSISTENCY_STRONG);
     if !strong {
-        return added.first().map(|_| {
-            RequestError::Validation(WITNESS_WITHOUT_MRSC_MESSAGE.to_string())
-        });
+        return added
+            .first()
+            .map(|_| RequestError::Validation(WITNESS_WITHOUT_MRSC_MESSAGE.to_string()));
+    }
+    // A local secondary index is declared with the table and indexes its own partition key,
+    // which is a table an MRSC group does not admit — asked before the Regions are counted,
+    // because it is the TABLE rather than the configuration that cannot join.
+    if !table.local_secondary_indexes.is_empty() {
+        return Some(RequestError::Validation(
+            MRSC_LOCAL_SECONDARY_INDEX_MESSAGE.to_string(),
+        ));
     }
     // The local table is a replica of the group it is about to become part of, so the
-    // group's Regions are it, the replicas it already has and the ones this request creates.
-    // Both shapes the model admits are decided by that count: `GlobalTableWitnessUpdates`
-    // carries at most one entry (its `@length`), so three Regions of which the witness is
-    // one leaves two replicas.
-    let replicas = 1 + table.replicas.len() + creates;
-    if replicas + added.len() != MRSC_GROUP_REGIONS {
-        return Some(RequestError::Validation(MRSC_GROUP_SHAPE_MESSAGE.to_string()));
+    // group's replica Regions are it, the replicas it already has and the ones this request
+    // creates, less the ones it removes; its witness Regions are the ones it holds plus the
+    // one this request adds, less the one it removes. Of the two shapes the model admits,
+    // the first spans three replicas and no witness and the second two replicas and one.
+    let replica_removals = actions
+        .iter()
+        .filter(|action| {
+            matches!(
+                action,
+                ReplicaAction::Delete(_) | ReplicaAction::Disassociate(_)
+            )
+        })
+        .count();
+    let witness_removals = witnesses.len() - added.len();
+    let replicas_after = (1 + table.replicas.len() + creates).saturating_sub(replica_removals);
+    let witnesses_after = (table.witnesses.len() + added.len()).saturating_sub(witness_removals);
+    let admitted = witnesses_after <= MRSC_GROUP_WITNESSES
+        && replicas_after + witnesses_after == MRSC_GROUP_REGIONS;
+    if !admitted {
+        return Some(RequestError::Validation(
+            UNSUPPORTED_REPLICA_COUNT_MESSAGE.to_string(),
+        ));
     }
     for region in added {
-        if let Err(refusal) = checked_region(region) {
-            return Some(refusal);
-        }
         if region == table.region
             || table.replica(region).is_some()
             || actions.iter().any(|action| action.region() == region)
@@ -904,6 +1056,32 @@ impl Table {
         self.replicas
             .iter_mut()
             .find(|replica| replica.region == region)
+    }
+
+    /// This table's replication group's witness in `region`, if it has one.
+    pub fn witness(&self, region: &str) -> Option<&TableWitness> {
+        self.witnesses
+            .iter()
+            .find(|witness| witness.region == region)
+    }
+
+    /// The same, for a caller that then changes it.
+    pub fn witness_mut(&mut self, region: &str) -> Option<&mut TableWitness> {
+        self.witnesses
+            .iter_mut()
+            .find(|witness| witness.region == region)
+    }
+
+    /// This table's group's witnesses as `TableDescription$GlobalTableWitnesses` reports
+    /// them, or `None` for a group that has none — a member a table with no witness carries
+    /// no list for, the way an unreplicated table carries no `Replicas`.
+    pub fn described_witnesses(&self, now: SystemTime) -> Option<Vec<GlobalTableWitnessDescription>> {
+        (!self.witnesses.is_empty()).then(|| {
+            self.witnesses
+                .iter()
+                .map(|witness| witness.describe(now))
+                .collect()
+        })
     }
 
     /// The Regions this table replicates to whose replica is not on its way out — the
@@ -954,7 +1132,13 @@ impl Table {
     /// Regions whose replicas are now GONE.
     ///
     /// A replica whose delete has fallen due is dropped from the record; every other
-    /// settled change leaves the replica `ACTIVE`.
+    /// settled change leaves the replica `ACTIVE`. The group's witnesses are settled by the
+    /// same clock here, because they are members of the same group: a witness whose removal
+    /// has fallen due is dropped and every other one is `ACTIVE`. A table the group has left
+    /// with no replica at all is a single-Region table again — "the deletion of both a
+    /// witness and replica converts the remaining replica to a single-Region DynamoDB table"
+    /// (`GlobalTableWitnessGroupUpdate$Delete`) — so it keeps neither a witness nor the
+    /// group's consistency mode.
     pub fn settle_replicas(&mut self, now: SystemTime) -> Vec<String> {
         let departed: Vec<String> = self
             .replicas
@@ -971,6 +1155,20 @@ impl Table {
             {
                 replica.pending = None;
             }
+        }
+        self.witnesses.retain(|witness| !witness.removal_due(now));
+        for witness in &mut self.witnesses {
+            if witness
+                .pending
+                .as_ref()
+                .is_some_and(|pending| now >= pending.due_at)
+            {
+                witness.pending = None;
+            }
+        }
+        if self.replicas.is_empty() {
+            self.witnesses.clear();
+            self.multi_region_consistency = None;
         }
         departed
     }
@@ -1139,6 +1337,12 @@ impl Table {
             restore: None,
             // Filled in by the caller, which knows the whole group this replica joins.
             replicas: Vec::new(),
+            // The group's multi-Region consistency configuration is recorded on every
+            // regional table of it by the call that establishes the group
+            // ([`ComAmazonawsDynamodbDynamodb20120810State::apply_consistency_configuration`]),
+            // which reaches this table once it is in the group.
+            multi_region_consistency: None,
+            witnesses: Vec::new(),
             // Encryption is settled per regional table: the replica's own key is the one
             // its `Create` action named, as KMS resolved it ([`resolve_replica_keys`]), in
             // force from the replica's first instant — and a replica whose action named no
@@ -1371,6 +1575,61 @@ impl ComAmazonawsDynamodbDynamodb20120810State {
             .unwrap_or_default()
     }
 
+    /// Record the multi-Region consistency configuration one `UpdateTable` asks for, having
+    /// held it to the configurations the service serves
+    /// ([`unsupported_consistency_configuration`]) and applied the replica actions beside
+    /// it.
+    ///
+    /// Both members state a configuration of the GROUP rather than of one table, so it is
+    /// written to every regional table of the group — the local one and each replica, the
+    /// ones this same request created included — which is what makes every one of their
+    /// descriptions report the same mode and the same witnesses. A witness `Create` is work
+    /// in a Region of its own, so the witness is `CREATING` for the span the clock owes it
+    /// and `ACTIVE` from then on, and a `Delete` leaves it `DELETING` until the clock drops
+    /// it ([`TableWitness`]).
+    pub fn apply_consistency_configuration(
+        &mut self,
+        region: &str,
+        name: &str,
+        consistency: Option<&str>,
+        witnesses: &[WitnessAction],
+        now: SystemTime,
+    ) {
+        if consistency.is_none() && witnesses.is_empty() {
+            return;
+        }
+        let mut regions = self.group_regions(name);
+        if !regions.iter().any(|held| held == region) {
+            regions.push(region.to_string());
+        }
+        for peer_region in regions {
+            let Ok(table) = self.table_mut(&peer_region, name) else {
+                continue;
+            };
+            if let Some(mode) = consistency {
+                table.multi_region_consistency = Some(mode.to_string());
+            }
+            for action in witnesses {
+                match action {
+                    WitnessAction::Create(witness_region) => {
+                        if table.witness(witness_region).is_none() {
+                            table.witnesses.push(TableWitness::starting(
+                                witness_region.clone(),
+                                ReplicaChange::Creating,
+                                now,
+                            ));
+                        }
+                    }
+                    WitnessAction::Delete(witness_region) => {
+                        if let Some(witness) = table.witness_mut(witness_region) {
+                            witness.begin(ReplicaChange::Deleting, now);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Create one replica: the regional table in its own Region — carrying the `stream`
     /// registered for that Region, if the group's table publishes its changes — the record
     /// of it on every table of the group, and the group itself.
@@ -1536,6 +1795,10 @@ impl ComAmazonawsDynamodbDynamodb20120810State {
         }
         if let Ok(table) = self.table_mut(region, name) {
             table.replicas.clear();
+            // A table that has left its group is a single-Region table, which carries
+            // neither the group's witnesses nor its consistency mode.
+            table.witnesses.clear();
+            table.multi_region_consistency = None;
             table.updated_at = Some(now + STATUS_TRANSITION);
         }
         if let Some(group) = self.global_table_groups.get_mut(name) {

@@ -579,6 +579,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // This table was imported into, not restored, so it has no `RestoreSummary`.
             restore: None,
             replicas: Vec::new(),
+            // An imported table is a regional table of its own, so it carries no
+            // multi-Region consistency configuration until `UpdateTable` establishes a
+            // group for it.
+            multi_region_consistency: None,
+            witnesses: Vec::new(),
             encryption,
             on_demand_throughput: crate::state::OnDemandCeilings::default()
                 .apply(parameters.on_demand_throughput.as_ref()),

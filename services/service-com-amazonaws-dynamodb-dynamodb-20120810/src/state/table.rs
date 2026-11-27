@@ -2319,6 +2319,13 @@ impl Table {
             // what a standalone regional table is not ([`Table::described_replicas`]).
             replicas: self.described_replicas(now),
             global_table_version: self.global_table_version(),
+            // The multi-Region consistency configuration of the replication group this
+            // table belongs to: the mode the group was configured for, and the witness
+            // Regions it spans beside its replicas — each reported only for a group that HAS
+            // one, so a table nobody configured carries neither member
+            // ([`Table::described_witnesses`]).
+            multi_region_consistency: self.multi_region_consistency.clone(),
+            global_table_witnesses: self.described_witnesses(now),
             // "The description of the server-side encryption status on the specified
             // table": reported only for a table encrypted with a KMS key, which is what
             // the Amazon Web Services OWNED key a table is encrypted with by default is

@@ -485,6 +485,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // backup's data, not a replication group, so it has no replica until
             // `UpdateTable` adds one.
             replicas: Vec::new(),
+            // ...and no multi-Region consistency configuration either, which is a
+            // configuration of the group it is not yet part of.
+            multi_region_consistency: None,
+            witnesses: Vec::new(),
             // "The new server-side encryption settings for the restored table"
             // (`$SSESpecificationOverride`): the restored table is encrypted with the key
             // the override names, in force from its first instant, and a restore that

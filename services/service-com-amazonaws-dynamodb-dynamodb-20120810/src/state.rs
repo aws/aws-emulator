@@ -3114,6 +3114,18 @@ pub struct Table {
     /// regional tables its replication group spans beside this one ([`TableReplica`]).
     /// Empty for a table that is not replicated, which is what makes it no global table.
     pub replicas: Vec<TableReplica>,
+    /// The multi-Region consistency mode this table's replication group is configured for,
+    /// as the `UpdateTable` that established the group named it — "indicates one of the
+    /// following consistency modes for a global table"
+    /// (`TableDescription$MultiRegionConsistency`).
+    ///
+    /// `None` for a table no call has configured one for, which is what makes the member
+    /// absent from its description.
+    pub multi_region_consistency: Option<String>,
+    /// The WITNESS Regions of this table's replication group, in the order they were added
+    /// ([`TableWitness`]): the Regions that maintain the group's replicated change data
+    /// without holding a table of their own. Empty for every group that has none.
+    pub witnesses: Vec<TableWitness>,
     /// This table's server-side encryption with a KMS key, or `None` for a table
     /// encrypted with the Amazon Web Services owned key — the default, which has no
     /// `SSEDescription` of its own ([`TableEncryption`]).
