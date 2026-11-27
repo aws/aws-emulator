@@ -1,0 +1,62 @@
+Issue-Source: trace-sweep-divergence
+Issue-Trace: textract-analyze-expense-password-protected-pdf-rejected
+Issue-Step: task#2
+Issue-Severity: HIGH
+Issue-Corpus: simparity-wire-aws-v1
+Issue-Corpus-Kind: wire
+Issue-Trace-Ids: textract-analyze-expense-password-protected-pdf-rejected textract-analyze-expense-unsupported-documents-rejected textract-start-text-detection-token-reuse-mismatch-rejected
+Issue-Shape-Id: com.amazonaws.textract#Textract
+Issue-Key: textract|AnalyzeExpense|2xx->4xx|$.DocumentMetadata
+Issue-Key: textract|AnalyzeExpense|2xx->4xx|$.ExpenseDocuments
+Issue-Key: textract|AnalyzeExpense|2xx->4xx|status
+Issue-Key: textract|StartDocumentTextDetection|4xx->2xx|$.Message
+Issue-Key: textract|StartDocumentTextDetection|4xx->2xx|$.__type
+Issue-Key: textract|StartDocumentTextDetection|4xx->2xx|status
+Issue-Commit: 599f5e0fd2976b77e672c15894a37066c05508bc
+
+# Textract accept/refuse verdicts diverge: AnalyzeExpense refuses documents AWS analyzes, and StartDocumentTextDetection accepts a reused ClientRequestToken that AWS rejects
+
+> _Note: this issue was identified against the code base at commit `599f5e0fd2976b77e672c15894a37066c05508bc`. If you are an issue fixer working on this, the code base you are currently working in can have drifted, so you might need to trace the issue back to the current code base._
+
+## Operation
+AnalyzeExpense
+
+## Description
+This issue reports 2 distinct root causes in the textract service, both of which get the ACCEPT/REFUSE decision itself wrong — not just a message: one refuses calls AWS answers with results, the other answers with results where AWS refuses. A fixer must close BOTH before submitting.
+
+Already-filed work that does NOT cover either cause: the open 20261127T131328Z-textract-document-limit-refusals-and-pdf-reading-diverge.md is a BEHAVIORAL issue whose Cause 3 describes PDF documents being refused on AnalyzeDocument and DetectDocumentText; it carries no replay key for any wire fixture named here and does not cover AnalyzeExpense's document acceptance or ClientRequestToken idempotency at all. The two Blocks-geometry wire divergences in this same replay were marked OWNED (20261125T053817Z, 20261126T113734Z) and are excluded.
+
+Cause 1 of 2 — AnalyzeExpense refuses, with a 400, documents that Amazon Textract analyzes and answers 200 for.
+AWS: Smithy (services/service-com-amazonaws-textract-textract/smithy-model/com-amazonaws-textract-textract.json): AnalyzeExpense returns DocumentMetadata + ExpenseDocuments on success (HTTP 200) and models UnsupportedDocumentException (client, HTTP 400) documented "The format of the input document isn't supported. Documents for operations can be in PNG, JPEG, PDF, or TIFF format." — so a document in one of those formats, including PDF, is a document the operation processes. The recorded responses for the two submits below are HTTP 200 with DocumentMetadata {"Pages": 1} and exactly one ExpenseDocuments entry: ExpenseIndex 1, a single PAGE Block whose Geometry spans the page, LineItemGroups holding one group (LineItemGroupIndex 1) with an empty LineItems list, and an empty SummaryFields list. The requirement is general: a readable document in an accepted format is ANALYZED, and a page from which no labelled line and no table was read yields one ExpenseDocument with empty SummaryFields/LineItems rather than a refusal — a document with nothing extractable is not an unsupported document.
+Emulator: HTTP 400 for both submits, with no DocumentMetadata and no ExpenseDocuments in the body (the replay reports both members missing because the response is an error). Hypothesis: the refusal is UnsupportedDocumentException "Request has unsupported document format", because the crate's own state module documents the behavior — "A PDF is answered there too: Textract accepts PDF, but this emulator has no page rasteriser and parses no PDF content stream, so it reads nothing out of one" (services/service-com-amazonaws-textract-textract/src/state.rs module docs, around lines 39-41) — and src/ops/analyze_expense.rs maps every Unreadable::UnsupportedFormat onto that modeled error (unreadable_error, lines 260-284). Whatever the code, the emulator's verdict is a refusal where AWS's is a result.
+Why: expense extraction is overwhelmingly run over PDF and scanned documents. Every such call fails closed against the emulator with a 400 telling the client its input format is unsupported — which is false — so a client cannot distinguish "my file is bad" from "this document yields no expense fields", and the common legitimate outcome (a page with no recognised summary fields or line items, reported as one empty ExpenseDocument) is unreachable.
+Fix: the document read path in the textract crate's state module (state.rs read_content/DocumentChannel format dispatch and the page splitting that feeds DocumentMetadata.Pages) must read these documents instead of routing them to Unreadable::UnsupportedFormat, and the AnalyzeExpense handler's derivation (crate::state::expense_documents) must answer a page with no labelled lines and no tables as ONE ExpenseDocument with ExpenseIndex 1, a PAGE block, one LineItemGroup with empty LineItems, and empty SummaryFields. UnsupportedDocumentException must stay reserved for formats Textract really does not accept.
+Traces: textract-analyze-expense-password-protected-pdf-rejected#task#2, textract-analyze-expense-unsupported-documents-rejected#task#4.
+
+Cause 2 of 2 — StartDocumentTextDetection replays a reused ClientRequestToken as a success when the rest of the request differs, instead of refusing it as an idempotent-parameter mismatch.
+AWS: Smithy: StartDocumentTextDetection models IdempotentParameterMismatchException as a client error at HTTP 400 with members Message/Code, documented "A ClientRequestToken input parameter was reused with an operation, but at least one of the other input parameters is different from the previous call to the operation." — the comparison is over ALL the other input parameters of the submit (DocumentLocation, JobTag, NotificationChannel, OutputConfig, KMSKeyId), not the document alone. The recorded response for the second submit reusing a token with a differing parameter is HTTP 400 with __type "IdempotentParameterMismatchException" and Message "Request has invalid Client token" — fixed text for this refusal class, with no variable part (no token, no JobId) taken from the request or from state.
+Emulator: HTTP 200 carrying a JobId; no __type and no Message, i.e. the reuse is treated as an idempotent replay of the first submit and the mismatch is never detected. The check is src/ops/start_document_text_detection.rs lines 258-288, which builds the idempotency slot from the token and calls crate::state::job_for_token(slot, &reference, &[]) — and job_for_token (state.rs lines 357-372) decides sameness as `job.document == *document && job.feature_types == *feature_types`, so any submit that reuses the token with the SAME DocumentLocation but a different JobTag, NotificationChannel, OutputConfig or KMSKeyId compares equal and is answered with the earlier JobId. Separately, the one case the handler does catch (a different document) is refused with emulator-authored wording — "the ClientRequestToken was already used to start job <id> for a different document" (lines 278-281) — rather than AWS's "Request has invalid Client token", and that message quotes a JobId AWS never puts in it.
+Why: idempotency tokens are a correctness mechanism. A caller that reuses a token by mistake with changed parameters (a new notification topic, a different output location or KMS key) is told by AWS that its token is invalid; against the emulator it gets a 200 and the JobId of the ORIGINAL job, so it polls a job configured the old way, publishes to the old topic and writes to the old output location while believing its new configuration took effect — a silent wrong-result path with no error anywhere.
+Fix: the idempotency comparison in the textract crate's state module (state.rs job_for_token) must compare every input parameter the submit carries — the document reference plus JobTag, NotificationChannel, OutputConfig, KMSKeyId (and FeatureTypes for StartDocumentAnalysis) — against what the stored Job recorded, and the Start* handlers must answer a mismatch with the modeled IdempotentParameterMismatchException at HTTP 400 carrying AWS's fixed sentence "Request has invalid Client token" instead of the current emulator-authored, JobId-quoting message. Both Start* handlers share the helper, so the two must not drift apart.
+Traces: textract-start-text-detection-token-reuse-mismatch-rejected#task#5.
+
+## Evidence
+Wire corpus simparity-wire-aws-v1 replayed against the emulator booted from this checkout: 16 fixtures replayed, 73 steps, 47 passed, 26 mismatched, 0 errored, 0 blocked, score 64.4%, bootstrap_signal false — textract answered every call. 7 divergence clusters, 2 of them OWNED and skipped.
+
+Cause 1 — cluster representative fixture textract-analyze-expense-password-protected-pdf-rejected, step task#2, operation AnalyzeExpense, verdict mismatch, expected_status 200, actual_status 400; the cluster's other member is textract-analyze-expense-unsupported-documents-rejected#task#4 (same operation, same verdict):
+  status: expected 200, got 400
+  $.DocumentMetadata: missing (expected {'Pages': 1}, got None)
+  $.ExpenseDocuments: missing (expected [{'Blocks': [{'BlockType': 'PAGE', 'Geometry': {...full-page BoundingBox and Polygon...}, 'Id': '<shaped-not-asserted>'}], 'ExpenseIndex': 1, 'LineItemGroups': [{'LineItemGroupIndex': 1, 'LineItems': []}], 'SummaryFields': []}], got None)
+  The recorded Id is not asserted and the geometry numbers are that page's measurements; the requirement is the 200 with Pages 1 and one ExpenseDocument shaped as above, not those literal coordinates.
+
+Cause 2 — fixture textract-start-text-detection-token-reuse-mismatch-rejected, step task#5, operation StartDocumentTextDetection, verdict mismatch, expected_status 400, actual_status 200:
+  status: expected 400, got 200
+  $.__type: missing (expected 'IdempotentParameterMismatchException', got None)
+  $.Message: missing (expected 'Request has invalid Client token', got None)
+  The expected Message is wholly fixed text — it carries no token, JobId, timestamp or request id — so it is a requirement rather than a per-run value. Earlier steps of the same fixture (the first submit and the idempotent replay with identical parameters) pass today.
+
+## Steps to Reproduce
+1. Build and boot the emulator from this checkout and replay the simparity-wire-aws-v1 wire corpus (textract fixtures).
+2. Cause 1 — call AnalyzeExpense with Document.Bytes holding a readable document in an accepted format (the corpus uses the documents of textract-analyze-expense-password-protected-pdf-rejected step 2 and textract-analyze-expense-unsupported-documents-rejected step 4, both of which AWS answers 200 for). Observe HTTP 400 with no DocumentMetadata/ExpenseDocuments where AWS returns 200 with DocumentMetadata {'Pages': 1} and one ExpenseDocuments entry carrying a PAGE block, one LineItemGroup with empty LineItems and empty SummaryFields. Confirm the negative cases in the same fixtures (a document that really is in an unsupported format, a PDF needing a non-empty user password) are still refused with UnsupportedDocumentException.
+3. Cause 2 — call StartDocumentTextDetection with a DocumentLocation and ClientRequestToken='t1'; note the JobId. Call it again with ClientRequestToken='t1', the SAME DocumentLocation, but a different JobTag (then separately a different NotificationChannel, OutputConfig and KMSKeyId). The emulator answers HTTP 200 with the first JobId; AWS answers HTTP 400 IdempotentParameterMismatchException with Message 'Request has invalid Client token'. Also re-run with the same token and a DIFFERENT document to see the message the handler already sends ('the ClientRequestToken was already used to start job <id> for a different document'), which must become AWS's sentence. Verify a true replay (same token, every parameter identical) still answers 200 with the original JobId, and check StartDocumentAnalysis for the same helper.
+4. After the fix, re-replay textract-analyze-expense-password-protected-pdf-rejected#task#2, textract-analyze-expense-unsupported-documents-rejected#task#4 and textract-start-text-detection-token-reuse-mismatch-rejected#task#5 and require every step of each fixture to pass end to end.
