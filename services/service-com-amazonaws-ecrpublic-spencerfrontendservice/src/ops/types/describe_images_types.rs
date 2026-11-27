@@ -28,19 +28,11 @@ pub struct DescribeImagesOutput {
     pub next_token: Option<String>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.ecrpublic#ImageDetail")]
-#[derive(Debug, Clone, Default)]
-pub struct ImageDetail {
-    pub registry_id: Option<String>,
-    pub repository_name: Option<String>,
-    pub image_digest: Option<String>,
-    pub image_tags: Option<Vec<String>>,
-    pub image_size_in_bytes: Option<i64>,
-    pub image_pushed_at: Option<::aws_smithy_types::DateTime>,
-    pub image_manifest_media_type: Option<String>,
-    pub artifact_media_type: Option<String>,
-    pub repository_type: Option<String>,
-}
+// `ImageDetail` is NOT declared here, although `DescribeImagesOutput` reports a list of
+// it: AWS answers with a member the published snapshot does not declare, so the shape is
+// declared in `image_detail_types` from the local overlay model instead (see
+// `smithy-model/LOCAL-ADDITIONS.md`). `types/mod.rs` re-exports it, so
+// `use super::types::*` resolves it from here as it does any other shape.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecrpublic#ImageNotFoundException")]
 #[derive(Debug, Clone, Default)]

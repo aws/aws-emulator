@@ -6,10 +6,20 @@
 //! The rule under test: a described image reports the tier of the repository that holds
 //! it, so the member is on every entry of every page whatever the image is and however
 //! the request selected it — it is a property of the repository, not of the manifest, of
-//! the tag set or of the request. Its value is the one `RepositoryType` is modelled with
-//! (`REPOSITORY_TYPE_VALUES`, i.e. the enum's value set from
-//! `smithy_query(query="shape", shape="RepositoryType")`), which is the tier a repository
-//! created in the account's default public registry is hosted in.
+//! the tag set or of the request. Its value is the one `RepositoryType` is declared with
+//! ([`REPOSITORY_TYPE_VALUES`]), which is the tier a repository created in the account's
+//! default public registry is hosted in.
+//!
+//! AWS carries this member while the published model snapshot does not declare it, so
+//! this crate declares `ImageDetail` itself, from the overlay model
+//! `smithy-model/local-additions.json` (see `smithy-model/LOCAL-ADDITIONS.md` and
+//! `src/ops/types/image_detail_types.rs`). The last three tests pin that declaration
+//! against the two model files: the snapshot's own member list, which the local
+//! declaration must cover in full and which must still not declare the member; every
+//! shape the overlay restates, compared declaration for declaration with the snapshot's;
+//! and the value catalogue, against the overlay's own enum. A refreshed snapshot that
+//! declares the member, adds one the overlay does not restate, or changes a target, value
+//! set or constraint fails there rather than silently narrowing what this service reports.
 //!
 //! Every row of the table below differs along what that rule generalises over: the form
 //! of the repository name, how many images the repository holds, whether an image carries
@@ -25,7 +35,7 @@
 
 use std::collections::BTreeSet;
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use service_com_amazonaws_ecrpublic_spencerfrontendservice::ops::types::REPOSITORY_TYPE_VALUES;
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -33,9 +43,32 @@ use crate::harness::{given_manifest_blobs, image_manifest, manifest_list};
 use crate::repository_image_lifecycle::{digest_of, ok, service, REGISTRY_ID};
 
 /// The tier a repository of this registry is hosted in, stated here rather than read from
-/// the service: it is the single value the model's `RepositoryType` enum declares, which
+/// the service: it is the single value the `RepositoryType` enum declares, which
 /// [`REPOSITORY_TYPE_VALUES`] carries and the case below cross-checks against.
 const EXPECTED_TIER: &str = "FREE";
+
+/// The published model snapshot this crate is generated from, embedded at compile time so
+/// the local declaration is checked against the model rather than against a copy of it.
+const SNAPSHOT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/smithy-model/com-amazonaws-ecrpublic-spencerfrontendservice.json"
+));
+
+/// The overlay model the local `ImageDetail` declaration is generated from, embedded for
+/// the same reason: what it restates of the snapshot must still match it.
+const OVERLAY: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/smithy-model/local-additions.json"
+));
+
+/// The shape the local declaration is of.
+const IMAGE_DETAIL_SHAPE: &str = "com.amazonaws.ecrpublic#ImageDetail";
+
+/// The shape the overlay adds, which the snapshot declares nowhere.
+const REPOSITORY_TYPE_SHAPE: &str = "com.amazonaws.ecrpublic#RepositoryType";
+
+/// The member this crate declares locally, which the snapshot does not.
+const LOCAL_MEMBER: &str = "repositoryType";
 
 /// The config-blob size every manifest this suite builds carries. Nothing here asserts on
 /// a reported image size, so one size serves every row; the documents themselves are the
@@ -488,5 +521,174 @@ async fn the_tag_entries_of_describe_image_tags_report_no_repository_tier() {
     assert_eq!(
         reported, expected,
         "case {case:?}: expected exactly the members {expected:?}, got {reported:?} in {detail}"
+    );
+}
+
+/// The `shapes` object of one model document.
+fn model_shapes(model: &str) -> Value {
+    let parsed: Value = serde_json::from_str(model).expect("a model document must be JSON");
+    let shapes = parsed["shapes"]
+        .as_object()
+        .unwrap_or_else(|| panic!("a model document must carry a shapes object"))
+        .clone();
+    Value::Object(shapes)
+}
+
+/// `declaration` with every documentation trait dropped, recursively — and with a traits
+/// object left empty by that dropped too, so a member the snapshot documents and nothing
+/// else compares equal to the same member restated with no traits at all.
+///
+/// Documentation is prose: the overlay restates what codegen READS — targets, types, enum
+/// values and constraint traits — so comparing declarations has to ignore the one trait
+/// that carries no behaviour.
+fn without_docs(declaration: &Value) -> Value {
+    match declaration {
+        Value::Object(members) => Value::Object(
+            members
+                .iter()
+                .filter(|(key, _)| key.as_str() != "smithy.api#documentation")
+                .map(|(key, value)| (key.clone(), without_docs(value)))
+                .filter(|(key, value)| {
+                    key.as_str() != "traits" || !value.as_object().is_some_and(Map::is_empty)
+                })
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(without_docs).collect()),
+        other => other.clone(),
+    }
+}
+
+#[test]
+fn the_snapshot_lacks_the_locally_declared_member_and_nothing_else() {
+    // The local declaration stands in for the snapshot's shape, so it has to cover the
+    // snapshot's own member list in full: a member the snapshot declares and this crate
+    // does not would simply stop being reported.
+    let snapshot = model_shapes(SNAPSHOT);
+    let members = snapshot[IMAGE_DETAIL_SHAPE]["members"]
+        .as_object()
+        .unwrap_or_else(|| panic!("the snapshot must declare {IMAGE_DETAIL_SHAPE} with members"))
+        .clone();
+    assert!(
+        !members.contains_key(LOCAL_MEMBER),
+        "the snapshot now declares {LOCAL_MEMBER}, so the local declaration should give way \
+         to the modelled member; snapshot members {:?}",
+        members.keys().collect::<Vec<_>>()
+    );
+    let reported: BTreeSet<&str> = TAGGED_IMAGE_MEMBERS.iter().copied().collect();
+    for member in members.keys() {
+        assert!(
+            reported.contains(member.as_str()),
+            "the snapshot declares {member}, which a described image must still report; this \
+             suite expects {reported:?}"
+        );
+    }
+    assert_eq!(
+        reported.len(),
+        members.len() + 1,
+        "a tagged image reports the snapshot's members plus {LOCAL_MEMBER} only; expected \
+         {reported:?}, snapshot {:?}",
+        members.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn the_overlay_restates_the_snapshot_exactly_but_for_the_member_it_adds() {
+    // The overlay is what the local declaration is generated from, so anything it restates
+    // of the snapshot — a member's target, a shape's type, a constraint trait — must still
+    // BE what the snapshot says, or the type on the wire would be narrower or wider than
+    // the model without any other test noticing.
+    let snapshot = model_shapes(SNAPSHOT);
+    let overlay = model_shapes(OVERLAY);
+    let restated = overlay
+        .as_object()
+        .expect("the overlay carries a shapes object");
+
+    for (shape_id, declared) in restated {
+        if shape_id == REPOSITORY_TYPE_SHAPE {
+            assert!(
+                snapshot[shape_id].is_null(),
+                "the snapshot now declares {shape_id}, so the local declaration should give \
+                 way to the modelled shape"
+            );
+            continue;
+        }
+        let modelled = &snapshot[shape_id];
+        assert!(
+            !modelled.is_null(),
+            "the overlay restates {shape_id}, which the snapshot does not declare"
+        );
+
+        if shape_id == IMAGE_DETAIL_SHAPE {
+            // The one shape that differs on purpose: the snapshot's members, restated as
+            // the snapshot declares them, plus the member AWS carries and it does not.
+            let declared_members = declared["members"]
+                .as_object()
+                .expect("the overlay declares the image-detail members");
+            let modelled_members = modelled["members"]
+                .as_object()
+                .expect("the snapshot declares the image-detail members");
+            for (member, modelled_member) in modelled_members {
+                assert_eq!(
+                    without_docs(&declared_members[member]),
+                    without_docs(modelled_member),
+                    "member {member} of {shape_id} must be restated as the snapshot declares \
+                     it, got {:?}",
+                    declared_members.get(member)
+                );
+            }
+            let added: Vec<&String> = declared_members
+                .keys()
+                .filter(|member| !modelled_members.contains_key(*member))
+                .collect();
+            assert_eq!(
+                added,
+                vec![LOCAL_MEMBER],
+                "{shape_id} may add {LOCAL_MEMBER} and nothing else, added {added:?}"
+            );
+            continue;
+        }
+
+        assert_eq!(
+            without_docs(declared),
+            without_docs(modelled),
+            "{shape_id} must be restated exactly as the snapshot declares it"
+        );
+    }
+}
+
+#[test]
+fn the_value_catalogue_is_the_overlay_enum_value_set() {
+    // `REPOSITORY_TYPE_VALUES` is written out in `image_detail_types` because the shape it
+    // belongs to is declared in the overlay rather than in the snapshot, so what the
+    // catalogue claims has to be what that file declares.
+    let overlay = model_shapes(OVERLAY);
+    let shape = &overlay[REPOSITORY_TYPE_SHAPE];
+    assert_eq!(
+        shape["type"], "enum",
+        "{REPOSITORY_TYPE_SHAPE} must be declared as an enum, got {shape}"
+    );
+    let declared: Vec<String> = shape["members"]
+        .as_object()
+        .unwrap_or_else(|| panic!("{REPOSITORY_TYPE_SHAPE} must declare members, got {shape}"))
+        .values()
+        .map(|member| {
+            member["traits"]["smithy.api#enumValue"]
+                .as_str()
+                .unwrap_or_else(|| panic!("every enum member carries a value, got {member}"))
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        declared,
+        REPOSITORY_TYPE_VALUES
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<String>>(),
+        "the catalogue must be the overlay's value set, got {REPOSITORY_TYPE_VALUES:?}"
+    );
+    assert!(
+        REPOSITORY_TYPE_VALUES.contains(&EXPECTED_TIER),
+        "the tier this registry reports must be one of the declared values, got \
+         {REPOSITORY_TYPE_VALUES:?}"
     );
 }

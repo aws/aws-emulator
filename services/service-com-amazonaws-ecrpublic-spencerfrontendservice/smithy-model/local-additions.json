@@ -1,0 +1,60 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.ecrpublic#ImageDetail": {
+      "type": "structure",
+      "members": {
+        "registryId": { "target": "com.amazonaws.ecrpublic#RegistryId" },
+        "repositoryName": { "target": "com.amazonaws.ecrpublic#RepositoryName" },
+        "imageDigest": { "target": "com.amazonaws.ecrpublic#ImageDigest" },
+        "imageTags": { "target": "com.amazonaws.ecrpublic#ImageTagList" },
+        "imageSizeInBytes": { "target": "com.amazonaws.ecrpublic#ImageSizeInBytes" },
+        "imagePushedAt": { "target": "com.amazonaws.ecrpublic#PushTimestamp" },
+        "imageManifestMediaType": { "target": "com.amazonaws.ecrpublic#MediaType" },
+        "artifactMediaType": { "target": "com.amazonaws.ecrpublic#MediaType" },
+        "repositoryType": { "target": "com.amazonaws.ecrpublic#RepositoryType" }
+      }
+    },
+    "com.amazonaws.ecrpublic#RepositoryType": {
+      "type": "enum",
+      "members": {
+        "FREE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "FREE" } }
+      }
+    },
+    "com.amazonaws.ecrpublic#RegistryId": {
+      "type": "string",
+      "traits": {
+        "smithy.api#pattern": "^[0-9]{12}$"
+      }
+    },
+    "com.amazonaws.ecrpublic#RepositoryName": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 2, "max": 205 },
+        "smithy.api#pattern": "^(?:[a-z0-9]+(?:[._-][a-z0-9]+)*/)*[a-z0-9]+(?:[._-][a-z0-9]+)*$"
+      }
+    },
+    "com.amazonaws.ecrpublic#ImageDigest": {
+      "type": "string"
+    },
+    "com.amazonaws.ecrpublic#ImageTagList": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.ecrpublic#ImageTag" }
+    },
+    "com.amazonaws.ecrpublic#ImageTag": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 300 }
+      }
+    },
+    "com.amazonaws.ecrpublic#ImageSizeInBytes": {
+      "type": "long"
+    },
+    "com.amazonaws.ecrpublic#PushTimestamp": {
+      "type": "timestamp"
+    },
+    "com.amazonaws.ecrpublic#MediaType": {
+      "type": "string"
+    }
+  }
+}

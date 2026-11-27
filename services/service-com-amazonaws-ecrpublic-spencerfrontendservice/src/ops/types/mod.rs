@@ -28,6 +28,10 @@ pub mod get_authorization_token_types;
 pub mod get_registry_catalog_data_types;
 pub mod get_repository_catalog_data_types;
 pub mod get_repository_policy_types;
+/// `ImageDetail`, declared from the local overlay model rather than from the published
+/// snapshot: AWS carries a member the snapshot does not declare (see
+/// `smithy-model/LOCAL-ADDITIONS.md`).
+pub mod image_detail_types;
 pub mod initiate_layer_upload_types;
 pub mod list_tags_for_resource_types;
 pub mod put_image_types;
@@ -67,6 +71,8 @@ pub use get_registry_catalog_data_types::*;
 pub use get_repository_catalog_data_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_repository_policy_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use image_detail_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use initiate_layer_upload_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

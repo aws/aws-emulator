@@ -219,14 +219,15 @@ pub const REGISTRY_ALIAS_STATUS_ACTIVE: &str = "ACTIVE";
 /// `CreateRepository` carries no tier member, so the tier is a property of the registry a
 /// repository was created in rather than of the request or of any image pushed to it. The
 /// default public registry of an account hosts free public repositories, which is the one
-/// value `RepositoryType` is modelled with
-/// ([`crate::ops::types::REPOSITORY_TYPE_VALUES`]), so every repository this store holds
-/// carries this tier and every image in it reports it
+/// value `RepositoryType` is declared with
+/// ([`crate::ops::types::REPOSITORY_TYPE_VALUES`], from the overlay model
+/// `smithy-model/local-additions.json` — see `smithy-model/LOCAL-ADDITIONS.md`), so every
+/// repository this store holds carries this tier and every image in it reports it
 /// ([`StoredRepository::image_detail`]).
 ///
 /// Stated here rather than read off the value list, so the tier does not follow that
 /// list's ordering if `RepositoryType` ever gains another value; that it is one of the
-/// modelled values is asserted by `tests/all/image_detail_repository_type.rs`.
+/// declared values is asserted by `tests/all/image_detail_repository_type.rs`.
 pub const DEFAULT_REPOSITORY_TYPE: &str = "FREE";
 
 /// The largest page either `Describe*` operation will serve, and the page size a request
