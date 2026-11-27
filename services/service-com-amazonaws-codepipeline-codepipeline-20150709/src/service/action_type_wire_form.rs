@@ -15,6 +15,17 @@
 //! carries, and nothing else about the walk changes — every other member, its name, its
 //! order and its schema stay the ones the model gave it.
 //!
+//! # The wire form it is a member of
+//!
+//! `__type` is the awsJson family's own way of naming a serialized shape, so it is written
+//! for a call served in THAT protocol: this service's model declares a second one
+//! (`rpcv2Cbor`), whose encoding names a shape nowhere on the success path, and a client
+//! calling in it is answered the members the model declares and no others
+//! ([`crate::service::request_protocol::is_a_json_call`] is which of the two a call is).
+//! The same holds for the envelope a framework-level failure of one of these operations
+//! renders in: it is the envelope of the protocol the REQUEST is served in, read per
+//! request below, so a CBOR client's refusal is a CBOR answer.
+//!
 //! # Which operations serve one
 //!
 //! EVERY operation of this service is served through this wrapper
@@ -36,14 +47,24 @@ use smithy_server_runtime::{
 use crate::service::shape_discriminator::{discriminator_of, TYPE_MEMBER_SCHEMA};
 
 /// One output shape, serialized with the discriminator on every discriminated structure
-/// under it.
+/// under it — on the wire form that has one.
 ///
 /// Built by [`DiscriminatedOperation`]; there is no reason to name this type elsewhere.
-pub struct Discriminating<T>(pub T);
+pub struct Discriminating<T> {
+    /// The handler's own output, untouched.
+    output: T,
+    /// Whether the call is served in the wire form the discriminator is a member of (see
+    /// the [module docs](self)). A call served in another is answered the members the
+    /// model declares and nothing besides.
+    discriminated: bool,
+}
 
 impl<T: SerializableStruct> SerializableStruct for Discriminating<T> {
     fn serialize_members(&self, s: &mut dyn ShapeSerializer) -> Result<(), SerdeError> {
-        self.0
+        if !self.discriminated {
+            return self.output.serialize_members(s);
+        }
+        self.output
             .serialize_members(&mut DiscriminatingSerializer { inner: s })
     }
 }
@@ -185,19 +206,17 @@ impl ShapeSerializer for DiscriminatingSerializer<'_> {
 pub struct DiscriminatedOperation<O> {
     /// The operation that serves the call.
     operation: O,
-    /// The protocol envelope the framework renders a pre-dispatch failure of this
-    /// operation in — the same value the generated shim passes.
-    pre_dispatch: PreDispatchProtocol<'static>,
 }
 
 impl<O> DiscriminatedOperation<O> {
-    /// Wrap one operation, already constructed from the shared engine, whose pre-dispatch
-    /// failures render in `pre_dispatch`.
-    pub fn new(operation: O, pre_dispatch: PreDispatchProtocol<'static>) -> Self {
-        Self {
-            operation,
-            pre_dispatch,
-        }
+    /// Wrap one operation, already constructed from the shared engine.
+    ///
+    /// The envelope the table hands every row — the one a service of a single protocol
+    /// renders its pre-dispatch failures in — is not kept: this service's model declares
+    /// two protocols, so the envelope is the one the REQUEST names and is read per request
+    /// in [`ErasedOperation::run`] instead.
+    pub fn new(operation: O, _declared_envelope: PreDispatchProtocol<'static>) -> Self {
+        Self { operation }
     }
 }
 
@@ -216,9 +235,19 @@ impl<O: Operation> Operation for DiscriminatedOperation<O> {
         input: Self::Input,
         ctx: &OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // Which wire form this call is served in, which is what decides whether the answer
+        // names its shapes: read from the request's own metadata, the only thing that names
+        // the protocol where an output is serialized.
+        let discriminated = crate::service::request_protocol::is_a_json_call(ctx.parts());
         // The handler's own answer, untouched: only how it is RENDERED changes, which is
         // the wrapper around it rather than anything about the output it built.
-        self.operation.handle(input, ctx).await.map(Discriminating)
+        self.operation
+            .handle(input, ctx)
+            .await
+            .map(|output| Discriminating {
+                output,
+                discriminated,
+            })
     }
 }
 
@@ -233,10 +262,15 @@ where
         ctx: &'r OperationContext<'r>,
     ) -> BoxFuture<'r, RtResponse> {
         Box::pin(async move {
+            // The envelope a framework-level failure of this call renders in: the one the
+            // protocol THIS request is served in gives it, which is what the generated shim
+            // of a service passes and what keeps a refusal of a call made in either of this
+            // model's two protocols in that protocol's own envelope.
+            let envelope = svc.definition().wire_protocol(req).envelope();
             // The framework's own per-request sequence, driven with THIS wrapper as the
             // operation: the handler it calls is the wrapped one, so the only difference
             // is the serializer the output is written with.
-            smithy_server_runtime::run_operation_http(self, svc, req, ctx, self.pre_dispatch).await
+            smithy_server_runtime::run_operation_http(self, svc, req, ctx, envelope).await
         })
     }
 

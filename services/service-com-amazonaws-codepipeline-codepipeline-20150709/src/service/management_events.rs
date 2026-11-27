@@ -159,9 +159,14 @@ impl<Eng: Send + Sync + 'static> AuditedService for CodePipelineAudit<Eng> {
     }
 }
 
-/// The envelope a pre-dispatch failure of one of this service's operations renders in:
-/// this service speaks `awsJson1_1`, which is the same value the generated per-operation
-/// shim passes.
+/// The envelope the audited table hands every row for a pre-dispatch failure: the one this
+/// service's `awsJson1_1` protocol gives it.
+///
+/// What a row actually answers such a failure in is the envelope of the protocol the REQUEST
+/// is served in, read per request by the wrapper each row is served behind
+/// ([`crate::service::action_type_wire_form`]) — this model declares two protocols, so one
+/// value cannot be right for both calls. This is the value the table carries for a row
+/// served through no such wrapper.
 const JSON_ENVELOPE: PreDispatchProtocol<'static> = PreDispatchProtocol::Json {
     content_type: "application/x-amz-json-1.1",
     // The awsJson families convey the error type in the body's `__type`, not in a header.

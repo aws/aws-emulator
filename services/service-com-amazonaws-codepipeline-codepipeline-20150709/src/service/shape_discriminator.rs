@@ -3,9 +3,10 @@
 //! WHICH structures of this service carry the awsJson shape discriminator, and the shape
 //! name each one carries.
 //!
-//! This service speaks `awsJson1_1` (`smithy_query query="service_info"`), and on that
-//! protocol two of its structures arrive at a client carrying `__type` — the member the
-//! awsJson family names a serialized shape with — beside the members the shape declares:
+//! On `awsJson1_1`, one of the two protocols this service's model declares
+//! (`smithy_query query="service_info"`), two of its structures arrive at a client carrying
+//! `__type` — the member the awsJson family names a serialized shape with — beside the
+//! members the shape declares:
 //!
 //! ```text
 //! "actionTypeId": {"__type": "ActionTypeId", "category": "Source", "owner": "AWS", …}

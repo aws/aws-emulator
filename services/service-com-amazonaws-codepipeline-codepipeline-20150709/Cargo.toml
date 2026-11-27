@@ -131,6 +131,10 @@ service-com-amazonaws-codebuild-codebuild-20161006 = { workspace = true }
 # key for an artifact's encryption to be taken from.
 service-com-amazonaws-kms-trentservice = { workspace = true }
 zip = { version = "9", default-features = false, features = ["deflate"] }
+# Reads the CBOR map an answer on this service's `rpcv2Cbor` route is, so the suite that
+# calls it in that protocol decodes the answer with a maintained decoder (the one the
+# framework's own CBOR codec is built on) rather than reading bytes by hand.
+minicbor = { version = "2.3", features = ["alloc"] }
 
 [lints]
 workspace = true

@@ -291,6 +291,18 @@ pub fn claims_parts(parts: &http::request::Parts) -> bool {
     addresses_trigger_plane(parts.uri.path())
 }
 
+/// Whether the runtime request `req` addresses this plane, by that same rule.
+///
+/// The question [`claims_parts`] answers, asked where the whole request is held rather than
+/// its parts: the service's definition reads it to decide which wire protocol serves a
+/// request (`crate::service::request_protocol`), and so does
+/// [`WebhookTriggerPlane::claims`] — one rule, so no layer of this service can disagree with
+/// another about which requests this plane serves.
+#[must_use]
+pub fn claims_request(req: &RtRequest) -> bool {
+    addresses_trigger_plane(::service_common::request_path(req.uri()))
+}
+
 /// The webhook trigger plane, as the one [`ErasedOperation`] the service holds for it.
 ///
 /// Owns the shared engine exactly as a generated operation does, so every answer is computed
@@ -332,7 +344,7 @@ impl<Eng: Send + Sync + 'static> WebhookTriggerPlane<Eng> {
     /// Whether this plane serves `req`, by the one rule the claim uses
     /// ([`addresses_trigger_plane`]).
     pub fn claims(&self, req: &RtRequest) -> bool {
-        addresses_trigger_plane(::service_common::request_path(req.uri()))
+        claims_request(req)
     }
 
     /// Serve one POST to a published trigger URL.

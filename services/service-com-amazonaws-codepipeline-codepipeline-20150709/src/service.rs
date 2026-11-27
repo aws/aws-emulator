@@ -51,10 +51,14 @@
 //! `ListWebhookItem$url` is an address a THIRD PARTY dials: "when a POST request is made to
 //! this URL, the defined pipeline is started as long as the body of the post request
 //! satisfies the defined authentication and filtering". That POST names no modelled
-//! operation and carries no routing key, so two of the seams above are what serve it:
+//! operation and carries no routing key, so three things above are what serve it:
 //!
 //! - [`Service::can_handle`] also claims a request addressed to that plane
 //!   ([`webhook_trigger::claims_parts`]), which is what routes it here at all;
+//! - the definition this service answers with serves a request addressed to that plane
+//!   whatever wire protocol it names ([`request_protocol`]), because such a request names
+//!   none of the two this model declares and the framework refuses one that names none
+//!   before any operation is asked for it;
 //! - [`Service::override_operation`] serves it, through
 //!   [`webhook_trigger::WebhookTriggerPlane`].
 //!
@@ -67,6 +71,9 @@ pub mod action_type_wire_form;
 /// WHICH structures carry that discriminator, and the shape name each one carries.
 pub mod shape_discriminator;
 pub mod management_events;
+/// WHICH of the two protocols this service's model declares serves one request — and what
+/// serves the one request of this service that names neither of them.
+pub mod request_protocol;
 pub mod webhook_trigger;
 
 use service_common::audited_operation::AuditedDefinition;
@@ -378,9 +385,12 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     /// The generated entry, routing through this service's AUDITED operations: every call
     /// it serves is a management event of this service, recorded in the account's event
     /// history where CloudTrail's `LookupEvents` reads it (see [`management_events`]).
-    /// Identity, the protocol and every framework error renderer stay the generated
-    /// entry's.
-    entry: AuditedDefinition<crate::ServiceDefinition<Eng>>,
+    /// Identity, the protocols and every framework error renderer stay the generated
+    /// entry's; the one further thing this service's own wrapper answers is which protocol
+    /// serves a request addressed to the published trigger plane ([`request_protocol`]).
+    entry: request_protocol::ServedWhateverProtocolItNames<
+        AuditedDefinition<crate::ServiceDefinition<Eng>>,
+    >,
     /// Serves the trigger plane a webhook publishes — the wire its `url` advertises. Held
     /// on the service because [`Service::override_operation`] hands the router a BORROW of
     /// one of its own operations, and it owns the shared engine so every answer is computed
@@ -403,7 +413,15 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         let audited = management_events::audited_table(&engine);
         Self {
             webhook_trigger: webhook_trigger::WebhookTriggerPlane::new(Arc::clone(&engine)),
-            entry: AuditedDefinition::new(crate::ServiceDefinition::new(engine), audited),
+            // Outermost, so the audited table is what it routes from: the request addressed
+            // to the published trigger plane names none of the two protocols this model
+            // declares, and without this wrapper the framework's per-request selection
+            // refuses it before `override_operation` is asked for it at all (see
+            // [`request_protocol`]).
+            entry: request_protocol::ServedWhateverProtocolItNames::new(AuditedDefinition::new(
+                crate::ServiceDefinition::new(engine),
+                audited,
+            )),
         }
     }
 }
