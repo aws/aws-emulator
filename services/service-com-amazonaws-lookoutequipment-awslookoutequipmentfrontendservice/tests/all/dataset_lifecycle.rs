@@ -14,6 +14,10 @@
 //! optional members of `IngestionS3InputConfiguration`, page sizes from 1 to past the item
 //! count plus both published `MaxResults` bounds and one past each, and prefixes that
 //! select all, some and none of the stored datasets.
+//!
+//! The last two tests widen the table to the whole operation surface of the model this
+//! crate is built from: every operation the service binds is routed to its own handler,
+//! and the six implemented here answer their modelled output.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -1070,5 +1074,180 @@ async fn delete_removes_the_dataset_and_its_ingestion_jobs() {
         Some(state::DATASET_STATUS_CREATED),
         "case recreate: a recreated dataset starts at {}, got {recreated}",
         state::DATASET_STATUS_CREATED
+    );
+}
+
+/// Every operation `AWSLookoutEquipmentFrontendService` binds, in the order the service
+/// shape lists them. Written out by hand from OPERATIONS.md, which carries one
+/// `## <Operation>` heading per bound operation; the same list comes from
+/// `smithy_query(query="list_operations")` over this crate's `smithy-model/`.
+const BOUND_OPERATIONS: [&str; 49] = [
+    "CreateDataset",
+    "CreateInferenceScheduler",
+    "CreateLabel",
+    "CreateLabelGroup",
+    "CreateModel",
+    "CreateRetrainingScheduler",
+    "DeleteDataset",
+    "DeleteInferenceScheduler",
+    "DeleteLabel",
+    "DeleteLabelGroup",
+    "DeleteModel",
+    "DeleteResourcePolicy",
+    "DeleteRetrainingScheduler",
+    "DescribeDataIngestionJob",
+    "DescribeDataset",
+    "DescribeInferenceScheduler",
+    "DescribeLabel",
+    "DescribeLabelGroup",
+    "DescribeModel",
+    "DescribeModelVersion",
+    "DescribeResourcePolicy",
+    "DescribeRetrainingScheduler",
+    "ImportDataset",
+    "ImportModelVersion",
+    "ListDataIngestionJobs",
+    "ListDatasets",
+    "ListInferenceEvents",
+    "ListInferenceExecutions",
+    "ListInferenceSchedulers",
+    "ListLabelGroups",
+    "ListLabels",
+    "ListModels",
+    "ListModelVersions",
+    "ListRetrainingSchedulers",
+    "ListSensorStatistics",
+    "ListTagsForResource",
+    "PutResourcePolicy",
+    "StartDataIngestionJob",
+    "StartInferenceScheduler",
+    "StartRetrainingScheduler",
+    "StopInferenceScheduler",
+    "StopRetrainingScheduler",
+    "TagResource",
+    "UntagResource",
+    "UpdateActiveModelVersion",
+    "UpdateInferenceScheduler",
+    "UpdateLabelGroup",
+    "UpdateModel",
+    "UpdateRetrainingScheduler",
+];
+
+/// A target name the model declares no operation for — the control row of the table
+/// below. Without it, a check that every bound operation is routed could pass while
+/// nothing was routed at all.
+const UNBOUND_OPERATION: &str = "DescribeEquipmentHealth";
+
+/// The `message` member of an answer, or the empty string when it carries none.
+fn message(body: &Value) -> String {
+    body.get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Whether the answer came from one of this service's own operations, rather than from
+/// the framework refusing a request that named no modelled operation.
+///
+/// A bound operation answers 200, one of its modelled errors, or — while it is still a
+/// scaffold — a 501 that calls itself scaffolded. A name the service binds no operation
+/// for never reaches a handler at all, and the refusal it earns does not claim to be a
+/// scaffold.
+fn reached_an_operation(status: u16, body: &Value) -> bool {
+    status != 501 || message(body).contains("scaffolded")
+}
+
+/// Every operation the model binds is routed to that operation's own handler.
+///
+/// The model carries AWS's end-of-support `@deprecated` trait on all 49 operations.
+/// Deprecation is documentation: it unbinds nothing and changes no wire contract, so
+/// every name below must still resolve to its handler — and the one name the model binds
+/// nothing for must still be refused by routing.
+#[tokio::test]
+async fn every_operation_the_model_binds_is_routed_to_its_own_handler() {
+    let router = router();
+
+    for operation in BOUND_OPERATIONS {
+        let (status, body) = call(&router, operation, &json!({})).await;
+        assert!(
+            reached_an_operation(status, &body),
+            "case {operation}: the model binds this operation, so the request must reach \
+             its handler, got {status}: {body}"
+        );
+    }
+
+    let (status, body) = call(&router, UNBOUND_OPERATION, &json!({})).await;
+    assert!(
+        !reached_an_operation(status, &body),
+        "case {UNBOUND_OPERATION}: a name the model binds no operation for must be refused \
+         by routing, got {status}: {body}"
+    );
+}
+
+/// The same rule one level down: an operation AWS marks deprecated is served exactly as
+/// it was before, so the six operations implemented in this crate still answer their
+/// modelled output from the persisted record.
+#[tokio::test]
+async fn the_implemented_operations_answer_their_modeled_output() {
+    let router = router();
+    let case = "deprecated-but-served";
+    let dataset = "deprecated-but-served";
+    let role_arn = format!("arn:aws:iam::{ACCOUNT}:role/LookoutRole");
+
+    let created = ok_call(
+        &router,
+        "CreateDataset",
+        &json!({ "DatasetName": dataset, "ClientToken": token(case) }),
+    )
+    .await;
+    let dataset_arn = text(&created, "DatasetArn", case);
+    assert!(
+        is_dataset_arn(&dataset_arn, dataset),
+        "case {case}: expected the dataset's own ARN, got {dataset_arn:?}"
+    );
+
+    let described = ok_call(&router, "DescribeDataset", &json!({ "DatasetName": dataset })).await;
+    assert_eq!(
+        described.get("DatasetArn").and_then(Value::as_str),
+        Some(dataset_arn.as_str()),
+        "case {case}: DescribeDataset must answer the stored ARN, got {described}"
+    );
+
+    let started = ok_call(
+        &router,
+        "StartDataIngestionJob",
+        &json!({
+            "DatasetName": dataset,
+            "IngestionInputConfiguration": { "S3InputConfiguration": { "Bucket": "sensor-data" } },
+            "RoleArn": role_arn,
+            "ClientToken": token(&format!("{case}-ingest")),
+        }),
+    )
+    .await;
+    let job_id = text(&started, "JobId", case);
+
+    let job = ok_call(
+        &router,
+        "DescribeDataIngestionJob",
+        &json!({ "JobId": job_id }),
+    )
+    .await;
+    assert_eq!(
+        job.get("DatasetArn").and_then(Value::as_str),
+        Some(dataset_arn.as_str()),
+        "case {case}: the job must report its parent dataset's ARN, got {job}"
+    );
+
+    let listed = ok_call(&router, "ListDatasets", &json!({})).await;
+    assert!(
+        summary_names(&listed).contains(&dataset.to_string()),
+        "case {case}: the created dataset must appear in the listing, got {listed}"
+    );
+
+    ok_call(&router, "DeleteDataset", &json!({ "DatasetName": dataset })).await;
+    let (status, body) = call(&router, "DescribeDataset", &json!({ "DatasetName": dataset })).await;
+    assert_eq!(
+        status, 404,
+        "case {case}: a deleted dataset must 404, got {status}: {body}"
     );
 }

@@ -26,305 +26,343 @@ contents — read that shape in the model above when you need its own members.
 
 ## CreateDataset
 
+- **Traits:** @deprecated
 - **Input:** `DatasetName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required), `DatasetSchema` (DatasetSchema), `ServerSideKmsKeyId` (string, len 1..2048, pattern ^[A-Za-z0-9][A-Za-z0-9:_/+=,@.-]{0,2048}$), `ClientToken` (string, len 1..256, pattern ^\p{ASCII}{1,256}$, @idempotencyToken, required), `Tags` (list<Tag>, len 0..200)
 - **Output:** `DatasetName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `DatasetArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:dataset\/[0-9a-zA-Z_-]{1,200}\/.+$), `Status` (DatasetStatus, one of: ACTIVE | CREATED | IMPORT_IN_PROGRESS | INGESTION_IN_PROGRESS)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ServiceQuotaExceededException (HTTP 402)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## CreateInferenceScheduler
 
+- **Traits:** @deprecated
 - **Input:** `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required), `InferenceSchedulerName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required), `DataDelayOffsetInMinutes` (long, range 0..60), `DataUploadFrequency` (DataUploadFrequency, one of: PT10M | PT15M | PT1H | PT30M | PT5M, required), `DataInputConfiguration` (InferenceInputConfiguration, required), `DataOutputConfiguration` (InferenceOutputConfiguration, required), `RoleArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:iam::[0-9]{12}:role/.+$, required), `ServerSideKmsKeyId` (string, len 1..2048, pattern ^[A-Za-z0-9][A-Za-z0-9:_/+=,@.-]{0,2048}$), `ClientToken` (string, len 1..256, pattern ^\p{ASCII}{1,256}$, @idempotencyToken, required), `Tags` (list<Tag>, len 0..200)
 - **Output:** `InferenceSchedulerArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:inference-scheduler\/.+$), `InferenceSchedulerName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `Status` (InferenceSchedulerStatus, one of: PENDING | RUNNING | STOPPED | STOPPING), `ModelQuality` (ModelQuality, one of: CANNOT_DETERMINE_QUALITY | POOR_QUALITY_DETECTED | QUALITY_THRESHOLD_MET)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ServiceQuotaExceededException (HTTP 402)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## CreateLabel
 
+- **Traits:** @deprecated
 - **Input:** `LabelGroupName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required), `StartTime` (timestamp, required), `EndTime` (timestamp, required), `Rating` (LabelRating, one of: ANOMALY | NEUTRAL | NO_ANOMALY, required), `FaultCode` (string, len 1..100, pattern ^[\P{M}\p{M}]{1,100}$), `Notes` (string, len 1..2560, pattern ^[\P{M}\p{M}]{1,2560}$), `Equipment` (string, len 1..200, pattern ^[\P{M}\p{M}]{1,200}$), `ClientToken` (string, len 1..256, pattern ^\p{ASCII}{1,256}$, @idempotencyToken, required)
 - **Output:** `LabelId` (string, len 0..32, pattern ^[A-Fa-f0-9]{0,32}$)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ServiceQuotaExceededException (HTTP 402)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## CreateLabelGroup
 
+- **Traits:** @deprecated
 - **Input:** `LabelGroupName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required), `FaultCodes` (list<string>, len 0..50), `ClientToken` (string, len 1..256, pattern ^\p{ASCII}{1,256}$, @idempotencyToken, required), `Tags` (list<Tag>, len 0..200)
 - **Output:** `LabelGroupName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `LabelGroupArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:label-group\/.+$)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ServiceQuotaExceededException (HTTP 402)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## CreateModel
 
+- **Traits:** @deprecated
 - **Input:** `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required), `DatasetName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required), `DatasetSchema` (DatasetSchema), `LabelsInputConfiguration` (LabelsInputConfiguration), `ClientToken` (string, len 1..256, pattern ^\p{ASCII}{1,256}$, @idempotencyToken, required), `TrainingDataStartTime` (timestamp), `TrainingDataEndTime` (timestamp), `EvaluationDataStartTime` (timestamp), `EvaluationDataEndTime` (timestamp), `RoleArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:iam::[0-9]{12}:role/.+$), `DataPreProcessingConfiguration` (DataPreProcessingConfiguration), `ServerSideKmsKeyId` (string, len 1..2048, pattern ^[A-Za-z0-9][A-Za-z0-9:_/+=,@.-]{0,2048}$), `Tags` (list<Tag>, len 0..200), `OffCondition` (string, len 1..2048), `ModelDiagnosticsOutputConfiguration` (ModelDiagnosticsOutputConfiguration)
 - **Output:** `ModelArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:model\/.+$), `Status` (ModelStatus, one of: FAILED | IMPORT_IN_PROGRESS | IN_PROGRESS | SUCCESS)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ServiceQuotaExceededException (HTTP 402)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## CreateRetrainingScheduler
 
+- **Traits:** @deprecated
 - **Input:** `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required), `RetrainingStartDate` (timestamp), `RetrainingFrequency` (string, len 1..10, pattern ^P(\dY)?(\d{1,2}M)?(\d{1,3}D)?$, required), `LookbackWindow` (string, pattern ^P180D$|^P360D$|^P540D$|^P720D$, required), `PromoteMode` (ModelPromoteMode, one of: MANAGED | MANUAL), `ClientToken` (string, len 1..256, pattern ^\p{ASCII}{1,256}$, @idempotencyToken, required)
 - **Output:** `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `ModelArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:model\/.+$), `Status` (RetrainingSchedulerStatus, one of: PENDING | RUNNING | STOPPED | STOPPING)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## DeleteDataset
 
+- **Traits:** @deprecated
 - **Input:** `DatasetName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required)
 - **Output:** (no members)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## DeleteInferenceScheduler
 
+- **Traits:** @deprecated
 - **Input:** `InferenceSchedulerName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required)
 - **Output:** (no members)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## DeleteLabel
 
+- **Traits:** @deprecated
 - **Input:** `LabelGroupName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required), `LabelId` (string, len 0..32, pattern ^[A-Fa-f0-9]{0,32}$, required)
 - **Output:** (no members)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## DeleteLabelGroup
 
+- **Traits:** @deprecated
 - **Input:** `LabelGroupName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required)
 - **Output:** (no members)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## DeleteModel
 
+- **Traits:** @deprecated
 - **Input:** `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required)
 - **Output:** (no members)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## DeleteResourcePolicy
 
+- **Traits:** @deprecated
 - **Input:** `ResourceArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:.+$, required)
 - **Output:** (no members)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## DeleteRetrainingScheduler
 
+- **Traits:** @deprecated
 - **Input:** `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required)
 - **Output:** (no members)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## DescribeDataIngestionJob
 
+- **Traits:** @deprecated
 - **Input:** `JobId` (string, len 0..32, pattern ^[A-Fa-f0-9]{0,32}$, required)
 - **Output:** `JobId` (string, len 0..32, pattern ^[A-Fa-f0-9]{0,32}$), `DatasetArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:dataset\/[0-9a-zA-Z_-]{1,200}\/.+$), `IngestionInputConfiguration` (IngestionInputConfiguration), `RoleArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:iam::[0-9]{12}:role/.+$), `CreatedAt` (timestamp), `Status` (IngestionJobStatus, one of: FAILED | IMPORT_IN_PROGRESS | IN_PROGRESS | SUCCESS), `FailedReason` (string, len 1..5000, pattern ^[\P{M}\p{M}]{1,5000}$), `DataQualitySummary` (DataQualitySummary), `IngestedFilesSummary` (IngestedFilesSummary), `StatusDetail` (string, len 1..5000, pattern ^[\P{M}\p{M}]{1,5000}$), `IngestedDataSize` (long, range 0..), `DataStartTime` (timestamp), `DataEndTime` (timestamp), `SourceDatasetArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:dataset\/[0-9a-zA-Z_-]{1,200}\/.+$)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## DescribeDataset
 
+- **Traits:** @deprecated
 - **Input:** `DatasetName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required)
 - **Output:** `DatasetName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `DatasetArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:dataset\/[0-9a-zA-Z_-]{1,200}\/.+$), `CreatedAt` (timestamp), `LastUpdatedAt` (timestamp), `Status` (DatasetStatus, one of: ACTIVE | CREATED | IMPORT_IN_PROGRESS | INGESTION_IN_PROGRESS), `Schema` (string, len 1..1000000), `ServerSideKmsKeyId` (string, len 1..1024, pattern ^arn:aws[a-z\-]*:kms:[a-z0-9\-]*:\d{12}:[\w\-\/]+$), `IngestionInputConfiguration` (IngestionInputConfiguration), `DataQualitySummary` (DataQualitySummary), `IngestedFilesSummary` (IngestedFilesSummary), `RoleArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:iam::[0-9]{12}:role/.+$), `DataStartTime` (timestamp), `DataEndTime` (timestamp), `SourceDatasetArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:dataset\/[0-9a-zA-Z_-]{1,200}\/.+$)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## DescribeInferenceScheduler
 
+- **Traits:** @deprecated
 - **Input:** `InferenceSchedulerName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required)
 - **Output:** `ModelArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:model\/.+$), `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `InferenceSchedulerName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `InferenceSchedulerArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:inference-scheduler\/.+$), `Status` (InferenceSchedulerStatus, one of: PENDING | RUNNING | STOPPED | STOPPING), `DataDelayOffsetInMinutes` (long, range 0..60), `DataUploadFrequency` (DataUploadFrequency, one of: PT10M | PT15M | PT1H | PT30M | PT5M), `CreatedAt` (timestamp), `UpdatedAt` (timestamp), `DataInputConfiguration` (InferenceInputConfiguration), `DataOutputConfiguration` (InferenceOutputConfiguration), `RoleArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:iam::[0-9]{12}:role/.+$), `ServerSideKmsKeyId` (string, len 1..1024, pattern ^arn:aws[a-z\-]*:kms:[a-z0-9\-]*:\d{12}:[\w\-\/]+$), `LatestInferenceResult` (LatestInferenceResult, one of: ANOMALOUS | NORMAL)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## DescribeLabel
 
+- **Traits:** @deprecated
 - **Input:** `LabelGroupName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required), `LabelId` (string, len 0..32, pattern ^[A-Fa-f0-9]{0,32}$, required)
 - **Output:** `LabelGroupName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `LabelGroupArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:label-group\/.+$), `LabelId` (string, len 0..32, pattern ^[A-Fa-f0-9]{0,32}$), `StartTime` (timestamp), `EndTime` (timestamp), `Rating` (LabelRating, one of: ANOMALY | NEUTRAL | NO_ANOMALY), `FaultCode` (string, len 1..100, pattern ^[\P{M}\p{M}]{1,100}$), `Notes` (string, len 1..2560, pattern ^[\P{M}\p{M}]{1,2560}$), `Equipment` (string, len 1..200, pattern ^[\P{M}\p{M}]{1,200}$), `CreatedAt` (timestamp)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## DescribeLabelGroup
 
+- **Traits:** @deprecated
 - **Input:** `LabelGroupName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required)
 - **Output:** `LabelGroupName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `LabelGroupArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:label-group\/.+$), `FaultCodes` (list<string>, len 0..50), `CreatedAt` (timestamp), `UpdatedAt` (timestamp)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## DescribeModel
 
+- **Traits:** @deprecated
 - **Input:** `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required)
 - **Output:** `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `ModelArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:model\/.+$), `DatasetName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `DatasetArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:dataset\/[0-9a-zA-Z_-]{1,200}\/.+$), `Schema` (string, len 1..1000000), `LabelsInputConfiguration` (LabelsInputConfiguration), `TrainingDataStartTime` (timestamp), `TrainingDataEndTime` (timestamp), `EvaluationDataStartTime` (timestamp), `EvaluationDataEndTime` (timestamp), `RoleArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:iam::[0-9]{12}:role/.+$), `DataPreProcessingConfiguration` (DataPreProcessingConfiguration), `Status` (ModelStatus, one of: FAILED | IMPORT_IN_PROGRESS | IN_PROGRESS | SUCCESS), `TrainingExecutionStartTime` (timestamp), `TrainingExecutionEndTime` (timestamp), `FailedReason` (string, len 1..5000, pattern ^[\P{M}\p{M}]{1,5000}$), `ModelMetrics` (string, len 1..50000), `LastUpdatedTime` (timestamp), `CreatedAt` (timestamp), `ServerSideKmsKeyId` (string, len 1..1024, pattern ^arn:aws[a-z\-]*:kms:[a-z0-9\-]*:\d{12}:[\w\-\/]+$), `OffCondition` (string, len 1..2048), `SourceModelVersionArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:model\/[0-9a-zA-Z_-]{1,200}\/.+\/model-version\/[0-9]{1,}$), `ImportJobStartTime` (timestamp), `ImportJobEndTime` (timestamp), `ActiveModelVersion` (long, range 1..), `ActiveModelVersionArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:model\/[0-9a-zA-Z_-]{1,200}\/.+\/model-version\/[0-9]{1,}$), `ModelVersionActivatedAt` (timestamp), `PreviousActiveModelVersion` (long, range 1..), `PreviousActiveModelVersionArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:model\/[0-9a-zA-Z_-]{1,200}\/.+\/model-version\/[0-9]{1,}$), `PreviousModelVersionActivatedAt` (timestamp), `PriorModelMetrics` (string, len 1..50000), `LatestScheduledRetrainingFailedReason` (string, len 1..5000, pattern ^[\P{M}\p{M}]{1,5000}$), `LatestScheduledRetrainingStatus` (ModelVersionStatus, one of: CANCELED | FAILED | IMPORT_IN_PROGRESS | IN_PROGRESS | SUCCESS), `LatestScheduledRetrainingModelVersion` (long, range 1..), `LatestScheduledRetrainingStartTime` (timestamp), `LatestScheduledRetrainingAvailableDataInDays` (integer), `NextScheduledRetrainingStartDate` (timestamp), `AccumulatedInferenceDataStartTime` (timestamp), `AccumulatedInferenceDataEndTime` (timestamp), `RetrainingSchedulerStatus` (RetrainingSchedulerStatus, one of: PENDING | RUNNING | STOPPED | STOPPING), `ModelDiagnosticsOutputConfiguration` (ModelDiagnosticsOutputConfiguration), `ModelQuality` (ModelQuality, one of: CANNOT_DETERMINE_QUALITY | POOR_QUALITY_DETECTED | QUALITY_THRESHOLD_MET)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## DescribeModelVersion
 
+- **Traits:** @deprecated
 - **Input:** `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required), `ModelVersion` (long, range 1.., required)
 - **Output:** `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `ModelArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:model\/.+$), `ModelVersion` (long, range 1..), `ModelVersionArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:model\/[0-9a-zA-Z_-]{1,200}\/.+\/model-version\/[0-9]{1,}$), `Status` (ModelVersionStatus, one of: CANCELED | FAILED | IMPORT_IN_PROGRESS | IN_PROGRESS | SUCCESS), `SourceType` (ModelVersionSourceType, one of: IMPORT | RETRAINING | TRAINING), `DatasetName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `DatasetArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:dataset\/[0-9a-zA-Z_-]{1,200}\/.+$), `Schema` (string, len 1..1000000), `LabelsInputConfiguration` (LabelsInputConfiguration), `TrainingDataStartTime` (timestamp), `TrainingDataEndTime` (timestamp), `EvaluationDataStartTime` (timestamp), `EvaluationDataEndTime` (timestamp), `RoleArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:iam::[0-9]{12}:role/.+$), `DataPreProcessingConfiguration` (DataPreProcessingConfiguration), `TrainingExecutionStartTime` (timestamp), `TrainingExecutionEndTime` (timestamp), `FailedReason` (string, len 1..5000, pattern ^[\P{M}\p{M}]{1,5000}$), `ModelMetrics` (string, len 1..50000), `LastUpdatedTime` (timestamp), `CreatedAt` (timestamp), `ServerSideKmsKeyId` (string, len 1..1024, pattern ^arn:aws[a-z\-]*:kms:[a-z0-9\-]*:\d{12}:[\w\-\/]+$), `OffCondition` (string, len 1..2048), `SourceModelVersionArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:model\/[0-9a-zA-Z_-]{1,200}\/.+\/model-version\/[0-9]{1,}$), `ImportJobStartTime` (timestamp), `ImportJobEndTime` (timestamp), `ImportedDataSizeInBytes` (long, range 0..), `PriorModelMetrics` (string, len 1..50000), `RetrainingAvailableDataInDays` (integer), `AutoPromotionResult` (AutoPromotionResult, one of: MODEL_NOT_PROMOTED | MODEL_PROMOTED | RETRAINING_CANCELLED | RETRAINING_CUSTOMER_ERROR | RETRAINING_INTERNAL_ERROR), `AutoPromotionResultReason` (string, len 1..256), `ModelDiagnosticsOutputConfiguration` (ModelDiagnosticsOutputConfiguration), `ModelDiagnosticsResultsObject` (S3Object), `ModelQuality` (ModelQuality, one of: CANNOT_DETERMINE_QUALITY | POOR_QUALITY_DETECTED | QUALITY_THRESHOLD_MET)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## DescribeResourcePolicy
 
+- **Traits:** @deprecated
 - **Input:** `ResourceArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:.+$, required)
 - **Output:** `PolicyRevisionId` (string, len 0..50, pattern ^[0-9A-Fa-f]+$), `ResourcePolicy` (string, len 1..20000, pattern ^[\u0009\u000A\u000D\u0020-\u00FF]+$), `CreationTime` (timestamp), `LastModifiedTime` (timestamp)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## DescribeRetrainingScheduler
 
+- **Traits:** @deprecated
 - **Input:** `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required)
 - **Output:** `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `ModelArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:model\/.+$), `RetrainingStartDate` (timestamp), `RetrainingFrequency` (string, len 1..10, pattern ^P(\dY)?(\d{1,2}M)?(\d{1,3}D)?$), `LookbackWindow` (string, pattern ^P180D$|^P360D$|^P540D$|^P720D$), `Status` (RetrainingSchedulerStatus, one of: PENDING | RUNNING | STOPPED | STOPPING), `PromoteMode` (ModelPromoteMode, one of: MANAGED | MANUAL), `CreatedAt` (timestamp), `UpdatedAt` (timestamp)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## ImportDataset
 
+- **Traits:** @deprecated
 - **Input:** `SourceDatasetArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:dataset\/[0-9a-zA-Z_-]{1,200}\/.+$, required), `DatasetName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `ClientToken` (string, len 1..256, pattern ^\p{ASCII}{1,256}$, @idempotencyToken, required), `ServerSideKmsKeyId` (string, len 1..2048, pattern ^[A-Za-z0-9][A-Za-z0-9:_/+=,@.-]{0,2048}$), `Tags` (list<Tag>, len 0..200)
 - **Output:** `DatasetName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `DatasetArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:dataset\/[0-9a-zA-Z_-]{1,200}\/.+$), `Status` (DatasetStatus, one of: ACTIVE | CREATED | IMPORT_IN_PROGRESS | INGESTION_IN_PROGRESS), `JobId` (string, len 0..32, pattern ^[A-Fa-f0-9]{0,32}$)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ServiceQuotaExceededException (HTTP 402)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## ImportModelVersion
 
+- **Traits:** @deprecated
 - **Input:** `SourceModelVersionArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:model\/[0-9a-zA-Z_-]{1,200}\/.+\/model-version\/[0-9]{1,}$, required), `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `DatasetName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required), `LabelsInputConfiguration` (LabelsInputConfiguration), `ClientToken` (string, len 1..256, pattern ^\p{ASCII}{1,256}$, @idempotencyToken, required), `RoleArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:iam::[0-9]{12}:role/.+$), `ServerSideKmsKeyId` (string, len 1..2048, pattern ^[A-Za-z0-9][A-Za-z0-9:_/+=,@.-]{0,2048}$), `Tags` (list<Tag>, len 0..200), `InferenceDataImportStrategy` (InferenceDataImportStrategy, one of: ADD_WHEN_EMPTY | NO_IMPORT | OVERWRITE)
 - **Output:** `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `ModelArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:model\/.+$), `ModelVersionArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:model\/[0-9a-zA-Z_-]{1,200}\/.+\/model-version\/[0-9]{1,}$), `ModelVersion` (long, range 1..), `Status` (ModelVersionStatus, one of: CANCELED | FAILED | IMPORT_IN_PROGRESS | IN_PROGRESS | SUCCESS)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ServiceQuotaExceededException (HTTP 402)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## ListDataIngestionJobs
 
-- **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?)
+- **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?), @deprecated
 - **Input:** `DatasetName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `NextToken` (string, len 0..8192, pattern ^\p{ASCII}{0,8192}$), `MaxResults` (integer, range 1..500), `Status` (IngestionJobStatus, one of: FAILED | IMPORT_IN_PROGRESS | IN_PROGRESS | SUCCESS)
 - **Output:** `NextToken` (string, len 0..8192, pattern ^\p{ASCII}{0,8192}$), `DataIngestionJobSummaries` (list<DataIngestionJobSummary>)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## ListDatasets
 
-- **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?)
+- **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?), @deprecated
 - **Input:** `NextToken` (string, len 0..8192, pattern ^\p{ASCII}{0,8192}$), `MaxResults` (integer, range 1..500), `DatasetNameBeginsWith` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$)
 - **Output:** `NextToken` (string, len 0..8192, pattern ^\p{ASCII}{0,8192}$), `DatasetSummaries` (list<DatasetSummary>)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## ListInferenceEvents
 
-- **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?)
+- **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?), @deprecated
 - **Input:** `NextToken` (string, len 0..8192, pattern ^\p{ASCII}{0,8192}$), `MaxResults` (integer, range 1..500), `InferenceSchedulerName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required), `IntervalStartTime` (timestamp, required), `IntervalEndTime` (timestamp, required)
 - **Output:** `NextToken` (string, len 0..8192, pattern ^\p{ASCII}{0,8192}$), `InferenceEventSummaries` (list<InferenceEventSummary>)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## ListInferenceExecutions
 
-- **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?)
+- **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?), @deprecated
 - **Input:** `NextToken` (string, len 0..8192, pattern ^\p{ASCII}{0,8192}$), `MaxResults` (integer, range 1..500), `InferenceSchedulerName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required), `DataStartTimeAfter` (timestamp), `DataEndTimeBefore` (timestamp), `Status` (InferenceExecutionStatus, one of: FAILED | IN_PROGRESS | SUCCESS)
 - **Output:** `NextToken` (string, len 0..8192, pattern ^\p{ASCII}{0,8192}$), `InferenceExecutionSummaries` (list<InferenceExecutionSummary>)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## ListInferenceSchedulers
 
-- **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?)
+- **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?), @deprecated
 - **Input:** `NextToken` (string, len 0..8192, pattern ^\p{ASCII}{0,8192}$), `MaxResults` (integer, range 1..500), `InferenceSchedulerNameBeginsWith` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `Status` (InferenceSchedulerStatus, one of: PENDING | RUNNING | STOPPED | STOPPING)
 - **Output:** `NextToken` (string, len 0..8192, pattern ^\p{ASCII}{0,8192}$), `InferenceSchedulerSummaries` (list<InferenceSchedulerSummary>)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## ListLabelGroups
 
-- **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?)
+- **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?), @deprecated
 - **Input:** `LabelGroupNameBeginsWith` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `NextToken` (string, len 0..8192, pattern ^\p{ASCII}{0,8192}$), `MaxResults` (integer, range 1..500)
 - **Output:** `NextToken` (string, len 0..8192, pattern ^\p{ASCII}{0,8192}$), `LabelGroupSummaries` (list<LabelGroupSummary>)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## ListLabels
 
-- **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?)
+- **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?), @deprecated
 - **Input:** `LabelGroupName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required), `IntervalStartTime` (timestamp), `IntervalEndTime` (timestamp), `FaultCode` (string, len 1..100, pattern ^[\P{M}\p{M}]{1,100}$), `Equipment` (string, len 1..200, pattern ^[\P{M}\p{M}]{1,200}$), `NextToken` (string, len 0..8192, pattern ^\p{ASCII}{0,8192}$), `MaxResults` (integer, range 1..500)
 - **Output:** `NextToken` (string, len 0..8192, pattern ^\p{ASCII}{0,8192}$), `LabelSummaries` (list<LabelSummary>)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## ListModels
 
-- **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?)
+- **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?), @deprecated
 - **Input:** `NextToken` (string, len 0..8192, pattern ^\p{ASCII}{0,8192}$), `MaxResults` (integer, range 1..500), `Status` (ModelStatus, one of: FAILED | IMPORT_IN_PROGRESS | IN_PROGRESS | SUCCESS), `ModelNameBeginsWith` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `DatasetNameBeginsWith` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$)
 - **Output:** `NextToken` (string, len 0..8192, pattern ^\p{ASCII}{0,8192}$), `ModelSummaries` (list<ModelSummary>)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## ListModelVersions
 
-- **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?)
+- **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?), @deprecated
 - **Input:** `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required), `NextToken` (string, len 0..8192, pattern ^\p{ASCII}{0,8192}$), `MaxResults` (integer, range 1..500), `Status` (ModelVersionStatus, one of: CANCELED | FAILED | IMPORT_IN_PROGRESS | IN_PROGRESS | SUCCESS), `SourceType` (ModelVersionSourceType, one of: IMPORT | RETRAINING | TRAINING), `CreatedAtEndTime` (timestamp), `CreatedAtStartTime` (timestamp), `MaxModelVersion` (long, range 1..), `MinModelVersion` (long, range 1..)
 - **Output:** `NextToken` (string, len 0..8192, pattern ^\p{ASCII}{0,8192}$), `ModelVersionSummaries` (list<ModelVersionSummary>)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## ListRetrainingSchedulers
 
-- **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?)
+- **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?), @deprecated
 - **Input:** `ModelNameBeginsWith` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `Status` (RetrainingSchedulerStatus, one of: PENDING | RUNNING | STOPPED | STOPPING), `NextToken` (string, len 0..8192, pattern ^\p{ASCII}{0,8192}$), `MaxResults` (integer, range 1..500)
 - **Output:** `RetrainingSchedulerSummaries` (list<RetrainingSchedulerSummary>), `NextToken` (string, len 0..8192, pattern ^\p{ASCII}{0,8192}$)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## ListSensorStatistics
 
-- **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?)
+- **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?), @deprecated
 - **Input:** `DatasetName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required), `IngestionJobId` (string, len 0..32, pattern ^[A-Fa-f0-9]{0,32}$), `MaxResults` (integer, range 1..500), `NextToken` (string, len 0..8192, pattern ^\p{ASCII}{0,8192}$)
 - **Output:** `SensorStatisticsSummaries` (list<SensorStatisticsSummary>), `NextToken` (string, len 0..8192, pattern ^\p{ASCII}{0,8192}$)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## ListTagsForResource
 
+- **Traits:** @deprecated
 - **Input:** `ResourceArn` (string, len 1..1011, required)
 - **Output:** `Tags` (list<Tag>, len 0..200)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## PutResourcePolicy
 
+- **Traits:** @deprecated
 - **Input:** `ResourceArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:.+$, required), `ResourcePolicy` (string, len 1..20000, pattern ^[\u0009\u000A\u000D\u0020-\u00FF]+$, required), `PolicyRevisionId` (string, len 0..50, pattern ^[0-9A-Fa-f]+$), `ClientToken` (string, len 1..256, pattern ^\p{ASCII}{1,256}$, @idempotencyToken, required)
 - **Output:** `ResourceArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:.+$), `PolicyRevisionId` (string, len 0..50, pattern ^[0-9A-Fa-f]+$)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ServiceQuotaExceededException (HTTP 402)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## StartDataIngestionJob
 
+- **Traits:** @deprecated
 - **Input:** `DatasetName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required), `IngestionInputConfiguration` (IngestionInputConfiguration, required), `RoleArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:iam::[0-9]{12}:role/.+$, required), `ClientToken` (string, len 1..256, pattern ^\p{ASCII}{1,256}$, @idempotencyToken, required)
 - **Output:** `JobId` (string, len 0..32, pattern ^[A-Fa-f0-9]{0,32}$), `Status` (IngestionJobStatus, one of: FAILED | IMPORT_IN_PROGRESS | IN_PROGRESS | SUCCESS)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ServiceQuotaExceededException (HTTP 402)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## StartInferenceScheduler
 
+- **Traits:** @deprecated
 - **Input:** `InferenceSchedulerName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required)
 - **Output:** `ModelArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:model\/.+$), `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `InferenceSchedulerName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `InferenceSchedulerArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:inference-scheduler\/.+$), `Status` (InferenceSchedulerStatus, one of: PENDING | RUNNING | STOPPED | STOPPING)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## StartRetrainingScheduler
 
+- **Traits:** @deprecated
 - **Input:** `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required)
 - **Output:** `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `ModelArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:model\/.+$), `Status` (RetrainingSchedulerStatus, one of: PENDING | RUNNING | STOPPED | STOPPING)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## StopInferenceScheduler
 
+- **Traits:** @deprecated
 - **Input:** `InferenceSchedulerName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required)
 - **Output:** `ModelArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:model\/.+$), `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `InferenceSchedulerName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `InferenceSchedulerArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:inference-scheduler\/.+$), `Status` (InferenceSchedulerStatus, one of: PENDING | RUNNING | STOPPED | STOPPING)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## StopRetrainingScheduler
 
+- **Traits:** @deprecated
 - **Input:** `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required)
 - **Output:** `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `ModelArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:model\/.+$), `Status` (RetrainingSchedulerStatus, one of: PENDING | RUNNING | STOPPED | STOPPING)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## TagResource
 
+- **Traits:** @deprecated
 - **Input:** `ResourceArn` (string, len 1..1011, required), `Tags` (list<Tag>, len 0..200, required)
 - **Output:** (no members)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ServiceQuotaExceededException (HTTP 402)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## UntagResource
 
+- **Traits:** @deprecated
 - **Input:** `ResourceArn` (string, len 1..1011, required), `TagKeys` (list<string>, len 0..200, required)
 - **Output:** (no members)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## UpdateActiveModelVersion
 
+- **Traits:** @deprecated
 - **Input:** `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required), `ModelVersion` (long, range 1.., required)
 - **Output:** `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$), `ModelArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:model\/.+$), `CurrentActiveVersion` (long, range 1..), `PreviousActiveVersion` (long, range 1..), `CurrentActiveVersionArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:model\/[0-9a-zA-Z_-]{1,200}\/.+\/model-version\/[0-9]{1,}$), `PreviousActiveVersionArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:lookoutequipment:[a-zA-Z0-9\-]*:[0-9]{12}:model\/[0-9a-zA-Z_-]{1,200}\/.+\/model-version\/[0-9]{1,}$)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## UpdateInferenceScheduler
 
+- **Traits:** @deprecated
 - **Input:** `InferenceSchedulerName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required), `DataDelayOffsetInMinutes` (long, range 0..60), `DataUploadFrequency` (DataUploadFrequency, one of: PT10M | PT15M | PT1H | PT30M | PT5M), `DataInputConfiguration` (InferenceInputConfiguration), `DataOutputConfiguration` (InferenceOutputConfiguration), `RoleArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:iam::[0-9]{12}:role/.+$)
 - **Output:** (no members)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## UpdateLabelGroup
 
+- **Traits:** @deprecated
 - **Input:** `LabelGroupName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required), `FaultCodes` (list<string>, len 0..50)
 - **Output:** (no members)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## UpdateModel
 
+- **Traits:** @deprecated
 - **Input:** `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required), `LabelsInputConfiguration` (LabelsInputConfiguration), `RoleArn` (string, len 20..2048, pattern ^arn:aws(-[^:]+)?:iam::[0-9]{12}:role/.+$), `ModelDiagnosticsOutputConfiguration` (ModelDiagnosticsOutputConfiguration)
 - **Output:** (no members)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## UpdateRetrainingScheduler
 
+- **Traits:** @deprecated
 - **Input:** `ModelName` (string, len 1..200, pattern ^[0-9a-zA-Z_-]{1,200}$, required), `RetrainingStartDate` (timestamp), `RetrainingFrequency` (string, len 1..10, pattern ^P(\dY)?(\d{1,2}M)?(\d{1,3}D)?$), `LookbackWindow` (string, pattern ^P180D$|^P360D$|^P540D$|^P720D$), `PromoteMode` (ModelPromoteMode, one of: MANAGED | MANUAL)
 - **Output:** (no members)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
