@@ -52,15 +52,18 @@ use service_com_amazonaws_pcs_awsparallelcomputingservice::state::{
 };
 use smithy_server_runtime::MultiServiceRouter;
 
-/// A SigV4 `Authorization` header scoped to `pcs` in `us-east-1`. The router resolves a
+/// A SigV4 `Authorization` header scoped to `pcs` in `region`. The router resolves a
 /// request's service from the credential scope, and the handlers read the region out of
 /// it to build an ARN. The signature is never checked: request authentication is off.
-const SIGNED_FOR_PCS: &str = "AWS4-HMAC-SHA256 \
-     Credential=AKIDEXAMPLE/20260101/us-east-1/pcs/aws4_request, \
-     SignedHeaders=host;x-amz-date, Signature=deadbeef";
+pub(crate) fn signed_for(region: &str) -> String {
+    format!(
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260101/{region}/pcs/aws4_request, \
+         SignedHeaders=host;x-amz-date, Signature=deadbeef"
+    )
+}
 
-/// The region [`SIGNED_FOR_PCS`] signs for, which every ARN in these tests carries.
-const REGION: &str = "us-east-1";
+/// The region [`call`] signs for, which every ARN in these tests carries.
+pub(crate) const REGION: &str = "us-east-1";
 
 /// An emulator with only PCS mounted, on its own engine.
 pub(crate) fn emulator() -> MultiServiceRouter {
@@ -80,9 +83,21 @@ pub(crate) fn emulator_with_engine() -> (MultiServiceRouter, std::sync::Arc<engi
     (router, engine)
 }
 
-/// Call one operation and return its HTTP status and JSON body.
+/// Call one operation, signed for [`REGION`], and return its HTTP status and JSON body.
 pub(crate) async fn call(
     router: &MultiServiceRouter,
+    operation: &str,
+    body: &Value,
+) -> (u16, Value) {
+    call_signed_for(router, REGION, operation, body).await
+}
+
+/// [`call`], signing for `region`: the ONE request builder these suites drive the wire with,
+/// so a test that varies the credential scope's Region exercises exactly the path every
+/// other test exercises.
+pub(crate) async fn call_signed_for(
+    router: &MultiServiceRouter,
+    region: &str,
     operation: &str,
     body: &Value,
 ) -> (u16, Value) {
@@ -94,7 +109,7 @@ pub(crate) async fn call(
             "x-amz-target",
             format!("AWSParallelComputingService.{operation}"),
         )
-        .header("authorization", SIGNED_FOR_PCS)
+        .header("authorization", signed_for(region))
         .body(bytes::Bytes::from(body.to_string()))
         .expect("the request must build");
     let response = router.dispatch(request).await;

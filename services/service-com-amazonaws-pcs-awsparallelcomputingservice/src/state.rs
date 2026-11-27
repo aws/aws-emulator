@@ -218,7 +218,7 @@ pub const DEFAULT_PURCHASE_OPTION: &str = "ONDEMAND";
 pub const DEFAULT_PAGE_SIZE: usize = 10;
 
 /// The region an ARN carries when the request carries no SigV4 credential scope to read
-/// one from.
+/// one from, and when the scope it carries names no Region LABEL ([`arn_region`]).
 pub const DEFAULT_REGION: &str = "us-east-1";
 
 /// The prefix PCS reserves for the ids it generates (`pcs_...`); a caller-chosen
@@ -1223,9 +1223,15 @@ fn scramble(seq: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// The region the request was signed for. PCS resources are regional, so every ARN the
-/// service mints carries it; a request that carries no SigV4 credential scope gets
+/// The region the request was signed for, AS SUBMITTED. PCS resources are regional, so
+/// every ARN the service mints carries it, and the EC2 and IAM hops a create makes are
+/// addressed in it; a request that carries no SigV4 credential scope gets
 /// [`DEFAULT_REGION`].
+///
+/// This is caller-supplied text, so every reader narrows it to the grammar its own use
+/// needs before it goes anywhere the value is more than data: [`arn_region`] for the ARNs
+/// this service mints, and `crate::state::ec2_client` for the endpoint a hop is addressed
+/// at.
 pub fn request_region(ctx: &smithy_server_runtime::OperationContext<'_>) -> String {
     ::emulator_server::sigv4_credential_scope(&ctx.parts().headers)
         .map(|scope| scope.region)
@@ -1233,15 +1239,41 @@ pub fn request_region(ctx: &smithy_server_runtime::OperationContext<'_>) -> Stri
         .unwrap_or_else(|| DEFAULT_REGION.to_string())
 }
 
+/// The Region segment an ARN this service MINTS carries: `candidate` when it is a
+/// well-formed AWS Region LABEL, and [`DEFAULT_REGION`] otherwise.
+///
+/// The Region a request is signed for is CALLER-SUPPLIED text ([`request_region`]), and in
+/// a minted ARN it lands in a field this service's own readers parse by POSITION — the ARN
+/// is six colon-separated fields, so everything after the fifth colon is the resource
+/// ([`arn_resource`], [`arn_cluster_id`]) — and in members the model constrains (`Arn`,
+/// `@length(1..1011)` with the pattern every tagging operation's `resourceArn` carries). So
+/// it is read as a Region label (`service_common::arn::region_label`, the tree's one
+/// reading of that grammar: non-empty, at most 20 characters, only `[a-z0-9-]`, the form
+/// every model's ARN pattern states for the field) instead of being interpolated as given:
+/// a value carrying a field delimiter would shift the resource field of the ARN it lands
+/// in, and a value past that length would push the whole ARN outside the member it is read
+/// back through. Either way the service would publish an ARN its own ARN-keyed lookups
+/// cannot resolve. Anything outside the grammar names no Region an endpoint has, so it is
+/// not interpolated at all and the service's own Region answers for it.
+fn arn_region(candidate: &str) -> &str {
+    ::service_common::arn::region_label(candidate).unwrap_or(DEFAULT_REGION)
+}
+
+/// `arn:aws:pcs:<region>:<account>:<resource>` — the ONE place a PCS ARN is built, so the
+/// Region every one of them carries is read the same way ([`arn_region`]) and the account
+/// segment is the single emulator account id `engine::emulator_arn` supplies.
+fn pcs_arn(region: &str, resource: &str) -> String {
+    ::engine::emulator_arn("pcs", arn_region(region), resource)
+}
+
 /// `arn:aws:pcs:<region>:<account>:cluster/<cluster id>`.
 pub fn cluster_arn(region: &str, cluster_id: &str) -> String {
-    ::engine::emulator_arn("pcs", region, &format!("cluster/{cluster_id}"))
+    pcs_arn(region, &format!("cluster/{cluster_id}"))
 }
 
 /// `arn:aws:pcs:<region>:<account>:cluster/<cluster id>/computenodegroup/<group id>`.
 pub fn compute_node_group_arn(region: &str, cluster_id: &str, group_id: &str) -> String {
-    ::engine::emulator_arn(
-        "pcs",
+    pcs_arn(
         region,
         &format!("cluster/{cluster_id}/computenodegroup/{group_id}"),
     )
@@ -1249,11 +1281,7 @@ pub fn compute_node_group_arn(region: &str, cluster_id: &str, group_id: &str) ->
 
 /// `arn:aws:pcs:<region>:<account>:cluster/<cluster id>/queue/<queue id>`.
 pub fn queue_arn(region: &str, cluster_id: &str, queue_id: &str) -> String {
-    ::engine::emulator_arn(
-        "pcs",
-        region,
-        &format!("cluster/{cluster_id}/queue/{queue_id}"),
-    )
+    pcs_arn(region, &format!("cluster/{cluster_id}/queue/{queue_id}"))
 }
 
 /// The `@pattern` `clusterName`, `computeNodeGroupName` and `queueName` all carry

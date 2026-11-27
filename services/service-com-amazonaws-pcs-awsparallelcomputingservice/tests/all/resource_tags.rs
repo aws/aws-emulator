@@ -22,6 +22,14 @@
 //! Each test builds its own engine, so the state one test writes is invisible to the
 //! others.
 
+// Which ARNs this ARN-keyed surface has to resolve — every ARN the service itself
+// publishes, whatever Region a request signed for — is its own suite, in the submodule
+// below. `tests/all/resource_tags.rs` is itself loaded by `#[path]` from `tests/all.rs`, so
+// a submodule of it is looked up beside it rather than in a directory named after it: the
+// `#[path]` here is what points at `tests/all/resource_tags/`.
+#[path = "resource_tags/minted_arn_region.rs"]
+mod minted_arn_region;
+
 use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
@@ -29,15 +37,8 @@ use service_com_amazonaws_pcs_awsparallelcomputingservice::service::wire::CLIENT
 use service_com_amazonaws_pcs_awsparallelcomputingservice::state::MAX_TAGS_PER_RESOURCE;
 use smithy_server_runtime::MultiServiceRouter;
 
-/// A SigV4 `Authorization` header scoped to `pcs` in `us-east-1`. The router resolves a
-/// request's service from the credential scope, and the handlers read the region out of
-/// it to build an ARN. The signature is never checked: request authentication is off.
-const SIGNED_FOR_PCS: &str = "AWS4-HMAC-SHA256 \
-     Credential=AKIDEXAMPLE/20260101/us-east-1/pcs/aws4_request, \
-     SignedHeaders=host;x-amz-date, Signature=deadbeef";
-
-/// The region [`SIGNED_FOR_PCS`] signs for, which every ARN in these tests carries.
-const REGION: &str = "us-east-1";
+/// The region these tests sign for, which every ARN they read carries.
+const REGION: &str = crate::cluster_lifecycle::REGION;
 
 /// The sentence PCS states for an ARN that names no resource it holds — the ARN-keyed
 /// lookup the tagging operations take, as against the identifier-keyed lookups, whose
@@ -55,33 +56,10 @@ fn emulator() -> MultiServiceRouter {
     router
 }
 
-/// Call one operation and return its HTTP status and JSON body.
+/// Call one operation and return its HTTP status and JSON body: the crate's one request
+/// builder, signing for [`REGION`].
 async fn call(router: &MultiServiceRouter, operation: &str, body: &Value) -> (u16, Value) {
-    let request = http::Request::builder()
-        .method("POST")
-        .uri("/")
-        .header("content-type", "application/x-amz-json-1.0")
-        .header(
-            "x-amz-target",
-            format!("AWSParallelComputingService.{operation}"),
-        )
-        .header("authorization", SIGNED_FOR_PCS)
-        .body(bytes::Bytes::from(body.to_string()))
-        .expect("the request must build");
-    let response = router.dispatch(request).await;
-    let status = response.status().as_u16();
-    let bytes = response.body().clone();
-    let parsed = if bytes.is_empty() {
-        json!({})
-    } else {
-        serde_json::from_slice(&bytes).unwrap_or_else(|error| {
-            panic!(
-                "{operation} answered {status} with a body that is not JSON ({error}): {:?}",
-                String::from_utf8_lossy(&bytes)
-            )
-        })
-    };
-    (status, parsed)
+    crate::cluster_lifecycle::call(router, operation, body).await
 }
 
 /// The three taggable PCS resources, each ACTIVE and carrying the tags its create asked
