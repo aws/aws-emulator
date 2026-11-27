@@ -250,6 +250,11 @@ pub use auto_scaling_groups::*;
 mod service_discovery;
 pub use service_discovery::*;
 
+/// The CPU and memory a container instance has left once the tasks on it are accounted
+/// for, and the placement that is held to it.
+mod instance_capacity;
+pub use instance_capacity::*;
+
 /// The SCOPE a request's references have to be inside: the cluster an ARN of a
 /// cluster-scoped resource carries, and what the call that sets a cluster's capacity-provider
 /// association may leave behind.
@@ -3785,6 +3790,18 @@ pub struct ContainerInstanceRecord {
     pub instance_id: String,
     pub cluster_name: String,
     pub ec2_instance_id: String,
+    /// The PRIVATE IPv4 ADDRESS of the machine this registration is of, as the instance
+    /// identity document the agent presented names it — and `None` where the registration
+    /// presented none.
+    ///
+    /// Held because it is the address a task that shares the host's network is reached at:
+    /// a task in the `bridge` or `host` network mode holds no interface of its own, so what
+    /// a service registry publishes for it is this address and the host port its container
+    /// was bound to
+    /// ([`ComAmazonawsEcsAmazonec2containerservicev20141113State::cloud_map_registrations`]).
+    /// Not a member of `ContainerInstance`: nothing renders it back, and the machine itself
+    /// is Amazon EC2's record.
+    pub private_ipv4_address: Option<String>,
     pub status: String,
     pub status_reason: Option<String>,
     pub agent_connected: bool,
@@ -3825,22 +3842,27 @@ impl ContainerInstanceRecord {
     /// the reader that counts them.
     ///
     /// `remainingResources` is "the remaining CPU and memory that wasn't already
-    /// allocated to tasks": what a task allocates is the reservation its own containers
-    /// hold (`Container$cpu`, `$memory`, `$memoryReservation`), which every task reports
-    /// for itself, and no pass over the task map subtracts those from the instance, so
-    /// the remainder is the set the registration reported.
+    /// allocated to tasks": the registered set less what the tasks placed on this
+    /// instance reserve, which the store reads off those tasks and hands in
+    /// ([`ComAmazonawsEcsAmazonec2containerservicev20141113State::remaining_instance_resources`]),
+    /// so the remainder cannot drift from the task records that exist.
     ///
     /// `healthStatus` stays absent: nothing runs an agent health check here, so there is
     /// no check result to report. `agentUpdateStatus` is reported only once an update was
     /// requested ("If an update wasn't ever requested, this value is NULL").
-    fn view(&self, fields: ContainerInstanceFields, hosted: ServiceTally) -> ContainerInstance {
+    fn view(
+        &self,
+        fields: ContainerInstanceFields,
+        hosted: ServiceTally,
+        remaining: Vec<Resource>,
+    ) -> ContainerInstance {
         ContainerInstance {
             container_instance_arn: Some(self.arn.clone()),
             ec2_instance_id: Some(self.ec2_instance_id.clone()),
             capacity_provider_name: None,
             version: self.version,
             version_info: self.version_info.clone(),
-            remaining_resources: Some(self.registered_resources.clone()),
+            remaining_resources: Some(remaining),
             registered_resources: Some(self.registered_resources.clone()),
             status: Some(self.status.clone()),
             status_reason: self.status_reason.clone(),

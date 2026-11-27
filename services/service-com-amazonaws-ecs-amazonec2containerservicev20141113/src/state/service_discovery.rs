@@ -46,6 +46,23 @@ pub const CLOUD_MAP_ATTRIBUTE_ECS_TASK_DEFINITION_FAMILY: &str = "ECS_TASK_DEFIN
 /// The attribute naming the Region the registered task runs in.
 pub const CLOUD_MAP_ATTRIBUTE_REGION: &str = "REGION";
 
+/// The attribute naming the Availability Zone the registered task runs in — one of the
+/// attributes Amazon ECS creates for every instance it registers for a task, beside the
+/// Region and the cluster, service and family it belongs to.
+pub const CLOUD_MAP_ATTRIBUTE_AVAILABILITY_ZONE: &str = "AVAILABILITY_ZONE";
+
+/// The attribute naming the Amazon EC2 instance of the container instance that HOSTS the
+/// registered task, which Amazon ECS creates only for a task placed on such a host: a task
+/// on capacity AWS owns runs on no instance of the account, so there is none to name.
+pub const CLOUD_MAP_ATTRIBUTE_EC2_INSTANCE_ID: &str = "EC2_INSTANCE_ID";
+
+/// `AWS_INIT_HEALTH_STATUS`: "If the service configuration includes
+/// `HealthCheckCustomConfig`, you can optionally use `AWS_INIT_HEALTH_STATUS` to specify the
+/// initial status of the custom health check, `HEALTHY` or `UNHEALTHY`"
+/// (`RegisterInstanceRequest$Attributes`) — the status Amazon ECS registers a task's instance
+/// with, which a read of that instance reports back beside the rest of its attributes.
+pub const CLOUD_MAP_ATTRIBUTE_INIT_HEALTH_STATUS: &str = "AWS_INIT_HEALTH_STATUS";
+
 /// One Cloud Map instance Amazon ECS holds for one task of one service registry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloudMapRegistration {
@@ -66,10 +83,17 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
     /// registry: a task Amazon ECS has started is one a client should discover, and a task
     /// that is still provisioning or has stopped serves nothing, so it is not published.
     ///
-    /// A task is registered at the address of the interface it was allocated, so only a task
-    /// that HOLDS one is registered: `AWS_INSTANCE_IPV4` is the address a DNS query is
-    /// answered with, and a task whose network mode gives it no interface of its own is
-    /// reached at its container instance's address, which this store does not hold.
+    /// A task is registered at the address it is REACHED at: `AWS_INSTANCE_IPV4` is the
+    /// address a DNS query is answered with, which for a task holding an elastic network
+    /// interface of its own is that interface's, and for a task whose network mode shares
+    /// its host's network is the private address of the container instance that hosts it,
+    /// with the host port its container was bound to. A task reached through neither — one
+    /// placed on no host this store holds an address for — is not published.
+    ///
+    /// Each instance carries the attributes Amazon ECS creates for a task it registers: the
+    /// address and port it is reached at, the cluster, service and task-definition family it
+    /// belongs to, the Region and Availability Zone it runs in, and — for a task placed on a
+    /// container instance — the Amazon EC2 instance of the host it shares.
     ///
     /// At most one entry per (Cloud Map service, task): a service carries at most
     /// [`MAX_SERVICE_REGISTRIES`] registries, and an id already registered for is not added
@@ -89,11 +113,24 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
                 {
                     continue;
                 }
-                let Some(address) = task
+                // WHERE the task is reached: the interface it was allocated where it holds
+                // one of its own, else the private address of the container instance that
+                // hosts it — a task in a network mode that shares its host's network holds
+                // no interface, and "tasks that use the bridge or host network mode" are
+                // reached at that host.
+                let interface_address = task
                     .attachments
                     .iter()
-                    .find_map(AttachmentRecord::private_ipv4_address)
-                else {
+                    .find_map(AttachmentRecord::private_ipv4_address);
+                // The container instance that hosts the task, which carries both that
+                // address and the Amazon EC2 instance the task shares with it.
+                let host = task
+                    .container_instance_arn
+                    .as_deref()
+                    .and_then(|arn| self.container_instances.get(arn));
+                let Some(address) = interface_address.map(str::to_string).or_else(|| {
+                    host.and_then(|held| held.private_ipv4_address.clone())
+                }) else {
                     continue;
                 };
                 for registry in &service.service_registries {
@@ -107,7 +144,7 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
                     let mut attributes = vec![
                         (
                             CLOUD_MAP_ATTRIBUTE_IPV4.to_string(),
-                            address.to_string(),
+                            address.clone(),
                         ),
                         (
                             CLOUD_MAP_ATTRIBUTE_ECS_CLUSTER_NAME.to_string(),
@@ -128,10 +165,41 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
                             region.to_string(),
                         ));
                     }
+                    // WHERE the placement put the task, as the instance's own attributes
+                    // report it: the zone the task runs in, and — for a task placed on a
+                    // container instance — the Amazon EC2 instance it shares with that host.
+                    if let Some(zone) = task.availability_zone.as_deref() {
+                        attributes.push((
+                            CLOUD_MAP_ATTRIBUTE_AVAILABILITY_ZONE.to_string(),
+                            zone.to_string(),
+                        ));
+                    }
+                    if let Some(ec2_instance_id) = host
+                        .map(|held| held.ec2_instance_id.as_str())
+                        .filter(|id| !id.is_empty())
+                    {
+                        attributes.push((
+                            CLOUD_MAP_ATTRIBUTE_EC2_INSTANCE_ID.to_string(),
+                            ec2_instance_id.to_string(),
+                        ));
+                    }
                     // The port the entry named: its own `port` for a registry that carries
-                    // one, the container port otherwise — the two forms a `serviceRegistries`
-                    // entry names a port in.
-                    if let Some(port) = registry.port.or(registry.container_port) {
+                    // one — the member an `awsvpc` placement names an SRV port with — and
+                    // for a task reached at its HOST the port its named container was bound
+                    // to on that host, which is where traffic to the task arrives
+                    // ([`ComAmazonawsEcsAmazonec2containerservicev20141113State::bound_host_port`]);
+                    // a task reached at its own interface answers on the container port
+                    // itself.
+                    let port = match (registry.port, interface_address) {
+                        (Some(port), _) => Some(port),
+                        (None, Some(_)) => registry.container_port,
+                        (None, None) => self.bound_host_port(
+                            task,
+                            registry.container_name.as_deref(),
+                            registry.container_port,
+                        ),
+                    };
+                    if let Some(port) = port {
                         attributes
                             .push((CLOUD_MAP_ATTRIBUTE_PORT.to_string(), port.to_string()));
                     }
@@ -228,8 +296,18 @@ pub fn reconcile_cloud_map_instances<Eng: Send + Sync + 'static>(
             ::service_com_amazonaws_servicediscovery_route53autonaming_v20170314::state::HEALTH_STATUS_UNKNOWN
         };
         for registration in wanted {
-            let attributes: ::std::collections::HashMap<String, String> =
+            let mut attributes: ::std::collections::HashMap<String, String> =
                 registration.attributes.iter().cloned().collect();
+            // The initial status the registration SUPPLIES, which an instance registered
+            // with one carries among its attributes: Amazon ECS registers a task of a
+            // custom-health-checked service as healthy, and a read of that instance reports
+            // the status it was registered with ([`CLOUD_MAP_ATTRIBUTE_INIT_HEALTH_STATUS`]).
+            if service.custom_health_checked() {
+                attributes.insert(
+                    CLOUD_MAP_ATTRIBUTE_INIT_HEALTH_STATUS.to_string(),
+                    health_status.to_string(),
+                );
+            }
             if let Some(held) = service.instances.get(&registration.instance_id) {
                 if held.attributes == attributes {
                     continue;

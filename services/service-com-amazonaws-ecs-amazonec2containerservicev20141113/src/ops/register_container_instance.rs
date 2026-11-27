@@ -113,6 +113,15 @@ const IDENTITY_DOCUMENT_INSTANCE_ID: &str = "instanceId";
 /// The member of the same document that names the Region the instance runs in.
 const IDENTITY_DOCUMENT_REGION: &str = "region";
 
+/// The member of the same document that carries the machine's PRIVATE IPv4 ADDRESS, which
+/// the published document spells `privateIp`.
+///
+/// Recorded against the registration because it is the address a task of this instance that
+/// shares the host's network is reached at
+/// ([`crate::state::ContainerInstanceRecord::private_ipv4_address`]). The document is the
+/// machine's own word on it, so nothing else is read for it.
+const IDENTITY_DOCUMENT_PRIVATE_IP: &str = "privateIp";
+
 /// The members that make a value an instance identity DOCUMENT at all: the machine it
 /// describes is named by its account and its instance id, so a value leaving either blank
 /// describes no machine. Read in THIS order, so a document leaving both blank is always
@@ -258,6 +267,15 @@ fn documented_instance_id(input: &RegisterContainerInstanceInput, region: &str) 
     // this operation panic.
     identity_document_member(&parsed, IDENTITY_DOCUMENT_INSTANCE_ID)
         .ok_or_else(|| member_cannot_be_blank(IDENTITY_DOCUMENT_INSTANCE_ID))
+}
+
+/// The private IPv4 address the request's identity document names, or `None` when the
+/// document carries none — a registration that presented no address names no address, and
+/// none is invented for it.
+fn documented_private_ip(input: &RegisterContainerInstanceInput) -> Option<String> {
+    let document = input.instance_identity_document.as_deref()?;
+    let parsed = ::serde_json::from_str::<::serde_json::Value>(document).ok()?;
+    identity_document_member(&parsed, IDENTITY_DOCUMENT_PRIVATE_IP)
 }
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
@@ -460,6 +478,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .get_mut(&arn)
                 .expect("the ARN was just read out of the map under this lock");
             instance.ec2_instance_id = documented_instance_id;
+            // The agent re-reports the machine it runs on, so where that machine is reached
+            // is reported afresh too.
+            instance.private_ipv4_address = documented_private_ip(&input);
             instance.status = crate::state::CONTAINER_INSTANCE_ACTIVE.to_string();
             instance.status_reason = None;
             instance.agent_connected = true;
@@ -523,6 +544,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             instance_id,
             cluster_name,
             ec2_instance_id,
+            // "The instance identity document for the EC2 instance to register" names the
+            // address the machine is reached at, which is where a task of it that shares
+            // its network is reached ([`documented_private_ip`]).
+            private_ipv4_address: documented_private_ip(&input),
             // Registration completes here: the trunk-interface provisioning that would
             // hold an instance in `REGISTERING` only happens for an account opted in to
             // `awsvpcTrunking`, which no account setting in this emulator turns on.

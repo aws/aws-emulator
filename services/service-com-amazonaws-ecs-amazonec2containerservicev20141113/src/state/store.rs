@@ -1934,7 +1934,13 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
             };
             let placement_launch_type =
                 self.placement_launch_type(task.launch_type.as_deref(), task.capacity_provider_name.as_deref());
-            let host = self.select_task_host(cluster_name, placement_launch_type.as_deref());
+            let host = self.select_task_host(
+                cluster_name,
+                placement_launch_type.as_deref(),
+                // What this task reserves is read off the task itself: it was created with
+                // the size its revision gave it ([`TaskReservation::of_task`]).
+                TaskReservation::of_task(task),
+            );
             let mut containers = task.containers.clone();
             let subnets = task
                 .awsvpc_configuration
@@ -2016,9 +2022,11 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
     }
 
     /// The container instance of `cluster_name` the scheduler places a task of `launch_type`
-    /// on, or `None` when that launch type is not hosted on the cluster's own capacity (a
-    /// Fargate task runs on capacity AWS owns, so it has no container instance at all) or
-    /// when the cluster has no instance that accepts a placement right now.
+    /// reserving `needs` on, or `None` when that launch type is not hosted on the cluster's
+    /// own capacity (a Fargate task runs on capacity AWS owns, so it has no container
+    /// instance at all), when the cluster has no instance that accepts a placement right
+    /// now, or when no instance of it has the resources the task reserves left
+    /// ([`Self::instance_admits_task`]).
     ///
     /// "The EC2 launch type runs your tasks on Amazon EC2 instances registered to your
     /// cluster" ([`needs_registered_capacity`]) — so such a task HAS a host, and
@@ -2026,14 +2034,16 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
     /// task". Which instance is the scheduler's choice: an instance it may place on at all
     /// ([`ContainerInstanceRecord::accepts_task_placement`], which excludes a `DRAINING`
     /// one — "prevents new tasks from being scheduled for placement on the container
-    /// instance" — and one whose agent is disconnected), and of those the one carrying the
-    /// FEWEST of the cluster's tasks, which is the `spread` placement that is the service
-    /// scheduler's default ("the default for the service scheduler is spread"). A tie is
-    /// broken by the instance's own ARN, so one cluster's placements are deterministic.
+    /// instance" — and one whose agent is disconnected) and that has room for the task, and
+    /// of those the one carrying the FEWEST of the cluster's tasks, which is the `spread`
+    /// placement that is the service scheduler's default ("the default for the service
+    /// scheduler is spread"). A tie is broken by the instance's own ARN, so one cluster's
+    /// placements are deterministic.
     pub fn select_task_host(
         &self,
         cluster_name: &str,
         launch_type: Option<&str>,
+        needs: TaskReservation,
     ) -> Option<String> {
         if !needs_registered_capacity(launch_type) {
             return None;
@@ -2041,7 +2051,9 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
         self.container_instances
             .values()
             .filter(|instance| {
-                instance.cluster_name == cluster_name && instance.accepts_task_placement()
+                instance.cluster_name == cluster_name
+                    && instance.accepts_task_placement()
+                    && self.instance_admits_task(instance, needs)
             })
             .min_by_key(|instance| {
                 let tally = self.container_instance_tally(&instance.arn);
@@ -2113,7 +2125,11 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
         fields: ContainerInstanceFields,
     ) -> Option<ContainerInstance> {
         let instance = self.container_instances.get(arn)?;
-        Some(instance.view(fields, self.container_instance_tally(arn)))
+        Some(instance.view(
+            fields,
+            self.container_instance_tally(arn),
+            self.remaining_instance_resources(instance),
+        ))
     }
 
     /// What the task map counts for ONE container instance: the tasks placed on it that
@@ -3680,6 +3696,7 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
             &format!("service:{}", service.name),
             placement.launch_type.as_deref(),
             &service.placement_constraints,
+            TaskReservation::of_revision(definition),
             placements,
         );
         // Nothing is changed when the placement would not fit: the cap is checked before
@@ -3808,6 +3825,7 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
             &format!("service:{}", service.name),
             placement.launch_type.as_deref(),
             &service.placement_constraints,
+            TaskReservation::of_revision(definition),
             to_place,
         );
         if self.tasks.len() + to_place > MAX_TASKS {
@@ -3951,6 +3969,56 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
                 .and_then(|name| self.capacity_providers.get(name)),
             self.placeable_container_instances(&service.cluster_name),
         );
+        // The group every task of a service belongs to, which is what a `distinctInstance`
+        // constraint caps at one task per container instance
+        // ([`super::requires_distinct_instances`]).
+        let group = format!("service:{}", service.name);
+        // WHERE this task runs is resolved before anything of it is minted, because a
+        // placement with nowhere to go is not made at all. The choice is made on the
+        // infrastructure the placement RESOLVED: a placement through a capacity provider
+        // names no launch type, and the provider's own class of capacity is what decides
+        // whether the task has a host at all ([`Self::placement_launch_type`]).
+        let placement_launch_type = self.placement_launch_type(
+            placement.launch_type.as_deref(),
+            placement.capacity_provider_name.as_deref(),
+        );
+        // What the task reserves on the host it is given, which is what the choice is held
+        // to ([`TaskReservation::of_revision`]).
+        let needs = TaskReservation::of_revision(definition);
+        // The host this task takes: a service whose placement constraints cap it at one task
+        // per container instance gets one that runs no task of the group yet, and any other
+        // service the scheduler's ordinary choice ([`super::caps_distinct_instances`], which
+        // is what keeps a placement made on no container instance at all — Fargate, or a
+        // capacity provider — out of the cap).
+        let container_instance_arn =
+            if caps_distinct_instances(&service.placement_constraints, placement.launch_type.as_deref())
+            {
+                self.select_distinct_task_host(
+                    &service.cluster_name,
+                    &group,
+                    placement_launch_type.as_deref(),
+                    needs,
+                )
+            } else {
+                self.select_task_host(
+                    &service.cluster_name,
+                    placement_launch_type.as_deref(),
+                    needs,
+                )
+            };
+        // A placement that takes a container instance of the cluster and found none with
+        // room for the task is not made at all: the task would have no host to run on, and
+        // the scheduler comes back for it when capacity frees up or more registers
+        // ([`Self::select_task_host`]). A task PARKED on a capacity provider that still has
+        // to acquire its capacity is a different case: it has no host yet because none
+        // exists, and it is placed when that capacity arrives
+        // ([`Self::place_tasks_awaiting_capacity`]).
+        if !awaiting_capacity
+            && container_instance_arn.is_none()
+            && needs_registered_capacity(placement_launch_type.as_deref())
+        {
+            return;
+        }
         let task_id = self.next_task_id();
         let task_arn = task_arn(region, &service.cluster_name, &task_id);
         // The interface an `awsvpc` task is allocated is allocated to EVERY task of it,
@@ -3999,33 +4067,8 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
             ),
             placement.platform_version.as_deref(),
         );
-        // The group every task of a service belongs to, which is what a `distinctInstance`
-        // constraint caps at one task per container instance
-        // ([`super::requires_distinct_instances`]).
-        let group = format!("service:{}", service.name);
-        // The host this task takes: a service whose placement constraints cap it at one task
-        // per container instance gets one that runs no task of the group yet, and any other
-        // service the scheduler's ordinary choice ([`super::caps_distinct_instances`], which
-        // is what keeps a placement made on no container instance at all — Fargate, or a
-        // capacity provider — out of the cap). The choice itself is made on the
-        // infrastructure the placement RESOLVED: a placement through a capacity provider
-        // names no launch type, and the provider's own class of capacity is what decides
-        // whether the task has a host at all ([`Self::placement_launch_type`]).
-        let placement_launch_type = self.placement_launch_type(
-            placement.launch_type.as_deref(),
-            placement.capacity_provider_name.as_deref(),
-        );
-        let container_instance_arn =
-            if caps_distinct_instances(&service.placement_constraints, placement.launch_type.as_deref())
-            {
-                self.select_distinct_task_host(
-                    &service.cluster_name,
-                    &group,
-                    placement_launch_type.as_deref(),
-                )
-            } else {
-                self.select_task_host(&service.cluster_name, placement_launch_type.as_deref())
-            };
+        // The group every task of a service belongs to, and the host it takes, are both
+        // resolved above — before anything of the task was minted.
         let availability_zone = self.task_availability_zone(
             container_instance_arn.as_deref(),
             &configured_subnets(placement.network_configuration.as_ref()),

@@ -577,6 +577,30 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 ));
                 continue;
             };
+            // An instance that HAS the task's resources left is one the task can be started
+            // on; one that does not takes no task and is reported as the resource it ran out
+            // of, beside the tasks the instances that could take one got
+            // ([`crate::state::ComAmazonawsEcsAmazonec2containerservicev20141113State::instance_resource_shortfall`]).
+            let shortfall = guard
+                .container_instances
+                .get(&container_instance_arn)
+                .and_then(|instance| {
+                    guard.instance_resource_shortfall(
+                        instance,
+                        crate::state::TaskReservation::of_revision(&definition),
+                    )
+                });
+            if let Some(resource) = shortfall {
+                failures.push(Failure {
+                    arn: Some(crate::state::unqualified_container_instance_arn(
+                        &region,
+                        crate::state::container_instance_id_from_reference(reference),
+                    )),
+                    reason: Some(crate::state::resource_failure_reason(resource)),
+                    detail: None,
+                });
+                continue;
+            }
 
             let task_id = guard.next_task_id();
             let task_arn = crate::state::task_arn(&region, &cluster_name, &task_id);

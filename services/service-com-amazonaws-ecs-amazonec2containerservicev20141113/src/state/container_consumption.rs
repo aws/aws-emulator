@@ -308,12 +308,17 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
                 && selected(task)
         }) {
             reading.tasks = reading.tasks.saturating_add(1);
+            // What this task RESERVES of its host, read through the one reader of that
+            // quantity ([`super::TaskReservation::of_task`]) — the same reading the placement
+            // that put the task there was held to, so what a cluster reports as reserved and
+            // what its container instances report as taken cannot disagree.
+            let reserved = TaskReservation::of_task(task);
             reading.reserved_bytes = reading
                 .reserved_bytes
-                .saturating_add(u128::from(task_reserved_memory_bytes(task)));
+                .saturating_add(u128::from(mebibytes_as_bytes(reserved.memory)));
             reading.reserved_cpu_units = reading
                 .reserved_cpu_units
-                .saturating_add(u128::from(task_reserved_cpu_units(task)));
+                .saturating_add(u128::from(u64::try_from(reserved.cpu).unwrap_or_default()));
             // The ephemeral storage this task's placement gave it, which is the storage its
             // containers write on ([`super::container_process`]) — and nothing at all for a
             // placement that gave it none to report.
@@ -358,33 +363,6 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
     }
 }
 
-/// How many bytes of memory ONE task's definition RESERVES for it, and zero for a definition
-/// that states no reservation anywhere.
-///
-/// `TaskDefinition$memory` is "the amount of memory (in MiB) used by the task", which is what
-/// the whole task reserves; a definition that states none states it per CONTAINER instead
-/// (`ContainerDefinition$memory`, "the amount (in MiB) of memory to present to the container",
-/// or `$memoryReservation`, "the soft limit (in MiB) of memory to reserve for the container"),
-/// and what the task then reserves is the sum over its containers. The hard limit is the
-/// reservation where a container states both: "If you specify both, `memory` must be greater
-/// than `memoryReservation`."
-fn task_reserved_memory_bytes(task: &TaskRecord) -> u64 {
-    if let Some(mib) = task.memory.as_deref().and_then(memory_mib) {
-        return mebibytes_as_bytes(mib);
-    }
-    task.containers
-        .iter()
-        .filter_map(|container| {
-            container
-                .memory
-                .as_deref()
-                .or(container.memory_reservation.as_deref())
-        })
-        .filter_map(memory_mib)
-        .map(mebibytes_as_bytes)
-        .fold(0, u64::saturating_add)
-}
-
 /// `mib` mebibytes as a number of bytes.
 fn mebibytes_as_bytes(mib: i64) -> u64 {
     u64::try_from(mib)
@@ -392,24 +370,3 @@ fn mebibytes_as_bytes(mib: i64) -> u64 {
         .saturating_mul(BYTES_PER_MIB)
 }
 
-/// How many CPU UNITS ONE task's definition RESERVES for it, and zero for a definition that
-/// states no reservation anywhere.
-///
-/// `TaskDefinition$cpu` is "the number of CPU units used by the task", which is what the whole
-/// task reserves; a definition that states none states it per CONTAINER instead
-/// (`ContainerDefinition$cpu`, "the number of cpu units the Amazon ECS container agent reserves
-/// for the container"), and what the task then reserves is the sum over its containers — read
-/// the same way the memory reservation beside it is ([`task_reserved_memory_bytes`]).
-fn task_reserved_cpu_units(task: &TaskRecord) -> u64 {
-    if let Some(units) = task.cpu.as_deref().and_then(cpu_units) {
-        if units > 0 {
-            return u64::try_from(units).unwrap_or_default();
-        }
-    }
-    task.containers
-        .iter()
-        .filter_map(|container| container.cpu.as_deref())
-        .filter_map(cpu_units)
-        .map(|units| u64::try_from(units).unwrap_or_default())
-        .fold(0, u64::saturating_add)
-}

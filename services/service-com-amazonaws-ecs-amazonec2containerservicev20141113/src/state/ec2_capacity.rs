@@ -104,6 +104,10 @@ struct AgentRegistration {
     ec2_instance_id: String,
     /// The cluster the instance's user data configured the agent with.
     cluster_name: String,
+    /// The private IPv4 address of the machine, as Amazon EC2 holds it — the address a task
+    /// of this instance that shares its network is reached at
+    /// ([`ContainerInstanceRecord::private_ipv4_address`]).
+    private_ipv4_address: Option<String>,
     /// The Region the instance runs in, read off its Availability Zone — the Region the
     /// container instance's own ARN is in.
     region: String,
@@ -176,6 +180,8 @@ fn read_launched_capacity(
                 registrations.push(AgentRegistration {
                     ec2_instance_id: instance.instance_id.clone(),
                     cluster_name,
+                    private_ipv4_address: (!instance.private_ip.is_empty())
+                        .then(|| instance.private_ip.clone()),
                     // A zone's name is its Region's with a letter appended, and the service
                     // that owns zones is the one that reads it that way
                     // ([`ec2::region_of_zone_name`]), so this is its reading rather than a
@@ -448,6 +454,7 @@ fn apply_registrations(
         if let Some(arn) = existing {
             if let Some(instance) = store.container_instances.get_mut(&arn) {
                 if instance.status != CONTAINER_INSTANCE_INACTIVE {
+                    instance.private_ipv4_address = registration.private_ipv4_address.clone();
                     instance.agent_connection_lost_due_at = None;
                     if !instance.agent_connected {
                         instance.agent_connected = true;
@@ -470,6 +477,9 @@ fn apply_registrations(
             instance_id,
             cluster_name: registration.cluster_name.clone(),
             ec2_instance_id: registration.ec2_instance_id.clone(),
+            // The address of the machine the agent runs on, as Amazon EC2 holds it: what a
+            // task of this instance that shares its network is reached at.
+            private_ipv4_address: registration.private_ipv4_address.clone(),
             // The registration completes as it does for the agent's own call: the trunk
             // interface that would hold an instance in `REGISTERING` is only provisioned
             // for an account opted in to `awsvpcTrunking`, which nothing here turns on.

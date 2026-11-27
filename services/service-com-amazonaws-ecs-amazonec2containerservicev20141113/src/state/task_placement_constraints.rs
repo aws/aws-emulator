@@ -112,15 +112,21 @@ impl DistinctInstancePlacement {
 }
 
 impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
-    /// The container instances of `cluster_name` a placement of `launch_type` could use at
-    /// all, in the order the scheduler chooses them.
+    /// The container instances of `cluster_name` a placement of `launch_type` reserving
+    /// `needs` could use at all, in the order the scheduler chooses them.
     ///
     /// The same capacity and the same order [`Self::select_task_host`] picks from — an
     /// instance a placement may be made on at all
-    /// ([`ContainerInstanceRecord::accepts_task_placement`]), fewest tasks first with the
+    /// ([`ContainerInstanceRecord::accepts_task_placement`]) that has the resources the task
+    /// reserves left ([`Self::instance_admits_task`]), fewest tasks first with the
     /// instance's own ARN breaking the tie — so a constrained placement and an unconstrained
     /// one choose hosts the same way.
-    fn placement_candidates(&self, cluster_name: &str, launch_type: Option<&str>) -> Vec<String> {
+    fn placement_candidates(
+        &self,
+        cluster_name: &str,
+        launch_type: Option<&str>,
+        needs: TaskReservation,
+    ) -> Vec<String> {
         if !needs_registered_capacity(launch_type) {
             return Vec::new();
         }
@@ -128,7 +134,9 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
             .container_instances
             .values()
             .filter(|instance| {
-                instance.cluster_name == cluster_name && instance.accepts_task_placement()
+                instance.cluster_name == cluster_name
+                    && instance.accepts_task_placement()
+                    && self.instance_admits_task(instance, needs)
             })
             .collect();
         candidates.sort_by_key(|instance| {
@@ -169,9 +177,10 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
         cluster_name: &str,
         group: &str,
         launch_type: Option<&str>,
+        needs: TaskReservation,
         count: usize,
     ) -> DistinctInstancePlacement {
-        let candidates = self.placement_candidates(cluster_name, launch_type);
+        let candidates = self.placement_candidates(cluster_name, launch_type, needs);
         let hosts: Vec<String> = candidates
             .iter()
             .filter(|arn| !self.hosts_group_task(arn, group))
@@ -193,8 +202,9 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
         cluster_name: &str,
         group: &str,
         launch_type: Option<&str>,
+        needs: TaskReservation,
     ) -> Option<String> {
-        self.distinct_instance_placement(cluster_name, group, launch_type, 1)
+        self.distinct_instance_placement(cluster_name, group, launch_type, needs, 1)
             .hosts
             .into_iter()
             .next()
@@ -211,12 +221,13 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
         group: &str,
         launch_type: Option<&str>,
         constraints: &[PlacementConstraint],
+        needs: TaskReservation,
         wanted: usize,
     ) -> usize {
         if !caps_distinct_instances(constraints, launch_type) {
             return wanted;
         }
-        self.distinct_instance_placement(cluster_name, group, launch_type, wanted)
+        self.distinct_instance_placement(cluster_name, group, launch_type, needs, wanted)
             .hosts
             .len()
     }
