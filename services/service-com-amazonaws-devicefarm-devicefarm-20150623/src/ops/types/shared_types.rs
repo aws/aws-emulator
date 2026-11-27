@@ -158,6 +158,7 @@ pub struct Device {
     pub model_id: Option<String>,
     pub form_factor: Option<String>,
     pub platform: Option<String>,
+    pub r#type: Option<String>,
     pub os: Option<String>,
     pub cpu: Option<CPU>,
     pub resolution: Option<Resolution>,
@@ -457,6 +458,7 @@ pub struct Run {
     pub web_url: Option<String>,
     pub skip_app_resign: Option<bool>,
     pub test_spec_arn: Option<String>,
+    pub test_package_arn: Option<String>,
     pub device_selection_result: Option<DeviceSelectionResult>,
     pub vpc_config: Option<VpcConfig>,
     pub execution_role_arn: Option<String>,
@@ -576,7 +578,7 @@ pub const ARTIFACT_CATEGORY_VALUES: &[&str] = &["FILE", "LOG", "SCREENSHOT"];
 
 
 /// The values `ArtifactType` accepts on the wire.
-pub const ARTIFACT_TYPE_VALUES: &[&str] = &["APPIUM_JAVA_OUTPUT", "APPIUM_JAVA_XML_OUTPUT", "APPIUM_PYTHON_OUTPUT", "APPIUM_PYTHON_XML_OUTPUT", "APPIUM_SERVER_OUTPUT", "APPLICATION_CRASH_REPORT", "AUTOMATION_OUTPUT", "CALABASH_JAVA_XML_OUTPUT", "CALABASH_JSON_OUTPUT", "CALABASH_PRETTY_OUTPUT", "CALABASH_STANDARD_OUTPUT", "CUSTOMER_ARTIFACT", "CUSTOMER_ARTIFACT_LOG", "DEVICE_LOG", "EXERCISER_MONKEY_OUTPUT", "EXPLORER_EVENT_LOG", "EXPLORER_SUMMARY_LOG", "INSTRUMENTATION_OUTPUT", "MESSAGE_LOG", "RESULT_LOG", "SCREENSHOT", "SERVICE_LOG", "TESTSPEC_OUTPUT", "UNKNOWN", "VIDEO", "VIDEO_LOG", "WEBKIT_LOG", "XCTEST_LOG"];
+pub const ARTIFACT_TYPE_VALUES: &[&str] = &["APPIUM_JAVA_OUTPUT", "APPIUM_JAVA_XML_OUTPUT", "APPIUM_PYTHON_OUTPUT", "APPIUM_PYTHON_XML_OUTPUT", "APPIUM_SERVER_OUTPUT", "APPLICATION_CRASH_REPORT", "AUTOMATION_OUTPUT", "CALABASH_JAVA_XML_OUTPUT", "CALABASH_JSON_OUTPUT", "CALABASH_PRETTY_OUTPUT", "CALABASH_STANDARD_OUTPUT", "CUSTOMER_ARTIFACT", "CUSTOMER_ARTIFACT_LOG", "DEVICE_CONNECT_COMMAND_LOG", "DEVICE_LOG", "EXERCISER_MONKEY_OUTPUT", "EXPLORER_EVENT_LOG", "EXPLORER_SUMMARY_LOG", "INSTRUMENTATION_OUTPUT", "MESSAGE_LOG", "RESULT_LOG", "SCREENSHOT", "SERVICE_LOG", "TESTSPEC_OUTPUT", "UNKNOWN", "VIDEO", "VIDEO_LOG", "WEBKIT_LOG", "XCTEST_LOG"];
 
 
 /// The values `BillingMethod` accepts on the wire.
@@ -588,7 +590,7 @@ pub const CURRENCY_CODE_VALUES: &[&str] = &["USD"];
 
 
 /// The values `DeviceAttribute` accepts on the wire.
-pub const DEVICE_ATTRIBUTE_VALUES: &[&str] = &["APPIUM_VERSION", "ARN", "AVAILABILITY", "FLEET_TYPE", "FORM_FACTOR", "INSTANCE_ARN", "INSTANCE_LABELS", "MANUFACTURER", "MODEL", "OS_VERSION", "PLATFORM", "REMOTE_ACCESS_ENABLED", "REMOTE_DEBUG_ENABLED"];
+pub const DEVICE_ATTRIBUTE_VALUES: &[&str] = &["APPIUM_VERSION", "ARN", "AVAILABILITY", "DEVICE_TYPE", "FLEET_TYPE", "FORM_FACTOR", "INSTANCE_ARN", "INSTANCE_LABELS", "MANUFACTURER", "MODEL", "OS_VERSION", "PLATFORM", "REMOTE_ACCESS_ENABLED", "REMOTE_DEBUG_ENABLED"];
 
 
 /// The values `DeviceAvailability` accepts on the wire.
@@ -596,7 +598,7 @@ pub const DEVICE_AVAILABILITY_VALUES: &[&str] = &["AVAILABLE", "BUSY", "HIGHLY_A
 
 
 /// The values `DeviceFilterAttribute` accepts on the wire.
-pub const DEVICE_FILTER_ATTRIBUTE_VALUES: &[&str] = &["ARN", "AVAILABILITY", "FLEET_TYPE", "FORM_FACTOR", "INSTANCE_ARN", "INSTANCE_LABELS", "MANUFACTURER", "MODEL", "OS_VERSION", "PLATFORM", "REMOTE_ACCESS_ENABLED", "REMOTE_DEBUG_ENABLED"];
+pub const DEVICE_FILTER_ATTRIBUTE_VALUES: &[&str] = &["ARN", "AVAILABILITY", "DEVICE_TYPE", "FLEET_TYPE", "FORM_FACTOR", "INSTANCE_ARN", "INSTANCE_LABELS", "MANUFACTURER", "MODEL", "OS_VERSION", "PLATFORM", "REMOTE_ACCESS_ENABLED", "REMOTE_DEBUG_ENABLED"];
 
 
 /// The values `DeviceFormFactor` accepts on the wire.
@@ -609,6 +611,10 @@ pub const DEVICE_PLATFORM_VALUES: &[&str] = &["ANDROID", "IOS"];
 
 /// The values `DevicePoolType` accepts on the wire.
 pub const DEVICE_POOL_TYPE_VALUES: &[&str] = &["CURATED", "PRIVATE"];
+
+
+/// The values `DeviceType` accepts on the wire.
+pub const DEVICE_TYPE_VALUES: &[&str] = &["PHYSICAL", "VIRTUAL"];
 
 
 /// The values `ExecutionResult` accepts on the wire.
@@ -624,7 +630,7 @@ pub const EXECUTION_STATUS_VALUES: &[&str] = &["COMPLETED", "PENDING", "PENDING_
 
 
 /// The values `InsightsType` accepts on the wire.
-pub const INSIGHTS_TYPE_VALUES: &[&str] = &["TEST_REPORT"];
+pub const INSIGHTS_TYPE_VALUES: &[&str] = &["NONE", "TEST_REPORT"];
 
 
 /// The values `InstanceStatus` accepts on the wire.
