@@ -278,28 +278,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             caller_id: input.caller_id,
             destination_phone_number: Some(destination),
             origination_phone_number: input.origination_phone_number,
-            // The body is recorded member for member, and WHICH of the three bodies the
-            // request carried is recorded by the body's own presence — every member of
+            // The body is recorded member for member — by the one mapping per body shape
+            // in `types::voice_content_records`, which the two shapes carrying the same
+            // three members share — and WHICH of the three bodies the request carried is
+            // recorded here, by that body's own presence: every member of
             // `CallInstructionsMessageType`, `PlainTextMessageType` and `SSMLMessageType`
             // is optional, so a body is never collapsed into one of its members: that
             // would make the body the one-body check above accepted read back as the
             // no-body request the same check refuses.
             content: crate::state::VoiceContentRecord {
-                call_instructions: content.call_instructions_message.map(|body| {
-                    crate::state::CallInstructionsRecord { text: body.text }
-                }),
-                plain_text: content.plain_text_message.map(|body| {
-                    crate::state::VoiceTextRecord {
-                        text: body.text,
-                        language_code: body.language_code,
-                        voice_id: body.voice_id,
-                    }
-                }),
-                ssml: content.ssml_message.map(|body| crate::state::VoiceTextRecord {
-                    text: body.text,
-                    language_code: body.language_code,
-                    voice_id: body.voice_id,
-                }),
+                call_instructions: content.call_instructions_message.map(Into::into),
+                plain_text: content.plain_text_message.map(Into::into),
+                ssml: content.ssml_message.map(Into::into),
             },
             sent_at: std::time::SystemTime::now(),
         });

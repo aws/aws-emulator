@@ -43,6 +43,11 @@ pub mod refusal_wording;
 pub mod send_voice_message_types;
 pub mod shared_types;
 pub mod update_configuration_set_event_destination_types;
+/// The one member-for-member mapping between each message-body shape of
+/// `VoiceMessageContent` and its stored record — not a modelled shape, so it carries no
+/// `_types` suffix and is NOT glob-re-exported: it declares only `From` impls, which are
+/// in scope wherever both types are.
+pub mod voice_content_records;
 
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_configuration_set_event_destination_types::*;
