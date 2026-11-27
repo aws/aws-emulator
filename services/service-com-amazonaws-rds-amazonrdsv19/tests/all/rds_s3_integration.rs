@@ -634,17 +634,16 @@ struct EngineNameRow {
     cluster: bool,
     feature: &'static str,
     /// The name the refusal calls the engine by: the `DBEngineDescription`
-    /// `DescribeDBEngineVersions` reports for it on a DB INSTANCE, and the product name that
-    /// catalogue publishes beside it on a DB CLUSTER, whose sentence puts the engine in front
-    /// of the word "engine".
+    /// `DescribeDBEngineVersions` reports for it, whichever resource the association
+    /// addressed — and not the product name that catalogue publishes beside it.
     display: &'static str,
 }
 
 /// The engine-name table: every refusal names the ENGINE, so the rows span engines whose
-/// published names differ in form — an Aurora engine named for its product, one whose
-/// description parenthesises the dialect while its product name does not, and the community
-/// editions of the two provisioned engines — with a feature name published for ANOTHER engine
-/// beside one published in another case.
+/// published descriptions differ in form — an Aurora engine whose description is its product
+/// name, one whose description parenthesises the dialect while its product name does not, and
+/// the community editions of the two provisioned engines — with a feature name published for
+/// ANOTHER engine beside one published in another case.
 const ENGINE_NAME_ROWS: &[EngineNameRow] = &[
     EngineNameRow {
         case: "Aurora MySQL does not publish the S3 import feature",
@@ -658,7 +657,7 @@ const ENGINE_NAME_ROWS: &[EngineNameRow] = &[
         engine: "aurora-postgresql",
         cluster: true,
         feature: "S3_INTEGRATION",
-        display: "Aurora PostgreSQL",
+        display: "Aurora (PostgreSQL)",
     },
     EngineNameRow {
         case: "RDS for MySQL publishes no role feature at all",
@@ -677,11 +676,9 @@ const ENGINE_NAME_ROWS: &[EngineNameRow] = &[
 ];
 
 /// Rule: a `FeatureName` the addressed resource's engine does not publish is refused with
-/// `InvalidParameterValue` and a sentence naming the value the request carried and that
-/// ENGINE, in the words AWS gives that RESOURCE: a DB instance names the engine by the
-/// description it is published with ([`st::unsupported_feature_name_message`]) and a DB
-/// cluster by its product name
-/// ([`st::cluster_unsupported_feature_name_message`]).
+/// `InvalidParameterValue` and ONE sentence naming the value the request carried and that
+/// ENGINE, under the description the engine catalogue publishes for it
+/// ([`st::unsupported_feature_name_message`]) — a DB instance and a DB cluster alike.
 #[tokio::test]
 async fn an_unpublished_feature_name_is_refused_naming_the_engine() {
     let (router, _engine) = emulator();
@@ -711,19 +708,13 @@ async fn an_unpublished_feature_name_is_refused_naming_the_engine() {
             "InvalidParameterValue",
         );
         let message = text(&body, "Message");
-        let expected = match row.cluster {
-            true => format!(
-                "The feature name {} is not valid for the {} engine.",
-                row.feature, row.display
-            ),
-            false => format!(
-                "The feature name {} is not valid for the engine {}.",
-                row.feature, row.display
-            ),
-        };
+        let expected = format!(
+            "The feature name {} is not valid for the engine {}.",
+            row.feature, row.display
+        );
         assert_eq!(
             message, expected,
-            "case {:?}: expected the refusal its resource words this defect in, got {message:?}",
+            "case {:?}: expected the refusal this defect is worded in, got {message:?}",
             row.case
         );
     }

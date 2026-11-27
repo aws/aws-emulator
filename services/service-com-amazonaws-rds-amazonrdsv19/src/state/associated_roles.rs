@@ -17,7 +17,9 @@
 //! What an association already in place is refused for is the one thing that differs by
 //! resource, because Amazon RDS words and codes the two refusals differently: a DB
 //! INSTANCE's engine takes one role ARN per feature name, and a DB CLUSTER takes one
-//! association per role.
+//! association per role. The unpublished-`FeatureName` refusal is NOT one of those: it is one
+//! sentence for both resources ([`unsupported_feature_name_message`]), because the engine is
+//! what decides whether a feature name exists and the resource does not change that answer.
 //!
 //! The feature names are not a list of this module's own: they are the
 //! `DBEngineVersion$SupportedFeatureNames` this service already publishes for that engine
@@ -78,19 +80,28 @@ pub fn feature_name_is_supported(
     supported_feature_names(engine, engine_version).contains(&feature_name)
 }
 
-/// What a request on a DB INSTANCE naming a `FeatureName` that instance's engine version does
-/// not publish is refused with: "The feature name &lt;FeatureName&gt; is not valid for the
-/// engine &lt;engine&gt;."
+/// What a request naming a `FeatureName` the addressed resource's engine version does not
+/// publish is refused with: "The feature name &lt;FeatureName&gt; is not valid for the engine
+/// &lt;engine&gt;."
 ///
-/// A DB CLUSTER words the same refusal differently — see
-/// [`cluster_unsupported_feature_name_message`], which names the engine by its product name
-/// rather than by the description below.
+/// ONE sentence for the whole class, whichever resource the request addressed — a DB instance
+/// ([`crate::ops::add_role_to_db_instance`]) or a DB cluster
+/// ([`check_cluster_role_feature_name`]): the defect is the same one, a value outside the
+/// engine version's published `SupportedFeatureNames`, and Amazon RDS words it the same way
+/// for both.
 ///
-/// The sentence names the value that was rejected and the ENGINE it was rejected for, under
-/// the DESCRIPTION that engine is published with rather than its product name
-/// ([`engine_published_description`]) — because the engine is what decides whether a feature
-/// name exists, and that description is the name of it a client reading the published
-/// catalogue has already seen.
+/// The FIXED text is, in this order, "The feature name ", " is not valid for the engine " and
+/// "." — the clause naming the engine comes LAST, introduced by "for the engine". The VARIABLE
+/// parts are the value the request carried, copied verbatim, and the ENGINE it was rejected
+/// for, under the DESCRIPTION that engine is published with rather than its product name
+/// ([`engine_published_description`]: `aurora-postgresql` is "Aurora (PostgreSQL)" there and
+/// "Aurora PostgreSQL" as a product) — because the engine is what decides whether a feature
+/// name exists at all ([`feature_name_is_supported`]), and that description is the name of it
+/// a client reading the published catalogue has already seen. A caller that read the sentence
+/// knows both which value was wrong and which engine's list to read instead.
+///
+/// A role Amazon RDS cannot take on is a defect of the ROLE rather than of the feature and
+/// carries that integration's own sentence ([`ROLE_NOT_TRUSTED_MESSAGE`]).
 #[must_use]
 pub fn unsupported_feature_name_message(engine: &str, feature_name: &str) -> String {
     format!(
@@ -99,36 +110,11 @@ pub fn unsupported_feature_name_message(engine: &str, feature_name: &str) -> Str
     )
 }
 
-/// What a request associating a role with a DB CLUSTER for a `FeatureName` that cluster's
-/// engine version does not publish is refused with: "The feature name &lt;FeatureName&gt; is
-/// not valid for the &lt;engine&gt; engine."
-///
-/// The fixed text is "The feature name ", " is not valid for the " and " engine."; the
-/// variable parts are the value the request carried and the ENGINE it was rejected for, named
-/// by the product name that engine is published under ([`engine_display_name`]) — the name of
-/// it a sentence puts in front of the word "engine", and the one a client reading the published
-/// catalogue has already seen.
-///
-/// The ENGINE is what decides whether a feature name exists at all
-/// ([`feature_name_is_supported`]), so the refusal names it beside the value: a caller that
-/// read the sentence knows both which value was wrong and which engine's list to read instead.
-/// A DB INSTANCE words the same refusal its own way
-/// ([`unsupported_feature_name_message`]), and a role Amazon RDS cannot take on is a defect of
-/// the ROLE rather than of the feature and carries that integration's own sentence
-/// ([`ROLE_NOT_TRUSTED_MESSAGE`]).
-#[must_use]
-pub fn cluster_unsupported_feature_name_message(engine: &str, feature_name: &str) -> String {
-    format!(
-        "The feature name {feature_name} is not valid for the {} engine.",
-        engine_display_name(engine)
-    )
-}
-
 /// Hold ONE `FeatureName` a DB cluster's role association names to the `SupportedFeatureNames`
 /// of the engine version that cluster runs: `Ok` for a feature the engine publishes and for an
 /// association that names NONE — which associates the role with the cluster itself, the member
 /// being optional and no catalogue entry gating it — and otherwise the sentence the request is
-/// refused with ([`cluster_unsupported_feature_name_message`]), which is the Query API's
+/// refused with ([`unsupported_feature_name_message`]), which is the Query API's
 /// `InvalidParameterValue`.
 ///
 /// The one reading of that question for every call that records an association on a cluster:
@@ -146,7 +132,7 @@ pub fn check_cluster_role_feature_name(
     if feature_name_is_supported(engine, engine_version, feature_name) {
         return Ok(());
     }
-    Err(cluster_unsupported_feature_name_message(engine, feature_name))
+    Err(unsupported_feature_name_message(engine, feature_name))
 }
 
 /// Hold every `AssociatedRoles` entry a DB cluster is being created or restored WITH to the
@@ -175,8 +161,9 @@ pub fn check_cluster_role_feature_names(
 /// The engine's `DBEngineDescription`, as the published engine catalogue reports it
 /// (`aurora-postgresql` → `Aurora (PostgreSQL)`), for the sentences that name the engine
 /// that way rather than by its product name ([`engine_display_name`], which is
-/// `Aurora PostgreSQL` for that same engine): the two differ, and which one a refusal
-/// carries is the refusal's own.
+/// `Aurora PostgreSQL` for that same engine): the two differ, and which one a sentence
+/// carries is that sentence's own — the unpublished-feature refusal of either resource
+/// ([`unsupported_feature_name_message`]) names the engine by this description.
 ///
 /// An engine the catalogue publishes nothing for is named by the `Engine` value itself —
 /// there is no other name for it this service knows.
@@ -249,7 +236,7 @@ pub fn invalid_role_arn_message(role_arn: &str) -> String {
 /// reported as the integration being unperformable rather than as a defect of one value. A
 /// `FeatureName` the cluster's engine does not publish is the OTHER half and carries its own
 /// sentence, which names the value and the engine
-/// ([`cluster_unsupported_feature_name_message`]).
+/// ([`unsupported_feature_name_message`]).
 ///
 /// ONE fixed sentence, with no variable part: this refusal names neither the role ARN the
 /// request carried, nor the principal the trust policy is missing, nor the feature that was

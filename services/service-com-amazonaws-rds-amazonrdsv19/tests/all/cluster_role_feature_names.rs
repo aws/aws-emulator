@@ -53,10 +53,11 @@ const ACTIVE: &str = "ACTIVE";
 struct Engine {
     /// `Engine`: the family the cluster runs.
     engine: &'static str,
-    /// The product name the published engine catalogue reports for that value
-    /// (`DBEngineVersion$DBEngineDescription`'s sibling, which `DescribeDBEngineVersions`
-    /// answers with), which is the name the cluster's refusal puts in front of "engine".
-    product: &'static str,
+    /// The `DBEngineDescription` the published engine catalogue reports for that value, which
+    /// `DescribeDBEngineVersions` answers with — the name the refusal calls the engine by,
+    /// and not the product name published beside it (`Aurora PostgreSQL` for the engine whose
+    /// description parenthesises the dialect).
+    description: &'static str,
     /// The identifier fragment resources of this engine are named under, since the engine's
     /// own value carries hyphens.
     tag: &'static str,
@@ -65,12 +66,12 @@ struct Engine {
 const ENGINES: &[Engine] = &[
     Engine {
         engine: "aurora-mysql",
-        product: "Aurora MySQL",
+        description: "Aurora MySQL",
         tag: "my",
     },
     Engine {
         engine: "aurora-postgresql",
-        product: "Aurora PostgreSQL",
+        description: "Aurora (PostgreSQL)",
         tag: "pg",
     },
 ];
@@ -130,9 +131,10 @@ fn publishes(row: &Feature, engine: &str) -> bool {
 }
 
 /// The sentence a DB cluster's association naming a feature its engine does not publish is
-/// refused with: the fixed text, the value the request carried and the engine's product name.
-fn refusal(product: &str, feature: &str) -> String {
-    format!("The feature name {feature} is not valid for the {product} engine.")
+/// refused with: the fixed text, the value the request carried and the engine's published
+/// description, which the clause introduced by "for the engine" names LAST.
+fn refusal(description: &str, feature: &str) -> String {
+    format!("The feature name {feature} is not valid for the engine {description}.")
 }
 
 /// Create the source cluster `identifier` of `engine`, answering once it reports `available` —
@@ -349,7 +351,7 @@ async fn every_call_that_records_a_cluster_role_holds_the_feature_name_to_the_en
             for entry in ENTRIES {
                 let case = format!(
                     "{}, {} ({})",
-                    engine.product,
+                    engine.description,
                     row.case,
                     entry.action()
                 );
@@ -372,7 +374,7 @@ async fn every_call_that_records_a_cluster_role_holds_the_feature_name_to_the_en
                     let body = expect_error(&case, answered, 400, "InvalidParameterValue");
                     let message = text(&body, "Message");
                     let expected = refusal(
-                        engine.product,
+                        engine.description,
                         row.feature.expect("an unpublished row names a feature"),
                     );
                     assert_eq!(

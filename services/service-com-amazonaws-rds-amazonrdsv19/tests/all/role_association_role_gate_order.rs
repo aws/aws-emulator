@@ -10,10 +10,10 @@
 //! version publishes.** So a request carrying BOTH defects is refused for the role, and
 //! neither refusal records an association.
 //!
-//! WHICH sentence the unpublished `FeatureName` itself carries is the resource's own: each
+//! WHICH sentence the unpublished `FeatureName` itself carries is one sentence for both: it
 //! names the value the request carried and the ENGINE it was rejected for — the engine is what
-//! decides whether the feature exists — a DB instance under the DESCRIPTION that engine is
-//! published with and a DB cluster under its product name.
+//! decides whether the feature exists — under the DESCRIPTION that engine is published with,
+//! whichever resource the association addressed.
 //!
 //! IAM is mounted beside this service on ONE engine, exactly as the assembled router mounts
 //! them, so the role each row names is a role that service really holds (or really does not)
@@ -112,10 +112,17 @@ struct Kind {
     /// A `FeatureName` it does not: `S3_INTEGRATION` is the Oracle and Microsoft SQL Server
     /// name, which no PostgreSQL version publishes.
     unpublished_feature: &'static str,
-    /// Which sentence this resource words the unpublished-feature refusal in: a DB cluster
-    /// names the engine by its PRODUCT name and a DB instance by the description that engine
-    /// is published with.
-    feature_refusal: fn(&str, &str) -> String,
+    /// The `DBEngineDescription` the engine catalogue publishes for this kind's engine, which
+    /// is the name the unpublished-feature refusal calls the engine by — spelled out here
+    /// rather than taken from the code under test, so this suite pins the wording too.
+    engine_description: &'static str,
+}
+
+/// The sentence an unpublished `FeatureName` is refused with: one sentence for both resource
+/// kinds, naming the value the request carried and then the engine, last, after "for the
+/// engine".
+fn feature_refusal(description: &str, feature: &str) -> String {
+    format!("The feature name {feature} is not valid for the engine {description}.")
 }
 
 const KINDS: &[Kind] = &[
@@ -127,7 +134,7 @@ const KINDS: &[Kind] = &[
         describe: "DescribeDBInstances",
         published_feature: "s3Import",
         unpublished_feature: "S3_INTEGRATION",
-        feature_refusal: st::unsupported_feature_name_message,
+        engine_description: "PostgreSQL",
     },
     Kind {
         kind: "DB cluster",
@@ -137,7 +144,7 @@ const KINDS: &[Kind] = &[
         describe: "DescribeDBClusters",
         published_feature: "s3Export",
         unpublished_feature: "S3_INTEGRATION",
-        feature_refusal: st::cluster_unsupported_feature_name_message,
+        engine_description: "Aurora (PostgreSQL)",
     },
 ];
 
@@ -196,7 +203,7 @@ async fn a_role_the_service_cannot_assume_is_refused_before_the_feature_name() {
                     Some(st::ROLE_NOT_TRUSTED_MESSAGE.to_string())
                 }
                 Defect::UnpublishedFeature => {
-                    Some((kind.feature_refusal)(kind.engine, feature_name))
+                    Some(feature_refusal(kind.engine_description, feature_name))
                 }
                 Defect::None => None,
             };

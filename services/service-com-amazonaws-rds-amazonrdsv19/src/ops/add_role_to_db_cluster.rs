@@ -258,9 +258,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // gates.
         //
         // The SENTENCE names the value and the ENGINE it was rejected for
-        // ([`crate::state::cluster_unsupported_feature_name_message`]): the engine is what
-        // decides whether the feature exists, so a caller is told which value is wrong and
-        // whose list to read. The ROLE's own defect — a role this service cannot take on — is
+        // ([`crate::state::unsupported_feature_name_message`], the one wording of this defect
+        // for a DB cluster as for a DB instance): the engine is what decides whether the
+        // feature exists, so a caller is told which value is wrong and whose list to read,
+        // under the description that engine is published with. The ROLE's own defect — a role
+        // this service cannot take on — is
         // the other half of the integration and carries that integration's own sentence
         // above. The check is the one every call that records an association on a cluster
         // makes ([`crate::state::check_cluster_role_feature_name`], which the create and
