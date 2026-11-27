@@ -1221,6 +1221,18 @@ impl InstanceRecord {
             .filter(|record| record.resource_type == resource_type)
     }
 
+    /// The same pairing [`Self::storage_config`] resolves, for writing: what
+    /// `UpdateInstanceStorageConfig` replaces the configuration of.
+    pub fn storage_config_mut(
+        &mut self,
+        association_id: &str,
+        resource_type: &str,
+    ) -> Option<&mut StorageConfigRecord> {
+        self.storage_configs
+            .get_mut(association_id)
+            .filter(|record| record.resource_type == resource_type)
+    }
+
     /// The storage configuration this instance's association with `client_token`
     /// produced for `resource_type`, if that token already made one.
     pub fn storage_config_associated_with_token(
@@ -1268,6 +1280,17 @@ impl StorageConfigRecord {
         let mut candidate = config.clone();
         candidate.association_id = Some(self.association_id.clone());
         candidate == self.config
+    }
+
+    /// Replace the configuration this record holds with `config`.
+    ///
+    /// An update changes WHERE a resource type's data is stored, never which
+    /// association stores it: the association keeps its own identifier and resource
+    /// type, and the stored configuration carries that identifier whatever
+    /// `AssociationId` the request's own configuration held.
+    pub fn apply(&mut self, mut config: InstanceStorageConfig) {
+        config.association_id = Some(self.association_id.clone());
+        self.config = config;
     }
 }
 
