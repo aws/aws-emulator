@@ -5,7 +5,9 @@
 //! IMPLEMENTED: resolves `OriginationIdentity` and `ConfigurationSetName` against
 //! [`crate::state`], mints a fresh `MessageId` and APPENDS the send to the stored message
 //! log, so a test can assert the send happened. A `DryRun` is recorded as a dry run and
-//! is not a sent message.
+//! is not a sent message. `OriginationIdentity` is optional, so a request that names none
+//! is sent from the account's default origination identity
+//! ([`crate::state::ComAmazonawsPinpointsmsvoicev2Pinpointsmsvoicev2State::default_origination_identity`]).
 //!
 //! ## Shape of an operation
 //!
@@ -202,7 +204,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
         let Some(store) = crate::state::service_state(&*self.engine) else {
             return Err(SendTextMessageErrorModeled::InternalServerException(
                 InternalServerException {
@@ -214,39 +215,30 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         let mut state = store.lock();
 
-        // A send needs an origination identity: this slice leases phone numbers, so the
-        // identity must resolve to one of them (by id, ARN or E.164 number). Pools and
-        // sender ids are not held by this emulator, so no identity names one.
-        let Some(origination_identity) = input.origination_identity else {
-            return Err(SendTextMessageErrorModeled::ValidationException(
-                ValidationException {
-                    message: Some(
-                        "OriginationIdentity is required: this emulator has no account \
-                         default origination identity to fall back to"
-                            .to_string(),
-                    ),
-                    reason: Some("MISSING_PARAMETER".to_string()),
-                    fields: Some(vec![ValidationExceptionField {
-                        name: "OriginationIdentity".to_string(),
-                        message: "must name a leased phone number".to_string(),
-                    }]),
-                },
-            )
-            .into());
+        // `OriginationIdentity` is OPTIONAL, so only an identity the request NAMES is
+        // resolved here: it must name a resource this account holds — this slice holds
+        // leased phone numbers, which an identity names by id, ARN or E.164 number. The
+        // absent case is resolved below, once every other reference the send carries has
+        // been checked, so a refused send changes nothing.
+        let named_identity = match input.origination_identity {
+            None => None,
+            Some(named) => {
+                if state.find_phone_number(&named).is_none() {
+                    return Err(SendTextMessageErrorModeled::ResourceNotFoundException(
+                        ResourceNotFoundException {
+                            message: Some(crate::state::resource_not_found_message(
+                                "phone-number",
+                                &named,
+                            )),
+                            resource_type: Some("phone-number".to_string()),
+                            resource_id: Some(named),
+                        },
+                    )
+                    .into());
+                }
+                Some(named)
+            }
         };
-        if state.find_phone_number(&origination_identity).is_none() {
-            return Err(SendTextMessageErrorModeled::ResourceNotFoundException(
-                ResourceNotFoundException {
-                    message: Some(crate::state::resource_not_found_message(
-                        "phone-number",
-                        &origination_identity,
-                    )),
-                    resource_type: Some("phone-number".to_string()),
-                    resource_id: Some(origination_identity),
-                },
-            )
-            .into());
-        }
 
         // A named configuration set must exist. `ConfigurationSetName` is a
         // `ConfigurationSetNameOrArn`, so resolve the name the store is keyed by first.
@@ -289,6 +281,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into());
             }
         }
+
+        // The identity a message is sent from is the service's to resolve, so a request
+        // that names none is sent from the account's own origination identity rather than
+        // refused.
+        let origination_identity = match named_identity {
+            Some(named) => named,
+            None => state.default_origination_identity(&crate::state::request_region(ctx)),
+        };
 
         // The message type defaults to the one the number was leased for.
         let message_type = input.message_type.or_else(|| {

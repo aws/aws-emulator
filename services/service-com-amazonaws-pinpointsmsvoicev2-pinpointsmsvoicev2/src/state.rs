@@ -34,6 +34,27 @@ pub const DEFAULT_OPT_OUT_LIST_NAME: &str = "Default";
 /// a US-dollar amount, the unit `MonthlyLeasingPrice` documents.
 pub const MONTHLY_LEASING_PRICE: &str = "0.00";
 
+/// The `NumberStatus` a number this emulator leases is in: provisioning is synchronous
+/// here, so the lease is handed back in the terminal state and no later transition is owed.
+pub const ACTIVE_NUMBER_STATUS: &str = "ACTIVE";
+
+/// The attributes of the origination identity this service leases for an account that
+/// holds none of its own, so a send that names no `OriginationIdentity` has one to resolve
+/// ([`ComAmazonawsPinpointsmsvoicev2Pinpointsmsvoicev2State::default_origination_identity`]).
+///
+/// Each value is one its own modelled enum declares: `IsoCountryCode` (`^[A-Z]{2}$`),
+/// `MessageType`, `NumberCapability` and `RequestableNumberType`
+/// (`smithy_query(query="shape",shape="MessageType,NumberCapability,RequestableNumberType")`).
+/// Which of those values it is is this emulator's choice, as the synthetic number itself is.
+pub const DEFAULT_ORIGINATION_ISO_COUNTRY_CODE: &str = "US";
+/// See [`DEFAULT_ORIGINATION_ISO_COUNTRY_CODE`].
+pub const DEFAULT_ORIGINATION_MESSAGE_TYPE: &str = "TRANSACTIONAL";
+/// See [`DEFAULT_ORIGINATION_ISO_COUNTRY_CODE`]. A text message is sent over the number's
+/// SMS capability, so that is the capability the identity carries.
+pub const DEFAULT_ORIGINATION_NUMBER_CAPABILITY: &str = "SMS";
+/// See [`DEFAULT_ORIGINATION_ISO_COUNTRY_CODE`].
+pub const DEFAULT_ORIGINATION_NUMBER_TYPE: &str = "LONG_CODE";
+
 /// The `ClientToken` idempotency key is namespaced by operation, so the same token on
 /// two different creates is two different requests. These are the operations that mint a
 /// resource under a token, named here because a delete/release must also forget the
@@ -826,6 +847,84 @@ impl ComAmazonawsPinpointsmsvoicev2Pinpointsmsvoicev2State {
     pub fn next_sequence(&mut self) -> u64 {
         self.sequence += 1;
         self.sequence
+    }
+
+    /// Lease one phone number into the store and answer its `PhoneNumberId`.
+    ///
+    /// The ONE place a lease is minted: the id, the ARN and the synthetic E.164 number all
+    /// come from the monotonic [`Self::sequence`], so no two leases collide, and every
+    /// member a fresh lease does not get from its request starts at the value the model
+    /// declares as that member's default. A caller-driven lease overwrites the optional
+    /// members on the stored record afterwards.
+    pub fn lease_phone_number(
+        &mut self,
+        region: &str,
+        iso_country_code: String,
+        message_type: String,
+        number_capabilities: Vec<String>,
+        number_type: String,
+    ) -> String {
+        let sequence = self.next_sequence();
+        let id = format!("phone-{sequence:032x}");
+        let record = PhoneNumberRecord {
+            arn: ::emulator_server::emulator_arn(
+                SIGNING_NAME,
+                region,
+                &format!("phone-number/{id}"),
+            ),
+            id: id.clone(),
+            // A synthetic number from one reserved range, minted from the monotonic
+            // sequence so no two leases collide. It satisfies `PhoneNumber`
+            // (`^\+?[1-9][0-9]{1,18}$`); the emulator does not claim country-correct
+            // numbering, because no numbering plan is available to it.
+            phone_number: format!("+1555{sequence:07}"),
+            // The emulator provisions synchronously, so the number is handed back in the
+            // terminal `ACTIVE` state and no later transition is owed.
+            status: ACTIVE_NUMBER_STATUS.to_string(),
+            iso_country_code,
+            message_type,
+            number_capabilities,
+            number_type,
+            monthly_leasing_price: MONTHLY_LEASING_PRICE.to_string(),
+            // Two-way messaging and self-managed opt-outs are off on a fresh lease; the
+            // model declares `false` as the default of each.
+            two_way_enabled: false,
+            two_way_channel_arn: None,
+            two_way_channel_role: None,
+            self_managed_opt_outs_enabled: false,
+            opt_out_list_name: DEFAULT_OPT_OUT_LIST_NAME.to_string(),
+            international_sending_enabled: false,
+            deletion_protection_enabled: false,
+            pool_id: None,
+            registration_id: None,
+            tags: Vec::new(),
+            created_timestamp: SystemTime::now(),
+        };
+        self.phone_numbers.insert(id.clone(), record);
+        id
+    }
+
+    /// The origination identity a send uses when the request names none: the
+    /// `PhoneNumberId` of the first number this account leases, in the store's stable
+    /// order, leasing one for the account when it holds none.
+    ///
+    /// The identity is the service's to resolve, not the caller's to supply, so there is
+    /// always one: an account that has leased nothing is given a number here, and because
+    /// it is a lease like any other it is reported by `DescribePhoneNumbers` and resolves
+    /// through [`Self::find_phone_number`] exactly as a requested number does. A send
+    /// grows the lease store only while it holds nothing, so repeated sends provision at
+    /// most this one number however many times they are made.
+    pub fn default_origination_identity(&mut self, region: &str) -> String {
+        if let Some(record) = self.phone_numbers.values().next() {
+            return record.id.clone();
+        }
+        self.lease_phone_number(
+            region,
+            DEFAULT_ORIGINATION_ISO_COUNTRY_CODE.to_string(),
+            DEFAULT_ORIGINATION_MESSAGE_TYPE.to_string(),
+            vec![DEFAULT_ORIGINATION_NUMBER_CAPABILITY.to_string()],
+            DEFAULT_ORIGINATION_NUMBER_TYPE.to_string(),
+        )
     }
 
     /// Look a stored number up by any of the origination identities that name it: its

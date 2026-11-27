@@ -323,47 +323,32 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
-        let sequence = state.next_sequence();
-        let id = format!("phone-{sequence:032x}");
-        let record = crate::state::PhoneNumberRecord {
-            arn: ::emulator_server::emulator_arn(
-                crate::state::SIGNING_NAME,
-                &region,
-                &format!("phone-number/{id}"),
-            ),
-            id: id.clone(),
-            // A synthetic number from one reserved range, minted from the monotonic
-            // sequence so no two leases collide. It satisfies `PhoneNumber`
-            // (`^\+?[1-9][0-9]{1,18}$`); the emulator does not claim country-correct
-            // numbering, because no numbering plan is available to it.
-            phone_number: format!("+1555{sequence:07}"),
-            // The emulator provisions synchronously, so the number is handed back in the
-            // terminal `ACTIVE` state and no later transition is owed.
-            status: "ACTIVE".to_string(),
-            iso_country_code: input.iso_country_code,
-            message_type: input.message_type,
-            number_capabilities: input.number_capabilities,
-            number_type: input.number_type,
-            monthly_leasing_price: crate::state::MONTHLY_LEASING_PRICE.to_string(),
-            // Two-way messaging and self-managed opt-outs are off on a fresh lease; the
-            // model declares `false` as the default of each.
-            two_way_enabled: false,
-            two_way_channel_arn: None,
-            two_way_channel_role: None,
-            self_managed_opt_outs_enabled: false,
-            opt_out_list_name: input
-                .opt_out_list_name
-                .as_deref()
-                .map(|value| crate::state::name_from_name_or_arn(value).to_string())
-                .unwrap_or_else(|| crate::state::DEFAULT_OPT_OUT_LIST_NAME.to_string()),
-            international_sending_enabled: input.international_sending_enabled.unwrap_or(false),
-            deletion_protection_enabled: input.deletion_protection_enabled.unwrap_or(false),
-            pool_id: input.pool_id.filter(|pool| !pool.is_empty()),
-            registration_id: input.registration_id,
-            tags: input.tags.unwrap_or_default(),
-            created_timestamp: ::std::time::SystemTime::now(),
-        };
-        state.phone_numbers.insert(id.clone(), record);
+        // The lease itself is minted by the store (so the id, the ARN and the synthetic
+        // number come from the one monotonic sequence), and this request's optional
+        // members are written onto the stored record afterwards.
+        let id = state.lease_phone_number(
+            &region,
+            input.iso_country_code,
+            input.message_type,
+            input.number_capabilities,
+            input.number_type,
+        );
+        {
+            let record = state
+                .phone_numbers
+                .get_mut(&id)
+                .expect("the phone number just leased is present");
+            if let Some(opt_out_list_name) = input.opt_out_list_name.as_deref() {
+                record.opt_out_list_name =
+                    crate::state::name_from_name_or_arn(opt_out_list_name).to_string();
+            }
+            record.international_sending_enabled =
+                input.international_sending_enabled.unwrap_or(false);
+            record.deletion_protection_enabled = input.deletion_protection_enabled.unwrap_or(false);
+            record.pool_id = input.pool_id.filter(|pool| !pool.is_empty());
+            record.registration_id = input.registration_id;
+            record.tags = input.tags.unwrap_or_default();
+        }
         if let Some(token) = token_key.as_deref() {
             state.remember_client_token(Self::NAME, token, &id, fingerprint);
         }
