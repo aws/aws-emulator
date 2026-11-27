@@ -248,6 +248,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // its answer name the Region its SigV4 credential scope does.
         let region = crate::state::request_region(ctx);
 
+        // The ordering this request asks for: the dimension to sort the recommendations on,
+        // with the direction that dimension is sorted in. "The order to sort the idle
+        // resource recommendations" is an ordering only once a dimension names what to sort
+        // on, so an `orderBy` the request leaves out and one that carries no dimension both
+        // report the sequence the analysis recorded — the same selection, read and digested
+        // as one value.
+        let order_by = input
+            .order_by
+            .as_ref()
+            .and_then(|order_by| order_by.dimension.as_deref())
+            .map(|dimension| {
+                let descending = crate::state::idle_sorts_descending(
+                    input
+                        .order_by
+                        .as_ref()
+                        .and_then(|order_by| order_by.order.as_deref()),
+                );
+                (dimension, descending)
+            });
+
         // The page token carries this operation's name and EVERY input that scopes the
         // selection it was taken over — the Region the request was signed for included, since
         // the recommendations reported are that endpoint's — so resuming a walk with a
@@ -255,13 +275,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // operation issued, is refused rather than answered with a page of a different result
         // set — worded as the whole crate words that refusal
         // ([`crate::state::INVALID_NEXT_TOKEN_MESSAGE`]), so no two readers of this service
-        // refuse the same token differently.
+        // refuse the same token differently. Every member goes in as the SELECTION it names
+        // rather than as it arrived, so two spellings of one selection mint interchangeable
+        // tokens.
         let selection_fingerprint = crate::state::fingerprint(&(
             Self::NAME,
             &resource_arns,
             &account_id,
             &filters,
-            &input.order_by,
+            &order_by,
             &region,
         ));
         let offset = match input.next_token.as_deref() {
@@ -380,18 +402,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // savings figure to sort on and `order` the direction. With no dimension there is
         // nothing to sort on, so the recommendations keep the order the analysis recorded
         // them in. The model documents no default direction, so this emulator sorts
-        // ascending unless `Desc` asks otherwise.
-        if let Some(dimension) = input
-            .order_by
-            .as_ref()
-            .and_then(|order_by| order_by.dimension.as_deref())
-        {
-            let descending = crate::state::idle_sorts_descending(
-                input
-                    .order_by
-                    .as_ref()
-                    .and_then(|order_by| order_by.order.as_deref()),
-            );
+        // ascending unless `Desc` asks otherwise. The ordering resolved above is the one
+        // bound into this walk's page tokens.
+        if let Some((dimension, descending)) = order_by {
             selected.sort_by(|left, right| {
                 let ordering = crate::state::idle_savings_value(left, dimension)
                     .total_cmp(&crate::state::idle_savings_value(right, dimension));

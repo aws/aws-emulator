@@ -200,14 +200,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
+        // The scope this request selects by: a `Scope` object carrying neither member names
+        // no scope level and addresses the same record as no scope at all, so it narrows
+        // nothing, exactly as a scope the request leaves out does
+        // ([`crate::state::selected_scope`]).
+        let scope = crate::state::selected_scope(input.scope.as_ref());
         // A page token names a boundary of the walk that minted it and of no other: it
         // carries the fingerprint of THIS operation and of the members that select the
         // records reported, so a token minted for a different `resourceType` or `scope` is
         // refused rather than applied as an ordering boundary of a sequence it names no
         // position in ([`crate::state::fingerprint`], the rule every paginated reader of
-        // this service binds into its cursor).
+        // this service binds into its cursor). The scope goes in as the SELECTION it names
+        // rather than as it arrived — the value the records are narrowed by below — so two
+        // spellings of one selection mint interchangeable tokens.
         let selection_fingerprint =
-            crate::state::fingerprint(&(Self::NAME, &input.resource_type, &input.scope));
+            crate::state::fingerprint(&(Self::NAME, &input.resource_type, &scope));
         // A `nextToken` this service did not issue cannot name a page boundary.
         let resume_at = match input.next_token.as_deref() {
             None => None,
@@ -230,10 +237,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             crate::state::MAX_PAGE_SIZE,
         );
         // A scope, when supplied, selects exactly the record written at that scope.
-        let only_scope = input
-            .scope
-            .as_ref()
-            .map(|scope| crate::state::PreferenceKey::new(&input.resource_type, Some(scope)));
+        let only_scope =
+            scope.map(|scope| crate::state::PreferenceKey::new(&input.resource_type, Some(scope)));
 
         let guard = state.lock();
         if !guard.enrollment.is_opted_in() {

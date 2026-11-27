@@ -636,6 +636,17 @@ impl PreferenceKey {
     }
 }
 
+/// The scope a request SELECTS by: `None` both for a request that supplies no scope and for
+/// one carrying a `Scope` object with neither member set, which names no scope level and
+/// addresses the same record as no scope at all ([`PreferenceKey::new`]).
+///
+/// The two spellings are therefore ONE selection, so a reader narrows its answer with this
+/// value and digests this value into its page token's [`fingerprint`] — never the member as
+/// it arrived — the same rule [`selected_list`] states for an optional list.
+pub fn selected_scope(scope: Option<&Scope>) -> Option<&Scope> {
+    scope.filter(|scope| scope.name.is_some() || scope.value.is_some())
+}
+
 /// One stored recommendation preference record: every preference field a
 /// `PutRecommendationPreferences` call can set for one (resourceType, scope) key.
 #[derive(Debug, Clone, Default)]
@@ -2268,6 +2279,19 @@ pub struct PageCursor {
 /// different one almost never does.
 pub fn fingerprint<T: std::fmt::Debug>(value: &T) -> String {
     ::hex::encode(Sha256::digest(format!("{value:?}").as_bytes()))
+}
+
+/// An optional list member as the SELECTION it names, which is what a reader digests into
+/// [`fingerprint`] rather than the member as it arrived off the wire.
+///
+/// A list the request leaves out and one it sends EMPTY select the same result set, because
+/// every reader of this service reads such a member defaulted — the rule
+/// [`named_identifiers`] states for the identifier lists — so the two spellings have to
+/// digest to ONE fingerprint. Digesting the raw `Option` instead renders them differently,
+/// and a token one spelling minted is then refused when the walk is resumed with the other
+/// instead of resuming the same sequence.
+pub fn selected_list<T>(member: Option<&[T]>) -> &[T] {
+    member.unwrap_or_default()
 }
 
 /// The opaque `nextToken` an offset-paged reader hands out: the cursor itself, hex-encoded,

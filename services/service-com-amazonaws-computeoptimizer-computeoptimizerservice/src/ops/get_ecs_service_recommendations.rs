@@ -301,12 +301,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // result set, so a token another reader issued — every one of them hands out a
         // boundary ARN — and one this reader issued for a different selection are both
         // refused rather than applied as an ordering boundary of a sequence they name no
-        // position in.
+        // position in. Every member goes in as the SELECTION it names rather than as it
+        // arrived — both lists through [`crate::state::selected_list`], the values this
+        // handler reads them through — so two spellings of one selection mint
+        // interchangeable tokens.
         let selection_fingerprint = crate::state::fingerprint(&(
             Self::NAME,
             &account_id,
-            &input.service_arns,
-            &input.filters,
+            crate::state::selected_list(input.service_arns.as_deref()),
+            crate::state::selected_list(input.filters.as_deref()),
         ));
         // A `nextToken` this service did not issue cannot name a page boundary.
         let resume_at = match input.next_token.as_deref() {

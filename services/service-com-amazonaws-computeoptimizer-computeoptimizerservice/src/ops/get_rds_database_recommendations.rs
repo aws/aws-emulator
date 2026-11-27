@@ -266,6 +266,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // names carry that region.
         let region = crate::state::request_region(ctx);
 
+        // The CPU vendor architectures the request asks its answer to be computed under:
+        // "Describes the recommendation preferences to return in the response". A request
+        // that leaves `recommendationPreferences` out, one that sends the object with no
+        // architectures and one that sends an empty list all ask for none, so all three are
+        // read — and digested below — as the same, defaulted, selection.
+        let requested_architectures: Vec<String> = input
+            .recommendation_preferences
+            .as_ref()
+            .and_then(|preferences| preferences.cpu_vendor_architectures.clone())
+            .unwrap_or_default();
+
         // The page token carries this operation's name and EVERY input that scopes the
         // selection it was taken over — the Region the request was signed for included, since
         // the databases analysed are that endpoint's — so resuming a walk with a different
@@ -273,13 +284,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // issued, is refused rather than answered with a page of a different result set —
         // worded as the whole crate words that refusal
         // ([`crate::state::INVALID_NEXT_TOKEN_MESSAGE`]), so no two readers of this service
-        // refuse the same token differently.
+        // refuse the same token differently. Every member goes in as the SELECTION it names
+        // rather than as it arrived, so two spellings of one selection mint interchangeable
+        // tokens.
         let selection_fingerprint = crate::state::fingerprint(&(
             Self::NAME,
             &resource_arns,
             &account_id,
             &filters,
-            &input.recommendation_preferences,
+            &requested_architectures,
             &region,
         ));
         let offset = match input.next_token.as_deref() {
@@ -356,14 +369,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // ([`crate::state::ComAmazonawsComputeoptimizerComputeoptimizerserviceState::rds_recommendation`]),
                 // shared with the EXPORT of these recommendations, so a reported
                 // recommendation and an exported row of the same database cannot disagree.
-                store.rds_recommendation(
-                    resource,
-                    &region,
-                    input
-                        .recommendation_preferences
-                        .as_ref()
-                        .and_then(|preferences| preferences.cpu_vendor_architectures.as_deref()),
-                )
+                store.rds_recommendation(resource, &region, Some(&requested_architectures))
             })
             .filter(|recommendation| {
                 crate::state::rds_recommendation_matches_filters(recommendation, &filters)

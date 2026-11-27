@@ -228,12 +228,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // carries the fingerprint of THIS operation and of the members that select this
         // result set, so a token another reader issued — every one of them hands out a
         // boundary ARN — and one this reader issued for a different selection are both
-        // refused rather than resolved against a sequence they name no position in.
+        // refused rather than resolved against a sequence they name no position in. Every
+        // member goes in as the SELECTION it names rather than as it arrived — `filters`
+        // through [`crate::state::selected_list`], the value this handler reads the member
+        // through — so two spellings of one selection mint interchangeable tokens.
         let selection_fingerprint = crate::state::fingerprint(&(
             Self::NAME,
             &account_id,
             &requested_arns,
-            &input.filters,
+            crate::state::selected_list(input.filters.as_deref()),
             &requested_architectures,
         ));
         // A `nextToken` this service did not issue cannot name a page boundary.

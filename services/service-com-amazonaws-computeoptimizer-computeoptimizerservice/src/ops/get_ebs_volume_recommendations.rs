@@ -211,12 +211,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // boundary ARN — and one this reader issued for a different selection are both
         // refused rather than applied as an ordering boundary of a sequence they name no
         // position in. The same rule this service's offset-paged readers bind into their own
-        // cursors ([`crate::state::fingerprint`]).
+        // cursors ([`crate::state::fingerprint`]). Every member goes in as the SELECTION it
+        // names rather than as it arrived — `filters` through
+        // [`crate::state::selected_list`], the value [`volume_filters`] reads the member
+        // through above — so two spellings of one selection mint interchangeable tokens.
         let selection_fingerprint = crate::state::fingerprint(&(
             Self::NAME,
             &account_id,
             &requested_volumes,
-            &input.filters,
+            crate::state::selected_list(input.filters.as_deref()),
         ));
         let resume_at = match input.next_token.as_deref() {
             None => None,

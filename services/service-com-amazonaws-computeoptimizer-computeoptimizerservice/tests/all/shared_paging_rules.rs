@@ -21,6 +21,10 @@
 //!   it with a page of a different result set. The Region a request is signed for is part of
 //!   that selection wherever it scopes what the reader answers, so a token minted at one
 //!   regional endpoint does not resume a walk at another.
+//! * WHAT a selection IS — the set the request's members NAME, not the way they were spelled:
+//!   a selecting member a request leaves out and the empty value it can send instead name the
+//!   same set, because every reader reads such a member defaulted, so either spelling's token
+//!   resumes the other's walk instead of being refused as a token of another selection.
 //! * HOW a reader refuses a token it cannot resume — with the ONE sentence this crate words
 //!   for that condition (`crate::state::INVALID_NEXT_TOKEN_MESSAGE`), identical at every
 //!   reader, so a client walking two readers of this service with a token neither can resume
@@ -46,7 +50,7 @@ use serde_json::{json, Value};
 use service_com_amazonaws_computeoptimizer_computeoptimizerservice::state::{
     service_state, AnalysedResource, MemberAccountEnrollment, DEFAULT_PAGE_SIZE,
     ENROLLMENT_STATUSES_MAX_PAGE_SIZE, IDLE_MAX_PAGE_SIZE, INVALID_NEXT_TOKEN_MESSAGE,
-    MAX_PAGE_SIZE, RESOURCE_TYPE_EBS_VOLUME, SCOPE_ACCOUNT_ID, SCOPE_ORGANIZATION,
+    MAX_PAGE_SIZE, ORDER_DESC, RESOURCE_TYPE_EBS_VOLUME, SCOPE_ACCOUNT_ID, SCOPE_ORGANIZATION,
     SCOPE_RESOURCE_ARN, SOURCE_TYPE_RDS_DB_INSTANCE,
 };
 use smithy_server_runtime::MultiServiceRouter;
@@ -708,6 +712,207 @@ async fn a_preference_token_resumes_only_the_records_it_was_minted_for() {
         Some(1),
         "the selection the token was minted for: expected the next record, got {body}"
     );
+}
+
+/// One optional member a request narrows a reader's selection with, and the spellings of that
+/// member which name the SAME selection.
+struct SelectionSpellings {
+    /// The operation whose input carries the member.
+    operation: &'static str,
+    /// The member, spelled as the wire spells it.
+    member: &'static str,
+    /// The values that all narrow NOTHING: `null` for a request that leaves the member out,
+    /// and every empty form the member's own modelled shape admits.
+    forms: Vec<Value>,
+}
+
+/// A list member, with the two spellings of "this list names nothing": the member left out,
+/// and the member sent as the empty list.
+fn list_member(operation: &'static str, member: &'static str) -> SelectionSpellings {
+    SelectionSpellings {
+        operation,
+        member,
+        forms: vec![Value::Null, json!([])],
+    }
+}
+
+/// Every optional member the paginated readers of this service narrow their selection with,
+/// crossed with the spellings of "this member narrows nothing".
+///
+/// The members are the ones this service's Smithy model gives those operations
+/// (`smithy_query(query="operation",operation="GetEC2InstanceRecommendations,GetIdleRecommendations")`),
+/// and the empty forms are the ones their target shapes admit: a list (`Filters`,
+/// `EBSFilters`, `ResourceArns`, `JobIds`, `AccountIds`, …) is empty as `[]`, and a structure
+/// whose every member is optional (`RecommendationPreferences`, `OrderBy`, `Scope`) is empty
+/// as `{}` — and, where it holds a list of its own, as that list sent empty, or as a member
+/// that constrains nothing without the member it qualifies (an `OrderBy$order` with no
+/// `dimension` to sort on).
+fn selection_spellings() -> Vec<SelectionSpellings> {
+    let no_preferences = |operation| SelectionSpellings {
+        operation,
+        member: "recommendationPreferences",
+        forms: vec![
+            Value::Null,
+            json!({}),
+            json!({"cpuVendorArchitectures": []}),
+        ],
+    };
+    vec![
+        list_member("DescribeRecommendationExportJobs", "jobIds"),
+        list_member("DescribeRecommendationExportJobs", "filters"),
+        list_member("GetAutoScalingGroupRecommendations", "accountIds"),
+        list_member("GetAutoScalingGroupRecommendations", "autoScalingGroupArns"),
+        list_member("GetAutoScalingGroupRecommendations", "filters"),
+        no_preferences("GetAutoScalingGroupRecommendations"),
+        list_member("GetEBSVolumeRecommendations", "volumeArns"),
+        list_member("GetEBSVolumeRecommendations", "filters"),
+        list_member("GetEC2InstanceRecommendations", "accountIds"),
+        list_member("GetEC2InstanceRecommendations", "instanceArns"),
+        list_member("GetEC2InstanceRecommendations", "filters"),
+        no_preferences("GetEC2InstanceRecommendations"),
+        list_member("GetECSServiceRecommendations", "serviceArns"),
+        list_member("GetECSServiceRecommendations", "filters"),
+        list_member("GetEnrollmentStatusesForOrganization", "filters"),
+        list_member("GetIdleRecommendations", "resourceArns"),
+        list_member("GetIdleRecommendations", "filters"),
+        SelectionSpellings {
+            operation: "GetIdleRecommendations",
+            member: "orderBy",
+            forms: vec![Value::Null, json!({}), json!({"order": ORDER_DESC})],
+        },
+        list_member("GetLambdaFunctionRecommendations", "functionArns"),
+        list_member("GetLambdaFunctionRecommendations", "filters"),
+        list_member("GetLicenseRecommendations", "resourceArns"),
+        list_member("GetLicenseRecommendations", "filters"),
+        list_member("GetRDSDatabaseRecommendations", "resourceArns"),
+        list_member("GetRDSDatabaseRecommendations", "filters"),
+        no_preferences("GetRDSDatabaseRecommendations"),
+        SelectionSpellings {
+            operation: "GetRecommendationPreferences",
+            member: "scope",
+            forms: vec![Value::Null, json!({})],
+        },
+    ]
+}
+
+/// `reader`'s request with `member` spelled as `form` — left out entirely when the form is
+/// `null` — plus the page size and the `nextToken` this call carries.
+fn spelled_request(
+    reader: &PagedReader,
+    member: &str,
+    form: &Value,
+    max_results: Option<usize>,
+    token: Option<&str>,
+) -> Value {
+    let mut request = reader.request.clone();
+    if !form.is_null() {
+        request[member] = form.clone();
+    }
+    if let Some(max_results) = max_results {
+        request["maxResults"] = json!(max_results);
+    }
+    if let Some(token) = token {
+        request["nextToken"] = json!(token);
+    }
+    request
+}
+
+/// TWO SPELLINGS OF ONE SELECTION ARE ONE WALK: a reader resumes a `nextToken` minted for the
+/// selection the request names, however that selection was spelled.
+///
+/// A selecting member a request leaves out and the empty value it can send instead name the
+/// same result set — every reader of this service reads such a member defaulted — so the two
+/// requests are one selection and the token either of them mints names a boundary of the
+/// other's walk. Asserted over a table of every optional member each paginated reader selects
+/// by, crossed with the empty forms that member's own modelled shape admits: every spelling
+/// reports the same sequence, and every spelling's token resumes the walk of every other at
+/// the same item — never refused as a token of some other selection, and never answered with
+/// a page of one.
+#[tokio::test]
+async fn two_spellings_of_one_selection_resume_each_others_walk() {
+    let (router, _engine) = paged_emulator().await;
+    let readers = readers();
+
+    for row in selection_spellings() {
+        let reader = readers
+            .iter()
+            .find(|reader| reader.operation == row.operation)
+            .unwrap_or_else(|| {
+                panic!(
+                    "case {:?}: the row must name a reader of the table",
+                    row.operation
+                )
+            });
+
+        // What each spelling selects, and the token a one-item page of its walk hands out.
+        let mut spelled: Vec<(String, Vec<String>, String)> = Vec::new();
+        for form in &row.forms {
+            let case = format!("{} with {} sent as {form}", row.operation, row.member);
+            let request = spelled_request(reader, row.member, form, None, None);
+            let (status, body) = call(&router, row.operation, request.clone()).await;
+            assert_eq!(
+                status, 200,
+                "case {case:?}: expected 200 from {request}, got {status}: {body}"
+            );
+            let sequence = page_of(&body, reader);
+            assert!(
+                sequence.len() >= 2,
+                "case {case:?}: this fixture must hold at least two items for a page boundary to \
+                 be observable, got {sequence:?}"
+            );
+
+            let request = spelled_request(reader, row.member, form, Some(1), None);
+            let (status, body) = call(&router, row.operation, request.clone()).await;
+            assert_eq!(
+                status, 200,
+                "case {case:?}: expected 200 from {request}, got {status}: {body}"
+            );
+            let token = body["nextToken"]
+                .as_str()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "case {case:?}: a one-item page of a longer sequence must hand out a \
+                         nextToken, got {body}"
+                    )
+                })
+                .to_string();
+            spelled.push((case, sequence, token));
+        }
+
+        // Every spelling selects the same sequence: they are ONE selection, not several.
+        let (first_case, first_sequence, _) = &spelled[0];
+        for (case, sequence, _) in &spelled[1..] {
+            assert_eq!(
+                sequence, first_sequence,
+                "case {case:?}: expected the sequence {first_case:?} selects, \
+                 {first_sequence:?}, got {sequence:?}"
+            );
+        }
+        let expected = first_sequence[1..2].to_vec();
+
+        // So each spelling's token resumes the walk of every spelling, at the item after the
+        // page that minted it.
+        for (minted_by, _, token) in &spelled {
+            for form in &row.forms {
+                let case = format!(
+                    "{} with {} sent as {form}, resuming the token {minted_by:?} minted",
+                    row.operation, row.member
+                );
+                let request = spelled_request(reader, row.member, form, Some(1), Some(token));
+                let (status, body) = call(&router, row.operation, request.clone()).await;
+                assert_eq!(
+                    status, 200,
+                    "case {case:?}: expected {request} to resume the walk with 200, got \
+                     {status}: {body}"
+                );
+                let page = page_of(&body, reader);
+                assert_eq!(
+                    page, expected,
+                    "case {case:?}: expected the page {expected:?}, got {page:?}"
+                );
+            }
+        }
+    }
 }
 
 /// The readers whose selection the request's REGION scopes. Compute Optimizer is regional, so
