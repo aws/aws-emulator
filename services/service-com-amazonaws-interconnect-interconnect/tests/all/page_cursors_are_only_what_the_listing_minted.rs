@@ -18,9 +18,10 @@
 //! `InterconnectValidationException` and this service's one wording for a cursor it did
 //! not issue, never with a page.
 //!
-//! The last two suites drive the FILTERS of that scope: a cursor of one filtered listing
-//! offered to another, across the filter selections of `ListConnections` and the
-//! `provider` of `ListEnvironments`, beside the inputs that window a page rather than
+//! The last suites drive the FILTERS of that scope: a cursor of one filtered listing
+//! offered to another, across the filter selections of `ListConnections` and, for
+//! `ListEnvironments`, every pairing of the Region whose endpoint answers with the
+//! `provider` that narrows its catalog — beside the inputs that window a page rather than
 //! deciding a sequence (`maxResults`, and the `location` distinguisher that narrows
 //! nothing), which scope no cursor.
 //!
@@ -40,8 +41,8 @@ use serde_json::{json, Map, Value};
 use service_com_amazonaws_interconnect_interconnect::ops::types::{AttachPoint, Provider};
 use service_com_amazonaws_interconnect_interconnect::state::{
     attach_point_cursor_scope, connection_cursor_scope, cursor_not_issued_message,
-    encode_cursor, environment_cursor_scope, service_state, PageTokenKey,
-    ATTACH_POINT_CURSOR_TAG, CONNECTION_CURSOR_TAG, ENVIRONMENT_CURSOR_TAG,
+    encode_cursor, environment_cursor_scope, provider_violation, service_state,
+    PageTokenKey, ATTACH_POINT_CURSOR_TAG, CONNECTION_CURSOR_TAG, ENVIRONMENT_CURSOR_TAG,
 };
 
 use crate::emulator::{
@@ -974,42 +975,121 @@ fn environment_ids(body: &Value) -> Vec<String> {
         .collect()
 }
 
-/// RULE: the same for the Environment listing — the `provider` filter decides which
-/// entries of the catalog the sequence holds, so it scopes the cursors that listing
-/// mints, while the `location` distinguisher, which narrows the catalog not at all,
-/// decides no sequence and scopes nothing.
+/// The ceiling the model puts on the name BOTH `Provider` members carry
+/// (`smithy_query(query="shape",shape="CloudServiceProvider,LastMileProvider")` reports
+/// `@length(max: 32)` on each, and no floor at all), so the bound and the empty name are
+/// both selections a request may carry and a name one character past it is none.
+const PARTNER_NAME_MAX_LENGTH: usize = 32;
+
+/// The windows a resuming call carries below: the two bounds the model gives `maxResults`
+/// (`smithy_query(query="shape",shape="MaxResults")` reports `@range(min: 1, max: 100)`),
+/// which is the whole span of that input.
+const WINDOW_BOUNDS: [i64; 2] = [1, 100];
+
+/// A partner the catalog publishes nothing for, so a filter on it selects no entry at all
+/// and still names a sequence of its own.
+const UNPUBLISHED_PARTNER: &str = "mcp-no-catalog-publishes-this";
+
+/// One `ListEnvironments` request: the filter that narrows the catalog, the cursor that
+/// resumes a walk of it, and the window that cuts the page.
+fn environment_request(
+    provider: Option<&Provider>,
+    token: Option<&str>,
+    max_results: Option<i64>,
+) -> Value {
+    let mut request = Map::new();
+    if let Some(provider) = provider {
+        request.insert("provider".to_string(), provider_request_member(provider));
+    }
+    if let Some(token) = token {
+        request.insert("nextToken".to_string(), json!(token));
+    }
+    if let Some(max_results) = max_results {
+        request.insert("maxResults".to_string(), json!(max_results));
+    }
+    Value::Object(request)
+}
+
+/// The part of a walked sequence a cursor naming `key` resumes to: every key strictly
+/// past it, which is what the listing that issued that cursor owes next.
+fn after_key(sequence: &[String], key: &str) -> Vec<String> {
+    sequence
+        .iter()
+        .filter(|id| id.as_str() > key)
+        .cloned()
+        .collect()
+}
+
+/// RULE: the same for the Environment listing — the Region whose endpoint answers and the
+/// `provider` filter decide which entries of the catalog the sequence holds, so BOTH
+/// scope the cursors that listing mints and no other selection may serve one, while the
+/// inputs that only window a page (`maxResults`) or narrow the catalog not at all (the
+/// `location` distinguisher) decide no sequence and scope nothing.
 #[tokio::test]
 async fn an_environment_cursor_is_served_only_by_the_provider_that_minted_it() {
     let (emulator, store_key) = emulator_with_store_key();
-    let region = DEFAULT_SIGNING_REGION;
-    let catalog = emulator.environments_in(region).await;
+    let catalog = emulator.environments_in(DEFAULT_SIGNING_REGION).await;
     let published = catalog
         .first()
         .expect("the Region publishes a catalog")
         .clone();
     let provider = provider_of(&published);
-    // A key of the sequence this listing really walks: the id of a published entry.
+    // A key of a sequence this listing really walks: the id of a published entry. A
+    // cursor may name a key the resuming sequence no longer holds — or never held, as the
+    // other Region's catalog does not — and resumes after that position all the same.
     let key = text(&published, "environmentId");
 
-    let selections: Vec<(&str, Option<Provider>)> = vec![
-        ("no provider filter at all", None),
-        ("the provider the catalog publishes", Some(provider.clone())),
+    // The provider selections, differing along the union member, the name, and its
+    // length: the partner the catalog publishes, that same partner on the other side of
+    // the union, a partner no catalog publishes, the empty name the member's missing
+    // floor permits, and a name at the member's published ceiling.
+    let providers: Vec<(String, Option<Provider>)> = vec![
+        ("no provider filter at all".to_string(), None),
         (
-            "the same partner on the other side of the union",
+            "the provider the catalog publishes".to_string(),
+            Some(provider.clone()),
+        ),
+        (
+            "the same partner on the other side of the union".to_string(),
             Some(other_side_of(&provider)),
         ),
+        (
+            "a partner no catalog publishes".to_string(),
+            Some(Provider::cloudServiceProvider(
+                UNPUBLISHED_PARTNER.to_string(),
+            )),
+        ),
+        (
+            "the empty partner name".to_string(),
+            Some(Provider::cloudServiceProvider(String::new())),
+        ),
+        (
+            format!("a partner name of {PARTNER_NAME_MAX_LENGTH} characters, the member's ceiling"),
+            Some(Provider::cloudServiceProvider(
+                "p".repeat(PARTNER_NAME_MAX_LENGTH),
+            )),
+        ),
     ];
+
+    // Every selection that decides one of this listing's sequences: the Region whose
+    // endpoint answers, crossed with the provider filter that narrows its catalog.
+    let mut selections: Vec<(String, &'static str, Option<Provider>)> = Vec::new();
+    for region in [DEFAULT_SIGNING_REGION, OTHER_REGION] {
+        for (label, provider) in &providers {
+            selections.push((format!("{label} in {region}"), region, provider.clone()));
+        }
+    }
 
     // Each selection's whole sequence, read off the live listing, so the served case can
     // assert the page a cursor really resumes to rather than only its status.
     let mut sequences: Vec<Vec<String>> = Vec::new();
-    for (label, provider) in &selections {
-        let mut request = Map::new();
-        if let Some(provider) = provider {
-            request.insert("provider".to_string(), provider_request_member(provider));
-        }
+    for (label, region, provider) in &selections {
         let (status, body) = emulator
-            .ic_in(region, "ListEnvironments", Value::Object(request))
+            .ic_in(
+                region,
+                "ListEnvironments",
+                environment_request(provider.as_ref(), None, None),
+            )
             .await;
         assert_eq!(
             status, 200,
@@ -1019,24 +1099,23 @@ async fn an_environment_cursor_is_served_only_by_the_provider_that_minted_it() {
     }
 
     let mut pairs_driven = 0_usize;
-    for (minted_label, minted) in &selections {
+    for (minted_label, minted_region, minted) in &selections {
         // The cursor that selection's listing mints, minted the one way the store mints
         // one: under its own secret, over the scope of the inputs that decided its
         // sequence.
         let token = encode_cursor(
             &store_key,
-            &environment_cursor_scope(region, minted.as_ref()),
+            &environment_cursor_scope(minted_region, minted.as_ref()),
             &key,
         );
-        for (position, (label, resuming)) in selections.iter().enumerate() {
+        for (position, (label, region, resuming)) in selections.iter().enumerate() {
             pairs_driven += 1;
-            let mut request = Map::new();
-            if let Some(provider) = resuming {
-                request.insert("provider".to_string(), provider_request_member(provider));
-            }
-            request.insert("nextToken".to_string(), json!(token));
             let (status, body) = emulator
-                .ic_in(region, "ListEnvironments", Value::Object(request))
+                .ic_in(
+                    region,
+                    "ListEnvironments",
+                    environment_request(resuming.as_ref(), Some(&token), None),
+                )
                 .await;
             let case = format!("an Environment cursor of {minted_label:?} offered to {label:?}");
             if label == minted_label {
@@ -1046,14 +1125,9 @@ async fn an_environment_cursor_is_served_only_by_the_provider_that_minted_it() {
                 );
                 // A cursor names a POSITION, so the page it is served is this selection's
                 // own sequence from the first key past the one the cursor carries.
-                let expected: Vec<String> = sequences[position]
-                    .iter()
-                    .filter(|id| id.as_str() > key.as_str())
-                    .cloned()
-                    .collect();
                 assert_eq!(
                     environment_ids(&body),
-                    expected,
+                    after_key(&sequences[position], &key),
                     "case {case:?}: expected this sequence resumed after {key:?}, got {body:?}"
                 );
             } else {
@@ -1072,25 +1146,81 @@ async fn an_environment_cursor_is_served_only_by_the_provider_that_minted_it() {
                     "case {case:?}: expected this service's one wording for a cursor it did not issue, got {:?}",
                     message(&body)
                 );
+                assert!(
+                    body["environments"].as_array().is_none(),
+                    "case {case:?}: expected no page at all, got {:?}",
+                    body["environments"]
+                );
             }
         }
     }
     assert_eq!(
         pairs_driven,
         selections.len() * selections.len(),
-        "case \"the Environment provider table\": expected every pair of provider selections to be driven, got {pairs_driven}"
+        "case \"the Region and provider table\": expected every pair of selections to be driven, got {pairs_driven}"
     );
+
+    // `maxResults` is "the max number of list results in a single paginated response": it
+    // cuts the page, it does not choose the sequence, so it scopes no cursor — a listing
+    // serves its own cursor whatever window the resuming call carries, and what it serves
+    // is that window's worth of the same resumed sequence. A `nextToken` comes back
+    // exactly while items remain after the page, which against the catalog this service
+    // publishes (one Environment per Region, `state::environment_catalog`) is never: these
+    // rows pin the ABSENT side of that, and the `ListConnections` suite above drives the
+    // present side over a sequence long enough to have one.
+    for (position, (label, region, provider)) in selections.iter().enumerate() {
+        let token = encode_cursor(
+            &store_key,
+            &environment_cursor_scope(region, provider.as_ref()),
+            &key,
+        );
+        let resumed = after_key(&sequences[position], &key);
+        for window in WINDOW_BOUNDS {
+            let case = format!("a cursor of {label:?} resumed with maxResults {window}");
+            let (status, body) = emulator
+                .ic_in(
+                    region,
+                    "ListEnvironments",
+                    environment_request(provider.as_ref(), Some(&token), Some(window)),
+                )
+                .await;
+            assert_eq!(
+                status, 200,
+                "case {case:?}: expected a window to scope no cursor, got {status} with {body:?}"
+            );
+            let expected: Vec<String> = resumed
+                .iter()
+                .take(usize::try_from(window).expect("a modelled window is positive"))
+                .cloned()
+                .collect();
+            assert_eq!(
+                environment_ids(&body),
+                expected,
+                "case {case:?}: expected this window's worth of the sequence resumed after {key:?}, got {body:?}"
+            );
+            assert_eq!(
+                body["nextToken"].is_string(),
+                resumed.len() > expected.len(),
+                "case {case:?}: expected a nextToken exactly while items remain after the page, got {:?}",
+                body["nextToken"]
+            );
+        }
+    }
 
     // The distinguisher narrows nothing here, so it decides no sequence: a cursor of the
     // unnarrowed listing is served whatever `location` the call that resumes carries.
-    let token = encode_cursor(&store_key, &environment_cursor_scope(region, None), &key);
+    let token = encode_cursor(
+        &store_key,
+        &environment_cursor_scope(DEFAULT_SIGNING_REGION, None),
+        &key,
+    );
     for distinguisher in [
         text(&published, "location"),
         "a distinguisher no Environment publishes".to_string(),
     ] {
         let (status, body) = emulator
             .ic_in(
-                region,
+                DEFAULT_SIGNING_REGION,
                 "ListEnvironments",
                 json!({ "location": distinguisher, "nextToken": token }),
             )
@@ -1100,6 +1230,44 @@ async fn an_environment_cursor_is_served_only_by_the_provider_that_minted_it() {
             "case {distinguisher:?}: expected a location distinguisher to scope no cursor, got {status} with {body:?}"
         );
     }
+
+    // One character past the member's ceiling is a fault in the REQUEST, reported as the
+    // length violation every reader of a `Provider` reports — not judged as a cursor, and
+    // not answered with a page, even behind a cursor minted for that very selection.
+    let past_ceiling = Provider::cloudServiceProvider("p".repeat(PARTNER_NAME_MAX_LENGTH + 1));
+    let token = encode_cursor(
+        &store_key,
+        &environment_cursor_scope(DEFAULT_SIGNING_REGION, Some(&past_ceiling)),
+        &key,
+    );
+    let (status, body) = emulator
+        .ic_in(
+            DEFAULT_SIGNING_REGION,
+            "ListEnvironments",
+            environment_request(Some(&past_ceiling), Some(&token), None),
+        )
+        .await;
+    let case = "a partner name one character past the member's ceiling";
+    assert_eq!(
+        status, 400,
+        "case {case:?}: expected HTTP 400 for a value the member cannot hold, got {status} with {body:?}"
+    );
+    // The sentence itself, so the row covers the wording and not only the order the two
+    // verdicts are reached in: the member that carried the value and the ceiling it is
+    // held to, neither of them the value echoed back.
+    assert!(
+        message(&body).contains(&format!(
+            "provider.cloudServiceProvider must be at most {PARTNER_NAME_MAX_LENGTH} characters long"
+        )),
+        "case {case:?}: expected the member and its ceiling named, got {:?}",
+        message(&body)
+    );
+    assert_eq!(
+        message(&body),
+        provider_violation(&past_ceiling).expect("a name past the ceiling violates it"),
+        "case {case:?}: expected this service's wording for a value the member cannot hold, got {:?}",
+        message(&body)
+    );
 }
 
 /// The character the fields of a cursor scope are divided by, which the values a caller

@@ -9,6 +9,20 @@ _Operation: ListEnvironments | Class: pagination_
 
 > _Note: this issue was identified against the code base at commit `657b97543b8e608c75aab9edda765f25072992b5`. If you are an issue fixer working on this, the code base you are currently working in can have drifted, so you might need to trace the issue back to the current code base._
 
+## Resolution
+
+The code base had drifted by the time this was picked up: the scope a `ListEnvironments`
+cursor is authenticated under already names the operation, the Region whose endpoint
+answered AND the `provider` the catalog was narrowed by
+(`state::environment_cursor_scope`, applied in `ops/list_environments.rs`), rendering the
+union member beside the name so two listings share a scope exactly when the filter selects
+the same records for both — the rule the sibling listings follow. No behaviour change was
+needed; the rule is now pinned by
+`tests/all/page_cursors_are_only_what_the_listing_minted.rs`'s
+`an_environment_cursor_is_served_only_by_the_provider_that_minted_it`, which drives every
+pairing of two Regions with six provider selections and demands HTTP 400 for a cursor of
+any other selection, beside the window and `location` inputs that scope no cursor.
+
 ## Description
 
 `ListEnvironments` authenticates its `nextToken` under the scope `env:<region>` only (`crate::state::environment_cursor_scope`), which names the operation and the Region and NOTHING about the `provider` filter that narrows the sequence the cursor names a position in. The handler itself does narrow on `provider` two statements earlier, and its own comment asserts that `provider` "narrows the catalog exactly" — yet the comment that chooses the cursor scope claims the sequence is decided by Region alone ("the sequence a cursor names a position in is this Region's own catalog"). Those two statements in the same function cannot both be true.
