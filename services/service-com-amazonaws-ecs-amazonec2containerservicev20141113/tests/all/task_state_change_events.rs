@@ -40,9 +40,14 @@ use crate::task_lifecycle::container;
 
 /// The `source` and `detail-type` Amazon ECS publishes a task's state changes under, spelled
 /// out here rather than imported, so a wrong constant in the implementation cannot make a
-/// test pass.
-const EVENT_SOURCE: &str = "aws.ecs";
-const TASK_STATE_CHANGE: &str = "ECS Task State Change";
+/// test pass. Shared with the suites that read those same publications, so the binary spells
+/// each of them out once.
+pub(crate) const EVENT_SOURCE: &str = "aws.ecs";
+pub(crate) const TASK_STATE_CHANGE: &str = "ECS Task State Change";
+
+/// The two task statuses those suites select the published envelopes by.
+pub(crate) const RUNNING: &str = "RUNNING";
+pub(crate) const STOPPED: &str = "STOPPED";
 
 /// The rule that matches an ECS task event, and the rule that cannot.
 const MATCHING_RULE: &str = "ecs-task-state-change";
@@ -55,7 +60,17 @@ const CLUSTER: &str = "eventing";
 const IMAGE: &str = "public.ecr.aws/nginx/nginx:latest";
 
 /// How often a poll re-reads the target queue.
-const POLL_INTERVAL: Duration = Duration::from_millis(50);
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// How long a poll waiting on a STANDALONE task's whole run keeps trying before it gives up:
+/// the start of an `awsvpc` task ([`AWSVPC_START`]), the work such a task was placed to do
+/// (`state::CONTAINER_WORK_SPAN`), the stop that follows it and the delivery of the events it
+/// earned, with generous margin for a loaded test machine.
+pub(crate) const STANDALONE_RUN_POLL_BUDGET: Duration = AWSVPC_START
+    .saturating_add(
+        service_com_amazonaws_ecs_amazonec2containerservicev20141113::state::CONTAINER_WORK_SPAN,
+    )
+    .saturating_add(Duration::from_secs(30));
 
 /// How long a poll keeps trying before it gives up: the whole start of an `awsvpc` task
 /// ([`AWSVPC_START`]), the work a standalone task is placed to do
@@ -342,7 +357,81 @@ fn task_event_pattern(cluster_arn: &str) -> Value {
 
 /// The ARN of the cluster these suites run their tasks in.
 fn cluster_arn() -> String {
-    format!("arn:aws:ecs:{SIGNED_REGION}:{ACCOUNT}:cluster/{CLUSTER}")
+    cluster_arn_of(CLUSTER)
+}
+
+/// The ARN of the cluster `cluster` names, in the Region these suites sign for.
+pub(crate) fn cluster_arn_of(cluster: &str) -> String {
+    format!("arn:aws:ecs:{SIGNED_REGION}:{ACCOUNT}:cluster/{cluster}")
+}
+
+/// The pattern of a rule scoped to the tasks of ONE cluster that STOPPED with a container
+/// that exited `exit_code`: the member it constrains sits inside the event's `containers`
+/// array.
+pub(crate) fn exit_code_pattern(cluster_arn: &str, exit_code: i64) -> Value {
+    json!({
+        "source": [EVENT_SOURCE],
+        "detail-type": [TASK_STATE_CHANGE],
+        "detail": {
+            "clusterArn": [cluster_arn],
+            "lastStatus": [STOPPED],
+            "containers": { "exitCode": [exit_code] },
+        },
+    })
+}
+
+/// The envelopes among `events` that are about the task `task_arn`.
+pub(crate) fn events_of<'a>(events: &'a [Value], task_arn: &str) -> Vec<&'a Value> {
+    events
+        .iter()
+        .filter(|event| event["detail"]["taskArn"] == json!(task_arn))
+        .collect()
+}
+
+/// Register one `awsvpc` FARGATE revision of `family` made of `containers`, and place ONE
+/// task of it in `cluster`. Answers the task's ARN.
+pub(crate) async fn place_fargate_task(
+    router: &MultiServiceRouter,
+    cluster: &str,
+    family: &str,
+    containers: Vec<Value>,
+    case: &str,
+) -> String {
+    ok(
+        router,
+        "RegisterTaskDefinition",
+        json!({
+            "family": family,
+            "networkMode": "awsvpc",
+            "requiresCompatibilities": ["FARGATE"],
+            // The documented Fargate task size the recorded check uses: 256 CPU units, 512 MiB.
+            "cpu": "256",
+            "memory": "512",
+            "containerDefinitions": containers,
+        }),
+        case,
+    )
+    .await;
+    let placed = ok(
+        router,
+        "RunTask",
+        json!({
+            "cluster": cluster,
+            "taskDefinition": family,
+            "launchType": "FARGATE",
+            "count": 1,
+            "networkConfiguration": awsvpc_network_configuration(),
+        }),
+        case,
+    )
+    .await;
+    let tasks = list(&placed, "tasks", case);
+    assert_eq!(
+        tasks.len(),
+        1,
+        "case {case:?}: expected RunTask to place one task, got {placed}"
+    );
+    string(&tasks[0], "taskArn", case)
 }
 
 /// Register one revision of `family` in `network_mode` with a single container, plus the
@@ -670,10 +759,20 @@ async fn place(router: &MultiServiceRouter, row: &Row, family: &str, case: &str)
 /// Read ONE task back through `DescribeTasks` — the stored record, not the answer of the
 /// call that created it.
 async fn describe(router: &MultiServiceRouter, task_arn: &str, case: &str) -> Value {
+    describe_task_in(router, CLUSTER, task_arn, case).await
+}
+
+/// The same read, of a task in the cluster `cluster` names.
+pub(crate) async fn describe_task_in(
+    router: &MultiServiceRouter,
+    cluster: &str,
+    task_arn: &str,
+    case: &str,
+) -> Value {
     let body = ok(
         router,
         "DescribeTasks",
-        json!({ "cluster": CLUSTER, "tasks": [task_arn] }),
+        json!({ "cluster": cluster, "tasks": [task_arn] }),
         case,
     )
     .await;

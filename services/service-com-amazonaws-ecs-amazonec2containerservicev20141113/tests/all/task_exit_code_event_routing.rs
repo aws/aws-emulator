@@ -31,21 +31,17 @@
 //! ([`crate::task_state_change_events::emulator`]), so a publication travels the real
 //! in-process callback, through the real bus, to a real queue.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::ecs_wire::{
-    awsvpc_network_configuration, list, ok, string, ACCOUNT, AWSVPC_START, SIGNED_REGION,
+use crate::ecs_wire::{list, ok};
+use crate::task_state_change_events::{
+    cluster_arn_of, describe_task_in, drain, emulator, events_of, exit_code_pattern, given_queue,
+    given_rule, grant_delivery, place_fargate_task, EVENT_SOURCE, POLL_INTERVAL, RUNNING,
+    STANDALONE_RUN_POLL_BUDGET, STOPPED, TASK_STATE_CHANGE,
 };
-use crate::task_state_change_events::{drain, emulator, given_queue, given_rule, grant_delivery};
-
-/// The `source` and `detail-type` Amazon ECS publishes a task's state changes under,
-/// spelled out here rather than imported, so a wrong constant in the implementation cannot
-/// make a test pass.
-const EVENT_SOURCE: &str = "aws.ecs";
-const TASK_STATE_CHANGE: &str = "ECS Task State Change";
 
 /// The cluster every task below runs in.
 const CLUSTER: &str = "exitrouting";
@@ -53,23 +49,6 @@ const CLUSTER: &str = "exitrouting";
 /// The image every container below starts from. Nothing is fetched from it: what runs is
 /// the `command` the revision states.
 const IMAGE: &str = "public.ecr.aws/docker/library/busybox:latest";
-
-/// The task statuses this suite reads off the delivered events.
-const RUNNING: &str = "RUNNING";
-const STOPPED: &str = "STOPPED";
-
-/// How often a poll re-reads the target queues.
-const POLL_INTERVAL: Duration = Duration::from_millis(50);
-
-/// How long the poll keeps trying before it gives up: the whole start of an `awsvpc` task
-/// ([`AWSVPC_START`]), the work a standalone task is placed to do
-/// (`state::CONTAINER_WORK_SPAN`), the stop that follows it and the delivery of the events,
-/// with generous margin for a loaded test machine.
-const POLL_BUDGET: Duration = AWSVPC_START
-    .saturating_add(
-        service_com_amazonaws_ecs_amazonec2containerservicev20141113::state::CONTAINER_WORK_SPAN,
-    )
-    .saturating_add(Duration::from_secs(30));
 
 /// One row: the status a task's container exits with, and so the status the rule that is to
 /// receive that task's `STOPPED` event names.
@@ -102,22 +81,7 @@ const ROWS: &[Row] = &[
 
 /// The ARN of the cluster this suite runs its tasks in.
 fn cluster_arn() -> String {
-    format!("arn:aws:ecs:{SIGNED_REGION}:{ACCOUNT}:cluster/{CLUSTER}")
-}
-
-/// The pattern of a rule scoped to the tasks of one cluster that STOPPED with a container
-/// that exited `exit_code`: the member it constrains sits inside the event's `containers`
-/// array.
-fn exit_code_pattern(cluster_arn: &str, exit_code: i64) -> Value {
-    json!({
-        "source": [EVENT_SOURCE],
-        "detail-type": [TASK_STATE_CHANGE],
-        "detail": {
-            "clusterArn": [cluster_arn],
-            "lastStatus": [STOPPED],
-            "containers": { "exitCode": [exit_code] },
-        },
-    })
+    cluster_arn_of(CLUSTER)
 }
 
 /// The pattern of a rule that takes EVERY move of the cluster's tasks, whatever it moved
@@ -149,14 +113,6 @@ fn version_of(event: &Value) -> Option<i64> {
     event["detail"]["version"].as_i64()
 }
 
-/// The events of one task, in the order they arrived.
-fn events_of<'a>(events: &'a [Value], task_arn: &str) -> Vec<&'a Value> {
-    events
-        .iter()
-        .filter(|event| event["detail"]["taskArn"] == json!(task_arn))
-        .collect()
-}
-
 /// The first collected event reporting `status`.
 fn event_in<'a>(events: &[&'a Value], status: &str) -> Option<&'a Value> {
     events
@@ -173,61 +129,24 @@ async fn place_task(
     program: &str,
     case: &str,
 ) -> String {
-    ok(
+    place_fargate_task(
         router,
-        "RegisterTaskDefinition",
-        json!({
-            "family": family,
-            "networkMode": "awsvpc",
-            "requiresCompatibilities": ["FARGATE"],
-            // The documented Fargate task size the recorded scenario uses.
-            "cpu": "256",
-            "memory": "512",
-            "containerDefinitions": [{
-                "name": "app",
-                "image": IMAGE,
-                "essential": true,
-                "command": ["sh", "-c", program],
-            }],
-        }),
+        CLUSTER,
+        family,
+        vec![json!({
+            "name": "app",
+            "image": IMAGE,
+            "essential": true,
+            "command": ["sh", "-c", program],
+        })],
         case,
     )
-    .await;
-    let placed = ok(
-        router,
-        "RunTask",
-        json!({
-            "cluster": CLUSTER,
-            "taskDefinition": family,
-            "launchType": "FARGATE",
-            "count": 1,
-            "networkConfiguration": awsvpc_network_configuration(),
-        }),
-        case,
-    )
-    .await;
-    let tasks = list(&placed, "tasks", case);
-    assert_eq!(
-        tasks.len(),
-        1,
-        "case {case:?}: expected RunTask to place one task, got {placed}"
-    );
-    string(&tasks[0], "taskArn", case)
+    .await
 }
 
 /// One task, as `DescribeTasks` reports it.
 async fn describe(router: &MultiServiceRouter, task_arn: &str, case: &str) -> Value {
-    let body = ok(
-        router,
-        "DescribeTasks",
-        json!({ "cluster": CLUSTER, "tasks": [task_arn] }),
-        case,
-    )
-    .await;
-    list(&body, "tasks", case)
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| panic!("case {case:?}: expected one task back, got {body}"))
+    describe_task_in(router, CLUSTER, task_arn, case).await
 }
 
 #[tokio::test]
@@ -286,7 +205,7 @@ async fn a_stopped_task_event_reaches_only_the_rule_naming_its_container_exit_st
     // takes every move — and stops the instant it holds.
     let mut delivered: Vec<Vec<Value>> = ROWS.iter().map(|_| Vec::new()).collect();
     let mut moves: Vec<Value> = Vec::new();
-    let deadline = Instant::now() + POLL_BUDGET;
+    let deadline = Instant::now() + STANDALONE_RUN_POLL_BUDGET;
     loop {
         for (index, url) in scoped.iter().enumerate() {
             let batch = drain(&router, ROWS[index].case, url).await;
@@ -501,7 +420,7 @@ async fn a_task_whose_container_ran_before_ending_is_routed_by_the_status_it_end
     // until every task reports STOPPED, and what it then reports is what the delivered events
     // are held against below.
     let mut reported: Vec<Value> = Vec::new();
-    let deadline = Instant::now() + POLL_BUDGET;
+    let deadline = Instant::now() + STANDALONE_RUN_POLL_BUDGET;
     loop {
         reported.clear();
         for (index, task_arn) in task_arns.iter().enumerate() {
@@ -533,7 +452,7 @@ async fn a_task_whose_container_ran_before_ending_is_routed_by_the_status_it_end
     // The BUS half: each task's stop is on the queue of the rule naming the status its
     // container ended with, and on no other rule's queue.
     let mut delivered: Vec<Vec<Value>> = RAN_THEN_EXITED_ROWS.iter().map(|_| Vec::new()).collect();
-    let deadline = Instant::now() + POLL_BUDGET;
+    let deadline = Instant::now() + STANDALONE_RUN_POLL_BUDGET;
     loop {
         for (index, url) in scoped.iter().enumerate() {
             let batch = drain(&router, RAN_THEN_EXITED_ROWS[index].case, url).await;
