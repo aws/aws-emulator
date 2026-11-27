@@ -64,15 +64,15 @@ async fn the_published_address_is_dialable_as_given_and_the_api_is_served_under_
 
         // One socket serves the account's apis, so two published values name two paths on one
         // address: the PATH is what says which api answers.
-        assert_ne!(
-            path, twin_path,
-            "case {case:?}: expected each api published under its own path, got {path:?} for \
-             both"
-        );
         assert_eq!(
             authority, twin_authority,
             "case {case:?}: expected both apis published on one socket, got {authority:?} and \
              {twin_authority:?}"
+        );
+        assert_ne!(
+            path, twin_path,
+            "case {case:?}: expected each api published under its own path, got {path:?} for \
+             both"
         );
 
         // The invoke URL a client builds from the published value: the stage name appended,

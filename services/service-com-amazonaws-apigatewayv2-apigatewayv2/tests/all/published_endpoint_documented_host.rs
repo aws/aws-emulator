@@ -444,7 +444,7 @@ async fn the_published_path_carries_the_apis_own_id() {
     }
 
     // A later read signed for a THIRD Region, addressed at ANOTHER endpoint of this emulator,
-    // reports the value the create settled: the host is the api's, not the reader's.
+    // reports the value the create settled: the address is the api's, not the reader's.
     let (status, read) = call_at_host(
         &emulator,
         ANOTHER_EMULATOR_HOST,

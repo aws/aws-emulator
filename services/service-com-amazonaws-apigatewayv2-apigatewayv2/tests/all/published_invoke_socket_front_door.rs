@@ -482,8 +482,7 @@ async fn a_disabled_default_endpoint_refuses_at_the_address_it_published() {
     assert_eq!(
         target.authority, twin.authority,
         "case {case:?}: expected both apis published on one socket, got {} and {}",
-        target.authority,
-        twin.authority
+        target.authority, twin.authority
     );
 
     // Both apis are served by the function to begin with, in every form a client builds the

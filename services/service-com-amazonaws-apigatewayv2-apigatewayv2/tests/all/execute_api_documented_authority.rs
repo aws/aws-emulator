@@ -14,8 +14,8 @@
 //! > appends `/{stageName}/{routePath}` reaches the api's route. An authority whose leading
 //! > label names no api of the account reaches no api, and the `execute-api` endpoint space
 //! > answers it itself; so does one that names the api in a zone neither AWS publishes it in
-//! > nor this emulator announces it in, because a name any other resolver could point at this
-//! > address is the one the core's `Host` allowlist refuses.
+//! > nor a resolver may point at this interface, because a name any other resolver could point
+//! > at this address is the one the core's `Host` allowlist refuses.
 //!
 //! The rows span what the rule generalises over: the address the request is made to (the
 //! `host:port` the api's own data-plane socket is published at, and this emulator's own front
@@ -23,9 +23,9 @@
 //! whether the client wrote the port it connected on, the stage the path names (the reserved
 //! `$default` stage that serves the api's root, and a named one), and the authorities that
 //! reach no api (an api id the account does not hold, a host that is no `execute-api` endpoint
-//! at all, the api's name in a zone neither AWS publishes it in nor this emulator announces it
-//! in — which only somebody else's resolver could point at this address — and a path that
-//! would resolve out of the api); and
+//! at all, the api's name in a zone neither AWS publishes it in nor a resolver may point at
+//! this interface — which only somebody else's resolver could point at this address — and a
+//! path that would resolve out of the api); and
 //! the operation that MINTED the api (`CreateApi`, `ImportApi`, `ReimportApi`).
 //!
 //! What an api's endpoint member ANNOUNCES is a different question — an announced address is
@@ -267,9 +267,9 @@ async fn the_published_address_serves_the_documented_execute_api_authority() {
             FORBIDDEN,
         ),
         (
-            // The loopback zone is the one this emulator ANNOUNCES the api's endpoint in:
-            // RFC 6761 reserves it and every name under it for the loopback interface the
-            // core binds on, so no resolver somebody else controls can point it here either.
+            // The loopback zone is the one a resolver may point at the interface the core binds
+            // on: RFC 6761 reserves it and every name under it for that interface, so no
+            // resolver somebody else controls can point it here either.
             "the same api named in the loopback zone".to_string(),
             format!("{api}.execute-api.{REGION}.localhost"),
             ROUTE_PATH.to_string(),
