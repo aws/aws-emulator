@@ -7,7 +7,7 @@
 //! `awsJson1_0` bodies, `POST /` and `X-Amz-Target: MailManagerSvc.<Operation>` — so what it
 //! pins is the emulator's HTTP behaviour, not an internal helper.
 //!
-//! RULE: where an operation reports an identifier it cannot resolve as a fault in the
+//! RULE: where an operation reports an identifier it has NO resource for as a fault in the
 //! REQUEST (the modelled `ValidationException`, HTTP 400), the message is the fixed text
 //! `Invalid ` followed by the INPUT MEMBER's name as the model spells it, and it echoes
 //! neither the value it was handed nor anything from the store.
@@ -18,10 +18,11 @@
 //! each member's modelled length, a plausible minted-looking value, and for the
 //! pattern-constrained member a hyphenated form the pattern admits).
 //!
-//! `archive_search_reachability.rs` pins the same wording for a `SearchId` whose job was
-//! taken out of reach by its archive going away; this suite is about the WORDING shared
-//! across members. Nothing here waits for a clock: an identifier that resolves to nothing is
-//! refused whatever state the store is in.
+//! A `SearchId` whose search this service DOES have a record of, but can no longer serve
+//! because its archive went away, is a different condition and carries its own wording;
+//! `search_read_not_found_message.rs` and `archive_search_reachability.rs` pin that one. This
+//! suite is about the wording an identifier naming nothing carries. Nothing here waits for a
+//! clock: an identifier that names nothing is refused whatever state the store is in.
 
 use std::sync::Arc;
 

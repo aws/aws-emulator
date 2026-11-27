@@ -7,12 +7,14 @@
 //! `awsJson1_0` bodies, `POST /` and `X-Amz-Target: MailManagerSvc.<Operation>` — so what it
 //! pins is the emulator's HTTP behaviour, not an internal helper.
 //!
-//! RULE: an operation that cannot resolve the search a `SearchId` names refuses the id as an
-//! unacceptable input MEMBER, in one fixed wording that echoes no id back — whichever of the
-//! two reads resolved it, and whichever way the id failed to resolve. The table below is that
-//! class: both reads against both ways a `SearchId` resolves to nothing (one never minted, at
-//! both ends of the modelled 1..64 length and inside it; and a real job whose archive no
-//! longer serves job operations).
+//! RULE: an operation that cannot resolve the search a `SearchId` names refuses the request
+//! with a validation failure (HTTP 400, `ValidationException`) carrying the fixed text of the
+//! condition it met and no id at all — the input MEMBER is unacceptable when this service
+//! holds no search of that id, and the SEARCH is not there when it holds one whose archive no
+//! longer serves job operations — whichever of the two reads resolved it. The table below is
+//! that class: both reads against both ways a `SearchId` resolves to nothing (one never
+//! minted, at both ends of the modelled 1..64 length and inside it; and a real job whose
+//! archive no longer serves job operations).
 //!
 //! The minted `ArchiveId`'s own form, and the search lifecycle on it, are pinned by
 //! `archive_lifecycle.rs`; the rows a completed search reports by `archive_search_results.rs`.
@@ -28,9 +30,13 @@ use smithy_server_runtime::MultiServiceRouter;
 /// The region the test signs for.
 const REGION: &str = "eu-west-1";
 
-/// The message every refusal of an id that resolves to no search job carries, spelled out
+/// The message a refusal of an id this service holds no search job for carries, spelled out
 /// here rather than read off the implementation so a change of wording fails this suite.
 const SEARCH_ID_INVALID: &str = "Invalid SearchId";
+
+/// The message a refusal of a search job this service holds but no longer serves carries;
+/// spelled out for the same reason as [`SEARCH_ID_INVALID`].
+const SEARCH_NOT_FOUND: &str = "Search not found.";
 
 /// The two instants the search below is asked over. Any pair inside `Timestamp`'s range does;
 /// these are epoch seconds a day apart.
@@ -102,11 +108,11 @@ fn error_message(body: &Value) -> Option<&str> {
         .or_else(|| body["message"].as_str())
 }
 
-/// An id that resolves to no search job is refused as an unacceptable `SearchId` — same
-/// status, same error code and same fixed text for both reads that take a `SearchId` and for
-/// both ways an id resolves to nothing.
+/// An id that resolves to no search job is refused with the same status, the same error code
+/// and the fixed text of its condition — for both reads that take a `SearchId`, and for both
+/// ways an id resolves to nothing.
 #[tokio::test]
-async fn an_unresolvable_search_id_is_refused_as_an_invalid_search_id() {
+async fn an_unresolvable_search_id_is_refused_with_its_conditions_message() {
     let harness = Harness::new();
 
     // A real job, of an archive that is then deleted — the archive going away is what takes
@@ -146,18 +152,34 @@ async fn an_unresolvable_search_id_is_refused_as_an_invalid_search_id() {
         .await;
     assert_eq!(status, 200, "DeleteArchive must answer 200, got {status} {out:?}");
 
-    // (case, the id presented) — ids inside `SearchId`'s modelled 1..64 length
-    // (`smithy_query(query="shape",shape="SearchId")`) that resolve to nothing: the shortest,
-    // a plausible minted-looking value, the longest, and the id of a job whose archive no
-    // longer serves job operations.
-    let cases: [(&str, String); 4] = [
-        ("the shortest id the length admits", "s".to_string()),
-        ("a plausible minted id", "0123456789abcdef".repeat(2)),
-        ("the longest id the length admits", "s".repeat(64)),
-        ("a job of a deleted archive", job_of_a_deleted_archive),
+    // (case, the id presented, the message that condition carries) — ids inside `SearchId`'s
+    // modelled 1..64 length (`smithy_query(query="shape",shape="SearchId")`) that resolve to
+    // nothing: the shortest, a plausible minted-looking value, the longest, and the id of a
+    // job whose archive no longer serves job operations.
+    let cases: [(&str, String, &str); 4] = [
+        (
+            "the shortest id the length admits",
+            "s".to_string(),
+            SEARCH_ID_INVALID,
+        ),
+        (
+            "a plausible minted id",
+            "0123456789abcdef".repeat(2),
+            SEARCH_ID_INVALID,
+        ),
+        (
+            "the longest id the length admits",
+            "s".repeat(64),
+            SEARCH_ID_INVALID,
+        ),
+        (
+            "a job of a deleted archive",
+            job_of_a_deleted_archive,
+            SEARCH_NOT_FOUND,
+        ),
     ];
 
-    for (case, search_id) in &cases {
+    for (case, search_id, expected) in &cases {
         for operation in ["GetArchiveSearch", "GetArchiveSearchResults"] {
             let (status, out) = harness
                 .call(operation, json!({ "SearchId": search_id }))
@@ -174,8 +196,8 @@ async fn an_unresolvable_search_id_is_refused_as_an_invalid_search_id() {
             );
             assert_eq!(
                 error_message(&out),
-                Some(SEARCH_ID_INVALID),
-                "case {case:?} ({operation}): unexpected message, got {out:?}"
+                Some(*expected),
+                "case {case:?} ({operation}): expected message {expected:?}, got {out:?}"
             );
         }
     }

@@ -282,9 +282,9 @@ pub fn member_of_address_list_not_found_message(address_list_id: &str) -> String
 ///
 /// The text is entirely fixed: it states that the `JobId` member is not acceptable and
 /// echoes no id back, which is why this is the modelled `ValidationException` (already
-/// `@httpError 400`) rather than the address-list answer above. The one wording every
-/// validation refusal of an unresolvable identifier in this service carries — "Invalid "
-/// followed by the input member's name (see [`SEARCH_ID_INVALID`]).
+/// `@httpError 400`) rather than the address-list answer above. The wording a refusal of an
+/// identifier this service holds no resource for carries — "Invalid " followed by the input
+/// member's name (see [`SEARCH_ID_INVALID`]).
 pub const IMPORT_JOB_ID_INVALID: &str = "Invalid JobId";
 
 /// The `ImportJobStatus` a created address-list import job carries.
@@ -662,18 +662,53 @@ impl ArchivedMessageRecord {
 /// no id back.
 pub const SEARCH_NOT_COMPLETED: &str = "Search is not completed yet.";
 
-/// How the search reads word the refusal of a `SearchId` that resolves to no search job
-/// this store serves — one that was never minted, and one whose archive is gone or no
-/// longer [`ARCHIVE_STATE_ACTIVE`].
+/// How the search reads word the refusal of a `SearchId` this store holds no search job
+/// for: nothing it ever minted, and nothing left of a job whose archive is permanently
+/// gone.
 ///
-/// The search reads model no `ResourceNotFoundException` at all, so a `SearchId` that names
-/// nothing is a fault in the REQUEST, carried by the modelled `ValidationException`
-/// (already `@httpError 400`); a validation refusal of an identifier states that the input
-/// MEMBER is unacceptable, so the text is "Invalid " followed by the member's name as the
-/// model spells it — entirely fixed, echoing neither the id it was handed nor anything from
-/// the store. The same wording the import-job read's `JobId` carries
-/// ([`IMPORT_JOB_ID_INVALID`]).
+/// The service has no search to speak about, so what it refuses is the input MEMBER: the
+/// text is "Invalid " followed by the member's name as the model spells it, entirely fixed
+/// and echoing neither the id it was handed nor anything from the store. A `SearchId` that
+/// does name a search this store holds is refused as the SEARCH's own condition instead
+/// (see [`SEARCH_NOT_FOUND`]).
 pub const SEARCH_ID_INVALID: &str = "Invalid SearchId";
+
+/// How the search reads word the refusal of a `SearchId` whose search job this store holds
+/// but no longer serves, because the archive it searched is gone or no longer
+/// [`ARCHIVE_STATE_ACTIVE`].
+///
+/// The search exists as far as the service is concerned, and what is not there is the
+/// SEARCH, so the text states that condition in one fixed sentence that echoes neither the
+/// `SearchId` nor the `ArchiveId` — the shape this service's job operations state a missing
+/// resource in (see [`ARCHIVE_NOT_FOUND`]).
+pub const SEARCH_NOT_FOUND: &str = "Search not found.";
+
+/// Why a search read refuses the `SearchId` it was handed; see
+/// [`ComAmazonawsMailmanagerMailmanagersvcState::resolve_search_job`].
+///
+/// Neither search read models a `ResourceNotFoundException` at all, so both conditions are
+/// a fault in the REQUEST and travel as the modelled `ValidationException` (already
+/// `@httpError 400`): the MESSAGE is the only thing that tells a caller which of the two it
+/// met, so each carries its own fixed text ([`Self::message`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchReadRefusal {
+    /// This store holds no search job of that id at all.
+    UnknownSearchId,
+    /// A search job of that id is held, but the archive it searched no longer serves job
+    /// operations, so the search itself is no longer there.
+    SearchGone,
+}
+
+impl SearchReadRefusal {
+    /// The whole message this refusal carries — fixed text with no variable part, so a
+    /// refusal reveals nothing of the request or of the store.
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::UnknownSearchId => SEARCH_ID_INVALID,
+            Self::SearchGone => SEARCH_NOT_FOUND,
+        }
+    }
+}
 
 /// The most rule sets this emulator keeps, i.e. its per-account rule-set quota.
 ///
@@ -982,16 +1017,26 @@ impl ComAmazonawsMailmanagerMailmanagersvcState {
         mint_id(self.import_job_sequence, now_millis)
     }
 
-    /// The search job `search_id` names, if this store still serves it.
+    /// The search job `search_id` names, if this store still serves it, and why it does not
+    /// when it does not.
     ///
-    /// Shared by the two search reads, so one `SearchId` resolves the same way for both: a
-    /// job of an archive that is gone, or one no longer [`ARCHIVE_STATE_ACTIVE`], is no
-    /// longer reachable and is reported exactly as one that was never minted (see
-    /// [`SEARCH_ID_INVALID`]).
-    pub fn resolve_search_job(&self, search_id: &str) -> Option<&SearchJobRecord> {
-        self.archive_searches
+    /// Shared by the two search reads, so one `SearchId` resolves the same way for both,
+    /// and it tells the two refusals apart: an id this store holds no job for is
+    /// [`SearchReadRefusal::UnknownSearchId`], while a job whose archive is gone or no
+    /// longer [`ARCHIVE_STATE_ACTIVE`] is held but unreachable
+    /// ([`SearchReadRefusal::SearchGone`]).
+    pub fn resolve_search_job(
+        &self,
+        search_id: &str,
+    ) -> Result<&SearchJobRecord, SearchReadRefusal> {
+        let job = self
+            .archive_searches
             .get(search_id)
-            .filter(|job| self.check_archive_for_job(&job.archive_id).is_ok())
+            .ok_or(SearchReadRefusal::UnknownSearchId)?;
+        match self.check_archive_for_job(&job.archive_id) {
+            Ok(()) => Ok(job),
+            Err(_) => Err(SearchReadRefusal::SearchGone),
+        }
     }
 
     /// The rows a COMPLETED archive search reports: the messages of the archive it searched
