@@ -34,6 +34,9 @@ sha2 = { workspace = true }
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
+# Declares one module per `tests/all/<name>.rs`, so the single integration-test target at
+# `tests/all/main.rs` picks a suite up by its file existing.
+automod = { workspace = true }
 # `time` is enabled here (and only for tests) so a suite can await the clock-owed
 # `creating` -> `available` transition without blocking the runtime worker.
 tokio = { workspace = true, features = ["time"] }

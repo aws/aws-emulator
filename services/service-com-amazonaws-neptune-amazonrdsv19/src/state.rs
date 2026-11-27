@@ -16,9 +16,19 @@ use sha2::{Digest, Sha256};
 
 /// Which address a cluster and its instances announce for a client to connect to.
 mod announced_address;
+/// The Serverless platform versions this control plane publishes, which a Serverless
+/// cluster's own envelope names one of.
+mod serverless_platform_versions;
 
 pub use announced_address::{
     announced_cluster_address, announced_instance_address, served_address, ClusterAddress,
+};
+pub use serverless_platform_versions::{
+    default_serverless_v2_platform_version, page_catalog, resolve_platform_version_max_records,
+    serverless_platform_version_description, serverless_platform_version_to_shape,
+    serverless_v2_platform_versions, ServerlessPlatformVersion,
+    DEFAULT_PLATFORM_VERSION_MAX_RECORDS, PLATFORM_VERSION_DISABLED, PLATFORM_VERSION_ENABLED,
+    PLATFORM_VERSION_MAX_RECORDS_BOUNDS, SERVERLESS_V2_PLATFORM_VERSIONS,
 };
 
 use crate::ops::types::{
@@ -753,6 +763,15 @@ pub fn cluster_view(record: &DbClusterRecord, status: &str) -> DBCluster {
                 max_capacity,
             },
         ),
+        // A cluster runs on a Serverless platform version exactly where it HAS Serverless
+        // capacity configured: the member is "the serverless platform version used by the
+        // Neptune Serverless DB cluster", and the platform a cluster is placed on is the one
+        // the platform-version report designates the default ("the version used for new DB
+        // clusters"). A provisioned cluster runs on no Serverless platform and reports none.
+        serverless_v2_platform_version: record
+            .serverless_v2_scaling_configuration
+            .and_then(|_| default_serverless_v2_platform_version())
+            .map(|platform| platform.version.to_string()),
         global_cluster_identifier: None,
         io_optimized_next_allowed_modification_time: None,
         storage_type: record.storage_type.clone(),

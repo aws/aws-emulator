@@ -237,6 +237,7 @@ pub struct DBCluster {
     pub cross_account_clone: Option<bool>,
     pub automatic_restart_time: Option<::aws_smithy_types::DateTime>,
     pub serverless_v2_scaling_configuration: Option<ServerlessV2ScalingConfigurationInfo>,
+    pub serverless_v2_platform_version: Option<String>,
     pub global_cluster_identifier: Option<String>,
     pub io_optimized_next_allowed_modification_time: Option<::aws_smithy_types::DateTime>,
     pub storage_type: Option<String>,
