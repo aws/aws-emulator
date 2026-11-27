@@ -4348,19 +4348,25 @@ fn trailing_backslashes(text: &str) -> usize {
 /// The collection member path a violation of a collection ELEMENT is reported against,
 /// or `None` when the offending value is not an element of a collection.
 ///
-/// The framework names an element by the step it took to reach it — `<1-based index>`
-/// for a list element, the key for a map entry, each followed by [`COLLECTION_STEP`] —
-/// so a path ENDING in that step is the element ITSELF and belongs to the collection
-/// holding it. A path that merely passes THROUGH a collection to reach a member inside
-/// an element (`settings.1.member.value`) keeps every segment: what failed there is that
-/// member, not the element.
+/// The framework names a list element by the step it took to reach it — the element's
+/// 1-based POSITION followed by [`COLLECTION_STEP`] — so a path ending in a position and
+/// that step is the element ITSELF and belongs to the collection holding it. A path that
+/// merely passes THROUGH a collection to reach a member inside an element
+/// (`settings.1.member.value`) keeps every segment: what failed there is that member, not
+/// the element.
 ///
 /// A map value that fails a constraint of its own shape is the one case this cannot
 /// place: the framework names it by its key alone (`tags.someKey`), with no collection
 /// step to tell it apart from a member of a structure, so it keeps the path the framework
-/// built.
+/// built. A key is text the CALLER chose and is echoed into the path exactly as sent, so
+/// it can SPELL the step (`tags.env.member`); only a step whose preceding segment is a
+/// position — which is the whole of what the framework writes there for an element — is
+/// read as one, so caller text is never mistaken for structure.
+///
+/// That spelling is recognised by the shared
+/// [`list_of_element`](::service_common::validation::list_of_element), the one place in
+/// this emulator that mirrors the validating walk's element path, so this service cannot
+/// drift from the walk it reads paths from.
 fn collection_holding(path: &str) -> Option<&str> {
-    let through_step = path.strip_suffix(COLLECTION_STEP)?.strip_suffix('.')?;
-    let (collection, _element) = through_step.rsplit_once('.')?;
-    Some(collection)
+    ::service_common::validation::list_of_element(path)
 }
