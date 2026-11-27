@@ -235,7 +235,11 @@ async fn a_withheld_shard_source_read_is_refused_in_that_source_services_own_wor
 
 /// Lambda, IAM and DynamoDB on ONE engine: the stream the second test names is one DynamoDB
 /// itself minted for a table, and the role deciding it is one IAM holds.
-fn router_with_iam_and_dynamodb() -> MultiServiceRouter {
+///
+/// `pub(crate)` because the suite over which values name one stream of one table mounts the
+/// same three services (`tests/all/event_source_mapping_stream_arn_resolution.rs`), and two
+/// harnesses for one assembly would be two things to keep in step.
+pub(crate) fn router_with_iam_and_dynamodb() -> MultiServiceRouter {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = router_on(&engine);
     router.register_service(
@@ -272,7 +276,14 @@ async fn dynamodb(router: &MultiServiceRouter, operation: &str, body: &Value) ->
 
 /// A table keyed on [`KEY`] with a stream enabled, waited out to `ACTIVE`; answers the
 /// `LatestStreamArn` that table reports.
-async fn given_streamed_table(router: &MultiServiceRouter, case: &str, name: &str) -> String {
+///
+/// `pub(crate)` for the reason [`router_with_iam_and_dynamodb`] is: a stream this emulator
+/// MINTED is what both suites resolve an `EventSourceArn` against.
+pub(crate) async fn given_streamed_table(
+    router: &MultiServiceRouter,
+    case: &str,
+    name: &str,
+) -> String {
     let (status, created) = dynamodb(
         router,
         "CreateTable",

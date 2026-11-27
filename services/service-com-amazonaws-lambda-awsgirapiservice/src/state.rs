@@ -2960,6 +2960,13 @@ pub use event_source_request::{
 pub mod event_source_queue_probe;
 pub use event_source_queue_probe::absent_queue_event_source_refusal;
 
+/// WHICH stream of WHICH table a DynamoDB `EventSourceArn` names lives in
+/// [`event_source_stream_resolution`], beside the readings above: it is the one reading of that
+/// value's two halves, which the member's own reading of what names an event source at all is
+/// written on — see the module's own header.
+pub mod event_source_stream_resolution;
+pub use event_source_stream_resolution::{names_one_table_stream, table_stream_named};
+
 /// Whether the customer managed key such a mapping's FILTER CRITERIA would be sealed under
 /// lets this service open them again lives in [`filter_criteria_key`], apart from the readings
 /// above for the same reason the queue probe is: it asks the service that owns keys. The create

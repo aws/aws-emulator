@@ -1147,25 +1147,37 @@ const STREAM_RESOURCE_STEP: &str = "/stream/";
 pub fn is_stream_arn(value: &str) -> bool {
     // `parse_of` is the one reader a service judges its OWN resource ARNs with: a
     // well-formed ARN whose vendor field is this namespace, in one call.
-    let Some(arn) = ::service_common::arn::parse_of(value, DYNAMODB_ARN_NAMESPACE) else {
-        return false;
-    };
-    let Some(resource) = arn
-        .resource
+    ::service_common::arn::parse_of(value, DYNAMODB_ARN_NAMESPACE)
+        .is_some_and(|arn| table_stream_resource(arn.resource).is_some())
+}
+
+/// The TABLE and the stream LABEL a stream ARN's RESOURCE FIELD names, and `None` for a
+/// resource field that names no one stream of one table.
+///
+/// A stream of a table is addressed by both halves of `table/<name>/stream/<label>`
+/// ([`STREAM_RESOURCE_STEP`]) — the label identifies one stream of that table, "the
+/// combination of … table name, StreamLabel is guaranteed to be unique"
+/// (`StreamDescription$StreamLabel`) — so a resource field that stops at the table, or
+/// carries a further `/` in either half, addresses something other than one stream of
+/// one table.
+///
+/// The reading [`is_stream_arn`] is written on, and the one THIS service's own
+/// identifiers are judged by, so another service holding a caller-supplied value to
+/// what it names reads it from here rather than keeping a second copy of the rule
+/// (`service-com-amazonaws-lambda-awsgirapiservice`'s `EventSourceArn` is held to it).
+#[must_use]
+pub fn table_stream_resource(resource: &str) -> Option<(&str, &str)> {
+    let named = resource
         .strip_prefix(TABLE_RESOURCE_TYPE)
-        .and_then(|rest| rest.strip_prefix('/'))
-    else {
-        return false;
-    };
-    let Some((table_name, stream_label)) = resource.split_once(STREAM_RESOURCE_STEP) else {
-        return false;
-    };
+        .and_then(|rest| rest.strip_prefix('/'))?;
+    let (table_name, stream_label) = named.split_once(STREAM_RESOURCE_STEP)?;
     // Both halves name one thing each: a resource field carrying a further `/` in
     // either of them addresses something other than a stream of a table.
-    !table_name.is_empty()
+    let names_one_each = !table_name.is_empty()
         && !table_name.contains('/')
         && !stream_label.is_empty()
-        && !stream_label.contains('/')
+        && !stream_label.contains('/');
+    names_one_each.then_some((table_name, stream_label))
 }
 
 /// What a request is refused with when a member that carries a stream ARN was given

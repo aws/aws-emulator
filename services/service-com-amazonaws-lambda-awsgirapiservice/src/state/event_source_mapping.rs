@@ -531,9 +531,15 @@ pub fn names_event_source(arn: &::service_common::arn::Arn<'_>) -> bool {
     let resource_type = arn.resource_type();
     match arn.vendor {
         EVENT_SOURCE_VENDOR_KINESIS => resource_type == EVENT_SOURCE_RESOURCE_STREAM,
+        // "Amazon DynamoDB Streams – The ARN of the stream" is the stream OF a table,
+        // addressed by the table it belongs to and the label that identifies it among that
+        // table's streams, so a resource field naming either half as anything but one thing
+        // names no stream — read through the one place this crate reads that pair
+        // ([`super::event_source_stream_resolution`]), which is the reading the service that
+        // OWNS those streams judges its own identifiers by.
         EVENT_SOURCE_VENDOR_DYNAMODB => {
             resource_type == EVENT_SOURCE_RESOURCE_TABLE
-                && arn.resource.contains(DYNAMODB_STREAM_SEGMENT)
+                && super::event_source_stream_resolution::names_one_table_stream(arn.resource)
         }
         // A queue's ARN carries the queue NAME as its whole resource field, and a queue
         // name admits neither separator, so a resource field carrying one names no queue.

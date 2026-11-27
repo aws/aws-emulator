@@ -99,7 +99,12 @@ const EXAMPLE_ACCOUNT: &str = "123456789012";
 /// The whole refusal an ARN of the wrong shape for the source service it names answers:
 /// the ARN format that service's pollable resource is addressed by, written for the Region
 /// the request was made in.
-fn expected_format_refusal(vendor: &str, resource: &str) -> String {
+///
+/// `pub(crate)` because this sentence has ONE owner here: the suite over which values name one
+/// stream of one table reads it from this function too
+/// (`tests/all/event_source_mapping_stream_arn_resolution.rs`), so the two tables cannot drift
+/// apart.
+pub(crate) fn expected_format_refusal(vendor: &str, resource: &str) -> String {
     format!(
         "Unrecognized event source. Expected arn of format \
          arn:aws:{vendor}:{REGION}:{EXAMPLE_ACCOUNT}:{resource}"
@@ -132,8 +137,10 @@ struct ShapeRow {
 /// table and a table's backup rather than a stream, a Kinesis application rather than a data
 /// stream, a queue path rather than a queue name, an Amazon MSK configuration rather than a
 /// cluster, an Amazon MQ configuration rather than a broker and an RDS database instance
-/// rather than a cluster — plus a table of another Region and account and one naming no
-/// account at all, and three vendors that enumeration does not name.
+/// rather than a cluster — plus the three ways a DynamoDB `table/…/stream/…` value still names
+/// no one stream of one table (a label carrying a further segment, no label, no table), a
+/// table of another Region and account and one naming no account at all, and three vendors
+/// that enumeration does not name.
 fn shape_rows() -> Vec<ShapeRow> {
     vec![
         ShapeRow {
@@ -158,6 +165,29 @@ fn shape_rows() -> Vec<ShapeRow> {
             case: "a dynamodb table's backup rather than its stream",
             event_source:
                 "arn:aws:dynamodb:us-east-1:000000000000:table/order-intake/backup/01700000000000-a1b2c3d4",
+            extras: json!({ "StartingPosition": "LATEST" }),
+            stated: Stated::ExpectedFormat("dynamodb", "table/TableName/stream/StreamId"),
+        },
+        ShapeRow {
+            // The label identifies ONE stream of the table, so a label carrying a further
+            // segment addresses something other than one stream of one table — the shape the
+            // service that owns those streams judges its own identifiers by too.
+            case: "a dynamodb stream label carrying a further segment",
+            event_source:
+                "arn:aws:dynamodb:us-east-1:000000000000:table/order-intake/stream/label/nonexistent-stream-label",
+            extras: json!({ "StartingPosition": "LATEST" }),
+            stated: Stated::ExpectedFormat("dynamodb", "table/TableName/stream/StreamId"),
+        },
+        ShapeRow {
+            case: "a dynamodb stream naming no label at all",
+            event_source: "arn:aws:dynamodb:us-east-1:000000000000:table/order-intake/stream/",
+            extras: json!({ "StartingPosition": "LATEST" }),
+            stated: Stated::ExpectedFormat("dynamodb", "table/TableName/stream/StreamId"),
+        },
+        ShapeRow {
+            case: "a dynamodb stream naming no table at all",
+            event_source:
+                "arn:aws:dynamodb:us-east-1:000000000000:table//stream/2026-10-23T11:46:49.000",
             extras: json!({ "StartingPosition": "LATEST" }),
             stated: Stated::ExpectedFormat("dynamodb", "table/TableName/stream/StreamId"),
         },
