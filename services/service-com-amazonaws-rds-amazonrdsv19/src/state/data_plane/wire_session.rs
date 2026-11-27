@@ -1114,7 +1114,18 @@ pub enum LoginRefusal {
     UnknownDatabase { database: String },
     /// The login did not prove the master user's password — a wrong password, a password
     /// for another user, or no password at all.
-    AuthenticationFailed { user: String, password_given: bool },
+    ///
+    /// `authenticates_with_a_token` is whether this database user authenticates with an
+    /// AUTHENTICATION TOKEN rather than with a password ([`IamLogin::expects_a_token`]), which
+    /// is what decides WHICH credential the refusal is about: the token one of those presented
+    /// did not admit it, and nothing of this database's own passwords was in question. Each
+    /// wire words that in the terms of the authentication method it serves IAM database
+    /// authentication through.
+    AuthenticationFailed {
+        user: String,
+        password_given: bool,
+        authenticates_with_a_token: bool,
+    },
 }
 
 impl LoginRefusal {
@@ -1264,6 +1275,10 @@ pub fn admit(
         return Err(LoginRefusal::AuthenticationFailed {
             user: user.to_string(),
             password_given: proof.password_given(),
+            // WHICH credential the refusal is about: a database user enabled for IAM database
+            // authentication presents a token, so what did not admit it is the token it
+            // presented rather than any password this database holds.
+            authenticates_with_a_token: iam.is_some_and(|iam| iam.expects_a_token(user)),
         });
     }
     match database {

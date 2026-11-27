@@ -146,9 +146,10 @@ fn instance_connections(store: &RdsState) -> Vec<InstanceConnections> {
     let mut instances: Vec<InstanceConnections> = Vec::new();
     for region in metric_publisher::regions(store) {
         for instance in store.instances_in(&region) {
-            let open = store
-                .engine_endpoint(&(instance.region.clone(), instance.identifier.clone()))
-                .map_or(0, |endpoint| endpoint.sessions().open_count());
+            let open = super::instance_connections::instance_open_sessions(
+                store,
+                &(instance.region.clone(), instance.identifier.clone()),
+            );
             instances.push(InstanceConnections {
                 key: (region.clone(), instance.dbi_resource_id.clone()),
                 identifier: instance.identifier.clone(),

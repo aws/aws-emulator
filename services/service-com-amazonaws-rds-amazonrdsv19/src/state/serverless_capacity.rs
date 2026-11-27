@@ -231,15 +231,10 @@ fn serverless_clusters(store: &RdsState) -> Vec<ClusterCapacity> {
             let members = store.cluster_members(cluster);
             // Every session this emulator is serving for the cluster: the ones on the cluster's
             // own writer and reader endpoints, and the ones on each member instance's own
-            // endpoint. Any of them is a connection the cluster is serving, so it is not idle.
-            let connected = store
-                .cluster_engine_endpoint(&key)
-                .is_some_and(|endpoint| endpoint.sessions().open_count() > 0)
-                || members.iter().any(|member| {
-                    store
-                        .engine_endpoint(&(member.region.clone(), member.identifier.clone()))
-                        .is_some_and(|endpoint| endpoint.sessions().open_count() > 0)
-                });
+            // endpoint. Any of them is a connection the cluster is serving, so it is not idle —
+            // counted through the one traversal every reader of that number shares
+            // ([`super::instance_connections`]).
+            let connected = super::instance_connections::cluster_open_sessions(store, cluster) > 0;
             clusters.push(ClusterCapacity {
                 publishing: cluster.status == super::DB_CLUSTER_STATUS_AVAILABLE,
                 ready_at: cluster.ready_at,
@@ -267,7 +262,7 @@ fn serverless_clusters(store: &RdsState) -> Vec<ClusterCapacity> {
     clusters
 }
 
-/// Publish the datapoint every series that is due is reported as.
+/// Publish the datapoint every capacity series that is due is reported as.
 ///
 /// Three steps, so no store guard is held over another service's lock and the two stores are
 /// never locked at once:

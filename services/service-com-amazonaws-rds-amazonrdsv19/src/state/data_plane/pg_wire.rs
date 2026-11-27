@@ -1466,6 +1466,22 @@ fn refusal_sentence(
             "3D000",
             format!("database \"{database}\" does not exist"),
         ),
+        // The two sentences PostgreSQL refuses a credential with, one per authentication
+        // METHOD: `pg_hba.conf` names the method a login is checked by, and the server words
+        // the refusal in that method's own terms. Amazon RDS serves IAM database
+        // authentication through PAM ("the AWSAuthenticationPlugin … for PostgreSQL, IAM
+        // authentication is handled by PAM"), so a database user that authenticates with an
+        // authentication token is refused as a PAM login — under `28000`, the SQLSTATE every
+        // method other than the password ones reports — and one that authenticates with a
+        // password keeps the password sentence and its `28P01`.
+        LoginRefusal::AuthenticationFailed {
+            user,
+            authenticates_with_a_token: true,
+            ..
+        } => (
+            "28000",
+            format!("PAM authentication failed for user \"{user}\""),
+        ),
         LoginRefusal::AuthenticationFailed { user, .. } => (
             "28P01",
             format!("password authentication failed for user \"{user}\""),

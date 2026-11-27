@@ -661,13 +661,22 @@ async fn an_iam_enabled_user_authenticates_with_an_authentication_token() {
         .await
         .err()
         .unwrap_or_else(|| panic!("case {case:?}: expected the login to be refused"));
-        assert_eq!(
-            refusal,
-            Refusal {
+        // A refusal is worded for the authentication METHOD the database user logs in by: PAM
+        // for one enabled for IAM database authentication, which is what Amazon RDS serves it
+        // through on this wire, and the password one for a user that logs in with a password.
+        let expected = match user {
+            "iamuser" => Refusal {
+                code: "28000".to_string(),
+                message: format!("PAM authentication failed for user \"{user}\""),
+            },
+            _ => Refusal {
                 code: "28P01".to_string(),
                 message: format!("password authentication failed for user \"{user}\""),
             },
-            "case {case:?}: expected PostgreSQL's own authentication refusal, got {refusal:?}"
+        };
+        assert_eq!(
+            refusal, expected,
+            "case {case:?}: expected {expected:?}, got {refusal:?}"
         );
     }
 }

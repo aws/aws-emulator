@@ -889,10 +889,11 @@ fn refusal_sentence(
             format!("Unknown database '{database}'"),
         ),
         // `ER_ACCESS_DENIED_ERROR`, whose message names the account the login was for and
-        // whether a password was sent at all.
+        // whether a password was sent at all. MySQL has ONE sentence for a credential that did
+        // not admit a login, whichever authentication plugin checked it, so an account that
+        // authenticates with an authentication token is refused in exactly these words too.
         LoginRefusal::AuthenticationFailed {
-            user: _,
-            password_given,
+            password_given, ..
         } => (
             1045,
             "28000",

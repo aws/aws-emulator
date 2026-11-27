@@ -377,6 +377,9 @@ pub use metric_publisher::PublisherClock;
 // CONNECTIONS it is holding, which an alarm over connection load is evaluated from.
 pub mod instance_metrics;
 pub use instance_metrics::{drive_instance_metrics, InstanceMetricPublisher};
+// How many client SESSIONS a DB resource is serving, which both the connections series and the
+// idleness an auto-pause is owed on read through one traversal.
+mod instance_connections;
 // The Aurora Serverless v2 CAPACITY a DB cluster runs on: the ACUs it holds, the auto-pause an
 // idle one is owed, and the CloudWatch series both are published as.
 pub mod serverless_capacity;

@@ -16,6 +16,11 @@
 //! the MySQL one, where it is the account's authentication plugin), whether the create asked
 //! for a `Port` at all, and the claim a refused token differs in (its host, its port).
 //!
+//! A refused token is refused in the words of the authentication METHOD the database user logs
+//! in by, which for a user enabled for IAM database authentication on the PostgreSQL wire is
+//! PAM — Amazon RDS serves IAM authentication for PostgreSQL through it — rather than the
+//! password one.
+//!
 //! What this does NOT assert is the FORM of the published address: whether a served engine
 //! publishes AWS's per-instance DNS name on the engine's own port, rather than the address
 //! the core bound its listener to, is a property of the core's listener surface and is
@@ -248,11 +253,11 @@ async fn a_postgres_token_minted_from_the_published_endpoint_admits_the_granted_
             assert_eq!(
                 refusal,
                 Refusal {
-                    code: "28P01".to_string(),
-                    message: format!("password authentication failed for user \"{IAM_USER}\""),
+                    code: "28000".to_string(),
+                    message: format!("PAM authentication failed for user \"{IAM_USER}\""),
                 },
-                "case {case:?}/{refused:?}: expected PostgreSQL's own authentication refusal, \
-                 got {refusal:?}"
+                "case {case:?}/{refused:?}: expected the refusal of the authentication method \
+                 this database user logs in by, got {refusal:?}"
             );
         }
     }
