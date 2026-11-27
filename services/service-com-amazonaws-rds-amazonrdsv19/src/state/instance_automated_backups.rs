@@ -393,41 +393,79 @@ pub fn instance_automated_backups_arn(region: &str, dbi_resource_id: &str) -> St
 }
 
 /// The RESOURCE ID of one automated backup, as the recorded auto-backup ARN carries it: the
-/// `ab-` prefix and [`AUTOMATED_BACKUP_ID_TOKEN_LEN`] characters of lowercase ASCII letters
-/// and digits — a form of its own, not the `db-` plus digits-and-uppercase form of the
-/// instance resource id a caller names the same backup by
-/// ([`mint_dbi_resource_id`]).
+/// `ab-` prefix and [`AUTOMATED_BACKUP_ID_TOKEN_LEN`] characters of the lowercase base32
+/// alphabet — `a`-`z` and the digits `2`-`7`, so none of `0`, `1`, `8` or `9` — a form of its
+/// own, not the `db-` plus digits-and-uppercase form of the instance resource id a caller
+/// names the same backup by ([`mint_dbi_resource_id`]).
 ///
 /// One automated backup per source instance per Region, so the id is a FUNCTION of those
-/// two: the source instance's own token fills the first [`RESOURCE_ID_TOKEN_LEN`]
-/// characters, lowercased, and a digest of the Region and that token
-/// ([`super::minted_hex`]) fills the id out to the published width — so the backup of one
-/// instance reports one id on every read, two Regions report different ids for the backups
-/// they each hold, and the source instance's resource id reads back out of the id
-/// ([`dbi_resource_id_in_automated_backups_arn`]), which is what lets a refusal name the
-/// backup by the id it is identified by after the record is gone. A source id NOT of the
-/// width this service mints one in carries no such field: the id is then the digest alone,
-/// which is of the same published form and names no instance of this store.
+/// two: the source instance's own token is ENCODED into the first [`SOURCE_FIELD_LEN`]
+/// characters — base32 over the token's bytes ([`base32_text`]), which carries the token's
+/// own digits-and-uppercase alphabet inside the published one and can be read back out of it
+/// — and a digest of the Region and that token ([`minted_base32`]) fills the id out to the
+/// published width. So the backup of one instance reports one id on every read, two Regions
+/// report different ids for the backups they each hold, and the source instance's resource id
+/// reads back out of the id ([`dbi_resource_id_in_automated_backups_arn`]), which is what
+/// lets a refusal name the backup by the id it is identified by after the record is gone. A
+/// source id NOT of the width this service mints one in carries no such field: the id is then
+/// the digest alone, which is of the same published form and names no instance of this store.
 fn automated_backup_id(region: &str, dbi_resource_id: &str) -> String {
-    let source = dbi_resource_id
-        .strip_prefix(DBI_RESOURCE_ID_PREFIX)
-        .unwrap_or(dbi_resource_id);
-    let digest = super::minted_hex(
-        &format!("{AUTOMATED_BACKUP_RESOURCE}/{region}/{source}"),
+    let token = source_instance_token(dbi_resource_id);
+    let digest = minted_base32(
+        &format!("{AUTOMATED_BACKUP_RESOURCE}/{region}/{token}"),
         AUTOMATED_BACKUP_ID_TOKEN_LEN,
     );
-    let token: String = source
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .map(|character| character.to_ascii_lowercase())
-        .collect();
     match token.len() == RESOURCE_ID_TOKEN_LEN {
         true => {
-            let fill: String = digest.chars().skip(RESOURCE_ID_TOKEN_LEN).collect();
-            format!("{AUTOMATED_BACKUP_ID_PREFIX}{token}{fill}")
+            let source = base32_text(token.as_bytes());
+            let fill: String = digest.chars().skip(source.len()).collect();
+            format!("{AUTOMATED_BACKUP_ID_PREFIX}{source}{fill}")
         }
         false => format!("{AUTOMATED_BACKUP_ID_PREFIX}{digest}"),
     }
+}
+
+/// The SOURCE instance's resource-id token: the ASCII letters and digits behind the `db-`
+/// prefix of `dbi_resource_id`, in the ONE case this service mints a resource id in.
+///
+/// `DbiResourceId` "isn't case-sensitive", so the token a value carries is read without
+/// regard to the case the request spelled it in — which is what makes the backup's own id a
+/// function of the instance it names rather than of how one caller wrote that instance's id,
+/// so the ARN minted for a request's value is the ARN the backup of that instance publishes.
+fn source_instance_token(dbi_resource_id: &str) -> String {
+    let remainder = dbi_resource_id
+        .get(..DBI_RESOURCE_ID_PREFIX.len())
+        .filter(|prefix| prefix.eq_ignore_ascii_case(DBI_RESOURCE_ID_PREFIX))
+        .map_or(dbi_resource_id, |prefix| &dbi_resource_id[prefix.len()..]);
+    remainder
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|character| character.to_ascii_uppercase())
+        .collect()
+}
+
+/// `width` characters drawn from the lowercase base32 alphabet an automated backup's own id
+/// is published in, derived from the SHA-512 digest of `seed`.
+///
+/// Deterministic in the seed and in nothing else, so the characters a seed mints are the same
+/// every time any read asks for them. The digest is the maintained `sha2` crate's and the
+/// alphabet is `data-encoding`'s reading of base32, so neither the hash nor the encoding is
+/// hand-rolled here; `width` is bounded by what the digest's 64 bytes encode to.
+fn minted_base32(seed: &str, width: usize) -> String {
+    use ::sha2::{Digest, Sha512};
+
+    let mut encoded = base32_text(Sha512::digest(seed.as_bytes()).as_slice());
+    encoded.truncate(width);
+    encoded
+}
+
+/// `bytes` in the lowercase, unpadded base32 alphabet: the ONE mapping this module writes an
+/// automated backup's own id through, both for the source field it reads back out of the id
+/// and for the digest that fills the id out to its published width.
+fn base32_text(bytes: &[u8]) -> String {
+    ::data_encoding::BASE32_NOPAD
+        .encode(bytes)
+        .to_ascii_lowercase()
 }
 
 /// Whether `value` is an ARN that names an automated backup AT ALL, which is what
@@ -483,13 +521,17 @@ fn names_an_automated_backup(value: &str) -> bool {
 }
 
 /// Whether `token` — the characters behind the `ab-` prefix of an automated backup's own id —
-/// is written in the form this service publishes one in: the published width, in lowercase
-/// ASCII letters and digits ([`automated_backup_id`]).
+/// is written in the form this service publishes one in: the published width, in the lowercase
+/// base32 alphabet ([`automated_backup_id`]).
 fn is_an_automated_backup_id(token: &str) -> bool {
-    token.len() == AUTOMATED_BACKUP_ID_TOKEN_LEN
-        && token
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || byte.is_ascii_lowercase())
+    token.len() == AUTOMATED_BACKUP_ID_TOKEN_LEN && token.bytes().all(is_a_base32_character)
+}
+
+/// Whether `byte` is a character of the lowercase base32 alphabet: `a`-`z` and the digits
+/// `2`-`7`, the alphabet an automated backup's own id is written in and the one
+/// [`base32_text`] emits.
+fn is_a_base32_character(byte: u8) -> bool {
+    matches!(byte, b'a'..=b'z' | b'2'..=b'7')
 }
 
 /// Whether `value` is written in the form a `DbiResourceId` is — "the resource ID of the DB
@@ -550,12 +592,17 @@ const AUTOMATED_BACKUP_RESOURCE: &str = "auto-backup";
 const AUTOMATED_BACKUP_ID_PREFIX: &str = "ab-";
 
 /// How many characters an automated backup's own id carries behind its `ab-` prefix: the
-/// width the auto-backup ARN Amazon RDS answers is recorded carrying, written in lowercase
-/// ASCII letters and digits. The member's own documented example shows a shorter,
+/// width the auto-backup ARN Amazon RDS answers is recorded carrying, written in the lowercase
+/// base32 alphabet. The member's own documented example shows a shorter,
 /// digits-and-uppercase id (`ab-L2IJCEXJP7XQ7HOJ4SIEXAMPLE`); the recorded answer is what the
 /// service publishes, so it is what this emulator publishes
 /// ([`automated_backup_id`]).
-const AUTOMATED_BACKUP_ID_TOKEN_LEN: usize = 58;
+const AUTOMATED_BACKUP_ID_TOKEN_LEN: usize = 64;
+
+/// How many of those characters the SOURCE instance's resource-id token occupies: what
+/// [`RESOURCE_ID_TOKEN_LEN`] bytes encode to in base32, which writes every five bytes as
+/// eight characters and a remainder in as many characters as its bits need.
+const SOURCE_FIELD_LEN: usize = (RESOURCE_ID_TOKEN_LEN * 8).div_ceil(5);
 
 /// The segment an automated backup's ARN carries its own id behind, which is what the id is
 /// read back out of it after ([`dbi_resource_id_in_automated_backups_arn`]).
@@ -575,11 +622,23 @@ pub fn dbi_resource_id_in_automated_backups_arn(arn: &str) -> Option<String> {
     if !is_an_automated_backup_id(token) {
         return None;
     }
-    let source = token.get(..RESOURCE_ID_TOKEN_LEN)?;
-    Some(format!(
-        "{DBI_RESOURCE_ID_PREFIX}{}",
-        source.to_ascii_uppercase()
-    ))
+    let source = token.get(..SOURCE_FIELD_LEN)?;
+    let decoded = ::data_encoding::BASE32_NOPAD
+        .decode(source.to_ascii_uppercase().as_bytes())
+        .ok()?;
+    let decoded = String::from_utf8(decoded).ok()?;
+    // The field holds a resource-id token only where it decodes to one: the width this
+    // service mints one in, in that id's own digits-and-uppercase alphabet. Anything else is
+    // an id whose source field was never an encoded resource id — the digest-only form above —
+    // which names no instance of this store.
+    let names_a_resource_id = decoded.len() == RESOURCE_ID_TOKEN_LEN
+        && decoded
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte.is_ascii_uppercase());
+    match names_a_resource_id {
+        true => Some(format!("{DBI_RESOURCE_ID_PREFIX}{decoded}")),
+        false => None,
+    }
 }
 
 /// The characters behind the `ab-` prefix of the id `arn` carries, or `None` for a value that

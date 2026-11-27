@@ -115,6 +115,12 @@ aws-sdk-kms = { version = "1", default-features = false, features = ["rt-tokio",
 # an awsQuery `<ErrorResponse>` envelope is shaped by library code rather than by hand.
 sha2 = { workspace = true }
 hex = { workspace = true }
+# `data-encoding` is the base32 alphabet an automated backup's own `ab-` id is published in
+# (`src/state/instance_automated_backups.rs`): one maintained reading of RFC 4648 base32 both
+# writes the source instance's resource-id token into that id and reads it back out, so the
+# codec behind an identity a client keeps is library code rather than a hand-rolled mapping.
+# Already in this workspace's lock file.
+data-encoding = "2"
 # `StartExportTask` writes the exported snapshot or cluster data INTO the one object store
 # this emulator serves, where the caller then lists and reads it: the export objects are
 # recorded through Amazon S3's own store on the same engine (`src/state/export_objects.rs`),

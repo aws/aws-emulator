@@ -18,7 +18,7 @@
 //!   time while the backup is still `creating` ("waiting for the first automated snapshot to
 //!   be available") rather than a span whose two ends are the same instant;
 //! * `DBInstanceAutomatedBackupsArn` names the backup by an id of its OWN form — the `ab-`
-//!   prefix and a fixed-width token of lowercase ASCII letters and digits — unique to the
+//!   prefix and a fixed-width token of the lowercase base32 alphabet — unique to the
 //!   backup and stable across reads;
 //! * a member that must carry a DB resource id is checked for FORM before any lookup by every
 //!   operation that takes it, so a value that is no `DbiResourceId` is `InvalidParameterValue`
@@ -69,9 +69,13 @@ const ACTIVE: &str = "active";
 /// `DBInstanceAutomatedBackupsArn` publishes.
 const BACKUP_ID_PREFIX: &str = "ab-";
 
-/// How many characters that id carries behind its prefix: the width the recorded auto-backup
-/// ARN writes it in.
-const BACKUP_ID_TOKEN_LEN: usize = 58;
+/// How many characters that id carries behind its prefix, and the alphabet they are drawn
+/// from: the width and the character set the recorded auto-backup ARN writes it in — lowercase
+/// base32, which holds no `0`, `1`, `8` or `9`. The id's own form is asserted in full, over
+/// the Regions and source resource-id forms it is minted for, in
+/// `automated_backup_id_token_form`.
+const BACKUP_ID_TOKEN_LEN: usize = 64;
+const BACKUP_ID_ALPHABET: &str = "abcdefghijklmnopqrstuvwxyz234567";
 
 /// `[(name, value.to_string()), ..]` — the query parameters of one call.
 macro_rules! params {
@@ -582,8 +586,9 @@ fn assert_backup_arn_form(case: &str, arn: &str) {
     assert!(
         token
             .chars()
-            .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit()),
-        "case {case:?}: expected a backup id of lowercase letters and digits, got {token:?}"
+            .all(|character| BACKUP_ID_ALPHABET.contains(character)),
+        "case {case:?}: expected a backup id drawn only from {BACKUP_ID_ALPHABET:?}, got \
+         {token:?}"
     );
 }
 
