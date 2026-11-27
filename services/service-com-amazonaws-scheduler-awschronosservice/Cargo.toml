@@ -114,6 +114,12 @@ service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true 
 # target is an event BUS is asserted where a client observes it — on the rule that bus
 # routes the published event to, and on that rule's own target.
 service-com-amazonaws-eventbridge-awsevents = { workspace = true }
+# A deployment package is a .zip archive: the suite that asserts a function target's own
+# failure is not a delivery failure uploads a handler that RAISES, and writes that archive
+# in memory the way a caller uploads one.
+zip = { version = "9", default-features = false, features = ["deflate"] }
+# ...carried base64, as the `FunctionCode$ZipFile` member a create states its code in.
+base64 = "0.22"
 # AWS KMS, mounted beside this one on that same engine: the customer managed key a write
 # states is resolved against the very records `CreateKey` and `CreateAlias` wrote, which
 # is what a suite needs in order to tell a key this account holds from one it does not.

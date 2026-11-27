@@ -247,14 +247,38 @@ async fn an_occurrence_publishes_what_it_came_to() {
 /// The `Sum` of every datapoint CloudWatch holds for one group's `metric`, read exactly as
 /// a client reads it. A series that does not exist holds nothing, which reads as 0.
 pub(crate) async fn sum_of(router: &MultiServiceRouter, group: &str, metric: &str) -> f64 {
+    sum_in(
+        router,
+        METRIC_NAMESPACE,
+        metric,
+        SCHEDULE_GROUP_DIMENSION,
+        group,
+    )
+    .await
+}
+
+/// The same read, of any ONE series: the `Sum` of every datapoint CloudWatch holds for
+/// `metric` of `namespace` on the single dimension `(dimension, value)`.
+///
+/// The one reader of a published series this test crate keeps: a suite also reads what
+/// ANOTHER service published about the call an occurrence made to it — the function error
+/// a Lambda target's own run came to — which differs from the read above only in the
+/// series it names.
+pub(crate) async fn sum_in(
+    router: &MultiServiceRouter,
+    namespace: &str,
+    metric: &str,
+    dimension: &str,
+    value: &str,
+) -> f64 {
     let now = epoch_seconds();
     let (status, answered) = cloudwatch(
         router,
         "GetMetricStatistics",
         &json!({
-            "Namespace": METRIC_NAMESPACE,
+            "Namespace": namespace,
             "MetricName": metric,
-            "Dimensions": [{ "Name": SCHEDULE_GROUP_DIMENSION, "Value": group }],
+            "Dimensions": [{ "Name": dimension, "Value": value }],
             "StartTime": now - READ_WINDOW,
             "EndTime": now + READ_WINDOW,
             "Period": READ_PERIOD,
@@ -264,7 +288,8 @@ pub(crate) async fn sum_of(router: &MultiServiceRouter, group: &str, metric: &st
     .await;
     assert_eq!(
         status, 200,
-        "GetMetricStatistics for {group}/{metric} answered {status} {answered}"
+        "GetMetricStatistics for {namespace}/{metric} of {dimension}={value:?} answered \
+         {status} {answered}"
     );
     answered["Datapoints"]
         .as_array()

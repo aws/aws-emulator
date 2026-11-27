@@ -21243,6 +21243,7 @@ dependencies = [
  "aws-smithy-runtime-api",
  "aws-smithy-schema 0.2.1",
  "aws-smithy-types",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "chrono-tz",
@@ -21264,6 +21265,7 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "tracing",
+ "zip",
 ]
 
 [[package]]

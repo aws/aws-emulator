@@ -26,7 +26,7 @@
 //! shape a client fans several schedules into one handler with: the payload is
 //! asserted in the asynchronous invocation Lambda holds for the function.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -70,6 +70,13 @@ pub(crate) const FUNCTIONS_URI: &str = "/2015-03-31/functions";
 /// The function's OWN role plays no part here: what is under test is the payload the
 /// invocation carries.
 const FUNCTION_ROLE: &str = "arn:aws:iam::000000000000:role/service-role/lambda-exec";
+
+/// The runtime a function this target creates runs on.
+pub(crate) const RUNTIME: &str = "python3.12";
+
+/// The `Handler` a function whose package carries no module at all names: nothing loads
+/// it, which is why only a suite reading the payload an invocation carried uses it.
+const EMPTY_HANDLER: &str = "index.handler";
 
 /// An empty `.zip` deployment package, base64 as `FunctionCode$ZipFile` carries one.
 /// Nothing here runs a handler — the payload is read from the invocation Lambda queued
@@ -433,14 +440,65 @@ pub(crate) fn emulator_with_lambda() -> (MultiServiceRouter, Arc<engine::InMemor
 }
 
 /// A function of `name`, and the ARN a schedule names it by.
+///
+/// Its package carries no handler module, which is all a suite that reads the PAYLOAD an
+/// invocation carried needs; one whose function must RUN states its own
+/// ([`given_function_with_code`]).
 pub(crate) async fn given_function(
     router: &MultiServiceRouter,
     case: &str,
     name: &str,
 ) -> String {
+    given_function_with_code(router, case, name, EMPTY_HANDLER, EMPTY_ZIP_FILE).await
+}
+
+/// The same create, with the `Handler` and the deployment package stated: the ONE
+/// `CreateFunction` call this test target makes, so a suite differs from another only in
+/// the code it uploads.
+pub(crate) async fn given_function_with_code(
+    router: &MultiServiceRouter,
+    case: &str,
+    name: &str,
+    handler: &str,
+    zip_file: &str,
+) -> String {
+    let (status, created) = lambda(
+        router,
+        "POST",
+        FUNCTIONS_URI,
+        Some(json!({
+            "FunctionName": name,
+            "Role": FUNCTION_ROLE,
+            "Runtime": RUNTIME,
+            "Handler": handler,
+            "Code": { "ZipFile": zip_file },
+        })),
+    )
+    .await;
+    assert_eq!(
+        status, 201,
+        "case {case:?}: CreateFunction answered {status} {created}"
+    );
+    created["FunctionArn"]
+        .as_str()
+        .unwrap_or_else(|| panic!("case {case:?}: no FunctionArn in {created}"))
+        .to_string()
+}
+
+/// One call against Lambda's restJson1 front door, which is how this test target reaches
+/// the service a function target lives in.
+pub(crate) async fn lambda(
+    router: &MultiServiceRouter,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (u16, Value) {
+    let payload = body.map_or_else(bytes::Bytes::new, |body| {
+        bytes::Bytes::from(body.to_string())
+    });
     let request = http::Request::builder()
-        .method("POST")
-        .uri(FUNCTIONS_URI)
+        .method(method)
+        .uri(uri)
         .header("host", format!("lambda.{REGION}.amazonaws.com"))
         .header("content-type", "application/json")
         .header(
@@ -450,28 +508,17 @@ pub(crate) async fn given_function(
                  aws4_request, SignedHeaders=host, Signature=0000"
             ),
         )
-        .body(bytes::Bytes::from(
-            json!({
-                "FunctionName": name,
-                "Role": FUNCTION_ROLE,
-                "Runtime": "python3.12",
-                "Handler": "index.handler",
-                "Code": { "ZipFile": EMPTY_ZIP_FILE },
-            })
-            .to_string(),
-        ))
+        .body(payload)
         .expect("the test request is well formed");
     let response = router.dispatch(request).await;
     let status = response.status().as_u16();
-    let created: Value = serde_json::from_slice(response.body()).unwrap_or(Value::Null);
-    assert_eq!(
-        status, 201,
-        "case {case:?}: CreateFunction answered {status} {created}"
-    );
-    created["FunctionArn"]
-        .as_str()
-        .unwrap_or_else(|| panic!("case {case:?}: no FunctionArn in {created}"))
-        .to_string()
+    let answered = response.into_body();
+    let parsed = if answered.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&answered).unwrap_or(Value::Null)
+    };
+    (status, parsed)
 }
 
 /// A role EventBridge Scheduler may assume whose inline policy allows each
@@ -530,19 +577,29 @@ pub(crate) fn invoked_payloads(
     engine: &Arc<engine::InMemoryEngine>,
     function: &str,
 ) -> BTreeSet<String> {
+    invoked_payload_counts(engine, function)
+        .into_keys()
+        .collect()
+}
+
+/// The same invocations, COUNTED by the payload each one carries: Lambda holds one entry
+/// per call that was delivered to the function — a run the function itself attempts again
+/// is the same entry — so a payload's count is how many deliveries carried it.
+pub(crate) fn invoked_payload_counts(
+    engine: &Arc<engine::InMemoryEngine>,
+    function: &str,
+) -> BTreeMap<String, usize> {
     let state = engine.state::<ComAmazonawsLambdaAwsgirapiserviceState>();
     let store = state.lock();
-    store
-        .functions
-        .get(function)
-        .map(|record| {
-            record
-                .async_invocations
-                .iter()
-                .map(|entry| String::from_utf8_lossy(&entry.payload).to_string())
-                .collect()
-        })
-        .unwrap_or_default()
+    let mut held: BTreeMap<String, usize> = BTreeMap::new();
+    if let Some(record) = store.functions.get(function) {
+        for entry in &record.async_invocations {
+            *held
+                .entry(String::from_utf8_lossy(&entry.payload).to_string())
+                .or_default() += 1;
+        }
+    }
+    held
 }
 
 /// Those payloads once Lambda holds at least `wanted` of them, or whatever it holds
