@@ -571,61 +571,6 @@ pub const RACK_SCALING_TYPE_SINGLE_RACK: &str = "SINGLE_RACK";
 /// [`RACK_SCALING_TYPE_SINGLE_RACK`].
 pub const RACK_SCALING_TYPE_MULTI_RACK: &str = "MULTI_RACK";
 
-/// The `RackUnitHeight` an Outposts RACK configuration carries, from the modelled
-/// value set [`crate::ops::types::RACK_UNIT_HEIGHT_VALUES`] (`HEIGHT_42U` |
-/// `HEIGHT_2U` | `HEIGHT_1U`).
-///
-/// A rack is the whole rack, so it is the full-height value of that set; the other
-/// two are the heights a single server comes in ([`RACK_UNIT_HEIGHT_1U`]).
-pub const RACK_UNIT_HEIGHT_42U: &str = "HEIGHT_42U";
-
-/// The `RackUnitHeight` of a one-rack-unit Outposts SERVER configuration, from the
-/// same value set. See [`RACK_UNIT_HEIGHT_42U`].
-pub const RACK_UNIT_HEIGHT_1U: &str = "HEIGHT_1U";
-
-/// The `RackUnitHeight` of a two-rack-unit Outposts SERVER configuration, from the
-/// same value set. See [`RACK_UNIT_HEIGHT_42U`].
-pub const RACK_UNIT_HEIGHT_2U: &str = "HEIGHT_2U";
-
-/// The `CurrentType` every configuration this service publishes carries: the
-/// electrical current its hardware is fed with.
-///
-/// Source: the power a SITE declares it can provide at a hardware placement
-/// position, which is the modelled `RackPhysicalProperties` — its `PowerConnector`
-/// set (`AH530P7W`, `AH532P6W`, `IEC309`, `L6_30P`) and its `PowerPhase` set
-/// (`SINGLE_PHASE` | `THREE_PHASE`) are alternating-current connectors and phases
-/// throughout, so hardware a site can be prepared for draws alternating current. The
-/// published configurations are all such hardware, so each reports this one value
-/// rather than a per-row figure that could disagree with the site requirements.
-pub const CURRENT_TYPE_AC: &str = "AC";
-
-/// The `Dimensions` an Outposts RACK configuration carries: the physical form a
-/// whole rack takes.
-///
-/// A configuration is either a rack or a single server ([`CATALOG_ITEM_CLASS_RACK`]),
-/// and a server's form is the height it occupies in the customer's own rack
-/// ([`server_dimensions`]) — so the form follows from the class and the height and is
-/// never a third, independent fact that could contradict either.
-pub const DIMENSIONS_OUTPOST_RACK: &str = "OUTPOST_RACK";
-
-/// The `Dimensions` prefix an Outposts SERVER configuration carries, completed by the
-/// rack units it occupies. See [`DIMENSIONS_OUTPOST_RACK`].
-const DIMENSIONS_OUTPOST_SERVER_PREFIX: &str = "OUTPOST_SERVER_";
-
-/// The prefix every modelled `RackUnitHeight` value carries before the rack units it
-/// names (`HEIGHT_1U` → `1U`), which is what [`server_dimensions`] reads the units
-/// off.
-const RACK_UNIT_HEIGHT_PREFIX: &str = "HEIGHT_";
-
-/// The `Dimensions` of a SERVER configuration of `rack_unit_height`: the form of a
-/// server is the rack units it occupies, so the two are one fact reported two ways.
-fn server_dimensions(rack_unit_height: &str) -> String {
-    let units = rack_unit_height
-        .strip_prefix(RACK_UNIT_HEIGHT_PREFIX)
-        .unwrap_or(rack_unit_height);
-    format!("{DIMENSIONS_OUTPOST_SERVER_PREFIX}{units}")
-}
-
 /// The literal prefix every `SkuCode` carries, as the modelled pattern
 /// `^OR-[A-Z0-9]{7}$` spells it.
 const SKU_PREFIX: &str = "OR-";
@@ -692,14 +637,6 @@ struct CatalogConfiguration {
     /// several, and the member is omitted rather than given a value the hardware has
     /// no answer for.
     rack_scaling_type: Option<&'static str>,
-    /// `RackUnitHeight`: how many rack units the configuration's hardware occupies,
-    /// from the modelled value set ([`RACK_UNIT_HEIGHT_42U`]).
-    ///
-    /// Spelled out per row because it is a fact about the hardware rather than one
-    /// its class implies: a rack is the whole rack, while the servers come in the two
-    /// single-unit heights that set names. `Dimensions` and the `Dimensions` of a
-    /// server follow from it ([`server_dimensions`]), so the two never disagree.
-    rack_unit_height: &'static str,
     /// How many vCPUs of EC2 capacity the configuration carries, which is what the
     /// `Quantity` of each of its EC2 capacities is computed from (see
     /// [`ec2_capacities`]). Not reported: the modelled `CatalogItem` reports the
@@ -724,19 +661,6 @@ impl CatalogConfiguration {
             self.supported_storage,
             self.rack_scaling_type.unwrap_or_default(),
         )
-    }
-
-    /// The `Dimensions` this configuration is published with: the physical form its
-    /// hardware takes.
-    ///
-    /// A rack is a whole rack ([`DIMENSIONS_OUTPOST_RACK`]); a server is the rack
-    /// units it occupies in the customer's own rack ([`server_dimensions`]), which is
-    /// the same fact its `RackUnitHeight` reports.
-    fn dimensions(&self) -> String {
-        match self.item_class {
-            CATALOG_ITEM_CLASS_RACK => DIMENSIONS_OUTPOST_RACK.to_string(),
-            _ => server_dimensions(self.rack_unit_height),
-        }
     }
 }
 
@@ -766,7 +690,6 @@ const CATALOG_ITEMS: &[CatalogConfiguration] = &[
         supported_storage: &[SUPPORTED_STORAGE_EBS, SUPPORTED_STORAGE_S3],
         s3_capacity_bytes: 26 * PUBLISHED_TERABYTE,
         rack_scaling_type: Some(RACK_SCALING_TYPE_SINGLE_RACK),
-        rack_unit_height: RACK_UNIT_HEIGHT_42U,
         capacity_vcpus: 480,
     },
     CatalogConfiguration {
@@ -779,7 +702,6 @@ const CATALOG_ITEMS: &[CatalogConfiguration] = &[
         supported_storage: &[SUPPORTED_STORAGE_EBS, SUPPORTED_STORAGE_S3],
         s3_capacity_bytes: 48 * PUBLISHED_TERABYTE,
         rack_scaling_type: Some(RACK_SCALING_TYPE_SINGLE_RACK),
-        rack_unit_height: RACK_UNIT_HEIGHT_42U,
         capacity_vcpus: 960,
     },
     CatalogConfiguration {
@@ -792,7 +714,6 @@ const CATALOG_ITEMS: &[CatalogConfiguration] = &[
         supported_storage: &[SUPPORTED_STORAGE_EBS, SUPPORTED_STORAGE_S3],
         s3_capacity_bytes: 240 * PUBLISHED_TERABYTE,
         rack_scaling_type: Some(RACK_SCALING_TYPE_MULTI_RACK),
-        rack_unit_height: RACK_UNIT_HEIGHT_42U,
         capacity_vcpus: 1440,
     },
     CatalogConfiguration {
@@ -805,7 +726,6 @@ const CATALOG_ITEMS: &[CatalogConfiguration] = &[
         supported_storage: &[SUPPORTED_STORAGE_EBS],
         s3_capacity_bytes: 0,
         rack_scaling_type: Some(RACK_SCALING_TYPE_SINGLE_RACK),
-        rack_unit_height: RACK_UNIT_HEIGHT_42U,
         capacity_vcpus: 240,
     },
     CatalogConfiguration {
@@ -818,7 +738,6 @@ const CATALOG_ITEMS: &[CatalogConfiguration] = &[
         supported_storage: &[SUPPORTED_STORAGE_EBS, SUPPORTED_STORAGE_S3],
         s3_capacity_bytes: 96 * PUBLISHED_TERABYTE,
         rack_scaling_type: Some(RACK_SCALING_TYPE_SINGLE_RACK),
-        rack_unit_height: RACK_UNIT_HEIGHT_42U,
         capacity_vcpus: 1280,
     },
     CatalogConfiguration {
@@ -831,7 +750,6 @@ const CATALOG_ITEMS: &[CatalogConfiguration] = &[
         supported_storage: &[SUPPORTED_STORAGE_EBS, SUPPORTED_STORAGE_S3],
         s3_capacity_bytes: 380 * PUBLISHED_TERABYTE,
         rack_scaling_type: Some(RACK_SCALING_TYPE_MULTI_RACK),
-        rack_unit_height: RACK_UNIT_HEIGHT_42U,
         capacity_vcpus: 2560,
     },
     CatalogConfiguration {
@@ -844,7 +762,6 @@ const CATALOG_ITEMS: &[CatalogConfiguration] = &[
         supported_storage: &[SUPPORTED_STORAGE_EBS],
         s3_capacity_bytes: 0,
         rack_scaling_type: None,
-        rack_unit_height: RACK_UNIT_HEIGHT_1U,
         capacity_vcpus: 64,
     },
     CatalogConfiguration {
@@ -857,7 +774,6 @@ const CATALOG_ITEMS: &[CatalogConfiguration] = &[
         supported_storage: &[SUPPORTED_STORAGE_EBS],
         s3_capacity_bytes: 0,
         rack_scaling_type: None,
-        rack_unit_height: RACK_UNIT_HEIGHT_2U,
         capacity_vcpus: 128,
     },
 ];
@@ -898,6 +814,15 @@ pub struct CatalogItemRecord {
     /// Outpost then reports as its own (see
     /// [`super::ComAmazonawsOutpostsOutpostsolafserviceState::installed_configuration`]).
     pub generation: &'static str,
+    /// The `CatalogItemClass` this item is published as.
+    ///
+    /// Held BESIDE the projection for the reason [`Self::generation`] is: the
+    /// modelled `CatalogItem` carries no class member, only the hardware facts a
+    /// class implies. It is the one fact `ListCatalogItems$ItemClassFilter` selects
+    /// on ([`Self::is_class`]), and the class whose hardware an Outpost of the same
+    /// form factor is installed with (see
+    /// [`super::ComAmazonawsOutpostsOutpostsolafserviceState::installed_configuration`]).
+    pub class: &'static str,
     /// The entry as a read of the catalog reports it.
     pub item: CatalogItem,
 }
@@ -919,16 +844,16 @@ impl CatalogItemRecord {
 
     /// Whether this item is of ANY of the classes a filter names.
     ///
-    /// Asked of the class the item REPORTS of itself (`CatalogItem$ItemClass`), so a
-    /// filtered read can never select on a class different from the one the selected
-    /// item says it is. The class is a SINGLE-valued fact about an item, so the
-    /// selection is the one rule every list of this service applies to a `*Filter`
-    /// member — a filter is a list of accepted values, and one carrying no value at
-    /// all narrows nothing, exactly as an absent one does. That rule lives in
-    /// [`filter_accepts`] and is stated only there; this method only says which fact
-    /// the filter selects on.
+    /// Asked of the class the catalog publishes this item as ([`Self::class`]), the
+    /// same fact every other reader of an item's class reads, so a filtered read can
+    /// never select on a class different from the one the item is published as. The
+    /// class is a SINGLE-valued fact about an item, so the selection is the one rule
+    /// every list of this service applies to a `*Filter` member — a filter is a list
+    /// of accepted values, and one carrying no value at all narrows nothing, exactly
+    /// as an absent one does. That rule lives in [`filter_accepts`] and is stated
+    /// only there; this method only says which fact the filter selects on.
     pub fn is_class(&self, classes: &[String]) -> bool {
-        filter_accepts(Some(classes), self.item.item_class.as_deref())
+        filter_accepts(Some(classes), Some(self.class))
     }
 
     /// Whether this item supports ANY of the storage options a filter names.
@@ -1046,7 +971,6 @@ pub fn catalog_item_catalog() -> Vec<CatalogItemRecord> {
                 && crate::ops::types::FORM_FACTOR_VALUES.contains(&config.item_class)
                 && crate::ops::types::OUTPOST_GENERATION_VALUES.contains(&config.generation)
                 && crate::ops::types::CATALOG_ITEM_STATUS_VALUES.contains(&config.item_status)
-                && crate::ops::types::RACK_UNIT_HEIGHT_VALUES.contains(&config.rack_unit_height)
                 && config
                     .supported_storage
                     .iter()
@@ -1055,8 +979,8 @@ pub fn catalog_item_catalog() -> Vec<CatalogItemRecord> {
                     crate::ops::types::RACK_SCALING_TYPE_VALUES.contains(&scaling)
                 })
         }),
-        "every catalog configuration names a modelled class, status, storage option, rack unit \
-         height and scaling type"
+        "every catalog configuration names a modelled class, status, storage option and \
+         scaling type"
     );
     // A configuration carries S3 capacity exactly when it supports S3 storage: a
     // figure on hardware that supports none would be capacity nothing can provision,
@@ -1070,65 +994,48 @@ pub fn catalog_item_catalog() -> Vec<CatalogItemRecord> {
         "a configuration carries S3 capacity exactly when it supports S3 storage"
     );
     let instance_types = instance_type_specifications();
-    let mut items: Vec<(i32, i64, &'static str, CatalogItem)> = CATALOG_ITEMS
+    let mut records: Vec<CatalogItemRecord> = CATALOG_ITEMS
         .iter()
-        .map(|config| {
-            (
-                config.capacity_vcpus,
-                config.s3_capacity_bytes,
-                config.generation,
-                CatalogItem {
-                    catalog_item_id: Some(sku_code(&config.sku_seed())),
-                    item_status: Some(config.item_status.to_string()),
-                    // The class the configuration is published as, which is also
-                    // what `ListCatalogItems$ItemClassFilter` selects on: a filter
-                    // narrows which items an answer holds, and the item says of
-                    // itself which class it is.
-                    item_class: Some(config.item_class.to_string()),
-                    current_type: Some(CURRENT_TYPE_AC.to_string()),
-                    dimensions: Some(config.dimensions()),
-                    rack_unit_height: Some(config.rack_unit_height.to_string()),
-                    ec2_capacities: Some(ec2_capacities(&instance_types, config)),
-                    power_kva: Some(config.power_kva),
-                    weight_lbs: Some(config.weight_lbs),
-                    supported_uplink_gbps: Some(config.supported_uplink_gbps.to_vec()),
-                    // The uplink speeds this configuration supports for the
-                    // connection to the Region, which both uplink members report:
-                    // they are the same published fact about the hardware, so both
-                    // are read off the one figure rather than kept twice.
-                    supported_uplink_gi_b: Some(config.supported_uplink_gbps.to_vec()),
-                    supported_storage: Some(
-                        config
-                            .supported_storage
-                            .iter()
-                            .map(|option| (*option).to_string())
-                            .collect(),
-                    ),
-                    rack_scaling_type: config
-                        .rack_scaling_type
-                        .map(|scaling| scaling.to_string()),
-                },
-            )
+        .map(|config| CatalogItemRecord {
+            // Filled in once the catalog is in its published order, below.
+            sequence: 0,
+            capacity_vcpus: config.capacity_vcpus,
+            s3_capacity_bytes: config.s3_capacity_bytes,
+            generation: config.generation,
+            // The class the configuration is published as, which is what
+            // `ListCatalogItems$ItemClassFilter` selects on: the modelled
+            // `CatalogItem` reports no class member, so the fact is held on the
+            // record rather than read back out of the projection.
+            class: config.item_class,
+            item: CatalogItem {
+                catalog_item_id: Some(sku_code(&config.sku_seed())),
+                item_status: Some(config.item_status.to_string()),
+                ec2_capacities: Some(ec2_capacities(&instance_types, config)),
+                power_kva: Some(config.power_kva),
+                weight_lbs: Some(config.weight_lbs),
+                supported_uplink_gbps: Some(config.supported_uplink_gbps.to_vec()),
+                supported_storage: Some(
+                    config
+                        .supported_storage
+                        .iter()
+                        .map(|option| (*option).to_string())
+                        .collect(),
+                ),
+                rack_scaling_type: config
+                    .rack_scaling_type
+                    .map(|scaling| scaling.to_string()),
+            },
         })
         .collect();
-    items.sort_by(|(.., left), (.., right)| left.catalog_item_id.cmp(&right.catalog_item_id));
+    records.sort_by(|left, right| left.item.catalog_item_id.cmp(&right.item.catalog_item_id));
     debug_assert!(
-        items
+        records
             .windows(2)
-            .all(|pair| pair[0].3.catalog_item_id != pair[1].3.catalog_item_id),
+            .all(|pair| pair[0].item.catalog_item_id != pair[1].item.catalog_item_id),
         "no two catalog configurations are published under one SkuCode"
     );
-    items
-        .into_iter()
-        .enumerate()
-        .map(
-            |(index, (capacity_vcpus, s3_capacity_bytes, generation, item))| CatalogItemRecord {
-                sequence: u64::try_from(index).unwrap_or_default() + 1,
-                capacity_vcpus,
-                s3_capacity_bytes,
-                generation,
-                item,
-            },
-        )
-        .collect()
+    for (index, record) in records.iter_mut().enumerate() {
+        record.sequence = u64::try_from(index).unwrap_or_default() + 1;
+    }
+    records
 }

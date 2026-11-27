@@ -321,11 +321,6 @@ pub struct CapacityTaskFailure {
 #[smithy_macros::smithy(shape = "com.amazonaws.outposts#CatalogItem")]
 #[derive(Debug, Clone, Default)]
 pub struct CatalogItem {
-    pub current_type: Option<String>,
-    pub dimensions: Option<String>,
-    pub item_class: Option<String>,
-    pub rack_unit_height: Option<String>,
-    pub supported_uplink_gi_b: Option<Vec<i32>>,
     pub catalog_item_id: Option<String>,
     pub item_status: Option<String>,
     pub ec2_capacities: Option<Vec<EC2Capacity>>,

@@ -2,8 +2,8 @@
 
 //! @op CreateSite
 //! IMPLEMENTED: mints a `SiteId` / `SiteArn`, persists the site in this service's
-//! store and answers the stored record — the minted id both on the `Site` and in the
-//! response's own top-level `SiteId`. `GetSite`, `ListSites`, `CreateOutpost` and
+//! store and answers the stored record on the `Site` the output declares — the only
+//! place a caller learns the minted id. `GetSite`, `ListSites`, `CreateOutpost` and
 //! `DeleteSite` all read that same store.
 //!
 //! ## Shape of an operation
@@ -68,8 +68,6 @@
 //! ## Output
 //!
 //! * `Site` (Site) — Information about a site.
-//! * `SiteId` (SiteId, len 1..255, pattern ^(arn:aws([a-z-]+)?:outposts:[a-z\d-]+:\d{12}:site/)?(os-
-//!   [a-f0-9]{17})$) — The ID of the site.
 //!
 //! ## Errors
 //!
@@ -209,11 +207,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         );
 
         Ok(CreateSiteOutput {
-            // The create answers the id it minted at the top level as well as on
-            // the `Site` it carries, which is what the recorded AWS response does:
-            // ONE id, read off the site that was just stored, so the two members
-            // can never name different sites.
-            site_id: site.site_id.clone(),
+            // The output declares the created site and nothing beside it, so the
+            // minted id reaches the caller exactly once: on the `Site` that was just
+            // stored.
             site: Some(site),
         })
     }

@@ -113,22 +113,22 @@ fn assert_facts(outpost: &Value, wanted: &(Option<String>, Option<String>), case
 
 /// Every hardware configuration this service publishes as still ORDERABLE.
 ///
-/// The id, the class and the rack scaling type are read over the WIRE, from
-/// `ListCatalogItems`, so what a case expects of an Outpost is what the catalog
-/// publishes for the configuration it was ordered from. The generation is read from the
-/// service's own catalog table, because the modelled `CatalogItem` carries no
-/// generation member at all — the same seam
-/// [`crate::instance_type_catalogs::specifications`] reads the specification table
-/// every expectation about an instance SIZE is derived from.
+/// The id and the rack scaling type are read over the WIRE, from `ListCatalogItems`, so
+/// what a case expects of an Outpost is what the catalog publishes for the
+/// configuration it was ordered from. The class and the generation are read from the
+/// service's own catalog table, because the modelled `CatalogItem` carries neither
+/// member — the same seam [`crate::instance_type_catalogs::specifications`] reads the
+/// specification table every expectation about an instance SIZE is derived from.
 async fn orderable_configurations(outposts: &Outposts) -> Vec<Configuration> {
-    let generations: BTreeMap<String, String> = catalog_item_catalog()
+    let hardware: BTreeMap<String, (String, String)> = catalog_item_catalog()
         .into_iter()
         .filter_map(|record| {
-            record
-                .item
-                .catalog_item_id
-                .clone()
-                .map(|catalog_item_id| (catalog_item_id, record.generation.to_string()))
+            record.item.catalog_item_id.clone().map(|catalog_item_id| {
+                (
+                    catalog_item_id,
+                    (record.class.to_string(), record.generation.to_string()),
+                )
+            })
         })
         .collect();
     let published = outposts
@@ -144,17 +144,15 @@ async fn orderable_configurations(outposts: &Outposts) -> Vec<Configuration> {
         .filter(|item| text(item, "ItemStatus") == ITEM_STATUS_AVAILABLE)
         .map(|item| {
             let catalog_item_id = text(item, "CatalogItemId");
-            let generation = generations
-                .get(&catalog_item_id)
-                .cloned()
-                .unwrap_or_else(|| {
+            let (item_class, generation) =
+                hardware.get(&catalog_item_id).cloned().unwrap_or_else(|| {
                     panic!(
                         "the published item {catalog_item_id:?} must be one of the service's \
                          own configurations"
                     )
                 });
             Configuration {
-                item_class: text(item, "ItemClass"),
+                item_class,
                 rack_scaling_type: optional(item, "RackScalingType"),
                 generation,
                 catalog_item_id,

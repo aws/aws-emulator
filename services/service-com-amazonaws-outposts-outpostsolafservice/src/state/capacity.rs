@@ -224,7 +224,7 @@ impl ComAmazonawsOutpostsOutpostsolafserviceState {
             .flat_map(|record| record.order.line_items.iter().flatten())
             .filter_map(|item| item.catalog_item_id.as_deref())
             .filter_map(|catalog_item_id| self.catalog_item(catalog_item_id))
-            .find(|record| record.item.item_class.as_deref() == Some(form_factor))
+            .find(|record| record.class == form_factor)
     }
 
     /// The EC2 capacity, in vCPUs, UNDER SUBSCRIPTION on the Outpost `outpost_id`

@@ -76,7 +76,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `POST /sites -> 200`
 - **Input:** `Name` (string, len 1..1000, pattern ^[\S ]+$, required), `Description` (string, len 1..1001, pattern ^[\S ]+$), `Notes` (string, len 1..2000, pattern ^[\S \n]+$), `Tags` (map<string,string>, len 1..50), `OperatingAddress` (Address), `ShippingAddress` (Address), `RackPhysicalProperties` (RackPhysicalProperties)
-- **Output:** `SiteId` (string, len 1..255, pattern ^(arn:aws([a-z-]+)?:outposts:[a-z\d-]+:\d{12}:site/)?(os-[a-f0-9]{17})$), `Site` (Site)
+- **Output:** `Site` (Site)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ServiceQuotaExceededException (HTTP 402)`, `ValidationException (HTTP 400)`
 
 ## DeleteOutpost
@@ -304,14 +304,14 @@ contents — read that shape in the model above when you need its own members.
 
 ## TagResource
 
-- **Route:** `POST /tags/{ResourceArn} -> 204`
+- **Route:** `POST /tags/{ResourceArn} -> 200`
 - **Input:** `ResourceArn` (string, len 0..1011, pattern ^(arn:aws([a-z-]+)?:outposts:[a-z\d-]+:\d{12}:([a-z\d-]+)/)[a-z]{2,8}-[a-f0-9]{17}$, @httpLabel, required), `Tags` (map<string,string>, len 1..50, required)
 - **Output:** (no members)
 - **Errors:** `InternalServerException (HTTP 500)`, `NotFoundException (HTTP 404)`, `ValidationException (HTTP 400)`
 
 ## UntagResource
 
-- **Route:** `DELETE /tags/{ResourceArn} -> 204`
+- **Route:** `DELETE /tags/{ResourceArn} -> 200`
 - **Input:** `ResourceArn` (string, len 0..1011, pattern ^(arn:aws([a-z-]+)?:outposts:[a-z\d-]+:\d{12}:([a-z\d-]+)/)[a-z]{2,8}-[a-f0-9]{17}$, @httpLabel, required), `TagKeys` (list<string>, len 1..50, @httpQuery(tagKeys), required)
 - **Output:** (no members)
 - **Errors:** `InternalServerException (HTTP 500)`, `NotFoundException (HTTP 404)`, `ValidationException (HTTP 400)`

@@ -26,7 +26,6 @@ pub struct CreateSiteInput {
 #[smithy_macros::smithy(shape = "com.amazonaws.outposts#CreateSiteOutput")]
 #[derive(Debug, Clone, Default)]
 pub struct CreateSiteOutput {
-    pub site_id: Option<String>,
     pub site: Option<Site>,
 }
 

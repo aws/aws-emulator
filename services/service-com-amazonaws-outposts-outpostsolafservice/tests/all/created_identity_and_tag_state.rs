@@ -7,10 +7,10 @@
 //!
 //! The rules under test, each stated once and then exercised over a SET of inputs:
 //!
-//! 1. `CreateSite`'s 200 reports the id it minted for the new site at the top level
-//!    (`SiteId`) as well as on the `Site` it answers, and both name the SAME site —
-//!    the response is the only place a caller learns that id, and every later call
-//!    addressed with it (`GetSite`, `CreateOutpost$SiteId`) reaches that site.
+//! 1. `CreateSite`'s 200 reports the new site on the `Site` its output declares, and
+//!    nothing beside it — that projection is the only place a caller learns the id
+//!    the service minted, and every later call addressed with it (`GetSite`,
+//!    `CreateOutpost$SiteId`) reaches that site.
 //! 2. A success response projects the resource AS STORED, so `UpdateSite`'s 200
 //!    carries the tag map the site holds at that moment — including tags a
 //!    `TagResource` applied after the create, and excluding ones an `UntagResource`
@@ -39,17 +39,21 @@ async fn create_site(outposts: &Outposts, request: &Value) -> Value {
     outposts.ok("POST", "/sites", Some(request)).await
 }
 
+/// The members `CreateSiteOutput` declares, as
+/// `smithy_query(query="operation", operation="CreateSite")` reports its output: the
+/// created site alone.
+const CREATE_SITE_OUTPUT_MEMBERS: &[&str] = &["Site"];
+
 /// Rule 1, over everything `CreateSite` generalises over: the optional members the
 /// request may carry (none, a description, notes, tags, each address, the rack
 /// properties) and the number of tags (none, one, several).
 ///
-/// Each row checks the minted id is of the modelled form, that the top-level member
-/// and the `Site` report the same one, and that the id read out of the TOP LEVEL
-/// alone addresses the new site — both to read it back (`GetSite`) and to place an
-/// Outpost on it (`CreateOutpost`). A response that reported no id, or a second id
-/// naming another site, fails here.
+/// Each row checks the response carries only the member the output declares, that the
+/// id on the `Site` is of the modelled form, and that this id addresses the new site —
+/// both to read it back (`GetSite`) and to place an Outpost on it (`CreateOutpost`). A
+/// response that reported no site, or a member the model does not declare, fails here.
 #[tokio::test]
-async fn create_site_answers_the_minted_id_at_the_top_level_and_on_the_site() {
+async fn create_site_answers_the_minted_id_on_the_site_it_created() {
     let outposts = Outposts::new();
     let cases: Vec<(&str, Value)> = vec![
         ("the name alone", json!({ "Name": "identity: name only" })),
@@ -103,18 +107,25 @@ async fn create_site_answers_the_minted_id_at_the_top_level_and_on_the_site() {
 
     for (case, request) in &cases {
         let created = create_site(&outposts, request).await;
-        let answered = text(&created, "SiteId");
-        assert!(
-            is_minted_id(&answered, SITE_ID_PREFIX),
-            "case {case:?}: the create must answer the minted SiteId at the top level, \
-             got {answered:?} in {created:?}"
+        let reported: Vec<String> = created
+            .as_object()
+            .map(|members| members.keys().cloned().collect())
+            .unwrap_or_default();
+        assert_eq!(
+            reported,
+            CREATE_SITE_OUTPUT_MEMBERS
+                .iter()
+                .map(|member| (*member).to_string())
+                .collect::<Vec<String>>(),
+            "case {case:?}: the create must answer exactly the members its output \
+             declares, got {created:?}"
         );
 
-        let on_site = text(&created["Site"], "SiteId");
-        assert_eq!(
-            answered, on_site,
-            "case {case:?}: the top-level SiteId and the Site's own must be one id, got \
-             {answered:?} and {on_site:?}"
+        let answered = text(&created["Site"], "SiteId");
+        assert!(
+            is_minted_id(&answered, SITE_ID_PREFIX),
+            "case {case:?}: the created site must carry the minted SiteId, got \
+             {answered:?} in {created:?}"
         );
         let site_arn = text(&created["Site"], "SiteArn");
         assert_eq!(
@@ -124,7 +135,7 @@ async fn create_site_answers_the_minted_id_at_the_top_level_and_on_the_site() {
              {site_arn:?}"
         );
 
-        // The id read out of the top level alone is what addresses the new site.
+        // The id read off the created site is what addresses the new site.
         let read = outposts.ok("GET", &format!("/sites/{answered}"), None).await;
         assert_eq!(
             read["Site"], created["Site"],
@@ -273,7 +284,7 @@ async fn update_site_answers_the_tags_the_site_carries_at_that_moment() {
             request["Tags"] = row.at_create.clone();
         }
         let created = create_site(&outposts, &request).await;
-        let site_id = text(&created, "SiteId");
+        let site_id = text(&created["Site"], "SiteId");
         let site_arn = text(&created["Site"], "SiteArn");
         let mut expected: BTreeMap<String, String> = tag_map(&row.at_create);
 
@@ -387,7 +398,7 @@ async fn every_tag_mutation_answers_the_no_content_status() {
     let outpost = outposts
         .create_outpost(&json!({
             "Name": "no content outpost",
-            "SiteId": text(&created, "SiteId"),
+            "SiteId": text(&created["Site"], "SiteId"),
             "Tags": { "Env": "dev" },
         }))
         .await;
