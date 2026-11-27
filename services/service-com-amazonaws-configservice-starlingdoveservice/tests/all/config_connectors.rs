@@ -2,7 +2,7 @@
 
 //! The connector slice of AWS Config, end to end over the wire.
 //!
-//! Four rules are pinned here, each over a TABLE of inputs rather than one recorded
+//! Five rules are pinned here, each over a TABLE of inputs rather than one recorded
 //! case:
 //!
 //! 1. `ListConnectors` reports exactly the connectors in state, each with the
@@ -19,7 +19,10 @@
 //!    request is scoped to is refused with ONE class and ONE text — whether the value
 //!    is malformed, names a connector that was never created, or names one a previous
 //!    delete removed — the same for every operation whose `Arn` names the connector it
-//!    acts on.
+//!    acts on;
+//! 5. every member of a summary beside the connector's own identity is an identifier of
+//!    ONE provider's own, so a summary reports it for exactly the connectors connected
+//!    to that provider and reports none of the other provider's members.
 //!
 //! The harness (`Emulator`) is the one `config_setup_and_rule_loop` already builds;
 //! every case drives the emulator the way a client does, through the
@@ -32,7 +35,7 @@ use std::time::SystemTime;
 
 use serde_json::{json, Value};
 use service_com_amazonaws_configservice_starlingdoveservice::ops::types::{
-    AzureConnectorConfiguration, ConnectorConfiguration,
+    AzureConnectorConfiguration, ConnectorConfiguration, GcpConnectorConfiguration,
 };
 use service_com_amazonaws_configservice_starlingdoveservice::state::{
     self, service_state, ConnectorEntry,
@@ -41,12 +44,32 @@ use service_com_amazonaws_configservice_starlingdoveservice::state::{
 use crate::config_setup_and_rule_loop::Emulator;
 
 /// Every published `Provider` value, from
-/// `smithy_query(query="shape", shape="Provider")`: `AZURE`.
+/// `smithy_query(query="shape", shape="Provider")`: `AZURE` and `GCP`.
 const AZURE: &str = "AZURE";
 
-/// A `Provider` value the model does NOT publish, used to check that a filter value
-/// is compared rather than assumed to match.
-const UNPUBLISHED_PROVIDER: &str = "GCP";
+/// See [`AZURE`]. The connectors the rules below are pinned over connect to Azure
+/// unless a case says otherwise, so this is also the provider a filter selects nothing
+/// for in those cases.
+const GCP: &str = "GCP";
+
+/// A `GcpServiceAccountEmail`, in the one form the member's `@pattern` allows
+/// (`^[a-z][a-z0-9\-]*@[a-z][a-z0-9\-]*[a-z0-9]\.iam\.gserviceaccount\.com$`, from
+/// `smithy_query(query="shape", shape="GcpServiceAccountEmail")`): "the format is
+/// `SERVICE_ACCOUNT_NAME@PROJECT_ID.iam.gserviceaccount.com`".
+pub(crate) const SERVICE_ACCOUNT: &str =
+    "config-recorder@aws-config-project.iam.gserviceaccount.com";
+
+/// A `GcpWorkloadIdentityPoolProvider`, in the one form its `@pattern` allows
+/// (`^projects/[0-9]+/locations/global/workloadIdentityPools/[^/]+/providers/[^/]+$`):
+/// "the format is
+/// `projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL_ID/providers/PROVIDER_ID`".
+pub(crate) const POOL_PROVIDER: &str =
+    "projects/123456789012/locations/global/workloadIdentityPools/aws-config/providers/config";
+
+/// A `GcpOrganizationId` — "the ID of the Google Cloud organization that contains the
+/// connector's management project" — within the modelled length (1..20, from
+/// `smithy_query(query="shape", shape="GcpOrganizationId")`).
+pub(crate) const ORGANIZATION_ID: &str = "728351472933";
 
 /// Every published `ConnectorFilterName` value, from
 /// `smithy_query(query="shape", shape="ConnectorFilterName")`: `provider`.
@@ -67,6 +90,21 @@ const CONNECTOR_ARN_NOT_VALID_TEXT: &str = "The connector ARN provided is not va
 /// A `ConnectorConfiguration` naming the Azure provider.
 pub(crate) fn azure_configuration(tenant: &str, client: &str) -> Value {
     json!({ "azure": { "tenantIdentifier": tenant, "clientIdentifier": client } })
+}
+
+/// A `ConnectorConfiguration` naming the Google Cloud provider, carrying the
+/// organization id where the case has one: it is "required if the management project
+/// belongs to an organization" and omitted otherwise, in which case "the connector can
+/// record only the management project".
+pub(crate) fn gcp_configuration(service_account: &str, organization: Option<&str>) -> Value {
+    let mut configuration = json!({
+        "serviceAccountEmail": service_account,
+        "workloadIdentityPoolProvider": POOL_PROVIDER,
+    });
+    if let Some(organization) = organization {
+        configuration["gcpOrganizationId"] = json!(organization);
+    }
+    json!({ "gcp": configuration })
 }
 
 /// The connector name the service derives for an Azure tenant, and the ARN it mints
@@ -90,7 +128,59 @@ fn expected_name_and_arn(region: &str, tenant: &str) -> (String, String) {
 /// therefore seeded in the shared engine the router hands the handlers, the way the
 /// other suites of this crate seed state.
 pub(crate) fn seed_connector(emulator: &Emulator, tenant: &str, client: &str) -> String {
-    let name = state::connector_name(state::PROVIDER_AZURE, tenant);
+    seed(
+        emulator,
+        state::PROVIDER_AZURE,
+        tenant,
+        ConnectorConfiguration {
+            azure: Some(AzureConnectorConfiguration {
+                tenant_identifier: tenant.to_string(),
+                client_identifier: client.to_string(),
+            }),
+            // The provider configurations are exclusive: this connector connects to
+            // Azure, so it carries no Google Cloud configuration.
+            gcp: None,
+        },
+    )
+}
+
+/// Place a connector for the Google Cloud `service_account` in the store, the same way
+/// and for the same reason as [`seed_connector`], and answer the ARN it is keyed by.
+///
+/// The connector is named for the identifier Google Cloud knows the recorded scope by:
+/// the organization the management project belongs to, or the project itself where the
+/// configuration names no organization.
+pub(crate) fn seed_gcp_connector(
+    emulator: &Emulator,
+    identifier: &str,
+    service_account: &str,
+    organization: Option<&str>,
+) -> String {
+    seed(
+        emulator,
+        state::PROVIDER_GCP,
+        identifier,
+        ConnectorConfiguration {
+            azure: None,
+            gcp: Some(GcpConnectorConfiguration {
+                gcp_organization_id: organization.map(str::to_string),
+                service_account_email: service_account.to_string(),
+                workload_identity_pool_provider: POOL_PROVIDER.to_string(),
+            }),
+        },
+    )
+}
+
+/// Place a connector for `configuration` in the store, reaching it the way a handler
+/// does. The name and the ARN are the ones the service derives for the configuration, so
+/// a seeded connector is keyed exactly as a created one would be.
+fn seed(
+    emulator: &Emulator,
+    provider: &str,
+    identifier: &str,
+    configuration: ConnectorConfiguration,
+) -> String {
+    let name = state::connector_name(provider, identifier);
     let arn = state::connector_arn(&emulator.region, &name);
     let handle = service_state(&*emulator.engine).expect("the test engine is the shared engine");
     handle.lock().connectors.insert(
@@ -99,13 +189,8 @@ pub(crate) fn seed_connector(emulator: &Emulator, tenant: &str, client: &str) ->
             name,
             arn: arn.clone(),
             region: emulator.region.clone(),
-            provider: state::PROVIDER_AZURE.to_string(),
-            connector_configuration: ConnectorConfiguration {
-                azure: Some(AzureConnectorConfiguration {
-                    tenant_identifier: tenant.to_string(),
-                    client_identifier: client.to_string(),
-                }),
-            },
+            provider: provider.to_string(),
+            connector_configuration: configuration,
             created_at: SystemTime::now(),
             tags: state::TagSet::new(),
         },
@@ -175,7 +260,7 @@ async fn list_connector_arns(emulator: &Emulator, max_results: i64) -> (Vec<Stri
 }
 
 /// The summaries one unpaginated `ListConnectors` call reports, with `filters`.
-async fn list_with_filters(emulator: &Emulator, filters: &Value) -> Vec<Value> {
+pub(crate) async fn list_with_filters(emulator: &Emulator, filters: &Value) -> Vec<Value> {
     let listed = emulator
         .ok("ListConnectors", &json!({ "Filters": filters }))
         .await;
@@ -364,7 +449,8 @@ async fn a_filter_selects_the_connectors_whose_attribute_it_matches() {
     }
 
     // Every row is a filter list and the number of the three stored connectors it
-    // selects. Each stored connector's provider is `AZURE`, the only published one.
+    // selects. Each stored connector's provider is `AZURE`; `GCP`, the other published
+    // one, is a provider this store holds no connector for.
     let cases: [(&str, Value, usize); 5] = [
         ("no filters", json!([]), CONNECTORS),
         (
@@ -374,12 +460,12 @@ async fn a_filter_selects_the_connectors_whose_attribute_it_matches() {
         ),
         (
             "a provider nothing is stored for",
-            json!([{ "filterName": PROVIDER_FILTER, "filterValues": [UNPUBLISHED_PROVIDER] }]),
+            json!([{ "filterName": PROVIDER_FILTER, "filterValues": [GCP] }]),
             0,
         ),
         (
             "either provider",
-            json!([{ "filterName": PROVIDER_FILTER, "filterValues": [UNPUBLISHED_PROVIDER, AZURE] }]),
+            json!([{ "filterName": PROVIDER_FILTER, "filterValues": [GCP, AZURE] }]),
             CONNECTORS,
         ),
         (
@@ -581,6 +667,122 @@ async fn a_connector_is_served_only_to_the_region_it_belongs_to() {
                 (400, "ValidationException", CONNECTOR_ARN_NOT_VALID_TEXT),
                 "case {case:?} / {operation:?}: another Region's connector ARN must not \
                  resolve here, got {status} {code} with message {message:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_summary_reports_the_members_of_the_provider_the_connector_connects_to() {
+    let emulator = Emulator::new();
+
+    // (case, the ARN the seeded connector is keyed by, the provider it connects to, the
+    //  provider-specific members its summary must report)
+    //
+    // Rows differ along WHICH provider the connector connects to and, within Google
+    // Cloud, along whether the configuration carries the optional organization id — the
+    // one provider-specific member a connector of that provider may have none of.
+    // `tenantIdentifier` is "returned only for Azure connectors", `gcpOrganizationId`
+    // and `serviceAccountEmail` "only for Google Cloud connectors"
+    // (`smithy_query(query="shape", shape="ConnectorSummary")`).
+    let other_service_account = "config-reader@analytics-project.iam.gserviceaccount.com";
+    let cases: [(&str, String, &str, Value); 4] = [
+        (
+            "an Azure connector",
+            seed_connector(&emulator, "72f988bf-86f1-41af-91ab-2d7cd011db47", "client"),
+            AZURE,
+            json!({ "tenantIdentifier": "72f988bf-86f1-41af-91ab-2d7cd011db47" }),
+        ),
+        (
+            "a Google Cloud connector recording an organization",
+            seed_gcp_connector(&emulator, ORGANIZATION_ID, SERVICE_ACCOUNT, Some(ORGANIZATION_ID)),
+            GCP,
+            json!({
+                "gcpOrganizationId": ORGANIZATION_ID,
+                "serviceAccountEmail": SERVICE_ACCOUNT,
+            }),
+        ),
+        (
+            "a Google Cloud connector recording only its management project",
+            seed_gcp_connector(&emulator, "management-project", other_service_account, None),
+            GCP,
+            json!({ "serviceAccountEmail": other_service_account }),
+        ),
+        (
+            "a second Azure connector, for a domain-form tenant",
+            seed_connector(&emulator, "contoso.onmicrosoft.com", "client"),
+            AZURE,
+            json!({ "tenantIdentifier": "contoso.onmicrosoft.com" }),
+        ),
+    ];
+
+    // Every provider-specific member any summary may carry, so each row is checked for
+    // the ones it must NOT report as well as the ones it must.
+    const PROVIDER_MEMBERS: [&str; 3] =
+        ["tenantIdentifier", "gcpOrganizationId", "serviceAccountEmail"];
+
+    let summaries = list_with_filters(&emulator, &json!([])).await;
+    for (case, arn, provider, expected) in &cases {
+        let summary = summaries
+            .iter()
+            .find(|summary| summary["arn"].as_str() == Some(arn.as_str()))
+            .unwrap_or_else(|| {
+                panic!(
+                    "case {case:?}: ListConnectors must report the connector {arn:?}, got \
+                     {summaries:?}"
+                )
+            });
+        assert_eq!(
+            summary["provider"].as_str(),
+            Some(*provider),
+            "case {case:?}: a summary must report the provider the connector connects \
+             to, got {summary}"
+        );
+        for member in PROVIDER_MEMBERS {
+            let reported = summary.get(member).cloned().unwrap_or(Value::Null);
+            let wanted = expected.get(member).cloned().unwrap_or(Value::Null);
+            assert_eq!(
+                reported, wanted,
+                "case {case:?}: expected {member} to be {wanted}, got {reported} in \
+                 {summary}"
+            );
+        }
+
+        // The configuration the summary's members are read off round-trips through the
+        // connector read, under the provider member it was created with.
+        let read = emulator.ok("GetConnector", &json!({ "Arn": arn })).await;
+        let stored = &read["Connector"]["connectorConfiguration"];
+        let provider_member = if *provider == GCP { "gcp" } else { "azure" };
+        let other_member = if *provider == GCP { "azure" } else { "gcp" };
+        assert!(
+            stored.get(provider_member).is_some() && stored.get(other_member).is_none(),
+            "case {case:?}: the stored configuration must carry the {provider_member} \
+             configuration and no other provider's, got {stored}"
+        );
+    }
+
+    // A filter on the provider selects exactly the connectors of that provider, which is
+    // the same split the summaries' members follow.
+    for (case, provider) in [("the Azure connectors", AZURE), ("the Google Cloud ones", GCP)] {
+        let filtered = list_with_filters(
+            &emulator,
+            &json!([{ "filterName": PROVIDER_FILTER, "filterValues": [provider] }]),
+        )
+        .await;
+        let expected = cases
+            .iter()
+            .filter(|(_, _, seeded, _)| *seeded == provider)
+            .count();
+        assert_eq!(
+            filtered.len(),
+            expected,
+            "case {case:?}: expected {expected} connector(s), got {filtered:?}"
+        );
+        for summary in &filtered {
+            assert_eq!(
+                summary["provider"].as_str(),
+                Some(provider),
+                "case {case:?}: a selected connector must satisfy the filter, got {summary}"
             );
         }
     }

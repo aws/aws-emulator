@@ -126,15 +126,15 @@ pub struct NoSuchConfigurationAggregatorException {
     pub message: Option<String>,
 }
 
-// `skip_validation = ["resourceType"]`: a resource key names the type of a resource
-// Config holds data about, which includes the ACCOUNT-level type Config itself uses for
-// an evaluation of the account rather than of a recorded resource — the model names it
-// on another member of this same service (`ExternalEvaluation$ComplianceResourceType`:
-// "Config accepts `AWS::::Account` resource type"), and `ResourceType`'s published value
-// set does not list it. Config judges the REQUEST a key belongs to rather than refusing
-// such a type at the boundary, so the enum trait is kept off the generated schema and
-// each operation checks what it needs of the key itself. `resourceId` keeps its modelled
-// constraints.
+// `skip_validation = ["resourceType"]`: a `ResourceKey` names a resource Config HOLDS a
+// configuration item for, and the configuration state of a CloudFormation registry type —
+// a custom resource type recorded through `PutResourceConfig` — is held under the
+// registry's own type name, which the modelled `ResourceType` enum does not list. The same
+// holds for the account-level type Config itself records an account's own compliance under.
+// So the type name a key carries is judged by the handler that was sent it, which answers
+// that operation's own modelled error for a key naming no resource, rather than by the
+// boundary — the same member, the same reason as `ListDiscoveredResourcesInput` and
+// `ListAggregateDiscoveredResourcesInput`.
 #[smithy_macros::smithy(
     shape = "com.amazonaws.configservice#ResourceKey",
     skip_validation = ["resourceType"]
@@ -391,6 +391,12 @@ pub struct NoSuchConfigRuleInConformancePackException {
     pub message: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.configservice#DescribeConformancePacksFilters")]
+#[derive(Debug, Clone, Default)]
+pub struct DescribeConformancePacksFilters {
+    pub types: Option<Vec<String>>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.configservice#ConformancePackInputParameter")]
 #[derive(Debug, Clone, Default)]
 pub struct ConformancePackInputParameter {
@@ -403,6 +409,19 @@ pub struct ConformancePackInputParameter {
 pub struct TemplateSSMDocumentDetails {
     pub document_name: String,
     pub document_version: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.configservice#ConformancePackSource")]
+#[derive(Debug, Clone, Default)]
+pub struct ConformancePackSource {
+    pub source_identifier: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.configservice#ConformancePackScope")]
+#[derive(Debug, Clone, Default)]
+pub struct ConformancePackScope {
+    pub tag_key: String,
+    pub tag_value: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.configservice#DeliveryChannel")]
@@ -595,6 +614,7 @@ pub struct EvaluationResult {
 #[derive(Debug, Clone, Default)]
 pub struct ConnectorConfiguration {
     pub azure: Option<AzureConnectorConfiguration>,
+    pub gcp: Option<GcpConnectorConfiguration>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.configservice#AzureConnectorConfiguration")]
@@ -602,6 +622,14 @@ pub struct ConnectorConfiguration {
 pub struct AzureConnectorConfiguration {
     pub tenant_identifier: String,
     pub client_identifier: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.configservice#GcpConnectorConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct GcpConnectorConfiguration {
+    pub gcp_organization_id: Option<String>,
+    pub service_account_email: String,
+    pub workload_identity_pool_provider: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.configservice#InvalidTimeRangeException")]
@@ -735,7 +763,11 @@ pub const CONFORMANCE_PACK_COMPLIANCE_TYPE_VALUES: &[&str] = &["COMPLIANT", "INS
 
 
 /// The values `ConformancePackState` accepts on the wire.
-pub const CONFORMANCE_PACK_STATE_VALUES: &[&str] = &["CREATE_COMPLETE", "CREATE_FAILED", "CREATE_IN_PROGRESS", "DELETE_FAILED", "DELETE_IN_PROGRESS"];
+pub const CONFORMANCE_PACK_STATE_VALUES: &[&str] = &["CREATE_COMPLETE", "CREATE_FAILED", "CREATE_IN_PROGRESS", "DELETE_FAILED", "DELETE_IN_PROGRESS", "UPDATE_COMPLETE", "UPDATE_FAILED", "UPDATE_IN_PROGRESS"];
+
+
+/// The values `ConformancePackType` accepts on the wire.
+pub const CONFORMANCE_PACK_TYPE_VALUES: &[&str] = &["CUSTOM", "MANAGED"];
 
 
 /// The values `ConnectorFilterName` accepts on the wire.
@@ -791,7 +823,7 @@ pub const OWNER_VALUES: &[&str] = &["AWS", "CUSTOM_LAMBDA", "CUSTOM_POLICY"];
 
 
 /// The values `Provider` accepts on the wire.
-pub const PROVIDER_VALUES: &[&str] = &["AZURE"];
+pub const PROVIDER_VALUES: &[&str] = &["AZURE", "GCP"];
 
 
 /// The values `RecorderStatus` accepts on the wire.

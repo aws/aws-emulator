@@ -15,6 +15,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-configservice-starlingd
 #[derive(Debug, Clone, Default)]
 pub struct DescribeConformancePacksInput {
     pub conformance_pack_names: Option<Vec<String>>,
+    pub filters: Option<DescribeConformancePacksFilters>,
     pub limit: i32,
     pub next_token: Option<String>,
 }
@@ -30,10 +31,6 @@ pub struct DescribeConformancePacksOutput {
 #[derive(Debug, Clone, Default)]
 pub struct ConformancePackDetail {
     pub conformance_pack_name: String,
-    /// `Type` — which KIND of conformance pack this is. Recorded behaviour: the live
-    /// service reports it on every conformance pack read, as `CUSTOM` for a pack the
-    /// account deployed itself.
-    pub r#type: Option<String>,
     pub conformance_pack_arn: String,
     pub conformance_pack_id: String,
     pub delivery_s3_bucket: Option<String>,
@@ -42,5 +39,8 @@ pub struct ConformancePackDetail {
     pub last_update_requested_time: Option<::aws_smithy_types::DateTime>,
     pub created_by: Option<String>,
     pub template_ssm_document_details: Option<TemplateSSMDocumentDetails>,
+    pub r#type: Option<String>,
+    pub source: Option<ConformancePackSource>,
+    pub scope: Option<ConformancePackScope>,
 }
 

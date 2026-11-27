@@ -2,24 +2,28 @@
 
 //! What `PutConnector` answers a provider configuration, end to end over the wire.
 //!
-//! Three rules are pinned here, each over a TABLE of configurations rather than one
+//! Four rules are pinned here, each over a TABLE of configurations rather than one
 //! recorded case:
 //!
 //! 1. a `ConnectorConfiguration` that names no provider is refused with the modelled
 //!    `ValidationException` and the one fixed structural text, whatever way it fails
-//!    to name one;
+//!    to name one, and so is one that names SEVERAL: "you must specify exactly one
+//!    provider configuration";
 //! 2. a provider identifier whose FORM is not the provider's own — an Azure tenant or
 //!    client identifier is a GUID in its canonical hyphenated form — is refused with
 //!    `ValidationException` naming the identifier that is not one, before any
 //!    credential is used;
 //! 3. a well-formed provider configuration is refused because its credentials cannot
 //!    be verified WITH the provider: a connector IS the credential Config connects
-//!    with, so the tenant/client pair is verified before anything is materialized, and
-//!    verifying it means calling the provider's identity service — an outbound
-//!    connection this emulator does not make. Nothing is created by any of the three:
-//!    no ARN comes back, the connector is readable nowhere and no listing reports it,
-//!    and the refusal happens BEFORE the conflict and quota legs this operation also
-//!    models.
+//!    with, so it is verified before anything is materialized, and verifying it means
+//!    calling the provider's identity service — an outbound connection this emulator
+//!    does not make. The refusal names the provider whose credentials could not be
+//!    verified, because each provider's credential is its own. Nothing is created by any
+//!    of the legs: no ARN comes back, the connector is readable nowhere and no listing
+//!    reports it, and the refusal happens BEFORE the conflict and quota legs this
+//!    operation also models;
+//! 4. the same holds for either published provider, so a Google Cloud configuration
+//!    reaches the Google Cloud credential boundary and is refused there.
 //!
 //! The harness (`Emulator`) is the one `config_setup_and_rule_loop` builds; every case
 //! drives the emulator the way a client does, through the `MultiServiceRouter`. The
@@ -30,7 +34,8 @@
 use serde_json::{json, Value};
 
 use crate::config_connectors::{
-    azure_configuration, refusal, seed_connector, AZURE_IDENTIFIER_MAX_LEN,
+    azure_configuration, gcp_configuration, refusal, seed_connector, AZURE_IDENTIFIER_MAX_LEN,
+    ORGANIZATION_ID, POOL_PROVIDER, SERVICE_ACCOUNT,
 };
 use crate::config_setup_and_rule_loop::Emulator;
 use service_com_amazonaws_configservice_starlingdoveservice::state;
@@ -44,12 +49,17 @@ const PUT_CONNECTOR: &str = "PutConnector";
 /// thing that identifies the leg.
 const NO_PROVIDER_TEXT: &str = "ConnectorConfiguration must contain at least one provider";
 /// See [`NO_PROVIDER_TEXT`].
+const SEVERAL_PROVIDERS_TEXT: &str = "ConnectorConfiguration must contain exactly one provider";
+/// See [`NO_PROVIDER_TEXT`].
 const INVALID_TENANT_TEXT: &str = "Invalid tenant identifier";
 /// See [`NO_PROVIDER_TEXT`].
 const INVALID_CLIENT_TEXT: &str = "Invalid client identifier";
 /// See [`NO_PROVIDER_TEXT`].
 const UNVERIFIABLE_TEXT: &str =
     "Unable to verify Azure credentials for the provided tenant configuration.";
+/// See [`NO_PROVIDER_TEXT`]. The Google Cloud leg of [`UNVERIFIABLE_TEXT`].
+const UNVERIFIABLE_GCP_TEXT: &str =
+    "Unable to verify Google Cloud credentials for the provided service account configuration.";
 
 /// A GUID in the canonical hyphenated form Microsoft Entra ID (Azure AD) publishes a
 /// directory (tenant) identifier in. The model constrains these identifiers only by
@@ -104,14 +114,14 @@ async fn a_configuration_naming_no_provider_is_refused_with_the_structural_text(
     // `ConnectorConfiguration`: "You must specify exactly one provider configuration."
     // Rows differ along HOW the configuration fails to name one: it carries no member
     // at all, it carries a member for a provider the model does not publish
-    // (`Provider`'s only value is `AZURE`), and it carries the provider member under a
-    // name the model does not declare — both of the last two are members the wire
-    // drops, so what reaches the handler names no provider.
+    // (`Provider` publishes `AZURE` and `GCP`), and it carries a published provider's
+    // member under a name the model does not declare — both of the last two are members
+    // the wire drops, so what reaches the handler names no provider.
     let cases: [(&str, Value); 3] = [
         ("an empty configuration", json!({})),
         (
             "a provider the model does not publish",
-            json!({ "gcp": { "projectIdentifier": "p-1" } }),
+            json!({ "oracle": { "tenantIdentifier": TENANT_GUID } }),
         ),
         (
             "the provider member under a name the model does not declare",
@@ -371,5 +381,110 @@ async fn the_credential_boundary_is_reached_before_the_conflict_and_quota_legs()
     assert!(
         after.contains(&seeded),
         "the connector in state must survive every refusal, got {after:?}"
+    );
+}
+
+#[tokio::test]
+async fn exactly_one_provider_configuration_is_what_reaches_a_credential_boundary() {
+    let emulator = Emulator::new();
+
+    // (case, the configuration the request carries, the text it must be refused with)
+    //
+    // Rows differ along how many providers the configuration names — none, both, one —
+    // and, for the rows naming one, along which provider's credential boundary they
+    // reach and along what that provider's configuration carries: each provider's
+    // credential is its own, so the refusal names it.
+    let other_service_account = "config-reader@analytics-project.iam.gserviceaccount.com";
+    let longest_organization = "9".repeat(20);
+    let cases: [(&str, Value, &str); 7] = [
+        ("no provider at all", json!({}), NO_PROVIDER_TEXT),
+        (
+            "both providers at once",
+            json!({
+                "azure": { "tenantIdentifier": TENANT_GUID, "clientIdentifier": CLIENT_GUID },
+                "gcp": {
+                    "serviceAccountEmail": SERVICE_ACCOUNT,
+                    "workloadIdentityPoolProvider": POOL_PROVIDER,
+                },
+            }),
+            SEVERAL_PROVIDERS_TEXT,
+        ),
+        (
+            "the Azure provider alone",
+            azure_configuration(TENANT_GUID, CLIENT_GUID),
+            UNVERIFIABLE_TEXT,
+        ),
+        (
+            "the Google Cloud provider with an organization",
+            gcp_configuration(SERVICE_ACCOUNT, Some(ORGANIZATION_ID)),
+            UNVERIFIABLE_GCP_TEXT,
+        ),
+        (
+            "the Google Cloud provider without an organization",
+            gcp_configuration(SERVICE_ACCOUNT, None),
+            UNVERIFIABLE_GCP_TEXT,
+        ),
+        (
+            "the Google Cloud provider at the organization id length maximum",
+            gcp_configuration(other_service_account, Some(&longest_organization)),
+            UNVERIFIABLE_GCP_TEXT,
+        ),
+        (
+            "the Google Cloud provider at the organization id length minimum",
+            gcp_configuration(other_service_account, Some("7")),
+            UNVERIFIABLE_GCP_TEXT,
+        ),
+    ];
+
+    for (case, configuration, expected) in cases {
+        let (status, code, message) = refused(&emulator, &configuration).await;
+        assert_eq!(
+            (status, code.as_str()),
+            (400, "ValidationException"),
+            "case {case:?}: expected HTTP 400 ValidationException, got {status} {code} \
+             with message {message:?}"
+        );
+        assert_eq!(
+            message, expected,
+            "case {case:?}: expected {expected:?}, got {message:?}"
+        );
+    }
+
+    // A Google Cloud identifier outside the form its member's `@pattern` publishes is
+    // refused by the modelled constraint, before any credential is used. Rows differ
+    // along which member deviates and how.
+    for (case, configuration) in [
+        (
+            "a service account that is not an IAM service account address",
+            gcp_configuration("config-recorder@example.com", None),
+        ),
+        (
+            "a workload identity pool provider that is not a provider resource name",
+            json!({
+                "gcp": {
+                    "serviceAccountEmail": SERVICE_ACCOUNT,
+                    "workloadIdentityPoolProvider": "projects/123456789012/providers/config",
+                },
+            }),
+        ),
+        (
+            "an organization id past the modelled length maximum",
+            gcp_configuration(SERVICE_ACCOUNT, Some(&"9".repeat(21))),
+        ),
+    ] {
+        let (status, code, message) = refused(&emulator, &configuration).await;
+        assert_eq!(
+            (status, code.as_str()),
+            (400, "ValidationException"),
+            "case {case:?}: expected HTTP 400 ValidationException, got {status} {code} \
+             with message {message:?}"
+        );
+    }
+
+    // None of the legs created anything: no connector of either provider is readable.
+    let arns = listed_arns(&emulator).await;
+    assert!(
+        arns.is_empty(),
+        "a refused PutConnector must create nothing, got {arns:?}"
     );
 }

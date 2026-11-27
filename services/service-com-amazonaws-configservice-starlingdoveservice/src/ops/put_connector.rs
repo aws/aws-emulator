@@ -11,21 +11,23 @@
 //! ## What this emulator answers, and why
 //!
 //! A connector IS the credential Config connects to the provider with, so Config
-//! verifies the provider configuration's tenant/client pair WITH that provider before
-//! it materializes anything, and refuses a pair it cannot verify. Verifying one means
-//! calling the provider's identity service — an outbound connection this emulator does
-//! not make — so no pair presented here can be verified: this handler checks the
-//! configuration's structure and the identifiers' form, and then refuses the request
-//! with the modelled `ValidationException` rather than handing back a connector no
-//! verified credential stands behind. Nothing is created, so nothing reaches the
+//! verifies the provider configuration's credentials WITH that provider before it
+//! materializes anything, and refuses credentials it cannot verify. Verifying them
+//! means calling the provider's identity service — an outbound connection this emulator
+//! does not make — so no configuration presented here can be verified: this handler
+//! checks the configuration's structure and the identifiers' form, and then refuses the
+//! request with the modelled `ValidationException` rather than handing back a connector
+//! no verified credential stands behind. Nothing is created, so nothing reaches the
 //! one-connector-per-configuration `ConflictException` or the
 //! `MaxNumberOfConnectorsExceededException` quota past that boundary.
 //!
 //! Every refusal text lives on `crate::state`
 //! (`CONNECTOR_CONFIGURATION_NO_PROVIDER_MESSAGE`,
+//! `CONNECTOR_CONFIGURATION_SEVERAL_PROVIDERS_MESSAGE`,
 //! `INVALID_AZURE_TENANT_IDENTIFIER_MESSAGE`,
 //! `INVALID_AZURE_CLIENT_IDENTIFIER_MESSAGE`,
-//! `UNVERIFIABLE_AZURE_CREDENTIALS_MESSAGE`).
+//! `UNVERIFIABLE_AZURE_CREDENTIALS_MESSAGE`,
+//! `UNVERIFIABLE_GCP_CREDENTIALS_MESSAGE`).
 //!
 //! ## Shape of an operation
 //!
@@ -203,43 +205,66 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })?;
 
         // `ConnectorConfiguration`: "You must specify exactly one provider
-        // configuration." The model carries one provider, so a configuration that
-        // names none names no provider to connect to.
-        let Some(azure) = input.connector_configuration.azure.as_ref() else {
-            return Err(validation(
-                crate::state::CONNECTOR_CONFIGURATION_NO_PROVIDER_MESSAGE.to_string(),
-            ));
+        // configuration." The configuration carries one member per published
+        // `Provider`, so a configuration that names none names nothing to connect to,
+        // and one that names several describes no single connection to make: a
+        // connector connects to ONE provider, the one its `Provider` reports and whose
+        // identifiers its reads carry.
+        let configuration = &input.connector_configuration;
+        let unverifiable = match (configuration.azure.as_ref(), configuration.gcp.as_ref()) {
+            (None, None) => {
+                return Err(validation(
+                    crate::state::CONNECTOR_CONFIGURATION_NO_PROVIDER_MESSAGE.to_string(),
+                ));
+            }
+            (Some(_), Some(_)) => {
+                return Err(validation(
+                    crate::state::CONNECTOR_CONFIGURATION_SEVERAL_PROVIDERS_MESSAGE.to_string(),
+                ));
+            }
+            (Some(azure), None) => {
+                // The Azure identifiers are the provider's own: a Microsoft Entra ID
+                // (Azure AD) directory and application identifier, both GUIDs. The
+                // model constrains only their length, so their FORM is checked here —
+                // a value that is not one cannot name a tenant or a client at the
+                // provider at all. The tenant is checked first: it is what the
+                // credential belongs to.
+                if !crate::state::is_azure_guid(&azure.tenant_identifier) {
+                    return Err(validation(
+                        crate::state::INVALID_AZURE_TENANT_IDENTIFIER_MESSAGE.to_string(),
+                    ));
+                }
+                if !crate::state::is_azure_guid(&azure.client_identifier) {
+                    return Err(validation(
+                        crate::state::INVALID_AZURE_CLIENT_IDENTIFIER_MESSAGE.to_string(),
+                    ));
+                }
+                crate::state::UNVERIFIABLE_AZURE_CREDENTIALS_MESSAGE
+            }
+            // The Google Cloud identifiers Config connects AS — the service account's
+            // email address and the workload identity pool provider that trusts Config
+            // — are both constrained by a `@pattern` of their own
+            // (`GcpServiceAccountEmail`, `GcpWorkloadIdentityPoolProvider`), which the
+            // request boundary enforces before this handler runs, so there is no form
+            // left for this leg to check: the configuration goes straight to the
+            // credential boundary below.
+            (None, Some(_)) => crate::state::UNVERIFIABLE_GCP_CREDENTIALS_MESSAGE,
         };
 
-        // The identifiers are the provider's own: a Microsoft Entra ID (Azure AD)
-        // directory and application identifier, both GUIDs. The model constrains only
-        // their length, so their FORM is checked here — a value that is not one cannot
-        // name a tenant or a client at the provider at all. The tenant is checked
-        // first: it is what the credential belongs to.
-        if !crate::state::is_azure_guid(&azure.tenant_identifier) {
-            return Err(validation(
-                crate::state::INVALID_AZURE_TENANT_IDENTIFIER_MESSAGE.to_string(),
-            ));
-        }
-        if !crate::state::is_azure_guid(&azure.client_identifier) {
-            return Err(validation(
-                crate::state::INVALID_AZURE_CLIENT_IDENTIFIER_MESSAGE.to_string(),
-            ));
-        }
-
         // A connector IS the credential Config connects to the provider with, so the
-        // pair is verified WITH that provider before a connector is materialized, and
-        // a pair that does not verify is refused with nothing created. Verifying one
-        // means calling the provider's identity service — an outbound connection this
-        // emulator does not make — so no pair presented here can be verified, and a
-        // connector whose credential nothing has verified is exactly what this
-        // operation must not hand back. Hence the refusal, and hence no connector, no
-        // ARN and no listing entry: the quota and the one-connector-per-configuration
-        // conflict this operation also models are past this boundary and nothing
-        // reaches them (`crate::state::CONNECTORS_QUOTA`).
-        Err(validation(
-            crate::state::UNVERIFIABLE_AZURE_CREDENTIALS_MESSAGE.to_string(),
-        ))
+        // configuration's credentials are verified WITH that provider before a
+        // connector is materialized, and credentials that do not verify are refused
+        // with nothing created. Verifying them means calling the provider's identity
+        // service — an outbound connection this emulator does not make — so no
+        // configuration presented here can be verified, and a connector whose
+        // credential nothing has verified is exactly what this operation must not hand
+        // back. Hence the refusal, and hence no connector, no ARN and no listing entry:
+        // the quota and the one-connector-per-configuration conflict this operation
+        // also models are past this boundary and nothing reaches them
+        // (`crate::state::CONNECTORS_QUOTA`). The text names the provider whose
+        // credentials could not be verified, because each provider's credential is its
+        // own.
+        Err(validation(unverifiable.to_string()))
     }
 }
 

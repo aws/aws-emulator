@@ -243,7 +243,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let store = state.lock();
 
         // Page over the store's own name ordering, so a token holds the NAME the next
-        // page resumes at and survives packs created or deleted between pages.
+        // page resumes at and survives packs created or deleted between pages. A request
+        // carrying `Filters` asks for the status of custom or of managed conformance
+        // packs, so a pack the filter does not select is left out of every page
+        // ([`crate::state::ConformancePackEntry::selected_by_types`]) — the same filter
+        // shape, read the same way, as `DescribeConformancePacks`.
         let mut page = Vec::new();
         let mut next_token = None;
         for (name, entry) in &store.conformance_packs {
@@ -251,6 +255,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 continue;
             }
             if !names.is_empty() && !names.iter().any(|requested| requested == name) {
+                continue;
+            }
+            if !entry.selected_by_types(input.filters.as_ref()) {
                 continue;
             }
             if page.len() == page_size {

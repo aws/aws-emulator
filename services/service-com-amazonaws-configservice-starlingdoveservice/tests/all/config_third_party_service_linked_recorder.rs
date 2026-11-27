@@ -189,11 +189,13 @@ async fn a_service_principal_that_owns_no_third_party_recorder_is_refused() {
 
 #[tokio::test]
 async fn a_supported_service_principal_creates_the_recorder_the_linked_service_manages() {
-    // Rows differ along the scope of third-party resources recorded: both published
-    // `scopeType` values (`ScopeConfiguration$scopeType`: "Valid values include tenant
-    // and subscription"), how many scope values are named, and whether every region of
-    // the provider is recorded or an explicit `includedRegions` list is.
-    let cases: [(&str, Value); 6] = [
+    // Rows differ along the scope of third-party resources recorded: every published
+    // `scopeType` value, one pair per provider (`ScopeConfiguration$scopeType`: "tenant
+    // – Applies to all resources in an Azure tenant", "subscription", "organization –
+    // Applies to all resources in a Google Cloud organization", "project"), how many
+    // scope values are named, and whether every region of the provider is recorded or an
+    // explicit `includedRegions` list is.
+    let cases: [(&str, Value); 9] = [
         (
             "tenant scope, every region",
             json!({ "scopeType": "tenant", "allRegions": true }),
@@ -236,6 +238,27 @@ async fn a_supported_service_principal_creates_the_recorder_the_linked_service_m
                 "scopeType": "subscription",
                 "allRegions": true,
                 "includedRegions": ["eastus"],
+            }),
+        ),
+        (
+            "organization scope, every region",
+            json!({ "scopeType": "organization", "allRegions": true }),
+        ),
+        (
+            "project scope naming two projects",
+            json!({
+                "scopeType": "project",
+                "scopeValues": ["analytics-project", "platform-project"],
+                "allRegions": true,
+            }),
+        ),
+        (
+            "project scope with one included region",
+            json!({
+                "scopeType": "project",
+                "scopeValues": ["analytics-project"],
+                "allRegions": false,
+                "includedRegions": ["us-central1"],
             }),
         ),
     ];
@@ -441,10 +464,11 @@ async fn the_first_recording_event_settles_the_way_the_clock_owes_it() {
 
 #[tokio::test]
 async fn a_scope_configuration_outside_its_published_constraints_is_refused() {
-    // Rows differ along which published value the scope type misses
-    // (`ScopeConfiguration$scopeType`: "Valid values include tenant and
-    // subscription"), including values that only differ in case.
-    let cases: [(&str, Value); 3] = [
+    // Rows differ along which published value the scope type misses (every published
+    // `scopeType`, from `smithy_query(query="shape", shape="ScopeConfiguration")`:
+    // `tenant`, `subscription`, `organization`, `project`), including values that only
+    // differ in case and one that names another provider's resource container.
+    let cases: [(&str, Value); 5] = [
         (
             "a scope type outside the published values",
             json!({ "scopeType": "resourceGroup", "allRegions": true }),
@@ -456,6 +480,14 @@ async fn a_scope_configuration_outside_its_published_constraints_is_refused() {
         (
             "a published scope type upper-cased",
             json!({ "scopeType": "SUBSCRIPTION", "allRegions": true }),
+        ),
+        (
+            "another container of the Google Cloud resource hierarchy",
+            json!({ "scopeType": "folder", "allRegions": true }),
+        ),
+        (
+            "a published scope type in the plural",
+            json!({ "scopeType": "projects", "allRegions": true }),
         ),
     ];
 
@@ -475,6 +507,13 @@ async fn a_scope_configuration_outside_its_published_constraints_is_refused() {
             message.contains("scopeConfiguration"),
             "case {case:?}: the refusal names the member it was built from, got {message:?}"
         );
+        for published in state::SCOPE_TYPES {
+            assert!(
+                message.contains(published),
+                "case {case:?}: the refusal names every value the member admits, \
+                 {published:?} missing from {message:?}"
+            );
+        }
 
         let recorders = described_recorders(&emulator).await;
         assert!(

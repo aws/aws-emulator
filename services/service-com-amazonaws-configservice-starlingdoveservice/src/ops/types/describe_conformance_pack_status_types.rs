@@ -15,6 +15,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-configservice-starlingd
 #[derive(Debug, Clone, Default)]
 pub struct DescribeConformancePackStatusInput {
     pub conformance_pack_names: Option<Vec<String>>,
+    pub filters: Option<DescribeConformancePacksFilters>,
     pub limit: i32,
     pub next_token: Option<String>,
 }
@@ -26,236 +27,17 @@ pub struct DescribeConformancePackStatusOutput {
     pub next_token: Option<String>,
 }
 
-/// `ConformancePackStatusDetail`, with its schema written out instead of derived.
-///
-/// WHY it is not `#[smithy_macros::smithy(shape = ...)]` like the shapes beside it:
-/// `StackArn` is "Amazon Resource Name (ARN) of CloudFormation stack"
-/// (`smithy_query(query="shape", shape="ConformancePackStatusDetail",
-/// model_path="services/service-com-amazonaws-configservice-starlingdoveservice/smithy-model/com-amazonaws-configservice-starlingdoveservice.json")`),
-/// and a pack whose deployment created no stack has no such ARN — the member targets
-/// `StackArn`, `@length(min 1, max 2048)`, so there is no value in it that stands for "no
-/// stack", and absence is the only form "none" can take. The model also marks the member
-/// `@required`, which the derive reads as "always on the wire": it refuses an `Option<T>`
-/// field for such a member ("Field 'stack_arn' is @required or @default in Smithy, so it
-/// must not be Option<T>."), leaving a derived response able to report only the empty
-/// string — a value outside the member's own value space, and an ARN that resolves to
-/// nothing for a caller that follows it to CloudFormation.
-///
-/// The member schemas below are the model's, member for member: same shape ids, same wire
-/// names, same order, same shape types.
-///
-/// Deliberately NOT reproduced, because nothing reads it here: the constraint traits the
-/// derive captures (the lengths and the pattern) — the framework's validating walk runs
-/// against `Operation::INPUT_SCHEMA` only, so they are inert on a shape a response carries.
-/// The read path IS written out, unlike in
-/// `services/service-com-amazonaws-iotsitewise-awsiotsitewise/src/ops/types/list_actions_types.rs`:
-/// this shape is not an operation output but an element of one, and the generated response
-/// that holds the list of them derives both directions, so the element type has to offer
-/// both.
-///
-/// This is a PER-SHAPE workaround for a generator gap filed as
-/// `issues/things-that-do-not-work/20261029T040000Z-smithy-macros-cannot-omit-a-required-output-member.md`;
-/// put the derive back once the generator can express an omittable member.
+#[smithy_macros::smithy(shape = "com.amazonaws.configservice#ConformancePackStatusDetail")]
 #[derive(Debug, Clone)]
 pub struct ConformancePackStatusDetail {
     pub conformance_pack_name: String,
-    /// `Type` — which KIND of conformance pack this is, reported here as it is on the
-    /// pack's configuration read ([`ConformancePackDetail`]).
-    pub r#type: Option<String>,
     pub conformance_pack_id: String,
     pub conformance_pack_arn: String,
     pub conformance_pack_state: String,
-    /// The ARN of the CloudFormation stack the pack is deployed as, which only a pack
-    /// that HAS one carries.
     pub stack_arn: Option<String>,
     pub conformance_pack_status_reason: Option<String>,
     pub last_update_requested_time: ::aws_smithy_types::DateTime,
     pub last_update_completed_time: Option<::aws_smithy_types::DateTime>,
-}
-
-impl ConformancePackStatusDetail {
-    const M_TYPE: ::aws_smithy_schema::Schema = Self::member(
-        "com.amazonaws.configservice#ConformancePackStatusDetail$Type",
-        "Type",
-        ::aws_smithy_schema::ShapeType::String,
-        0,
-    );
-    const M_CONFORMANCE_PACK_NAME: ::aws_smithy_schema::Schema = Self::member(
-        "com.amazonaws.configservice#ConformancePackStatusDetail$ConformancePackName",
-        "ConformancePackName",
-        ::aws_smithy_schema::ShapeType::String,
-        1,
-    );
-    const M_CONFORMANCE_PACK_ID: ::aws_smithy_schema::Schema = Self::member(
-        "com.amazonaws.configservice#ConformancePackStatusDetail$ConformancePackId",
-        "ConformancePackId",
-        ::aws_smithy_schema::ShapeType::String,
-        2,
-    );
-    const M_CONFORMANCE_PACK_ARN: ::aws_smithy_schema::Schema = Self::member(
-        "com.amazonaws.configservice#ConformancePackStatusDetail$ConformancePackArn",
-        "ConformancePackArn",
-        ::aws_smithy_schema::ShapeType::String,
-        3,
-    );
-    const M_CONFORMANCE_PACK_STATE: ::aws_smithy_schema::Schema = Self::member(
-        "com.amazonaws.configservice#ConformancePackStatusDetail$ConformancePackState",
-        "ConformancePackState",
-        ::aws_smithy_schema::ShapeType::String,
-        4,
-    );
-    const M_STACK_ARN: ::aws_smithy_schema::Schema = Self::member(
-        "com.amazonaws.configservice#ConformancePackStatusDetail$StackArn",
-        "StackArn",
-        ::aws_smithy_schema::ShapeType::String,
-        5,
-    );
-    const M_CONFORMANCE_PACK_STATUS_REASON: ::aws_smithy_schema::Schema = Self::member(
-        "com.amazonaws.configservice#ConformancePackStatusDetail$ConformancePackStatusReason",
-        "ConformancePackStatusReason",
-        ::aws_smithy_schema::ShapeType::String,
-        6,
-    );
-    const M_LAST_UPDATE_REQUESTED_TIME: ::aws_smithy_schema::Schema = Self::member(
-        "com.amazonaws.configservice#ConformancePackStatusDetail$LastUpdateRequestedTime",
-        "LastUpdateRequestedTime",
-        ::aws_smithy_schema::ShapeType::Timestamp,
-        7,
-    );
-    const M_LAST_UPDATE_COMPLETED_TIME: ::aws_smithy_schema::Schema = Self::member(
-        "com.amazonaws.configservice#ConformancePackStatusDetail$LastUpdateCompletedTime",
-        "LastUpdateCompletedTime",
-        ::aws_smithy_schema::ShapeType::Timestamp,
-        8,
-    );
-
-    /// One member of this shape, named and typed as the model declares it.
-    const fn member(
-        id: &'static str,
-        name: &'static str,
-        shape_type: ::aws_smithy_schema::ShapeType,
-        index: usize,
-    ) -> ::aws_smithy_schema::Schema {
-        ::aws_smithy_schema::Schema::new_member(
-            ::aws_smithy_schema::ShapeId::from_static(id, "com.amazonaws.configservice", name),
-            shape_type,
-            name,
-            index,
-        )
-    }
-
-    pub const SCHEMA: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_struct(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.configservice#ConformancePackStatusDetail",
-            "com.amazonaws.configservice",
-            "ConformancePackStatusDetail",
-        ),
-        ::aws_smithy_schema::ShapeType::Structure,
-        &[
-            &Self::M_TYPE,
-            &Self::M_CONFORMANCE_PACK_NAME,
-            &Self::M_CONFORMANCE_PACK_ID,
-            &Self::M_CONFORMANCE_PACK_ARN,
-            &Self::M_CONFORMANCE_PACK_STATE,
-            &Self::M_STACK_ARN,
-            &Self::M_CONFORMANCE_PACK_STATUS_REASON,
-            &Self::M_LAST_UPDATE_REQUESTED_TIME,
-            &Self::M_LAST_UPDATE_COMPLETED_TIME,
-        ],
-    );
-}
-
-impl ::aws_smithy_schema_server::DeserializableStruct for ConformancePackStatusDetail {
-    /// Read the shape back off a deserializer.
-    ///
-    /// Written out for the same reason the serializer above is. Nothing in this service
-    /// deserializes a status detail — it is reported by a read and carried by no request —
-    /// but the generated response shape that holds the list of them derives both
-    /// directions, so the element type has to offer both.
-    fn deserialize(
-        deserializer: &mut dyn ::aws_smithy_schema::serde::ShapeDeserializer,
-    ) -> ::std::result::Result<Self, ::aws_smithy_schema::serde::SerdeError> {
-        let mut conformance_pack_name: Option<String> = None;
-        let mut pack_type: Option<String> = None;
-        let mut conformance_pack_id: Option<String> = None;
-        let mut conformance_pack_arn: Option<String> = None;
-        let mut conformance_pack_state: Option<String> = None;
-        let mut stack_arn: Option<String> = None;
-        let mut conformance_pack_status_reason: Option<String> = None;
-        let mut last_update_requested_time: Option<::aws_smithy_types::DateTime> = None;
-        let mut last_update_completed_time: Option<::aws_smithy_types::DateTime> = None;
-        deserializer.read_struct(&Self::SCHEMA, &mut |member, deserializer| {
-            match member.member_index() {
-                Some(0) => pack_type = Some(deserializer.read_string(member)?),
-                Some(1) => conformance_pack_name = Some(deserializer.read_string(member)?),
-                Some(2) => conformance_pack_id = Some(deserializer.read_string(member)?),
-                Some(3) => conformance_pack_arn = Some(deserializer.read_string(member)?),
-                Some(4) => conformance_pack_state = Some(deserializer.read_string(member)?),
-                Some(5) => stack_arn = Some(deserializer.read_string(member)?),
-                Some(6) => conformance_pack_status_reason = Some(deserializer.read_string(member)?),
-                Some(7) => last_update_requested_time = Some(deserializer.read_timestamp(member)?),
-                Some(8) => last_update_completed_time = Some(deserializer.read_timestamp(member)?),
-                _ => {}
-            }
-            Ok(())
-        })?;
-        Ok(Self {
-            conformance_pack_name: conformance_pack_name
-                .ok_or_else(|| ::aws_smithy_schema_server::missing_member("ConformancePackName"))?,
-            r#type: pack_type,
-            conformance_pack_id: conformance_pack_id
-                .ok_or_else(|| ::aws_smithy_schema_server::missing_member("ConformancePackId"))?,
-            conformance_pack_arn: conformance_pack_arn
-                .ok_or_else(|| ::aws_smithy_schema_server::missing_member("ConformancePackArn"))?,
-            conformance_pack_state: conformance_pack_state
-                .ok_or_else(|| ::aws_smithy_schema_server::missing_member("ConformancePackState"))?,
-            stack_arn,
-            conformance_pack_status_reason,
-            last_update_requested_time: last_update_requested_time.ok_or_else(|| {
-                ::aws_smithy_schema_server::missing_member("LastUpdateRequestedTime")
-            })?,
-            last_update_completed_time,
-        })
-    }
-}
-
-impl ::aws_smithy_schema::serde::SerializableStruct for ConformancePackStatusDetail {
-    fn serialize_members(
-        &self,
-        serializer: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        if let Some(pack_type) = self.r#type.as_ref() {
-            serializer.write_string(&Self::M_TYPE, pack_type.as_str())?;
-        }
-        serializer.write_string(
-            &Self::M_CONFORMANCE_PACK_NAME,
-            self.conformance_pack_name.as_str(),
-        )?;
-        serializer.write_string(&Self::M_CONFORMANCE_PACK_ID, self.conformance_pack_id.as_str())?;
-        serializer.write_string(
-            &Self::M_CONFORMANCE_PACK_ARN,
-            self.conformance_pack_arn.as_str(),
-        )?;
-        serializer.write_string(
-            &Self::M_CONFORMANCE_PACK_STATE,
-            self.conformance_pack_state.as_str(),
-        )?;
-        // The stack is written only for a pack that HAS one: a deployment that created no
-        // stack reports no ARN rather than one that resolves to nothing.
-        if let Some(stack_arn) = self.stack_arn.as_ref() {
-            serializer.write_string(&Self::M_STACK_ARN, stack_arn.as_str())?;
-        }
-        if let Some(reason) = self.conformance_pack_status_reason.as_ref() {
-            serializer.write_string(&Self::M_CONFORMANCE_PACK_STATUS_REASON, reason.as_str())?;
-        }
-        serializer.write_timestamp(
-            &Self::M_LAST_UPDATE_REQUESTED_TIME,
-            &self.last_update_requested_time,
-        )?;
-        if let Some(completed) = self.last_update_completed_time.as_ref() {
-            serializer.write_timestamp(&Self::M_LAST_UPDATE_COMPLETED_TIME, completed)?;
-        }
-        Ok(())
-    }
+    pub r#type: Option<String>,
 }
 

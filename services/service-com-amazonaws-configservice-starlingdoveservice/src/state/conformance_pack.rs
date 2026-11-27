@@ -5,17 +5,54 @@
 
 use super::*;
 
-/// The `Type` of a conformance pack the account deployed itself, with
-/// `PutConformancePack`.
+use crate::ops::types::{
+    ConformancePackScope, ConformancePackSource, DescribeConformancePacksFilters,
+};
+
+/// The `Type` of a conformance pack the account authored itself and deployed from a
+/// template with `PutConformancePack` (`ConformancePackType`: "`CUSTOM` – A custom
+/// conformance pack").
 ///
 /// Every conformance pack read reports which KIND of pack it is describing, so a client
 /// can tell a pack the account authored from one an Amazon Web Services service deployed
 /// on its behalf — the latter being the pack that names that service in `CreatedBy`
 /// (`ConformancePackDetail$CreatedBy`: "The Amazon Web Services service that created the
-/// conformance pack"). `PutConformancePack` is the one way a pack enters this store, and
-/// a pack it deployed is the account's own, so that is the type its record carries
-/// ([`ConformancePackEntry::pack_type`]).
+/// conformance pack"). A pack deployed from a TEMPLATE is the account's own, so that is
+/// the type its record carries ([`ConformancePackEntry::pack_type`]).
 pub const CONFORMANCE_PACK_TYPE_CUSTOM: &str = "CUSTOM";
+
+/// The `Type` of a MANAGED conformance pack (`ConformancePackType`: "`MANAGED` – A
+/// managed conformance pack"): one deployed from a managed `Source` rather than from a
+/// template the account wrote, "predefined collections of Config rules that are created
+/// and maintained by Amazon Web Services" (`PutConformancePackRequest$Source`).
+///
+/// A managed pack is the one kind that carries [`ConformancePackEntry::source`] and
+/// [`ConformancePackEntry::scope`], which is why the type and those two members move
+/// together, and the kind a pack is is fixed at creation: "You cannot convert an
+/// existing conformance pack between a managed conformance pack and a custom
+/// conformance pack".
+pub const CONFORMANCE_PACK_TYPE_MANAGED: &str = "MANAGED";
+
+/// How Config words a `Scope` named without the `Source` it belongs to.
+///
+/// `PutConformancePackRequest$Scope` is "supported only for managed conformance packs.
+/// If you specify a scope, you must also specify `Source`": a scope defines which
+/// resources trigger an evaluation for the rules of the managed pack a source names, so
+/// it stands for nothing on its own. The text is fixed — it is built from no part of
+/// the request — because the member it is about is the one the request named.
+pub const CONFORMANCE_PACK_SCOPE_NEEDS_SOURCE_MESSAGE: &str =
+    "When you specify Scope, you must also specify Source";
+
+/// How Config words a deployment that would change WHICH KIND of conformance pack an
+/// existing pack is.
+///
+/// "You cannot convert an existing conformance pack between a managed conformance pack
+/// and a custom conformance pack" (`PutConformancePackRequest$Source`): the kind was
+/// fixed when the pack was created ([`ConformancePackEntry::pack_type`]), so the pack
+/// is left as it is and the refusal states the rule.
+pub const CONFORMANCE_PACK_KIND_IS_FIXED_MESSAGE: &str =
+    "You cannot convert an existing conformance pack between a managed conformance pack \
+     and a custom conformance pack";
 
 /// One conformance pack deployed in this account and Region.
 ///
@@ -95,6 +132,20 @@ pub struct ConformancePackEntry {
     /// resource's one tag set, reached through
     /// [`ComAmazonawsConfigserviceStarlingdoveserviceState::tags_of`].
     pub tags: TagSet,
+    /// The managed conformance pack this pack was deployed from, for a pack that was:
+    /// "contains the identifier of the managed conformance pack that Config deploys in
+    /// your account ... This field applies only to managed conformance packs"
+    /// (`ConformancePackDetail$Source`). A pack deployed from a template
+    /// ([`Self::template_body`]) has none, and the two are exclusive — a request naming
+    /// a `Source` may name no template at all.
+    pub source: Option<ConformancePackSource>,
+    /// Which resources trigger an evaluation for the pack's Config rules, where the
+    /// pack was deployed with a scope: "managed conformance packs with a scope populate
+    /// this field. Custom conformance packs leave it empty"
+    /// (`ConformancePackDetail$Scope`). It is carried only beside [`Self::source`], as
+    /// `PutConformancePackRequest$Scope` requires ("if you specify a scope, you must
+    /// also specify `Source`").
+    pub scope: Option<ConformancePackScope>,
 }
 
 impl ConformancePackEntry {
@@ -146,6 +197,10 @@ impl ConformancePackEntry {
     /// none of, and `TemplateSSMDocumentDetails` is carried only by a pack deployed from
     /// a Systems Manager document, which this store holds none of: `PutConformancePack`
     /// refuses that leg rather than deploying from a template it never read.
+    ///
+    /// `Source` and `Scope` are the MANAGED pack's own members, so they are reported
+    /// from what the pack was deployed with ([`Self::source`], [`Self::scope`]) and a
+    /// pack deployed from a template carries neither.
     pub fn to_detail(&self) -> ConformancePackDetail {
         ConformancePackDetail {
             conformance_pack_name: self.name.clone(),
@@ -158,7 +213,24 @@ impl ConformancePackEntry {
             last_update_requested_time: Some(timestamp(self.last_update_requested_at)),
             created_by: None,
             template_ssm_document_details: None,
+            source: self.source.clone(),
+            scope: self.scope.clone(),
         }
+    }
+
+    /// Whether a conformance pack read that filters by `Type` reports this pack.
+    ///
+    /// `DescribeConformancePacksFilters$Types` "filters results by conformance pack
+    /// type ... if you specify both values, Config returns conformance packs of either
+    /// type", and a request carrying no filter asks for every pack ("by default, if the
+    /// filter is not defined, Config returns details for all your conformance packs").
+    /// A value outside the published `ConformancePackType` names no type any pack is,
+    /// so it selects none.
+    pub fn selected_by_types(&self, filters: Option<&DescribeConformancePacksFilters>) -> bool {
+        let Some(types) = filters.and_then(|filters| filters.types.as_deref()) else {
+            return true;
+        };
+        types.contains(&self.pack_type)
     }
 }
 

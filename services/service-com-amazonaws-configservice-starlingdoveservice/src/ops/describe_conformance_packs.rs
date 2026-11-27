@@ -269,7 +269,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // Page over the store's own name ordering, so a token holds the NAME the next
-        // page resumes at and survives packs created or deleted between pages.
+        // page resumes at and survives packs created or deleted between pages. A request
+        // carrying `Filters` asks for "a filtered list of custom or managed conformance
+        // packs", so a pack the filter does not select is left out of every page
+        // ([`crate::state::ConformancePackEntry::selected_by_types`]) — the names the
+        // request listed narrow the same listing further rather than overriding it.
         let mut page = Vec::new();
         let mut next_token = None;
         for (name, entry) in &store.conformance_packs {
@@ -277,6 +281,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 continue;
             }
             if !names.is_empty() && !names.iter().any(|requested| requested == name) {
+                continue;
+            }
+            if !entry.selected_by_types(input.filters.as_ref()) {
                 continue;
             }
             if page.len() == page_size {

@@ -235,14 +235,14 @@ contents — read that shape in the model above when you need its own members.
 ## DescribeConformancePacks
 
 - **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=ConformancePackDetails)
-- **Input:** `ConformancePackNames` (list<string>, len 0..25), `Limit` (integer, range 0..20, default 0, required), `NextToken` (string)
+- **Input:** `ConformancePackNames` (list<string>, len 0..25), `Filters` (DescribeConformancePacksFilters), `Limit` (integer, range 0..20, default 0, required), `NextToken` (string)
 - **Output:** `ConformancePackDetails` (list<ConformancePackDetail>, len 0..25), `NextToken` (string)
 - **Errors:** `InvalidLimitException (HTTP 400)`, `InvalidNextTokenException (HTTP 400)`, `InvalidParameterValueException (HTTP 400)`, `NoSuchConformancePackException (HTTP 400)`
 
 ## DescribeConformancePackStatus
 
 - **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=ConformancePackStatusDetails)
-- **Input:** `ConformancePackNames` (list<string>, len 0..25), `Limit` (integer, range 0..20, default 0, required), `NextToken` (string)
+- **Input:** `ConformancePackNames` (list<string>, len 0..25), `Filters` (DescribeConformancePacksFilters), `Limit` (integer, range 0..20, default 0, required), `NextToken` (string)
 - **Output:** `ConformancePackStatusDetails` (list<ConformancePackStatusDetail>, len 0..25), `NextToken` (string)
 - **Errors:** `InvalidLimitException (HTTP 400)`, `InvalidNextTokenException (HTTP 400)`, `InvalidParameterValueException (HTTP 400)`
 
@@ -540,7 +540,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## PutConformancePack
 
-- **Input:** `ConformancePackName` (string, len 1..256, pattern ^[a-zA-Z][-a-zA-Z0-9]*$, required), `TemplateS3Uri` (string, len 1..1024, pattern ^s3://), `TemplateBody` (string, len 1..51200), `DeliveryS3Bucket` (string, len 0..63), `DeliveryS3KeyPrefix` (string, len 0..1024), `ConformancePackInputParameters` (list<ConformancePackInputParameter>, len 0..60), `TemplateSSMDocumentDetails` (TemplateSSMDocumentDetails), `Tags` (list<Tag>, len 0..50)
+- **Input:** `ConformancePackName` (string, len 1..256, pattern ^[a-zA-Z][-a-zA-Z0-9]*$, required), `TemplateS3Uri` (string, len 1..1024, pattern ^s3://), `TemplateBody` (string, len 1..51200), `DeliveryS3Bucket` (string, len 0..63), `DeliveryS3KeyPrefix` (string, len 0..1024), `ConformancePackInputParameters` (list<ConformancePackInputParameter>, len 0..330), `TemplateSSMDocumentDetails` (TemplateSSMDocumentDetails), `Tags` (list<Tag>, len 0..50), `Source` (ConformancePackSource), `Scope` (ConformancePackScope)
 - **Output:** `ConformancePackArn` (string, len 1..2048)
 - **Errors:** `ConformancePackTemplateValidationException (HTTP 400)`, `InsufficientPermissionsException (HTTP 400)`, `InvalidParameterValueException (HTTP 400)`, `MaxNumberOfConformancePacksExceededException (HTTP 400)`, `ResourceInUseException (HTTP 400)`
 
@@ -576,7 +576,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## PutOrganizationConformancePack
 
-- **Input:** `OrganizationConformancePackName` (string, len 1..128, pattern ^[a-zA-Z][-a-zA-Z0-9]*$, required), `TemplateS3Uri` (string, len 1..1024, pattern ^s3://), `TemplateBody` (string, len 1..51200), `DeliveryS3Bucket` (string, len 0..63), `DeliveryS3KeyPrefix` (string, len 0..1024), `ConformancePackInputParameters` (list<ConformancePackInputParameter>, len 0..60), `ExcludedAccounts` (list<string>, len 0..1000), `Tags` (list<Tag>, len 0..50)
+- **Input:** `OrganizationConformancePackName` (string, len 1..128, pattern ^[a-zA-Z][-a-zA-Z0-9]*$, required), `TemplateS3Uri` (string, len 1..1024, pattern ^s3://), `TemplateBody` (string, len 1..51200), `DeliveryS3Bucket` (string, len 0..63), `DeliveryS3KeyPrefix` (string, len 0..1024), `ConformancePackInputParameters` (list<ConformancePackInputParameter>, len 0..330), `ExcludedAccounts` (list<string>, len 0..1000), `Tags` (list<Tag>, len 0..50)
 - **Output:** `OrganizationConformancePackArn` (string, len 1..256)
 - **Errors:** `InsufficientPermissionsException (HTTP 400)`, `MaxNumberOfOrganizationConformancePacksExceededException (HTTP 400)`, `NoAvailableOrganizationException (HTTP 400)`, `OrganizationAccessDeniedException (HTTP 400)`, `OrganizationAllFeaturesNotEnabledException (HTTP 400)`, `OrganizationConformancePackTemplateValidationException (HTTP 400)`, `ResourceInUseException (HTTP 400)`, `ValidationException (HTTP 400)`
 

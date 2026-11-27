@@ -284,6 +284,9 @@ fn verified_for(tenant: &str, client: &str) -> ConnectorConfiguration {
             tenant_identifier: tenant.to_string(),
             client_identifier: client.to_string(),
         }),
+        // The provider configurations are exclusive — "you must specify exactly one
+        // provider configuration" — and this connector connects to Azure.
+        gcp: None,
     }
 }
 

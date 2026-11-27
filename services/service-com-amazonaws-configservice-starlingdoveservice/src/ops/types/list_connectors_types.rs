@@ -39,7 +39,9 @@ pub struct ConnectorSummary {
     pub arn: String,
     pub name: String,
     pub provider: String,
-    pub tenant_identifier: String,
+    pub tenant_identifier: Option<String>,
+    pub gcp_organization_id: Option<String>,
+    pub service_account_email: Option<String>,
     pub created_time: ::aws_smithy_types::DateTime,
 }
 

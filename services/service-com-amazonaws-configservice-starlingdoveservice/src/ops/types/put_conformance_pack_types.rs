@@ -22,6 +22,8 @@ pub struct PutConformancePackInput {
     pub conformance_pack_input_parameters: Option<Vec<ConformancePackInputParameter>>,
     pub template_ssm_document_details: Option<TemplateSSMDocumentDetails>,
     pub tags: Option<Vec<Tag>>,
+    pub source: Option<ConformancePackSource>,
+    pub scope: Option<ConformancePackScope>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.configservice#PutConformancePackResponse")]

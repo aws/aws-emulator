@@ -8,9 +8,19 @@
 //!
 //! What this handler enforces, and where each rule comes from:
 //!
-//! * "You must specify only one of the follow parameters: TemplateS3Uri, TemplateBody
-//!   or TemplateSSMDocumentDetails": a request carrying none of them, or more than one,
-//!   is refused with the modelled `InvalidParameterValueException`;
+//! * "For custom conformance packs, you must specify only one of TemplateS3Uri,
+//!   TemplateBody, TemplateSSMDocumentDetails": a request carrying none of them, or
+//!   more than one, is refused with the modelled `InvalidParameterValueException`;
+//! * "For managed conformance packs, you must specify Source. Do not specify
+//!   TemplateS3Uri, TemplateBody, TemplateSSMDocumentDetails, DeliveryS3Bucket, or
+//!   DeliveryS3KeyPrefix": a request naming a `Source` is a MANAGED deployment, so one
+//!   that names a template or a delivery location beside it is refused with the same
+//!   error, as is a `Scope` named without a `Source` ("supported only for managed
+//!   conformance packs ... if you specify a scope, you must also specify Source");
+//! * "You cannot convert an existing conformance pack between a managed conformance pack
+//!   and a custom conformance pack": the kind a pack is was fixed when it was created,
+//!   so a request that would deploy an existing pack as the other kind is refused and
+//!   leaves it as it is;
 //! * a `TemplateBody` is READ as the YAML (or JSON, which YAML 1.2 is a superset of)
 //!   template it must be, and must declare the resource types a conformance pack
 //!   template declares ([`CONFORMANCE_PACK_TEMPLATE_RESOURCE_TYPES`]); a body that is
@@ -46,6 +56,13 @@
 //! object, and `TemplateSSMDocumentDetails`, whose body is a Systems Manager document —
 //! is not read here: this handler cannot see either store, so rather than deploy a pack
 //! from a template it never read it answers the scaffold's 501 for those two legs alone.
+//! A MANAGED pack is the third such leg: what its `Source` names is "a predefined
+//! identifier for a managed conformance pack" standing for a collection of Config rules
+//! "created and maintained by Amazon Web Services", which this emulator holds none of,
+//! so rather than report a managed pack deployed whose rules exist nowhere this handler
+//! answers 501 for a request carrying a `Source` too. A managed pack that IS in state —
+//! carrying its `Source`, its `Scope` and the `MANAGED` type — is reported by the
+//! conformance pack read paths like any other.
 //!
 //! ## The values the template is deployed WITH
 //!
@@ -1212,12 +1229,70 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             crate::scaffolded::Scaffolded::validation(crate::state::STATE_UNAVAILABLE)
         })?;
 
-        // "You must specify only one of the follow parameters: TemplateS3Uri,
-        // TemplateBody or TemplateSSMDocumentDetails." Each is optional on its own, so
+        // "For managed conformance packs, you must specify Source. Do not specify
+        // TemplateS3Uri, TemplateBody, TemplateSSMDocumentDetails, DeliveryS3Bucket, or
+        // DeliveryS3KeyPrefix": a `Source` is what makes the request a MANAGED
+        // deployment — "if you specify a source, Config creates a managed conformance
+        // pack" — and a managed pack is deployed from the collection that source names
+        // rather than from a template of the account's own, so a request naming both
+        // describes two deployments. Each member is optional on its own, so the request
+        // walk cannot refuse the COMBINATION: this operation's own
+        // `InvalidParameterValueException` ("One or more of the specified parameters are
+        // not valid") is what refuses it, naming the members the request sent.
+        let template_or_delivery = [
+            ("TemplateS3Uri", input.template_s3_uri.is_some()),
+            ("TemplateBody", input.template_body.is_some()),
+            (
+                "TemplateSSMDocumentDetails",
+                input.template_ssm_document_details.is_some(),
+            ),
+            ("DeliveryS3Bucket", input.delivery_s3_bucket.is_some()),
+            ("DeliveryS3KeyPrefix", input.delivery_s3_key_prefix.is_some()),
+        ];
+        if input.source.is_some() {
+            let specified: Vec<&str> = template_or_delivery
+                .iter()
+                .filter(|(_, present)| *present)
+                .map(|(member, _)| *member)
+                .collect();
+            if !specified.is_empty() {
+                return Err(invalid_parameter(format!(
+                    "When you specify Source, you cannot specify {}, and {} {} specified",
+                    template_or_delivery
+                        .iter()
+                        .map(|(member, _)| *member)
+                        .collect::<Vec<&str>>()
+                        .join(", "),
+                    specified.join(", "),
+                    if specified.len() == 1 { "was" } else { "were" },
+                )));
+            }
+
+            // What a `Source` names is a collection of Config rules Amazon Web Services
+            // created and maintains, which this emulator holds none of, so the pack its
+            // deployment would create has no rules to create: the scaffold's 501 is
+            // answered for this leg rather than a pack reported deployed whose rules
+            // exist nowhere. See the module doc.
+            return Err(crate::scaffolded::Scaffolded::not_implemented(
+                "PutConformancePack with a managed conformance pack Source",
+            ));
+        }
+
+        // "This field is optional and is supported only for managed conformance packs.
+        // If you specify a scope, you must also specify Source": a scope defines which
+        // resources trigger an evaluation for the rules of the MANAGED pack a source
+        // names, so it stands for nothing on its own.
+        if input.scope.is_some() {
+            return Err(invalid_parameter(
+                crate::state::CONFORMANCE_PACK_SCOPE_NEEDS_SOURCE_MESSAGE.to_string(),
+            ));
+        }
+
+        // "For custom conformance packs, you must specify only one of TemplateS3Uri,
+        // TemplateBody, TemplateSSMDocumentDetails." Each is optional on its own, so
         // the request walk cannot refuse a request that carries none or several: the
         // rule is about the COMBINATION, which this operation's own
-        // `InvalidParameterValueException` ("One or more of the specified parameters are
-        // not valid") is what refuses.
+        // `InvalidParameterValueException` is what refuses.
         let sources = [
             ("TemplateBody", input.template_body.is_some()),
             ("TemplateS3Uri", input.template_s3_uri.is_some()),
@@ -1375,6 +1450,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // cannot be updated with this operation"). Only a NEW pack has to fit under this
         // Region's conformance pack quota.
         let existing = store.conformance_packs.get(&name).cloned();
+
+        // "You cannot convert an existing conformance pack between a managed conformance
+        // pack and a custom conformance pack": which kind a pack is was fixed when it
+        // was created, and this call deploys a CUSTOM pack from a template of the
+        // account's own — a request naming a `Source` answered above — so a name an
+        // existing MANAGED pack holds is refused and that pack is left exactly as it is.
+        if existing
+            .as_ref()
+            .is_some_and(|pack| pack.pack_type == crate::state::CONFORMANCE_PACK_TYPE_MANAGED)
+        {
+            return Err(invalid_parameter(
+                crate::state::CONFORMANCE_PACK_KIND_IS_FIXED_MESSAGE.to_string(),
+            ));
+        }
+
         let (id, arn, deployed_stack_arn, pack_type, tags, previously_deployed) = match existing {
             Some(pack) => (
                 pack.id,
@@ -1562,6 +1652,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 last_update_requested_at: now,
                 deployment_completes_at: completes_at,
                 tags,
+                // The managed pack's own members: this call deploys a pack from a
+                // template the account wrote, which carries neither.
+                source: None,
+                scope: None,
             },
         );
         drop(store);

@@ -6,10 +6,14 @@
 //! Two rules are pinned here.
 //!
 //! * Every read of a conformance pack reports WHICH KIND of pack it is describing, in
-//!   `Type`, and a pack this account deployed with `PutConformancePack` is its own —
-//!   `CUSTOM` — as opposed to one an Amazon Web Services service deployed on the
-//!   account's behalf (the pack that names that service in `CreatedBy`). It is reported
-//!   by the configuration read (`DescribeConformancePacks`) and by the status read
+//!   `Type`, and a pack this account deployed from a template with `PutConformancePack`
+//!   is its own — `CUSTOM` — as opposed to a `MANAGED` one, the predefined collection of
+//!   Config rules Amazon Web Services maintains and deploys from a `Source`. The managed
+//!   pack's own members (`Source`, and the `Scope` that narrows which resources trigger
+//!   an evaluation for its rules) are reported for exactly the packs that carry them, a
+//!   pack deployed from a template carrying neither, and a request's `Types` filter
+//!   narrows either read to the kinds it names. It is reported by the configuration read
+//!   (`DescribeConformancePacks`) and by the status read
 //!   (`DescribeConformancePackStatus`), on every entry of either, whether the request
 //!   names the packs it wants or asks for all of them, and in every deployment state the
 //!   pack passes through. Recorded behaviour: the on-disk model does not carry the
@@ -31,14 +35,19 @@
 //! of the name itself.
 
 use std::collections::BTreeSet;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::{json, Value};
+use service_com_amazonaws_configservice_starlingdoveservice::ops::types::{
+    ConformancePackScope, ConformancePackSource,
+};
 use service_com_amazonaws_configservice_starlingdoveservice::state::{
-    CONFORMANCE_PACK_STACK_NAME_PREFIX, CONFORMANCE_PACK_STATE_CREATE_COMPLETE,
-    CONFORMANCE_PACK_STATE_CREATE_IN_PROGRESS, CONFORMANCE_PACK_TYPE_CUSTOM,
+    self, service_state, ConformancePackEntry, CONFORMANCE_PACK_STACK_NAME_PREFIX,
+    CONFORMANCE_PACK_STATE_CREATE_COMPLETE, CONFORMANCE_PACK_STATE_CREATE_IN_PROGRESS,
+    CONFORMANCE_PACK_TYPE_CUSTOM, CONFORMANCE_PACK_TYPE_MANAGED,
 };
 
+use crate::config_connectors::refusal;
 use crate::config_setup_and_rule_loop::Emulator;
 use crate::conformance_pack_compliance::template;
 
@@ -390,4 +399,472 @@ async fn a_packs_stack_arn_is_the_cloudformation_stack_it_is_deployed_as() {
             "case {case:?}: the redeployment settles, got {redeployed}"
         );
     }
+}
+
+/// The operation every managed-pack refusal below is asked of.
+const PUT: &str = "PutConformancePack";
+
+/// The texts AWS answers the two managed-pack legs of `PutConformancePack` with, written
+/// out here rather than read from the service's own constants so this suite PINS them.
+const SCOPE_NEEDS_SOURCE_TEXT: &str = "When you specify Scope, you must also specify Source";
+/// See [`SCOPE_NEEDS_SOURCE_TEXT`].
+const KIND_IS_FIXED_TEXT: &str = "You cannot convert an existing conformance pack between a \
+                                  managed conformance pack and a custom conformance pack";
+
+/// A `ConformancePackSourceIdentifier`: "a predefined identifier for a managed conformance
+/// pack", in the form Config publishes its managed packs under.
+const SOURCE_IDENTIFIER: &str = "Operational-Best-Practices-for-AWS-Identity-And-Access-Management";
+
+/// A second one, so no two managed rows share a source.
+const OTHER_SOURCE_IDENTIFIER: &str = "Operational-Best-Practices-for-Amazon-S3";
+
+/// The `ConformancePackScope` a managed pack carries, where it has one: the tag key
+/// that "applies to only those resources that you want to trigger an evaluation for",
+/// and the optional tag value beside it.
+type PackScope = Option<(&'static str, Option<&'static str>)>;
+
+/// One row of the managed-pack table: the case, the pack's name, the managed source it
+/// was deployed from and the scope it was deployed with.
+type ManagedRow = (&'static str, &'static str, &'static str, PackScope);
+
+/// Place a MANAGED conformance pack in the store, reaching it the way a handler does,
+/// and answer the id it was given.
+///
+/// `PutConformancePack` deploys no managed pack in this emulator: what a `Source` names
+/// is a collection of Config rules Amazon Web Services maintains, which this emulator
+/// holds none of, so that leg answers 501 rather than reporting a pack whose rules exist
+/// nowhere (pinned below). The managed packs the read paths are pinned over are
+/// therefore seeded in the shared engine the router hands the handlers, the way the
+/// other suites of this crate seed state, and what is asserted of them here is what the
+/// reads report ABOUT THE PACK: its kind, its source and its scope.
+fn seed_managed_pack(
+    emulator: &Emulator,
+    name: &str,
+    source_identifier: &str,
+    scope: Option<(&str, Option<&str>)>,
+) -> String {
+    let id = state::mint_conformance_pack_id();
+    let arn = state::conformance_pack_arn(&emulator.region, name, &id);
+    let deployed_at = SystemTime::now();
+    let handle = service_state(&*emulator.engine).expect("the test engine is the shared engine");
+    handle.lock().conformance_packs.insert(
+        name.to_string(),
+        ConformancePackEntry {
+            name: name.to_string(),
+            id: id.clone(),
+            arn,
+            stack_arn: Some(state::conformance_pack_stack_arn(
+                &emulator.region,
+                name,
+                &id,
+                &state::stack_id(),
+            )),
+            pack_type: CONFORMANCE_PACK_TYPE_MANAGED.to_string(),
+            template_body: None,
+            delivery_s3_bucket: None,
+            delivery_s3_key_prefix: None,
+            input_parameters: Vec::new(),
+            deployed_rule_names: Vec::new(),
+            failure_reason: None,
+            last_update_requested_at: deployed_at,
+            deployment_completes_at: deployed_at,
+            tags: state::TagSet::new(),
+            source: Some(ConformancePackSource {
+                source_identifier: source_identifier.to_string(),
+            }),
+            scope: scope.map(|(tag_key, tag_value)| ConformancePackScope {
+                tag_key: tag_key.to_string(),
+                tag_value: tag_value.map(str::to_string),
+            }),
+        },
+    );
+    id
+}
+
+/// Every pack name one `DescribeConformancePacks` call reports, with `request`.
+async fn described(emulator: &Emulator, request: &Value) -> Vec<String> {
+    let body = emulator.ok("DescribeConformancePacks", request).await;
+    body["ConformancePackDetails"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected ConformancePackDetails, got {body}"))
+        .iter()
+        .map(|entry| {
+            entry["ConformancePackName"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect()
+}
+
+/// Every pack name one `DescribeConformancePackStatus` call reports, with `request`.
+async fn status_named(emulator: &Emulator, request: &Value) -> Vec<String> {
+    let body = emulator
+        .ok("DescribeConformancePackStatus", request)
+        .await;
+    body["ConformancePackStatusDetails"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected ConformancePackStatusDetails, got {body}"))
+        .iter()
+        .map(|entry| {
+            entry["ConformancePackName"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_read_reports_the_managed_members_of_the_packs_that_carry_them() {
+    let emulator = Emulator::new();
+
+    // (case, the pack's name, what the read must report for Source and Scope)
+    //
+    // Rows differ along which kind of pack it is and, within the managed ones, along
+    // whether the pack carries a scope and whether that scope narrows by a tag key alone
+    // or by a key and a value: "managed conformance packs with a scope populate this
+    // field. Custom conformance packs leave it empty"
+    // (`smithy_query(query="shape", shape="ConformancePackDetail")`).
+    let managed: [ManagedRow; 3] = [
+        (
+            "a managed pack scoped by a tag key and value",
+            "managed-scoped",
+            SOURCE_IDENTIFIER,
+            Some(("Environment", Some("production"))),
+        ),
+        (
+            "a managed pack scoped by a tag key alone",
+            "managed-key-only",
+            OTHER_SOURCE_IDENTIFIER,
+            Some(("Owner", None)),
+        ),
+        (
+            "a managed pack with no scope at all",
+            "managed-unscoped",
+            SOURCE_IDENTIFIER,
+            None,
+        ),
+    ];
+    for (case, name, source_identifier, scope) in managed {
+        seed_managed_pack(&emulator, name, source_identifier, scope);
+
+        let configured = configuration(case, &emulator, name).await;
+        let expected_scope = scope.map(|(tag_key, tag_value)| match tag_value {
+            Some(tag_value) => json!({ "TagKey": tag_key, "TagValue": tag_value }),
+            None => json!({ "TagKey": tag_key }),
+        });
+        assert_eq!(
+            (
+                configured["Type"].as_str(),
+                configured["Source"]["SourceIdentifier"].as_str(),
+                configured.get("Scope").cloned(),
+            ),
+            (
+                Some(CONFORMANCE_PACK_TYPE_MANAGED),
+                Some(source_identifier),
+                expected_scope,
+            ),
+            "case {case:?}: the configuration read must report the managed pack's own \
+             members, got {configured}"
+        );
+
+        // The status read reports the kind of pack too; `Source` and `Scope` belong to
+        // the pack's CONFIGURATION, which is the read that carries them.
+        let state_detail = status(case, &emulator, name).await;
+        assert_eq!(
+            state_detail["Type"].as_str(),
+            Some(CONFORMANCE_PACK_TYPE_MANAGED),
+            "case {case:?}: the status read must report the managed pack's kind, got \
+             {state_detail}"
+        );
+    }
+
+    // A pack deployed from a TEMPLATE is the account's own and carries neither member.
+    let custom = "custom-pack";
+    emulator
+        .ok(
+            PUT,
+            &json!({
+                "ConformancePackName": custom,
+                "TemplateBody": template(&["only-rule"]),
+            }),
+        )
+        .await;
+    let configured = configuration("a custom pack", &emulator, custom).await;
+    assert_eq!(
+        (
+            configured["Type"].as_str(),
+            configured.get("Source").cloned(),
+            configured.get("Scope").cloned(),
+        ),
+        (Some(CONFORMANCE_PACK_TYPE_CUSTOM), None, None),
+        "case \"a custom pack\": a pack deployed from a template carries neither managed \
+         member, got {configured}"
+    );
+}
+
+#[tokio::test]
+async fn a_types_filter_reports_the_packs_of_the_kinds_it_names() {
+    let emulator = Emulator::new();
+    seed_managed_pack(&emulator, "managed-alpha", SOURCE_IDENTIFIER, None);
+    seed_managed_pack(
+        &emulator,
+        "managed-beta",
+        OTHER_SOURCE_IDENTIFIER,
+        Some(("Environment", Some("production"))),
+    );
+    for custom in ["custom-alpha", "custom-beta"] {
+        emulator
+            .ok(
+                PUT,
+                &json!({
+                    "ConformancePackName": custom,
+                    "TemplateBody": template(&["only-rule"]),
+                }),
+            )
+            .await;
+    }
+    let all = vec![
+        "custom-alpha".to_string(),
+        "custom-beta".to_string(),
+        "managed-alpha".to_string(),
+        "managed-beta".to_string(),
+    ];
+    let customs = vec!["custom-alpha".to_string(), "custom-beta".to_string()];
+    let manageds = vec!["managed-alpha".to_string(), "managed-beta".to_string()];
+
+    // (case, the request, the pack names both reads must report)
+    //
+    // "Filters results by conformance pack type ... if you specify both values, Config
+    // returns conformance packs of either type", and "by default, if the filter is not
+    // defined, Config returns details for all your conformance packs". Rows differ along
+    // which types the filter names, in which order, and along a filter that names a
+    // member with no types at all.
+    let cases: [(&str, Value, Vec<String>); 6] = [
+        ("no filter at all", json!({}), all.clone()),
+        ("a filter naming no type", json!({ "Filters": {} }), all.clone()),
+        (
+            "the custom packs",
+            json!({ "Filters": { "Types": [CONFORMANCE_PACK_TYPE_CUSTOM] } }),
+            customs,
+        ),
+        (
+            "the managed packs",
+            json!({ "Filters": { "Types": [CONFORMANCE_PACK_TYPE_MANAGED] } }),
+            manageds.clone(),
+        ),
+        (
+            "both types",
+            json!({
+                "Filters": {
+                    "Types": [CONFORMANCE_PACK_TYPE_CUSTOM, CONFORMANCE_PACK_TYPE_MANAGED],
+                },
+            }),
+            all.clone(),
+        ),
+        (
+            "both types, the other way round",
+            json!({
+                "Filters": {
+                    "Types": [CONFORMANCE_PACK_TYPE_MANAGED, CONFORMANCE_PACK_TYPE_CUSTOM],
+                },
+            }),
+            all,
+        ),
+    ];
+
+    for (case, request, expected) in cases {
+        let configured = described(&emulator, &request).await;
+        assert_eq!(
+            configured, expected,
+            "case {case:?}: the configuration read must report the filtered packs, got \
+             {configured:?}"
+        );
+        let reported = status_named(&emulator, &request).await;
+        assert_eq!(
+            reported, expected,
+            "case {case:?}: the status read must report the same filtered packs, got \
+             {reported:?}"
+        );
+    }
+
+    // The names a request lists narrow the SAME filtered listing rather than overriding
+    // it: a pack of another kind is not reported because it was named.
+    let narrowed = described(
+        &emulator,
+        &json!({
+            "ConformancePackNames": ["managed-alpha", "custom-alpha"],
+            "Filters": { "Types": [CONFORMANCE_PACK_TYPE_MANAGED] },
+        }),
+    )
+    .await;
+    assert_eq!(
+        narrowed,
+        vec!["managed-alpha".to_string()],
+        "a named pack of another kind must not be reported, got {narrowed:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_managed_and_the_custom_legs_of_a_deployment_cannot_be_mixed() {
+    let emulator = Emulator::new();
+    let body = template(&["only-rule"]);
+    let source = json!({ "SourceIdentifier": SOURCE_IDENTIFIER });
+    let scope = json!({ "TagKey": "Environment", "TagValue": "production" });
+
+    // (case, what the request carries besides the pack's name, the members it specified
+    //  that the refusal must name)
+    //
+    // "For managed conformance packs, you must specify Source. Do not specify
+    // TemplateS3Uri, TemplateBody, TemplateSSMDocumentDetails, DeliveryS3Bucket, or
+    // DeliveryS3KeyPrefix." Rows differ along WHICH excluded member is named beside the
+    // source, and along naming two of them at once.
+    let excluded: [(&str, Value, &[&str]); 6] = [
+        (
+            "a source and a template body",
+            json!({ "Source": source.clone(), "TemplateBody": body.clone() }),
+            &["TemplateBody"],
+        ),
+        (
+            "a source and a template S3 URI",
+            json!({
+                "Source": source.clone(),
+                "TemplateS3Uri": "s3://config-templates/pack.yaml",
+            }),
+            &["TemplateS3Uri"],
+        ),
+        (
+            "a source and an SSM document",
+            json!({
+                "Source": source.clone(),
+                "TemplateSSMDocumentDetails": { "DocumentName": "config-pack-document" },
+            }),
+            &["TemplateSSMDocumentDetails"],
+        ),
+        (
+            "a source and a delivery bucket",
+            json!({
+                "Source": source.clone(),
+                "DeliveryS3Bucket": "conformance-pack-templates",
+            }),
+            &["DeliveryS3Bucket"],
+        ),
+        (
+            "a source and a delivery key prefix",
+            json!({ "Source": source.clone(), "DeliveryS3KeyPrefix": "packs/alpha" }),
+            &["DeliveryS3KeyPrefix"],
+        ),
+        (
+            "a source, a delivery bucket and a template body",
+            json!({
+                "Source": source.clone(),
+                "DeliveryS3Bucket": "conformance-pack-templates",
+                "TemplateBody": body.clone(),
+            }),
+            &["TemplateBody", "DeliveryS3Bucket"],
+        ),
+    ];
+
+    for (case, extras, named) in excluded {
+        let (status_code, code, message) =
+            refusal(&emulator, PUT, &put_request("mixed-pack", &extras)).await;
+        assert_eq!(
+            (status_code, code.as_str()),
+            (400, "InvalidParameterValueException"),
+            "case {case:?}: expected 400 InvalidParameterValueException, got \
+             {status_code} {code} with message {message:?}"
+        );
+        for member in named {
+            assert!(
+                message.contains(member),
+                "case {case:?}: the refusal must name the member the request specified, \
+                 {member:?} missing from {message:?}"
+            );
+        }
+    }
+
+    // "This field is optional and is supported only for managed conformance packs. If
+    // you specify a scope, you must also specify Source." Rows differ along what the
+    // scope is named beside.
+    for (case, extras) in [
+        ("a scope alone", json!({ "Scope": scope.clone() })),
+        (
+            "a scope and a template body",
+            json!({ "Scope": scope.clone(), "TemplateBody": body.clone() }),
+        ),
+    ] {
+        let (status_code, code, message) =
+            refusal(&emulator, PUT, &put_request("scoped-pack", &extras)).await;
+        assert_eq!(
+            (status_code, code.as_str(), message.as_str()),
+            (400, "InvalidParameterValueException", SCOPE_NEEDS_SOURCE_TEXT),
+            "case {case:?}: expected the scope-without-source refusal, got {status_code} \
+             {code} with message {message:?}"
+        );
+    }
+
+    // A request naming a source alone is a MANAGED deployment, and what that source
+    // names is a collection of Config rules Amazon Web Services maintains, which this
+    // emulator holds none of: the scaffold's 501 rather than a pack reported deployed
+    // whose rules exist nowhere.
+    for (case, extras) in [
+        ("a source alone", json!({ "Source": source.clone() })),
+        (
+            "a source and a scope",
+            json!({ "Source": source.clone(), "Scope": scope.clone() }),
+        ),
+    ] {
+        let (status_code, code) = emulator
+            .refused(PUT, &put_request("managed-pack", &extras))
+            .await;
+        assert_eq!(
+            (status_code, code.as_str()),
+            (501, "NotImplemented"),
+            "case {case:?}: a managed deployment is answered 501 NotImplemented, got \
+             {status_code} {code}"
+        );
+    }
+
+    // Nothing above created a pack: neither the refused requests nor the 501 legs.
+    let described_packs = described(&emulator, &json!({})).await;
+    assert!(
+        described_packs.is_empty(),
+        "a refused PutConformancePack must deploy nothing, got {described_packs:?}"
+    );
+
+    // "You cannot convert an existing conformance pack between a managed conformance
+    // pack and a custom conformance pack": the kind was fixed when the pack was created,
+    // so a template deployment for a managed pack's name is refused and leaves it as it
+    // is.
+    let managed = "managed-in-state";
+    let id = seed_managed_pack(&emulator, managed, SOURCE_IDENTIFIER, None);
+    let (status_code, code, message) = refusal(
+        &emulator,
+        PUT,
+        &put_request(managed, &json!({ "TemplateBody": body.clone() })),
+    )
+    .await;
+    assert_eq!(
+        (status_code, code.as_str(), message.as_str()),
+        (400, "InvalidParameterValueException", KIND_IS_FIXED_TEXT),
+        "case \"a template deployment for a managed pack\": expected the conversion \
+         refusal, got {status_code} {code} with message {message:?}"
+    );
+    let configured = configuration("a managed pack after the refusal", &emulator, managed).await;
+    assert_eq!(
+        (
+            configured["Type"].as_str(),
+            configured["ConformancePackId"].as_str(),
+            configured["Source"]["SourceIdentifier"].as_str(),
+            configured.get("TemplateBody").cloned(),
+        ),
+        (
+            Some(CONFORMANCE_PACK_TYPE_MANAGED),
+            Some(id.as_str()),
+            Some(SOURCE_IDENTIFIER),
+            None,
+        ),
+        "the refused conversion must leave the managed pack as it is, got {configured}"
+    );
 }
