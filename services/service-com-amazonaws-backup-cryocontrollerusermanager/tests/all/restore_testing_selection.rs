@@ -9,10 +9,13 @@
 //!   plan, addressed by its name within that plan: the body a create submits is
 //!   what every later read of that pair reports, and the same name under another
 //!   plan is another selection;
-//! * the body is stored EXACTLY as submitted — a collection the create states as
-//!   EMPTY is reported as the empty collection it is, and one it states nothing
-//!   for is reported as absent, because none of those members carries a modelled
-//!   default;
+//! * the body is stored as submitted, except for the three members every
+//!   selection HAS rather than optionally states — the resources it is scoped
+//!   to, the conditions it filters those resources by and the restore metadata
+//!   keys it overrides — which a read reports as the collections the selection
+//!   holds: the specific ARNs stated or the documented wildcard where none were,
+//!   and the empty filter and empty overrides map where the create stated
+//!   neither;
 //! * "this request can be sent after CreateRestoreTestingPlan request returns
 //!   successfully" (model doc for the operation), so a create naming a plan the
 //!   account does not hold is the plan's not-found refusal and stores nothing;
@@ -145,6 +148,42 @@ pub(crate) fn name_of_length(length: usize) -> String {
     (0..length)
         .map(|i| char::from(ALPHABET[(i * 7 + length) % ALPHABET.len()]))
         .collect()
+}
+
+/// The resource SCOPE a stored selection carries, as a read reports it: the
+/// specific ARNs the request named, and the documented wildcard where it named
+/// none — "you can include specific ARNs … or you can include a wildcard:
+/// `ProtectedResourceArns: ["*"]`" (model doc for
+/// `RestoreTestingSelectionForGet$ProtectedResourceArns`), so a selection that
+/// names no specific ARN is scoped to every protected resource of its type.
+pub(crate) fn completed_scope(stated: Option<&Value>) -> Value {
+    match stated.and_then(Value::as_array) {
+        Some(arns) if !arns.is_empty() => json!(arns),
+        _ => json!(["*"]),
+    }
+}
+
+/// The conditions filter a STORED selection carries, as a read reports it: the
+/// structure the request stated with both of its lists materialised, and the
+/// filter that matches on nothing where it stated none.
+pub(crate) fn completed_conditions(stated: Option<&Value>) -> Value {
+    let stated = stated.cloned().unwrap_or_else(|| json!({}));
+    json!({
+        "StringEquals": stated
+            .get("StringEquals")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
+        "StringNotEquals": stated
+            .get("StringNotEquals")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
+    })
+}
+
+/// The restore metadata overrides a STORED selection carries: the map the
+/// request stated, and the empty map where it stated none.
+pub(crate) fn completed_overrides(stated: Option<&Value>) -> Value {
+    stated.cloned().unwrap_or_else(|| json!({}))
 }
 
 /// The smallest selection body the documented rules admit: a name, a role, a
@@ -314,17 +353,28 @@ async fn a_created_restore_testing_selection_round_trips_through_the_read() {
             ),
             "case {case:?}: the read must report what the create stored, got {read:?}"
         );
-        for member in [
-            "ProtectedResourceArns",
-            "ProtectedResourceConditions",
-            "RestoreMetadataOverrides",
-        ] {
-            assert_eq!(
-                stored.get(member).cloned(),
-                selection.get(member).cloned(),
-                "case {case:?}: {member} is reported as the create stated it, got {stored:?}"
-            );
-        }
+        assert_eq!(
+            stored.get("ProtectedResourceArns").cloned(),
+            Some(completed_scope(selection.get("ProtectedResourceArns"))),
+            "case {case:?}: the resource scope is reported as the specific ARNs the create named, \
+             or the wildcard where it named none, got {stored:?}"
+        );
+        assert_eq!(
+            (
+                stored.get("ProtectedResourceConditions").cloned(),
+                stored.get("RestoreMetadataOverrides").cloned(),
+            ),
+            (
+                Some(completed_conditions(
+                    selection.get("ProtectedResourceConditions")
+                )),
+                Some(completed_overrides(
+                    selection.get("RestoreMetadataOverrides")
+                )),
+            ),
+            "case {case:?}: the conditions filter and the overrides map are reported as the \
+             collections the selection holds, got {stored:?}"
+        );
         assert_eq!(
             int_or(&stored, "ValidationWindowHours", MIN_VALIDATION_WINDOW_HOURS),
             selection
@@ -337,43 +387,87 @@ async fn a_created_restore_testing_selection_round_trips_through_the_read() {
     }
 }
 
-/// An EMPTY collection and an ABSENT one are two different answers: none of the
-/// three optional collections of a selection carries a modelled default, so the
-/// read reports the empty collection the create stated, and reports nothing for
-/// a member the create stated nothing for.
+/// What a read reports for each of the three collections of a selection: they
+/// are members every stored selection HAS, so the read reports them as the
+/// collections the selection holds — the conditions filter and the overrides map
+/// as the empty collection where the create stated neither, and the resource
+/// scope as the specific ARNs the create named or the documented wildcard where
+/// it named none.
 ///
-/// The rows span the three members, each as the empty collection of its own kind
-/// and as an unstated member, with the other means of selecting resources kept
-/// constant so each row differs only in the member under test.
+/// The rows span the three members, each as the empty collection of its own
+/// kind, as an unstated member and as a stated collection with an entry in it,
+/// with the other means of selecting resources kept constant so each row differs
+/// only in the member under test.
 #[tokio::test]
-async fn an_empty_collection_and_an_absent_one_are_reported_apart() {
-    let cases: Vec<(&str, &str, Option<Value>)> = vec![
-        ("an empty ARN list", "ProtectedResourceArns", Some(json!([]))),
-        ("no ARN list at all", "ProtectedResourceArns", None),
+async fn a_read_reports_every_collection_the_selection_holds() {
+    let empty_conditions = json!({ "StringEquals": [], "StringNotEquals": [] });
+    let cases: Vec<(&str, &str, Option<Value>, Option<Value>)> = vec![
+        (
+            "an empty ARN list",
+            "ProtectedResourceArns",
+            Some(json!([])),
+            Some(json!(["*"])),
+        ),
+        (
+            "no ARN list at all",
+            "ProtectedResourceArns",
+            None,
+            Some(json!(["*"])),
+        ),
+        (
+            "one specific ARN",
+            "ProtectedResourceArns",
+            Some(json!([protected_resource_arn(7)])),
+            Some(json!([protected_resource_arn(7)])),
+        ),
         (
             "an empty conditions structure",
             "ProtectedResourceConditions",
             Some(json!({})),
+            Some(empty_conditions.clone()),
         ),
         (
             "an empty condition list inside it",
             "ProtectedResourceConditions",
             Some(json!({ "StringEquals": [] })),
+            Some(empty_conditions.clone()),
         ),
         (
             "no conditions at all",
             "ProtectedResourceConditions",
             None,
+            Some(empty_conditions.clone()),
+        ),
+        (
+            "a condition on one tag",
+            "ProtectedResourceConditions",
+            Some(json!({ "StringNotEquals": [{ "Key": "stage", "Value": "prod" }] })),
+            Some(json!({
+                "StringEquals": [],
+                "StringNotEquals": [{ "Key": "stage", "Value": "prod" }],
+            })),
         ),
         (
             "an empty overrides map",
             "RestoreMetadataOverrides",
             Some(json!({})),
+            Some(json!({})),
         ),
-        ("no overrides at all", "RestoreMetadataOverrides", None),
+        (
+            "no overrides at all",
+            "RestoreMetadataOverrides",
+            None,
+            Some(json!({})),
+        ),
+        (
+            "an override of one metadata key",
+            "RestoreMetadataOverrides",
+            Some(json!({ "instanceType": "t3.micro" })),
+            Some(json!({ "instanceType": "t3.micro" })),
+        ),
     ];
 
-    for (case, member, stated) in cases {
+    for (case, member, stated, expected) in cases {
         let router = router();
         stored_plan(&router, "plan_empty_vs_absent").await;
         let name = "selection_empty_vs_absent";
@@ -381,7 +475,15 @@ async fn an_empty_collection_and_an_absent_one_are_reported_apart() {
         // the wildcard, or a condition where the row empties the ARN list — so
         // the only difference between two rows is the member under test.
         let mut selection = minimal_selection(name);
-        if member == "ProtectedResourceArns" {
+        // A row that empties or drops the resource scope keeps a condition, so
+        // the selection still selects resources the documented rules admit; a
+        // row naming a specific ARN states none beside it ("cannot select by
+        // both protected resource types AND specific ARNs").
+        let names_specific_arns = stated
+            .as_ref()
+            .and_then(Value::as_array)
+            .is_some_and(|arns| !arns.is_empty());
+        if member == "ProtectedResourceArns" && !names_specific_arns {
             selection["ProtectedResourceConditions"] = json!({
                 "StringEquals": [{ "Key": "team", "Value": "backup" }],
             });
@@ -408,8 +510,9 @@ async fn an_empty_collection_and_an_absent_one_are_reported_apart() {
         );
         let stored_member = read_selection(&read).get(member).cloned();
         assert_eq!(
-            stored_member, stated,
-            "case {case:?}: {member} must come back exactly as it was stated, got {read:?}"
+            stored_member, expected,
+            "case {case:?}: {member} must be reported as the collection the selection holds, got \
+             {read:?}"
         );
     }
 }

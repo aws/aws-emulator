@@ -29,10 +29,16 @@
 //! model doc), so a retry carrying the token of the create that stored the
 //! selection answers with that selection.
 //!
-//! The body is stored EXACTLY as submitted — a collection stated as empty stays
-//! empty and one the request states nothing for stays absent, because neither
-//! member carries a modelled default — and the documented rules on it are
-//! `crate::state`'s
+//! The body is stored as submitted, except for the three members every
+//! selection HAS rather than optionally states — the resources it is scoped to,
+//! the conditions it filters those resources by and the restore metadata keys
+//! it overrides — which are completed where the request states them emptily or
+//! not at all, so a read reports the scope and the collections the selection
+//! holds rather than nothing
+//! ([`crate::state::stored_protected_resource_arns`],
+//! [`crate::state::stored_protected_resource_conditions`],
+//! [`crate::state::stored_restore_metadata_overrides`]); the documented rules on
+//! the body are `crate::state`'s
 //! ([`crate::state::rejected_restore_testing_selection_body`]), shared with
 //! every other operation that stores a selection body.
 //!
@@ -296,15 +302,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             name: selection.restore_testing_selection_name,
             iam_role_arn: selection.iam_role_arn,
             protected_resource_type: selection.protected_resource_type,
-            // Stored as submitted, `None` and `Some(empty)` kept apart: neither
-            // member carries a modelled default, so an empty collection and an
-            // absent one are two different answers a read has to report.
-            protected_resource_arns: selection.protected_resource_arns,
-            protected_resource_conditions: selection.protected_resource_conditions,
-            restore_metadata_overrides: selection.restore_metadata_overrides,
+            // Stored as submitted, except the three members every selection HAS
+            // rather than optionally states — the resources it is scoped to, the
+            // conditions it filters them by and the overrides it applies —
+            // which are completed here, so a read reports the scope and the
+            // collections the selection really holds rather than the spelling
+            // the request happened to use for them.
+            protected_resource_arns: crate::state::stored_protected_resource_arns(
+                selection.protected_resource_arns,
+            ),
+            protected_resource_conditions: crate::state::stored_protected_resource_conditions(
+                selection.protected_resource_conditions,
+            ),
+            restore_metadata_overrides: crate::state::stored_restore_metadata_overrides(
+                selection.restore_metadata_overrides,
+            ),
             validation_window_hours: selection.validation_window_hours,
             creator_request_id: input.creator_request_id,
             creation_time: now,
+            last_update_time: now,
         };
         let output = restore_testing_selection_created(&plan_arn, &record);
         store.restore_testing_selections.insert(key, record);

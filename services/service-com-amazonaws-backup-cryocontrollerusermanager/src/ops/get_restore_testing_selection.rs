@@ -2,13 +2,13 @@
 
 //! @op GetRestoreTestingSelection
 //!
-//! Reports the restore testing selection `CreateRestoreTestingSelection` stored
-//! under the plan and selection names the request names, from the ONE read
-//! projection of that stored record
-//! ([`crate::state::RestoreTestingSelectionRecord::for_get`]), so this read
-//! reports nothing the create did not store — a collection the create stated as
-//! empty included, which is reported as the empty collection it is rather than
-//! as absent.
+//! Reports the restore testing selection the store holds under the plan and
+//! selection names the request names, from the ONE read projection of that
+//! stored record ([`crate::state::RestoreTestingSelectionRecord::for_get`]), so
+//! this read reports nothing the store does not hold — the resource scope, the
+//! conditions filter and the overrides map every selection carries included,
+//! which are reported as the collections they are, empty ones as the empty
+//! collection rather than as absent.
 //!
 //! A name this account holds no plan under is the plan's not-found condition
 //! ([`crate::state::restore_testing_plan_not_found`]) and a selection name the

@@ -23,11 +23,19 @@
 //!   will fail if both are included" (the operation's own model doc), which is
 //!   the reading [`rejected_restore_testing_selection_body`] applies before
 //!   anything is stored;
-//! * the body is stored EXACTLY as submitted: a collection the request states as
-//!   empty is stored empty and reported empty, and one it states nothing for is
-//!   stored and reported as absent — the members are optional with no modelled
-//!   default, so emptiness and absence are two different answers and the read
-//!   reports the one the create carried.
+//! * the body is stored as submitted, except for the three members every
+//!   selection HAS rather than optionally states — the resources it is scoped
+//!   to, the conditions it filters those resources by and the restore metadata
+//!   keys it overrides, which are completed where the request states them
+//!   emptily or not at all ([`stored_protected_resource_arns`],
+//!   [`stored_protected_resource_conditions`],
+//!   [`stored_restore_metadata_overrides`]) and so are reported by every read as
+//!   the collections the selection holds, empty ones included, rather than
+//!   omitted;
+//! * an update rewrites the members its body states and leaves every other
+//!   member of the stored selection alone
+//!   ([`RestoreTestingSelectionRecord::apply_update`]), so the selection it
+//!   merged is what every later read reports.
 
 use std::collections::HashMap;
 use std::time::SystemTime;
@@ -37,6 +45,7 @@ use crate::ops::types::{
     AlreadyExistsException, InvalidParameterValueException, LimitExceededException,
     MissingParameterValueException, ProtectedResourceConditions, ResourceNotFoundException,
     RestoreTestingSelectionForGet, RestoreTestingSelectionForList,
+    RestoreTestingSelectionForUpdate,
 };
 
 /// The most restore testing selections this emulator keeps for one plan.
@@ -131,13 +140,74 @@ pub fn restore_testing_selection_already_exists_message(
     )
 }
 
-/// A restore testing selection: what `CreateRestoreTestingSelection` stores and
-/// `GetRestoreTestingSelection` reports.
+/// The resource SCOPE a stored selection carries: the specific protected
+/// resource ARNs the request named, and the documented wildcard where it named
+/// none.
 ///
-/// The body is kept as the create submitted it — including which of its optional
-/// collections the request stated at all — so a read reports what was stored
-/// rather than a value recomputed per call; the instant only this service can
-/// know, when the selection was stored, is its own member.
+/// A selection selects "one of the following: ProtectedResourceArns
+/// ProtectedResourceConditions" and "can include a wildcard value (\"*\") for
+/// ProtectedResourceArns along with ProtectedResourceConditions" (model doc for
+/// the operation), so a selection that names no specific ARN is scoped to every
+/// protected resource of its type — filtered by its conditions where it states
+/// any — which is what that wildcard form states
+/// ([`PROTECTED_RESOURCE_ARNS_WILDCARD`]). The scope is therefore stored as the
+/// wildcard and read back as it, rather than as the absent or empty list the
+/// request happened to spell it with; a body that names neither ARNs nor
+/// conditions selects nothing and is refused before anything is stored
+/// ([`rejected_restore_testing_selection_body`]), so no selection is scoped to
+/// the wildcard by this completion without having asked for every resource of
+/// its type.
+pub fn stored_protected_resource_arns(arns: Option<Vec<String>>) -> Vec<String> {
+    let arns = arns.unwrap_or_default();
+    if arns.is_empty() {
+        return vec![PROTECTED_RESOURCE_ARNS_WILDCARD.to_string()];
+    }
+    arns
+}
+
+/// The conditions filter a STORED selection carries: the structure submitted
+/// with both of its lists materialised, and the filter that matches on nothing
+/// where the request stated none.
+///
+/// Every selection HAS a conditions filter — AWS reports the structure on every
+/// read of a selection, as the empty-but-present form for one stored without
+/// conditions — so what this service keeps is the filter the selection applies
+/// rather than whether the request mentioned the member: a selection that
+/// states no condition filters by no tag, which is exactly the filter whose two
+/// lists are empty. The same completion the plan's create applies to the
+/// members of a body the service fills in
+/// ([`super::stored_restore_testing_recovery_point_selection`]).
+pub fn stored_protected_resource_conditions(
+    conditions: Option<ProtectedResourceConditions>,
+) -> ProtectedResourceConditions {
+    let conditions = conditions.unwrap_or_default();
+    ProtectedResourceConditions {
+        string_equals: Some(conditions.string_equals.unwrap_or_default()),
+        string_not_equals: Some(conditions.string_not_equals.unwrap_or_default()),
+    }
+}
+
+/// The restore metadata overrides a STORED selection carries: the map
+/// submitted, and the empty map where the request stated none — for the reason
+/// given on [`stored_protected_resource_conditions`]: a selection overrides a
+/// set of restore metadata keys, and one that states no override overrides none,
+/// which is the empty map AWS reports for it.
+pub fn stored_restore_metadata_overrides(
+    overrides: Option<HashMap<String, String>>,
+) -> HashMap<String, String> {
+    overrides.unwrap_or_default()
+}
+
+/// A restore testing selection: what `CreateRestoreTestingSelection` stores,
+/// `UpdateRestoreTestingSelection` rewrites and `GetRestoreTestingSelection`
+/// reports.
+///
+/// The body is kept as it was submitted, except for the three members every
+/// selection has rather than optionally states, which are completed where the
+/// request states them emptily or not at all (above) — so a read reports what
+/// was stored rather than a value recomputed per call; the instants only this
+/// service can know, when the selection was stored and when it was last
+/// written, are its own members.
 #[derive(Debug, Clone)]
 pub struct RestoreTestingSelectionRecord {
     /// The plan this selection belongs to, the other half of the key it is
@@ -149,33 +219,55 @@ pub struct RestoreTestingSelectionRecord {
     /// as submitted.
     pub iam_role_arn: String,
     pub protected_resource_type: String,
-    /// The resources this selection restores, as the create stated them:
-    /// `None` where it stated nothing, and `Some` of what it stated otherwise —
-    /// an empty list included.
-    pub protected_resource_arns: Option<Vec<String>>,
-    /// The tag conditions this selection filters protected resources by, as the
-    /// create stated them, `None` where it stated nothing.
-    pub protected_resource_conditions: Option<ProtectedResourceConditions>,
-    /// The restore metadata keys this selection overrides, as the create stated
-    /// them, `None` where it stated nothing.
-    pub restore_metadata_overrides: Option<HashMap<String, String>>,
+    /// The resources this selection restores: the specific ARNs the request
+    /// named, or the wildcard where it named none
+    /// ([`stored_protected_resource_arns`]) — so a selection always carries the
+    /// scope it really has and a read always reports it.
+    pub protected_resource_arns: Vec<String>,
+    /// The tag conditions this selection filters protected resources by, with
+    /// both of its lists materialised — empty where the selection filters by no
+    /// tag.
+    pub protected_resource_conditions: ProtectedResourceConditions,
+    /// The restore metadata keys this selection overrides — empty where it
+    /// overrides none.
+    pub restore_metadata_overrides: HashMap<String, String>,
+    /// The hours a restore test started from this selection keeps its data for
+    /// validation, as the request stated it.
+    ///
+    /// The member is a plain integer carrying a modelled default of `0`, and
+    /// `0` is also the floor of its documented range, so a request that states
+    /// nothing for it and one that states that floor reach this service alike:
+    /// an update carrying `0` states no new window and the stored one stands
+    /// ([`Self::apply_update`]), which is the one window an update cannot move
+    /// a stored selection back to.
     pub validation_window_hours: i32,
     pub creator_request_id: Option<String>,
     pub creation_time: SystemTime,
+    /// When this selection was last written: the instant the create stored it
+    /// until an update rewrites it.
+    pub last_update_time: SystemTime,
 }
 
 impl RestoreTestingSelectionRecord {
     /// The selection as a READ reports it — the ONE projection of a stored
-    /// selection, so a read can report nothing the create did not store.
+    /// selection, so a read can report nothing the store does not hold.
+    ///
+    /// The conditions filter, the overrides map and the resource scope are
+    /// members of every stored selection, so this projection always reports
+    /// them: a client that reads
+    /// `ProtectedResourceConditions.StringEquals`, iterates
+    /// `RestoreMetadataOverrides` or asks what a selection is scoped to after a
+    /// successful read finds the collection the selection holds rather than
+    /// nothing at all.
     pub fn for_get(&self) -> RestoreTestingSelectionForGet {
         RestoreTestingSelectionForGet {
             restore_testing_plan_name: self.plan_name.clone(),
             restore_testing_selection_name: self.name.clone(),
             iam_role_arn: self.iam_role_arn.clone(),
             protected_resource_type: self.protected_resource_type.clone(),
-            protected_resource_arns: self.protected_resource_arns.clone(),
-            protected_resource_conditions: self.protected_resource_conditions.clone(),
-            restore_metadata_overrides: self.restore_metadata_overrides.clone(),
+            protected_resource_arns: Some(self.protected_resource_arns.clone()),
+            protected_resource_conditions: Some(self.protected_resource_conditions.clone()),
+            restore_metadata_overrides: Some(self.restore_metadata_overrides.clone()),
             validation_window_hours: self.validation_window_hours,
             creator_request_id: self.creator_request_id.clone(),
             creation_time: super::modelled_timestamp(self.creation_time),
@@ -201,6 +293,44 @@ impl RestoreTestingSelectionRecord {
             validation_window_hours: self.validation_window_hours,
             creation_time: super::modelled_timestamp(self.creation_time),
         }
+    }
+
+    /// Rewrite the members an update may change, and record the instant it
+    /// changed them.
+    ///
+    /// "Most elements except the RestoreTestingSelectionName can be updated with
+    /// this request" (the update's model doc), so the name, the plan it belongs
+    /// to, the protected resource type it was created for and the creation
+    /// instant survive the rewrite, and the five members
+    /// `RestoreTestingSelectionForUpdate` declares are what this applies. A
+    /// member the body states NOTHING for keeps the value the selection already
+    /// held; a stated collection REPLACES the stored one, completed exactly as a
+    /// create completes it ([`stored_protected_resource_conditions`],
+    /// [`stored_restore_metadata_overrides`]), so a selection an update rewrote
+    /// and a selection a create stored read back the same way.
+    pub fn apply_update(&mut self, body: RestoreTestingSelectionForUpdate, now: SystemTime) {
+        if let Some(iam_role_arn) = body.iam_role_arn {
+            self.iam_role_arn = iam_role_arn;
+        }
+        if let Some(arns) = body.protected_resource_arns {
+            self.protected_resource_arns = stored_protected_resource_arns(Some(arns));
+        }
+        if let Some(conditions) = body.protected_resource_conditions {
+            self.protected_resource_conditions =
+                stored_protected_resource_conditions(Some(conditions));
+        }
+        if let Some(overrides) = body.restore_metadata_overrides {
+            self.restore_metadata_overrides = stored_restore_metadata_overrides(Some(overrides));
+        }
+        // A validation window the update states nothing for reaches this
+        // service as the modelled default of its integer member (`0`), which is
+        // indistinguishable from a stated zero: it states no new window, so the
+        // stored one stands — the reading the plan's update applies to its own
+        // windows ([`super::RestoreTestingPlanRecord::apply_update`]).
+        if body.validation_window_hours != 0 {
+            self.validation_window_hours = body.validation_window_hours;
+        }
+        self.last_update_time = now;
     }
 }
 
@@ -416,6 +546,57 @@ pub fn states_a_condition(conditions: Option<&ProtectedResourceConditions>) -> b
     })
 }
 
+/// Why the body an UPDATE carries is not one the stored selection can be
+/// rewritten from, or `None` when it is one.
+///
+/// An update states only the members it changes, so the rules are read over the
+/// selection the update would leave behind — each member as the body states it,
+/// else as the selection already holds it — through the SAME reading that
+/// admitted the create's body
+/// ([`rejected_restore_testing_selection_body`]), so a selection an update
+/// rewrote can be no selection a create could not have stored. That is what
+/// states the documented rule for this operation: "you can use either protected
+/// resource ARNs or conditions, but not both. That is, if your selection has
+/// ProtectedResourceArns, requesting an update with the parameter
+/// ProtectedResourceConditions will be unsuccessful" (model doc for
+/// `UpdateRestoreTestingSelection`) — the merged selection names specific ARNs
+/// beside conditions, which the reading refuses.
+///
+/// The name is not read: it addresses the selection rather than being rewritten
+/// ("most elements except the RestoreTestingSelectionName can be updated", the
+/// same doc), and it is the stored one, which was admitted when it was stored.
+pub fn rejected_restore_testing_selection_update(
+    stored: &RestoreTestingSelectionRecord,
+    body: &RestoreTestingSelectionForUpdate,
+) -> Option<RejectedRestoreTestingSelectionBody> {
+    let iam_role_arn = body
+        .iam_role_arn
+        .clone()
+        .unwrap_or_else(|| stored.iam_role_arn.clone());
+    let protected_resource_arns = body
+        .protected_resource_arns
+        .clone()
+        .unwrap_or_else(|| stored.protected_resource_arns.clone());
+    let protected_resource_conditions = stored_protected_resource_conditions(Some(
+        body.protected_resource_conditions
+            .clone()
+            .unwrap_or_else(|| stored.protected_resource_conditions.clone()),
+    ));
+    let validation_window_hours = if body.validation_window_hours == 0 {
+        stored.validation_window_hours
+    } else {
+        body.validation_window_hours
+    };
+    rejected_restore_testing_selection_body(
+        &stored.name,
+        &stored.protected_resource_type,
+        &iam_role_arn,
+        Some(&protected_resource_arns),
+        Some(&protected_resource_conditions),
+        validation_window_hours,
+    )
+}
+
 impl ComAmazonawsBackupCryocontrollerusermanagerState {
     /// Resolve the restore testing selection a (`RestoreTestingPlanName`,
     /// `RestoreTestingSelectionName`) pair addresses, or the modelled refusal
@@ -434,6 +615,22 @@ impl ComAmazonawsBackupCryocontrollerusermanagerState {
         self.stored_restore_testing_plan(plan_name)?;
         self.restore_testing_selections
             .get(&(plan_name.to_string(), selection_name.to_string()))
+            .ok_or_else(restore_testing_selection_not_found)
+    }
+
+    /// Resolve the restore testing selection a (`RestoreTestingPlanName`,
+    /// `RestoreTestingSelectionName`) pair addresses FOR WRITING, or the
+    /// modelled refusal for one this account does not hold — the same
+    /// resolution, and so the same refusals in the same order, every read of a
+    /// selection answers.
+    pub fn stored_restore_testing_selection_mut(
+        &mut self,
+        plan_name: &str,
+        selection_name: &str,
+    ) -> Result<&mut RestoreTestingSelectionRecord, ResourceNotFoundException> {
+        self.stored_restore_testing_plan(plan_name)?;
+        self.restore_testing_selections
+            .get_mut(&restore_testing_selection_key(plan_name, selection_name))
             .ok_or_else(restore_testing_selection_not_found)
     }
 
