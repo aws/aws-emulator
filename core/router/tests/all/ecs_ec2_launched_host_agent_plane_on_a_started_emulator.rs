@@ -27,6 +27,11 @@
 //! every service has to read the same Region out of the credential scope alone. One estate is
 //! built per row, on an emulator of its own.
 //!
+//! Inside each estate the two hosts span the FORM the launch places them with — `SubnetId` beside
+//! a security group, and `NetworkInterface.1` carrying the subnet, the group and a public address
+//! assigned at launch — because what the agent reads is the user data the launch carried and not
+//! how that launch named its network, so both forms owe the cluster the same capacity.
+//!
 //! Every wait here ends on the CONDITION a client polls for — the hosts registering, the tasks
 //! reaching `RUNNING` — never on a span of the clock; the deadlines are only there so a
 //! convergence that never happens fails the case instead of hanging it.
@@ -441,32 +446,42 @@ fn estate(emulator: &Started, addressing: Addressing, case: &str) -> Vec<String>
     );
     let image = member(case, &resolved, "/Parameter/Value");
 
-    // Two hosts, each launched into the cluster the documented way. One launch asks for both,
-    // which is what a client that wants a two-host estate sends.
+    // Two hosts, each launched into the cluster the documented way — one launch per FORM a client
+    // places a host in a subnet with: `SubnetId` beside the subnet's own security group, and
+    // `NetworkInterface.1` carrying the subnet, the group and a public address assigned at launch.
+    // The agent registers either way, because what it reads is the user data the launch carried
+    // and not how the launch named its network.
     let user_data = launched_into(CLUSTER);
-    let launched = elements(
-        &ec2(
-            emulator,
-            addressing,
-            case,
-            "RunInstances",
-            &[
-                ("ImageId", &image),
-                ("InstanceType", INSTANCE_TYPE),
-                ("SubnetId", &subnet),
-                ("SecurityGroupId.1", &group),
-                ("IamInstanceProfile.Arn", &profile_arn),
-                ("UserData", &user_data),
-                ("MinCount", "2"),
-                ("MaxCount", "2"),
-            ],
-        ),
-        "instanceId",
-    );
+    let by_subnet: [(&str, &str); 2] = [
+        ("SubnetId", subnet.as_str()),
+        ("SecurityGroupId.1", group.as_str()),
+    ];
+    let by_interface: [(&str, &str); 4] = [
+        ("NetworkInterface.1.DeviceIndex", "0"),
+        ("NetworkInterface.1.SubnetId", subnet.as_str()),
+        ("NetworkInterface.1.AssociatePublicIpAddress", "true"),
+        ("NetworkInterface.1.SecurityGroupId.1", group.as_str()),
+    ];
+    let mut launched: Vec<String> = Vec::new();
+    for placement in [&by_subnet[..], &by_interface[..]] {
+        let mut params: Vec<(&str, &str)> = vec![
+            ("ImageId", &image),
+            ("InstanceType", INSTANCE_TYPE),
+            ("IamInstanceProfile.Arn", &profile_arn),
+            ("UserData", &user_data),
+            ("MinCount", "1"),
+            ("MaxCount", "1"),
+        ];
+        params.extend_from_slice(placement);
+        launched.extend(elements(
+            &ec2(emulator, addressing, case, "RunInstances", &params),
+            "instanceId",
+        ));
+    }
     assert_eq!(
         launched.len(),
         2,
-        "case {case:?}: expected the launch to mint two hosts, got {launched:?}"
+        "case {case:?}: expected one host per launch form, got {launched:?}"
     );
     launched
 }

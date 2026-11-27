@@ -33,7 +33,7 @@
 //! The recorded case the issue was filed about (a `SearchableDocuments` datapoint driven
 //! past an alarm's threshold, and a forged `AWS/ES` datapoint) is one row of each table.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
@@ -62,6 +62,24 @@ const SHORTEST_PERIOD_SECS: i32 = 10;
 /// and publishes no number for how many, so the rows that drive a datapoint OUT of the range
 /// are written against the emulator's own factor.
 const EVALUATION_RANGE_PERIODS: i32 = 3;
+
+/// The span of clock that range reaches back over at the least, in seconds
+/// (`crate::state::alarm_evaluation::MINIMUM_EVALUATION_RANGE_SPAN_SECS`): how many datapoints
+/// CloudWatch attempts to retrieve depends on the LENGTH of the alarm's period as well as on its
+/// look-back, so an alarm whose periods are finer than the shortest regular one searches more of
+/// them rather than a shorter stretch of its series — which is what the rows below have to reach
+/// past to drive a datapoint out of the range.
+const MINIMUM_EVALUATION_RANGE_SPAN_SECS: i32 = 180;
+
+/// How many period windows the evaluation range of an alarm of `periods` evaluation periods on
+/// `period_secs`-second periods covers: the wider of the look-back's own multiple
+/// ([`EVALUATION_RANGE_PERIODS`]) and the windows one [`MINIMUM_EVALUATION_RANGE_SPAN_SECS`] takes.
+fn evaluation_range_periods(periods: i32, period_secs: i32) -> i32 {
+    // The ceiling of that division, written out: `i32::div_ceil` is unstable on this toolchain.
+    let covering_the_minimum_span = MINIMUM_EVALUATION_RANGE_SPAN_SECS / period_secs
+        + i32::from(MINIMUM_EVALUATION_RANGE_SPAN_SECS % period_secs != 0);
+    (EVALUATION_RANGE_PERIODS * periods).max(covering_the_minimum_span)
+}
 
 /// Block until the clock is just past a `period`-second boundary.
 ///
@@ -729,8 +747,8 @@ async fn an_evaluation_with_nothing_to_grade_reports_the_datapoints_it_did_not_h
     let mut names: Vec<String> = Vec::with_capacity(rows.len());
     // A period is anchored at a multiple of the period, so the boundary that carries a
     // datapoint out of the range falls at a known instant: publishing just after one boundary
-    // leaves each row's datapoint inside its range for the reading below, and the wait that
-    // follows crosses exactly one more boundary.
+    // leaves each row's datapoint inside its range for the reading below, and the poll that
+    // follows ends on the state the boundary after it leaves the alarm in.
     wait_for_period_start(f64::from(SHORTEST_PERIOD_SECS)).await;
     for (index, (_, periods, _)) in rows.iter().enumerate() {
         let name = format!("aged-out-{index}");
@@ -743,11 +761,11 @@ async fn an_evaluation_with_nothing_to_grade_reports_the_datapoints_it_did_not_h
             }),
         );
         ok(&router, "PutMetricAlarm", &alarm).await;
-        // The OLDEST period the alarm's evaluation range still searches: the range covers
-        // `EVALUATION_RANGE_PERIODS` periods per evaluation period, counting back from the
-        // newest period that has closed, so the oldest of them is that many periods less one
-        // behind it.
-        let age = f64::from(EVALUATION_RANGE_PERIODS * periods - 1)
+        // The OLDEST period the alarm's evaluation range still searches: the range covers the
+        // wider of `EVALUATION_RANGE_PERIODS` periods per evaluation period and the windows one
+        // minimum range span takes ([`evaluation_range_periods`]), counting back from the newest
+        // period that has closed, so the oldest of them is that many periods less one behind it.
+        let age = f64::from(evaluation_range_periods(*periods, SHORTEST_PERIOD_SECS) - 1)
             * f64::from(SHORTEST_PERIOD_SECS);
         publish_in_period(
             &router,
@@ -772,17 +790,12 @@ async fn an_evaluation_with_nothing_to_grade_reports_the_datapoints_it_did_not_h
         );
     }
 
-    // One period boundary on, every row's datapoint is a period older than the oldest period
-    // its alarm searches, so every period the evaluation looks at is empty. The wait is derived
-    // from the period the rows use — one and a half of them, which carries the clock past the
-    // boundary the publish was placed just after whatever that boundary was — so it follows
-    // that constant rather than restating it.
-    std::thread::sleep(Duration::from_secs_f64(
-        f64::from(SHORTEST_PERIOD_SECS) * 1.5,
-    ));
+    // At the next period boundary every row's datapoint is a period older than the oldest period
+    // its alarm searches, so every period the evaluation looks at is empty. That boundary is the
+    // CLOCK's move, so each row looks again until the alarm reports the state no datapoint in its
+    // range leaves it in ([`awaited_state`]) rather than waiting out a span.
     for ((case, _, expected), name) in rows.iter().zip(&names) {
-        let described = ok(&router, "DescribeAlarms", &json!({"AlarmNames": [name]})).await;
-        let reported = &described["MetricAlarms"][0];
+        let reported = awaited_state(&router, name, "INSUFFICIENT_DATA").await;
         assert_eq!(
             reported.get("StateValue").and_then(Value::as_str),
             Some("INSUFFICIENT_DATA"),
@@ -797,6 +810,31 @@ async fn an_evaluation_with_nothing_to_grade_reports_the_datapoints_it_did_not_h
             reason, *expected,
             "case {case:?}: expected StateReason {expected:?}, got {reason:?}"
         );
+    }
+}
+
+/// Look again at the alarm `name` until `DescribeAlarms` reports `wanted`, answering the alarm it
+/// last read.
+///
+/// What such a wait is for is a move the CLOCK makes — a datapoint leaving the evaluation range at
+/// a period boundary, and the evaluation that follows it — so it waits for the CONDITION rather
+/// than for a span of the clock. The deadline is generous, and is only there so a state that never
+/// arrives fails the row on the value it last read instead of hanging it.
+async fn awaited_state(router: &MultiServiceRouter, name: &str, wanted: &str) -> Value {
+    /// How long one such wait keeps looking, and how long it leaves between looks.
+    const DEADLINE: Duration = Duration::from_secs(90);
+    const LOOK_AGAIN_AFTER: Duration = Duration::from_millis(100);
+
+    let giving_up_at = Instant::now() + DEADLINE;
+    loop {
+        let described = ok(router, "DescribeAlarms", &json!({"AlarmNames": [name]})).await;
+        let reported = described["MetricAlarms"][0].clone();
+        if reported.get("StateValue").and_then(Value::as_str) == Some(wanted)
+            || Instant::now() >= giving_up_at
+        {
+            return reported;
+        }
+        tokio::time::sleep(LOOK_AGAIN_AFTER).await;
     }
 }
 

@@ -29,7 +29,12 @@
 //!   CloudWatch "attempts to retrieve a higher number of data points than the number
 //!   specified as Evaluation Periods" and "all real data points in the evaluation range are
 //!   included in the evaluation", filling what is still missing with the missing-data
-//!   treatment "only as few times as possible";
+//!   treatment "only as few times as possible" — and how many it attempts "depends on the
+//!   length of the alarm period and whether it is based on a metric with standard resolution or
+//!   high resolution", so the range reaches back over a SPAN of clock rather than over a
+//!   multiple of the period alone ([`MINIMUM_EVALUATION_RANGE_SPAN_SECS`]): an alarm whose
+//!   newest non-missing datapoint still breaches keeps `ALARM` while a client's publishing is
+//!   paused, instead of being moved by the absence of new data;
 //! * a datapoint BREACHES when the comparison between it and `Threshold` holds;
 //! * an alarm whose statistic is a PERCENTILE may be configured to withhold its state while a
 //!   window is too thinly sampled for that percentile to mean anything — "If you specify
@@ -162,8 +167,9 @@ const MAX_EVALUATED_PERIODS: usize = 1_440;
 /// number, so this factor is the emulator's own bounded choice: wide enough that a sparse
 /// series is evaluated on what it really published, and a fixed multiple of the look-back so
 /// the periods one evaluation folds stay bounded by it. Where the periods are finer than the
-/// granularity the series is STORED at, the width this factor gives is not enough on its own
-/// and the range covers one storage span instead ([`evaluation_range_periods`]), which is
+/// granularity the series is STORED at, or finer than the shortest regular period, the width
+/// this factor gives is not enough on its own and the range covers one storage span, or one
+/// [`MINIMUM_EVALUATION_RANGE_SPAN_SECS`], instead ([`evaluation_range_periods`]) — each
 /// bounded too.
 ///
 /// The periods are anchored on the grid the alarm's window lays and the newest of them is the one
@@ -171,6 +177,33 @@ const MAX_EVALUATED_PERIODS: usize = 1_440;
 /// reaches further back than a span measured from the evaluation instant would, which is why this
 /// factor leaves room for more periods than the look-back plus the sparse-series margin.
 const EVALUATION_RANGE_FACTOR: usize = 3;
+
+/// The shortest `Period` an alarm over a REGULAR-resolution metric is evaluated on: "Valid values
+/// are 10, 20, 30, and any multiple of 60" (`PutMetricAlarmInput$Period`), of which 60 is the
+/// shortest that is not a high-resolution period — "if you specify a period of 10, 20, or 30 for an
+/// alarm on a high-resolution metric, you create a high-resolution alarm".
+const SHORTEST_REGULAR_PERIOD_SECS: f64 = 60.0;
+
+/// The span of clock the EVALUATION RANGE reaches back over at the least, whatever the alarm's
+/// period, in seconds.
+///
+/// How many datapoints CloudWatch attempts to retrieve "depends on the length of the alarm period
+/// and whether it is based on a metric with standard resolution or high resolution", so the range
+/// is not a multiple of the period alone: a FINER period does not give an alarm a shorter memory
+/// of the series it watches. This is the width in TIME that an alarm at the shortest regular
+/// period gets from the factor above ([`EVALUATION_RANGE_FACTOR`] x
+/// [`SHORTEST_REGULAR_PERIOD_SECS`]), and an alarm whose periods are finer than that period
+/// reaches back over the same span in more, shorter windows ([`evaluation_range_periods`]).
+///
+/// What it decides is what happens when a client STOPS publishing: the most recent real datapoint
+/// of the series keeps deciding the alarm for as long as it is inside the range ("all real data
+/// points in the evaluation range are included in the evaluation"), so an alarm whose newest
+/// non-missing datapoint still breaches holds `ALARM` until data that contradicts it arrives,
+/// instead of being moved by the ABSENCE of new data one look-back after the last publish. The
+/// range stays bounded, so a series nothing publishes into for long enough is eventually decided
+/// by the missing-data treatment, as CloudWatch decides it.
+const MINIMUM_EVALUATION_RANGE_SPAN_SECS: f64 =
+    EVALUATION_RANGE_FACTOR as f64 * SHORTEST_REGULAR_PERIOD_SECS;
 
 /// The most action notifications the store holds waiting for delivery.
 ///
@@ -709,11 +742,17 @@ fn evaluated_periods(alarm: &MetricAlarm) -> Option<usize> {
 /// width at which every stored datapoint is graded by the evaluations running while it is the
 /// newest one the series holds.
 ///
+/// The range also reaches back over at least one minimum SPAN of clock
+/// ([`MINIMUM_EVALUATION_RANGE_SPAN_SECS`]), in as many of this alarm's windows as that span
+/// takes: how far back the retrieval reaches depends on the length of the alarm's period, so an
+/// alarm whose periods are finer than the shortest regular one searches more of them rather than a
+/// shorter stretch of its series.
+///
 /// Where the look-back's own multiple is already that wide the width is unchanged, which is
-/// every alarm whose period is no finer than the granularity its series is stored at. The
-/// covering term carries the same capacity bound the look-back does
-/// ([`MAX_EVALUATED_PERIODS`]), so neither term can size one evaluation's fold by more windows
-/// than this store ever grades.
+/// every alarm whose period is no finer than the granularity its series is stored at and no finer
+/// than the shortest regular period. Each covering term carries the same capacity bound the
+/// look-back does ([`MAX_EVALUATED_PERIODS`]), so no term can size one evaluation's fold by more
+/// windows than this store ever grades.
 fn evaluation_range_periods(
     evaluation_periods: usize,
     period: Option<f64>,
@@ -721,17 +760,25 @@ fn evaluation_range_periods(
     grid: EvaluationGrid,
     now_secs: f64,
 ) -> usize {
+    let covering = |span: f64| {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let windows = span.ceil() as usize;
+        windows.min(MAX_EVALUATED_PERIODS)
+    };
     let covering_one_storage_span = period
         .filter(|period| *period >= 1.0 && stored_span > 0.0)
         .map_or(0, |period| {
-            let covering = (stored_span + grid.lag_secs(now_secs, period)) / period;
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let covering = covering.ceil() as usize;
-            covering.min(MAX_EVALUATED_PERIODS)
+            covering((stored_span + grid.lag_secs(now_secs, period)) / period)
+        });
+    let covering_the_minimum_span = period
+        .filter(|period| *period >= 1.0)
+        .map_or(0, |period| {
+            covering(MINIMUM_EVALUATION_RANGE_SPAN_SECS / period)
         });
     evaluation_periods
         .saturating_mul(EVALUATION_RANGE_FACTOR)
         .max(covering_one_storage_span)
+        .max(covering_the_minimum_span)
 }
 
 /// The names of `alarms` in the order their evaluations came DUE: oldest first, and by name

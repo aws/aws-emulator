@@ -70,6 +70,15 @@ const NOT_BREACHING: f64 = 0.0;
 /// state it moved out of.
 const INSUFFICIENT_DATA: &str = "INSUFFICIENT_DATA";
 
+/// How far back in its own series the row whose last link is decided by a window with NO datapoint
+/// publishes, in seconds: inside the evaluation range an alarm of [`PERIOD`] searches
+/// (`crate::state::alarm_evaluation::MINIMUM_EVALUATION_RANGE_SPAN_SECS`, the span of clock that
+/// range reaches back over) and close to its old end, so the clock carries the row's newest
+/// datapoint out of the range within seconds of the publishing stopping — with room left for the
+/// half-window the stamp this age is measured from already sits behind the clock
+/// ([`crate::harness::graded_window_stamp`]).
+const AGE_NEAR_THE_END_OF_THE_RANGE: f64 = 150.0;
+
 /// How long this suite waits for work the clock owes before giving up on it. Generous on
 /// purpose: nothing here is asserted about how fast the host runs, only about what eventually
 /// arrives.
@@ -264,6 +273,35 @@ async fn publish(emulator: &Emulator, alarm: &str, value: f64) {
     .await;
 }
 
+/// Publish `value` into the window `age_secs` BEFORE the newest window of the alarm's series an
+/// evaluation grades, at HIGH resolution.
+///
+/// A datapoint is graded in the window its own time stamp falls in, so a row that needs its series
+/// to run out inside its own wait places its datapoints near the old end of the evaluation range
+/// ([`AGE_NEAR_THE_END_OF_THE_RANGE`]) instead of waiting out the whole span that range reaches
+/// back over. High resolution for the same reason: "Setting this to 1 specifies this metric as a
+/// high-resolution metric" (`MetricDatum$StorageResolution`), which is the granularity at which
+/// each of this row's datapoints sits in a window of its own — a regular-resolution series holds
+/// one datapoint per minute, so two values of such a row would be aggregated into one window and
+/// the second could not move the alarm.
+async fn publish_at_age(emulator: &Emulator, alarm: &str, value: f64, age_secs: f64) {
+    monitoring(
+        emulator,
+        "PutMetricData",
+        &json!({
+            "Namespace": NAMESPACE,
+            "MetricData": [{
+                "MetricName": METRIC,
+                "Dimensions": [{"Name": "QueueName", "Value": alarm}],
+                "StorageResolution": 1,
+                "Timestamp": graded_window_stamp(PERIOD as f64) - age_secs,
+                "Value": value,
+            }],
+        }),
+    )
+    .await;
+}
+
 /// Take whatever has been delivered to the queue at `url` and add it to `held`, BY EVENT ID: a
 /// standard queue delivers a message at least once, and a message a reader takes without deleting
 /// it becomes visible again once its visibility timeout passes — so one event read more than once
@@ -337,6 +375,28 @@ async fn until_evaluated(
 ) {
     for _ in 0..looks() {
         publish(emulator, alarm, value).await;
+        collect(emulator, url, held).await;
+        if holds_state(held, state) {
+            return;
+        }
+        tokio::time::sleep(LOOK_INTERVAL).await;
+    }
+    collect(emulator, url, held).await;
+}
+
+/// The same drive, publishing each datapoint `age_secs` before the newest window the alarm grades
+/// ([`publish_at_age`]) — for the row whose last link is decided by its series running out.
+async fn until_evaluated_at_age(
+    emulator: &Emulator,
+    url: &str,
+    alarm: &str,
+    value: f64,
+    age_secs: f64,
+    state: &str,
+    held: &mut Vec<Value>,
+) {
+    for _ in 0..looks() {
+        publish_at_age(emulator, alarm, value, age_secs).await;
         collect(emulator, url, held).await;
         if holds_state(held, state) {
             return;
@@ -652,8 +712,29 @@ async fn evaluated_transitions_chain_with_the_record_each_state_was_announced_wi
     );
 
     let mut held: Vec<Value> = Vec::new();
-    until_evaluated(&emulator, &queue, alarm, BREACHING, "ALARM", &mut held).await;
-    until_evaluated(&emulator, &queue, alarm, NOT_BREACHING, "OK", &mut held).await;
+    // Both published links are driven NEAR THE OLD END of the evaluation range this alarm
+    // searches, so the window holding the row's newest datapoint leaves that range a few period
+    // boundaries after the publishing stops rather than a whole range span later.
+    until_evaluated_at_age(
+        &emulator,
+        &queue,
+        alarm,
+        BREACHING,
+        AGE_NEAR_THE_END_OF_THE_RANGE,
+        "ALARM",
+        &mut held,
+    )
+    .await;
+    until_evaluated_at_age(
+        &emulator,
+        &queue,
+        alarm,
+        NOT_BREACHING,
+        AGE_NEAR_THE_END_OF_THE_RANGE - f64::from(i32::try_from(PERIOD).unwrap_or(i32::MAX)),
+        "OK",
+        &mut held,
+    )
+    .await;
     // Publishing STOPS here: what moves this alarm back is a window holding no datapoint at all.
     until_unpublished_state(&emulator, &queue, alarm, INSUFFICIENT_DATA, &mut held).await;
 
