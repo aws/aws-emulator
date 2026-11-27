@@ -4,19 +4,20 @@
 //!
 //! Inserts a new snapshot copy grant into this service's store and reports it
 //! back: the name as given, the Key Management Service key it permits Amazon
-//! Redshift to use — reported by the key IDENTIFIER KMS resolves, and the
-//! account's default key when the request names none — and the tags the request
-//! carried. A second create under the same name is refused with
+//! Redshift to use — reported in the IDENTIFIER FORM the request supplied, and
+//! the account's default key when the request names none — and the tags the
+//! request carried. A second create under the same name is refused with
 //! `SnapshotCopyGrantAlreadyExistsFault` and overwrites nothing.
 //!
 //! A `KmsKeyId` the request NAMES is resolved against Key Management Service
 //! before anything is written: the grant's whole purpose is to let Amazon
 //! Redshift use that key, so a value KMS reports it cannot read names no key
 //! this grant could ever permit, and the request is refused with
-//! `InvalidParameterValue` (HTTP 400) with nothing stored. The grant then
-//! carries the key id KMS reported rather than the handle the request spelled —
-//! a key id, a key ARN, an alias name and an alias ARN all name one key, and the
-//! grant reports that one key.
+//! `InvalidParameterValue` (HTTP 400) with nothing stored. That lookup decides
+//! only whether the create is served: a key the request named is stored and
+//! reported exactly as the request spelled it — a key id stays a key id and a
+//! key ARN stays that ARN, character for character — so a caller comparing the
+//! grant against the identifier it owns reads its own value back.
 //!
 //! ## Shape of an operation
 //!
@@ -164,8 +165,8 @@ impl<Eng> CreateSnapshotCopyGrant<Eng> {
 enum KeyLookup {
     /// KMS reported the key: it exists and this caller can read it. The value is
     /// the key IDENTIFIER KMS resolved the request's value to — the same key id
-    /// `DescribeKey` reports for it, which is what the grant then carries,
-    /// whatever form the request named the key in.
+    /// `DescribeKey` reports for it. It stands in for a key NO request named (the
+    /// account's default), never for the handle a request did name.
     Resolved(String),
     /// KMS reported that the value names no key it can resolve — the key does not
     /// exist, the value is not a key identifier KMS can read at all, or this caller
@@ -222,7 +223,7 @@ fn kms_client(
 /// form the request gave it in — a key id, a key ARN, an alias name or an alias
 /// ARN are all identifiers `DescribeKey` accepts, so nothing here inspects the
 /// string itself — and, for one it resolves, the key IDENTIFIER behind that form,
-/// which is what a grant reports.
+/// which is what names the account's default key when no request named one.
 ///
 /// The answer is a definite negative only when KMS names one of
 /// [`KEY_NEGATIVE_KMS_ERROR_CODES`] with a client status: those codes say the key
@@ -427,20 +428,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // names NO key asks for the account's default key, which callers name by
         // its alias, so that alias is the value resolved.
         //
-        // What the grant CARRIES is the identifier KMS resolved, not the value the
-        // request spelled: `DescribeKey` takes a key id, a key ARN, an alias name
-        // or an alias ARN and reports the one key id behind them, and a client
-        // that looks the grant's key up in KMS, or compares two grants, needs that
-        // one identifier rather than whichever handle a caller happened to use.
-        // When KMS gives no answer about the value, there is no identifier to
-        // report and the value the request named stands.
+        // What the grant CARRIES is the value the REQUEST supplied, unchanged:
+        // the lookup decides whether the create is served, not what it stores, so
+        // a key id is stored as a key id and a key ARN as that ARN, character for
+        // character. Only a request that named NO key has no supplied value, and
+        // it gets the identifier KMS resolved for the account's default alias.
         let named_key = input
             .kms_key_id
             .clone()
             .unwrap_or_else(|| st::DEFAULT_SNAPSHOT_COPY_GRANT_KMS_KEY.to_string());
         let region = st::request_region(ctx);
         let kms_key_id = match describe_kms_key(ctx, &region, &named_key).await {
-            KeyLookup::Resolved(key_id) => key_id,
+            KeyLookup::Resolved(key_id) => input.kms_key_id.clone().unwrap_or(key_id),
             KeyLookup::Unresolvable(reason) => {
                 // Only a key the REQUEST named can be refused for not resolving:
                 // a caller that named none asked for whatever key the account
@@ -483,10 +482,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // The record every later `DescribeSnapshotCopyGrants` reports verbatim:
-        // the name the request carried, the KEY IDENTIFIER Key Management Service
-        // resolved for the key it named — the account's default key when it named
-        // none — and the tags it carried (an empty list when it carried none,
-        // which is what the grant then has).
+        // the name the request carried, the KmsKeyId it supplied for the key —
+        // the account's default key when it supplied none — and the tags it
+        // carried (an empty list when it carried none, which is what the grant
+        // then has).
         let grant = SnapshotCopyGrant {
             snapshot_copy_grant_name: Some(input.snapshot_copy_grant_name.clone()),
             kms_key_id: Some(kms_key_id),

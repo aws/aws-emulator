@@ -9,14 +9,16 @@
 //! against KMS before anything is written. A value KMS reports it cannot read for
 //! this caller — whatever form the request gave it in — is refused with HTTP 400
 //! `InvalidParameterValue` naming that value, and no grant is created; a value KMS
-//! resolves is accepted and the grant carries the key IDENTIFIER that lookup
-//! reported, not the form the request spelled. The suite asserts that over a TABLE
-//! of identifier forms rather than one recorded ARN: the refused rows differ in form
-//! (key ARN, bare key id, alias name, alias ARN, another account's ARN, an ARN of
-//! another service) and the accepted rows in the form of a key that really exists
-//! (its ARN, its bare id, a predefined Amazon Web Services alias, and no key named
-//! at all) — every accepted row expecting the one key id KMS's own `DescribeKey`
-//! reports for it.
+//! resolves is accepted and the grant carries that value EXACTLY as the request
+//! supplied it, because the lookup decides whether the create is served and never
+//! what it stores. The suite asserts that over a TABLE of identifier forms rather
+//! than one recorded ARN: the refused rows differ in form (key ARN, bare key id,
+//! alias name, alias ARN, another account's ARN, an ARN of another service) and the
+//! accepted rows in the form one existing key is named by (its ARN, its bare id, a
+//! predefined Amazon Web Services alias, that alias's ARN, and no key named at all)
+//! — every accepted row that supplied a value expecting that same value back, and
+//! the row supplying none expecting the key KMS resolves for the account's default
+//! alias.
 //!
 //! A third case pins the other half of the rule: an answer KMS never gave is not a
 //! negative. With no KMS mounted to ask, the same identifier is accepted, because
@@ -184,18 +186,17 @@ async fn a_kms_key_id_kms_cannot_resolve_is_refused_and_nothing_is_stored() {
         "case the freed name: expected the create served, got {} with body {}",
         answer.status, answer.body
     );
-    let resolved = emulator.kms_key_id_of(REGION, &real_key).await;
     assert_eq!(
         stored_key(&emulator, "grant-badkey-0"),
-        Some(resolved.clone()),
-        "case the freed name: expected the resolved key id {resolved:?} stored, got {:?}",
+        Some(real_key.clone()),
+        "case the freed name: expected the supplied key {real_key:?} stored, got {:?}",
         stored_key(&emulator, "grant-badkey-0")
     );
 }
 
-/// Every identifier form KMS DOES resolve is accepted, stored as the key id KMS
-/// resolved it to and read back by `DescribeSnapshotCopyGrants`; a request naming no
-/// key gets the account's default key, resolved the same way.
+/// Every identifier form KMS DOES resolve is accepted, stored exactly as the request
+/// supplied it and read back by `DescribeSnapshotCopyGrants`; a request naming no key
+/// gets the account's default key, which KMS resolves because no value was supplied.
 #[tokio::test]
 async fn a_kms_key_id_kms_resolves_is_accepted_and_read_back() {
     let emulator = Emulator::with_kms();
@@ -206,34 +207,38 @@ async fn a_kms_key_id_kms_resolves_is_accepted_and_read_back() {
         .expect("CreateKey reports a key ARN carrying its key id");
 
     // `DescribeKey` accepts "the key ID or key ARN of the KMS key", and a key may
-    // equally be named by an alias — including a predefined Amazon Web Services
-    // alias, which is the form `DEFAULT_SNAPSHOT_COPY_GRANT_KMS_KEY` itself takes.
-    // A row's expectation is the key id KMS resolves the named form to, read from
-    // KMS itself: one key, however it was named, and never the form named.
-    let rows: Vec<(&str, Option<String>, String)> = vec![
+    // equally be named by an alias name or an alias ARN — including a predefined
+    // Amazon Web Services alias, which is the form
+    // `DEFAULT_SNAPSHOT_COPY_GRANT_KMS_KEY` itself takes. Four of these rows name
+    // ONE key in four different forms, and each expects its OWN form back, so a
+    // grant that folded any of them into the key's id fails here. A row expecting
+    // `None` supplied nothing, and gets whatever key KMS resolves for the default
+    // alias, read from KMS itself.
+    let rows: Vec<(&str, Option<String>, Option<String>)> = vec![
         (
             "the full ARN of a key KMS minted",
             Some(key_arn.clone()),
-            key_arn.clone(),
+            Some(key_arn.clone()),
         ),
         (
             "the bare key id of that same key",
             Some(key_id.clone()),
-            key_id.clone(),
+            Some(key_id.clone()),
         ),
         (
             "a predefined Amazon Web Services alias",
             Some(state::DEFAULT_SNAPSHOT_COPY_GRANT_KMS_KEY.to_string()),
-            state::DEFAULT_SNAPSHOT_COPY_GRANT_KMS_KEY.to_string(),
+            Some(state::DEFAULT_SNAPSHOT_COPY_GRANT_KMS_KEY.to_string()),
         ),
         (
-            "no key named at all",
-            None,
-            state::DEFAULT_SNAPSHOT_COPY_GRANT_KMS_KEY.to_string(),
+            "the alias ARN of that same predefined alias",
+            Some(kms_arn(state::DEFAULT_SNAPSHOT_COPY_GRANT_KMS_KEY)),
+            Some(kms_arn(state::DEFAULT_SNAPSHOT_COPY_GRANT_KMS_KEY)),
         ),
+        ("no key named at all", None, None),
     ];
 
-    for (index, (case, requested, named)) in rows.into_iter().enumerate() {
+    for (index, (case, requested, echoed)) in rows.into_iter().enumerate() {
         let name = format!("grant-goodkey-{index}");
         let answer = create_grant(&emulator, &name, requested.as_deref()).await;
         assert_eq!(
@@ -241,7 +246,14 @@ async fn a_kms_key_id_kms_resolves_is_accepted_and_read_back() {
             "case {case}: expected the create served, got {} with body {}",
             answer.status, answer.body
         );
-        let expected = emulator.kms_key_id_of(REGION, &named).await;
+        let expected = match echoed {
+            Some(supplied) => supplied,
+            None => {
+                emulator
+                    .kms_key_id_of(REGION, state::DEFAULT_SNAPSHOT_COPY_GRANT_KMS_KEY)
+                    .await
+            }
+        };
         assert_eq!(
             answer.text("KmsKeyId"),
             Some(expected.clone()),
