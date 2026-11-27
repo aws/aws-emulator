@@ -202,9 +202,7 @@ pub struct ResiliencyGroupAssociation {
 #[derive(Debug, Clone, Default)]
 pub struct DirectConnectGateway {
     pub direct_connect_gateway_id: Option<String>,
-    pub direct_connect_gateway_arn: Option<String>,
     pub direct_connect_gateway_name: Option<String>,
-    pub direct_connect_gateway_type: Option<String>,
     pub amazon_side_asn: Option<i64>,
     pub owner_account: Option<String>,
     pub direct_connect_gateway_state: Option<String>,

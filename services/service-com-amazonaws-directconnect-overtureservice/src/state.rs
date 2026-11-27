@@ -38,27 +38,12 @@ pub const DIRECT_CONNECT_ARN_NAMESPACE: &str = "directconnect";
 /// under is `dx-gateway`, which is the segment
 /// `arn:<partition>:directconnect::<account>:dx-gateway/<id>` carries. A gateway "is
 /// global and visible in any Amazon Web Services Region after it is created", so such an
-/// ARN carries no Region at all. The one path, both WRITTEN
-/// ([`direct_connect_gateway_arn`]) and READ ([`tags_of_resource`]) here, so a gateway
-/// cannot publish an ARN its own tag read does not resolve.
+/// ARN carries no Region at all. The gateway shape this service answers with declares no
+/// ARN member, so this path is never PUBLISHED: it is only parsed out of an ARN a client
+/// built itself and named a gateway by, on the tag read ([`tags_of_resource`]) and on the
+/// tag write ([`tags_of_resource_mut`]) alike, both of which resolve it through the one
+/// [`tagged_resource`].
 pub const DIRECT_CONNECT_GATEWAY_ARN_PATH: &str = "dx-gateway";
-
-/// The ARN of the Direct Connect gateway `direct_connect_gateway_id`, owned by
-/// `owner_account`: this service's ARN namespace, NO Region (the gateway is global), the
-/// owning account and the [`DIRECT_CONNECT_GATEWAY_ARN_PATH`] resource path followed by
-/// the gateway's own id.
-pub fn direct_connect_gateway_arn(owner_account: &str, direct_connect_gateway_id: &str) -> String {
-    format!(
-        "arn:aws:{DIRECT_CONNECT_ARN_NAMESPACE}::{owner_account}:\
-         {DIRECT_CONNECT_GATEWAY_ARN_PATH}/{direct_connect_gateway_id}"
-    )
-}
-
-/// The `directConnectGatewayType` a gateway this service mints is reported under.
-///
-/// A gateway created through `CreateDirectConnectGateway` is the ordinary, default kind,
-/// and that is the type every such gateway carries on the wire.
-pub const DIRECT_CONNECT_GATEWAY_TYPE_DEFAULT: &str = "Default";
 
 /// The resource paths a CONNECTION's and a VIRTUAL INTERFACE's ARN carry before the
 /// resource's own id (`arn:<partition>:directconnect:<region>:<account>:dxcon/<id>`
@@ -473,9 +458,6 @@ pub struct Connection {
 pub struct DirectConnectGateway {
     pub direct_connect_gateway_id: String,
     pub direct_connect_gateway_name: String,
-    /// The kind of gateway this record is, reported as `directConnectGatewayType`:
-    /// [`DIRECT_CONNECT_GATEWAY_TYPE_DEFAULT`] for every gateway a create mints.
-    pub direct_connect_gateway_type: String,
     pub amazon_side_asn: i64,
     pub owner_account: String,
     pub direct_connect_gateway_state: String,
@@ -657,12 +639,7 @@ impl ComAmazonawsDirectconnectOvertureserviceState {
     ) -> crate::ops::types::DirectConnectGateway {
         crate::ops::types::DirectConnectGateway {
             direct_connect_gateway_id: Some(gateway.direct_connect_gateway_id.clone()),
-            direct_connect_gateway_arn: Some(direct_connect_gateway_arn(
-                &gateway.owner_account,
-                &gateway.direct_connect_gateway_id,
-            )),
             direct_connect_gateway_name: Some(gateway.direct_connect_gateway_name.clone()),
-            direct_connect_gateway_type: Some(gateway.direct_connect_gateway_type.clone()),
             amazon_side_asn: Some(gateway.amazon_side_asn),
             owner_account: Some(gateway.owner_account.clone()),
             direct_connect_gateway_state: Some(gateway.direct_connect_gateway_state.clone()),

@@ -2,12 +2,14 @@
 
 //! NOT COMPILED, and holds nothing: no module declares this file.
 //!
-//! It was added by an earlier round of this fix to carry the two members a Direct Connect
-//! gateway record puts on the wire that the on-disk model did not then declare —
-//! `directConnectGatewayArn` and `directConnectGatewayType` — because
+//! It was added by an earlier round of a fix to carry two members a Direct Connect gateway
+//! record was then put on the wire with — `directConnectGatewayArn` and
+//! `directConnectGatewayType` — which the model did not declare, because
 //! `#[smithy_macros::smithy(shape = ...)]` admits exactly the model's member list. The
-//! model this crate ships now declares both, so the derive emits their schema and codec
-//! and the one projection of a stored gateway fills them like any other member; nothing
-//! is left for this file to hold, and `types/mod.rs` no longer declares it.
+//! model this crate ships declares NEITHER member, so neither belongs on a gateway this
+//! service answers with, and the one projection of a stored gateway
+//! (`ComAmazonawsDirectconnectOvertureserviceState::gateway_output`) fills only the
+//! members the model declares; nothing is left for this file to hold, and `types/mod.rs`
+//! does not declare it.
 //!
 //! The file itself could not be removed from the fixer's checkout, which has no delete.

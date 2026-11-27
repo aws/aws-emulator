@@ -8,7 +8,9 @@
 //! carries no Region either — which is why their lifecycles are pinned together here.
 //!
 //! Every assertion goes through `POST /` with `X-Amz-Target: OvertureService.<Op>`
-//! (awsJson1_1), the same path a client takes, and every expectation is about what
+//! (awsJson1_1) — and, for the rule that the two protocols this model declares are two
+//! ENCODINGS of one API over one store, through `rpcv2Cbor` as well — the same paths a
+//! client takes, and every expectation is about what
 //! the SERVICE STORED: a `CreateDirectConnectGateway` is proved by reading the
 //! gateway back through `DescribeDirectConnectGateways`, and a
 //! `CreateResiliencyGroup` by reading the group back through `GetResiliencyGroup`,
@@ -29,6 +31,11 @@
 use std::time::Duration;
 
 use serde_json::{json, Map, Value};
+use service_com_amazonaws_directconnect_overtureservice::ops::types::{
+    CreateDirectConnectGatewayInput, CreateDirectConnectGatewayOutput,
+    DescribeDirectConnectGatewaysInput, DescribeDirectConnectGatewaysOutput,
+    CREATE_DIRECT_CONNECT_GATEWAY_INPUT_SCHEMA, DESCRIBE_DIRECT_CONNECT_GATEWAYS_INPUT_SCHEMA,
+};
 use service_com_amazonaws_directconnect_overtureservice::state::gateway_associations::MAX_ALLOWED_PREFIXES_PER_ASSOCIATION;
 use service_com_amazonaws_directconnect_overtureservice::state::resiliency_groups::{
     ResiliencyGroup, MAX_RESILIENCY_GROUP_NAME_LEN, RESILIENCY_GROUP_ID_DIGITS,
@@ -54,6 +61,49 @@ type GatewayRow<'a> = (&'a str, &'a str, Option<i64>, &'a [(&'a str, &'a str)]);
 
 /// One row of the projection table: case, name, tags.
 type ProjectionRow<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)]);
+
+/// Every member the model declares on `DirectConnectGateway`, in declaration order
+/// (`smithy_query(query="shape", shape="DirectConnectGateway")`) — the WHOLE set a
+/// response may carry for a gateway, and the catalog the projection assertions are
+/// derived from rather than transcribing one expected body.
+const MODELLED_GATEWAY_MEMBERS: [&str; 8] = [
+    "directConnectGatewayId",
+    "directConnectGatewayName",
+    "amazonSideAsn",
+    "ownerAccount",
+    "directConnectGatewayState",
+    "stateChangeError",
+    "totalPrefixPoolAllocations",
+    "tags",
+];
+
+/// The member of `DirectConnectGateway` a gateway no state advance has failed for carries
+/// nothing in: `stateChangeError` is "the error message if the state of an object failed
+/// to advance", so it is absent from a healthy record rather than rendered empty.
+const GATEWAY_MEMBER_ONLY_A_FAILED_ADVANCE_FILLS: &str = "stateChangeError";
+
+/// The members a gateway record this service answers with is expected to carry: the
+/// modelled set ([`MODELLED_GATEWAY_MEMBERS`]) less the one only a failed state advance
+/// fills, sorted so the comparison is about the SET.
+fn reported_gateway_members() -> Vec<String> {
+    let mut members: Vec<String> = MODELLED_GATEWAY_MEMBERS
+        .iter()
+        .filter(|member| **member != GATEWAY_MEMBER_ONLY_A_FAILED_ADVANCE_FILLS)
+        .map(|member| (*member).to_string())
+        .collect();
+    members.sort();
+    members
+}
+
+/// The members `record` actually carries, sorted.
+fn rendered_members(record: &Value) -> Vec<String> {
+    let mut members: Vec<String> = record
+        .as_object()
+        .map(|members| members.keys().cloned().collect())
+        .unwrap_or_default();
+    members.sort();
+    members
+}
 
 /// Whether `id` is a server-minted gateway id: lowercase hex in UUID groups.
 fn is_minted_gateway_id(id: &Value) -> bool {
@@ -316,14 +366,13 @@ async fn a_created_gateway_is_ready_from_the_create_on_and_no_read_moves_it() {
 }
 
 #[tokio::test]
-async fn every_gateway_record_carries_its_arn_its_type_and_its_tag_list() {
-    // RULE: ONE projection renders a stored Direct Connect gateway, and every operation
-    // that answers a `DirectConnectGateway` renders through it — so create, describe,
-    // update and delete report the same member set for the same gateway: the gateway's
-    // own ARN (this service's namespace, NO Region because a gateway is global, the
-    // owning account and the `dx-gateway/<id>` resource path), the gateway type, the tag
-    // list (present and empty when nothing tagged it) and the state the record is
-    // actually in.
+async fn every_gateway_record_carries_exactly_the_modelled_member_set() {
+    // RULE: a response carries exactly the members the model declares for the shape it
+    // answers — never one the model does not declare — and ONE projection renders a
+    // stored Direct Connect gateway, so create, describe, update and delete report that
+    // same member set for the same gateway: its id, its name, its Amazon-side ASN, its
+    // owning account, the state the record is actually in, the prefix-pool allocation
+    // count and the tag list (present and empty when nothing tagged it).
     //
     // The rows differ in what the rule generalises over — the tag count (none, one,
     // several) and the name shape — since none of those changes the member set.
@@ -355,21 +404,28 @@ async fn every_gateway_record_carries_its_arn_its_type_and_its_tag_list() {
             .to_string();
         let expected_arn = direct_connect_arn("", "dx-gateway", &id);
         assert_eq!(
+            rendered_members(&created),
+            reported_gateway_members(),
+            "case {case:?}: expected exactly the members the model declares for a gateway \
+             (and no other), got {created}"
+        );
+        assert_eq!(
             (
-                created["directConnectGatewayArn"].clone(),
-                // The one type a gateway this service mints is of.
-                created["directConnectGatewayType"].clone(),
+                created["directConnectGatewayName"].clone(),
+                created["ownerAccount"].clone(),
                 created["tags"].clone(),
                 created["directConnectGatewayState"].clone(),
+                created["totalPrefixPoolAllocations"].clone(),
             ),
             (
-                json!(expected_arn),
-                json!("Default"),
+                json!(name),
+                json!(engine::EMULATOR_ACCOUNT_ID),
                 tag_list(tags),
                 json!("available"),
+                json!(0),
             ),
-            "case {case:?}: expected the create to report the gateway's ARN, type, tag list \
-             and state, got {created}"
+            "case {case:?}: expected the create to report the gateway's name, owner, tag \
+             list, state and prefix-pool count, got {created}"
         );
 
         // The read path renders the SAME projection, member for member.
@@ -381,8 +437,10 @@ async fn every_gateway_record_carries_its_arn_its_type_and_its_tag_list() {
              {described:?}"
         );
 
-        // The ARN the gateway publishes is the one this service resolves back to that
-        // same gateway, so a client can tag or read tags by what it was handed.
+        // A gateway record publishes no ARN of its own — the shape declares no member for
+        // one — so the ARN a client BUILDS for it, in the form AWS names a Direct Connect
+        // gateway under, is what this service resolves back to that same gateway, and a
+        // client can tag or read tags by it.
         let (status, tagged) = dx
             .call("DescribeTags", json!({"resourceArns": [&expected_arn]}))
             .await;
@@ -390,8 +448,8 @@ async fn every_gateway_record_carries_its_arn_its_type_and_its_tag_list() {
         assert_eq!(
             (status, tagged["resourceTags"].clone()),
             (200, expected_tags),
-            "case {case:?}: the published ARN must resolve to this gateway, got {status} with \
-             {tagged}"
+            "case {case:?}: the ARN a client builds for this gateway must resolve to it, got \
+             {status} with {tagged}"
         );
 
         // A rename changes the name and NOTHING else of the projection, and the read
@@ -3159,5 +3217,327 @@ async fn a_gateway_id_no_gateway_exists_under_is_refused_with_the_one_stated_sen
         "case \"a gateway the account holds\": expected the rename to succeed, got {status} with \
          {renamed}"
     );
+}
+
+/// The Smithy SERVICE shape name of this service
+/// (`smithy_query(query="service_info")`): the `{Service}` label of an `rpcv2Cbor` URI
+/// (`/service/{Service}/operation/{Operation}`) and the prefix an awsJson1_1
+/// `X-Amz-Target` carries.
+const SERVICE_SHAPE: &str = "OvertureService";
+
+/// The two headers an `rpcv2Cbor` exchange of this service is labelled with.
+const CBOR_MEDIA_TYPE: &str = "application/cbor";
+const CBOR_PROTOCOL: &str = "rpc-v2-cbor";
+
+/// The media type an `awsJson1_1` exchange of this service is labelled with.
+const JSON_MEDIA_TYPE: &str = "application/x-amz-json-1.1";
+
+/// One emulator reached over EITHER wire protocol this model declares — `awsJson1_1` and
+/// `rpcv2Cbor` (`smithy_query(query="service_info")`) — over ONE router and ONE engine.
+///
+/// Separate from the suite's shared [`Emulator`], which posts awsJson1_1 at `POST /` and
+/// nothing else: what is pinned below is that the declared protocols are two ENCODINGS of
+/// one API over one store, so the harness has to be able to send a request either way and
+/// read the answer back in the form it was asked for.
+struct EitherProtocol {
+    router: smithy_server_runtime::MultiServiceRouter,
+}
+
+/// The credential scope of this service, which is how a request names the service that
+/// claims it; the signature itself is not verified by the test router.
+fn authorization() -> String {
+    "AWS4-HMAC-SHA256 Credential=AKIDTESTEXAMPLE/20260101/us-east-1/directconnect/aws4_request, \
+     SignedHeaders=host, Signature=0000"
+        .to_string()
+}
+
+/// What one exchange answered: its status, the two labels the envelope carries, and the
+/// body as it came off the wire.
+struct Answer {
+    status: u16,
+    content_type: String,
+    smithy_protocol: String,
+    body: bytes::Bytes,
+}
+
+impl EitherProtocol {
+    fn new() -> Self {
+        let engine: std::sync::Arc<engine::InMemoryEngine> =
+            std::sync::Arc::new(engine::InMemoryEngine::new());
+        let mut router = smithy_server_runtime::MultiServiceRouter::new();
+        router.set_request_authentication(false);
+        router.register_service(
+            service_com_amazonaws_directconnect_overtureservice::EmulatedService::new(engine),
+        );
+        Self { router }
+    }
+
+    async fn dispatch(&self, request: http::Request<bytes::Bytes>) -> Answer {
+        let response = self.router.dispatch(request).await;
+        let header = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string()
+        };
+        Answer {
+            status: response.status().as_u16(),
+            content_type: header("content-type"),
+            smithy_protocol: header("smithy-protocol"),
+            body: bytes::Bytes::copy_from_slice(response.body()),
+        }
+    }
+
+    /// One `rpcv2Cbor` request: the operation in the URI, the input encoded by the SAME
+    /// codec the protocol specifies, and the labels that name the protocol.
+    async fn over_cbor<I: aws_smithy_schema::serde::SerializableStruct>(
+        &self,
+        operation: &str,
+        input_schema: &aws_smithy_schema::Schema,
+        input: &I,
+    ) -> Answer {
+        use aws_smithy_schema::codec::{Codec, FinishSerializer};
+        use aws_smithy_schema::serde::ShapeSerializer;
+
+        let codec = aws_smithy_schema_server::CborCodec::default();
+        let mut serializer = codec.create_serializer();
+        serializer
+            .write_struct(input_schema, input)
+            .expect("the input shape serializes");
+        let request = http::Request::builder()
+            .method("POST")
+            .uri(format!("/service/{SERVICE_SHAPE}/operation/{operation}"))
+            .header("content-type", CBOR_MEDIA_TYPE)
+            .header("smithy-protocol", CBOR_PROTOCOL)
+            .header("authorization", authorization())
+            .body(bytes::Bytes::from(serializer.finish()))
+            .expect("a well-formed rpcv2Cbor request");
+        self.dispatch(request).await
+    }
+
+    /// One `awsJson1_1` request: the operation in `X-Amz-Target` at `POST /`.
+    async fn over_json(&self, operation: &str, body: Value) -> Answer {
+        let request = http::Request::builder()
+            .method("POST")
+            .uri("https://directconnect.amazonaws.com/")
+            .header("content-type", JSON_MEDIA_TYPE)
+            .header("x-amz-target", format!("{SERVICE_SHAPE}.{operation}"))
+            .header("authorization", authorization())
+            .body(bytes::Bytes::from(
+                serde_json::to_vec(&body).expect("the request body serializes"),
+            ))
+            .expect("a well-formed awsJson1_1 request");
+        self.dispatch(request).await
+    }
+}
+
+impl Answer {
+    /// The body decoded as the CBOR an `rpcv2Cbor` response carries, through the generated
+    /// schema of the shape the operation answers.
+    fn cbor<T: aws_smithy_schema_server::DeserializableStruct>(&self, case: &str) -> T {
+        use aws_smithy_schema::codec::Codec;
+
+        let codec = aws_smithy_schema_server::CborCodec::default();
+        let mut deserializer = codec.create_deserializer(&self.body);
+        T::deserialize(&mut deserializer).unwrap_or_else(|error| {
+            panic!("case {case:?}: the CBOR response does not deserialize: {error:?}")
+        })
+    }
+
+    /// The body decoded as the JSON an `awsJson1_1` response carries.
+    fn json(&self) -> Value {
+        serde_json::from_slice(&self.body).unwrap_or(Value::Null)
+    }
+
+    /// The body as something an assertion can print, whichever encoding it is in.
+    fn rendered(&self) -> String {
+        match serde_json::from_slice::<Value>(&self.body) {
+            Ok(body) => body.to_string(),
+            Err(_) => format!("{:?}", self.body),
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_gateway_is_created_and_read_back_over_either_declared_protocol() {
+    // RULE: the protocols a service declares are ENCODINGS of one API over one store, so
+    // a request reaches the same handler and the same stored record whichever of them it
+    // is sent in, and the answer comes back labelled with the protocol the request named.
+    // This model declares `awsJson1_1` and `rpcv2Cbor`, so a gateway created over either
+    // is one gateway, readable over both.
+    //
+    // The rows differ along which protocol WRITES and which READS, and along whether the
+    // create names an Amazon-side ASN, since neither changes the record.
+    //
+    // (case, create over CBOR, amazonSideAsn)
+    let rows: &[(&str, bool, Option<i64>)] = &[
+        ("created over rpcv2Cbor, nothing optional set", true, None),
+        ("created over rpcv2Cbor with its own ASN", true, Some(64_800)),
+        ("created over awsJson1_1 with its own ASN", false, Some(64_801)),
+    ];
+
+    for (case, create_over_cbor, amazon_side_asn) in rows {
+        let dx = EitherProtocol::new();
+        let name = format!("either-protocol-{}", case.replace(' ', "-"));
+
+        let (id, state, asn) = if *create_over_cbor {
+            let answer = dx
+                .over_cbor(
+                    "CreateDirectConnectGateway",
+                    CREATE_DIRECT_CONNECT_GATEWAY_INPUT_SCHEMA,
+                    &CreateDirectConnectGatewayInput {
+                        direct_connect_gateway_name: name.clone(),
+                        amazon_side_asn: *amazon_side_asn,
+                        tags: None,
+                    },
+                )
+                .await;
+            assert_eq!(
+                (
+                    answer.status,
+                    answer.content_type.as_str(),
+                    answer.smithy_protocol.as_str()
+                ),
+                (200, CBOR_MEDIA_TYPE, CBOR_PROTOCOL),
+                "case {case:?}: expected the create to succeed in the rpcv2Cbor envelope, got \
+                 {} with {} / {} and body {}",
+                answer.status,
+                answer.content_type,
+                answer.smithy_protocol,
+                answer.rendered()
+            );
+            let created: CreateDirectConnectGatewayOutput = answer.cbor(case);
+            let gateway = created
+                .direct_connect_gateway
+                .unwrap_or_else(|| panic!("case {case:?}: the create answered no gateway"));
+            (
+                gateway.direct_connect_gateway_id.unwrap_or_default(),
+                gateway.direct_connect_gateway_state.unwrap_or_default(),
+                gateway.amazon_side_asn,
+            )
+        } else {
+            let mut body = Map::new();
+            body.insert("directConnectGatewayName".to_string(), json!(&name));
+            if let Some(asn) = amazon_side_asn {
+                body.insert("amazonSideAsn".to_string(), json!(asn));
+            }
+            let answer = dx
+                .over_json("CreateDirectConnectGateway", Value::Object(body))
+                .await;
+            assert_eq!(
+                answer.status,
+                200,
+                "case {case:?}: expected the create to succeed, got {} with {}",
+                answer.status,
+                answer.rendered()
+            );
+            let created = answer.json()["directConnectGateway"].clone();
+            (
+                created["directConnectGatewayId"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                created["directConnectGatewayState"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                created["amazonSideAsn"].as_i64(),
+            )
+        };
+
+        let expected_asn = amazon_side_asn.unwrap_or(DEFAULT_AMAZON_SIDE_ASN);
+        assert_eq!(
+            (state.as_str(), asn),
+            ("available", Some(expected_asn)),
+            "case {case:?}: expected the create to report the gateway ready on its ASN, got \
+             {state:?} and {asn:?}"
+        );
+        assert!(
+            is_minted_gateway_id(&json!(&id)),
+            "case {case:?}: expected a server-minted gateway id, got {id:?}"
+        );
+
+        // The OTHER protocol reads the same record back: one store, two encodings.
+        let read_over_cbor = !*create_over_cbor;
+        let (read_id, read_name, read_asn) = if read_over_cbor {
+            let answer = dx
+                .over_cbor(
+                    "DescribeDirectConnectGateways",
+                    DESCRIBE_DIRECT_CONNECT_GATEWAYS_INPUT_SCHEMA,
+                    &DescribeDirectConnectGatewaysInput {
+                        direct_connect_gateway_id: Some(id.clone()),
+                        ..Default::default()
+                    },
+                )
+                .await;
+            assert_eq!(
+                (
+                    answer.status,
+                    answer.content_type.as_str(),
+                    answer.smithy_protocol.as_str()
+                ),
+                (200, CBOR_MEDIA_TYPE, CBOR_PROTOCOL),
+                "case {case:?}: expected the read to succeed in the rpcv2Cbor envelope, got {} \
+                 with {} / {} and body {}",
+                answer.status,
+                answer.content_type,
+                answer.smithy_protocol,
+                answer.rendered()
+            );
+            let described: DescribeDirectConnectGatewaysOutput = answer.cbor(case);
+            let mut held = described.direct_connect_gateways.unwrap_or_default();
+            assert_eq!(
+                held.len(),
+                1,
+                "case {case:?}: expected exactly the named gateway, got {held:?}"
+            );
+            let gateway = held.remove(0);
+            (
+                gateway.direct_connect_gateway_id.unwrap_or_default(),
+                gateway.direct_connect_gateway_name.unwrap_or_default(),
+                gateway.amazon_side_asn,
+            )
+        } else {
+            let answer = dx
+                .over_json(
+                    "DescribeDirectConnectGateways",
+                    json!({"directConnectGatewayId": &id}),
+                )
+                .await;
+            assert_eq!(
+                answer.status,
+                200,
+                "case {case:?}: expected the read to succeed, got {} with {}",
+                answer.status,
+                answer.rendered()
+            );
+            let held = answer.json()["directConnectGateways"].clone();
+            assert_eq!(
+                held.as_array().map(Vec::len),
+                Some(1),
+                "case {case:?}: expected exactly the named gateway, got {held}"
+            );
+            (
+                held[0]["directConnectGatewayId"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                held[0]["directConnectGatewayName"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                held[0]["amazonSideAsn"].as_i64(),
+            )
+        };
+
+        assert_eq!(
+            (read_id.as_str(), read_name.as_str(), read_asn),
+            (id.as_str(), name.as_str(), Some(expected_asn)),
+            "case {case:?}: expected the other protocol to read the same record back, got \
+             {read_id:?}, {read_name:?} and {read_asn:?}"
+        );
+    }
 }
 

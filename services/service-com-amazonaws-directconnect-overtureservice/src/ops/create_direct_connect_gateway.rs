@@ -225,8 +225,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let gateway = crate::state::DirectConnectGateway {
             direct_connect_gateway_id: gateway_id.clone(),
             direct_connect_gateway_name: name,
-            direct_connect_gateway_type: crate::state::DIRECT_CONNECT_GATEWAY_TYPE_DEFAULT
-                .to_string(),
             amazon_side_asn,
             owner_account: ::engine::emulator_account_id().to_string(),
             // A gateway is ready for use from the create on: creating one allocates

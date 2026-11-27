@@ -46,6 +46,17 @@ const REPORTED_MEMBERS: [&str; 6] = [
     "LastSuccessfulDataRetrievalTime",
 ];
 
+/// How long this suite is willing to wait for a CONDITION the clock decides — the terminal
+/// status a fresh registration owes, and the agreement of the two reporting operations
+/// across the instant that status falls due — and how often it looks again.
+///
+/// Generous on purpose: what is waited for is the condition and never a span of wall clock,
+/// so a loaded or a faster host cannot decide the outcome, and each wait ends as soon as the
+/// condition holds.
+const AGREEMENT_DEADLINE: Duration = Duration::from_secs(60);
+/// See [`AGREEMENT_DEADLINE`].
+const LOOK_AGAIN_AFTER: Duration = Duration::from_millis(25);
+
 /// One row: a stored registration, stated member by member.
 struct Row {
     case: &'static str,
@@ -262,7 +273,7 @@ async fn the_read_and_the_listing_agree_over_a_registration_the_service_created(
     // Poll until the transition the clock owes has been materialized — the emulator never
     // sleeps for it, so the condition is what the test waits on, under a deadline generous
     // enough that a loaded host still reaches it.
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + AGREEMENT_DEADLINE;
     let after = loop {
         let members = agreed_members(&h, &arn, case).await;
         if members.get("SubscriptionProviderStatus") == Some(&Some(ACTIVE.to_string())) {
@@ -272,7 +283,7 @@ async fn the_read_and_the_listing_agree_over_a_registration_the_service_created(
             Instant::now() < deadline,
             "case {case:?}: expected {ACTIVE} before the deadline, last reported {members:?}"
         );
-        std::thread::sleep(Duration::from_millis(25));
+        std::thread::sleep(LOOK_AGAIN_AFTER);
     };
 
     let retrieved = after
@@ -301,17 +312,34 @@ async fn the_read_and_the_listing_agree_over_a_registration_the_service_created(
 /// The members both reporting operations answer for `arn`, asserted to be the same set on
 /// both sides and answered once — the agreement is the rule, so a caller of this helper
 /// reads one member set rather than two.
+///
+/// The two sides are two calls at two INSTANTS, and a transition the clock owes this
+/// registration is materialized by whichever call reports a status first, so a pair that
+/// straddles the due instant differs in WHEN the record was observed rather than in HOW it
+/// was projected. The pair is therefore observed again until the two sides agree, under a
+/// deadline far above any span this service owes: a projection that really differed between
+/// the two operations never agrees, and the wait that runs out names the last pair it read.
+///
+/// The pause between looks is `std::thread::sleep` rather than `tokio::time::sleep`: this
+/// workspace enables tokio's `macros`/`rt` features only, and nothing else is pending on
+/// the test's runtime while it waits.
 async fn agreed_members(
     h: &Harness,
     arn: &str,
     case: &str,
 ) -> BTreeMap<&'static str, Option<String>> {
-    let read = reported(get_provider(h, arn).await.ok(case), case);
-    let listing = list_providers(h, &json!({})).await;
-    let listed = reported(&listed_entry(&listing, arn, case), case);
-    assert_eq!(
-        read, listed,
-        "case {case:?}: the read reported {read:?} and the listing {listed:?} for {arn}"
-    );
-    read
+    let deadline = Instant::now() + AGREEMENT_DEADLINE;
+    loop {
+        let read = reported(get_provider(h, arn).await.ok(case), case);
+        let listing = list_providers(h, &json!({})).await;
+        let listed = reported(&listed_entry(&listing, arn, case), case);
+        if read == listed {
+            return read;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "case {case:?}: the read reported {read:?} and the listing {listed:?} for {arn}"
+        );
+        std::thread::sleep(LOOK_AGAIN_AFTER);
+    }
 }
