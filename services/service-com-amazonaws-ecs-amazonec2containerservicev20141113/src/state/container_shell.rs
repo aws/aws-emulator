@@ -207,14 +207,19 @@
 //!
 //! What a wait does NOT decide is how long this emulator takes to answer whatever is waiting to
 //! see that program END — the standalone task whose terminal status a client polls for, the AWS
-//! Batch job whose verdict and whose dependents wait on the task its container runs as. The
-//! seconds are the caller's own words, so the wall clock one wait may spend on them is bounded
-//! HERE, by [`WAIT_CEILING`], exactly as the steps a run may take and the lifetime it may have
-//! are — and past that ceiling the program goes on from the wait, to its next step or to its
-//! own end. A wait that names no END of its own names no length for a ceiling to bound: nothing
-//! in the program follows it, so the container waits for whatever will end it from outside — a
-//! stop its task is sent, a file another container writes — up to the run's own deadline
-//! ([`ContainerShell::wait_for`] clamps every wait to it, and a run that reaches it is
+//! Batch job whose verdict and whose dependents wait on the task its container runs as, and the
+//! next job that job's queue admits once it releases the capacity or the consumable quantity it
+//! holds. The seconds are the caller's own words, so the wall clock one wait may spend on them
+//! is bounded HERE, by [`wait_ceiling`], exactly as the steps a run may take and the lifetime it
+//! may have are — and past that ceiling the program goes on from the wait, to its next step or
+//! to its own end. The ceiling is ORDERED by the seconds the wait named rather than flat, so a
+//! program written to be there for longer is there for longer, and CAPPED, so a client that
+//! serialises several such containers one after another — one per unit of a scarce resource, one
+//! per turn of a queue that admits one at a time — reaches every one of their verdicts inside a
+//! budget of its own. A wait that names no END of its own names no length for a ceiling to
+//! bound: nothing in the program follows it, so the container waits for whatever will end it
+//! from outside — a stop its task is sent, a file another container writes — up to the run's own
+//! deadline ([`ContainerShell::wait_for`] clamps every wait to it, and a run that reaches it is
 //! ABANDONED and claims nothing about its container).
 //!
 //! A container whose task a SERVICE's or a DAEMON's scheduler maintains has nothing waiting for
@@ -237,7 +242,8 @@ use super::*;
 /// The exit status of a command that ran to success.
 const EXIT_SUCCESS: i32 = 0;
 
-/// The longest wall clock ONE wait a container's program NAMES A LENGTH for may spend.
+/// The longest wall clock ONE wait of `stated` — a wait a container's program NAMES A LENGTH
+/// for — may spend.
 ///
 /// EMULATOR-CHOSEN — the seconds are the caller's own and AWS spends every one of them — and
 /// what it is chosen against is the pair of things such a container is read by. A client that
@@ -245,17 +251,43 @@ const EXIT_SUCCESS: i32 = 0;
 /// `RUNNING` while it waits, and a window narrower than the interval such a client looks again
 /// at would let it miss that status altogether. And whatever is waiting to see that program END
 /// — the standalone task's terminal status a caller polls for, the AWS Batch job whose verdict
-/// and whose dependents wait on the task its container runs as — must reach its verdict without
-/// the request's own words deciding when: the bound on that is this emulator's, like every other
-/// bound in this module. Thirty seconds is wide enough for several looks of an ordinary poll and
-/// short enough that every verdict behind the container is reached inside one.
+/// and whose dependents wait on the task its container runs as, the next job that job's queue
+/// admits once it releases the capacity or the consumable quantity it holds — must reach its
+/// verdict without the request's own words deciding when: the bound on that is this emulator's,
+/// like every other bound in this module.
+///
+/// Both readings are served by a ceiling that is ORDERED by the seconds the wait named rather
+/// than flat, and CAPPED:
+///
+/// * one span of this emulator's clock for every [`WAIT_DIVISOR`] the wait named, so a program
+///   written to be there for longer is there for longer — which is what a client that places
+///   such a container to hold a slot, a licence seat or a queue's turn depends on;
+/// * never less than the span this emulator gives a standalone task's work
+///   ([`CONTAINER_WORK_SPAN`]) — so such a task is observed `RUNNING` exactly as every other
+///   one is — and never more than the wait itself, because a wait of a second costs a second;
+/// * never more than [`WAIT_CEILING_WORK_SPANS`] of that span, so a wait of an hour cannot put
+///   a number in a request in charge of how long every client of this emulator waits. A client
+///   whose own work is SERIALISED behind a handful of such containers — one per unit of a
+///   scarce resource — reaches all of their verdicts inside one budget of its own, which a
+///   ceiling of tens of seconds apiece would spend on the first one or two.
 ///
 /// It bounds the wall clock ONE wait spends, not what the program then does: past the ceiling
 /// the program carries on from the wait, to its next step or to its own end, so what the
 /// container reports is still its own program's outcome ([`ContainerShell::run_sleep`]). A wait
 /// that names no end of its own, and every wait of a container whose task a SERVICE maintains,
 /// take no ceiling at all: see the module docs for why neither has a verdict behind it.
-pub const WAIT_CEILING: Duration = Duration::from_secs(30);
+#[must_use]
+pub fn wait_ceiling(stated: Duration) -> Duration {
+    let cap = CONTAINER_WORK_SPAN.saturating_mul(WAIT_CEILING_WORK_SPANS);
+    stated.min((stated / WAIT_DIVISOR).clamp(CONTAINER_WORK_SPAN, cap))
+}
+
+/// How many seconds a wait must name for this emulator to spend one of its own on it
+/// ([`wait_ceiling`]).
+const WAIT_DIVISOR: u32 = 3;
+
+/// How many spans of a standalone task's work the longest wait may spend ([`wait_ceiling`]).
+const WAIT_CEILING_WORK_SPANS: u32 = 8;
 
 /// The exit status of a command that ran and answered failure, which is what the `false`
 /// utility is specified to do ("exit with a status code indicating failure").
@@ -919,7 +951,7 @@ pub struct ContainerShell {
     terminal: Option<TerminalSize>,
     /// Whether the container whose program this session performs belongs to a task a SERVICE's
     /// or a DAEMON's scheduler maintains, so nothing is waiting for that program to END and no
-    /// ceiling is put on the waits it names ([`Self::wait_ceiling`]).
+    /// ceiling is put on the waits it names ([`Self::wait_ceiling_for`]).
     maintained_by_a_service: bool,
 }
 
@@ -1103,7 +1135,7 @@ impl ContainerShell {
     /// Every wait the program names is SPENT, wherever it stands in it and whichever spelling
     /// the program is written in ([`Self::run_sleep`]): the program has not ended while one of
     /// its waits is outstanding, so neither has the container. How much wall clock one wait may
-    /// spend is this emulator's ([`WAIT_CEILING`]); see the module docs.
+    /// spend is this emulator's ([`wait_ceiling`]); see the module docs.
     pub async fn run(&mut self, program: &ContainerProgram) -> ContainerOutcome {
         let mut status = match program {
             ContainerProgram::Script(text) => self.run_text(text).await,
@@ -1707,11 +1739,12 @@ impl ContainerShell {
         })
     }
 
-    /// The ceiling on the wall clock ONE wait of this session may spend ([`WAIT_CEILING`]), and
-    /// `None` for a session no ceiling applies to: the program of a container whose task a
-    /// SERVICE maintains, which has no verdict waiting on its end (see the module docs).
-    fn wait_ceiling(&self) -> Option<Duration> {
-        (!self.maintained_by_a_service).then_some(WAIT_CEILING)
+    /// The ceiling on the wall clock ONE wait of `stated` may spend in this session
+    /// ([`wait_ceiling`]), and `None` for a session no ceiling applies to: the program of a
+    /// container whose task a SERVICE maintains, which has no verdict waiting on its end (see
+    /// the module docs).
+    fn wait_ceiling_for(&self, stated: Duration) -> Option<Duration> {
+        (!self.maintained_by_a_service).then(|| wait_ceiling(stated))
     }
 
     /// The action this session has recorded for the termination signal, under any of the
@@ -2845,7 +2878,7 @@ impl ContainerShell {
     /// `time` operand", so the program has not reached its next command — nor its own end, nor
     /// the status that end carries — while the wait is outstanding, and the container it runs in
     /// is still there throughout. How much wall clock one wait may spend on the caller's own
-    /// seconds is this emulator's ([`WAIT_CEILING`], which a container whose task a SERVICE
+    /// seconds is this emulator's ([`wait_ceiling`], which a container whose task a SERVICE
     /// maintains takes none of); past it the program carries on from the wait. A wait that names
     /// no end of its own takes no ceiling either: the container waits for whatever will end it
     /// from outside, up to the run's own deadline (see the module docs).
@@ -2865,7 +2898,7 @@ impl ContainerShell {
                 .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
             {
                 // The span the container is there for, bounded where this emulator bounds it.
-                Some(waiting) => Some(match self.wait_ceiling() {
+                Some(waiting) => Some(match self.wait_ceiling_for(waiting) {
                     Some(ceiling) => waiting.min(ceiling),
                     None => waiting,
                 }),

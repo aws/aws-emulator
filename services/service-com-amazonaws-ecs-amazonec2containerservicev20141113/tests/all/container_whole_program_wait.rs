@@ -5,17 +5,22 @@
 //! [`crate::ecs_wire`], so every value asserted is read back through `DescribeTasks`.
 //!
 //! RULE under test: **a container runs the program its definition states, so a container whose
-//! WHOLE program is a wait is a container with nothing to do but wait: the seconds it names
-//! are the span it runs for, so the task goes on RUNNING and reports no exit status — exactly
+//! WHOLE program is a wait is a container with nothing to do but wait: that wait is the span it
+//! runs for, so the task goes on RUNNING and reports no exit status while it lasts — exactly
 //! as a wait that names no end of its own keeps it up.** A wait inside a program that does
 //! something ELSE is the same rule and the same outcome, since the wait is spent wherever it
 //! stands: the program has not reached its next step while it waits, which
 //! [`crate::container_program_waits`] pins over every position one can stand in, and
 //! [`crate::container_stated_waits`] pins for what the program does once a brief one is over.
+//! How long the span is, is this emulator's bounded reading of the seconds the program named
+//! (`state::wait_ceiling`: ordered by them, never below the span a standalone task's work takes
+//! and never above its cap) rather than those seconds themselves, because everything waiting to
+//! see the program END reaches its verdict inside a budget of its own — which is why the rows
+//! below are watched over a window far shorter than any of the waits they name.
 //!
 //! POSIX states what the wait means for the program: "the `sleep` utility shall suspend
 //! execution for at least the integral number of seconds specified by the `time` operand" — so
-//! a process whose whole program is that utility is still there for those seconds, which is
+//! a process whose whole program is that utility is still there while it waits, which is
 //! what `Task$lastStatus` ("the last known status of the task") reports of a task while its
 //! containers are up, and `Container$exitCode` ("the exit code returned from the container")
 //! is absent until the program has ended.

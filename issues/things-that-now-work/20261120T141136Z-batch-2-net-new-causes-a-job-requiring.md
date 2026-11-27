@@ -62,3 +62,34 @@ Cause 2:
 2. SubmitJob twice concurrently.
 3. Poll DescribeJobs until one job is STARTING or RUNNING — it never is.
 4. Independently call DescribeConsumableResource(consumableResource=<name or arn>) repeatedly while the two jobs are outstanding: inUseQuantity never rises to 1 and availableQuantity never drops to 0, so the quantity triple reports a permanently idle resource while two jobs are claiming it; and the final "inUseQuantity back to 0 after both jobs are terminal" read is never reached because the jobs never settle.
+
+## Resolution note
+
+Both causes are served, and the defect behind them was not in the admission path: the
+consumable-resource allocator (the `RUNNABLE` hold, the charge on admission, the release on
+every terminal route and the re-arm of the waiting claimant) and `DescribeConsumableResource`'s
+`totalQuantity`/`inUseQuantity`/`availableQuantity` triple were already computed from the
+claims the jobs hold. What no client could reach was the state they govern, because ONE job's
+container occupied its task for as long as the request's own words named: the ceiling on one
+wait a container's program names was FLAT — thirty seconds whatever the wait named — so a job
+declaring `sleep 40` held the single unit for tens of seconds of real time and the second
+claimant could not even start inside a client's polling budget.
+
+How much wall clock one such wait may spend is now DERIVED from the seconds the program named
+— ordered by them, never below the span a standalone task's work takes, never above a cap
+stated in those spans and never above the wait itself (`state::wait_ceiling` in the Amazon ECS
+crate, pinned by that crate's `container_wait_ceiling` suite) — so everything waiting to see
+such a container end, including the next job a Batch queue admits once this one releases the
+quantity it holds, reaches its verdict inside a budget of its own. A wait nothing in the
+program will end (`sleep infinity`, a loop) and every wait of a container whose task a service
+maintains are unchanged: nothing is waiting for those to end.
+
+Two jobs submitted concurrently against a `REPLENISHABLE` resource of `totalQuantity` 1 now
+serialise end to end on the assembled emulator: at most one is live past the queue at any
+instant, the resource reports one unit in use and none available while the holder runs, both
+reach `SUCCEEDED` with integral `startedAt`/`stoppedAt`, the later window starts at or after
+the earlier one closed, and the final read is back at nothing in use with the total untouched.
+`core/router/tests/all/batch_consumable_resource_caps_running_fargate_jobs.rs` pins it over a
+table (the total held, the quantity each claimant takes, how many claimants contend, the
+identifier form the requirement names the resource in, and the shape of the dwelling program).
+
