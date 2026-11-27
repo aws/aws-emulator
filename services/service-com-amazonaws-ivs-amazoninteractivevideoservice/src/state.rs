@@ -607,16 +607,128 @@ pub const STREAM_STATE_LIVE: &str = "LIVE";
 /// UNKNOWN`, see [`crate::ops::types::STREAM_HEALTH_VALUES`]).
 pub const STREAM_HEALTH_HEALTHY: &str = "HEALTHY";
 
+/// The prefix every `StreamId` carries, from the modelled `^st-[a-zA-Z0-9]+$`
+/// pattern (`smithy_query(query="shape",shape="StreamId")`).
+const STREAM_ID_PREFIX: &str = "st-";
+
+/// How many characters follow [`STREAM_ID_PREFIX`]: the modelled shape is exactly 26
+/// characters long, so the body is what the prefix leaves.
+const STREAM_ID_BODY_LEN: usize = 23;
+
 /// A fresh `StreamId`.
 ///
 /// The modelled shape is exactly 26 characters and matches `^st-[a-zA-Z0-9]+$`,
-/// so an id is the `st-` prefix plus 23 characters from that alphabet; hex is a
-/// subset of it, and [`ComAmazonawsIvsAmazoninteractivevideoserviceState::mint_hex`]
-/// never repeats a value.
+/// so an id is the `st-` prefix plus [`STREAM_ID_BODY_LEN`] characters from that alphabet;
+/// hex is a subset of it, and
+/// [`ComAmazonawsIvsAmazoninteractivevideoserviceState::mint_hex`] never repeats a value.
+///
+/// The one place a stream id is WRITTEN, beside the one place a value is read as one
+/// ([`is_stream_id_form`]), so the form this service issues and the form it admits cannot
+/// drift apart.
 fn mint_stream_id(state: &mut ComAmazonawsIvsAmazoninteractivevideoserviceState) -> String {
     let digest = state.mint_hex("stream", 12);
-    format!("st-{}", &digest[..23])
+    format!("{STREAM_ID_PREFIX}{}", &digest[..STREAM_ID_BODY_LEN])
 }
+
+/// Whether `value` is a stream id AT ALL: a value this deployment ISSUED as one.
+///
+/// An IVS stream id is an opaque token the service mints and hands out, never a value a
+/// caller composes — which is why the service can tell a value that is not one of its ids
+/// from one that is, and answers the two differently: a value that is no id of it fails the
+/// INPUT, while an id of it that names no session of the channel asked about is a resource
+/// that does not exist. This emulator mints its ids too ([`mint_stream_id`]), so the
+/// equivalent question here is whether the value is one of them: it is an id when it is
+/// written in the form every id this service issues carries AND some stream or session of
+/// this store carries it.
+///
+/// The two halves answer the same question at different cost, and the cheap one is kept
+/// deliberately: the FORM ([`is_stream_id_form`]) is the shape an id is written in, decided
+/// without reading the store at all, and it is also the one statement in this crate of what
+/// that shape is beside the mint; the store half ([`issued_stream_id`]) is what makes the
+/// value a TOKEN rather than a well-shaped string. Every id this store holds satisfies the
+/// form by construction, so the form only ever turns away a value the store would have turned
+/// away too — never one it holds.
+///
+/// It is bounded by what this deployment HOLDS, which is the one place it parts from AWS: an
+/// id whose channel has since been deleted is no longer carried by any stream or session of
+/// this store ([`crate::ops::delete_channel`] drops both with the channel), so it is answered
+/// as a value that is not an id rather than as the not-found AWS's own self-validating token
+/// would get. Nothing of this store can tell the two apart once the records are gone.
+///
+/// The modelled `StreamId` constraints (`@length(26, 26)`, `@pattern ^st-[a-zA-Z0-9]+$`)
+/// are the framework's to enforce and admit far more than an id this service issued: a value
+/// the walk admits still reaches this question ([`check_stream_id`]).
+#[must_use]
+pub fn is_stream_id(
+    state: &ComAmazonawsIvsAmazoninteractivevideoserviceState,
+    value: &str,
+) -> bool {
+    is_stream_id_form(value) && issued_stream_id(state, value)
+}
+
+/// Whether `value` is written in the form every stream id this service issues carries
+/// ([`mint_stream_id`]): the `st-` prefix plus [`STREAM_ID_BODY_LEN`] lowercase-hex
+/// characters.
+fn is_stream_id_form(value: &str) -> bool {
+    value.strip_prefix(STREAM_ID_PREFIX).is_some_and(|body| {
+        body.chars().count() == STREAM_ID_BODY_LEN
+            && body
+                .chars()
+                .all(|character| matches!(character, '0'..='9' | 'a'..='f'))
+    })
+}
+
+/// Whether this deployment ISSUED `value` as a stream id: some channel of this store carries
+/// a stream or a session the id names.
+///
+/// Every broadcast this emulator admits mints one id and records it on both
+/// ([`start_stream`], [`start_session`]), so this is the whole of what it has issued and
+/// still holds.
+fn issued_stream_id(
+    state: &ComAmazonawsIvsAmazoninteractivevideoserviceState,
+    value: &str,
+) -> bool {
+    let on_a_session = state
+        .stream_sessions
+        .values()
+        .flatten()
+        .any(|session| session.stream_id == value);
+    let on_a_stream = state
+        .streams
+        .values()
+        .any(|stream| stream.stream_id.as_deref() == Some(value));
+    on_a_session || on_a_stream
+}
+
+/// Refuse a request member carrying a `streamId` that is not a stream id of this deployment
+/// ([`is_stream_id`]), returning the message to put on a `ValidationException`.
+///
+/// A value that is not an id is a failure of the INPUT, which is what a
+/// `ValidationException` ("The input fails to satisfy the constraints specified by an Amazon
+/// Web Services service") reports — so it is answered before the CHANNEL the request names is
+/// resolved, and the not-found a read answers is left for an id of this deployment that names
+/// no session of that channel.
+///
+/// Stated the way IVS states a member's value it rejects for a reason the model does not
+/// express (see [`member_constraint_message`]): the member the id travels in, and the
+/// constraint the value violated.
+pub fn check_stream_id(
+    state: &ComAmazonawsIvsAmazoninteractivevideoserviceState,
+    member: &str,
+    value: &str,
+) -> Result<(), String> {
+    match is_stream_id(state, value) {
+        true => Ok(()),
+        false => Err(member_constraint_message(member, STREAM_ID_CONSTRAINT)),
+    }
+}
+
+/// The member a request names a stream id in, which is the member a rejection of one names:
+/// `streamId`, spelled the way the request spells it.
+pub const STREAM_ID_MEMBER: &str = "streamId";
+
+/// The constraint a rejected `streamId` names: the value is not a stream id.
+const STREAM_ID_CONSTRAINT: &str = "invalid stream id";
 
 /// The LIVE stream `channel_arn` is currently ingesting, or `None` when that
 /// channel is not broadcasting.

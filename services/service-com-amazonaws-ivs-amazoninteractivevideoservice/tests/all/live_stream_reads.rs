@@ -81,8 +81,12 @@ fn end_ingest(ivs: &Ivs, channel_arn: &str) {
     });
 }
 
-/// Whether `id` satisfies the modelled `StreamId`: exactly 26 characters matching
-/// `^st-[a-zA-Z0-9]+$`.
+/// Whether `value` satisfies the MODELLED `StreamId` — exactly 26 characters matching
+/// `^st-[a-zA-Z0-9]+$` (`smithy_query(query="shape",shape="StreamId")`) — which is what
+/// decides whether the framework's constraint walk refuses a value before a handler sees it.
+///
+/// The one reading of that shape in this suite: both the minted ids the reads report and the
+/// values the stream-id rows send are judged by it.
 fn stream_id_is_well_formed(id: &str) -> bool {
     id.len() == 26
         && id
@@ -1463,18 +1467,218 @@ async fn stopping_a_stream_disconnects_its_publisher_and_closes_the_session() {
         "a session carries the channel it belongs to, got {reported}"
     );
 
-    // A stream id this channel never had is not a session of it.
+    // A stream id this deployment DID issue — the one minted for another channel's
+    // broadcast — names no session of this channel, which is the resource that does not
+    // exist. The whole class is the table in
+    // `get_stream_session_judges_the_stream_id_before_the_channel`.
+    let elsewhere = ivs.create(json!({ "name": "another-broadcast" })).await;
+    let other_arn = text(&elsewhere["channel"], "arn");
+    let other_stream = start_ingest(&ivs, &other_arn);
     let unknown = ivs
         .call(
             "GetStreamSession",
-            &json!({ "channelArn": arn, "streamId": "st-00000000000000000000000" }),
+            &json!({ "channelArn": arn, "streamId": other_stream }),
         )
         .await;
     assert_eq!(
         unknown.status, 404,
-        "a stream id this channel never had names no session, got {} {}",
+        "a stream id this channel never had names no session of it, got {} {}",
         unknown.status, unknown.body
     );
+}
+
+/// RULE: `GetStreamSession` judges the `streamId` the request names BEFORE it resolves the
+/// channel. A stream id is a value this service ISSUED — an opaque token it mints, never one
+/// a caller composes — so a `streamId` no stream or session of this deployment carries fails
+/// the INPUT (`ValidationException`, 400, naming the member and the constraint), while an id
+/// it did issue that names no session of the channel asked about is a resource that does not
+/// exist (`ResourceNotFoundException`, 404, naming that channel's ARN). An id of the channel
+/// itself, and the absence of any id on a channel that has a session, answer the session.
+///
+/// The rows differ along what the rule generalises over: whether the value is an id this
+/// deployment issued, which channel issued it, the alphabet and the case the value is
+/// written in, whether the channel exists, and whether the request names an id at all.
+#[tokio::test]
+async fn get_stream_session_judges_the_stream_id_before_the_channel() {
+    let ivs = Ivs::new();
+    // Two channels a publisher has really contributed to, so each holds the session the
+    // broadcast left behind, and one that nothing has published to.
+    let broadcast = ivs.create(json!({ "name": "sessions-held" })).await;
+    let broadcasting = text(&broadcast["channel"], "arn");
+    let live_id = publish_session(&ivs, &broadcast);
+    let elsewhere = ivs.create(json!({ "name": "sessions-elsewhere" })).await;
+    let other_id = publish_session(&ivs, &elsewhere);
+    let idle = ivs.create_arn(json!({ "name": "sessions-none" })).await;
+    let absent = format!("{CHANNEL_ARN_PREFIX}neverCreated");
+
+    // (case, the channel the request names, the streamId it names, the status and the code
+    // the service must answer)
+    let rows: Vec<(&str, &str, Option<String>, u16, &str)> = vec![
+        (
+            "the channel's own broadcast",
+            &broadcasting,
+            Some(live_id.clone()),
+            200,
+            "",
+        ),
+        (
+            "no id at all on a channel that has a session",
+            &broadcasting,
+            None,
+            200,
+            "",
+        ),
+        (
+            "an id this deployment issued, for another channel",
+            &broadcasting,
+            Some(other_id.clone()),
+            404,
+            "ResourceNotFoundException",
+        ),
+        (
+            "an id this deployment issued, on a channel that has no session",
+            &idle,
+            Some(live_id.clone()),
+            404,
+            "ResourceNotFoundException",
+        ),
+        (
+            "no id at all on a channel that has no session",
+            &idle,
+            None,
+            404,
+            "ResourceNotFoundException",
+        ),
+        (
+            "an id this deployment issued, on a channel that was never created",
+            &absent,
+            Some(live_id.clone()),
+            404,
+            "ResourceNotFoundException",
+        ),
+        (
+            "a value of zeros nothing ever issued",
+            &broadcasting,
+            Some(unissued_stream_id("00000000000000000000000")),
+            400,
+            "ValidationException",
+        ),
+        (
+            "a value in the hex alphabet this service's ids use, but never issued",
+            &broadcasting,
+            Some(unissued_stream_id("0123456789abcdef0123456")),
+            400,
+            "ValidationException",
+        ),
+        (
+            "a value outside that alphabet",
+            &broadcasting,
+            Some(unissued_stream_id("notARealStreamIdValue01")),
+            400,
+            "ValidationException",
+        ),
+        (
+            "the channel's own id in another case",
+            &broadcasting,
+            Some(live_id.to_ascii_uppercase().replace("ST-", "st-")),
+            400,
+            "ValidationException",
+        ),
+        (
+            "a value nothing issued, on a channel that was never created: the id first",
+            &absent,
+            Some(unissued_stream_id("0000000000000000000beef")),
+            400,
+            "ValidationException",
+        ),
+        (
+            "a value shorter than the modelled StreamId, refused by the constraint walk",
+            &broadcasting,
+            Some("st-short".to_string()),
+            400,
+            "ValidationException",
+        ),
+    ];
+
+    for (case, channel_arn, stream_id, status, code) in rows {
+        let request = match &stream_id {
+            Some(id) => json!({ "channelArn": channel_arn, "streamId": id }),
+            None => json!({ "channelArn": channel_arn }),
+        };
+        let answer = ivs.call("GetStreamSession", &request).await;
+        assert_eq!(
+            answer.status, status,
+            "case {case:?}: expected HTTP {status}, got {} {}",
+            answer.status, answer.body
+        );
+        if status == 200 {
+            let reported = text(&answer.body["streamSession"], "streamId");
+            let expected = stream_id.clone().unwrap_or_else(|| live_id.clone());
+            assert_eq!(
+                reported, expected,
+                "case {case:?}: expected the session {expected:?}, got {}",
+                answer.body
+            );
+            continue;
+        }
+        assert_eq!(
+            text(&answer.body, "Code"),
+            code,
+            "case {case:?}: expected the error code {code:?}, got {}",
+            answer.body
+        );
+        let message = text(&answer.body, "Message");
+        let expected_message = match code {
+            "ValidationException" => INVALID_STREAM_ID.to_string(),
+            _ => format!("Resource: {channel_arn} not found"),
+        };
+        match (code, stream_id.as_deref()) {
+            // The constraint walk words a MODELLED violation from the operation and the
+            // member path, which is a different sentence of the same error class; what this
+            // row pins is that the value is refused at all, with that class.
+            ("ValidationException", Some(value)) if !stream_id_is_well_formed(value) => assert!(
+                message.contains("streamId"),
+                "case {case:?}: expected the refusal to name the member, got {message:?}"
+            ),
+            _ => assert_eq!(
+                message, expected_message,
+                "case {case:?}: expected {expected_message:?}, got {message:?}"
+            ),
+        }
+    }
+}
+
+/// The session a real publish to the channel `created` names leaves behind: the broadcast
+/// is admitted the way the contribute plane admits one, with that channel's own stream key,
+/// so the id the rows use is an id this deployment really ISSUED.
+fn publish_session(ivs: &Ivs, created: &Value) -> String {
+    let key = text(&created["streamKey"], "value");
+    ivs.with_store_mut(|store| state::accept_publish(store, &key))
+        .expect("the channel's own stream key admits a publish")
+        .stream_id
+}
+
+/// The service's one sentence for a `streamId` that is not a stream id it issued: the
+/// member-constraint sentence, naming the member the id travelled in and the constraint it
+/// failed.
+///
+/// Shared with `error_envelope.rs`, which pins the ENVELOPE that sentence travels in, so the
+/// two suites cannot disagree about the text.
+pub(crate) const INVALID_STREAM_ID: &str =
+    "Request member: streamId failed to satisfy the constraints: invalid stream id";
+
+/// A value satisfying the modelled `StreamId` ([`stream_id_is_well_formed`]) that no stream
+/// of this emulator carries, so the constraint walk admits it and the handler is what judges
+/// it.
+///
+/// Shared with `error_envelope.rs` for the same reason as [`INVALID_STREAM_ID`].
+pub(crate) fn unissued_stream_id(body: &str) -> String {
+    let id = format!("st-{body}");
+    assert!(
+        stream_id_is_well_formed(&id),
+        "case {id:?}: a row's unissued id must still satisfy the modelled StreamId"
+    );
+    id
 }
 
 /// RULE: an admitted publish may only send what the plane could serve — a message larger

@@ -140,9 +140,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     /// A REPORTING operation: it resolves the channel and the session from the store and
     /// writes nothing, so reading a session cannot itself change what a later caller sees.
     ///
-    /// Two answers, in the order the two resources are resolved:
+    /// Three answers, in the order the stream id the request names is judged and then the
+    /// resources are resolved:
     ///
-    /// * the channel is not in the store, or it holds no session the request names ->
+    /// * the `streamId` the request carries is not a stream id this deployment issued ->
+    ///   `ValidationException` (400), naming the member that carries it and the constraint it
+    ///   failed. The value is judged before the channel is resolved, so a request whose own
+    ///   `streamId` is at fault is never answered as a missing channel;
+    /// * the channel is not in the store, or it holds no session the request's id names ->
     ///   `ResourceNotFoundException` (404), naming the ARN the request asked for;
     /// * otherwise the session asked for — or, "if no streamId is provided … the most
     ///   recent stream session for the channel" — with the channel it snapshotted at the
@@ -156,7 +161,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ) -> Result<Self::Output, Self::Error> {
         // `channelArn` carries the modelled `ChannelArn` length and pattern and `streamId`
         // the modelled `StreamId` ones, which the framework's constraint walk has already
-        // enforced, so reaching here means both are well formed.
+        // enforced. That walk admits every 26-character `st-…` value the pattern allows,
+        // which is far wider than an id this service issued, so the value is judged here
+        // (`crate::state::check_stream_id`) — and before the CHANNEL is resolved, so a
+        // request whose own `streamId` is at fault is never answered as a missing channel.
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             crate::state::resource_not_found(
                 GetStreamSessionErrorModeled::ResourceNotFoundException,
@@ -165,6 +173,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })?;
 
         let store = state.lock();
+        if let Some(stream_id) = input.stream_id.as_deref() {
+            crate::state::check_stream_id(&store, crate::state::STREAM_ID_MEMBER, stream_id)
+                .map_err(|message| {
+                    crate::state::validation(
+                        GetStreamSessionErrorModeled::ValidationException,
+                        message,
+                    )
+                })?;
+        }
         if !crate::state::channel_exists(&store, &input.channel_arn) {
             return Err(crate::state::resource_not_found(
                 GetStreamSessionErrorModeled::ResourceNotFoundException,

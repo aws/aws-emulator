@@ -22,6 +22,10 @@
 //! Each table's rows differ along what its rule generalises over (the operation, the error
 //! class, the member, the position in the list, the kind of list), never by renaming one
 //! case.
+//!
+//! The `GetStreamSession` rows carry the refusal for a `streamId` that is not an id this
+//! deployment issued; `live_stream_reads.rs` is where that rule is asserted over the whole
+//! class of stream ids, against the sessions this store really holds.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -188,6 +192,20 @@ fn offline(channel_arn: &str) -> String {
 /// The sentence a `@pattern` refusal states.
 fn pattern_refusal(operation: &str, path: &str, pattern: &str) -> String {
     format!("{operation}.{path} does not match the required pattern {pattern}")
+}
+
+/// The service's one sentence for a `streamId` that is not a stream id it ever issued,
+/// read from the one place this crate's suites state it (`live_stream_reads.rs`, where the
+/// rule itself is asserted), so the two cannot disagree about the text.
+fn invalid_stream_id() -> String {
+    crate::live_stream_reads::INVALID_STREAM_ID.to_string()
+}
+
+/// A value satisfying the modelled `StreamId` (`@length 26..26`, `@pattern
+/// ^st-[a-zA-Z0-9]+$`) that no stream of this emulator carries — the same reader the rule's
+/// own suite builds its rows with.
+fn unissued_stream_id(body: &str) -> String {
+    crate::live_stream_reads::unissued_stream_id(body)
 }
 
 /// Whether `id` takes the fixed-width base64 token form every response of this endpoint
@@ -381,6 +399,34 @@ async fn every_refused_call_states_its_code_its_text_and_the_request_it_answers(
             404,
             "ChannelNotBroadcasting",
             Some(offline(&idle)),
+        ),
+        (
+            "a stream id this deployment never issued, read through GetStreamSession",
+            "GetStreamSession",
+            json!({ "channelArn": idle,
+                    "streamId": unissued_stream_id("00000000000000000000000") }),
+            400,
+            "ValidationException",
+            Some(invalid_stream_id()),
+        ),
+        (
+            "a stream id outside the alphabet this service's ids are written in",
+            "GetStreamSession",
+            json!({ "channelArn": idle,
+                    "streamId": unissued_stream_id("notARealStreamIdValue01") }),
+            400,
+            "ValidationException",
+            Some(invalid_stream_id()),
+        ),
+        (
+            "an unissued stream id on a channel that was never created: the id is judged \
+             first",
+            "GetStreamSession",
+            json!({ "channelArn": absent_channel,
+                    "streamId": unissued_stream_id("0123456789abcdef0123456") }),
+            400,
+            "ValidationException",
+            Some(invalid_stream_id()),
         ),
         (
             "a channel that was never created, named by StartViewerSessionRevocation",
