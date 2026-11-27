@@ -337,7 +337,9 @@ fn import_columns(template: &[String], header: &::csv::StringRecord) -> Option<V
 ///
 /// * the value under [`CSV_USERNAME_COLUMN`] is the name to create the user under,
 ///   and the value under each attribute column is stored as that attribute, blank
-///   values storing nothing ([`stored_text`]);
+///   values storing nothing ([`stored_text`]) and a column whose attribute the
+///   pool's schema declares a boolean being read as the boolean its text states
+///   ([`import_attribute_value`]);
 /// * a row the format or the schema rejects — no username, a non-boolean where the
 ///   format carries a boolean, a value no attribute of the pool can hold
 ///   ([`attribute_value_defect`]), or a row arriving once the pool holds all the
@@ -382,6 +384,14 @@ fn place_row(
         }
         let Some(value) = stored_text(row.get(at).map(|value| value.trim().to_string())) else {
             continue;
+        };
+        // A column whose attribute the pool's schema declares a BOOLEAN carries
+        // a boolean, in the CSV format's own spelling of one rather than in the
+        // spelling this service stores it as ([`boolean_column`]) — so it is
+        // read as the boolean it states and stored canonically, and a value that
+        // states no boolean is a row this import cannot read.
+        let Some(value) = import_attribute_value(pool, column, value) else {
+            return RowResult::Failed;
         };
         if attribute_value_defect(column, &value).is_some() {
             return RowResult::Failed;
@@ -493,11 +503,36 @@ fn is_import_format_column(column: &str) -> bool {
         || column == CSV_PASSWORD_HASH_COLUMN
 }
 
+/// The value one data row stores for the attribute column `column`, or `None`
+/// when the row carries no value that attribute can hold.
+///
+/// A CSV carries every value as TEXT, so a column whose attribute the pool's
+/// schema declares a boolean ([`declares_boolean_attribute`]) carries a boolean
+/// SPELLED the way the import format spells one, which is not necessarily the
+/// spelling this service stores it as: the value is read as the boolean it
+/// states ([`boolean_column`]) and stored as the one spelling the pool's
+/// booleans take ([`stored_boolean`]), so an imported user's flags are the same
+/// values every other writer of them stores and every reader of them compares
+/// against. Text that states no boolean states no value such an attribute can
+/// hold at all.
+///
+/// Every other attribute holds the text the row carried.
+fn import_attribute_value(pool: &UserPool, column: &str, value: String) -> Option<String> {
+    if !declares_boolean_attribute(pool, column) {
+        return Some(value);
+    }
+    Some(stored_boolean(boolean_column(&value)?).to_string())
+}
+
 /// The boolean `value` states, `Some(false)` for a blank value (a column the row
 /// left empty states nothing) and `None` for a value that is no boolean at all.
 ///
-/// The two spellings are the ones every boolean the pool stores takes
-/// ([`FLAG_CONFIRMED`] and [`FLAG_UNCONFIRMED`]), compared without case.
+/// The CSV import format states a boolean column's value in either case — the
+/// import template's own documented values are upper case (Amazon Cognito
+/// Developer Guide, "Importing users from a CSV file"), while this service
+/// stores a boolean attribute as [`FLAG_CONFIRMED`] or [`FLAG_UNCONFIRMED`] — so
+/// the two spellings are compared without case, and this is the ONE reading of a
+/// boolean column every column of the import that carries one is read through.
 fn boolean_column(value: &str) -> Option<bool> {
     if value.is_empty() {
         return Some(false);

@@ -13,11 +13,13 @@
 //!   `cognito:username` and carrying the row's attribute values, and the job
 //!   advances to the terminal status its run earned while reporting
 //!   `ImportedUsers`, `SkippedUsers`, `FailedUsers` and `CompletionMessage` from
-//!   that run. A row naming a user the pool already holds is SKIPPED, a row the
-//!   import format or the pool's schema rejects is FAILED, and a file whose header
-//!   is not the pool's template places nothing and leaves the job `Failed`. Every
-//!   imported user is readable through `AdminGetUser` and listed by `ListUsers`,
-//!   in the status that requires a password reset.
+//!   that run. A column whose attribute the pool's schema declares `Boolean`
+//!   carries its boolean in EITHER case and is stored in the one spelling the
+//!   pool holds a boolean as. A row naming a user the pool already holds is
+//!   SKIPPED, a row the import format or the pool's schema rejects is FAILED, and
+//!   a file whose header is not the pool's template places nothing and leaves the
+//!   job `Failed`. Every imported user is readable through `AdminGetUser` and
+//!   listed by `ListUsers`, in the status that requires a password reset.
 //! * RULE B — a user import job logs through the role it names, so Amazon Cognito
 //!   validates that role when the import is STARTED: a role whose trust policy
 //!   does not grant `cognito-idp.amazonaws.com` the assume makes
@@ -395,6 +397,9 @@ struct ImportCase {
 /// endings), a custom attribute column, a name the pool already holds, a row with
 /// no username, a value no attribute of the pool can hold, a value outside the
 /// bound the pool's schema declares for its attribute, and the MFA column.
+///
+/// The CASE a boolean column's value is written in is its own table
+/// ([`boolean_spelling_cases`]).
 fn import_cases() -> Vec<ImportCase> {
     vec![
         ImportCase {
@@ -585,6 +590,148 @@ fn import_cases() -> Vec<ImportCase> {
     ]
 }
 
+/// A schema entry declaring one custom attribute of `data_type`, for a row that
+/// imports a column of the pool's own.
+fn custom_attribute(name: &str, data_type: &str) -> Value {
+    json!({
+        "Name": name,
+        "AttributeDataType": data_type,
+        "Mutable": true,
+        "Required": false,
+    })
+}
+
+/// The rows of RULE A's boolean-column half, differing along the CASE the file
+/// writes the boolean in and WHICH boolean column carries it.
+///
+/// A CSV carries every value as text, so a column whose attribute the pool's
+/// schema declares `Boolean` (`SchemaAttributeType.AttributeDataType`, whose
+/// values are `String | Number | DateTime | Boolean` in this service's model) —
+/// like the column the import FORMAT adds for the user's MFA state — states its
+/// boolean in either case, the import template's own documented values being
+/// upper case, while the pool holds a boolean attribute as ONE spelling (a custom
+/// attribute's value "is always a string, for example `\"custom:isMember\" :
+/// \"true\"`", the same model member's doc). So the import reads the boolean the
+/// text states and stores the canonical spelling, whichever of the pool's boolean
+/// columns carries it and whichever case the file wrote, and text that states no
+/// boolean is a row the import cannot read.
+///
+/// WHICH columns of a pool's template are boolean ones is the pool's own
+/// schema's answer, asserted in [`crate::user_import_boolean_columns`]; the rows
+/// here drive one of each kind it reports.
+fn boolean_spelling_cases() -> Vec<ImportCase> {
+    vec![
+        ImportCase {
+            case: "a verified flag in the import template's upper case",
+            schema: Vec::new(),
+            existing: None,
+            file: "cognito:username,email,email_verified\n\
+                   quentin,quentin@example.com,TRUE\n",
+            status: "Succeeded",
+            counters: (1, 0, 0),
+            imported: vec![(
+                "quentin",
+                vec![
+                    ("email", "quentin@example.com"),
+                    ("email_verified", "true"),
+                ],
+            )],
+        },
+        ImportCase {
+            case: "the other value of a verified flag, in upper case",
+            schema: Vec::new(),
+            existing: None,
+            file: "cognito:username,email,email_verified\n\
+                   rosa,rosa@example.com,FALSE\n",
+            status: "Succeeded",
+            counters: (1, 0, 0),
+            imported: vec![(
+                "rosa",
+                vec![("email", "rosa@example.com"), ("email_verified", "false")],
+            )],
+        },
+        ImportCase {
+            case: "a verified flag in mixed case",
+            schema: Vec::new(),
+            existing: None,
+            file: "cognito:username,email,email_verified\n\
+                   stefan,stefan@example.com,fAlSe\n",
+            status: "Succeeded",
+            counters: (1, 0, 0),
+            imported: vec![(
+                "stefan",
+                vec![("email", "stefan@example.com"), ("email_verified", "false")],
+            )],
+        },
+        ImportCase {
+            case: "the other verified flag the standard schema declares, in upper case",
+            schema: Vec::new(),
+            existing: None,
+            file: "cognito:username,phone_number,phone_number_verified\n\
+                   tamar,+15550143,TRUE\n",
+            status: "Succeeded",
+            counters: (1, 0, 0),
+            imported: vec![(
+                "tamar",
+                vec![
+                    ("phone_number", "+15550143"),
+                    ("phone_number_verified", "true"),
+                ],
+            )],
+        },
+        ImportCase {
+            case: "a custom Boolean attribute of the pool's own, in upper case",
+            schema: vec![custom_attribute("ismember", "Boolean")],
+            existing: None,
+            file: "cognito:username,custom:ismember\n\
+                   ulla,TRUE\n",
+            status: "Succeeded",
+            counters: (1, 0, 0),
+            imported: vec![("ulla", vec![("custom:ismember", "true")])],
+        },
+        ImportCase {
+            case: "a custom Boolean attribute of the pool's own, in mixed case",
+            schema: vec![custom_attribute("ismember", "Boolean")],
+            existing: None,
+            file: "cognito:username,custom:ismember\n\
+                   viktor,FaLsE\n",
+            status: "Succeeded",
+            counters: (1, 0, 0),
+            imported: vec![("viktor", vec![("custom:ismember", "false")])],
+        },
+        ImportCase {
+            case: "the MFA column in upper case",
+            schema: Vec::new(),
+            existing: None,
+            file: "cognito:username,phone_number,cognito:mfa_enabled\n\
+                   wanda,+15550177,TRUE\n",
+            status: "Succeeded",
+            counters: (1, 0, 0),
+            imported: vec![("wanda", vec![("phone_number", "+15550177")])],
+        },
+        ImportCase {
+            case: "a row whose verified flag is no boolean",
+            schema: Vec::new(),
+            existing: None,
+            file: "cognito:username,email,email_verified\n\
+                   xenia,xenia@example.com,maybe\n",
+            status: "Succeeded",
+            counters: (0, 0, 1),
+            imported: Vec::new(),
+        },
+        ImportCase {
+            case: "a row whose custom Boolean attribute is no boolean",
+            schema: vec![custom_attribute("ismember", "Boolean")],
+            existing: None,
+            file: "cognito:username,custom:ismember\n\
+                   yusuf,yes\n",
+            status: "Succeeded",
+            counters: (0, 0, 1),
+            imported: Vec::new(),
+        },
+    ]
+}
+
 /// Drive ONE row of RULE A: import `row`'s file into a fresh pool and assert what
 /// the run left behind.
 async fn assert_import_case(row: &ImportCase) {
@@ -731,6 +878,125 @@ async fn a_header_that_is_not_the_pools_template_fails_the_job() {
     for row in import_cases().iter().filter(|row| row.status == "Failed") {
         assert_import_case(row).await;
     }
+}
+
+/// RULE A's boolean-column half: a boolean column states its boolean in either
+/// case, the imported user holds it in the one spelling the pool stores a boolean
+/// as, and text that states no boolean fails the row
+/// ([`boolean_spelling_cases`]).
+#[tokio::test]
+async fn a_boolean_column_is_read_in_either_case() {
+    for row in boolean_spelling_cases() {
+        assert_import_case(&row).await;
+    }
+}
+
+/// The ROUND TRIP the boolean rows of RULE A's table exist for: a file that
+/// states a verified flag in the import template's upper case places a user the
+/// pool really holds — readable in the status an imported user owes a reset in,
+/// moved to `CONFIRMED` by a permanent password, and able to sign in afterwards.
+///
+/// WHICH columns of the template carry a boolean at all is the pool's own
+/// schema's answer, asserted in [`crate::user_import_boolean_columns`].
+#[tokio::test]
+async fn an_upper_case_verified_flag_imports_a_user_that_signs_in() {
+    let case = "an upper-case verified flag, imported and then signed in";
+    let router = router();
+    let user_pool_id = pool(&router, "import-boolean-pool", Vec::new()).await;
+    let created_client = ok(
+        &router,
+        "CreateUserPoolClient",
+        &json!({
+            "UserPoolId": user_pool_id,
+            "ClientName": "import-boolean-client",
+            "ExplicitAuthFlows": ["ALLOW_ADMIN_USER_PASSWORD_AUTH"],
+        }),
+    )
+    .await;
+    let client_id = created_client["UserPoolClient"]["ClientId"]
+        .as_str()
+        .expect("a minted client id")
+        .to_string();
+
+    let username = "zelda";
+    let job = create_job(&router, &user_pool_id, "boolean-job", UNRESOLVED_ROLE).await;
+    let job_id = job["JobId"].as_str().expect("a minted job id").to_string();
+    upload_csv(
+        &router,
+        case,
+        &job,
+        "cognito:username,email,email_verified\nzelda,zelda@example.com,TRUE\n",
+    )
+    .await;
+    ok(
+        &router,
+        "StartUserImportJob",
+        &json!({ "UserPoolId": user_pool_id, "JobId": job_id }),
+    )
+    .await;
+    let completed = poll_until_status(&router, case, &user_pool_id, &job_id, "Succeeded").await;
+    assert_eq!(
+        completed["ImportedUsers"],
+        json!(1),
+        "case {case:?}: the one data row must be imported, got {completed}"
+    );
+
+    let Some((status, held)) = read_user(&router, &user_pool_id, username).await else {
+        panic!("case {case:?}: the pool must hold the imported user {username}");
+    };
+    assert_eq!(
+        status, "RESET_REQUIRED",
+        "case {case:?}: an imported user carries no verifiable password, got {status}"
+    );
+    assert!(
+        held.iter()
+            .any(|(name, value)| name == "email_verified" && value == "true"),
+        "case {case:?}: the flag is stored in the pool's own spelling, got {held:?}"
+    );
+
+    let password = "Imported-1-Password!";
+    ok(
+        &router,
+        "AdminSetUserPassword",
+        &json!({
+            "UserPoolId": user_pool_id,
+            "Username": username,
+            "Password": password,
+            "Permanent": true,
+        }),
+    )
+    .await;
+    let Some((confirmed, _)) = read_user(&router, &user_pool_id, username).await else {
+        panic!("case {case:?}: the pool must still hold {username}");
+    };
+    assert_eq!(
+        confirmed, "CONFIRMED",
+        "case {case:?}: a permanent password confirms the imported user, got {confirmed}"
+    );
+
+    let (signed_in_status, signed_in) = call(
+        &router,
+        "AdminInitiateAuth",
+        &json!({
+            "UserPoolId": user_pool_id,
+            "ClientId": client_id,
+            "AuthFlow": "ADMIN_USER_PASSWORD_AUTH",
+            "AuthParameters": { "USERNAME": username, "PASSWORD": password },
+        }),
+    )
+    .await;
+    assert_eq!(
+        signed_in_status, 200,
+        "case {case:?}: the imported user must be able to sign in, got {signed_in_status} with \
+         {signed_in}"
+    );
+    let access_token = signed_in["AuthenticationResult"]["AccessToken"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        !access_token.is_empty(),
+        "case {case:?}: the imported user signs in with an access token, got {signed_in}"
+    );
 }
 
 /// The bytes one POOL retains across its jobs are bounded too, not just the bytes

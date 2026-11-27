@@ -842,6 +842,30 @@ const BOOLEAN_VALUES: [&str; 2] = [FLAG_CONFIRMED, FLAG_UNCONFIRMED];
 /// ([`crate::ops::types::ATTRIBUTE_DATA_TYPE_VALUES`]).
 const BOOLEAN_ATTRIBUTE_DATA_TYPE: &str = "Boolean";
 
+/// Whether `pool`'s schema declares the attribute `name` as one whose values are
+/// BOOLEANS (`SchemaAttributeType.AttributeDataType` of
+/// [`BOOLEAN_ATTRIBUTE_DATA_TYPE`]), so the only values a user of the pool can
+/// hold for it are the two a boolean has ([`BOOLEAN_VALUES`]).
+///
+/// Asked by a caller that reads a boolean out of text written in some other
+/// spelling than the one this service stores it in, so that it can store the
+/// stored spelling instead of refusing the value. An attribute the schema does
+/// not declare, or declares without a data type, declares no booleans: the type
+/// an entry defaults to is [`DEFAULT_ATTRIBUTE_DATA_TYPE`].
+#[must_use]
+pub fn declares_boolean_attribute(pool: &UserPool, name: &str) -> bool {
+    pool.schema_attribute(name)
+        .and_then(|entry| entry.attribute_data_type.as_deref())
+        .is_some_and(|data_type| data_type == BOOLEAN_ATTRIBUTE_DATA_TYPE)
+}
+
+/// The value this service STORES for the boolean `flag`, as the strings every
+/// attribute value is carried as ([`FLAG_CONFIRMED`], [`FLAG_UNCONFIRMED`]).
+#[must_use]
+pub fn stored_boolean(flag: bool) -> &'static str {
+    if flag { FLAG_CONFIRMED } else { FLAG_UNCONFIRMED }
+}
+
 /// The path `pool`'s schema holds the attribute `name` under: a custom attribute
 /// under [`CUSTOM_SCHEMA_PATH`], carrying the name it was declared with rather
 /// than the prefixed name a request writes it by, and a standard attribute under
