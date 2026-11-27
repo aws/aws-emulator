@@ -1323,7 +1323,8 @@ fn refused_key(refusal: crate::state::KeyRefusal) -> ElementRefusal {
     refused_call(refusal.into_error())
 }
 
-/// WHOSE failure a crossing of the item-size quota is, for the item an `Update` LEAVES.
+/// The refusal an `Update` whose change would carry the item past the item-size quota earns:
+/// the transaction is CANCELLED with that action named in the reason list.
 ///
 /// What an update is weighed against is not the quota alone: on top of the bytes the item it
 /// leaves STORES, the update path charges the REQUEST for its own shape — the part of the item

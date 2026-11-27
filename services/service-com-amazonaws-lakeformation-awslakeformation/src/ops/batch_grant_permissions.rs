@@ -249,9 +249,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut updated = 0_usize;
         {
             let mut store = state.lock();
+            // One provenance for the whole batch: every record it writes was written by
+            // this one call.
+            let provenance = crate::state::caller_provenance(::std::time::SystemTime::now());
             for (entry, outcome) in input.entries.iter().zip(resolved) {
                 let applied = outcome.and_then(|(request, records)| {
-                    crate::state::record_grants(&mut store, &catalog_id, &request, &records)
+                    crate::state::record_grants(
+                        &mut store,
+                        &catalog_id,
+                        &request,
+                        &records,
+                        &provenance,
+                    )
                 });
                 match applied {
                     Ok((entry_inserted, entry_updated)) => {

@@ -196,6 +196,9 @@ pub fn merge_reported_grant(
             held.permissions = reported_permissions(&held.permissions);
             held.permissions_with_grant_option =
                 reported_permissions(&held.permissions_with_grant_option);
+            // The entry reports the provenance of the most recent write any of the records
+            // it reports carries, that being when what the entry reports last changed.
+            held.absorb_provenance(&grant);
         }
         None => {
             reported.insert(key, grant);

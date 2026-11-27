@@ -554,12 +554,32 @@ async fn a_batch_entry_grants_exactly_what_the_single_grant_call_grants() {
         );
 
         let filter = json!({ "Principal": { "DataLakePrincipalIdentifier": principal } });
-        // Compared whole: a listed entry carries no record-keeping member either path could
-        // differ on, so what is compared is what each path left behind.
+        // Compared member by member, with the one member the two paths cannot agree on left
+        // out: `LastUpdated` is the instant each path's own write ran, so what is compared is
+        // the record each left behind, plus that both recorded the write at all.
         let from_single = list_permissions(&single, case, &filter).await;
         let from_batch = list_permissions(&batched, case, &filter).await;
+        let without_the_instant = |listed: &[Value]| -> Vec<Value> {
+            listed
+                .iter()
+                .map(|entry| {
+                    let mut entry = entry.clone();
+                    let held = entry
+                        .as_object_mut()
+                        .expect("a listed entry is an object")
+                        .remove("LastUpdated");
+                    assert!(
+                        held.is_some(),
+                        "case {case:?}: every written record reports its write's instant, got \
+                         {entry:?}"
+                    );
+                    entry
+                })
+                .collect()
+        };
         assert_eq!(
-            from_batch, from_single,
+            without_the_instant(&from_batch),
+            without_the_instant(&from_single),
             "case {case:?}: expected the batch to leave what the single grant leaves \
              ({from_single:?}), got {from_batch:?}"
         );

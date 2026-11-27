@@ -231,6 +231,7 @@ pub fn apply_revoke(
     catalog_id: &str,
     request: &RevokeRequest,
     plan: &RevokePlan,
+    provenance: &GrantProvenance,
 ) -> Result<RevokeOutcome, String> {
     // The creation-time default, unless a revoke already took it away. It is not a record,
     // so it is held ON TOP of whatever `GrantPermissions` wrote. What the default IS comes
@@ -315,7 +316,8 @@ pub fn apply_revoke(
     // A grant a table was created carrying is taken away the same way — remembered as gone,
     // keyed exactly as the listing renders it — and whatever it still holds becomes a
     // record, so a revoke of one permission leaves the others in place.
-    let revoked_implicit = revoke_implicit_grants(store, &plan.table_grants, &plan.scoped)?;
+    let revoked_implicit =
+        revoke_implicit_grants(store, &plan.table_grants, &plan.scoped, provenance)?;
 
     // Counted per record, symmetrically with the grant path's inserted/updated: a revoke can
     // trim one scope and empty another, and a revoke of a default grant trims no record.
@@ -338,6 +340,9 @@ pub fn apply_revoke(
                 store.permission_grants.remove(scoped_key);
                 outcome.removed += 1;
             } else {
+                // What the record still holds was last written by THIS revoke, so that is
+                // the provenance a later read of it reports.
+                grant.written_by(provenance);
                 outcome.reduced += 1;
             }
         }

@@ -242,9 +242,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // The revoke itself, under this service's lock: a revoke that would take nothing
         // away — because the grant does not exist at all, or because it never carried these
-        // permissions — is refused here and trims nothing.
-        let outcome = crate::state::apply_revoke(&mut state.lock(), &catalog_id, &request, &plan)
-            .map_err(invalid)?;
+        // permissions — is refused here and trims nothing. A record it trims was last
+        // written by THIS call, which is the provenance a later read of it reports.
+        let provenance = crate::state::caller_provenance(::std::time::SystemTime::now());
+        let outcome = crate::state::apply_revoke(
+            &mut state.lock(),
+            &catalog_id,
+            &request,
+            &plan,
+            &provenance,
+        )
+        .map_err(invalid)?;
 
         // The audit record for a state change: who, what, where, and what each scope did.
         // No secret and no credential material — the access key id identifies the caller

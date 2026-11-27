@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! End-to-end suite for WHO answers for the item-size quota when a `TransactWriteItems`
-//! `Update` crosses it, driven over the wire (`POST /` with
+//! End-to-end suite for HOW a `TransactWriteItems` `Update` that crosses the item-size quota
+//! is answered, driven over the wire (`POST /` with
 //! `X-Amz-Target: DynamoDB_20120810.<Operation>`).
 //!
 //! RULE: an update is weighed over the bytes the item it leaves STORES plus what the update
@@ -198,6 +198,30 @@ fn assert_refused(case: &str, status: u16, body: &Value) {
     );
 }
 
+/// Assert the transaction was CANCELLED over the one action it carried: the status, the
+/// cancellation class, the top-level sentence, and that action's own reason.
+fn assert_cancelled(case: &str, status: u16, body: &Value) {
+    assert_eq!(
+        (status, error_code(body).as_str(), message(body).as_str()),
+        (
+            400,
+            "TransactionCanceledException",
+            "Transaction cancelled, please refer cancellation reasons for specific reasons \
+             [ValidationError]"
+        ),
+        "case {case:?}: expected the transaction cancelled over that action, got {status} with \
+         {body}"
+    );
+    assert_eq!(
+        (
+            body["CancellationReasons"][0]["Code"].as_str(),
+            body["CancellationReasons"][0]["Message"].as_str(),
+        ),
+        (Some(VALIDATION_ERROR_CODE), Some(UPDATE_TOO_BIG)),
+        "case {case:?}: expected that action's reason to word the quota, got {body}"
+    );
+}
+
 #[tokio::test]
 async fn a_statement_the_update_path_charges_its_own_ceiling_refuses_the_call() {
     let router = seeded().await;
@@ -216,15 +240,20 @@ async fn a_statement_the_update_path_charges_its_own_ceiling_refuses_the_call() 
         .await;
         assert_refused(statement.case, status, &body);
 
-        // The single-item surface of the SAME statement answers the same: the ceiling is the
-        // item's and the refusal is the request's, so the two paths stop at one byte with one
-        // class and one sentence.
+        // The single-item surface of the SAME statement answers the same: the ceiling the
+        // update path held the request to is that surface's too, so the two paths stop at one
+        // byte with one class and one sentence.
         let (status, body) = call(&router, "UpdateItem", request).await;
         assert_eq!(
             (status, error_code(&body).as_str(), message(&body).as_str()),
             (400, "ValidationException", UPDATE_TOO_BIG),
             "case {:?}: expected UpdateItem to refuse the same statement, got {status} with \
              {body}",
+            statement.case
+        );
+        assert!(
+            body.get("CancellationReasons").is_none(),
+            "case {:?}: a single-item refusal grades no action, got {body}",
             statement.case
         );
 
@@ -255,27 +284,7 @@ async fn a_statement_held_to_the_quota_itself_cancels_the_transaction() {
             ]}),
         )
         .await;
-        assert_eq!(
-            (status, error_code(&body).as_str(), message(&body).as_str()),
-            (
-                400,
-                "TransactionCanceledException",
-                "Transaction cancelled, please refer cancellation reasons for specific reasons \
-                 [ValidationError]"
-            ),
-            "case {:?}: expected the transaction cancelled over that action, got {status} with \
-             {body}",
-            statement.case
-        );
-        assert_eq!(
-            (
-                body["CancellationReasons"][0]["Code"].as_str(),
-                body["CancellationReasons"][0]["Message"].as_str(),
-            ),
-            (Some(VALIDATION_ERROR_CODE), Some(UPDATE_TOO_BIG)),
-            "case {:?}: expected that action's reason to word the quota, got {body}",
-            statement.case
-        );
+        assert_cancelled(statement.case, status, &body);
 
         let held = held_bytes(&router, &key).await;
         assert_eq!(

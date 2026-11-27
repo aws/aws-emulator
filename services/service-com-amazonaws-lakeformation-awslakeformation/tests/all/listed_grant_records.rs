@@ -5,13 +5,13 @@
 //!
 //! Two rules, each over a table of inputs rather than one request.
 //!
-//! * No entry reports update PROVENANCE: `PrincipalResourcePermissions$LastUpdated` ("The
-//!   date and time when the resource was last updated") and `$LastUpdatedBy` ("The user who
-//!   updated the record") are optional members with no default, and no operation of this API
-//!   supplies either, so a listing leaves both absent — for a record `GrantPermissions` wrote,
-//!   for one a later grant added to, for one a revoke trimmed, and for a grant a resource was
-//!   created carrying — while the members the record does carry (the principal it is held by,
-//!   the resource form it is held on and its two permission sets) are reported in full.
+//! * Every entry reports the PROVENANCE of the write that set the record it reports:
+//!   `PrincipalResourcePermissions$LastUpdated` ("The date and time when the resource was last
+//!   updated") and `$LastUpdatedBy` ("The user who updated the record") — for a record
+//!   `GrantPermissions` wrote, for one a later grant added to, for one a revoke trimmed, and
+//!   for a grant a resource was created carrying — beside the members the record itself
+//!   carries (the principal it is held by, the resource form it is held on and its two
+//!   permission sets).
 //! * A listing reports its entries ordered by what the ANSWER carries — the principal the
 //!   permissions are held by, then the `Resource` member they are held on and the names that
 //!   address it — and the page `MaxResults` bounds is cut from that order, so a walk over
@@ -100,16 +100,20 @@ async fn grant(
     );
 }
 
-/// The provenance members a listing never reports, asserted absent on one entry: a record
-/// carries that provenance only when something supplied it, and no operation of this API does.
-fn assert_no_provenance(case: &str, entry: &Value) {
-    for member in ["LastUpdated", "LastUpdatedBy"] {
-        assert_eq!(
-            entry.get(member),
-            None,
-            "case {case:?}: expected the entry to report no {member}, got {entry:?}"
-        );
-    }
+/// The provenance members every listed entry reports, asserted present on one entry: the
+/// instant of the write that set the record, and the principal that made it.
+fn assert_provenance(case: &str, entry: &Value) {
+    assert!(
+        entry.get("LastUpdated").and_then(Value::as_f64).is_some_and(|at| at > 0.0),
+        "case {case:?}: expected the entry to report the write's instant, got {entry:?}"
+    );
+    assert!(
+        entry
+            .get("LastUpdatedBy")
+            .and_then(Value::as_str)
+            .is_some_and(|by| (1..=255).contains(&by.chars().count())),
+        "case {case:?}: expected the entry to report who made the write, got {entry:?}"
+    );
 }
 
 /// The permissions one entry reports, in the order it reports them.
@@ -157,7 +161,7 @@ fn placed(listed: &[Value]) -> Vec<Placed> {
 }
 
 #[tokio::test]
-async fn no_listed_entry_reports_update_provenance() {
+async fn every_listed_entry_reports_update_provenance() {
     // Rows differ along the resource form granted on and how many scopes the grant lands
     // on: a database (one record), a table whose permissions split across the table and its
     // columns (two records), the table alone, and the table's columns alone.
@@ -191,7 +195,7 @@ async fn no_listed_entry_reports_update_provenance() {
             "case {case:?}: expected {records} entries for the grant, got {listed:?}"
         );
         for entry in &listed {
-            assert_no_provenance(case, entry);
+            assert_provenance(case, entry);
             // What the record DOES carry is reported: the grantee it was made for, and
             // permissions out of the set the grant named.
             assert_eq!(
@@ -206,8 +210,8 @@ async fn no_listed_entry_reports_update_provenance() {
             );
         }
 
-        // A second grant on the same record is another write to it, and still nothing to
-        // report provenance from: the records are the same ones, with both members absent.
+        // A second grant on the same record is another write to it, so the records are the
+        // same ones, each reporting that write's provenance.
         grant(&router, case, &analyst, &resource, &permissions).await;
         let relisted = list(
             &router,
@@ -221,17 +225,16 @@ async fn no_listed_entry_reports_update_provenance() {
             "case {case:?}: a repeated grant is the same records, got {relisted:?}"
         );
         for entry in &relisted {
-            assert_no_provenance(case, entry);
+            assert_provenance(case, entry);
         }
     }
 }
 
 #[tokio::test]
-async fn a_grant_a_table_was_created_carrying_reports_no_provenance_either() {
+async fn a_grant_a_table_was_created_carrying_reports_the_creates_provenance() {
     // The complement of the rule for a record no `GrantPermissions` call wrote: creating the
-    // table is what made it, and the create supplies no provenance for the permission record
-    // any more than a grant does. Rows differ along which of the table's two creation-time
-    // records is read.
+    // table is the write that made it, so that create's own provenance is what the entry
+    // reports. Rows differ along which of the table's two creation-time records is read.
     let router = seeded().await;
     let creator = table_created_by(&router, DATABASE, TABLE).await;
 
@@ -247,7 +250,7 @@ async fn a_grant_a_table_was_created_carrying_reports_no_provenance_either() {
             .unwrap_or_else(|| {
                 panic!("case {case:?}: expected a {member} entry for {creator}, got {listed:?}")
             });
-        assert_no_provenance(case, entry);
+        assert_provenance(case, entry);
         assert!(
             !permissions_of(entry).is_empty(),
             "case {case:?}: expected the creation-time record to report what it holds, got \
@@ -257,10 +260,9 @@ async fn a_grant_a_table_was_created_carrying_reports_no_provenance_either() {
 }
 
 #[tokio::test]
-async fn a_revoke_that_trims_a_record_leaves_it_without_provenance() {
-    // A revoke that leaves a record holding something is a write to that record, and the
-    // record it leaves reports no provenance for that write either. Rows differ along which
-    // permission of the record the revoke takes away.
+async fn a_revoke_that_trims_a_record_leaves_it_reporting_the_revokes_provenance() {
+    // A revoke that leaves a record holding something is a write to that record, so what it
+    // leaves reports that write. Rows differ along which permission the revoke takes away.
     let catalog = account_catalog();
     let analyst = format!("arn:aws:iam::{catalog}:role/analyst");
     for (case, revoked, left_holding) in [
@@ -271,7 +273,7 @@ async fn a_revoke_that_trims_a_record_leaves_it_without_provenance() {
         grant(&router, case, &analyst, &on_table(), &["DESCRIBE", "ALTER"]).await;
         let filter = json!({ "Principal": { "DataLakePrincipalIdentifier": analyst } });
         let granted = list(&router, case, &filter).await;
-        assert_no_provenance(case, &granted[0]);
+        assert_provenance(case, &granted[0]);
 
         let (status, payload) = call(
             &router,
@@ -300,7 +302,7 @@ async fn a_revoke_that_trims_a_record_leaves_it_without_provenance() {
             vec![left_holding.to_string()],
             "case {case:?}: expected the record to be left holding {left_holding}, got {left:?}"
         );
-        assert_no_provenance(case, &left[0]);
+        assert_provenance(case, &left[0]);
     }
 }
 

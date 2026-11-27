@@ -9,9 +9,8 @@
 //! and `StopQuery` cancels it.
 //!
 //! A `MonitorName` this account does not hold is refused with `ValidationException` (400)
-//! and nothing is recorded. A monitor that monitors no resource collects no data, so there
-//! is no repository for any query type to run against: such a start is refused with
-//! `BadRequestException` (400) before a `QueryId` is minted or a query recorded.
+//! and nothing is recorded. What the monitor has COLLECTED decides nothing about the start:
+//! a monitor that monitors no resource still serves a query, whose result reports no row.
 //!
 //! ## Shape of an operation
 //!
@@ -228,17 +227,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
-        // The query interface returns "data for a specific query type" that the monitor
-        // itself collected, and a monitor that monitors no resource collects none: there is
-        // no repository for a query of ANY type to run against, so the start is refused as
-        // an input-validation failure before a `QueryId` is minted or a query recorded. The
-        // monitor is only read here, so its own configuration state is untouched.
-        if monitor.resources.is_empty() {
-            return Err(StartQueryErrorModeled::BadRequestException(BadRequestException {
-                message: Some(crate::state::INVALID_REQUEST_BODY_MESSAGE.to_string()),
-            })
-            .into());
-        }
+        // A monitor that monitors no resource is still a monitor this account holds, so a
+        // query of it is STARTED: the query interface answers what the monitor's repository
+        // holds, and a repository that holds no row is an empty result rather than a
+        // refusal — "Return the data for a query with the Amazon CloudWatch Internet Monitor
+        // query interface" is what `GetQueryResults` then answers for it. The monitor is
+        // only read here, to resolve the name; its own configuration state is untouched.
+        let _ = monitor;
 
         // "Specify a time period for the data that you want returned by using StartTime
         // and EndTime": a period that ends before it starts is no period, so the request

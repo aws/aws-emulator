@@ -10,20 +10,19 @@ use super::*;
 pub const DEFAULT_JOB_MODE: &str = "SCRIPT";
 
 /// The `JobCommand$PythonVersion` a stored job definition whose submitted command named
-/// none carries while the write that submitted it STATED no Glue version: "The Python
+/// none carries while the Glue version it RUNS ON still has a Python 2 runtime: "The Python
 /// version being used to run a Python shell job. Allowed values are 2 or 3."
 ///
 /// RECORDED: a definition that sent a command without a Python version reads back with one
-/// INSIDE the command structure it sent, and for a write that stated no Glue version that is
-/// the FIRST of the two values the member allows — the historical default, which a write
-/// that says nothing about the runtime keeps whatever Glue version the service then runs the
-/// job on. A definition that names a version keeps the one it named.
+/// INSIDE the command structure it sent. WHICH of the two values the member allows follows
+/// the runtime the job runs under ([`default_python_version`]), so this one is carried only
+/// by a definition on one of the early Glue versions that still ran Python 2. A definition
+/// that names a version keeps the one it named.
 pub const DEFAULT_PYTHON_VERSION: &str = "2";
 
 /// The other value `JobCommand$PythonVersion` allows, and the one filled into a command of a
-/// definition whose write STATED a Glue version that runs no Python 2
-/// ([`GLUE_VERSION_WITHOUT_PYTHON_2`]): a job asked for such a version runs Python 3, so
-/// that is the version it reads back with.
+/// definition whose Glue version runs no Python 2 ([`GLUE_VERSION_WITHOUT_PYTHON_2`]): such
+/// a job runs Python 3, so that is the version it reads back with.
 pub const PYTHON_VERSION_3: &str = "3";
 
 /// The first Glue version whose runtime carries no Python 2 — from it on, a Python job runs
@@ -43,17 +42,24 @@ fn runs_no_python_2(glue_version: &str) -> bool {
         .is_some_and(|major| major >= GLUE_VERSION_WITHOUT_PYTHON_2)
 }
 
-/// The `PythonVersion` the service fills into a command that named none, for a write that
-/// STATED `glue_version` (`None` where it stated no Glue version).
+/// The `PythonVersion` the service fills into a command that named none, for a definition
+/// stored under `glue_version`.
 ///
-/// The version follows what the write ASKED FOR rather than the Glue version the service
-/// then runs the job on: a write that asks for a Glue version carrying no Python 2 is asking
-/// for a Python 3 job ([`PYTHON_VERSION_3`]), while a write that asks for no version at all
-/// keeps the historical default ([`DEFAULT_PYTHON_VERSION`]) — which is why a definition
-/// created without either member reads back with the service's current Glue version beside
-/// that default.
-pub fn default_python_version(stated_glue_version: Option<&str>) -> &'static str {
-    if stated_glue_version.is_some_and(runs_no_python_2) {
+/// The version follows the Glue version the job RUNS ON — the one the stored definition
+/// carries and every read of it reports, which is the version the write stated, the one the
+/// service filled in for a write that stated none ([`DEFAULT_GLUE_VERSION`]), or the one it
+/// chooses for a definition that left the choice to it ([`AUTO_GLUE_VERSION`]). A job on a
+/// version whose runtime carries no Python 2 runs Python 3 ([`PYTHON_VERSION_3`]) and
+/// nothing else, so that is the version it reads back with; one on an early version that
+/// still ran Python 2 keeps the historical default ([`DEFAULT_PYTHON_VERSION`]).
+pub fn default_python_version(glue_version: &str) -> &'static str {
+    // `auto` names no runtime of its own: the service runs such a job on the version it
+    // would have filled in, so that is the version this reads.
+    let effective = match glue_version {
+        AUTO_GLUE_VERSION => DEFAULT_GLUE_VERSION,
+        named => named,
+    };
+    if runs_no_python_2(effective) {
         PYTHON_VERSION_3
     } else {
         DEFAULT_PYTHON_VERSION
@@ -254,21 +260,20 @@ pub fn script_location_defect(command: &JobCommand) -> Option<String> {
 ///
 /// A nested structure is no exception to the defaults a write applies: the Python version a
 /// job runs under is the service's to decide when the command named none, and WHICH version
-/// it fills in follows the Glue version the write stated
+/// it fills in follows the Glue version the stored definition RUNS ON
 /// ([`default_python_version`]) — so it is written INSIDE the structure the caller supplied
 /// rather than left for a client to guess, and a command that named one keeps it, whichever
 /// of the allowed values it is. The exception is a Ray job, whose versions its `Runtime`
 /// states (see [`RAY_COMMAND`]).
 ///
 /// `CreateJob` and `UpdateJob` submit the same structure under the same documentation, so
-/// both store it through here, each with the Glue version its own request stated.
-pub(super) fn stored_command(
-    command: &JobCommand,
-    stated_glue_version: Option<&str>,
-) -> JobCommand {
+/// both store it through here, each with the Glue version its own definition is stored with
+/// — the version the request stated, the service's own default where it stated none, or (on
+/// an update) the one the definition retains.
+pub(super) fn stored_command(command: &JobCommand, glue_version: &str) -> JobCommand {
     let mut stored = command.clone();
     if stored.python_version.is_none() && command.name.as_deref() != Some(RAY_COMMAND) {
-        stored.python_version = Some(default_python_version(stated_glue_version).to_string());
+        stored.python_version = Some(default_python_version(glue_version).to_string());
     }
     stored
 }
@@ -652,8 +657,8 @@ impl JobEntry {
         let max_concurrent_runs = max_concurrent_runs_of(input.execution_property.as_ref());
         // The `Command` is stored with the members the service fills in added inside the
         // structure the caller supplied ([`stored_command`]), under the Glue version this
-        // request stated.
-        let command = stored_command(&input.command, input.glue_version.as_deref());
+        // definition is stored with — the one the request stated, else the service's own.
+        let command = stored_command(&input.command, &glue_version);
         let (worker_type, number_of_workers, max_capacity) = capacity_members(
             input.max_capacity,
             input.allocated_capacity,
@@ -727,11 +732,9 @@ impl JobEntry {
             .unwrap_or_else(|| self.glue_version.clone());
         let max_concurrent_runs = max_concurrent_runs_of(update.execution_property.as_ref());
         // The command the update submitted, stored with the members the service fills in
-        // ([`stored_command`]) under the Glue version THIS request stated.
-        let command = stored_command(
-            &update.command.clone().unwrap_or_default(),
-            update.glue_version.as_deref(),
-        );
+        // ([`stored_command`]) under the Glue version the definition is left on — the one
+        // this request stated, else the one it retains.
+        let command = stored_command(&update.command.clone().unwrap_or_default(), &glue_version);
         let (worker_type, number_of_workers, max_capacity) = capacity_members(
             update.max_capacity,
             update.allocated_capacity,

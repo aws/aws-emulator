@@ -203,6 +203,7 @@ pub fn created_table_grants<Eng: Send + Sync + 'static>(
                         .created_by
                         .clone()
                         .filter(|creator| !creator.is_empty()),
+                    created_at: table.create_time,
                 })
                 .collect();
             renders += tables.len() * per_table;
@@ -238,7 +239,17 @@ pub fn created_table_grants<Eng: Send + Sync + 'static>(
             };
 
             // The creator holds Super, so this split yields both the table's own record
-            // and its column-wildcard one.
+            // and its column-wildcard one. The write that made the grant is the CREATE of
+            // the table, so that is the provenance a listing reports for it: the instant
+            // the catalog records for the table and the principal it records as having
+            // created it, else the identity this emulator's credential speaks for, which is
+            // the one every call into it is made under.
+            let provenance = GrantProvenance {
+                at: table.created_at,
+                by: table.creator.clone().unwrap_or_else(
+                    ::service_common::caller_principal::ambient_user_arn,
+                ),
+            };
             if let Some(creator) = &table.creator {
                 record_implicit_grant(
                     &mut grants,
@@ -247,6 +258,7 @@ pub fn created_table_grants<Eng: Send + Sync + 'static>(
                     &resource,
                     &creator_permissions,
                     &creator_permissions,
+                    &provenance,
                 );
             }
 
@@ -260,6 +272,7 @@ pub fn created_table_grants<Eng: Send + Sync + 'static>(
                     &resource,
                     permissions,
                     &[],
+                    &provenance,
                 );
             }
         }
@@ -287,10 +300,13 @@ struct CreatedTable {
     name: String,
     /// Its `Table$CreatedBy`, when the catalog recorded one.
     creator: Option<String>,
+    /// Its `Table$CreateTime` — the instant of the write that made these grants.
+    created_at: SystemTime,
 }
 
 /// Adds the grant of `permissions` to `principal` on `resource` to `grants`, split across
-/// the scopes each permission applies at and merged with whatever is already keyed there.
+/// the scopes each permission applies at and merged with whatever is already keyed there,
+/// each record carrying the provenance of the write that made it.
 fn record_implicit_grant(
     grants: &mut BTreeMap<String, PermissionGrant>,
     catalog_id: &str,
@@ -298,11 +314,12 @@ fn record_implicit_grant(
     resource: &Resource,
     permissions: &[String],
     permissions_with_grant_option: &[String],
+    provenance: &GrantProvenance,
 ) {
     for (scoped_resource, scoped_permissions, scoped_with_grant_option) in
         scoped_grant_records(resource, permissions, permissions_with_grant_option)
     {
-        let grant = PermissionGrant {
+        let mut grant = PermissionGrant {
             catalog_id: catalog_id.to_string(),
             principal: principal.to_string(),
             resource: scoped_resource,
@@ -310,7 +327,10 @@ fn record_implicit_grant(
             permissions_with_grant_option: scoped_with_grant_option,
             // A grant a resource was created carrying never has a condition.
             condition_expression: None,
+            last_updated: None,
+            last_updated_by: None,
         };
+        grant.written_by(provenance);
         let key = grant_key(catalog_id, &grant.principal, &grant.resource, None);
         match grants.get_mut(&key) {
             Some(held) => {
@@ -319,6 +339,7 @@ fn record_implicit_grant(
                     &mut held.permissions_with_grant_option,
                     &grant.permissions_with_grant_option,
                 );
+                held.absorb_provenance(&grant);
             }
             None => {
                 grants.insert(key, grant);

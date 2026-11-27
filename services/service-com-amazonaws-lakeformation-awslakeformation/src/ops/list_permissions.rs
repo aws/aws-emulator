@@ -16,12 +16,13 @@
 //!
 //! The entries come in the order the ANSWER carries them — the principal each is held by,
 //! then the resource it is held on, then the condition
-//! ([`crate::state::reported_grant_order_key`]) — which is the order a `MaxResults`-bounded
-//! page is cut from, so what lands on the first page follows from the values the caller
-//! reads rather than from how a record is stored. An entry carries the update PROVENANCE
-//! members (`LastUpdated` / `LastUpdatedBy`) only for a record that holds that provenance,
-//! and no operation of this API supplies it, so they are reported absent
-//! ([`crate::state::PermissionGrant::to_wire`]).
+//! ([`crate::state::reported_grant_order_key`]) — with the records the operation documents
+//! it returns, the explicitly granted ones, ahead of the grants a resource was created
+//! carrying ([`crate::state::paged_grant_order_key`]). That is the order a
+//! `MaxResults`-bounded page is cut from, so what lands on the first page follows from the
+//! values the caller reads rather than from how a record is stored. Each entry carries the
+//! update PROVENANCE members (`LastUpdated` / `LastUpdatedBy`) of the write that last set
+//! the record it reports ([`crate::state::PermissionGrant::to_wire`]).
 //!
 //! Two things a client should know. A listing that matches no grant answers an EMPTY
 //! `PrincipalResourcePermissions` list — `PrincipalResourcePermissionsList` carries no
@@ -398,7 +399,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let principal_resource_permissions: Vec<PrincipalResourcePermissions> = selected
             .iter()
-            .map(|grant| grant.to_wire())
+            // A listing that answers EFFECTIVE permissions answers what the principal
+            // HOLDS rather than the records holding it, so its entries carry no record
+            // provenance ([`crate::state::reported_grant_entry`]).
+            .map(|grant| crate::state::reported_grant_entry(grant, effective_for.is_some()))
             .collect();
 
         Ok(ListPermissionsOutput {

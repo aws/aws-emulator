@@ -5,13 +5,12 @@
 //!
 //! The rules under test:
 //!
-//! * A start against a monitor this account holds that monitors at least one resource
-//!   mints a `QueryId` and records the query in the non-terminal `QUEUED` state. The clock
-//!   then carries the query to `RUNNING` and `SUCCEEDED`, which is what `GetQueryStatus`
-//!   reports and what `StopQuery` cancels.
-//! * A monitor that monitors no resource collects no data for a query of any type to run
-//!   against, so a start naming one is refused with `BadRequestException` (400), records
-//!   no query and leaves the monitor itself untouched.
+//! * A start against a monitor this account holds mints a `QueryId` and records the query in
+//!   the non-terminal `QUEUED` state. The clock then carries the query to `RUNNING` and
+//!   `SUCCEEDED`, which is what `GetQueryStatus` reports and what `StopQuery` cancels.
+//! * What the monitor has COLLECTED is no part of that: a monitor that monitors no resource
+//!   serves a start too, and the query it records reports the repository's columns with no
+//!   rows.
 //! * A `MonitorName` this account does not hold, and a time period that ends before it
 //!   starts, are refused (400) and record no query.
 //! * A `QueryId` no query of the named monitor carries is refused by both readers with the
@@ -183,7 +182,7 @@ struct StartCase {
 }
 
 // ---------------------------------------------------------------------------------------
-// A query is started only against a monitor that monitors at least one resource
+// A query is started against any monitor this account holds
 // ---------------------------------------------------------------------------------------
 
 #[tokio::test]
@@ -246,14 +245,14 @@ async fn start_query_accepts_a_monitor_that_monitors_resources() {
 }
 
 #[tokio::test]
-async fn start_query_refuses_a_monitor_that_monitors_no_resource() {
+async fn start_query_serves_a_monitor_that_monitors_no_resource() {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let router = emulator_on(Arc::clone(&engine));
 
     // Each row is a monitor that monitors nothing, reached a different way: a create that
     // sent no `Resources` member at all, one that sent the member empty, and one whose only
-    // resource `UpdateMonitor` took away. A resource set is a set, so emptiness is the
-    // property the rule reads, however the monitor came to be empty.
+    // resource `UpdateMonitor` took away. What a monitor MONITORS is not what a start is
+    // weighed on, however the monitor came to be empty.
     create_monitor(&router, json!({ "MonitorName": "no-member-monitor" })).await;
     create_monitor(&router, json!({ "MonitorName": "empty-list-monitor", "Resources": [] })).await;
     monitor_with_resources(&router, "emptied-monitor").await;
@@ -270,37 +269,39 @@ async fn start_query_refuses_a_monitor_that_monitors_no_resource() {
     );
 
     let now = SystemTime::now();
+    let mut minted: Vec<(String, String)> = Vec::new();
     for monitor in ["no-member-monitor", "empty-list-monitor", "emptied-monitor"] {
-        // The monitor the start is refused for is a settled, ACTIVE one: it is what it
-        // monitors, not where it is in its own lifecycle, that the refusal turns on.
+        // The monitor the start is served for is a settled, ACTIVE one: it is where the
+        // monitor is in its own lifecycle, not what it monitors, that a start is read
+        // against.
         settled_monitor(&router, monitor, monitor, MONITOR_STATE_ACTIVE).await;
 
         for query_type in QUERY_TYPE_VALUES {
             let case = format!("{monitor} asked for {query_type}");
-            let (status, refused) =
+            let (status, started) =
                 start_query(&router, monitor, start_body(query_type, now)).await;
             assert_eq!(
-                status, 400,
-                "case {case:?}: expected 400, got {status} with {refused}"
+                status, 200,
+                "case {case:?}: expected 200, got {status} with {started}"
             );
-            assert_eq!(
-                error_code(&refused),
-                "BadRequestException",
-                "case {case:?}: expected BadRequestException, got {refused}"
-            );
-            assert_eq!(
-                error_message(&refused),
-                INVALID_REQUEST_BODY_MESSAGE,
-                "case {case:?}: expected message {INVALID_REQUEST_BODY_MESSAGE:?}, got {refused}"
-            );
+            let query_id = started["QueryId"]
+                .as_str()
+                .unwrap_or_else(|| panic!("case {case:?}: no QueryId in {started}"))
+                .to_string();
             assert!(
-                refused.get("QueryId").is_none(),
-                "case {case:?}: a refused start must mint no QueryId, got {refused}"
+                !query_id.is_empty(),
+                "case {case:?}: the minted QueryId must not be empty, got {started}"
             );
+            assert_eq!(
+                reported_status(&router, &case, monitor, &query_id).await,
+                QUERY_STATUS_QUEUED,
+                "case {case:?}: a started query must first report QUEUED"
+            );
+            minted.push((case, query_id));
         }
 
-        // The refusal is reached before anything is recorded, and it leaves the monitor
-        // itself where it was: it still reads back ACTIVE.
+        // The start recorded the query it answered with, and left the monitor itself where
+        // it was: it still reads back ACTIVE, monitoring nothing.
         let recorded: Vec<String> = {
             let state = service_state(&*engine).expect("the monitor store");
             let store = state.lock();
@@ -311,9 +312,10 @@ async fn start_query_refuses_a_monitor_that_monitors_no_resource() {
                 .map(|query| query.query_id.clone())
                 .collect()
         };
-        assert!(
-            recorded.is_empty(),
-            "case {monitor:?}: a refused start must record no query, got {recorded:?}"
+        assert_eq!(
+            recorded.len(),
+            QUERY_TYPE_VALUES.len(),
+            "case {monitor:?}: every served start must record its query, got {recorded:?}"
         );
         let got = settled_monitor(&router, monitor, monitor, MONITOR_STATE_ACTIVE).await;
         assert_eq!(
@@ -323,32 +325,41 @@ async fn start_query_refuses_a_monitor_that_monitors_no_resource() {
         );
     }
 
-    // The same monitor, once it monitors a resource, serves the very query that was
-    // refused: the rule reads the resource set at the time of the start and nothing else.
-    let (status, updated) = call(
-        &router,
-        "PATCH",
-        "/v20210603/Monitors/no-member-monitor",
-        Some(json!({ "ResourcesToAdd": [vpc_arn("cccc0001")] })),
-    )
-    .await;
+    // Every start minted its own id, so no caller was served another caller's query.
+    let distinct: BTreeSet<&String> = minted.iter().map(|(_, id)| id).collect();
     assert_eq!(
-        status, 200,
-        "giving the monitor a resource: expected 200, got {status} with {updated}"
+        distinct.len(),
+        minted.len(),
+        "each start must mint its own QueryId, got {minted:?}"
     );
-    let (status, started) = start_query(
+
+    // A query of a monitor that collected nothing reports the repository's own columns and
+    // no rows — the empty result the start promised, rather than a refusal.
+    let (case, query_id) = minted
+        .first()
+        .cloned()
+        .expect("a served start to read back");
+    let (status, results) = call(
         &router,
-        "no-member-monitor",
-        start_body(QUERY_TYPE_VALUES[0], now),
+        "GET",
+        &format!("/v20210603/Monitors/no-member-monitor/Queries/{query_id}/Results"),
+        None,
     )
     .await;
     assert_eq!(
         status, 200,
-        "a monitor that now holds a resource: expected 200, got {status} with {started}"
+        "case {case:?}: GetQueryResults expected 200, got {status} with {results}"
     );
     assert!(
-        started["QueryId"].as_str().is_some_and(|id| !id.is_empty()),
-        "a served start must mint a QueryId, got {started}"
+        results["Fields"].as_array().is_some_and(|fields| !fields.is_empty()),
+        "case {case:?}: the repository's columns must be reported, got {results}"
+    );
+    assert!(
+        results
+            .get("Data")
+            .and_then(Value::as_array)
+            .is_none_or(|rows| rows.is_empty()),
+        "case {case:?}: a monitor that collected nothing reports no row, got {results}"
     );
 }
 

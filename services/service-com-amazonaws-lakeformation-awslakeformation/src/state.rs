@@ -182,23 +182,32 @@ pub struct PermissionGrant {
     /// `Condition$Expression`, when the grant carried one: part of the record's identity,
     /// since the same permissions under two conditions are two grants.
     pub condition_expression: Option<String>,
+    /// When the write that last set this record ran — `PrincipalResourcePermissions$LastUpdated`,
+    /// "the date and time when the resource was last updated".
+    ///
+    /// Written by the write itself, never by a read, so two reads of one unchanged grant
+    /// report one instant. For a grant a Data Catalog resource was CREATED carrying it is
+    /// the instant the catalog records for that resource, which is the write that
+    /// established the grant ([`created_table_grants`], [`default_database_grants`]).
+    pub last_updated: Option<SystemTime>,
+    /// Who that write was — `PrincipalResourcePermissions$LastUpdatedBy`, "the user who
+    /// updated the record" — or `None` where no principal is recorded for it.
+    pub last_updated_by: Option<String>,
 }
 
 impl PermissionGrant {
     /// This record as the wire shape `ListPermissions` projects it.
     ///
-    /// Three members of the wire shape are left ABSENT, because this service holds nothing
-    /// to put in them. `AdditionalDetails` carries the RAM resource-share ARNs of a
-    /// cross-account share, and this emulator models no cross-account sharing. The
-    /// record-keeping pair — `LastUpdated` ("The date and time when the resource was last
-    /// updated") and `LastUpdatedBy` ("The user who updated the record") — is the update
-    /// PROVENANCE of a record, and no operation of this API supplies it: neither
-    /// `GrantPermissions` nor `RevokePermissions` carries a member for either, and both are
-    /// optional with no default on `PrincipalResourcePermissions`
-    /// (`smithy_query(query="shape",shape="PrincipalResourcePermissions")`), so a listing
-    /// reports them only for a record that actually carries that provenance. Filling them
-    /// from the clock and from the caller instead would report provenance that was never
-    /// recorded, and would make two reads of one unchanged grant disagree.
+    /// One member of the wire shape is left ABSENT, because this service holds nothing to
+    /// put in it: `AdditionalDetails` carries the RAM resource-share ARNs of a cross-account
+    /// share, and this emulator models no cross-account sharing.
+    ///
+    /// The record-keeping pair — `LastUpdated` ("The date and time when the resource was
+    /// last updated") and `LastUpdatedBy` ("The user who updated the record") — is the
+    /// PROVENANCE of the write that set the record, which every reported entry carries: the
+    /// instant that write ran and the principal that made it, both recorded when the write
+    /// happened rather than read off the clock when a listing runs, so repeated reads of one
+    /// unchanged grant agree.
     pub fn to_wire(&self) -> PrincipalResourcePermissions {
         PrincipalResourcePermissions {
             principal: Some(DataLakePrincipal {
@@ -214,9 +223,88 @@ impl PermissionGrant {
             permissions: Some(self.permissions.clone()),
             permissions_with_grant_option: Some(self.permissions_with_grant_option.clone()),
             additional_details: None,
-            last_updated: None,
-            last_updated_by: None,
+            last_updated: self.last_updated.map(reported_instant),
+            last_updated_by: self.last_updated_by.clone(),
         }
+    }
+
+    /// Record that `provenance` wrote this grant: the write that last set it is the one a
+    /// read reports.
+    pub fn written_by(&mut self, provenance: &GrantProvenance) {
+        self.last_updated = Some(provenance.at);
+        self.last_updated_by = Some(provenance.by.clone());
+    }
+
+    /// Carry over the LATER of two provenances, for an entry a listing reports several
+    /// records under: what the entry reports is the most recent write any of them carries,
+    /// since that is when what the entry reports last changed.
+    pub fn absorb_provenance(&mut self, other: &Self) {
+        if other.last_updated > self.last_updated {
+            self.last_updated = other.last_updated;
+            self.last_updated_by = other.last_updated_by.clone();
+        }
+    }
+}
+
+/// An instant as this API REPORTS it: the epoch-seconds timestamp the protocol carries a
+/// `@timestamp` member in, at MILLISECOND resolution.
+///
+/// `LastModifiedTimestamp` declares no `@timestampFormat`
+/// (`smithy_query(query="shape",shape="LastModifiedTimestamp")`), so restJson1 carries it as
+/// an epoch-seconds number — and the resolution of a timestamp AWS's JSON APIs put on the
+/// wire is the millisecond, so the sub-millisecond part of the clock this emulator read is
+/// not part of the value a client gets back.
+fn reported_instant(at: SystemTime) -> ::aws_smithy_types::DateTime {
+    let since = at
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default();
+    ::aws_smithy_types::DateTime::from_millis(i64::try_from(since.as_millis()).unwrap_or(i64::MAX))
+}
+
+/// The PROVENANCE of a write of permissions: when it ran and which principal made it, which
+/// is what a read reports as a record's `LastUpdated` / `LastUpdatedBy`.
+///
+/// Built once per request from the request's own instant and the caller's identity
+/// ([`caller_provenance`]), so every record one call writes carries the same provenance.
+#[derive(Debug, Clone)]
+pub struct GrantProvenance {
+    /// The instant the write ran.
+    pub at: SystemTime,
+    /// The IAM principal the calling credential speaks for.
+    pub by: String,
+}
+
+/// What a listing reports for one grant: the record as the wire shape carries it
+/// ([`PermissionGrant::to_wire`]), with the record-keeping pair dropped where the listing
+/// answers EFFECTIVE permissions.
+///
+/// "If both Principal and Resource parameters are provided, the response returns effective
+/// permissions rather than the explicitly granted permissions" (`ListPermissions`). An
+/// effective answer is COMPUTED — what the principal holds in its own name together with
+/// what it holds through every group it belongs to — rather than a record read back, so
+/// there is no single write for it to report the provenance of: `LastUpdated` and
+/// `LastUpdatedBy` are the provenance of a RECORD, and the entry a listing of explicitly
+/// granted permissions reports IS that record, so only such an entry carries them.
+pub fn reported_grant_entry(
+    grant: &PermissionGrant,
+    effective: bool,
+) -> PrincipalResourcePermissions {
+    let mut entry = grant.to_wire();
+    if effective {
+        entry.last_updated = None;
+        entry.last_updated_by = None;
+    }
+    entry
+}
+
+/// The provenance a write of this request's own carries: the instant it runs and the IAM
+/// principal the calling credential speaks for
+/// ([`::service_common::caller_principal::ambient_user_arn`], the tree's ONE definition of
+/// that identity, which STS reports as the caller and IAM holds among the account's users).
+pub fn caller_provenance(at: SystemTime) -> GrantProvenance {
+    GrantProvenance {
+        at,
+        by: ::service_common::caller_principal::ambient_user_arn(),
     }
 }
 
@@ -1057,11 +1145,12 @@ pub fn default_database_grants<Eng: Send + Sync + 'static>(
     };
 
     // The databases the Data Catalog holds under the addressed catalog id: the one named,
-    // if it is there, else every one of them.
+    // if it is there, else every one of them, each with the instant it was created — the
+    // write that made the grant this renders.
     let Some(catalog) = glue_state::service_state(engine) else {
         return Vec::new();
     };
-    let names: Vec<String> = {
+    let names: Vec<(String, SystemTime)> = {
         let catalog = catalog.lock();
         let Some(held) = catalog.catalogs.get(&database_catalog) else {
             return Vec::new();
@@ -1070,14 +1159,14 @@ pub fn default_database_grants<Eng: Send + Sync + 'static>(
             Some(name) => {
                 let stored = glue_state::fold_name(&name);
                 match held.databases.get(&stored) {
-                    Some(_) => vec![stored],
+                    Some(database) => vec![(stored, database.create_time)],
                     None => return Vec::new(),
                 }
             }
             None => held
                 .databases
                 .values()
-                .map(|database| database.name.clone())
+                .map(|database| (database.name.clone(), database.create_time))
                 .collect(),
         }
     };
@@ -1095,7 +1184,7 @@ pub fn default_database_grants<Eng: Send + Sync + 'static>(
         .filter(|(_, permissions)| !permissions.is_empty())
         .collect();
     let mut grants: Vec<(String, PermissionGrant)> = Vec::new();
-    for name in names {
+    for (name, created_at) in names {
         for (principal, permissions) in &granted {
             let resource = Resource {
                 database: Some(DatabaseResource {
@@ -1112,6 +1201,14 @@ pub fn default_database_grants<Eng: Send + Sync + 'static>(
                 // The default carries no grant option and no condition.
                 permissions_with_grant_option: Vec::new(),
                 condition_expression: None,
+                // The write that made this grant is the CREATE of the database, so that is
+                // the instant a listing reports for it, and the principal that made it is
+                // the identity this emulator's credential speaks for — the one every call
+                // into it is made under ([`caller_provenance`]).
+                last_updated: Some(created_at),
+                last_updated_by: Some(
+                    ::service_common::caller_principal::ambient_user_arn(),
+                ),
             };
             let key = grant_key(catalog_id, &grant.principal, &grant.resource, None);
             grants.push((key, grant));

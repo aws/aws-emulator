@@ -381,10 +381,10 @@ async fn a_change_that_would_grow_the_item_past_it_is_the_update_sentence() {
         ),
         (
             // A VALUE an action CARRIES that no item could hold is a fact of the REQUEST,
-            // settled before any table is looked up, so it refuses the call — in the sentence
-            // the update path words that quota with, because the value is one this change
-            // would leave in the stored item. The cases where the item the change LEAVES is
-            // what crosses the quota are driven below.
+            // settled while the element's own expression is read and before any table is
+            // looked up, so it refuses the call — in the sentence the update path words that
+            // quota with, because the value is one this change would store. The cases where
+            // the item the change LEAVES is what crosses the quota are driven below.
             "one action of a transaction carrying a value no item could hold",
             "TransactWriteItems",
             json!({"TransactItems": [{"Update": {"TableName": TABLE, "Key": key(),

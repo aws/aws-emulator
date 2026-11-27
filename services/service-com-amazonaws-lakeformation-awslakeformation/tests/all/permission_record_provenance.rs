@@ -1,26 +1,25 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! End-to-end suite for the update PROVENANCE a `ListPermissions` entry reports: none.
+//! End-to-end suite for the update PROVENANCE a `ListPermissions` entry reports.
 //!
-//! RULE: `PrincipalResourcePermissions$LastUpdated` ("The date and time when the resource was
-//! last updated") and `$LastUpdatedBy` ("The user who updated the record") are optional
-//! members with no default
-//! (`smithy_query(query="shape",shape="PrincipalResourcePermissions")`), and no operation of
-//! this API carries a value for either — neither `GrantPermissions` and its batch form nor
-//! `RevokePermissions` and its batch form declare a member for them — so a listing reports a
-//! record WITHOUT that provenance, whichever write made the record and whatever else the
-//! entry carries.
+//! RULE: an entry that reports a permission RECORD carries the provenance of the write that
+//! last set that record — `PrincipalResourcePermissions$LastUpdated` ("The date and time when
+//! the resource was last updated") and `$LastUpdatedBy` ("The user who updated the record",
+//! `NameString`, length 1..255) — recorded when the write happened, so two reads of one
+//! unchanged record report one instant and a later write to it moves that instant forward.
+//! A listing that answers EFFECTIVE permissions instead — the one that names BOTH a
+//! `Principal` and a `Resource`, where "the response returns effective permissions rather
+//! than the explicitly granted permissions" (`ListPermissions`) — answers what the principal
+//! HOLDS rather than the records holding it, so its entries carry no record provenance.
 //!
-//! The rows span what the rule generalises over: the WRITE PATH that made the record
-//! (`GrantPermissions`, `BatchGrantPermissions`, a second grant that added to a record, the
-//! revoke paths that trim one, and the create of the resource for a grant it was created
-//! carrying), the resource FORM the record is held on (a database, a table, a table's
-//! columns), and the FILTER the listing narrows by (the principal, the resource, nothing at
-//! all) — because the projection is one for every entry of every page.
+//! The rows span what the rule generalises over: the WRITE PATH that set the record
+//! (`GrantPermissions`, `BatchGrantPermissions`, a second grant that added to a record, and
+//! the two revoke paths that trim one), the resource FORM the record is held on (a database,
+//! a table, a table's columns), and the FILTER the listing narrows by (the principal, the
+//! resource, nothing at all, and both together).
 //!
-//! The rule is about the ABSENCE of members, so each row also asserts the members a record
-//! does carry are reported, which is what tells "nothing to report provenance from" apart
-//! from "nothing reported at all".
+//! Every call goes over the wire the way an SDK client does, so a response can only be what
+//! the handler computed from stored state.
 
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
@@ -37,8 +36,9 @@ const DATABASE: &str = "ledger";
 /// Its table.
 const TABLE: &str = "entries";
 
-/// The two members a listed entry never carries.
-const PROVENANCE: [&str; 2] = ["LastUpdated", "LastUpdatedBy"];
+/// The two members that carry a record's provenance.
+const LAST_UPDATED: &str = "LastUpdated";
+const LAST_UPDATED_BY: &str = "LastUpdatedBy";
 
 /// An emulator whose catalog holds [`DATABASE`] and its [`TABLE`].
 async fn seeded() -> MultiServiceRouter {
@@ -67,21 +67,37 @@ fn on_columns() -> Value {
     })
 }
 
-/// Assert every entry of `listed` reports no provenance, and that each still reports the
-/// members its record holds.
-fn assert_entries_without_provenance(case: &str, listed: &[Value]) {
+/// The instant one entry reports, as the epoch-seconds number the wire carries.
+fn reported_instant(case: &str, entry: &Value) -> f64 {
+    entry
+        .get(LAST_UPDATED)
+        .and_then(Value::as_f64)
+        .unwrap_or_else(|| {
+            panic!("case {case:?}: expected {LAST_UPDATED} on the entry, got {entry:?}")
+        })
+}
+
+/// Assert every entry of `listed` reports the provenance of the write that set it, and the
+/// members its record holds beside it.
+fn assert_entries_with_provenance(case: &str, listed: &[Value]) {
     assert!(
         !listed.is_empty(),
         "case {case:?}: expected the listing to report the record, got no entry"
     );
     for entry in listed {
-        for member in PROVENANCE {
-            assert_eq!(
-                entry.get(member),
-                None,
-                "case {case:?}: expected no {member} on the entry, got {entry:?}"
-            );
-        }
+        let at = reported_instant(case, entry);
+        assert!(
+            at > 0.0,
+            "case {case:?}: expected an instant past the epoch, got {at} in {entry:?}"
+        );
+        let by = entry
+            .get(LAST_UPDATED_BY)
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(
+            (1..=255).contains(&by.chars().count()),
+            "case {case:?}: expected {LAST_UPDATED_BY} inside NameString's 1..255, got {entry:?}"
+        );
         assert!(
             entry.get("Principal").is_some()
                 && entry.get("Resource").is_some()
@@ -108,7 +124,7 @@ async fn accepted(router: &MultiServiceRouter, case: &str, operation: &str, body
 type Row = (&'static str, Value, Vec<(&'static str, Value)>);
 
 #[tokio::test]
-async fn no_write_path_leaves_a_record_reporting_provenance() {
+async fn every_write_path_leaves_a_record_reporting_its_provenance() {
     let catalog = account_catalog();
     let analyst = format!("arn:aws:iam::{catalog}:role/analyst");
 
@@ -227,41 +243,84 @@ async fn no_write_path_leaves_a_record_reporting_provenance() {
             accepted(&router, case, operation, body).await;
         }
 
-        // Read back under each filter a listing can be narrowed by, since the projection is
-        // one for every entry of every answer.
+        // Read back under each filter a listing of RECORDS can be narrowed by, since the
+        // projection is one for every entry of every answer.
         for (filter_case, filter) in [
             (
                 "by principal",
                 json!({ "Principal": { "DataLakePrincipalIdentifier": analyst } }),
             ),
-            ("by resource", json!({ "Resource": resource })),
+            ("by resource", json!({ "Resource": resource.clone() })),
             ("unfiltered", json!({})),
         ] {
             let case = format!("{case}, listed {filter_case}");
             let listed = list(&router, &case, &filter).await;
-            assert_entries_without_provenance(&case, &listed);
+            assert_entries_with_provenance(&case, &listed);
+        }
+
+        // The EFFECTIVE listing of the same records — both a Principal and a Resource —
+        // answers what the principal holds rather than the records, so it reports no record
+        // provenance.
+        let case = format!("{case}, listed effectively");
+        let listed = list(
+            &router,
+            &case,
+            &json!({
+                "Principal": { "DataLakePrincipalIdentifier": analyst },
+                "Resource": resource,
+            }),
+        )
+        .await;
+        assert!(
+            !listed.is_empty(),
+            "case {case:?}: expected the effective listing to report what the principal holds, \
+             got no entry"
+        );
+        for entry in &listed {
+            for member in [LAST_UPDATED, LAST_UPDATED_BY] {
+                assert_eq!(
+                    entry.get(member),
+                    None,
+                    "case {case:?}: an effective answer reports no {member}, got {entry:?}"
+                );
+            }
         }
     }
 }
 
 #[tokio::test]
-async fn a_record_a_resource_was_created_carrying_reports_no_provenance() {
-    // The records no call of this API wrote: creating the table grants its creator Super,
-    // and creating a database grants the IAM-access-control group. The create supplies no
-    // provenance for a permission record either, so these entries carry none.
-    let router = emulator();
-    create_database_with_input(&router, &json!({ "Name": DATABASE })).await;
-    create_table(&router, DATABASE, TABLE).await;
+async fn the_reported_instant_is_the_writes_own_and_moves_only_with_a_write() {
+    let catalog = account_catalog();
+    let analyst = format!("arn:aws:iam::{catalog}:role/analyst");
+    let router = seeded().await;
+    let filter = json!({ "Principal": { "DataLakePrincipalIdentifier": analyst } });
+    let grant = |permissions: Value| {
+        json!({
+            "Principal": { "DataLakePrincipalIdentifier": analyst },
+            "Resource": on_table(),
+            "Permissions": permissions,
+        })
+    };
 
-    for (case, filter) in [
-        ("the records a table's creation made", json!({ "Resource": on_table() })),
-        (
-            "the record a database's creation made",
-            json!({ "Resource": on_database() }),
-        ),
-        ("every creation-time record", json!({})),
-    ] {
-        let listed = list(&router, case, &filter).await;
-        assert_entries_without_provenance(case, &listed);
-    }
+    accepted(&router, "the first grant", "GrantPermissions", &grant(json!(["DESCRIBE"]))).await;
+    let first = list(&router, "the record as first written", &filter).await;
+    let written = reported_instant("the record as first written", &first[0]);
+
+    // Read AGAIN, without writing anything: a read reports the write's own instant, so the
+    // same record reports the same instant however often it is read.
+    let again = list(&router, "the record read again", &filter).await;
+    assert_eq!(
+        reported_instant("the record read again", &again[0]),
+        written,
+        "two reads of one unchanged record must report one instant, got {first:?} then {again:?}"
+    );
+
+    // A WRITE to the record moves it: the grant that adds a permission is the write a later
+    // read reports.
+    accepted(&router, "the second grant", "GrantPermissions", &grant(json!(["ALTER"]))).await;
+    let updated = list(&router, "the record after the second grant", &filter).await;
+    assert!(
+        reported_instant("the record after the second grant", &updated[0]) >= written,
+        "a write must not move the reported instant backwards, got {updated:?} after {first:?}"
+    );
 }

@@ -237,12 +237,13 @@ async fn a_created_job_definition_reads_back_with_what_it_was_given_and_the_docu
             );
         }
         // A command that named a Python version keeps it; one that named none is stored
-        // with the version the Glue version the request STATED calls for — 3 where that
-        // version runs no Python 2, else the historical default. A Ray job's versions are
-        // its `Runtime`'s to state, so none is filled in for it.
-        let stated_glue_version = row.request.get("GlueVersion").and_then(Value::as_str);
-        let runs_no_python_2 = stated_glue_version
-            .and_then(|version| version.split('.').next())
+        // with the version the Glue version the stored definition RUNS ON calls for — 3
+        // where that version runs no Python 2, else the historical default. A Ray job's
+        // versions are its `Runtime`'s to state, so none is filled in for it.
+        let runs_no_python_2 = row
+            .glue_version
+            .split('.')
+            .next()
             .and_then(|major| major.parse::<u32>().ok())
             .is_some_and(|major| major >= 2);
         let expected_python_version = match sent_command.get("PythonVersion") {

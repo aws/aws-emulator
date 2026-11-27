@@ -41,6 +41,7 @@ pub fn revoke_implicit_grants(
     store: &mut ComAmazonawsLakeformationAwslakeformationState,
     implicit: &[(String, PermissionGrant)],
     revoked: &[(String, Vec<String>, Vec<String>)],
+    provenance: &GrantProvenance,
 ) -> Result<bool, String> {
     // What this revoke takes away, per scope: the key to remember as revoked, and what the
     // grant still holds there (`None` when nothing is left of it).
@@ -117,8 +118,13 @@ pub fn revoke_implicit_grants(
                     &mut held.permissions_with_grant_option,
                     &remainder.permissions_with_grant_option,
                 );
+                held.written_by(provenance);
             }
             None => {
+                let mut remainder = remainder;
+                // The remainder is a record THIS revoke wrote, so it carries this call's
+                // provenance rather than the one the rendered grant was created with.
+                remainder.written_by(provenance);
                 store.permission_grants.insert(key.clone(), remainder);
             }
         }

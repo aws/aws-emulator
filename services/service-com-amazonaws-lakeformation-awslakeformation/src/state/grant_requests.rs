@@ -240,7 +240,8 @@ pub fn plan_grant<Eng: Send + Sync + 'static>(
 ///
 /// Granting again on the same resource to the same principal UNIONS the permissions into
 /// the record it already has, so a repeated grant is a no-op on state rather than a second
-/// entry.
+/// entry — and `provenance` is written onto every record this call touched, inserted or
+/// absorbed, because that write is the one a later read reports as the record's last.
 ///
 /// This is the single site that grows the grant store, so this is where
 /// [`MAX_PERMISSION_GRANTS`] is enforced. The whole grant is weighed BEFORE the first
@@ -250,6 +251,7 @@ pub fn record_grants(
     catalog_id: &str,
     request: &GrantRequest,
     records: &[GrantRecord],
+    provenance: &GrantProvenance,
 ) -> Result<(usize, usize), String> {
     let held = store.permission_grants.len();
     let inserts = records
@@ -275,22 +277,22 @@ pub fn record_grants(
                     &mut grant.permissions_with_grant_option,
                     &record.permissions_with_grant_option,
                 );
+                grant.written_by(provenance);
                 updated += 1;
             }
             None => {
-                store.permission_grants.insert(
-                    record.key.clone(),
-                    PermissionGrant {
-                        catalog_id: catalog_id.to_string(),
-                        principal: request.principal.clone(),
-                        resource: record.resource.clone(),
-                        permissions: record.permissions.clone(),
-                        permissions_with_grant_option: record
-                            .permissions_with_grant_option
-                            .clone(),
-                        condition_expression: request.condition.clone(),
-                    },
-                );
+                let mut grant = PermissionGrant {
+                    catalog_id: catalog_id.to_string(),
+                    principal: request.principal.clone(),
+                    resource: record.resource.clone(),
+                    permissions: record.permissions.clone(),
+                    permissions_with_grant_option: record.permissions_with_grant_option.clone(),
+                    condition_expression: request.condition.clone(),
+                    last_updated: None,
+                    last_updated_by: None,
+                };
+                grant.written_by(provenance);
+                store.permission_grants.insert(record.key.clone(), grant);
                 inserted += 1;
             }
         }

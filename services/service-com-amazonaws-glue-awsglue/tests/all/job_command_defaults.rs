@@ -11,10 +11,11 @@
 //! supplied included — while a member the request declared nothing for and the service
 //! documents no value for stays ABSENT. `JobCommand$PythonVersion` ("The Python version
 //! being used to run a Python shell job. Allowed values are 2 or 3") is such a nested
-//! member: a command that named no version is stored with the one the GLUE VERSION the write
-//! stated calls for — 3 where that version runs no Python 2, else the historical default of
-//! 2 — written inside the structure the caller sent, and a command that named a version
-//! keeps it.
+//! member: a command that named no version is stored with the one the GLUE VERSION the
+//! stored definition RUNS ON calls for — 3 where that version runs no Python 2, else the
+//! historical default of 2 — written inside the structure the caller sent, and a command
+//! that named a version keeps it. The version a definition runs on is the one its write
+//! stated, else the one the service filled in for it.
 //!
 //! Each suite is a TABLE whose rows differ along what the rule generalises over: the job
 //! command, the Python version the request named (each value the member's `@pattern`
@@ -24,7 +25,7 @@
 
 use serde_json::{json, Value};
 use service_com_amazonaws_glue_awsglue::state::{
-    DEFAULT_JOB_MODE, DEFAULT_MAX_CONCURRENT_RUNS, DEFAULT_PYTHON_VERSION,
+    DEFAULT_GLUE_VERSION, DEFAULT_JOB_MODE, DEFAULT_MAX_CONCURRENT_RUNS, DEFAULT_PYTHON_VERSION,
     DEFAULT_TIMEOUT_MINUTES_THROUGH_GLUE_4, PYTHON_VERSION_3,
 };
 use smithy_server_runtime::MultiServiceRouter;
@@ -64,8 +65,10 @@ async fn command_of(router: &MultiServiceRouter, name: &str) -> Value {
 /// The rows differ along the job command: the two Spark commands and the Python shell one
 /// (`JobCommand$Name`: "For an Apache Spark ETL job, this must be `glueetl` … for a Python
 /// shell job, it must be `pythonshell` … for an Apache Spark streaming ETL job, this must be
-/// `gluestreaming`"), and along the Glue version the create states beside the command, which
-/// is what decides WHICH version is filled in.
+/// `gluestreaming`"), and along the Glue version the stored definition runs on, which is
+/// what decides WHICH version is filled in: the one the create states, the one the service
+/// fills in for a create that states none, and the literal that leaves the choice to the
+/// service.
 #[tokio::test]
 async fn a_command_that_named_no_python_version_is_stored_with_the_services_own() {
     let router = emulator();
@@ -77,12 +80,16 @@ async fn a_command_that_named_no_python_version_is_stored_with_the_services_own(
         // (the Glue version the create states, the version that calls for). The published
         // versions either run Python 2 (0.9, 1.0) or run Python 3 alone (2.0 and later),
         // and a create that states none keeps the historical default.
-        let versions: [(Option<&str>, &str); 5] = [
-            (None, DEFAULT_PYTHON_VERSION),
+        let versions: [(Option<&str>, &str); 7] = [
+            // A create that states no version is stored on the service's own default, which
+            // runs no Python 2, so that is the runtime the job gets.
+            (None, PYTHON_VERSION_3),
+            (Some("auto"), PYTHON_VERSION_3),
             (Some("0.9"), DEFAULT_PYTHON_VERSION),
             (Some("1.0"), DEFAULT_PYTHON_VERSION),
             (Some("2.0"), PYTHON_VERSION_3),
             (Some("5.0"), PYTHON_VERSION_3),
+            (Some(DEFAULT_GLUE_VERSION), PYTHON_VERSION_3),
         ];
         for (index, (glue_version, expected)) in versions.into_iter().enumerate() {
             let job = format!("defaults-{command_name}-{index}");
@@ -195,8 +202,9 @@ async fn a_ray_command_is_stored_with_its_runtime_and_no_python_version() {
 
 /// The write that OVERWRITES a definition fills the Python version in exactly as the create
 /// does — "the previous job definition is completely overwritten by this information"
-/// (`UpdateJob`) — and WHICH version it fills in follows the Glue version THAT request
-/// states, not the one the definition already ran on.
+/// (`UpdateJob`) — and WHICH version it fills in follows the Glue version the overwritten
+/// definition is left ON: the one the update states, else the one it retains
+/// (`JobUpdate$GlueVersion`).
 ///
 /// The rows differ along the version the submitted command named (none, and each value the
 /// member admits) and along the Glue version the update states beside it.
@@ -223,10 +231,12 @@ async fn an_update_fills_the_version_the_glue_version_it_states_calls_for() {
     // states, the version the stored definition must then report).
     let rows: Vec<(&str, Option<&str>, Option<&str>, &str)> = vec![
         (
+            // The definition was created without a Glue version, so it runs on the one the
+            // service filled in and the update retains it.
             "an update naming neither version",
             None,
             None,
-            DEFAULT_PYTHON_VERSION,
+            PYTHON_VERSION_3,
         ),
         (
             "an update stating a Glue version that runs no Python 2",
@@ -288,12 +298,12 @@ async fn the_filled_version_is_part_of_the_definition_a_repeat_create_is_compare
         ("the repeat names no version either", None, None),
         (
             "the repeat states the version the service filled in",
-            Some(DEFAULT_PYTHON_VERSION),
+            Some(PYTHON_VERSION_3),
             None,
         ),
         (
             "the repeat names another version",
-            Some(PYTHON_VERSION_3),
+            Some(DEFAULT_PYTHON_VERSION),
             Some("IdempotentParameterMismatchException"),
         ),
     ];
@@ -346,11 +356,12 @@ async fn the_filled_version_is_part_of_the_definition_a_repeat_create_is_compare
         }
 
         // Whichever answer it earned, the stored definition is the one the first create
-        // stored.
+        // stored: that create named no Glue version, so it was stored on the service's own,
+        // which runs no Python 2.
         let stored = command_of(&router, &job).await;
         assert_eq!(
             stored.get("PythonVersion").and_then(Value::as_str),
-            Some(DEFAULT_PYTHON_VERSION),
+            Some(PYTHON_VERSION_3),
             "case {case:?}: the second create changes nothing, got {stored}"
         );
     }

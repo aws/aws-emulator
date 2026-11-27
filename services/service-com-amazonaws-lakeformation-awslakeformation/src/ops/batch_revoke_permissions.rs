@@ -242,9 +242,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut reduced = 0_usize;
         {
             let mut store = state.lock();
+            // One provenance for the whole batch: every record it trims was written by this
+            // one call.
+            let provenance = crate::state::caller_provenance(::std::time::SystemTime::now());
             for (entry, outcome) in input.entries.iter().zip(resolved) {
                 let applied = outcome.and_then(|(request, plan)| {
-                    crate::state::apply_revoke(&mut store, &catalog_id, &request, &plan)
+                    crate::state::apply_revoke(
+                        &mut store,
+                        &catalog_id,
+                        &request,
+                        &plan,
+                        &provenance,
+                    )
                 });
                 match applied {
                     Ok(outcome) => {

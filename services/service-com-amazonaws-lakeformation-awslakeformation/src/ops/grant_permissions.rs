@@ -269,12 +269,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         .map_err(invalid)?;
 
         // One grant can write a record at more than one scope, so the audit line counts
-        // what each scope did rather than collapsing a mixed grant into one word.
+        // what each scope did rather than collapsing a mixed grant into one word. Every
+        // record it writes carries THIS call's provenance, which is what a later read
+        // reports as the record's last update.
+        let provenance = crate::state::caller_provenance(::std::time::SystemTime::now());
         let (inserted, updated) = crate::state::record_grants(
             &mut state.lock(),
             &catalog_id,
             &request,
             &records,
+            &provenance,
         )
         .map_err(invalid)?;
 
