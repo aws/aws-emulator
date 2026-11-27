@@ -1008,6 +1008,41 @@ pub fn connected_sessions_of(
         .collect()
 }
 
+/// End every connection the stage `stage_arn` is holding for `participant_id` at `at`,
+/// and return the sessions it was taken out of.
+///
+/// The ONE way a control-plane call ends a participant's connection to a stage, so the two
+/// operations that do it — `DisconnectParticipant`, addressed to the participant, and
+/// `RevokeConnectionToken`, addressed to the token it connected with — leave the same
+/// store: every session of that stage the participant is still
+/// [`PARTICIPANT_STATE_CONNECTED`] in ([`connected_sessions_of`]) records the departure
+/// ([`leave_stage_session_at`]), so the record reports `DISCONNECTED` and a session the
+/// departure empties ends, and what the clock then owes the replications that departure put
+/// on their reconnect window is written down before the caller is answered
+/// ([`materialize_due_replications`]).
+///
+/// Empty — and nothing written — for a participant that stage is holding no connection
+/// for, which is what makes either call idempotent.
+pub fn end_participant_connections(
+    state: &mut ComAmazonawsIvsrealtimeAmazoninteractivevideoservicerealtimeState,
+    stage_arn: &str,
+    participant_id: &str,
+    at: SystemTime,
+) -> Vec<String> {
+    let connected = connected_sessions_of(state, stage_arn, participant_id);
+    for session_id in &connected {
+        leave_stage_session_at(state, stage_arn, session_id, participant_id, at);
+    }
+    // A replication replicates a PUBLISHING participant, so the departures above put every
+    // replication this participant sources on the reconnect deadline its own window earns
+    // it, and the end the clock already owes is written down here: with the window the model
+    // documents as the default that end is owed at the instant the publisher went, so the
+    // replication is reported stopped and its replica is out of the destination stage by the
+    // time the caller is answered.
+    materialize_due_replications(state, at);
+    connected
+}
+
 /// The record the session `session_id` of `stage_arn` holds for `participant_id`, if it
 /// holds one.
 ///

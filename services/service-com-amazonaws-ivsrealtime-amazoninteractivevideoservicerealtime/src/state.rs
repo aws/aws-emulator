@@ -1291,6 +1291,12 @@ pub struct ParticipantTokenRecord {
     /// the reported token keeps (see [`Self::to_participant_token`]).
     pub requested_capabilities: Option<Vec<String>>,
     pub expiration_time: SystemTime,
+    /// When the token was REVOKED, and `None` while it has not been: the instant
+    /// [`revoke_connection_token`] wrote down. A revoked token is no longer an identity
+    /// this service issued against the stage ([`stage_participant`]), so it admits its
+    /// holder to nothing, and the record stays — keeping the id it spent, so no later
+    /// issuance mints the same one.
+    pub revoked_at: Option<SystemTime>,
 }
 
 /// Which lifetime a reported `ParticipantToken` states, chosen by the operation doing the
@@ -1313,6 +1319,23 @@ pub enum ReportedTokenDuration {
 }
 
 impl ParticipantTokenRecord {
+    /// Whether this token has been revoked, which is what makes it admit nobody.
+    pub fn is_revoked(&self) -> bool {
+        self.revoked_at.is_some()
+    }
+
+    /// Revoke the token at `at`, answering whether THIS call is what revoked it.
+    ///
+    /// The one writer of [`Self::revoked_at`]: a token already revoked keeps the instant
+    /// it was revoked at, so revoking it again changes nothing.
+    pub fn revoke(&mut self, at: SystemTime) -> bool {
+        if self.is_revoked() {
+            return false;
+        }
+        self.revoked_at = Some(at);
+        true
+    }
+
     /// The modelled `ParticipantToken` this record reports, with `duration` stated as
     /// `reported` asks for.
     ///
@@ -3742,9 +3765,13 @@ pub fn stage_participant(
         .participant_tokens
         .get(stage_arn)
         .and_then(|records| {
-            records
-                .iter()
-                .find(|record| record.participant_id == participant_id)
+            records.iter().find(|record| {
+                record.participant_id == participant_id
+                    // A REVOKED token is no longer an identity this service issued: it
+                    // "can no longer connect to a stage", so it empowers and names
+                    // nobody there ([`revoke_connection_token`]).
+                    && !record.is_revoked()
+            })
         })
     {
         return Some(StageParticipant {
@@ -4091,6 +4118,8 @@ pub fn issue_token_record(
             .unwrap_or_else(default_token_capabilities),
         requested_capabilities: requested.capabilities,
         expiration_time,
+        // Issued, not revoked: a token is revoked only by the operation that revokes it.
+        revoked_at: None,
     })
 }
 
@@ -4424,12 +4453,14 @@ mod tests;
 
 // The parts this module is split into, each one concern of the store, re-exported so
 // every path a handler already uses (`crate::state::…`) keeps resolving.
+mod connection_tokens;
 mod ingest_plane;
 mod page_tokens;
 mod recording_bucket;
 mod refusals;
 mod sessions;
 mod stage_endpoints;
+pub use connection_tokens::*;
 pub use ingest_plane::*;
 pub use page_tokens::*;
 pub use recording_bucket::*;

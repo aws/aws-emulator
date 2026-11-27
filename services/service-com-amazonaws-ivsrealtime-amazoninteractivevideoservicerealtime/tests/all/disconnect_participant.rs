@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! `DisconnectParticipant` end to end: what the emulator does to the participant an id
-//! names in the stage an ARN names.
+//! The two calls that END a participant's connection to a stage, end to end:
+//! `DisconnectParticipant`, addressed to the participant an id names in the stage an ARN
+//! names, and `RevokeConnectionToken`, addressed to the token that connection was opened
+//! with.
 //!
 //! Every case goes through the router's own `dispatch` with a restJson1 request, exactly
 //! as a signed `aws ivs-realtime disconnect-participant` call arrives, so what is asserted
@@ -26,6 +28,15 @@
 //!    (HTTP 400). A well-formed `participantId` the resolved stage holds no connection for
 //!    is NOT a refusal: there is nothing to disconnect, so the call answers the modelled
 //!    200 carrying no member and writes nothing — the disconnect is idempotent.
+//! 4. Revoking a connection token "so that it can no longer connect to a stage"
+//!    disconnects "any participant currently connected with the revoked token": the
+//!    holder of the revoked token leaves the stage the token was issued against exactly as
+//!    a disconnect leaves it, every other participant and token of that stage is untouched,
+//!    and the revoked token is no longer an identity of the stage — so a call that acts on
+//!    the stage's publisher under that id no longer finds one. A `tokenId` this region's
+//!    view of the account holds no token for names nothing to revoke, so the call answers
+//!    the modelled 200 carrying no member and writes nothing, and revoking the same token
+//!    again answers the way the first call did.
 //!
 //! Nothing in the IVS RealTime control plane makes a participant JOIN a stage: a
 //! participant joins over the stage's data plane with the participant token or ingest key
@@ -43,6 +54,9 @@ use service_com_amazonaws_ivsrealtime_amazoninteractivevideoservicerealtime::{
     state, EmulatedService,
 };
 
+/// The region every call that does not vary it is signed for.
+const REGION: &str = "us-east-1";
+
 /// The two values the modelled `ParticipantState` carries, from
 /// `smithy_query(query="shape",shape="ParticipantState")`.
 const PARTICIPANT_CONNECTED: &str = "CONNECTED";
@@ -53,6 +67,13 @@ const PARTICIPANT_DISCONNECTED: &str = "DISCONNECTED";
 /// `ACTIVE` while a publisher is publishing to its stage, and `INACTIVE` otherwise.
 const PUBLISHING_STATE: &str = "ACTIVE";
 const NO_PUBLISHER_STATE: &str = "INACTIVE";
+
+/// The published `@length` bounds of `ConnectionTokenId` — the member
+/// `RevokeConnectionToken` names a token by — from
+/// `smithy_query(query="shape",shape="ConnectionTokenId")`: `@length(1..64)`, pattern
+/// `^[a-zA-Z0-9-_]+$`.
+const TOKEN_ID_MIN_LENGTH: usize = 1;
+const TOKEN_ID_MAX_LENGTH: usize = 64;
 
 /// The published `@length` bounds of `DisconnectParticipantReason`, from
 /// `smithy_query(query="shape",shape="DisconnectParticipantReason")`.
@@ -79,15 +100,23 @@ impl RealTime {
     }
 
     /// Call `operation` as an SDK would: `POST /<operation>` with a SigV4 credential
-    /// scope naming `ivs`.
+    /// scope naming `ivs`, signed for [`REGION`].
     async fn call(&self, operation: &str, body: &Value) -> (u16, Value) {
-        let authorization = "AWS4-HMAC-SHA256 \
-             Credential=AKIDTESTIVS/20260101/us-east-1/ivs/aws4_request, \
-             SignedHeaders=host;x-amz-date, Signature=00";
+        self.call_in(REGION, operation, body).await
+    }
+
+    /// [`Self::call`] signed for `region`, so a case can address another region's
+    /// endpoint: every resource of this service belongs to the region whose endpoint
+    /// created it.
+    async fn call_in(&self, region: &str, operation: &str, body: &Value) -> (u16, Value) {
+        let authorization = format!(
+            "AWS4-HMAC-SHA256 Credential=AKIDTESTIVS/20260101/{region}/ivs/aws4_request, \
+             SignedHeaders=host;x-amz-date, Signature=00"
+        );
         let request = http::Request::builder()
             .method("POST")
             .uri(format!(
-                "https://ivsrealtime.us-east-1.amazonaws.com/{operation}"
+                "https://ivsrealtime.{region}.amazonaws.com/{operation}"
             ))
             .header("content-type", "application/json")
             .header("authorization", authorization)
@@ -105,25 +134,47 @@ impl RealTime {
 
     /// Create a stage and return the ARN the service minted for it.
     async fn create_stage(&self, case: &str, name: &str) -> String {
-        let (status, response) = self.call("CreateStage", &json!({ "name": name })).await;
+        self.create_stage_in(case, REGION, name).await
+    }
+
+    /// [`Self::create_stage`] through `region`'s endpoint.
+    async fn create_stage_in(&self, case: &str, region: &str, name: &str) -> String {
+        let (status, response) = self
+            .call_in(region, "CreateStage", &json!({ "name": name }))
+            .await;
         assert_eq!(
             status, 200,
-            "case {case:?}: CreateStage {name:?} must answer HTTP 200, got {status} {response}"
+            "case {case:?}: CreateStage {name:?} in {region} must answer HTTP 200, \
+             got {status} {response}"
         );
         member(&response["stage"], "arn")
     }
 
     /// Issue a participant token for `stage_arn` and return the participant id it
-    /// carries — the id the holder of that token joins the stage under.
+    /// carries — the id the holder of that token joins the stage under, and the id of the
+    /// token itself.
     async fn create_token(&self, case: &str, stage_arn: &str, user_id: Option<&str>) -> String {
+        self.create_token_in(case, REGION, stage_arn, user_id).await
+    }
+
+    /// [`Self::create_token`] through `region`'s endpoint.
+    async fn create_token_in(
+        &self,
+        case: &str,
+        region: &str,
+        stage_arn: &str,
+        user_id: Option<&str>,
+    ) -> String {
         let mut request = json!({ "stageArn": stage_arn });
         if let Some(user_id) = user_id {
             request["userId"] = json!(user_id);
         }
-        let (status, response) = self.call("CreateParticipantToken", &request).await;
+        let (status, response) = self
+            .call_in(region, "CreateParticipantToken", &request)
+            .await;
         assert_eq!(
             status, 200,
-            "case {case:?}: CreateParticipantToken {request} must answer HTTP 200, \
+            "case {case:?}: CreateParticipantToken {request} in {region} must answer HTTP 200, \
              got {status} {response}"
         );
         member(&response["participantToken"], "participantId")
@@ -217,6 +268,50 @@ impl RealTime {
             request["reason"] = json!(reason);
         }
         self.call("DisconnectParticipant", &request).await
+    }
+
+    /// `RevokeConnectionToken` for the token `token_id` names, signed for [`REGION`].
+    async fn revoke(&self, token_id: &str) -> (u16, Value) {
+        self.revoke_in(REGION, token_id).await
+    }
+
+    /// [`Self::revoke`] through `region`'s endpoint.
+    async fn revoke_in(&self, region: &str, token_id: &str) -> (u16, Value) {
+        self.call_in(region, "RevokeConnectionToken", &json!({ "tokenId": token_id }))
+            .await
+    }
+
+    /// `StartParticipantReplication` of `participant_id` from one stage into another — the
+    /// call that acts on a stage's PUBLISHER under that id, so what it answers says whether
+    /// the stage still has a publishing participant under it.
+    async fn start_replication(
+        &self,
+        source_stage_arn: &str,
+        destination_stage_arn: &str,
+        participant_id: &str,
+    ) -> (u16, Value) {
+        self.start_replication_in(REGION, source_stage_arn, destination_stage_arn, participant_id)
+            .await
+    }
+
+    /// [`Self::start_replication`] through `region`'s endpoint.
+    async fn start_replication_in(
+        &self,
+        region: &str,
+        source_stage_arn: &str,
+        destination_stage_arn: &str,
+        participant_id: &str,
+    ) -> (u16, Value) {
+        self.call_in(
+            region,
+            "StartParticipantReplication",
+            &json!({
+                "sourceStageArn": source_stage_arn,
+                "destinationStageArn": destination_stage_arn,
+                "participantId": participant_id,
+            }),
+        )
+        .await
     }
 }
 
@@ -872,5 +967,446 @@ async fn a_request_naming_no_resource_of_this_account_is_refused() {
         active, session_id,
         "expected the stage to keep its session {session_id:?} across every refusal, \
          got {active:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Rule 4 — revoking a connection token ends the connection it opened, and the
+// token admits nobody afterwards
+// ---------------------------------------------------------------------------
+
+/// Revoking a token "disconnects any participant currently connected with the revoked
+/// token": that holder's record moves to `DISCONNECTED`, every other holder of the same
+/// session stays where it was, and a session the departure empties ends — over sessions of
+/// different sizes, with the revoked token at different positions in join order and with
+/// its holder publishing or only subscribing.
+#[tokio::test]
+async fn revoking_a_token_takes_only_its_holder_out_of_the_stage() {
+    // Rows differ in how many token holders are in the session, WHICH of their tokens is
+    // revoked (first, middle, last) and what that holder was doing in the stage.
+    let cases: Vec<(&str, Vec<Joining>, usize)> = vec![
+        (
+            "a lone subscriber",
+            vec![Joining {
+                user_id: "solo",
+                published: false,
+            }],
+            0,
+        ),
+        (
+            "a lone publisher",
+            vec![Joining {
+                user_id: "broadcaster",
+                published: true,
+            }],
+            0,
+        ),
+        (
+            "the publisher of a pair",
+            vec![
+                Joining {
+                    user_id: "publisher",
+                    published: true,
+                },
+                Joining {
+                    user_id: "subscriber",
+                    published: false,
+                },
+            ],
+            0,
+        ),
+        (
+            "the subscriber of a pair",
+            vec![
+                Joining {
+                    user_id: "publisher",
+                    published: true,
+                },
+                Joining {
+                    user_id: "subscriber",
+                    published: false,
+                },
+            ],
+            1,
+        ),
+        (
+            "the middle of three",
+            vec![
+                Joining {
+                    user_id: "one",
+                    published: true,
+                },
+                Joining {
+                    user_id: "two",
+                    published: false,
+                },
+                Joining {
+                    user_id: "three",
+                    published: false,
+                },
+            ],
+            1,
+        ),
+        (
+            "the last of three",
+            vec![
+                Joining {
+                    user_id: "one",
+                    published: true,
+                },
+                Joining {
+                    user_id: "two",
+                    published: false,
+                },
+                Joining {
+                    user_id: "three",
+                    published: true,
+                },
+            ],
+            2,
+        ),
+    ];
+
+    for (case, roster, revoked_index) in cases {
+        let emulator = RealTime::new();
+        let stage_arn = emulator.create_stage(case, "revoked").await;
+        let (ids, session_id) = populate(&emulator, case, &stage_arn, &roster).await;
+        let revoked = ids[revoked_index].clone();
+
+        let (status, response) = emulator.revoke(&revoked).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected HTTP 200 revoking {revoked:?}, got {status} {response}"
+        );
+        assert!(
+            carries_no_members(&response),
+            "case {case:?}: expected an answer carrying no member, got {response}"
+        );
+
+        for (index, participant_id) in ids.iter().enumerate() {
+            let expected = if index == revoked_index {
+                PARTICIPANT_DISCONNECTED
+            } else {
+                PARTICIPANT_CONNECTED
+            };
+            let actual = emulator
+                .participant_state(case, &stage_arn, &session_id, participant_id)
+                .await;
+            assert_eq!(
+                actual.as_deref(),
+                Some(expected),
+                "case {case:?}: expected {participant_id:?} {expected:?} after revoking \
+                 {revoked:?}, got {actual:?}"
+            );
+        }
+
+        // A session the departure emptied ends, so the stage reports no active session
+        // again; one that still holds somebody keeps the session it had.
+        let expected_active = if roster.len() == 1 {
+            String::new()
+        } else {
+            session_id.clone()
+        };
+        let active = emulator.active_session_id(case, &stage_arn).await;
+        assert_eq!(
+            active, expected_active,
+            "case {case:?}: expected activeSessionId {expected_active:?} after revoking \
+             {revoked:?}, got {active:?}"
+        );
+    }
+}
+
+/// A revoked token "can no longer connect to a stage": it is no longer one of the
+/// identities this service issued against that stage, so a call that acts on the stage's
+/// publisher under that id finds none — while a token of the same stage that nothing
+/// revoked still names one.
+///
+/// The rows differ in what the token's holder had done with it by the time it was revoked:
+/// nothing at all, joined to subscribe, or joined and published.
+#[tokio::test]
+async fn a_revoked_token_is_no_longer_an_identity_of_the_stage() {
+    for (case, joins, publishes) in [
+        ("a token nobody connected with", false, false),
+        ("a token whose holder subscribes", true, false),
+        ("a token whose holder publishes", true, true),
+    ] {
+        let emulator = RealTime::new();
+        let stage_arn = emulator.create_stage(case, "source").await;
+        let destination_stage_arn = emulator.create_stage(case, "destination").await;
+        // Two tokens of the same stage, issued alike and used alike: one is revoked and
+        // one is left alone, so the only difference between what the two answer is the
+        // revocation.
+        let revoked = emulator.create_token(case, &stage_arn, Some("revoked")).await;
+        let kept = emulator.create_token(case, &stage_arn, Some("kept")).await;
+        if joins {
+            for participant_id in [&revoked, &kept] {
+                emulator.join(
+                    case,
+                    &stage_arn,
+                    state::JoinedParticipant {
+                        participant_id: participant_id.clone(),
+                        published: publishes,
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+
+        let (status, response) = emulator.revoke(&revoked).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected HTTP 200 revoking {revoked:?}, got {status} {response}"
+        );
+
+        // The stage publishes nothing under the revoked id any more, which is the modelled
+        // `ConflictException` (409) a replication of a non-publishing participant answers.
+        let (status, response) = emulator
+            .start_replication(&stage_arn, &destination_stage_arn, &revoked)
+            .await;
+        assert_eq!(
+            status, 409,
+            "case {case:?}: expected HTTP 409 replicating the revoked {revoked:?}, \
+             got {status} {response}"
+        );
+        assert_eq!(
+            error_code(&response),
+            "ConflictException",
+            "case {case:?}: expected ConflictException for the revoked {revoked:?}, \
+             got {response}"
+        );
+
+        // The token nothing revoked still names a publishing participant of the stage.
+        let (status, response) = emulator
+            .start_replication(&stage_arn, &destination_stage_arn, &kept)
+            .await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected HTTP 200 replicating the un-revoked {kept:?}, \
+             got {status} {response}"
+        );
+    }
+}
+
+/// Revoking the same token again answers the way the first call did and writes nothing
+/// further, and no other token of the account is touched: the other holder of the same
+/// stage, and a holder of another stage entirely, stay connected.
+#[tokio::test]
+async fn revoking_the_same_token_again_changes_nothing() {
+    // Rows differ in how many times the one token is revoked.
+    for repeats in [1usize, 2, 3] {
+        let case = format!("revoked {repeats} time(s)");
+        let case = case.as_str();
+        let emulator = RealTime::new();
+        let stage_arn = emulator.create_stage(case, "revoked").await;
+        let other_stage_arn = emulator.create_stage(case, "elsewhere").await;
+        let (ids, session_id) = populate(
+            &emulator,
+            case,
+            &stage_arn,
+            &[
+                Joining {
+                    user_id: "revoked",
+                    published: true,
+                },
+                Joining {
+                    user_id: "kept",
+                    published: false,
+                },
+            ],
+        )
+        .await;
+        let revoked = ids[0].clone();
+        let kept = ids[1].clone();
+        let (other_ids, other_session_id) = populate(
+            &emulator,
+            case,
+            &other_stage_arn,
+            &[Joining {
+                user_id: "stranger",
+                published: true,
+            }],
+        )
+        .await;
+        let stranger = other_ids[0].clone();
+
+        for round in 1..=repeats {
+            let (status, response) = emulator.revoke(&revoked).await;
+            assert_eq!(
+                status, 200,
+                "case {case:?}: round {round} revoking {revoked:?} expected HTTP 200, \
+                 got {status} {response}"
+            );
+            assert!(
+                carries_no_members(&response),
+                "case {case:?}: round {round} expected an answer carrying no member, \
+                 got {response}"
+            );
+
+            // Each round leaves exactly what the first one left.
+            for (participant_id, stage, session, expected) in [
+                (&revoked, &stage_arn, &session_id, PARTICIPANT_DISCONNECTED),
+                (&kept, &stage_arn, &session_id, PARTICIPANT_CONNECTED),
+                (
+                    &stranger,
+                    &other_stage_arn,
+                    &other_session_id,
+                    PARTICIPANT_CONNECTED,
+                ),
+            ] {
+                let actual = emulator
+                    .participant_state(case, stage, session, participant_id)
+                    .await;
+                assert_eq!(
+                    actual.as_deref(),
+                    Some(expected),
+                    "case {case:?}: round {round} expected {participant_id:?} of {stage} \
+                     {expected:?}, got {actual:?}"
+                );
+            }
+        }
+
+        // The other token of the revoked token's own stage still names a publishing
+        // participant of it.
+        let (status, response) = emulator
+            .start_replication(&stage_arn, &other_stage_arn, &kept)
+            .await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected HTTP 200 replicating the untouched {kept:?}, \
+             got {status} {response}"
+        );
+    }
+}
+
+/// A `tokenId` outside the member's modelled `@length` / `@pattern` is the modelled
+/// `ValidationException` (400); a well-formed id this request's own region's view of the
+/// account holds no token for names nothing to revoke, so it answers the modelled 200
+/// carrying no member. Neither writes anything.
+#[tokio::test]
+async fn a_revoke_naming_no_token_of_this_region_is_refused_or_already_satisfied() {
+    /// A second region, so a case can name a token only another region's endpoint issued.
+    const OTHER_REGION: &str = "eu-west-1";
+
+    let emulator = RealTime::new();
+    let stage_arn = emulator.create_stage("revoke refusals", "held").await;
+    let (ids, session_id) = populate(
+        &emulator,
+        "revoke refusals",
+        &stage_arn,
+        &[Joining {
+            user_id: "resident",
+            published: true,
+        }],
+    )
+    .await;
+    let resident = ids[0].clone();
+    // A token of another region: issued against a stage that region's endpoint created, so
+    // this region's view of the account holds neither.
+    let other_region_stage = emulator
+        .create_stage_in("revoke refusals", OTHER_REGION, "elsewhere")
+        .await;
+    let other_region_destination = emulator
+        .create_stage_in("revoke refusals", OTHER_REGION, "destination")
+        .await;
+    let other_region_token = emulator
+        .create_token_in("revoke refusals", OTHER_REGION, &other_region_stage, None)
+        .await;
+
+    // Rows differ in HOW the id fails to name a token of this region: a well-formed id
+    // nothing was minted for (at each published `@length` bound), a token of another
+    // region, and a value outside the member's modelled constraints (one past the length
+    // maximum, one below the minimum, and outside the pattern).
+    //
+    // (case, tokenId, status, the error code — empty where the row is a success)
+    let cases: Vec<(&str, String, u16, &str)> = vec![
+        (
+            "an id nothing was minted for",
+            "no-such-token".to_string(),
+            200,
+            "",
+        ),
+        (
+            "an id at the length minimum",
+            "a".repeat(TOKEN_ID_MIN_LENGTH),
+            200,
+            "",
+        ),
+        (
+            "an id at the length maximum",
+            "t".repeat(TOKEN_ID_MAX_LENGTH),
+            200,
+            "",
+        ),
+        (
+            "a token of another region",
+            other_region_token.clone(),
+            200,
+            "",
+        ),
+        (
+            "an id one past the length maximum",
+            "t".repeat(TOKEN_ID_MAX_LENGTH + 1),
+            400,
+            "ValidationException",
+        ),
+        (
+            "the empty id, one below the length minimum",
+            String::new(),
+            400,
+            "ValidationException",
+        ),
+        (
+            "an id outside the modelled pattern",
+            "not a token!".to_string(),
+            400,
+            "ValidationException",
+        ),
+    ];
+
+    for (case, token_id, expected_status, expected_code) in cases {
+        let (status, response) = emulator.revoke(&token_id).await;
+        assert_eq!(
+            status, expected_status,
+            "case {case:?}: expected HTTP {expected_status} revoking {token_id:?}, \
+             got {status} {response}"
+        );
+        if expected_code.is_empty() {
+            assert!(
+                carries_no_members(&response),
+                "case {case:?}: expected an answer carrying no member, got {response}"
+            );
+        } else {
+            assert_eq!(
+                error_code(&response),
+                expected_code,
+                "case {case:?}: expected {expected_code}, got {response}"
+            );
+        }
+        // Nothing was written: this region's own participant is still connected.
+        let actual = emulator
+            .participant_state(case, &stage_arn, &session_id, &resident)
+            .await;
+        assert_eq!(
+            actual.as_deref(),
+            Some(PARTICIPANT_CONNECTED),
+            "case {case:?}: expected the call to leave {resident:?} {PARTICIPANT_CONNECTED:?}, \
+             got {actual:?}"
+        );
+    }
+
+    // And the other region's token still names a publishing participant of its own stage:
+    // the call addressed to this region revoked nothing of that one.
+    let (status, response) = emulator
+        .start_replication_in(
+            OTHER_REGION,
+            &other_region_stage,
+            &other_region_destination,
+            &other_region_token,
+        )
+        .await;
+    assert_eq!(
+        status, 200,
+        "expected HTTP 200 replicating {other_region_token:?} in {OTHER_REGION}, \
+         got {status} {response}"
     );
 }

@@ -21,9 +21,9 @@
 #[macro_use]
 pub mod date_time_wire;
 
-// The output-side rendering of a `float` member, because the vendored JSON writer
-// renders one from a widened double. Hand-added, not generated; see the module's own
-// note.
+// The output wrapper every operation that reports a `float` member names as its
+// `Operation::Output`, because the vendored JSON writer widens a binary32 to a binary64
+// before rendering it. Hand-added, not generated; see the module's own note.
 pub mod float_wire;
 
 pub mod create_encoder_configuration_types;
@@ -57,6 +57,7 @@ pub mod list_stage_sessions_types;
 pub mod list_stages_types;
 pub mod list_storage_configurations_types;
 pub mod list_tags_for_resource_types;
+pub mod revoke_connection_token_types;
 pub mod shared_types;
 pub mod start_composition_types;
 pub mod start_participant_replication_types;
@@ -69,6 +70,7 @@ pub mod update_stage_types;
 
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use float_wire::*;
+
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_encoder_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -131,6 +133,8 @@ pub use list_stages_types::*;
 pub use list_storage_configurations_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_tags_for_resource_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use revoke_connection_token_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

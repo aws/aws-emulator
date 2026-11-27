@@ -4,8 +4,10 @@
 //!
 //! Disconnects one participant from one stage: the participant record the stage's
 //! session holds for it moves to `DISCONNECTED` — through
-//! `crate::state::leave_stage_session`, the one place a participant leaves, so a session
-//! the departure empties ends exactly as a data-plane departure would end it — and any
+//! `crate::state::end_participant_connections`, the one way a control-plane call ends a
+//! participant's connection to a stage (shared with `RevokeConnectionToken`, which ends
+//! the connection the token it revokes opened), so a session the departure empties ends
+//! exactly as a data-plane departure would end it — and any
 //! ingest configuration that participant was publishing to the stage with is left
 //! associated with no stage (`crate::state::NO_ASSOCIATED_STAGE_ARN`), which is what the
 //! operation's own doc states it does.
@@ -221,18 +223,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Ok(DisconnectParticipantOutput {});
         }
 
-        // The sessions of this stage the participant is still CONNECTED in — the ONE
-        // lookup for that (`crate::state::connected_sessions_of`, beside the departure it
-        // feeds) — and the configurations it is publishing to the stage with. Both are
-        // read BEFORE anything is written, because the second is a fact about a
-        // participant that is publishing right now
-        // (`crate::state::ingest_configuration_publishers`, the same lookup a
+        // The configurations the participant is publishing to the stage with, read BEFORE
+        // anything is written: it is a fact about a participant that is publishing right
+        // now (`crate::state::ingest_configuration_publishers`, the same lookup a
         // configuration's reported `state` and a forced delete follow) and the disconnect
         // below is exactly what ends that. A participant that is attached but already
-        // disconnected is in no session and publishes with nothing, so both are empty and
-        // the call leaves it exactly as it was.
-        let connected_sessions =
-            crate::state::connected_sessions_of(&store, &input.stage_arn, &input.participant_id);
+        // disconnected publishes with nothing, so this is empty and the call leaves it
+        // exactly as it was.
         let publishing_with: Vec<String> = store
             .ingest_configurations
             .values()
@@ -246,29 +243,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .collect();
 
         // "Disconnects a specified participant from a specified stage": the participant
-        // leaves the stage through the one place a participant leaves, so it is reported
-        // `DISCONNECTED` and a session it emptied ends — the same departure a client
-        // dropping off the data plane records. A participant that is already disconnected
-        // has nothing to leave, so this writes nothing for it.
-        for session_id in &connected_sessions {
-            crate::state::leave_stage_session(
-                &mut store,
-                &input.stage_arn,
-                session_id,
-                &input.participant_id,
-            );
-        }
-
-        // A replication replicates a PUBLISHING participant, so the departure above put
-        // every replication this participant sources on the reconnect deadline its own
-        // window earns it (`crate::state::leave_stage_session`), and what the clock already
-        // owes those replications is written down here
-        // (`crate::state::materialize_due_replications`): with the window the model
-        // documents as the default, the end is owed at the instant the publisher went —
-        // which is this call — so the replication is reported stopped and its replica is
-        // out of the destination stage's session by the time this answers, while a window
-        // the caller asked for leaves the end owed until it runs out.
-        crate::state::materialize_due_replications(&mut store, ::std::time::SystemTime::now());
+        // leaves the stage through the one way a control-plane call ends a participant's
+        // connection to it (`crate::state::end_participant_connections`, shared with
+        // `RevokeConnectionToken`), so it is reported `DISCONNECTED`, a session it emptied
+        // ends — the same departure a client dropping off the data plane records — and the
+        // end the clock then owes every replication that publisher sourced is written down
+        // before this answers. A participant that is already disconnected has nothing to
+        // leave, so this writes nothing for it.
+        crate::state::end_participant_connections(
+            &mut store,
+            &input.stage_arn,
+            &input.participant_id,
+            ::std::time::SystemTime::now(),
+        );
 
         // "If the participant is publishing using an IngestConfiguration,
         // DisconnectParticipant also updates the stageArn in the IngestConfiguration to be
