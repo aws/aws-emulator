@@ -1195,6 +1195,15 @@ pub struct StoredGroup {
     pub instances: Vec<StoredInstance>,
     /// End of the group's cooldown after its last applied capacity change.
     pub cooldown_until: Option<SystemTime>,
+    /// When that cooldown BEGAN: the instant the capacity change it follows was applied.
+    ///
+    /// Kept beside the end instant because the SPAN in force is not the same for every caller:
+    /// a specific simple scaling policy may carry a cooldown period of its own, which
+    /// "overrides the default cooldown" (`PutScalingPolicyType$Cooldown`), so what such a
+    /// policy's execution waits out is that span measured from here rather than the one the
+    /// change left behind ([`Self::in_cooldown_of_span`]). Set and cleared together with
+    /// [`Self::cooldown_until`], so a group inside a cooldown always knows both ends of it.
+    pub cooldown_started: Option<SystemTime>,
     /// A capacity change waiting for [`Self::cooldown_until`].
     pub pending_capacity: Option<PendingCapacity>,
     /// Whether a launch into this group could NOT place what it was asked for, so the
@@ -1453,6 +1462,30 @@ impl StoredGroup {
     /// change.
     pub fn in_cooldown(&self, now: SystemTime) -> bool {
         self.cooldown_until.is_some_and(|until| now < until)
+    }
+
+    /// The same question for a caller whose own cooldown period stands in for the group's:
+    /// whether `span_secs` has elapsed since the capacity change the group's cooldown follows.
+    ///
+    /// "A cooldown period, in seconds, that applies to a specific simple scaling policy. When a
+    /// cooldown period is specified here, it overrides the default cooldown."
+    /// (`PutScalingPolicyType$Cooldown`) — so an execution of a policy that states one waits for
+    /// THAT period to complete (`ExecutePolicyType$HonorCooldown`, "waits for the cooldown
+    /// period to complete before executing the policy"), counted from the same activity, and the
+    /// group's `DefaultCooldown` decides nothing for it. A caller with no period of its own — a
+    /// manual capacity change, a policy that states none — is answered by [`Self::in_cooldown`],
+    /// the group's own.
+    ///
+    /// A group no capacity change has moved is inside no cooldown whatever span is asked about:
+    /// there is no activity for one to follow.
+    pub fn in_cooldown_of_span(&self, span_secs: Option<i32>, now: SystemTime) -> bool {
+        let Some(span_secs) = span_secs else {
+            return self.in_cooldown(now);
+        };
+        let Some(started) = self.cooldown_started else {
+            return false;
+        };
+        now < started + Duration::from_secs(u64::from(span_secs.max(0).unsigned_abs()))
     }
 
     /// How many more instances this group can be given before it reaches
@@ -2567,6 +2600,7 @@ impl AutoScalingState {
         // from the moment it was created, and the first policy performed on it would be
         // blocked by an activity nothing made.
         if held_capacity != desired_capacity {
+            group.cooldown_started = Some(now);
             group.cooldown_until =
                 Some(now + Duration::from_secs(u64::from(cooldown.unsigned_abs())));
         }
@@ -2807,6 +2841,7 @@ impl AutoScalingState {
         let Some((seconds, group)) = seconds.zip(self.groups.get_mut(group_name)) else {
             return;
         };
+        group.cooldown_started = Some(applied_at);
         group.cooldown_until =
             Some(applied_at + Duration::from_secs(u64::from(seconds.max(0).unsigned_abs())));
     }

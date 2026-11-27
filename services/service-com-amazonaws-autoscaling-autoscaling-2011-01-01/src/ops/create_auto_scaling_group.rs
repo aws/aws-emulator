@@ -966,6 +966,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             created_time: now,
             instances: Vec::new(),
             cooldown_until: None,
+            cooldown_started: None,
             pending_capacity: None,
             // A group is created owing no launch: the capacity its own create launches is
             // launched below, and a launch that could not place it is what leaves it owing.

@@ -46,14 +46,14 @@
 //! policy doesn't remove instances from the Auto Scaling group"
 //! (`TargetTrackingConfiguration$DisableScaleIn`).
 //!
-//! # The cooldowns
+//! # The cooldown
 //!
-//! Two different ones, both the model's own sentences:
+//! ONE period, decided by the two members below, both the model's own sentences:
 //!
 //! * `HonorCooldown` — "Indicates whether Amazon EC2 Auto Scaling waits for the cooldown
 //!   period to complete before executing the policy. Valid only if the policy type is
-//!   SimpleScaling" — so a simple policy performed with it while the group is still in the
-//!   cooldown of its last change is NOT performed: the request is REFUSED with the
+//!   SimpleScaling" — so a simple policy performed with it while that period is still
+//!   running after the group's last capacity change is NOT performed: the request is REFUSED with the
 //!   modelled `ScalingActivityInProgressFault`
 //!   ([`PolicyExecutionRefusal::CooldownInProgress`]) and nothing of the group is touched,
 //!   so a policy asked for N times inside one cooldown window moves the capacity once and
@@ -64,11 +64,17 @@
 //!   ([`super::scaling_policies::policy_members_of_type`]) rather than refusing the
 //!   request. The members this operation documents as "not supported otherwise" ARE
 //!   refused — that is a different sentence.
-//! * `Cooldown` — "The duration of the policy's cooldown period, in seconds. When a
-//!   cooldown period is specified here, it overrides the default cooldown period defined
-//!   for the Auto Scaling group" (`PutScalingPolicyType$Cooldown`) — so the cooldown the
-//!   performed policy LEAVES BEHIND is the policy's own when it carries one, and the
-//!   group's `DefaultCooldown` otherwise.
+//! * `Cooldown` — "A cooldown period, in seconds, that applies to a specific simple scaling
+//!   policy. When a cooldown period is specified here, it overrides the default cooldown"
+//!   (`PutScalingPolicyType$Cooldown`) — so the period in force for an execution of THAT
+//!   policy is the policy's own whenever it carries one, and the group's `DefaultCooldown`
+//!   otherwise. It is the same period on both sides of the execution: the one the execution
+//!   WAITS OUT above ([`super::StoredGroup::in_cooldown_of_span`], measured from the activity
+//!   the group's cooldown follows) and the one the performed policy LEAVES BEHIND
+//!   ([`AutoScalingState::override_cooldown`]). A policy whose own period has elapsed since
+//!   that activity — a policy stating a period of zero, which waits for nothing — is
+//!   therefore performed while the group's longer default would still be running, because
+//!   that default decides nothing for a policy that overrode it.
 
 use std::time::SystemTime;
 
@@ -534,10 +540,15 @@ impl AutoScalingState {
         if group.launches_needed(to) > group.launch_headroom() {
             return Err(PolicyExecutionRefusal::InstancesStillTerminating);
         }
-        let in_cooldown = group.in_cooldown(now);
+        // The cooldown period in force for THIS execution: the policy's own when it states one,
+        // which "overrides the default cooldown" (`PutScalingPolicyType$Cooldown`), and the
+        // group's `DefaultCooldown` otherwise — one span, measured from the activity the group's
+        // cooldown follows, for what the execution waits out as well as for what it leaves
+        // behind ([`AutoScalingState::override_cooldown`] below).
+        let in_cooldown = group.in_cooldown_of_span(policy.cooldown, now);
 
         // "Valid only if the policy type is SimpleScaling": only a simple policy honours the
-        // group's cooldown, and a request that asks for it while one is still running is
+        // cooldown, and a request that asks for it while one is still running is
         // BLOCKED by the scaling activity that started that cooldown — the change is not
         // applied now and not kept for later, so nothing of the group is touched.
         if request.honor_cooldown && policy_type == POLICY_TYPE_SIMPLE_SCALING && in_cooldown {

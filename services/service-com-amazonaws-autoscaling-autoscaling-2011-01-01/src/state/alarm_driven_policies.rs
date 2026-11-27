@@ -26,11 +26,14 @@
 //! * `Enabled` — "Indicates whether the scaling policy is enabled or disabled"
 //!   (`PutScalingPolicyType$Enabled`): a disabled policy is not performed by the alarm that
 //!   names it.
-//! * the COOLDOWN — "the cooldown period" a simple policy's last change left behind. An
+//! * the COOLDOWN — the period that follows the group's last capacity change. An
 //!   alarm-driven execution waits for it ("Amazon EC2 Auto Scaling waits for the cooldown
 //!   period to complete before executing the policy", `ExecutePolicyType$HonorCooldown`,
 //!   which is the behaviour of a scaling policy driven by an alarm rather than by a manual
-//!   request), so an alarm that keeps firing inside one window moves the capacity once.
+//!   request), so an alarm that keeps firing inside one window moves the capacity once. WHICH
+//!   period that is belongs to the policy being performed: its own `Cooldown` overrides the
+//!   group's default ([`super::policy_execution`]), so a policy that states a cooldown of zero
+//!   is performed as soon as the alarm hands it over.
 //!
 //! # Where the notification comes from
 //!
