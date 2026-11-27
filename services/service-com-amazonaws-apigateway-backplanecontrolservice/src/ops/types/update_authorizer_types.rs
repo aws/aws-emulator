@@ -32,5 +32,6 @@ pub struct UpdateAuthorizerOutput {
     pub identity_source: Option<String>,
     pub identity_validation_expression: Option<String>,
     pub authorizer_result_ttl_in_seconds: Option<i32>,
+    pub jwt_configuration: Option<JwtConfiguration>,
 }
 

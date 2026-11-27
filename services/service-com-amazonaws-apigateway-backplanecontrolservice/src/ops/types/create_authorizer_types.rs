@@ -24,5 +24,21 @@ pub struct CreateAuthorizerInput {
     pub identity_source: Option<String>,
     pub identity_validation_expression: Option<String>,
     pub authorizer_result_ttl_in_seconds: Option<i32>,
+    pub jwt_configuration: Option<JwtConfigurationInput>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.apigateway#JwtConfigurationInput")]
+#[derive(Debug, Clone, Default)]
+pub struct JwtConfigurationInput {
+    pub issuers: Vec<JwtIssuerInput>,
+    pub default_algorithms: Vec<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.apigateway#JwtIssuerInput")]
+#[derive(Debug, Clone, Default)]
+pub struct JwtIssuerInput {
+    pub issuer: String,
+    pub audiences: Vec<String>,
+    pub additional_claims: Option<Vec<JwtAdditionalClaim>>,
 }
 

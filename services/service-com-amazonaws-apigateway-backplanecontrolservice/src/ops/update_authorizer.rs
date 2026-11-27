@@ -218,12 +218,21 @@ fn apply_patch(entry: &mut AuthorizerEntry, patch: &Patch) -> Result<(), PatchFa
         ),
         // A stored authorizer always carries a TTL — the member documents the value the
         // service picks for a request that sets none — so it is replaced inside its
-        // published window and never cleared.
-        "authorizerResultTtlInSeconds" => patch_i32_checked(
-            &mut entry.authorizer_result_ttl_in_seconds,
-            patch,
-            |requested| authorizer_result_ttl(Some(requested)),
-        ),
+        // published window and never cleared. A `JWT` authorizer's type does not support
+        // the member at all, so a patch of it on such a record is refused rather than
+        // storing a window nothing would cache for.
+        "authorizerResultTtlInSeconds" => {
+            if !crate::ops::create_authorizer::caches_results(&entry.r#type) {
+                return Err(PatchFailure::BadRequest(
+                    crate::ops::create_authorizer::INVALID_REQUEST_INPUT.to_string(),
+                ));
+            }
+            patch_i32_checked(
+                &mut entry.authorizer_result_ttl_in_seconds,
+                patch,
+                |requested| authorizer_result_ttl(Some(requested)),
+            )
+        }
         // The path names ONE pool ARN of the list, or the op's own `value` does: a
         // collection member has elements added and removed rather than being replaced
         // whole.
@@ -371,6 +380,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         require_members_of_type(&updated)
             .map_err(PatchFailure::BadRequest)
             .map_err(patch_failure)?;
+        // Including its `jwtConfiguration`, which belongs to a `JWT` authorizer and to no
+        // other ([`crate::state::jwt_authorizer`]): a patch that moves `/type` away from
+        // `JWT`, or onto it, is refused rather than leaving a record carrying a declaration
+        // its type does not admit or none its type needs.
+        crate::state::jwt_authorizer::require_configuration_of_type(&updated)
+            .map_err(PatchFailure::BadRequest)
+            .map_err(patch_failure)?;
         // And every `providerARNs` entry of it has to NAME a user pool, the same precondition
         // the create turns on the record it would store
         // ([`crate::state::user_pool_state`]): a patch that adds an entry naming no pool is
@@ -395,6 +411,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             identity_source: body.identity_source,
             identity_validation_expression: body.identity_validation_expression,
             authorizer_result_ttl_in_seconds: body.authorizer_result_ttl_in_seconds,
+            jwt_configuration: body.jwt_configuration,
         };
         // Everything below is owned, so the lock is released before the audit record is
         // emitted: the critical section covers the state change only.

@@ -97,7 +97,7 @@ const GATEWAY_RESPONSE_TYPE_VALUES: [&str; 21] = [
 
 /// The `AuthorizerType` value set, in the order the model declares it. Source:
 /// `smithy_query(query="shape", shape="com.amazonaws.apigateway#AuthorizerType")`.
-const AUTHORIZER_TYPE_VALUES: [&str; 3] = ["TOKEN", "REQUEST", "COGNITO_USER_POOLS"];
+const AUTHORIZER_TYPE_VALUES: [&str; 4] = ["TOKEN", "REQUEST", "COGNITO_USER_POOLS", "JWT"];
 
 /// The `IntegrationType` value set as API Gateway lists it. Source: the recorded refusal
 /// of an out-of-enum `type` on `PutIntegration`. (The public model declares the same five

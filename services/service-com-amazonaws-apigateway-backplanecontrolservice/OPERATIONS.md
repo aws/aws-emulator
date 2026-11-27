@@ -33,8 +33,8 @@ contents — read that shape in the model above when you need its own members.
 ## CreateAuthorizer
 
 - **Route:** `POST /restapis/{restApiId}/authorizers -> 201`
-- **Input:** `restApiId` (string, @httpLabel, required), `name` (string, required), `type` (AuthorizerType, one of: COGNITO_USER_POOLS | REQUEST | TOKEN, required), `providerARNs` (list<string>), `authType` (string), `authorizerUri` (string), `authorizerCredentials` (string), `identitySource` (string), `identityValidationExpression` (string), `authorizerResultTtlInSeconds` (integer)
-- **Output:** `id` (string), `name` (string), `type` (AuthorizerType, one of: COGNITO_USER_POOLS | REQUEST | TOKEN), `providerARNs` (list<string>), `authType` (string), `authorizerUri` (string), `authorizerCredentials` (string), `identitySource` (string), `identityValidationExpression` (string), `authorizerResultTtlInSeconds` (integer)
+- **Input:** `restApiId` (string, @httpLabel, required), `name` (string, required), `type` (AuthorizerType, one of: COGNITO_USER_POOLS | JWT | REQUEST | TOKEN, required), `providerARNs` (list<string>), `authType` (string), `authorizerUri` (string), `authorizerCredentials` (string), `identitySource` (string), `identityValidationExpression` (string), `authorizerResultTtlInSeconds` (integer), `jwtConfiguration` (JwtConfigurationInput)
+- **Output:** `id` (string), `name` (string), `type` (AuthorizerType, one of: COGNITO_USER_POOLS | JWT | REQUEST | TOKEN), `providerARNs` (list<string>), `authType` (string), `authorizerUri` (string), `authorizerCredentials` (string), `identitySource` (string), `identityValidationExpression` (string), `authorizerResultTtlInSeconds` (integer), `jwtConfiguration` (JwtConfiguration)
 - **Errors:** `BadRequestException (HTTP 400)`, `ConflictException (HTTP 409)`, `LimitExceededException (HTTP 429)`, `NotFoundException (HTTP 404)`, `TooManyRequestsException (HTTP 429)`, `UnauthorizedException (HTTP 401)`
 
 ## CreateBasePathMapping
@@ -336,7 +336,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `GET /restapis/{restApiId}/authorizers/{authorizerId} -> 200`
 - **Input:** `restApiId` (string, @httpLabel, required), `authorizerId` (string, @httpLabel, required)
-- **Output:** `id` (string), `name` (string), `type` (AuthorizerType, one of: COGNITO_USER_POOLS | REQUEST | TOKEN), `providerARNs` (list<string>), `authType` (string), `authorizerUri` (string), `authorizerCredentials` (string), `identitySource` (string), `identityValidationExpression` (string), `authorizerResultTtlInSeconds` (integer)
+- **Output:** `id` (string), `name` (string), `type` (AuthorizerType, one of: COGNITO_USER_POOLS | JWT | REQUEST | TOKEN), `providerARNs` (list<string>), `authType` (string), `authorizerUri` (string), `authorizerCredentials` (string), `identitySource` (string), `identityValidationExpression` (string), `authorizerResultTtlInSeconds` (integer), `jwtConfiguration` (JwtConfiguration)
 - **Errors:** `BadRequestException (HTTP 400)`, `NotFoundException (HTTP 404)`, `TooManyRequestsException (HTTP 429)`, `UnauthorizedException (HTTP 401)`
 
 ## GetAuthorizers
@@ -767,7 +767,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `PATCH /restapis/{restApiId}/authorizers/{authorizerId} -> 200`
 - **Input:** `restApiId` (string, @httpLabel, required), `authorizerId` (string, @httpLabel, required), `patchOperations` (list<PatchOperation>)
-- **Output:** `id` (string), `name` (string), `type` (AuthorizerType, one of: COGNITO_USER_POOLS | REQUEST | TOKEN), `providerARNs` (list<string>), `authType` (string), `authorizerUri` (string), `authorizerCredentials` (string), `identitySource` (string), `identityValidationExpression` (string), `authorizerResultTtlInSeconds` (integer)
+- **Output:** `id` (string), `name` (string), `type` (AuthorizerType, one of: COGNITO_USER_POOLS | JWT | REQUEST | TOKEN), `providerARNs` (list<string>), `authType` (string), `authorizerUri` (string), `authorizerCredentials` (string), `identitySource` (string), `identityValidationExpression` (string), `authorizerResultTtlInSeconds` (integer), `jwtConfiguration` (JwtConfiguration)
 - **Errors:** `BadRequestException (HTTP 400)`, `ConflictException (HTTP 409)`, `LimitExceededException (HTTP 429)`, `NotFoundException (HTTP 404)`, `TooManyRequestsException (HTTP 429)`, `UnauthorizedException (HTTP 401)`
 
 ## UpdateBasePathMapping

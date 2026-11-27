@@ -1272,8 +1272,15 @@ pub struct AuthorizerEntry {
     pub authorizer_credentials: Option<String>,
     pub identity_source: Option<String>,
     pub identity_validation_expression: Option<String>,
-    /// The TTL in seconds of cached authorizer results; `0` disables caching.
+    /// The TTL in seconds of cached authorizer results; `0` disables caching. A `JWT`
+    /// authorizer, whose type the member "is not supported for", carries `0`: it caches
+    /// nothing, and a read of it reports no such member at all.
     pub authorizer_result_ttl_in_seconds: i32,
+    /// The trusted issuers, audiences and signing algorithms a `JWT` authorizer verifies a
+    /// presented token against — "present only when `type` is `JWT`"
+    /// (`Authorizer$jwtConfiguration`), and `None` for every other type; see
+    /// [`jwt_authorizer`].
+    pub jwt_configuration: Option<jwt_authorizer::JwtConfigurationEntry>,
     /// This authorizer's creation rank, from
     /// [`ComAmazonawsApigatewayBackplanecontrolserviceState::next_sequence`], so a
     /// listing can report creation order rather than id order.
@@ -4917,6 +4924,11 @@ pub use pages::*;
 /// re-exported whole, so a handler still reaches each name as `crate::state::…`.
 mod tag_quota;
 pub use tag_quota::*;
+
+/// The `jwtConfiguration` a `JWT` authorizer carries — what a request may declare in it,
+/// the record it is stored as and the configuration a read of the authorizer reports; see
+/// that module.
+pub mod jwt_authorizer;
 
 /// WHEN a record may carry an `endpointAccessMode` — the security policies that member is
 /// available for — and the refusal for a request that sets one without such a policy;

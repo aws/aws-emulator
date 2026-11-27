@@ -210,6 +210,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             identity_source: body.identity_source,
             identity_validation_expression: body.identity_validation_expression,
             authorizer_result_ttl_in_seconds: body.authorizer_result_ttl_in_seconds,
+            jwt_configuration: body.jwt_configuration,
         })
     }
 }

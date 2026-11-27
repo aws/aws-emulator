@@ -181,8 +181,25 @@ pub fn authorizer_body(entry: &AuthorizerEntry) -> CreateAuthorizerOutput {
         authorizer_credentials: entry.authorizer_credentials.clone(),
         identity_source: entry.identity_source.clone(),
         identity_validation_expression: entry.identity_validation_expression.clone(),
-        authorizer_result_ttl_in_seconds: Some(entry.authorizer_result_ttl_in_seconds),
+        authorizer_result_ttl_in_seconds: caches_results(&entry.r#type)
+            .then_some(entry.authorizer_result_ttl_in_seconds),
+        jwt_configuration: entry
+            .jwt_configuration
+            .as_ref()
+            .map(crate::state::jwt_authorizer::configuration_body),
     }
+}
+
+/// Whether an authorizer of `authorizer_type` holds cached results at all — which is
+/// whether it reports an `authorizerResultTtlInSeconds`.
+///
+/// "The TTL in seconds of cached authorizer results … This property is not supported for
+/// `JWT` authorizers" (`Authorizer$authorizerResultTtlInSeconds`): a native JWT authorizer
+/// decides a call from the token in front of it rather than from a result it kept, so it
+/// holds none and a read of it reports no such member rather than a window it does not keep
+/// results for.
+pub fn caches_results(authorizer_type: &str) -> bool {
+    authorizer_type != AUTHORIZER_TYPE_JWT
 }
 
 /// Whether a caller set a string member to something that names anything: an absent
@@ -258,6 +275,11 @@ pub const AUTHORIZER_TYPE_REQUEST: &str = "REQUEST";
 /// The `AuthorizerType` value for an Amazon Cognito user pool authorizer.
 pub const AUTHORIZER_TYPE_COGNITO_USER_POOLS: &str = "COGNITO_USER_POOLS";
 
+/// The `AuthorizerType` value for "a native JWT authorizer with the trusted issuers,
+/// audiences, and signing algorithms that you declare" (`AuthorizerType`), which it
+/// declares through its `jwtConfiguration` ([`crate::state::jwt_authorizer`]).
+pub const AUTHORIZER_TYPE_JWT: &str = "JWT";
+
 /// The `authType` of an authorization served by a Lambda authorizer — the label API
 /// Gateway names that KIND of authorization by, wherever it names it: the `authType` of the
 /// authorizer record and the `x-amazon-apigateway-authtype` its security scheme is exported
@@ -277,8 +299,11 @@ pub const AUTH_TYPE_COGNITO_USER_POOLS: &str = "cognito_user_pools";
 /// value the service fills in for a request that supplies none is the label that document
 /// names this kind of authorization by: `custom` for a Lambda authorizer (a `TOKEN` or a
 /// `REQUEST` one, which authorize by calling a function of the developer's own) and
-/// `cognito_user_pools` for one that authorizes against a user pool. A type outside the
-/// catalog implies nothing, which the boundary validator has already refused.
+/// `cognito_user_pools` for one that authorizes against a user pool. A `JWT` authorizer
+/// authorizes by neither route — it verifies the presented token itself, against the issuers
+/// its own `jwtConfiguration` declares — so no such label is implied for it and the member
+/// stays as the request set it. A type outside the catalog implies nothing, which the
+/// boundary validator has already refused.
 pub fn implied_auth_type(authorizer_type: &str) -> Option<&'static str> {
     match authorizer_type {
         AUTHORIZER_TYPE_TOKEN | AUTHORIZER_TYPE_REQUEST => Some(AUTH_TYPE_CUSTOM),
@@ -325,9 +350,24 @@ pub fn require_members_of_type(entry: &AuthorizerEntry) -> Result<(), String> {
     {
         return Err(AUTHORIZER_URI_REQUIRED.to_string());
     }
+    // The members a `JWT` authorizer's own documentation says it does not have: the Lambda
+    // it would otherwise call and the credentials to call it with, the user pools whose
+    // tokens it would otherwise accept, the expression another type matches an audience
+    // with, and the cached results it keeps none of. Each is "not supported for JWT
+    // authorizers" on the member itself, so a record of that type carrying one is a
+    // configuration nothing would read.
+    if authorizer_type == AUTHORIZER_TYPE_JWT
+        && (supplied(&entry.authorizer_uri)
+            || supplied(&entry.authorizer_credentials)
+            || supplied(&entry.identity_validation_expression)
+            || !entry.provider_arns.is_empty()
+            || ttl != MIN_AUTHORIZER_RESULT_TTL_SECONDS)
+    {
+        return Err(INVALID_REQUEST_INPUT.to_string());
+    }
     let caching_enabled = ttl > MIN_AUTHORIZER_RESULT_TTL_SECONDS;
     let identity_source_required = match authorizer_type {
-        AUTHORIZER_TYPE_TOKEN | AUTHORIZER_TYPE_COGNITO_USER_POOLS => true,
+        AUTHORIZER_TYPE_TOKEN | AUTHORIZER_TYPE_COGNITO_USER_POOLS | AUTHORIZER_TYPE_JWT => true,
         AUTHORIZER_TYPE_REQUEST => caching_enabled,
         _ => false,
     };
@@ -350,6 +390,20 @@ pub fn require_members_of_type(entry: &AuthorizerEntry) -> Result<(), String> {
                 return Err(invalid_token_source(source));
             }
         }
+    }
+    // A `JWT` authorizer reads one value too: "for a JWT authorizer, this is required and
+    // must be a single request-header mapping expression, `method.request.header.<name>`
+    // …. Query string parameters are not supported, and there is no default"
+    // (`Authorizer$identitySource`) — the same form, refused with this service's sentence
+    // for a configuration it does not admit, since the expression a JWT authorizer reads a
+    // token from is no `TOKEN` authorizer's token source.
+    if authorizer_type == AUTHORIZER_TYPE_JWT
+        && entry
+            .identity_source
+            .as_deref()
+            .is_some_and(|source| !is_method_request_header(source))
+    {
+        return Err(INVALID_REQUEST_INPUT.to_string());
     }
     if authorizer_type == AUTHORIZER_TYPE_COGNITO_USER_POOLS && entry.provider_arns.is_empty() {
         return Err(INVALID_REQUEST_INPUT.to_string());
@@ -516,8 +570,30 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(bad_request("name must not be empty".to_string()).into());
         }
         bound_input(&input).map_err(bad_request)?;
-        let ttl =
-            authorizer_result_ttl(input.authorizer_result_ttl_in_seconds).map_err(bad_request)?;
+        // "This property is not supported for JWT authorizers"
+        // (`Authorizer$authorizerResultTtlInSeconds`): such an authorizer keeps no cached
+        // result, so it is stored with caching disabled and a request that sets the member
+        // at all is refused rather than stored with a window nothing would cache for.
+        let ttl = if input.r#type == AUTHORIZER_TYPE_JWT {
+            if input.authorizer_result_ttl_in_seconds.is_some() {
+                return Err(bad_request(INVALID_REQUEST_INPUT.to_string()).into());
+            }
+            MIN_AUTHORIZER_RESULT_TTL_SECONDS
+        } else {
+            authorizer_result_ttl(input.authorizer_result_ttl_in_seconds).map_err(bad_request)?
+        };
+        // The declaration a `JWT` authorizer verifies a presented token against, judged
+        // member by member before anything is stored
+        // ([`crate::state::jwt_authorizer::stored_configuration`]). WHICH type may carry
+        // one is the record's own rule, applied below beside the other type-coherence
+        // clauses.
+        let jwt_configuration = match input.jwt_configuration.as_ref() {
+            Some(requested) => Some(
+                crate::state::jwt_authorizer::stored_configuration(requested)
+                    .map_err(bad_request)?,
+            ),
+            None => None,
+        };
         // The record is assembled BEFORE the type-coherence rule is applied, so the rule
         // judges the authorizer as it will be stored — the same way `UpdateAuthorizer`
         // judges the patched record. The id and the creation rank are minted under the
@@ -542,9 +618,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             identity_source: input.identity_source,
             identity_validation_expression: input.identity_validation_expression,
             authorizer_result_ttl_in_seconds: ttl,
+            jwt_configuration,
             sequence: 0,
         };
         require_members_of_type(&entry).map_err(bad_request)?;
+        // And a `jwtConfiguration` belongs to a `JWT` authorizer and to no other, which is
+        // the same rule read off the record ([`crate::state::jwt_authorizer`]).
+        crate::state::jwt_authorizer::require_configuration_of_type(&entry)
+            .map_err(bad_request)?;
         // And every `providerARNs` entry has to NAME a user pool, since that is the pool whose
         // tokens the authorizer would accept ([`crate::state::user_pool_state`]): checked
         // before the store lock is taken, so an authorizer that could authorize nothing never

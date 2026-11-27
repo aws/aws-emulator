@@ -60,11 +60,11 @@ async fn listed_authorizers(
 
 /// One authorizer request per `index`, rotating across the whole modelled
 /// `AuthorizerType` catalog (`smithy_query(query="shape",
-/// shape="com.amazonaws.apigateway#AuthorizerType")`: COGNITO_USER_POOLS | REQUEST |
+/// shape="com.amazonaws.apigateway#AuthorizerType")`: COGNITO_USER_POOLS | JWT | REQUEST |
 /// TOKEN), each carrying the members its own type documents as required. So a collection
 /// of any size holds authorizers of every type rather than copies of one.
 fn authorizer_of_each_type(index: usize) -> Value {
-    match index % 3 {
+    match index % 4 {
         0 => token_request(&format!("auth-{index}")),
         1 => json!({
             "name": format!("auth-{index}"),
@@ -73,6 +73,20 @@ fn authorizer_of_each_type(index: usize) -> Value {
             // A TTL of 0 disables caching, which is when a REQUEST authorizer needs no
             // identity source.
             "authorizerResultTtlInSeconds": 0,
+        }),
+        2 => json!({
+            "name": format!("auth-{index}"),
+            "type": "JWT",
+            // A JWT authorizer reads one request header and verifies the token there
+            // against the issuers its own `jwtConfiguration` declares.
+            "identitySource": "method.request.header.Authorization",
+            "jwtConfiguration": {
+                "issuers": [{
+                    "issuer": format!("https://issuer-{index}.example.com"),
+                    "audiences": ["api.example.com"],
+                }],
+                "defaultAlgorithms": ["RS256"],
+            },
         }),
         _ => json!({
             "name": format!("auth-{index}"),

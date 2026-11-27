@@ -18,6 +18,11 @@
 //! documents as required; that a name does not identify an authorizer (two identical
 //! requests make two records); and every identifier these operations resolve over the
 //! records that do and do not exist.
+//!
+//! The `JWT` type of that catalog is the one whose whole configuration is a declaration of
+//! its own (`jwtConfiguration`), so its round trip, the members it does not support and the
+//! declarations it does not admit are asserted in the `authorizer_jwt_configuration` suite
+//! beside this one.
 
 use serde_json::{json, Value};
 use service_com_amazonaws_apigateway_backplanecontrolservice::ops::create_authorizer::{

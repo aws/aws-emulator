@@ -86,13 +86,13 @@ fn assert_sentence(answer: &Answer, expected: (u16, &str), sentence: &str, case:
 
 /// The values a `type` can carry that the modelled catalog does not hold. Source: the
 /// catalog is `smithy_query(query="shape",
-/// shape="com.amazonaws.apigateway#AuthorizerType")` — COGNITO_USER_POOLS | REQUEST |
-/// TOKEN — so each row below misses it in a different way.
+/// shape="com.amazonaws.apigateway#AuthorizerType")` — COGNITO_USER_POOLS | JWT | REQUEST
+/// | TOKEN — so each row below misses it in a different way.
 const TYPES_OUTSIDE_THE_CATALOG: [(&str, &str); 5] = [
     ("an unknown word", "NOT_A_REAL_TYPE"),
     ("a declared value in the wrong case", "token"),
     ("a declared value with trailing space", "REQUEST "),
-    ("a neighbouring service's value", "JWT"),
+    ("a declared value in the wrong case, of the newest type", "jwt"),
     ("the empty string", ""),
 ];
 
@@ -150,8 +150,11 @@ async fn a_type_outside_the_authorizer_catalog_is_refused_with_the_members_own_s
         }
     }
 
-    // Every value the catalog DOES hold is taken on the patch, so the refusals above are
-    // the catalog's and not a blanket refusal of writing the member.
+    // Every value the catalog holds that this record's OTHER members already admit is
+    // taken on the patch, so the refusals above are the catalog's and not a blanket
+    // refusal of writing the member. (`COGNITO_USER_POOLS` lists the pools it accepts
+    // tokens from and `JWT` declares the issuers it trusts, neither of which this record
+    // carries, so each is refused for its own member and not for its type.)
     for admitted in ["REQUEST", "TOKEN"] {
         let patched = patch(&gateway, &uri, vec![replace("/type", admitted)]).await;
         assert_eq!(

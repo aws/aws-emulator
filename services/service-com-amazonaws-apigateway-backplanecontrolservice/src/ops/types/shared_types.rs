@@ -64,6 +64,15 @@ pub struct UnauthorizedException {
     pub message: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.apigateway#JwtAdditionalClaim")]
+#[derive(Debug, Clone, Default)]
+pub struct JwtAdditionalClaim {
+    pub claim_name: String,
+    pub format: String,
+    pub required: bool,
+    pub expected_values: Option<Vec<String>>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.apigateway#Authorizer")]
 #[derive(Debug, Clone, Default)]
 pub struct CreateAuthorizerOutput {
@@ -77,6 +86,23 @@ pub struct CreateAuthorizerOutput {
     pub identity_source: Option<String>,
     pub identity_validation_expression: Option<String>,
     pub authorizer_result_ttl_in_seconds: Option<i32>,
+    pub jwt_configuration: Option<JwtConfiguration>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.apigateway#JwtConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct JwtConfiguration {
+    pub issuers: Option<Vec<JwtIssuer>>,
+    pub default_algorithms: Option<Vec<String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.apigateway#JwtIssuer")]
+#[derive(Debug, Clone, Default)]
+pub struct JwtIssuer {
+    pub issuer: Option<String>,
+    pub audiences: Option<Vec<String>>,
+    pub additional_claims: Option<Vec<JwtAdditionalClaim>>,
+    pub jwks_uri: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.apigateway#BasePathMapping")]
@@ -499,7 +525,7 @@ pub const API_STATUS_VALUES: &[&str] = &["AVAILABLE", "FAILED", "PENDING", "UPDA
 
 
 /// The values `AuthorizerType` accepts on the wire.
-pub const AUTHORIZER_TYPE_VALUES: &[&str] = &["COGNITO_USER_POOLS", "REQUEST", "TOKEN"];
+pub const AUTHORIZER_TYPE_VALUES: &[&str] = &["COGNITO_USER_POOLS", "JWT", "REQUEST", "TOKEN"];
 
 
 /// The values `CacheClusterSize` accepts on the wire.
@@ -544,6 +570,14 @@ pub const INTEGRATION_TYPE_VALUES: &[&str] = &["AWS", "AWS_PROXY", "HTTP", "HTTP
 
 /// The values `IpAddressType` accepts on the wire.
 pub const IP_ADDRESS_TYPE_VALUES: &[&str] = &["dualstack", "ipv4"];
+
+
+/// The values `JwtClaimFormat` accepts on the wire.
+pub const JWT_CLAIM_FORMAT_VALUES: &[&str] = &["SINGLE_STRING"];
+
+
+/// The values `JwtSigningAlgorithm` accepts on the wire.
+pub const JWT_SIGNING_ALGORITHM_VALUES: &[&str] = &["ES256", "ES384", "ES512", "RS256", "RS384", "RS512"];
 
 
 /// The values `LocationStatusType` accepts on the wire.
