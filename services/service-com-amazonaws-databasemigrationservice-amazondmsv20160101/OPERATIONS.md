@@ -119,7 +119,6 @@ contents — read that shape in the model above when you need its own members.
 - **Input:** `ReplicationSubnetGroupIdentifier` (string, required), `ReplicationSubnetGroupDescription` (string, required), `SubnetIds` (list<string>, required), `Tags` (list<Tag>)
 - **Output:** `ReplicationSubnetGroup` (ReplicationSubnetGroup)
 - **Errors:** `AccessDeniedFault (HTTP 400)`, `InvalidSubnet (HTTP 400)`, `ReplicationSubnetGroupDoesNotCoverEnoughAZs (HTTP 400)`, `ResourceAlreadyExistsFault (HTTP 400)`, `ResourceNotFoundFault (HTTP 400)`, `ResourceQuotaExceededFault (HTTP 400)`
-- AWS's published model declares no ARN member on the `ReplicationSubnetGroup` shape, but the service answers a create with `ReplicationSubnetGroupArn` carrying the group's `subgrp` ARN — the handle a caller tags and references the group by — so that member is on the shape in `smithy-model/` (see `src/ops/create_replication_subnet_group.rs`)
 
 ## CreateReplicationTask
 

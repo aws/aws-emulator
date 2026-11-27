@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! What a replication subnet group reports ABOUT ITSELF: its own handle, and the IP
+//! What a replication subnet group reports ABOUT ITSELF: which members, and the IP
 //! addressing protocols the subnets it holds support.
 //!
 //! The rules under test:
 //!
-//! 1. A group's handle is a DMS ARN over the `subgrp` resource type: the partition and
-//!    namespace, the Region the request was signed for, the emulator's account, and the
-//!    identifier the group is held under — which is the caller's folded to lower case
-//!    ("This value is stored as a lowercase string"). It is a pure function of those, so
-//!    re-creating a group under the same identifier reports the same ARN, and every
-//!    reading of a group reports the one its create answered.
+//! 1. A reported group carries exactly the members the service's model declares for the
+//!    `ReplicationSubnetGroup` shape — and no member it does not declare, an ARN of its
+//!    own among them — each computed from the record the create persisted: the identifier
+//!    is the caller's folded to lower case ("This value is stored as a lowercase
+//!    string"), so re-creating a group under the same identifier reports the same group,
+//!    and every reading of a group reports what its create answered.
 //! 2. `SupportedNetworkTypes` reports "the IP addressing protocol supported by the subnet
 //!    group ... with values such as IPv4 only or Dual-stack that supports both IPv4 and
 //!    IPv6 addressing. IPv6 only is not yet supported"
@@ -24,13 +24,149 @@
 //! three zones. Nothing here reaches into either store: a subnet is dual-stack only
 //! because EC2 associated an IPv6 block with it, and a group reports what DMS answered.
 
+use std::collections::BTreeSet;
 use std::net::Ipv6Addr;
 
 use serde_json::{json, Value};
 use service_com_amazonaws_databasemigrationservice_amazondmsv20160101::state::SUBNET_GROUP_IDENTIFIER_MAX_LEN;
 
-use crate::migration_task_slice::{text, Emulator, ACCOUNT, REGION};
+use crate::migration_task_slice::{text, Emulator, REGION};
 use crate::subnet_group_placement::{create_subnet, create_vpc, delete, Subnet};
+
+/// Every member the model declares on the `ReplicationSubnetGroup` shape, in any order.
+///
+/// The catalog's source is the shape itself:
+/// `smithy_query(query="shape",shape="ReplicationSubnetGroup",model_path="services/service-com-amazonaws-databasemigrationservice-amazondmsv20160101/smithy-model/com-amazonaws-databasemigrationservice-amazondmsv20160101.json")`.
+/// It declares no ARN member, so a group reports none.
+const GROUP_MEMBERS: &[&str] = &[
+    "ReplicationSubnetGroupIdentifier",
+    "ReplicationSubnetGroupDescription",
+    "VpcId",
+    "SubnetGroupStatus",
+    "Subnets",
+    "SupportedNetworkTypes",
+    "IsReadOnly",
+];
+
+/// Every member the model declares on the `Subnet` shape, which is what each element of
+/// `ReplicationSubnetGroup$Subnets` carries (same query, `shape="Subnet"`).
+const SUBNET_MEMBERS: &[&str] = &["SubnetIdentifier", "SubnetAvailabilityZone", "SubnetStatus"];
+
+/// Every member the model declares on the `AvailabilityZone` shape, which is what
+/// `Subnet$SubnetAvailabilityZone` carries (same query, `shape="AvailabilityZone"`).
+const AVAILABILITY_ZONE_MEMBERS: &[&str] = &["Name"];
+
+/// The status DMS reports for a subnet group it holds complete
+/// (`ReplicationSubnetGroup$SubnetGroupStatus`).
+const COMPLETE: &str = "Complete";
+
+/// The status DMS reports for a subnet of a group (`Subnet$SubnetStatus`).
+const ACTIVE: &str = "Active";
+
+/// The member names of the JSON object `value`, or an empty set when it is not one.
+fn member_names(value: &Value) -> BTreeSet<String> {
+    value
+        .as_object()
+        .map(|object| object.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// The names `catalog` declares, as a set to compare a reported object against.
+fn declared(catalog: &[&str]) -> BTreeSet<String> {
+    catalog.iter().map(|name| (*name).to_string()).collect()
+}
+
+/// Assert that `group`, and every subnet it reports, carries exactly the members the
+/// model declares for its shape.
+///
+/// Shared with the sibling suites in this target: every reading of a group — the create's
+/// answer, a describe, and the group a replication instance reports — is held to the same
+/// member set.
+pub(crate) fn assert_modelled_members(case: &str, group: &Value) {
+    assert_eq!(
+        member_names(group),
+        declared(GROUP_MEMBERS),
+        "case {case:?}: expected a group to report exactly the members the model declares \
+         for the ReplicationSubnetGroup shape, got {group}"
+    );
+    for subnet in group
+        .pointer("/Subnets")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+    {
+        assert_eq!(
+            member_names(&subnet),
+            declared(SUBNET_MEMBERS),
+            "case {case:?}: expected a subnet to report exactly the members the model \
+             declares for the Subnet shape, got {subnet}"
+        );
+        assert_eq!(
+            member_names(subnet.get("SubnetAvailabilityZone").unwrap_or(&Value::Null)),
+            declared(AVAILABILITY_ZONE_MEMBERS),
+            "case {case:?}: expected the zone to report exactly the members the model \
+             declares for the AvailabilityZone shape, got {subnet}"
+        );
+    }
+}
+
+/// Assert that `group` is the group [`create_group`] created under `identifier` over
+/// `subnets` subnets: the modelled member set, and every member computed from the record
+/// the create persisted.
+pub(crate) fn assert_modelled_group(case: &str, group: &Value, identifier: &str, subnets: usize) {
+    assert_modelled_members(case, group);
+    assert_eq!(
+        text(group, "/ReplicationSubnetGroupIdentifier"),
+        identifier.to_lowercase(),
+        "case {case:?}: expected the identifier the group is stored under, folded to \
+         lower case, got {group}"
+    );
+    assert_eq!(
+        text(group, "/ReplicationSubnetGroupDescription"),
+        format!("subnets for {case}"),
+        "case {case:?}: expected the description the create gave the group, got {group}"
+    );
+    assert_eq!(
+        text(group, "/SubnetGroupStatus"),
+        COMPLETE,
+        "case {case:?}: expected a group DMS holds complete, got {group}"
+    );
+    assert_eq!(
+        group.get("IsReadOnly").and_then(Value::as_bool),
+        Some(false),
+        "case {case:?}: expected a group the caller created not to be read-only, got \
+         {group}"
+    );
+    assert!(
+        text(group, "/VpcId").starts_with("vpc-"),
+        "case {case:?}: expected the VPC EC2 placed the group's subnets in, got {group}"
+    );
+    let reported = group
+        .pointer("/Subnets")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        reported.len(),
+        subnets,
+        "case {case:?}: expected the {subnets} subnets the create named, got {group}"
+    );
+    for subnet in &reported {
+        assert!(
+            text(subnet, "/SubnetIdentifier").starts_with("subnet-"),
+            "case {case:?}: expected the subnet id EC2 answered for, got {subnet}"
+        );
+        assert!(
+            !text(subnet, "/SubnetAvailabilityZone/Name").is_empty(),
+            "case {case:?}: expected the zone EC2 placed the subnet in, got {subnet}"
+        );
+        assert_eq!(
+            text(subnet, "/SubnetStatus"),
+            ACTIVE,
+            "case {case:?}: expected an active subnet, got {subnet}"
+        );
+    }
+}
 
 /// The network type DMS reports for IPv4-only addressing. The value list lives on the one
 /// member of this model that publishes it: "A value of IPV4 represents an instance profile
@@ -194,7 +330,7 @@ fn identifier_rows() -> Vec<(&'static str, String)> {
 }
 
 #[tokio::test]
-async fn a_subnet_group_reports_a_subgrp_arn_over_its_region_account_and_identifier() {
+async fn a_group_reports_exactly_the_members_the_model_declares() {
     let (emulator, ec2, _iam) = Emulator::with_network();
     let network = create_network(&ec2).await;
     let subnet_ids: Vec<String> = network
@@ -206,30 +342,20 @@ async fn a_subnet_group_reports_a_subgrp_arn_over_its_region_account_and_identif
 
     for (case, identifier) in identifier_rows() {
         let group = create_group(&emulator, case, &identifier, &subnet_ids).await;
-        let expected = format!(
-            "arn:aws:dms:{REGION}:{ACCOUNT}:subgrp:{}",
-            identifier.to_lowercase()
-        );
-        let reported = text(&group, "/ReplicationSubnetGroupArn");
-        assert_eq!(
-            reported, expected,
-            "case {case:?}: expected the group's handle to be the subgrp ARN over the \
-             Region, the account and the stored identifier, got {reported:?}"
-        );
+        assert_modelled_group(case, &group, &identifier, subnet_ids.len());
 
-        // The ARN is derived, not minted per call: the group deleted and created again
-        // under the same identifier carries the same handle.
+        // Every member is derived from the record, not minted per call: the group deleted
+        // and created again under the same identifier reports the same group.
         let (deleted, code) = delete(&emulator, &identifier).await;
         assert_eq!(
             deleted, 200,
             "case {case:?}: expected the group to be deletable, got {deleted} {code}"
         );
         let again = create_group(&emulator, case, &identifier, &subnet_ids).await;
-        let re_reported = text(&again, "/ReplicationSubnetGroupArn");
         assert_eq!(
-            re_reported, expected,
-            "case {case:?}: expected a re-created group to carry the same handle, got \
-             {re_reported:?}"
+            again, group,
+            "case {case:?}: expected a re-created group to report the same members and \
+             values, got {again}"
         );
         let (deleted, code) = delete(&emulator, &identifier).await;
         assert_eq!(
@@ -321,7 +447,7 @@ async fn supported_network_types_follow_the_address_families_of_a_group_subnets(
 }
 
 #[tokio::test]
-async fn a_group_reports_the_same_handle_and_protocols_wherever_it_is_read_back() {
+async fn a_group_reports_the_same_members_wherever_it_is_read_back() {
     let (emulator, ec2, _iam) = Emulator::with_network();
     let network = create_network(&ec2).await;
     let subnet_ids: Vec<String> = network
@@ -331,7 +457,9 @@ async fn a_group_reports_the_same_handle_and_protocols_wherever_it_is_read_back(
         .map(|subnet| subnet.id.clone())
         .collect();
 
-    let created = create_group(&emulator, "read back", "round-trip-handle", &subnet_ids).await;
+    let case = "read back";
+    let created = create_group(&emulator, case, "round-trip-handle", &subnet_ids).await;
+    assert_modelled_group(case, &created, "round-trip-handle", subnet_ids.len());
     assert_eq!(
         network_types(&created),
         vec![IPV4, DUAL],
@@ -342,7 +470,7 @@ async fn a_group_reports_the_same_handle_and_protocols_wherever_it_is_read_back(
     // back through the implemented describe.
     emulator
         .ok(
-            "read back",
+            case,
             "CreateReplicationInstance",
             &json!({
                 "ReplicationInstanceIdentifier": "round-trip-handle-instance",
@@ -352,21 +480,16 @@ async fn a_group_reports_the_same_handle_and_protocols_wherever_it_is_read_back(
         )
         .await;
     let described = emulator
-        .ok("read back", "DescribeReplicationInstances", &json!({}))
+        .ok(case, "DescribeReplicationInstances", &json!({}))
         .await;
     let read_back = described
         .pointer("/ReplicationInstances/0/ReplicationSubnetGroup")
         .cloned()
         .unwrap_or(Value::Null);
+    assert_modelled_group(case, &read_back, "round-trip-handle", subnet_ids.len());
     assert_eq!(
-        text(&read_back, "/ReplicationSubnetGroupArn"),
-        text(&created, "/ReplicationSubnetGroupArn"),
-        "expected the group read back to carry the handle its create answered, got \
+        read_back, created,
+        "expected the group read back to report what its create answered, got \
          {read_back}"
-    );
-    assert_eq!(
-        network_types(&read_back),
-        network_types(&created),
-        "expected the group read back to report the same protocols, got {read_back}"
     );
 }

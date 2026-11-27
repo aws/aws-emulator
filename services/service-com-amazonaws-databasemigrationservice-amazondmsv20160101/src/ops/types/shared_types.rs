@@ -1058,7 +1058,6 @@ pub struct VpcSecurityGroupMembership {
 #[smithy_macros::smithy(shape = "com.amazonaws.databasemigrationservice#ReplicationSubnetGroup")]
 #[derive(Debug, Clone, Default)]
 pub struct ReplicationSubnetGroup {
-    pub replication_subnet_group_arn: Option<String>,
     pub replication_subnet_group_identifier: Option<String>,
     pub replication_subnet_group_description: Option<String>,
     pub vpc_id: Option<String>,

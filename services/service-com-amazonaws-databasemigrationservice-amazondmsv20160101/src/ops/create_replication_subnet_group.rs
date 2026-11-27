@@ -72,10 +72,11 @@
 //! * `ReplicationSubnetGroup` (ReplicationSubnetGroup) — The replication subnet group that
 //!   was created.
 //!
-//! AWS's published model declares no ARN member on the `ReplicationSubnetGroup` shape, yet
-//! the service answers a create with `ReplicationSubnetGroupArn` carrying the group's
-//! `subgrp` ARN — the handle a caller tags the group by and references it from another
-//! resource with — so that member is on the shape in `smithy-model/`.
+//! The `ReplicationSubnetGroup` shape declares no ARN member, so the group this create
+//! answers carries the members that shape declares and no other. The group's own
+//! `subgrp` ARN is still what a tag attached to it reports (`Tag$ResourceArn`) and what a
+//! paged scan of the groups resumes against, so it is derived and persisted with the
+//! record (`crate::state::ReplicationSubnetGroupRecord::arn`).
 //!
 //! ## Errors
 //!

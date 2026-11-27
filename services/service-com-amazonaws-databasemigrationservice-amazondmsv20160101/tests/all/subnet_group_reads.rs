@@ -6,10 +6,10 @@
 //! The rules under test:
 //!
 //! 1. A reading of a group reports the record its create persisted — its identifier,
-//!    description, VPC, subnets with the zones EC2 placed them in, status, its own
-//!    `subgrp` handle and the IP addressing protocols its subnets support — so the
-//!    describe answers exactly what the create answered, and answers it the same way on
-//!    every later reading.
+//!    description, VPC, subnets with the zones EC2 placed them in, status, whether DMS
+//!    manages it, and the IP addressing protocols its subnets support — so the describe
+//!    answers exactly what the create answered, and answers it the same way on every
+//!    later reading.
 //! 2. `Filters` narrows the answer to the groups the one filter name the member doc
 //!    publishes selects ("Valid filter names: replication-subnet-group-id"), matched
 //!    against the identifier as it is stored ("This value is stored as a lowercase
@@ -34,8 +34,11 @@ use service_com_amazonaws_databasemigrationservice_amazondmsv20160101::state::{
     MAX_RECORDS_MAX, MAX_RECORDS_MIN,
 };
 
-use crate::migration_task_slice::{error_code, text, Emulator, ACCOUNT, REGION};
-use crate::subnet_group_handle::{create_group, create_network, network_types, Network};
+use crate::migration_task_slice::{error_code, text, Emulator};
+use crate::subnet_group_handle::{
+    assert_modelled_group, assert_modelled_members, create_group, create_network, network_types,
+    Network,
+};
 use crate::subnet_group_placement::Subnet;
 
 /// The error code the framework answers a request that breaks a rule the model does not
@@ -113,16 +116,7 @@ async fn a_describe_reports_each_group_exactly_as_its_create_answered() {
     let mut created: BTreeMap<String, Value> = BTreeMap::new();
     for (case, identifier, subnet_ids, protocols) in reading_rows(&network) {
         let group = create_group(&emulator, case, identifier, &subnet_ids).await;
-        let expected_arn = format!(
-            "arn:aws:dms:{REGION}:{ACCOUNT}:subgrp:{}",
-            identifier.to_lowercase()
-        );
-        let reported = text(&group, "/ReplicationSubnetGroupArn");
-        assert_eq!(
-            reported, expected_arn,
-            "case {case:?}: expected the create to answer the group's subgrp handle, got \
-             {reported:?}"
-        );
+        assert_modelled_group(case, &group, identifier, subnet_ids.len());
         let reported = network_types(&group);
         assert_eq!(
             reported, protocols,
@@ -144,6 +138,7 @@ async fn a_describe_reports_each_group_exactly_as_its_create_answered() {
     );
     for group in &reported {
         let identifier = text(group, "/ReplicationSubnetGroupIdentifier");
+        assert_modelled_members(&identifier, group);
         let expected = created.get(&identifier).unwrap_or_else(|| {
             panic!(
                 "case \"every group\": the describe reported {identifier:?}, which no \

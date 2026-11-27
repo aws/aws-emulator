@@ -441,9 +441,12 @@ impl Pending {
 #[derive(Debug, Clone, Default)]
 pub struct ReplicationSubnetGroupRecord {
     /// The group's ARN, `arn:aws:dms:<region>:<account>:subgrp:<identifier>` — the
-    /// handle DMS reports for the group, derived from the Region the create was signed
-    /// for and the identifier it is held under, and stored so it is the same value on
-    /// every later reading.
+    /// handle a tag attached to the group reports (`Tag$ResourceArn`) and the key a
+    /// paged scan of the groups resumes against, derived from the Region the create was
+    /// signed for and the identifier the group is held under, and stored so it is the
+    /// same value on every later reading. The modelled `ReplicationSubnetGroup` shape
+    /// declares no ARN member, so no reading of a group reports it as a field of its
+    /// own.
     pub arn: String,
     /// The caller's identifier, stored lowercased: "This value is stored as a
     /// lowercase string" (`CreateReplicationSubnetGroup$ReplicationSubnetGroupIdentifier`).
@@ -497,10 +500,10 @@ impl ReplicationSubnetGroupRecord {
         supported
     }
 
-    /// This record as the modelled `ReplicationSubnetGroup` shape.
+    /// This record as the modelled `ReplicationSubnetGroup` shape: every member that
+    /// shape declares, and nothing else.
     pub fn to_shape(&self) -> ReplicationSubnetGroup {
         ReplicationSubnetGroup {
-            replication_subnet_group_arn: Some(self.arn.clone()),
             replication_subnet_group_identifier: Some(self.identifier.clone()),
             replication_subnet_group_description: Some(self.description.clone()),
             vpc_id: Some(self.vpc_id.clone()),
