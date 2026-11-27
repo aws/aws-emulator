@@ -46,10 +46,13 @@
 //! while the surfaces that CHANGE a cluster, the delete among them, keep the parameter
 //! refusal.
 //!
-//! The resolution BEHIND Rule 1 holds for every cluster-addressed operation,
-//! including the two that change how clients reach the cluster (`UpdateConnectivity`,
-//! `RejectClientVpcConnection`): a well-formed ARN of this account passes the gate,
-//! and what this endpoint holds under it is the operation's own to answer — which
+//! The resolution BEHIND Rule 1 holds for every cluster-addressed operation: a
+//! well-formed ARN of this account passes the gate, and what this endpoint holds
+//! under it is the operation's own to answer. For the two calls that act on the
+//! surface clients REACH the cluster over (`UpdateConnectivity`,
+//! `RejectClientVpcConnection`) that answer is itself the authorization refusal —
+//! only a document attached to the target cluster could have granted them, and an
+//! ARN this endpoint holds no cluster under carries none — which
 //! `connectivity_absent_cluster_refusal.rs` drives.
 //!
 //! The rows span both dimensions the rules generalise over: which operation
@@ -126,6 +129,14 @@ impl Operation {
     /// even for a value that is no ARN at all.
     fn only_a_cluster_policy_can_grant(&self) -> bool {
         CLUSTER_POLICY_ACTIONS.contains(&self.name)
+    }
+
+    /// Whether the grant for this operation's action could only have rested on a
+    /// document attached to the TARGET cluster, so a well-formed ARN this endpoint
+    /// holds no cluster under reaches no grant once the resolution behind the gate
+    /// runs: the call that configures the surface clients reach a cluster over.
+    fn refused_without_the_targets_document(&self) -> bool {
+        self.name == "UpdateConnectivity"
     }
 
     /// The request URI for `arn`, with the ARN percent-encoded wherever the
@@ -852,15 +863,29 @@ async fn the_gates_are_ordered_and_each_answers_its_own_values() {
         let served = emulator
             .call(operation.method, &operation.uri(&absent), operation.body())
             .await;
-        assert_ne!(
-            served.error_code(),
-            "AccessDeniedException",
-            "case \"a well-formed absent cluster\"/{}: a cluster ARN of this account must \
-             pass the gate, got {} {}",
-            operation.name,
-            served.status,
-            served.body
-        );
+        if operation.refused_without_the_targets_document() {
+            // The gate passed the ARN; the refusal comes from the resolution behind
+            // it, the target carrying no document that could have granted the call.
+            assert_eq!(
+                (served.status, served.error_code()),
+                (403, "AccessDeniedException"),
+                "case \"a well-formed absent cluster\"/{}: a target carrying no document \
+                 must reach no grant, got {} {}",
+                operation.name,
+                served.status,
+                served.body
+            );
+        } else {
+            assert_ne!(
+                served.error_code(),
+                "AccessDeniedException",
+                "case \"a well-formed absent cluster\"/{}: a cluster ARN of this account must \
+                 pass the gate, got {} {}",
+                operation.name,
+                served.status,
+                served.body
+            );
+        }
 
         let denied = emulator
             .call(

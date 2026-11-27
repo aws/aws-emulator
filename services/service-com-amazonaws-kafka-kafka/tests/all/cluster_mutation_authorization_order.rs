@@ -22,12 +22,14 @@
 //!   of this account that this endpoint's region holds no cluster for is
 //!   `NotFoundException` (HTTP 404) in the service's one sentence for a resource it
 //!   cannot resolve, and the cluster it DOES hold has the update accepted — except
-//!   where the call MANAGES one of the cluster's client VPC connections, the
-//!   multi-VPC surface a cluster's own resource-based policy is attached for: only a
-//!   document attached to the target cluster can grant such a call, and a cluster
-//!   carrying none reaches no grant, so there the permitted caller is refused as
-//!   unauthorized too and learns nothing about the registry either
-//!   (`client_vpc_connection_target_grant.rs` drives that rule over its own table).
+//!   where the call acts on the surface clients REACH the cluster over, which is the
+//!   surface a cluster's own resource-based policy is attached for: only a document
+//!   attached to the target cluster can grant such a call, and a cluster carrying
+//!   none reaches no grant, so there the permitted caller is refused as unauthorized
+//!   too and learns nothing about the registry either
+//!   (`connectivity_absent_cluster_refusal.rs` drives that rule for the call that
+//!   configures that surface, and `client_vpc_connection_target_grant.rs` for the
+//!   calls that manage the connections made over it).
 //!
 //! The rows differ along what the rule generalises over: the document in force on
 //! the calling principal (a deny of exactly this action, a deny of every action of
@@ -126,11 +128,16 @@ impl Mutation {
 /// decision belongs to the service.
 fn mutations() -> Vec<Mutation> {
     vec![
+        // `UpdateConnectivity` is deliberately not a row here: it acts on the
+        // surface a cluster's own resource-based policy is attached for, so a
+        // permitted caller handed an ARN this endpoint holds no cluster under is
+        // refused as unauthorized rather than told about the target
+        // (`connectivity_absent_cluster_refusal.rs`).
         Mutation {
-            operation: "UpdateConnectivity",
+            operation: "UpdateStorage",
             method: "PUT",
-            suffix: "/connectivity",
-            members: json!({ "connectivityInfo": { "publicAccess": { "type": "SERVICE_PROVIDED_EIPS" } } }),
+            suffix: "/storage",
+            members: json!({ "volumeSizeGB": 2000 }),
         },
         Mutation {
             operation: "UpdateBrokerCount",

@@ -24,14 +24,24 @@
 //! on the cluster its `ClusterArn` names, and that decision is taken on the ARN as
 //! submitted, before anything is resolved ([`crate::state::authorization`]).
 //!
-//! A `ClusterArn` this endpoint's Region holds no cluster for is answered as the
-//! ABSENCE it is — the modelled `NotFoundException` carrying this service's fixed
-//! sentence ([`crate::state::RESOURCE_NOT_FOUND_MESSAGE`]) — which is what the
-//! recorded answer for this operation shows, and what every other cluster-addressed
-//! call of this service answers for an ARN it holds nothing under. Changing how
-//! clients reach a cluster is no exception: the cluster's own resource-based policy
-//! governs who may create a VPC connection to it, not whether its absence is
-//! reported.
+//! A `ClusterArn` this endpoint's Region holds no cluster for is refused as
+//! UNAUTHORIZED rather than reported absent
+//! ([`crate::state::authorization::no_resource_policy_for_cluster`]). What this call
+//! configures is the surface clients REACH the cluster over — its public access and
+//! the multi-VPC private connectivity a cluster's own resource-based policy is
+//! attached for — so the document that can grant it lives ON the target cluster, and
+//! a cluster this endpoint holds no record of carries no document at all: the call
+//! reaches no grant, and the answer is the authorization refusal naming the ARN as
+//! submitted, so a caller it refuses learns nothing about what this registry holds.
+//! That is this operation's recorded answer for such an ARN, and the one
+//! `RejectClientVpcConnection` and `CreateVpcConnection`'s target are decided by for
+//! the same reason. A call that changes or reports any OTHER part of a cluster rests
+//! on the caller's own identity-based documents, which are in force whether or not
+//! the cluster exists, so those answer the absence as the absence it is — which is
+//! why the modelled `NotFoundException` is not what this handler reaches for.
+//!
+//! The decision over the target therefore comes before any member of the BODY is
+//! read, as every authorization decision of this service does.
 //!
 //! The scaffold notes below describe the framework; they are kept because they
 //! document the seams this handler uses.
@@ -216,6 +226,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        let mut state = state.lock();
+        let now = std::time::SystemTime::now();
+        // The TARGET first, before any member of the body is read: this call
+        // configures the surface clients reach the cluster over, which is the
+        // surface a cluster's own resource-based policy is attached for, so the
+        // grant for it can only rest on a document that lives ON the target
+        // cluster. Resolved through the settling lookup every other operation uses,
+        // so the transitions the clock already owed this cluster are materialised
+        // before its state and version are judged. An ARN this endpoint's Region
+        // holds no cluster for — absent, or belonging to another Region — carries no
+        // document at all, so the call reaches no grant and is refused as
+        // unauthorized naming the ARN as submitted, rather than told whether the
+        // cluster is there.
+        let Some(cluster) = state.settled_cluster_in_mut(&region, &input.cluster_arn, now) else {
+            return Err(crate::state::authorization::no_resource_policy_for_cluster(
+                &*self.engine,
+                ctx,
+                Self::NAME,
+                &input.cluster_arn,
+            ));
+        };
+
         // Both members the operation can change are optional in the model, so a
         // request carrying neither asks for no change at all: there is no
         // connectivity configuration to apply and nothing for the cluster
@@ -225,7 +257,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // honest where minting an operation that changes nothing would not be.
         // `ConnectivityInfo` is named as the member at fault because it is the
         // operation's subject; `ZookeeperAccess` is the alternative the message
-        // spells out.
+        // spells out. It is a defect of the REQUEST, so it is answered after the
+        // decision over the target above, which every authorization decision of
+        // this service precedes the body with.
         if input.connectivity_info.is_none() && input.zookeeper_access.is_none() {
             return Err(
                 UpdateConnectivityErrorModeled::BadRequestException(BadRequestException {
@@ -239,27 +273,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into(),
             );
         }
-
-        let mut state = state.lock();
-        let now = std::time::SystemTime::now();
-        // Resolved through the settling lookup every other operation uses, so
-        // the transitions the clock already owed this cluster are materialised
-        // before its state and version are judged. An ARN this endpoint's Region
-        // holds no cluster for — absent, or belonging to another Region — is a
-        // resource that does not exist here, which is what this operation's
-        // recorded answer reports and what every other cluster-addressed call of
-        // this service answers for such an ARN.
-        let Some(cluster) = state.settled_cluster_in_mut(&region, &input.cluster_arn, now) else {
-            return Err(
-                UpdateConnectivityErrorModeled::NotFoundException(NotFoundException {
-                    // The member that named the resource, as the other readers of a
-                    // cluster ARN report it.
-                    invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
-                    message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
-                })
-                .into(),
-            );
-        };
 
         // A `CurrentVersion` is a token the SERVICE mints and the caller quotes
         // back, so a value outside that shape
