@@ -600,12 +600,25 @@ async fn a_blank_or_malformed_domain_name_is_refused_as_invalid_input() {
         );
     }
 
-    for case in [
-        "sim-probe",
-        "-sim-probe.com",
-        "sim-probe-.com",
-        "sim probe.com",
-    ] {
+    // A value of a single label carries no top-level domain, which the service states in
+    // its own sentence rather than as a value outside the member's constraint.
+    for case in ["sim-probe", "sim-probe-r53d-1"] {
+        let (status, body) = emulator
+            .call("CheckDomainTransferability", &json!({ "DomainName": case }))
+            .await;
+        assert_eq!(
+            (status, error_code(&body)),
+            (400, "InvalidInput".to_string()),
+            "case {case:?}: expected 400 InvalidInput, got {status} {body}"
+        );
+        assert_eq!(
+            body["message"].as_str(),
+            Some("Invalid request. Problems: Give domain name must contain more than 1 label"),
+            "case {case:?}: the refusal states the missing top-level domain, got {body}"
+        );
+    }
+
+    for case in ["-sim-probe.com", "sim-probe-.com", "sim probe.com"] {
         let (status, body) = emulator
             .call("CheckDomainTransferability", &json!({ "DomainName": case }))
             .await;

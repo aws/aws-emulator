@@ -59,11 +59,12 @@ pub fn wanted_suggestions(requested: i32) -> Option<usize> {
 /// The model declares no `@range` on the member, so the rule is the one the member's
 /// documentation states — "Specify a value between 1 and 50" — and this service enforces
 /// it as a problem with the REQUEST, stated in the envelope it words those in
-/// ([`request_problem`]). The variable parts are the modelled member name, the two
-/// documented bounds and the value the request carried.
-pub fn suggestion_count_message(requested: i32) -> String {
+/// ([`request_problem`]). The refusal states that rule and nothing about the particular
+/// value: it names the count in prose and the two documented bounds, and does not echo
+/// what the request carried, so one submitted value cannot reach the message.
+pub fn suggestion_count_message() -> String {
     request_problem(&format!(
-        "SuggestionCount {requested} must be between {MIN_SUGGESTION_COUNT} and \
+        "Suggestion count must be a value between {MIN_SUGGESTION_COUNT} and \
          {MAX_SUGGESTION_COUNT}"
     ))
 }

@@ -1169,9 +1169,10 @@ async fn only_standard_prices_selects_nothing_out_of_the_suggestions() {
 #[tokio::test]
 async fn a_suggestion_count_outside_the_documented_range_is_refused() {
     // `SuggestionCount`: "Specify a value between 1 and 50." The model declares no
-    // `@range`, so the service enforces it. Rows differ along which side of the range the
-    // value falls and how far outside it sits — each published bound, one past it, and a
-    // value far beyond.
+    // `@range`, so the service enforces it, and states the rule rather than the value it
+    // was handed: the sentence is the same for every refused count. Rows differ along
+    // which side of the range the value falls and how far outside it sits — each
+    // published bound, one past it, and a value far beyond.
     let refused: [i64; 5] = [0, -1, 51, 100, 1000];
     let emulator = Emulator::new();
 
@@ -1189,11 +1190,8 @@ async fn a_suggestion_count_outside_the_documented_range_is_refused() {
         );
         assert_eq!(
             body["message"].as_str(),
-            Some(
-                format!("Invalid request. Problems: SuggestionCount {count} must be between 1 and 50")
-                    .as_str()
-            ),
-            "case {count}: the refusal names the member, the value and the bounds, got {body}"
+            Some("Invalid request. Problems: Suggestion count must be a value between 1 and 50"),
+            "case {count}: the refusal states the documented range, got {body}"
         );
     }
 

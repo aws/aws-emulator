@@ -333,6 +333,21 @@ pub enum DomainNameError {
 /// registrar could ever hold.
 const MAX_LABEL_LEN: usize = 63;
 
+/// The fewest labels a registrable domain name has: the name itself plus the top-level
+/// domain it sits under. A value of one label carries no top-level domain at all, so it
+/// names no domain any registry delegates.
+const MIN_LABELS: usize = 2;
+
+/// Whether `name` carries fewer than the [`MIN_LABELS`] labels a registrable domain name
+/// has, i.e. no top-level domain.
+///
+/// The ONE place that count is taken, so the refusal
+/// ([`invalid_domain_name_message`]) reports exactly the condition
+/// [`resolve_domain_name`] refuses on.
+fn has_too_few_labels(name: &str) -> bool {
+    name.split('.').count() < MIN_LABELS
+}
+
 /// Whether `candidate` is a suffix that a registry delegates names under.
 ///
 /// Asked of the Public Suffix List, which the `psl` crate carries compiled in: a name is
@@ -375,10 +390,10 @@ pub fn resolve_domain_name(raw: &str) -> Result<String, DomainNameError> {
         return Err(DomainNameError::Invalid);
     }
 
-    let labels: Vec<&str> = name.split('.').collect();
-    if labels.len() < 2 {
+    if has_too_few_labels(&name) {
         return Err(DomainNameError::Invalid);
     }
+    let labels: Vec<&str> = name.split('.').collect();
     for label in &labels {
         let ok = !label.is_empty()
             && label.len() <= MAX_LABEL_LEN
@@ -431,10 +446,11 @@ pub fn request_problem(problem: &str) -> String {
 ///
 /// A problem the real service has its own sentence for is stated in the request-problem
 /// envelope ([`request_problem`]), naming the part of the name the caller has to change:
-/// a member carrying no name at all, and a LABEL over the longest one DNS gives
-/// ([`MAX_LABEL_LEN`]). Anything else names the member and the rule the value failed, the
-/// way the framework's boundary validator words a refusal, so a caller can fix the request
-/// from the message alone.
+/// a member carrying no name at all, a LABEL over the longest one DNS gives
+/// ([`MAX_LABEL_LEN`]), and a name of fewer labels than a registrable one has
+/// ([`has_too_few_labels`]). Anything else names the member and the rule the value failed,
+/// the way the framework's boundary validator words a refusal, so a caller can fix the
+/// request from the message alone.
 pub fn invalid_domain_name_message(raw: &str) -> String {
     // A value with nothing in it is not a name that broke one of the syntax rules: the
     // member carries no name at all.
@@ -446,6 +462,14 @@ pub fn invalid_domain_name_message(raw: &str) -> String {
     // not what was wrong.
     if let Some(label) = raw.split('.').find(|label| label.len() > MAX_LABEL_LEN) {
         return request_problem(&format!("Domain label too long: [{label}]"));
+    }
+    // A name of a single label is not a name that broke a character rule either: nothing
+    // in it is wrong, it is the top-level domain that is MISSING, which the service says
+    // in its own words rather than in the member-constraint clause. Checked after the
+    // label length, because an over-long label is a part of the value the caller must
+    // change, while the label count asks for a part that is not there at all.
+    if has_too_few_labels(raw) {
+        return request_problem("Give domain name must contain more than 1 label");
     }
     format!(
         "Value '{raw}' at 'domainName' failed to satisfy constraint: Member must be a \

@@ -202,7 +202,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // client-input error the operation models.
         let wanted = crate::state::wanted_suggestions(input.suggestion_count).ok_or_else(|| {
             GetDomainSuggestionsErrorModeled::InvalidInput(InvalidInput {
-                message: Some(crate::state::suggestion_count_message(input.suggestion_count)),
+                message: Some(crate::state::suggestion_count_message()),
             })
         })?;
 

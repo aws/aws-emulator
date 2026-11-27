@@ -553,6 +553,147 @@ async fn a_label_longer_than_dns_allows_is_refused_as_that_label() {
 }
 
 // ---------------------------------------------------------------------------
+// The rule: a name carrying no top-level domain is refused for its label count
+// ---------------------------------------------------------------------------
+
+/// The sentence a name of fewer labels than a registrable one is refused with: the
+/// service's request-problem envelope plus its own fixed sentence for the missing
+/// top-level domain. No variable part — in particular the requested name is not echoed.
+const MISSING_TLD_MESSAGE: &str =
+    "Invalid request. Problems: Give domain name must contain more than 1 label";
+
+/// A request body for `operation` carrying `name` as the domain name it asks about, with
+/// every other member the model marks `@required` and nothing else (smithy_query
+/// operation GetDomainSuggestions/RegisterDomain; `GetContactReachabilityStatus` spells
+/// its member `domainName`).
+fn domain_request(operation: &str, name: &str) -> Value {
+    match operation {
+        "GetDomainSuggestions" => {
+            json!({ "DomainName": name, "SuggestionCount": 5, "OnlyAvailable": true })
+        }
+        "RegisterDomain" => registration(name, 1, &person_contact()),
+        "GetContactReachabilityStatus" => json!({ "domainName": name }),
+        _ => json!({ "DomainName": name }),
+    }
+}
+
+/// Every operation that resolves a request's domain name and models `InvalidInput`.
+const DOMAIN_NAME_OPERATIONS: &[&str] = &[
+    "CheckDomainAvailability",
+    "CheckDomainTransferability",
+    "DeleteDomain",
+    "DisableDomainAutoRenew",
+    "DisableDomainTransferLock",
+    "EnableDomainAutoRenew",
+    "GetContactReachabilityStatus",
+    "GetDomainDetail",
+    "GetDomainSuggestions",
+    "ListTagsForDomain",
+    "RegisterDomain",
+    "UpdateTagsForDomain",
+];
+
+#[tokio::test]
+async fn a_name_with_no_top_level_domain_is_refused_for_its_label_count() {
+    // A value of one label is not a name that broke a character rule: the top-level
+    // domain it would sit under is MISSING, which the service states in its own words.
+    // Rows differ along the shape of the lone label — a word, a single character, digits,
+    // interior hyphens, the longest label DNS allows, and a label in mixed case — and
+    // along the operation asked, because every domain-scoped operation resolves the name
+    // by the one rule.
+    let longest_allowed = "a".repeat(63);
+    let single_label: [&str; 6] = [
+        "example-no-tld",
+        "r",
+        "9",
+        "a-0-b",
+        &longest_allowed,
+        "ExampleNoTld",
+    ];
+    let emulator = Emulator::new();
+
+    for operation in DOMAIN_NAME_OPERATIONS {
+        for case in single_label {
+            let (status, body) = emulator
+                .call(operation, &domain_request(operation, case))
+                .await;
+            assert_eq!(
+                (status, error_code(&body)),
+                (400, "InvalidInput".to_string()),
+                "case {operation}/{case:?}: expected 400 InvalidInput, got {status} {body}"
+            );
+            assert_eq!(
+                body["message"].as_str(),
+                Some(MISSING_TLD_MESSAGE),
+                "case {operation}/{case:?}: the refusal states the missing top-level \
+                 domain, got {body}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_name_of_two_labels_or_more_is_never_refused_for_its_label_count() {
+    // The same builder keeps its other sentences, so the label-count refusal is reported
+    // for that problem alone. Rows differ along what else is wrong with a name that DOES
+    // carry a top-level domain: nothing (it resolves), a character the member disallows,
+    // a hyphen at a label's edge, an empty label, and a label over the 63 octets DNS
+    // gives one — plus a member with no name in it at all, which is refused as blank.
+    let one_too_long = "a".repeat(64);
+    let cases: [(&str, &str); 6] = [
+        ("sim probe.com", "constraint"),
+        ("-sim-probe.com", "constraint"),
+        ("sim-probe-.com", "constraint"),
+        ("sim..probe.com", "constraint"),
+        (&one_too_long, "too long"),
+        ("", "blank"),
+    ];
+    let emulator = Emulator::new();
+
+    for operation in DOMAIN_NAME_OPERATIONS {
+        for (case, kind) in cases {
+            let (status, body) = emulator
+                .call(operation, &domain_request(operation, case))
+                .await;
+            assert_eq!(
+                (status, error_code(&body)),
+                (400, "InvalidInput".to_string()),
+                "case {operation}/{case:?}: expected 400 InvalidInput, got {status} {body}"
+            );
+            let message = body["message"].as_str().unwrap_or_default();
+            assert_ne!(
+                message, MISSING_TLD_MESSAGE,
+                "case {operation}/{case:?}: a {kind} problem is not the label count, \
+                 got {body}"
+            );
+            let expected = match kind {
+                "blank" => "Invalid request. Problems: Domain name cannot be blank".to_string(),
+                "too long" => {
+                    format!("Invalid request. Problems: Domain label too long: [{case}]")
+                }
+                _ => format!(
+                    "Value '{case}' at 'domainName' failed to satisfy constraint: Member must \
+                     be a domain name of one label under a top-level domain, where every label \
+                     is made up of letters, digits and interior hyphens"
+                ),
+            };
+            assert_eq!(
+                message, expected,
+                "case {operation}/{case:?}: expected the {kind} wording, got {body}"
+            );
+        }
+    }
+
+    // ...and a well-formed name of two labels resolves, so the refusal is about the
+    // label count and not about every name the rule sees.
+    assert_eq!(
+        availability(&emulator, "example-with-tld.com").await,
+        "AVAILABLE",
+        "a name of two labels under a supported TLD must resolve"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // The rule: GetDomainDetail reports the stored record, not the request
 // ---------------------------------------------------------------------------
 
