@@ -53,6 +53,11 @@ const INSTANCE: &str = "emu-proxy-iam-target";
 const IAM_PROXY: &str = "emu-proxy-iam-required";
 const PASSWORD_PROXY: &str = "emu-proxy-iam-disabled";
 
+/// The two proxies whose `Auth` entry spells NO database user out: one whose secret holds the
+/// database's own user, and one whose secret states no user at all.
+const SECRET_USER_PROXY: &str = "emu-proxy-iam-from-secret";
+const USERLESS_SECRET_PROXY: &str = "emu-proxy-iam-userless-secret";
+
 /// An IAM role ARN of the form `CreateDBProxy$RoleArn` takes: the role a proxy reads its
 /// `Auth` secret with.
 const PROXY_ROLE_ARN: &str = "arn:aws:iam::000000000000:role/rds-proxy";
@@ -117,6 +122,55 @@ fn emulator() -> MultiServiceRouter {
         ),
     );
     router
+}
+
+/// [`emulator`] with SECRETS MANAGER beside it, for the rows about an `Auth` entry whose
+/// database user comes from the secret it names: what the entry is in force for is then a record
+/// that service holds, written through its own operation and read through the in-process
+/// callback a session on the proxy's endpoint holds.
+fn emulator_with_secrets() -> MultiServiceRouter {
+    let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
+    let mut router = MultiServiceRouter::new();
+    router.set_request_authentication(false);
+    router.register_service(
+        service_com_amazonaws_rds_amazonrdsv19::EmulatedService::new(Arc::clone(&engine)),
+    );
+    router.register_service(
+        service_com_amazonaws_iam_awsidentitymanagementv20100508::EmulatedService::new(Arc::clone(
+            &engine,
+        )),
+    );
+    router.register_service(
+        service_com_amazonaws_sts_awssecuritytokenservicev20110615::EmulatedService::new(
+            Arc::clone(&engine),
+        ),
+    );
+    router.register_service(
+        service_com_amazonaws_secretsmanager_secretsmanager::EmulatedService::new(Arc::clone(
+            &engine,
+        )),
+    );
+    router
+}
+
+/// The secret `name`, holding `document`, written through Secrets Manager's OWN operation:
+/// answers the ARN it minted, which is the value an `Auth` entry's `SecretArn` carries.
+async fn planted_secret(
+    secrets: &aws_sdk_secretsmanager::Client,
+    name: &str,
+    document: &str,
+) -> String {
+    let created = secrets
+        .create_secret()
+        .name(name)
+        .secret_string(document)
+        .send()
+        .await
+        .unwrap_or_else(|error| panic!("setup {name:?}: the secret must be created: {error:?}"));
+    created
+        .arn()
+        .unwrap_or_else(|| panic!("setup {name:?}: CreateSecret must report the ARN it minted"))
+        .to_string()
 }
 
 /// One form value as a client puts it in an `application/x-www-form-urlencoded` body, so a
@@ -311,25 +365,37 @@ async fn available_proxy(
     iam_auth: &str,
     require_tls: bool,
 ) -> (String, String) {
-    let created = expect_ok(
-        name,
-        call(
-            router,
-            "CreateDBProxy",
-            &[
-                ("DBProxyName", name),
-                ("EngineFamily", "MYSQL"),
-                ("RoleArn", PROXY_ROLE_ARN),
-                ("VpcSubnetIds.member.1", SUBNET_ID),
-                ("RequireTLS", if require_tls { "true" } else { "false" }),
-                ("Auth.member.1.UserName", MASTER_USER),
-                ("Auth.member.1.AuthScheme", "SECRETS"),
-                ("Auth.member.1.SecretArn", SECRET_ARN),
-                ("Auth.member.1.IAMAuth", iam_auth),
-            ],
-        )
-        .await,
-    );
+    available_proxy_with(router, name, iam_auth, require_tls, SECRET_ARN, true).await
+}
+
+/// [`available_proxy`], with the secret the `Auth` entry points at and whether that entry
+/// SPELLS THE DATABASE USER OUT.
+///
+/// `UserName` is an optional member, and the create AWS documents states the scheme, the secret
+/// and the IAM mode and leaves the user to the credential in that secret — so a proxy is created
+/// both ways here.
+async fn available_proxy_with(
+    router: &MultiServiceRouter,
+    name: &str,
+    iam_auth: &str,
+    require_tls: bool,
+    secret_arn: &str,
+    names_the_user: bool,
+) -> (String, String) {
+    let mut params: Vec<(&str, &str)> = vec![
+        ("DBProxyName", name),
+        ("EngineFamily", "MYSQL"),
+        ("RoleArn", PROXY_ROLE_ARN),
+        ("VpcSubnetIds.member.1", SUBNET_ID),
+        ("RequireTLS", if require_tls { "true" } else { "false" }),
+        ("Auth.member.1.AuthScheme", "SECRETS"),
+        ("Auth.member.1.SecretArn", secret_arn),
+        ("Auth.member.1.IAMAuth", iam_auth),
+    ];
+    if names_the_user {
+        params.push(("Auth.member.1.UserName", MASTER_USER));
+    }
+    let created = expect_ok(name, call(router, "CreateDBProxy", &params).await);
     let published = text(&created, "Endpoint");
     let arn = text(&created, "DBProxyArn");
     // The proxy comes up on its own, so what this waits for is the CONDITION a client has to
@@ -601,6 +667,14 @@ async fn a_proxy_requiring_iam_auth_admits_the_client_its_dbuser_grant_covers() 
             true,
         ),
         (
+            // The other reading of the same published value: the whole authority as the host,
+            // completed with the port that authority itself spells. Both readings name this one
+            // endpoint, so a token generated for either is a token for it.
+            "a token generated for the published endpoint completed with the port it spells",
+            auth_token(&granted, &published, port, MASTER_USER, REGION, now),
+            true,
+        ),
+        (
             "a token the granted principal generated for another endpoint",
             auth_token(&granted, &host, ANOTHER_PORT, MASTER_USER, REGION, now),
             false,
@@ -678,6 +752,155 @@ async fn a_proxy_requiring_iam_auth_admits_the_client_its_dbuser_grant_covers() 
             }
         }
     }
+}
+
+/// RULE: `UserAuthConfig$UserName` is optional, and the credential a proxy logs in with is the
+/// one in the secret the same entry names — so an `Auth` entry that spells no user out is in
+/// force for the DATABASE USER THAT SECRET HOLDS, and an entry whose secret states no user is in
+/// force for nobody and decides nothing about any client.
+///
+/// The secret is Secrets Manager's own record here, written through its own operation and read
+/// through the in-process callback a session on the endpoint holds, so what the proxy reads is
+/// the document a caller really stored — fields of every type a credential document carries
+/// included.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_auth_entry_naming_no_user_is_in_force_for_the_user_its_secret_holds() {
+    let router = emulator_with_secrets();
+    let secrets = crate::managed_master_user_password::secrets_manager_in(&router, REGION);
+    // The credential document AWS documents for a database secret, beside the other fields such
+    // a document carries — including one that is not a string.
+    let credential = planted_secret(
+        &secrets,
+        "emu-proxy-iam-secret-user",
+        &format!(
+            r#"{{"username":"{MASTER_USER}","password":"{MASTER_PASSWORD}","engine":"mysql","port":3306,"dbname":"{DATABASE}"}}"#
+        ),
+    )
+    .await;
+    // A document that states no user at all, so the entry pointing at it is in force for nobody.
+    let userless = planted_secret(
+        &secrets,
+        "emu-proxy-iam-secret-userless",
+        &format!(r#"{{"password":"{MASTER_PASSWORD}","engine":"mysql","port":3306}}"#),
+    )
+    .await;
+    available_instance(&router, INSTANCE, "mysql", &[]).await;
+    let (published, proxy_arn) = available_proxy_with(
+        &router,
+        SECRET_USER_PROXY,
+        "REQUIRED",
+        true,
+        &credential,
+        false,
+    )
+    .await;
+    registered_target(&router, SECRET_USER_PROXY).await;
+    let (host, port) = dialled("the proxy whose Auth names no user", &published);
+    let granted = user_key(
+        &router,
+        "a grant on the dbuser resource of the secret's user",
+        "emu-proxy-iam-secret-user-key",
+        &document(&[(
+            "Allow",
+            "rds-db:connect",
+            &dbuser_arn(&proxy_arn, MASTER_USER),
+        )]),
+    )
+    .await;
+    let other = user_key(
+        &router,
+        "a grant on another database user's resource",
+        "emu-proxy-iam-secret-other-key",
+        &document(&[(
+            "Allow",
+            "rds-db:connect",
+            &dbuser_arn(&proxy_arn, "someone_else"),
+        )]),
+    )
+    .await;
+    let now = SystemTime::now();
+
+    // (case, the credential presented, whether the proxy admits the session)
+    let rows: Vec<(&str, String, bool)> = vec![
+        (
+            "a token signed by the principal granted connect on the secret's own user",
+            auth_token(&granted, &host, port, MASTER_USER, REGION, now),
+            true,
+        ),
+        (
+            "a token signed by a principal granted connect on another database user",
+            auth_token(&other, &host, port, MASTER_USER, REGION, now),
+            false,
+        ),
+        (
+            // IAM authentication is REQUIRED for the user the secret holds, so the database's
+            // own password authenticates nothing on this proxy's hop either.
+            "the database's own password, where the secret's user requires IAM authentication",
+            MASTER_PASSWORD.to_string(),
+            false,
+        ),
+    ];
+    for (case, credential, admitted) in rows {
+        match login(&host, port, &credential).await {
+            Ok(mut session) => {
+                assert!(
+                    admitted,
+                    "case {case:?}: expected the proxy to refuse the session, got one it \
+                     admitted"
+                );
+                let answered = session.query("SELECT 1").await.unwrap_or_else(|refusal| {
+                    panic!(
+                        "case {case:?}: the admitted session must serve statements, got {refusal:?}"
+                    )
+                });
+                assert_eq!(
+                    answered.only(),
+                    Some("1"),
+                    "case {case:?}: expected the statement to answer 1, got {answered:?}"
+                );
+            }
+            Err(refusal) => {
+                assert!(
+                    !admitted,
+                    "case {case:?}: expected the proxy to admit the session, got {refusal:?}"
+                );
+                assert_eq!(
+                    refusal,
+                    access_denied(&host),
+                    "case {case:?}: expected MySQL's own access-denied refusal, got {refusal:?}"
+                );
+            }
+        }
+    }
+
+    // And the boundary: an entry whose secret states no user names no user, so the proxy decides
+    // nothing about this client and the database's own credential stands.
+    let (published, _arn) = available_proxy_with(
+        &router,
+        USERLESS_SECRET_PROXY,
+        "REQUIRED",
+        true,
+        &userless,
+        false,
+    )
+    .await;
+    registered_target(&router, USERLESS_SECRET_PROXY).await;
+    let (host, port) = dialled("the proxy whose secret states no user", &published);
+    let case = "the database's own password, where the entry's secret states no user";
+    let mut session = login(&host, port, MASTER_PASSWORD)
+        .await
+        .unwrap_or_else(|refusal| {
+            panic!("case {case:?}: expected the database's own password to admit the session, got {refusal:?}")
+        });
+    let answered = session
+        .query("SELECT 1")
+        .await
+        .unwrap_or_else(|refusal| panic!("case {case:?}: the admitted session must serve statements, got {refusal:?}"));
+    assert_eq!(
+        answered.only(),
+        Some("1"),
+        "case {case:?}: expected the statement to answer 1, got {answered:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

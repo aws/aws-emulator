@@ -186,7 +186,7 @@ async fn serve_session(
     // 2. The instance this listener belongs to, as the store holds it now, and the storage
     //    its statements run on — resolved together, so a session cannot be admitted against
     //    one database and served from another.
-    let Some(served) = context.endpoint_facts() else {
+    let Some(served) = context.session_facts().await else {
         return fatal(
             &mut conn,
             "57P03",

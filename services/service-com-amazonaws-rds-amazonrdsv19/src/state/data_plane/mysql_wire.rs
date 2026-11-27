@@ -156,7 +156,7 @@ async fn serve_session(
 ) -> std::io::Result<()> {
     let mut conn = conn;
     let connection_id = context.take_connection_id();
-    let Some(served) = context.endpoint_facts() else {
+    let Some(served) = context.session_facts().await else {
         // No database behind this listener any more: the protocol's own "server shutting
         // down" is the honest answer, sent as the first packet the client reads.
         return write_error(&mut conn, 0, 1053, "08S01", "Server shutdown in progress").await;

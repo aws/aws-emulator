@@ -53,3 +53,29 @@ Actual (emulator): no assertion is reached at all — the check is terminated at
 5. Create two VPC-attached Lambda functions from the same package: one role granting rds-db:connect on that exact ARN, one with no such grant.
 6. Invoke the granted function -> expected {"ok": true, "value": 1}; invoke the ungranted function -> expected {"ok": false, "mysql_error_code": 1045}.
    Observed: the check never reaches step 6's comparison; the harness terminates it with `Check timed out after 60.0s`.
+
+## Resolution
+
+FIXED — the scenario now converges and both documented outcomes are produced: the role granted
+`rds-db:connect` on the proxy's `dbuser` resource authenticates through the IAM-auth proxy and its
+statement runs, and the role without that grant is refused by the proxy with MySQL 1045 and runs no
+statement.
+
+What did not converge was the invocation, in three places, each a general rule rather than this
+scenario's shape:
+
+1. An authentication token is PRESIGNED in the client over the address the caller named — a SigV4
+   canonical request carries the path, the query, the headers and the payload hash, and the address
+   only as the `host` header — so the SDK neither resolves nor parses `DBHostname`: whatever a caller
+   read out of a control plane's endpoint member is minted a token addressed `<DBHostname>:<Port>`.
+   The runtime's SDK seam was composing that authority into the URI it handed the signer, so a value
+   carrying a port of its own — what a member that models no port publishes — was refused as a
+   malformed URL and the handler raised instead of being handed a token.
+2. The addresses one proxy endpoint answers at are both readings of the value it published — the
+   host alone and the whole authority — each completed with either port that endpoint answers at, so
+   a token minted for any of them is a token for that one endpoint.
+3. `UserAuthConfig$UserName` is optional and the credential the proxy logs in with is the one in the
+   secret the same entry names, so an entry that spells no user out is in force for the user that
+   secret holds — the proxy created the way the service documents one, with the scheme, the secret
+   and the IAM mode and no user. The secret is read through Secrets Manager's own operation over the
+   in-process callback, and only the user is taken from it.

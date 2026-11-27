@@ -283,7 +283,7 @@ pub async fn mint_master_user_secret<Eng: Send + Sync + 'static>(
     region: &str,
     asked: &MasterSecretRequest<'_>,
 ) -> Result<MintedMasterSecret, String> {
-    let secrets = secrets_manager_client(ctx, region).ok_or_else(unaskable_region)?;
+    let secrets = secrets_manager_client(ctx.callback(), region).ok_or_else(unaskable_region)?;
     let password = generated_password(&secrets, asked.engine).await?;
     // The secret is one RDS OWNS, so the create is made as RDS's OWN service principal
     // acting for the resource the secret belongs to ([`ServicePrincipalCall`]): that is
@@ -363,7 +363,7 @@ pub async fn rotate_master_user_secret<Eng: Send + Sync + 'static>(
     username: Option<&str>,
     db_engine: &str,
 ) -> Result<String, String> {
-    let secrets = secrets_manager_client(ctx, region).ok_or_else(unaskable_region)?;
+    let secrets = secrets_manager_client(ctx.callback(), region).ok_or_else(unaskable_region)?;
     let password = generated_password(&secrets, db_engine).await?;
     let acting = ServicePrincipalCall::begin(engine, ctx, owner_arn)
         .ok_or_else(|| unactable_principal("rotated", owner_arn))?;
@@ -655,8 +655,13 @@ fn unactable_principal(action: &str, owner: &str) -> String {
 /// of being interpolated as given — the same gate [`kms_client`] applies: `None` for a value
 /// that would name an authority the caller chose rather than the peer service this emulator
 /// asks.
-fn secrets_manager_client(
-    ctx: &smithy_server_runtime::OperationContext<'_>,
+///
+/// It takes the CALLBACK rather than the request context, so the one builder serves a request
+/// (`ctx.callback()`) and a seam that outlives the request that opened it — the data plane of a
+/// DB proxy, which reads the credential its `Auth` names per session
+/// (`super::data_plane::proxy_client_auth`).
+pub(crate) fn secrets_manager_client(
+    callback: &::smithy_server_runtime::EmbeddedEmulator,
     region: &str,
 ) -> Option<::aws_sdk_secretsmanager::Client> {
     let region = ::service_common::arn::region_label(region)?;
@@ -666,8 +671,8 @@ fn secrets_manager_client(
             region.to_string(),
         ))
         .endpoint_url(format!("https://secretsmanager.{region}.amazonaws.com"))
-        .credentials_provider(ctx.callback().aws_credentials_provider())
-        .http_client(ctx.callback().http_client())
+        .credentials_provider(callback.aws_credentials_provider())
+        .http_client(callback.http_client())
         .retry_config(::aws_sdk_secretsmanager::config::retry::RetryConfig::disabled())
         .timeout_config(::aws_sdk_secretsmanager::config::timeout::TimeoutConfig::disabled())
         .identity_cache(::aws_sdk_secretsmanager::config::IdentityCache::no_cache())

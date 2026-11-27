@@ -145,7 +145,11 @@ const CLIENT_PREAMBLE: &[&str] = &[
 /// itself — the greeting, the `mysql_native_password` proof, then one `COM_QUERY` per statement —
 /// and reports what the server answered, including the refusal it was answered with instead of a
 /// session.
-const PROBE_SOURCE: &str = r#"
+/// `pub(crate)` because the suite over a session a client authenticates to the proxy with IAM
+/// (`tests/all/handler_rds_proxy_iam_auth_session.rs`) opens its sessions with this same
+/// handler rather than carrying a second spelling of the MySQL protocol: what differs there is
+/// the CREDENTIAL presented, which that suite mints and hands this handler as the password.
+pub(crate) const PROBE_SOURCE: &str = r#"
 import hashlib
 import socket
 import ssl

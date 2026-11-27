@@ -297,6 +297,24 @@ impl SessionContext {
         }
     }
 
+    /// [`Self::endpoint_facts`], with what the DB PROXY in front of this session says about its
+    /// CLIENT's credential completed: an `Auth` entry that names no database user is in force
+    /// for the user the secret it points at holds, and that secret is Secrets Manager's own to
+    /// answer ([`super::proxy_client_auth::ProxyClientAuth::resolve_users_from_secrets`]).
+    ///
+    /// The reading every wire opens a session with, so the credential a client is asked for and
+    /// the credential its login is admitted against are decided from one reading of the proxy's
+    /// `Auth`. The state lock is released before the secret is asked for: the read is another
+    /// service's operation over the in-process callback, and nothing of this store is held
+    /// across it.
+    pub async fn session_facts(&self) -> Option<ServedSession> {
+        let mut served = self.endpoint_facts()?;
+        if let Some(auth) = served.facts.proxy_client_auth.as_mut() {
+            auth.resolve_users_from_secrets(&self.callback).await;
+        }
+        Some(served)
+    }
+
     /// The endpoint's engine as it is NOW, re-read for each statement a session runs: the
     /// parameters in force, when the engine last came up, whether it is replaying from a
     /// primary, and whether the endpoint serves writes at all.
@@ -1394,16 +1412,18 @@ impl IamLogin {
         // completes the published value with the port of the databases the proxy's engine
         // family names ([`super::proxy_endpoint::wire_engine_port`]) — and the value this
         // emulator publishes carries the port of the listener too, so a client may take the
-        // whole published authority as the host it completes. Every one of them names this one
-        // endpoint, which is the endpoint the session arrived on.
+        // whole published authority as the host it completes. Both readings of the published
+        // value, completed with either port the endpoint answers at, name this one endpoint,
+        // which is the endpoint the session arrived on.
         let family_port = super::proxy_endpoint::wire_engine_port(facts.wire);
         let published = ::service_common::data_plane_addressing::host_port_authority(
             &facts.endpoint_host,
             facts.endpoint_port,
         );
-        let addresses: [(&str, u16); 3] = [
+        let addresses: [(&str, u16); 4] = [
             (facts.endpoint_host.as_str(), facts.endpoint_port),
             (facts.endpoint_host.as_str(), family_port),
+            (published.as_str(), facts.endpoint_port),
             (published.as_str(), family_port),
         ];
         let now = ::std::time::SystemTime::now();

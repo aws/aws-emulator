@@ -50,8 +50,16 @@ use std::time::SystemTime;
 use ::service_com_amazonaws_iam_awsidentitymanagementv20100508::state as iam_store;
 use ::service_com_amazonaws_sts_awssecuritytokenservicev20110615::state as sts_store;
 use ::service_common::iam_authorization::{self as iam, Decision};
+use ::smithy_server_runtime::EmbeddedEmulator;
 
 use crate::ops::types::UserAuthConfigInfo;
+
+/// The field a database credential secret holds the database user in.
+///
+/// A secret a proxy authenticates to its database with is the credential document Amazon RDS
+/// documents for one — a `username` and a `password` — so the user an `Auth` entry naming none
+/// is in force for is this field of the secret that entry points at.
+const SECRET_USERNAME_FIELD: &str = "username";
 
 /// `IAMAuthMode` — "REQUIRED", the mode under which a client of the proxy authenticates with
 /// IAM and with nothing else, so the credential it presents in place of a password is an
@@ -160,6 +168,76 @@ impl ProxyClientAuth {
             ),
         )
     }
+
+    /// Fill in the DATABASE USER of every `Auth` entry that names none, out of the secret that
+    /// entry points at.
+    ///
+    /// `UserName` — "the name of the database user to which the proxy connects" — is an
+    /// OPTIONAL member, and the credential the proxy logs in as that user with is the one in the
+    /// secret the same entry names (`SecretArn`, "the secret that the proxy uses to authenticate
+    /// to the RDS DB instance or Aurora DB cluster"). So an entry that spells no user out is in
+    /// force for the user THAT SECRET holds, read as the field a database credential secret
+    /// carries it in ([`SECRET_USERNAME_FIELD`]): a proxy created with an `Auth` entry stating
+    /// the scheme, the secret and the IAM mode and no user authenticates the client logging in
+    /// as the secret's own user.
+    ///
+    /// The secret is read through Secrets Manager's OWN operation over the in-process callback —
+    /// with this crate's one in-process client for it
+    /// ([`crate::state::managed_master_secret::secrets_manager_client`]) — because what a secret
+    /// holds is that service's to answer rather than another store's to read: only the user is
+    /// kept, and the credential beside it is not looked at. An entry whose secret cannot be read,
+    /// or whose secret holds no such field, names no user still and decides nothing about any
+    /// client; an entry naming one is left exactly as the proxy reports it.
+    pub async fn resolve_users_from_secrets(&mut self, callback: &EmbeddedEmulator) {
+        if self.auth.iter().all(|entry| entry.user_name.is_some()) {
+            return;
+        }
+        let Some(client) =
+            crate::state::managed_master_secret::secrets_manager_client(callback, &self.region)
+        else {
+            return;
+        };
+        for entry in &mut self.auth {
+            if entry.user_name.is_some() {
+                continue;
+            }
+            let Some(secret_arn) = entry
+                .secret_arn
+                .as_deref()
+                .filter(|arn| !arn.is_empty())
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            entry.user_name = user_in_secret(&client, &secret_arn).await;
+        }
+    }
+}
+
+/// The database user the secret `secret_arn` holds, or `None` when Secrets Manager answered no
+/// value, the value is not a document stating fields at all, or it states no user.
+///
+/// The document is read for its `username` field and nothing else: every other field a
+/// credential secret carries — the engine, the host, the port, the database name — is left
+/// alone, whatever type it holds, and the credential beside the user is never touched, logged or
+/// carried out of this function.
+async fn user_in_secret(
+    client: &::aws_sdk_secretsmanager::Client,
+    secret_arn: &str,
+) -> Option<String> {
+    let answered = client
+        .get_secret_value()
+        .secret_id(secret_arn)
+        .send()
+        .await
+        .ok()?;
+    let document = answered.secret_string()?;
+    let fields: ::serde_json::Value = ::serde_json::from_str(document).ok()?;
+    fields
+        .get(SECRET_USERNAME_FIELD)
+        .and_then(::serde_json::Value::as_str)
+        .filter(|user| !user.is_empty())
+        .map(str::to_string)
 }
 
 /// WHO an authentication token speaks for, and what that principal may do: the two stores the
