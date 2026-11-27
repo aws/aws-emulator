@@ -23,8 +23,9 @@
 //! resurrect one a delete removed.
 //!
 //! It is a READ: nothing here writes, and the members a catalogue snapshot reports are read
-//! off the image that restores from it — its owner, its owner alias, its creation date and
-//! the size, encryption and key of the device the mapping restores.
+//! off the image that restores from it — its owner, its owner alias, the name the build was
+//! published under, its creation date and the size, encryption and key of the device the
+//! mapping restores.
 //!
 //! BOUNDS: one projection per EBS device mapping of each stored image, which is bounded by
 //! the store's own ceiling on images ([`MAX_IMAGES`]) and the mappings a register may supply;
@@ -81,6 +82,21 @@ impl ComAmazonawsEc2Amazonec2State {
     }
 }
 
+/// How a snapshot of the published catalogue describes itself: the NAME the build it was
+/// published with carries ("the name of the AMI that was provided during image creation",
+/// `Image$Name`), falling back to what that image describes itself as for an image published
+/// under no name at all.
+///
+/// RECORDED BEHAVIOUR: a published build is identified by the name it is published under —
+/// the variant, the architecture and the version are all in it — and that is the description
+/// the snapshot the build restores from carries, which is why the way a client finds the
+/// snapshots of one published build is a `description` filter carrying that build's published
+/// name. The snapshot and the image it backs therefore name the same build, rather than the
+/// snapshot repeating the image's prose.
+fn published_build_description(image: &Image) -> Option<String> {
+    image.name.clone().or_else(|| image.description.clone())
+}
+
 /// One device mapping's snapshot as the `Snapshot` shape, read off the `image` that restores
 /// from it.
 ///
@@ -104,9 +120,9 @@ fn image_backing_snapshot(
         snapshot_id: Some(snapshot_id.to_string()),
         owner_id: image.owner_id.clone(),
         owner_alias,
-        // "A description of the snapshot" (`Snapshot$Description`): what the image the
-        // snapshot was published with describes itself as.
-        description: image.description.clone(),
+        // "A description of the snapshot" (`Snapshot$Description`): the name the build was
+        // published under ([`published_build_description`]).
+        description: published_build_description(image),
         // "The ID of the volume that was used to create the snapshot" (`Snapshot$VolumeId`):
         // the publisher's, which this account cannot resolve
         // ([`SNAPSHOT_SOURCE_VOLUME_PLACEHOLDER`]).
@@ -135,9 +151,11 @@ fn image_backing_snapshot(
         // through the one conversion [`volume_full_snapshot_size_in_bytes`] holds: every block
         // of the restored device is written in a snapshot an image restores from.
         full_snapshot_size_in_bytes: volume_size.and_then(volume_full_snapshot_size_in_bytes),
-        // "Any tags assigned to the snapshot" (`Snapshot$Tags`): a catalogue snapshot is
-        // tagged by nothing, there being no call that tags one.
-        tags: Some(Vec::new()),
+        // "Any tags assigned to the snapshot" (`Snapshot$Tags`): a resource's tags are its
+        // OWNER's, and this snapshot belongs to the account that published the image — so a
+        // reader that is not that owner is shown no tag member at all, rather than an empty
+        // set it could read as "the publisher tagged nothing".
+        tags: None,
         // The members a snapshot of this kind carries nothing for, for the reasons this
         // crate's own snapshot writers record against the same shape: the Outpost ARN names
         // one stored on an Outpost, the Availability Zone one in a Local Zone, the restore

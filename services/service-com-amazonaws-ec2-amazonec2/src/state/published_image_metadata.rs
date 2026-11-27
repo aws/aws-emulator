@@ -225,7 +225,9 @@ const BOTTLEROCKET_FACTS: &[(&str, &str)] = &[("image_version", BOTTLEROCKET_VER
 /// each Amazon Linux family, each architecture it is built for, and the accelerator builds
 /// that carry an accelerator's drivers — and each publishes its JSON manifest at its own path
 /// beside the leaves; the Bottlerocket rows publish the build's version beside its id, which
-/// is what that project publishes, and no manifest.
+/// is what that project publishes, and no manifest. The Bottlerocket rows are one per variant
+/// that project builds a node image for: its Amazon ECS variant, and each Kubernetes minor it
+/// supports in both architectures and with and without the accelerator drivers.
 const PUBLISHED_IMAGE_METADATA: &[ImageMetadataHierarchy] = &[
     ImageMetadataHierarchy {
         path: "/aws/service/ecs/optimized-ami/amazon-linux-2/recommended",
@@ -366,6 +368,180 @@ const PUBLISHED_IMAGE_METADATA: &[ImageMetadataHierarchy] = &[
             // The project spells the 64-bit Arm architecture `aarch64` in a build's name.
             name: "bottlerocket-aws-ecs-2-aarch64-v1.46.0-7f7f0a6c",
             description: "Bottlerocket OS 1.46.0 (aws-ecs-2) aarch64",
+            architecture: "arm64",
+            creation_date: BOTTLEROCKET_CREATION_DATE,
+            boot_mode: BOOT_MODE_UEFI,
+            requires_imdsv2: true,
+        },
+        publishes_image_name: false,
+        publishes_manifest: false,
+        facts: BOTTLEROCKET_FACTS,
+    },
+    // The Kubernetes variants of the same release: ONE ROW PER (Kubernetes minor, accelerator,
+    // architecture), which is the shape of the namespace that project publishes a node image
+    // under — a variant with no row here is a cluster whose node group resolves no image, and
+    // a build nothing in the snapshot inventory is published with.
+    ImageMetadataHierarchy {
+        path: "/aws/service/bottlerocket/aws-k8s-1.32/x86_64/latest",
+        image: PublishedImage {
+            name: "bottlerocket-aws-k8s-1.32-x86_64-v1.46.0-7f7f0a6c",
+            description: "Bottlerocket OS 1.46.0 (aws-k8s-1.32) x86_64",
+            architecture: "x86_64",
+            creation_date: BOTTLEROCKET_CREATION_DATE,
+            boot_mode: BOOT_MODE_UEFI_PREFERRED,
+            requires_imdsv2: true,
+        },
+        publishes_image_name: false,
+        publishes_manifest: false,
+        facts: BOTTLEROCKET_FACTS,
+    },
+    ImageMetadataHierarchy {
+        path: "/aws/service/bottlerocket/aws-k8s-1.32/arm64/latest",
+        image: PublishedImage {
+            name: "bottlerocket-aws-k8s-1.32-aarch64-v1.46.0-7f7f0a6c",
+            description: "Bottlerocket OS 1.46.0 (aws-k8s-1.32) aarch64",
+            architecture: "arm64",
+            creation_date: BOTTLEROCKET_CREATION_DATE,
+            boot_mode: BOOT_MODE_UEFI,
+            requires_imdsv2: true,
+        },
+        publishes_image_name: false,
+        publishes_manifest: false,
+        facts: BOTTLEROCKET_FACTS,
+    },
+    ImageMetadataHierarchy {
+        path: "/aws/service/bottlerocket/aws-k8s-1.32-nvidia/x86_64/latest",
+        image: PublishedImage {
+            // The accelerator build of a variant carries the accelerator in its own variant
+            // token, both in the name and in the path it is published under.
+            name: "bottlerocket-aws-k8s-1.32-nvidia-x86_64-v1.46.0-7f7f0a6c",
+            description: "Bottlerocket OS 1.46.0 (aws-k8s-1.32-nvidia) x86_64",
+            architecture: "x86_64",
+            creation_date: BOTTLEROCKET_CREATION_DATE,
+            boot_mode: BOOT_MODE_UEFI_PREFERRED,
+            requires_imdsv2: true,
+        },
+        publishes_image_name: false,
+        publishes_manifest: false,
+        facts: BOTTLEROCKET_FACTS,
+    },
+    ImageMetadataHierarchy {
+        path: "/aws/service/bottlerocket/aws-k8s-1.32-nvidia/arm64/latest",
+        image: PublishedImage {
+            name: "bottlerocket-aws-k8s-1.32-nvidia-aarch64-v1.46.0-7f7f0a6c",
+            description: "Bottlerocket OS 1.46.0 (aws-k8s-1.32-nvidia) aarch64",
+            architecture: "arm64",
+            creation_date: BOTTLEROCKET_CREATION_DATE,
+            boot_mode: BOOT_MODE_UEFI,
+            requires_imdsv2: true,
+        },
+        publishes_image_name: false,
+        publishes_manifest: false,
+        facts: BOTTLEROCKET_FACTS,
+    },
+    ImageMetadataHierarchy {
+        path: "/aws/service/bottlerocket/aws-k8s-1.33/x86_64/latest",
+        image: PublishedImage {
+            name: "bottlerocket-aws-k8s-1.33-x86_64-v1.46.0-7f7f0a6c",
+            description: "Bottlerocket OS 1.46.0 (aws-k8s-1.33) x86_64",
+            architecture: "x86_64",
+            creation_date: BOTTLEROCKET_CREATION_DATE,
+            boot_mode: BOOT_MODE_UEFI_PREFERRED,
+            requires_imdsv2: true,
+        },
+        publishes_image_name: false,
+        publishes_manifest: false,
+        facts: BOTTLEROCKET_FACTS,
+    },
+    ImageMetadataHierarchy {
+        path: "/aws/service/bottlerocket/aws-k8s-1.33/arm64/latest",
+        image: PublishedImage {
+            name: "bottlerocket-aws-k8s-1.33-aarch64-v1.46.0-7f7f0a6c",
+            description: "Bottlerocket OS 1.46.0 (aws-k8s-1.33) aarch64",
+            architecture: "arm64",
+            creation_date: BOTTLEROCKET_CREATION_DATE,
+            boot_mode: BOOT_MODE_UEFI,
+            requires_imdsv2: true,
+        },
+        publishes_image_name: false,
+        publishes_manifest: false,
+        facts: BOTTLEROCKET_FACTS,
+    },
+    ImageMetadataHierarchy {
+        path: "/aws/service/bottlerocket/aws-k8s-1.33-nvidia/x86_64/latest",
+        image: PublishedImage {
+            name: "bottlerocket-aws-k8s-1.33-nvidia-x86_64-v1.46.0-7f7f0a6c",
+            description: "Bottlerocket OS 1.46.0 (aws-k8s-1.33-nvidia) x86_64",
+            architecture: "x86_64",
+            creation_date: BOTTLEROCKET_CREATION_DATE,
+            boot_mode: BOOT_MODE_UEFI_PREFERRED,
+            requires_imdsv2: true,
+        },
+        publishes_image_name: false,
+        publishes_manifest: false,
+        facts: BOTTLEROCKET_FACTS,
+    },
+    ImageMetadataHierarchy {
+        path: "/aws/service/bottlerocket/aws-k8s-1.33-nvidia/arm64/latest",
+        image: PublishedImage {
+            name: "bottlerocket-aws-k8s-1.33-nvidia-aarch64-v1.46.0-7f7f0a6c",
+            description: "Bottlerocket OS 1.46.0 (aws-k8s-1.33-nvidia) aarch64",
+            architecture: "arm64",
+            creation_date: BOTTLEROCKET_CREATION_DATE,
+            boot_mode: BOOT_MODE_UEFI,
+            requires_imdsv2: true,
+        },
+        publishes_image_name: false,
+        publishes_manifest: false,
+        facts: BOTTLEROCKET_FACTS,
+    },
+    ImageMetadataHierarchy {
+        path: "/aws/service/bottlerocket/aws-k8s-1.34/x86_64/latest",
+        image: PublishedImage {
+            name: "bottlerocket-aws-k8s-1.34-x86_64-v1.46.0-7f7f0a6c",
+            description: "Bottlerocket OS 1.46.0 (aws-k8s-1.34) x86_64",
+            architecture: "x86_64",
+            creation_date: BOTTLEROCKET_CREATION_DATE,
+            boot_mode: BOOT_MODE_UEFI_PREFERRED,
+            requires_imdsv2: true,
+        },
+        publishes_image_name: false,
+        publishes_manifest: false,
+        facts: BOTTLEROCKET_FACTS,
+    },
+    ImageMetadataHierarchy {
+        path: "/aws/service/bottlerocket/aws-k8s-1.34/arm64/latest",
+        image: PublishedImage {
+            name: "bottlerocket-aws-k8s-1.34-aarch64-v1.46.0-7f7f0a6c",
+            description: "Bottlerocket OS 1.46.0 (aws-k8s-1.34) aarch64",
+            architecture: "arm64",
+            creation_date: BOTTLEROCKET_CREATION_DATE,
+            boot_mode: BOOT_MODE_UEFI,
+            requires_imdsv2: true,
+        },
+        publishes_image_name: false,
+        publishes_manifest: false,
+        facts: BOTTLEROCKET_FACTS,
+    },
+    ImageMetadataHierarchy {
+        path: "/aws/service/bottlerocket/aws-k8s-1.34-nvidia/x86_64/latest",
+        image: PublishedImage {
+            name: "bottlerocket-aws-k8s-1.34-nvidia-x86_64-v1.46.0-7f7f0a6c",
+            description: "Bottlerocket OS 1.46.0 (aws-k8s-1.34-nvidia) x86_64",
+            architecture: "x86_64",
+            creation_date: BOTTLEROCKET_CREATION_DATE,
+            boot_mode: BOOT_MODE_UEFI_PREFERRED,
+            requires_imdsv2: true,
+        },
+        publishes_image_name: false,
+        publishes_manifest: false,
+        facts: BOTTLEROCKET_FACTS,
+    },
+    ImageMetadataHierarchy {
+        path: "/aws/service/bottlerocket/aws-k8s-1.34-nvidia/arm64/latest",
+        image: PublishedImage {
+            name: "bottlerocket-aws-k8s-1.34-nvidia-aarch64-v1.46.0-7f7f0a6c",
+            description: "Bottlerocket OS 1.46.0 (aws-k8s-1.34-nvidia) aarch64",
             architecture: "arm64",
             creation_date: BOTTLEROCKET_CREATION_DATE,
             boot_mode: BOOT_MODE_UEFI,
