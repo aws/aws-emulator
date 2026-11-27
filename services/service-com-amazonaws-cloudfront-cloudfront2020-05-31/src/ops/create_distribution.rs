@@ -475,9 +475,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // exists to carry the alias. The pair rule — that a configuration claiming an alias
         // names one custom certificate at all — is answered inside the shared create path,
         // which is why only the resolution is here.
-        if let Some(message) =
-            crate::state::unusable_viewer_certificate(&*self.engine, &input.distribution_config)
-        {
+        if let Some(message) = crate::state::unusable_viewer_certificate(
+            &*self.engine,
+            &input.distribution_config,
+            now,
+        ) {
             return Err(create_refusal(
                 crate::state::CreateRefusal::InvalidViewerCertificate(message.to_string()),
             ));

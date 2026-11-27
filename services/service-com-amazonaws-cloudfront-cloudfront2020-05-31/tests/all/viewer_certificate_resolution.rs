@@ -25,21 +25,29 @@
 //!   that position and not the bare name beneath it;
 //! * a certificate in Certificate Manager has to be in the one Region CloudFront presents one
 //!   from: "CloudFront only supports ACM certificates in the US East (N. Virginia) Region
-//!   (`us-east-1`)" (`ViewerCertificate$ACMCertificateArn`);
+//!   (`us-east-1`)" (`ViewerCertificate$ACMCertificateArn`), and has to be one that service
+//!   reports as ISSUED — a certificate in any other `CertificateStatus`
+//!   (`smithy_query(query="shape",shape="CertificateStatus")`) has no key material in force,
+//!   so nothing could terminate a viewer's TLS under it;
 //! * a value NEITHER service resolves anything for is evidence of nothing and is left alone.
 //!
 //! What the rows span: the two directions of the authority rule (a CA-signed certificate and a
 //! self-signed one), coverage exactly, by wildcard, past a wildcard and not at all, one alias
 //! and two, and — for the Region rule — the supported Region, three others and values of no
-//! ACM resource at all. Every row is submitted on both create paths, and the stored
-//! distribution of an accepted row is read back; one refusal is also driven through
-//! `UpdateDistribution`, which leaves the stored certificate where it was.
+//! ACM resource at all. The status rule spans the statuses the holder can be brought to
+//! through its OWN API: a certificate it has issued, one still waiting for its domain to be
+//! validated, and a request it could not carry out. Every row is submitted on both create
+//! paths, and the stored distribution of an accepted row is read back; refusals are also
+//! driven through `UpdateDistribution`, which leaves the stored certificate where it was.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use smithy_server_runtime::{EmbeddedEmulator, MultiServiceRouter};
 
-use crate::distribution_lifecycle::{call, get_distribution, Answer, API_VERSION};
+use crate::distribution_lifecycle::{
+    call, get_distribution, Answer, API_VERSION, POLL_INTERVAL, READY_DEADLINE,
+};
 
 /// The Region the clients below sign for.
 const REGION: &str = "us-east-1";
@@ -135,6 +143,64 @@ impl Emulator {
             .certificate_arn()
             .unwrap_or_else(|| panic!("case {case}: the import reports the ARN it stored"))
             .to_string()
+    }
+
+    /// Ask Certificate Manager for a PUBLIC certificate over `domain_name`, validated by DNS,
+    /// and report the ARN it stored the request under.
+    ///
+    /// Nothing publishes the challenge that request hands out, so the holder keeps the
+    /// certificate in the status that request lands in — which is the whole point of using its
+    /// own API for it: the status CloudFront reads is one that service really reached.
+    async fn request(&self, case: &str, domain_name: &str) -> String {
+        let requested = self
+            .acm()
+            .request_certificate()
+            .domain_name(domain_name)
+            .validation_method(aws_sdk_acm::types::ValidationMethod::Dns)
+            .send()
+            .await
+            .unwrap_or_else(|error| {
+                panic!("case {case}: requesting a certificate for {domain_name}: {error:?}")
+            });
+        requested
+            .certificate_arn()
+            .unwrap_or_else(|| panic!("case {case}: the request reports the ARN it stored"))
+            .to_string()
+    }
+
+    /// Look again until Certificate Manager's own `DescribeCertificate` reports the
+    /// certificate `arn` in `expected` — or [`READY_DEADLINE`] passes, which fails the case.
+    ///
+    /// A status the CLOCK owes a request (the verdict on a name nothing in this account could
+    /// ever prove control of) is waited for as a CONDITION, never for a span of the host's
+    /// clock, exactly as this crate's other poll loops wait.
+    async fn awaited_certificate_status(&self, case: &str, arn: &str, expected: &str) {
+        let deadline = Instant::now() + READY_DEADLINE;
+        loop {
+            let described = self
+                .acm()
+                .describe_certificate()
+                .certificate_arn(arn)
+                .send()
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("case {case}: describing the certificate {arn}: {error:?}")
+                });
+            let status = described
+                .certificate()
+                .and_then(|certificate| certificate.status())
+                .map(|status| status.as_str().to_string())
+                .unwrap_or_default();
+            if status == expected {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "case {case:?}: the certificate never reached {expected}, last status \
+                 {status:?}"
+            );
+            ::tokio::time::sleep(POLL_INTERVAL).await;
+        }
     }
 
     /// Upload `minted` under `name` and report the `ServerCertificateId` that service minted
@@ -426,12 +492,18 @@ fn assert_refused(case: &str, path: &str, aliases: &[String], answer: &Answer) {
 
 /// Assert the accepted write stored the configuration it was given: the aliases and the
 /// certificate are read back through `GetDistribution`.
+///
+/// `certificate_member` is the `ViewerCertificate` member the row named its certificate in
+/// (`IAMCertificateId` or `ACMCertificateArn`) and `certificate` the value it named, so every
+/// accepted row of this suite holds the stored configuration to the one definition of "the
+/// write stored what it was given".
 async fn assert_stored(
     router: &MultiServiceRouter,
     case: &str,
     path: &str,
     aliases: &[String],
-    certificate_id: &str,
+    certificate_member: &str,
+    certificate: &str,
     answer: &Answer,
 ) {
     assert_eq!(
@@ -467,9 +539,10 @@ async fn assert_stored(
         "case {case:?} ({path}): expected the aliases stored as submitted, got {stored:?}"
     );
     assert_eq!(
-        read.root()
-            .text_at("DistributionConfig/ViewerCertificate/IAMCertificateId"),
-        Some(certificate_id),
+        read.root().text_at(&format!(
+            "DistributionConfig/ViewerCertificate/{certificate_member}"
+        )),
+        Some(certificate),
         "case {case:?} ({path}): expected the stored certificate to be the one named, got {}",
         read.raw
     );
@@ -524,6 +597,7 @@ async fn a_certificate_can_attach_an_alias_only_when_it_can_serve_that_name() {
                     row.case,
                     path,
                     &aliases,
+                    "IAMCertificateId",
                     &certificate_id,
                     &answer,
                 )
@@ -724,4 +798,195 @@ async fn an_update_cannot_attach_a_certificate_that_cannot_serve_the_alias() {
             read.header("etag")
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// The status half of the Certificate Manager rule
+// ---------------------------------------------------------------------------
+
+/// How a row's certificate is brought into Certificate Manager, which is what decides the
+/// status that service then reports for it.
+#[derive(Clone, Copy)]
+enum Held {
+    /// Material a client brought in: `ImportCertificate` stores a certificate that service has
+    /// nothing left to validate, so it holds it as issued from the moment of the import.
+    Imported,
+    /// A public request validated by DNS whose challenge nobody ever publishes: that service
+    /// waits for the evidence, so the request stays pending — unless it is for a name no
+    /// account could prove control of, which it refuses instead.
+    Requested,
+}
+
+/// One row of the status table: how the certificate was come by, the registrable domain it is
+/// held over, the status Certificate Manager reaches for it and whether a configuration naming
+/// it is refused.
+///
+/// The alias claimed in every row is the very name the certificate is held over, so the
+/// coverage half of the rule holds throughout and the only thing that differs down the table
+/// is the status the holder reports.
+struct StatusRow {
+    case: &'static str,
+    held: Held,
+    /// The registrable domain the row's certificate and alias sit under. A name under a domain
+    /// the registries reserve for documentation is one nobody can publish evidence of control
+    /// over, which is the request Certificate Manager refuses rather than waits on.
+    zone: &'static str,
+    /// The `CertificateStatus` the holder reports for it once the clock owes it its outcome —
+    /// one of the values that enum declares
+    /// (`smithy_query(query="shape",shape="CertificateStatus")`).
+    status: &'static str,
+    refused: bool,
+}
+
+/// The table: the statuses a client can bring a Certificate Manager certificate to through
+/// that service's own API, in both directions of the rule.
+const STATUS_ROWS: &[StatusRow] = &[
+    StatusRow {
+        case: "a certificate the holder has issued",
+        held: Held::Imported,
+        zone: "cf-alias-fixture.com",
+        status: "ISSUED",
+        refused: false,
+    },
+    StatusRow {
+        case: "a certificate still waiting for its domain to be validated",
+        held: Held::Requested,
+        zone: "cf-alias-fixture.com",
+        status: "PENDING_VALIDATION",
+        refused: true,
+    },
+    StatusRow {
+        case: "a request the holder could not carry out",
+        held: Held::Requested,
+        zone: "example.com",
+        status: "FAILED",
+        refused: true,
+    },
+];
+
+/// RULE: an alternate domain name is attached under a Certificate Manager certificate only
+/// while that service reports it as ISSUED — a certificate in any other status has no key
+/// material in force — judged on both create paths, with the certificate covering the alias in
+/// every row so nothing but its status decides the answer.
+#[tokio::test]
+async fn a_managed_certificate_attaches_an_alias_only_while_it_is_issued() {
+    let emulator = Emulator::new();
+    let signer = authority();
+
+    for (index, row) in STATUS_ROWS.iter().enumerate() {
+        // Each row works in its own name, and each PATH in its own name under it, so no two
+        // writes of this suite ever claim the same alternate domain name.
+        for (position, path) in ["CreateDistribution", "CreateDistributionWithTags"]
+            .into_iter()
+            .enumerate()
+        {
+            let domain = format!("vc-status-{index}-{position}.{}", row.zone);
+            let aliases = vec![domain.clone()];
+            let arn = match row.held {
+                Held::Imported => {
+                    emulator
+                        .import(row.case, &mint(&aliases, Some(&signer)))
+                        .await
+                }
+                Held::Requested => emulator.request(row.case, &domain).await,
+            };
+            // The status the holder itself reports, waited for as a condition: what CloudFront
+            // reads is that service's own record, so the case only begins once that record
+            // says what the row is about.
+            emulator
+                .awaited_certificate_status(row.case, &arn, row.status)
+                .await;
+
+            let reference = format!("viewer-certificate-status-{index}-{position}");
+            let config = config_xml(&reference, &aliases, &acm_certificate(&arn));
+            let answer = match position {
+                0 => create(&emulator.router, &config).await,
+                _ => create_with_tags(&emulator.router, &config).await,
+            };
+            if row.refused {
+                assert_refused(row.case, path, &aliases, &answer);
+                continue;
+            }
+            assert_stored(
+                &emulator.router,
+                row.case,
+                path,
+                &aliases,
+                "ACMCertificateArn",
+                &arn,
+                &answer,
+            )
+            .await;
+        }
+    }
+}
+
+/// RULE: the same status judgement is made on the way IN to a stored distribution, so an
+/// update cannot move one onto a certificate that is not issued — and the refused update
+/// leaves the distribution exactly as it was.
+#[tokio::test]
+async fn an_update_cannot_attach_a_certificate_that_is_not_issued() {
+    let emulator = Emulator::new();
+    let signer = authority();
+    let domain = "vc-status-update.cf-alias-fixture.com".to_string();
+    let aliases = vec![domain.clone()];
+
+    // The distribution is created under a certificate the holder has issued.
+    let issued = emulator
+        .import(
+            "the certificate the distribution is created under",
+            &mint(&aliases, Some(&signer)),
+        )
+        .await;
+    let created = create(
+        &emulator.router,
+        &config_xml(
+            "viewer-certificate-status-update",
+            &aliases,
+            &acm_certificate(&issued),
+        ),
+    )
+    .await;
+    assert_eq!(
+        created.status, 201,
+        "setup: expected HTTP 201 from CreateDistribution, got {} with {}",
+        created.status, created.raw
+    );
+    let id = created.root().text_at("Id").unwrap_or_default().to_string();
+    let etag = created.header("etag").to_string();
+
+    // A second certificate over the SAME name, still waiting for that name to be validated:
+    // it covers the alias exactly as the first one does, so only its status differs.
+    let case = "an update onto a certificate still waiting for its domain to be validated";
+    let pending = emulator.request(case, &domain).await;
+    emulator
+        .awaited_certificate_status(case, &pending, "PENDING_VALIDATION")
+        .await;
+    let refused = update(
+        &emulator.router,
+        &id,
+        &config_xml(
+            "viewer-certificate-status-update",
+            &aliases,
+            &acm_certificate(&pending),
+        ),
+        &etag,
+    )
+    .await;
+    assert_refused(case, "UpdateDistribution", &aliases, &refused);
+
+    let read = get_distribution(&emulator.router, &id).await;
+    assert_eq!(
+        read.root()
+            .text_at("DistributionConfig/ViewerCertificate/ACMCertificateArn"),
+        Some(issued.as_str()),
+        "case {case:?}: a refused update leaves the stored certificate in place, got {}",
+        read.raw
+    );
+    assert_eq!(
+        read.header("etag"),
+        etag,
+        "case {case:?}: a refused update mints no new version, got {:?}",
+        read.header("etag")
+    );
 }

@@ -529,9 +529,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // And the other half of it: the certificate the configuration names, resolved against
         // the records of the services that HOLD certificates, so an update cannot leave a
         // distribution presenting one CloudFront could not serve the alias under.
-        if let Some(message) =
-            crate::state::unusable_viewer_certificate(&*self.engine, &input.distribution_config)
-        {
+        if let Some(message) = crate::state::unusable_viewer_certificate(
+            &*self.engine,
+            &input.distribution_config,
+            now,
+        ) {
             return Err(UpdateDistributionErrorModeled::InvalidViewerCertificate(
                 InvalidViewerCertificate {
                     message: Some(message.to_string()),

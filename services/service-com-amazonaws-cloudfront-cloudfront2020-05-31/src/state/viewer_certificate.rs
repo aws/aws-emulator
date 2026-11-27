@@ -13,9 +13,12 @@
 //! * `ACMCertificateArn` is "the Amazon Resource Name (ARN) of the ACM certificate", and
 //!   "CloudFront only supports ACM certificates in the US East (N. Virginia) Region
 //!   (`us-east-1`)" — so an ARN of Certificate Manager naming any other Region names a
-//!   certificate CloudFront cannot present at all, which the value itself says; and a
-//!   certificate that service HOLDS has to cover the names the configuration claims, which
-//!   is Certificate Manager's own answer about its own record
+//!   certificate CloudFront cannot present at all, which the value itself says; a
+//!   certificate that service HOLDS has to be one it has ISSUED, since a `CertificateStatus`
+//!   other than that is a certificate with no key material in force — one still being
+//!   validated, one whose request failed or timed out, one revoked, expired or inactive —
+//!   and nothing can terminate a viewer's TLS under it; and it has to cover the names the
+//!   configuration claims, which is Certificate Manager's own answer about its own record
 //!   ([`acm_store::Certificate::covers`]).
 //! * `IAMCertificateId` is the id of a certificate "stored in Identity and Access
 //!   Management". One the account uploaded that SIGNED ITSELF has no authority above it, so
@@ -41,6 +44,8 @@
 //! taking another. Every path that calls it does so BEFORE it locks this service's own store,
 //! and no Certificate Manager and no Identity and Access Management operation reads this
 //! service's store, so the guards can never be taken in opposite orders.
+
+use ::std::time::SystemTime;
 
 use ::service_com_amazonaws_acm_certificatemanager::state as acm_store;
 use ::service_com_amazonaws_iam_awsidentitymanagementv20100508::state as iam_store;
@@ -76,10 +81,12 @@ const ACM_VENDOR: &str = "acm";
 /// resolves anything for.
 ///
 /// The rule is stated in this module's own documentation; `engine` is the shared engine the
-/// calling handler holds, which is how the holding services' records are read.
+/// calling handler holds, which is how the holding services' records are read, and `now` is
+/// the instant the write is judged at — what a certificate's own status is depends on it.
 pub fn unusable_viewer_certificate<Eng: ::std::marker::Send + ::std::marker::Sync + 'static>(
     engine: &Eng,
     config: &DistributionConfig,
+    now: SystemTime,
 ) -> Option<&'static str> {
     let aliases: &[String] = config
         .aliases
@@ -91,7 +98,7 @@ pub fn unusable_viewer_certificate<Eng: ::std::marker::Send + ::std::marker::Syn
     }
     let certificate = config.viewer_certificate.as_ref()?;
     if let Some(arn) = named_member(certificate.acm_certificate_arn.as_ref()) {
-        if managed_certificate_unusable(engine, aliases, arn) {
+        if managed_certificate_unusable(engine, aliases, arn, now) {
             return Some(UNUSABLE_VIEWER_CERTIFICATE_MESSAGE);
         }
     }
@@ -113,15 +120,26 @@ fn named_member(value: Option<&String>) -> Option<&str> {
 /// Whether the Certificate Manager certificate `certificate_arn` names cannot serve every one
 /// of `aliases`.
 ///
-/// Two things about it are read, in the order of what the value alone says and then what the
+/// Three things about it are read, in the order of what the value alone says and then what the
 /// holding service says: the Region the ARN names has to be the one CloudFront presents a
-/// certificate from ([`VIEWER_CERTIFICATE_REGION`]), and a certificate that service holds has
-/// to cover every name claimed. An ARN of no Certificate Manager resource at all, and one
-/// that service holds nothing under, are evidence of nothing and report `false`.
+/// certificate from ([`VIEWER_CERTIFICATE_REGION`]), a certificate that service holds has to
+/// be one it reports as ISSUED, and it has to cover every name claimed. An ARN of no
+/// Certificate Manager resource at all, and one that service holds nothing under, are evidence
+/// of nothing and report `false`.
+///
+/// WHETHER a certificate is in force is that service's `CertificateDetail$Status` and nothing
+/// derived here: it is the one member that says whether key material exists for the
+/// certificate, so a validation still running, a request that failed or timed out and a
+/// revoked, expired or inactive certificate are all read off it rather than re-decided from
+/// the material. The holder's own reads materialise what the clock owes its records before
+/// reporting a status ([`acm_store::ComAmazonawsAcmCertificatemanagerState::materialize_due`]),
+/// so that pass is made here too and this read sees the record `DescribeCertificate` would
+/// report at `now` — a validation that has already fallen due has issued the certificate.
 fn managed_certificate_unusable<Eng: ::std::marker::Send + ::std::marker::Sync + 'static>(
     engine: &Eng,
     aliases: &[String],
     certificate_arn: &str,
+    now: SystemTime,
 ) -> bool {
     if let Some(region) = ::service_common::arn::region_of(certificate_arn, ACM_VENDOR) {
         if region != VIEWER_CERTIFICATE_REGION {
@@ -131,11 +149,13 @@ fn managed_certificate_unusable<Eng: ::std::marker::Send + ::std::marker::Sync +
     let Some(store) = acm_store::service_state(engine) else {
         return false;
     };
-    let certificates = store.lock();
+    let mut certificates = store.lock();
+    certificates.materialize_due(now);
     let Some(certificate) = certificates.certificates.get(certificate_arn) else {
         return false;
     };
-    !aliases.iter().all(|alias| certificate.covers(alias))
+    certificate.status != acm_store::STATUS_ISSUED
+        || !aliases.iter().all(|alias| certificate.covers(alias))
 }
 
 /// Whether the certificate the account holds in Identity and Access Management under the id

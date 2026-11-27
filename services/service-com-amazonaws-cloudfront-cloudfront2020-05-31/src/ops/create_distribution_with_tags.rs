@@ -462,7 +462,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(create_refusal(refusal));
         }
         if let Some(message) =
-            crate::state::unusable_viewer_certificate(&*self.engine, &distribution_config)
+            crate::state::unusable_viewer_certificate(&*self.engine, &distribution_config, now)
         {
             return Err(create_refusal(
                 crate::state::CreateRefusal::InvalidViewerCertificate(message.to_string()),
