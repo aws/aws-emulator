@@ -84,8 +84,8 @@
 //! * `DefaultActions` (Actions) **required** — The actions for the default rule.
 //! * `LoadBalancerArn` (LoadBalancerArn) **required** — The Amazon Resource Name (ARN) of the
 //!   load balancer.
-//! * `MutualAuthentication` (MutualAuthenticationAttributes) — [HTTPS listeners] The mutual
-//!   authentication configuration information.
+//! * `MutualAuthentication` (MutualAuthenticationAttributes) — [HTTPS and TLS listeners] The
+//!   mutual authentication configuration information.
 //! * `Port` (Port, range 1..65535) — The port on which the load balancer is listening. You
 //!   can't specify a port for a Gateway Load Balancer.
 //! * `Protocol` (ProtocolEnum, one of: GENEVE | HTTP | HTTPS | QUIC | TCP | TCP_QUIC |
@@ -258,7 +258,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the request alone.
         check_default_certificate(input.protocol.as_deref(), input.certificates.as_deref())?;
 
-        // And so does the client certificate handling, bracketed to its own protocol: a
+        // And so does the client certificate handling, bracketed to the same listeners: a
         // request configuring it on any other listener is refused rather than accepted
         // with the configuration dropped.
         crate::state::check_mutual_authentication(
@@ -352,10 +352,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .collect(),
             default_actions: input.default_actions.clone(),
             alpn_policy: input.alpn_policy.clone().unwrap_or_default(),
-            // "[HTTPS listeners] The mutual authentication configuration information" —
-            // kept as the request configured it, so a read of the listener answers the
-            // client-certificate handling it was created with rather than one made up per
-            // call ([`crate::state::ListenerRecord::effective_mutual_authentication`]).
+            // "[HTTPS and TLS listeners] The mutual authentication configuration
+            // information" — kept as the request configured it, so a read of the listener
+            // answers the client-certificate handling it was created with rather than one
+            // made up per call
+            // ([`crate::state::ListenerRecord::effective_mutual_authentication`]).
             mutual_authentication: input.mutual_authentication.clone(),
             attributes: std::collections::HashMap::new(),
             tags: input

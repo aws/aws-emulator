@@ -80,8 +80,8 @@
 //! * `DefaultActions` (Actions) — The actions for the default rule.
 //! * `ListenerArn` (ListenerArn) **required** — The Amazon Resource Name (ARN) of the
 //!   listener.
-//! * `MutualAuthentication` (MutualAuthenticationAttributes) — [HTTPS listeners] The mutual
-//!   authentication configuration information.
+//! * `MutualAuthentication` (MutualAuthenticationAttributes) — [HTTPS and TLS listeners] The
+//!   mutual authentication configuration information.
 //! * `Port` (Port, range 1..65535) — The port for connections from clients to the load
 //!   balancer. You can't specify a port for a Gateway Load Balancer.
 //! * `Protocol` (ProtocolEnum, one of: GENEVE | HTTP | HTTPS | QUIC | TCP | TCP_QUIC |
@@ -292,10 +292,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             updated.alpn_policy = alpn_policy;
         }
         if let Some(mutual_authentication) = input.mutual_authentication.clone() {
-            // "[HTTPS listeners] The mutual authentication configuration information" —
-            // judged against the protocol this call LEAVES the listener on, since a request
-            // may change both at once, and then replacing the stored configuration
-            // outright; a request naming none leaves the listener's own in place.
+            // "[HTTPS and TLS listeners] The mutual authentication configuration
+            // information" — judged against the protocol this call LEAVES the listener on,
+            // since a request may change both at once, and then replacing the stored
+            // configuration outright; a request naming none leaves the listener's own in
+            // place.
             crate::state::check_mutual_authentication(
                 updated.protocol.as_deref(),
                 Some(&mutual_authentication),

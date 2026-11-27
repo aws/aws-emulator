@@ -14,10 +14,10 @@
 //!   forward is carried at until a request turns it on. A forward among SEVERAL groups has
 //!   no single-group spelling, so that member stays absent for it.
 //! * A listener's `MutualAuthentication` belongs to the listeners the model brackets the
-//!   member to ("[HTTPS listeners] The mutual authentication configuration information"),
-//!   so a read of such a listener reports the client certificate handling it is effectively
-//!   under — the documented default mode for a listener nothing configured mTLS on — and a
-//!   listener outside that bracket reports no such block at all.
+//!   member to ("[HTTPS and TLS listeners] The mutual authentication configuration
+//!   information"), so a read of such a listener reports the client certificate handling it
+//!   is effectively under — the documented default mode for a listener nothing configured
+//!   mTLS on — and a listener outside that bracket reports no such block at all.
 //!
 //! The rows differ along what those rules generalise over: which spelling the request used
 //! (one, the other, or both), how many target groups a forward distributes among, whether
@@ -63,12 +63,23 @@ const HIGHEST_DURATION: i32 = 604_800;
 
 /// The client certificate handling method a listener nothing configured mTLS on is under,
 /// from `MutualAuthenticationAttributes$Mode`'s own documentation
-/// (`smithy_query(query="shape",shape="MutualAuthenticationAttributes")`): "Options are
-/// `off`, `passthrough` or `verify`. The default value is `off`."
+/// (`smithy_query(query="shape",shape="MutualAuthenticationAttributes")`): "The client
+/// certificate handling method. The default value is `off`."
 const DEFAULT_MODE: &str = "off";
 
-/// Every mode that member documents, which the listener rows below each name one of.
+/// Every mode that member documents for the HTTPS listener of an Application Load Balancer:
+/// "[Application Load Balancers] The possible values are `off`, `passthrough`, and
+/// `verify`."
 const MODES: &[&str] = &["off", "passthrough", "verify"];
+
+/// And every mode it documents for the TLS listener of a Network Load Balancer: "[Network
+/// Load Balancers] The possible values are `off` and `verify`."
+const NETWORK_MODES: &[&str] = &["off", "verify"];
+
+/// The listeners the member is bracketed to, from its own documentation on both writes that
+/// set it (`CreateListenerInput$MutualAuthentication` and
+/// `ModifyListenerInput$MutualAuthentication`): "[HTTPS and TLS listeners]".
+const MUTUAL_AUTHENTICATION_PROTOCOLS: &[&str] = &["HTTPS", "TLS"];
 
 /// The error code this service answers an input its own documented brackets refuse with.
 const VALIDATION_ERROR: &str = "ValidationError";
@@ -704,16 +715,24 @@ fn listener_rows() -> Vec<ListenerRow> {
             reports: None,
         },
         ListenerRow {
-            case: "a TLS listener, which terminates TLS but handles no client certificate",
+            case: "a TLS listener created without mTLS",
             protocol: "TLS",
             configured: None,
-            reports: None,
+            reports: Some(DEFAULT_MODE),
         },
     ];
     for mode in MODES {
         rows.push(ListenerRow {
             case: "an HTTPS listener created with a mode of its own",
             protocol: "HTTPS",
+            configured: Some(mode),
+            reports: Some(mode),
+        });
+    }
+    for mode in NETWORK_MODES {
+        rows.push(ListenerRow {
+            case: "a TLS listener created with a mode of its own",
+            protocol: "TLS",
             configured: Some(mode),
             reports: Some(mode),
         });
@@ -755,7 +774,7 @@ async fn a_read_listener_reports_the_mutual_authentication_it_is_under() {
         let (echoed, echoed_mode) = reported_mode(&created.body);
         let expected_echo = row
             .configured
-            .filter(|_| row.protocol == "HTTPS")
+            .filter(|_| MUTUAL_AUTHENTICATION_PROTOCOLS.contains(&row.protocol))
             .map(str::to_string);
         assert_eq!(
             (echoed, echoed_mode.clone()),
@@ -890,13 +909,12 @@ async fn configuring_mutual_authentication_outside_its_bracket_is_refused() {
     let target_group = create_http_target_group(&router, "mtls-bracket-tg").await;
     let lb = create_load_balancer(&router, "mtls-bracket-lb").await;
 
-    // Every other value `ProtocolEnum` declares, plus a listener naming no protocol at all
-    // (`smithy_query(query="shape",shape="ProtocolEnum")`: GENEVE, HTTP, HTTPS, QUIC, TCP,
-    // TCP_QUIC, TCP_UDP, TLS, UDP) — HTTPS, the one the member is bracketed to, is asserted
-    // accepted above.
+    // Every value `ProtocolEnum` declares outside the bracket, plus a listener naming no
+    // protocol at all (`smithy_query(query="shape",shape="ProtocolEnum")`: GENEVE, HTTP,
+    // HTTPS, QUIC, TCP, TCP_QUIC, TCP_UDP, TLS, UDP) — HTTPS and TLS, the two the member is
+    // bracketed to, are asserted accepted above.
     let outside: &[Option<&str>] = &[
         Some("HTTP"),
-        Some("TLS"),
         Some("TCP"),
         Some("TCP_UDP"),
         Some("UDP"),
@@ -913,9 +931,6 @@ async fn configuring_mutual_authentication_outside_its_bracket_is_refused() {
         if let Some(protocol) = protocol {
             form.push(p("Protocol", protocol));
             form.push(p("Port", &(21_000 + index as i32).to_string()));
-            if *protocol == "TLS" {
-                form.push(p("Certificates.member.1.CertificateArn", CERTIFICATE));
-            }
         }
         form.push(p("MutualAuthentication.Mode", "verify"));
         form.push(p("DefaultActions.member.1.Type", "forward"));

@@ -180,13 +180,23 @@ pub struct JwtValidationActionAdditionalClaim {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.elasticloadbalancingv2#MutualAuthenticationAttributes")]
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct MutualAuthenticationAttributes {
     pub mode: Option<String>,
     pub trust_store_arn: Option<String>,
     pub ignore_client_certificate_expiry: Option<bool>,
     pub trust_store_association_status: Option<String>,
     pub advertise_trust_store_ca_names: Option<String>,
+    pub client_certificate_identity_filters: Option<Vec<ClientCertificateIdentityFilter>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elasticloadbalancingv2#ClientCertificateIdentityFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct ClientCertificateIdentityFilter {
+    pub field: String,
+    pub action: String,
+    pub match_type: String,
+    pub value: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.elasticloadbalancingv2#Listener")]
@@ -648,6 +658,18 @@ pub const AUTHENTICATE_OIDC_ACTION_CONDITIONAL_BEHAVIOR_ENUM_VALUES: &[&str] = &
 
 /// The values `CapacityReservationStateEnum` accepts on the wire.
 pub const CAPACITY_RESERVATION_STATE_ENUM_VALUES: &[&str] = &["failed", "pending", "provisioned", "rebalancing"];
+
+
+/// The values `ClientCertificateIdentityFilterAction` accepts on the wire.
+pub const CLIENT_CERTIFICATE_IDENTITY_FILTER_ACTION_VALUES: &[&str] = &["accept"];
+
+
+/// The values `ClientCertificateIdentityFilterField` accepts on the wire.
+pub const CLIENT_CERTIFICATE_IDENTITY_FILTER_FIELD_VALUES: &[&str] = &["san-dns", "san-uri", "subject-cn", "subject-ou"];
+
+
+/// The values `ClientCertificateIdentityFilterMatchType` accepts on the wire.
+pub const CLIENT_CERTIFICATE_IDENTITY_FILTER_MATCH_TYPE_VALUES: &[&str] = &["exact", "prefix"];
 
 
 /// The values `DescribeTargetHealthInputIncludeEnum` accepts on the wire.

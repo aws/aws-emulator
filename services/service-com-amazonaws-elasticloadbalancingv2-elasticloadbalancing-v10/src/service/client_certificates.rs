@@ -63,7 +63,8 @@ use ::x509_cert::Certificate;
 use crate::state::ListenerRecord;
 
 /// The `MutualAuthenticationAttributes$Mode` whose listener hands the presented chain to the
-/// target: "Options are `off`, `passthrough` or `verify`".
+/// target: "[Application Load Balancers] The possible values are `off`, `passthrough`, and
+/// `verify`."
 pub(super) const PASSTHROUGH_MODE: &str = "passthrough";
 
 /// Which fact of the presented chain one member of the family carries.

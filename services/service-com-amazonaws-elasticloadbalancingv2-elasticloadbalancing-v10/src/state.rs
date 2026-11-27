@@ -1233,23 +1233,24 @@ pub fn terminates_tls(protocol: Option<&str>) -> bool {
     protocol.is_some_and(|value| TLS_TERMINATING_PROTOCOLS.contains(&value))
 }
 
-/// The protocol a listener's MUTUAL AUTHENTICATION configuration belongs to, from the
+/// The listener protocols a MUTUAL AUTHENTICATION configuration belongs to, from the
 /// bracket the model puts on the member wherever it is set:
 /// `CreateListenerInput$MutualAuthentication` and `ModifyListenerInput$MutualAuthentication`
-/// are both documented "[HTTPS listeners] The mutual authentication configuration
-/// information". Narrower than [`TLS_TERMINATING_PROTOCOLS`]: a TLS listener terminates TLS
-/// but carries no client-certificate handling.
-pub const MUTUAL_AUTHENTICATION_PROTOCOL: &str = "HTTPS";
+/// are both documented "[HTTPS and TLS listeners] The mutual authentication configuration
+/// information" — the listeners that terminate TLS, since asking a client for a certificate
+/// is part of the handshake such a listener terminates. The two listeners the mode's own
+/// documentation names them by: "[Application Load Balancers] … [Network Load Balancers]".
+pub const MUTUAL_AUTHENTICATION_PROTOCOLS: &[&str] = TLS_TERMINATING_PROTOCOLS;
 
 /// The client certificate handling method a listener is carried at when nothing configured
-/// one, from `MutualAuthenticationAttributes$Mode`'s own documentation: "Options are `off`,
-/// `passthrough` or `verify`. The default value is `off`."
+/// one, from `MutualAuthenticationAttributes$Mode`'s own documentation: "The client
+/// certificate handling method. The default value is `off`."
 pub const DEFAULT_MUTUAL_AUTHENTICATION_MODE: &str = "off";
 
 /// Whether a listener on `protocol` carries a mutual authentication configuration at all
-/// ([`MUTUAL_AUTHENTICATION_PROTOCOL`]).
+/// ([`MUTUAL_AUTHENTICATION_PROTOCOLS`]).
 pub fn handles_client_certificates(protocol: Option<&str>) -> bool {
-    protocol == Some(MUTUAL_AUTHENTICATION_PROTOCOL)
+    protocol.is_some_and(|value| MUTUAL_AUTHENTICATION_PROTOCOLS.contains(&value))
 }
 
 /// How a refusal about a listener's protocol brackets NAMES what it judged, for a listener
@@ -1264,7 +1265,7 @@ pub fn named_listener(protocol: Option<&str>) -> String {
 }
 
 /// Enforce the bracket the model puts on a listener's MUTUAL AUTHENTICATION: the member
-/// belongs to the listeners [`MUTUAL_AUTHENTICATION_PROTOCOL`] names and to no other, so a
+/// belongs to the listeners [`MUTUAL_AUTHENTICATION_PROTOCOLS`] names and to no other, so a
 /// request configuring client certificate handling on a listener of any other protocol is
 /// refused rather than accepted and dropped.
 ///
@@ -1283,8 +1284,9 @@ pub fn check_mutual_authentication(
     }
     Err(format!(
         "MutualAuthentication cannot be specified for {}: the mutual authentication \
-         configuration applies only to {MUTUAL_AUTHENTICATION_PROTOCOL} listeners",
-        named_listener(protocol)
+         configuration applies only to {} listeners",
+        named_listener(protocol),
+        MUTUAL_AUTHENTICATION_PROTOCOLS.join(" and ")
     ))
 }
 

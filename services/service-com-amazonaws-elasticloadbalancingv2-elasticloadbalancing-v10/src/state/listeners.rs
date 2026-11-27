@@ -28,7 +28,7 @@ pub struct ListenerRecord {
     pub alpn_policy: Vec<String>,
     /// The MUTUAL AUTHENTICATION the listener was configured with, as the create or the
     /// modification that set it carried it, and `None` for a listener nothing configured it
-    /// on. A listener outside [`MUTUAL_AUTHENTICATION_PROTOCOL`] carries none at all.
+    /// on. A listener outside [`MUTUAL_AUTHENTICATION_PROTOCOLS`] carries none at all.
     pub mutual_authentication: Option<MutualAuthenticationAttributes>,
     pub attributes: HashMap<String, String>,
     pub tags: HashMap<String, String>,
@@ -55,7 +55,10 @@ impl ListenerRecord {
             // listeners differing only in it are not "the same settings": they are compared
             // by what each is EFFECTIVELY under, so a request naming the mode the service
             // defaults is the idempotent repeat of one that named none.
-            && self.effective_mutual_authentication() == other.effective_mutual_authentication()
+            && MutualAuthenticationSettings::of(self.effective_mutual_authentication().as_ref())
+                == MutualAuthenticationSettings::of(
+                    other.effective_mutual_authentication().as_ref(),
+                )
             && action_summary(&self.default_actions) == action_summary(&other.default_actions)
     }
 
@@ -252,5 +255,65 @@ impl ListenerRecord {
             arns.extend(action_target_group_arns(&rule.actions));
         }
         arns
+    }
+}
+
+/// The comparable projection of a listener's mutual authentication configuration: EVERY
+/// setting the configuration carries, read off the modelled shape so two configurations can
+/// be judged the same or different ([`ListenerRecord::has_settings_of`]).
+///
+/// The modelled shapes are rendered from the model and carry no comparison of their own, so
+/// a configuration is compared through this projection exactly as an action list is compared
+/// through its own ([`action_summary`]). One setting per member
+/// `MutualAuthenticationAttributes` declares
+/// (`smithy_query(query="shape",shape="MutualAuthenticationAttributes")`), so a listener
+/// differing in any one of them — the mode, the trust store, whether expired client
+/// certificates are ignored, the shared trust store association status, whether the trust
+/// store's CA names are advertised, or the client certificate identity filters it admits
+/// connections by — is not a listener with the same settings. The filters are projected as
+/// a SET, each by the four members `ClientCertificateIdentityFilter` declares and all four
+/// of which it requires: "[t]he load balancer admits a connection only if the client
+/// certificate matches at least one filter", so the same filters in another order admit
+/// exactly the same connections and are the same setting — the reason the default
+/// certificates are compared sorted too.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct MutualAuthenticationSettings {
+    mode: Option<String>,
+    trust_store_arn: Option<String>,
+    ignore_client_certificate_expiry: Option<bool>,
+    trust_store_association_status: Option<String>,
+    advertise_trust_store_ca_names: Option<String>,
+    client_certificate_identity_filters: Vec<(String, String, String, String)>,
+}
+
+impl MutualAuthenticationSettings {
+    /// The settings `mutual_authentication` holds, and `None` for a listener that carries
+    /// no mutual authentication configuration at all — which is itself a setting two
+    /// listeners can differ in.
+    fn of(mutual_authentication: Option<&MutualAuthenticationAttributes>) -> Option<Self> {
+        let attributes = mutual_authentication?;
+        let mut client_certificate_identity_filters: Vec<(String, String, String, String)> =
+            attributes
+                .client_certificate_identity_filters
+                .iter()
+                .flatten()
+                .map(|filter| {
+                    (
+                        filter.field.clone(),
+                        filter.action.clone(),
+                        filter.match_type.clone(),
+                        filter.value.clone(),
+                    )
+                })
+                .collect();
+        client_certificate_identity_filters.sort();
+        Some(Self {
+            mode: attributes.mode.clone(),
+            trust_store_arn: attributes.trust_store_arn.clone(),
+            ignore_client_certificate_expiry: attributes.ignore_client_certificate_expiry,
+            trust_store_association_status: attributes.trust_store_association_status.clone(),
+            advertise_trust_store_ca_names: attributes.advertise_trust_store_ca_names.clone(),
+            client_certificate_identity_filters,
+        })
     }
 }
