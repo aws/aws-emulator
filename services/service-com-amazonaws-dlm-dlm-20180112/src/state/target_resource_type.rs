@@ -177,19 +177,6 @@ fn parameters(details: &PolicyDetails) -> Option<&Parameters> {
     details.parameters.as_ref()
 }
 
-/// True when every `ResourceTypeValues` member a configuration targets is the
-/// instance target, so the policy is one of the "[Custom ... policies that target
-/// instances only]" its documentation speaks of.
-///
-/// Judged on EVERY target the configuration states, as the members above are, and
-/// false for a configuration that states none: a policy with no target is not a
-/// policy targeting instances.
-pub fn targets_instances_only(details: &PolicyDetails) -> bool {
-    details.resource_types.as_deref().is_some_and(|targets| {
-        !targets.is_empty() && targets.iter().all(|target| target == INSTANCE_TARGET)
-    })
-}
-
 /// Why Amazon Data Lifecycle Manager refuses the configuration a request states
 /// for what the policy TARGETS, or `None` when every member it states is one the
 /// target resource type admits.

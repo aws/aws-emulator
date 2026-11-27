@@ -26,14 +26,14 @@
 //! each kind of custom policy (a snapshot policy stating no language, the same one
 //! restating `STANDARD`, an AMI policy and an event-based policy).
 //!
-//! The same rule for the optional parameters a custom snapshot or AMI policy runs
-//! on, which the last two tests below pin: the stored configuration states the
-//! value every `PolicyDetails$Parameters` member whose documentation publishes one
-//! carries, for the combination of policy type and target resource type that
-//! member's documentation admits, and states nothing for a combination that admits
-//! none. Its rows differ along the policy type, the target resource type, whether
-//! the request stated the parameters structure at all, and whether it stated a
-//! member whose documented value it contradicts.
+//! The optional parameters a custom snapshot or AMI policy carries, which the last
+//! three tests below pin: `PolicyDetails$Parameters` and each of its members are
+//! optional and non-defaulted, so the stored configuration carries exactly the
+//! optional parameters the request stated — the structure absent when the request
+//! stated none, and only the members it stated when it stated one — and a read
+//! round-trips into an update unchanged. Its rows differ along the policy type, the
+//! target resource type, whether the request stated the parameters structure at
+//! all, which members it stated, and the value of each.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -487,18 +487,6 @@ async fn every_way_of_asking_for_one_kind_of_policy_reads_back_one_configuration
     );
 }
 
-/// The value `Parameters$NoReboot` carries when a custom AMI policy states none:
-/// the member is documented "`true` indicates that targeted instances are not
-/// rebooted when the policy runs ... The default is `true` (instances are not
-/// rebooted)" (`smithy_query(query="shape", shape="Parameters")`).
-const NO_REBOOT_DEFAULT: bool = true;
-
-/// The value `Parameters$ExcludeBootVolume` carries when a custom snapshot policy
-/// that targets instances states none: the member is documented "Indicates
-/// whether to exclude the root volume from multi-volume snapshot sets. The default
-/// is `false`" (same source).
-const EXCLUDE_BOOT_VOLUME_DEFAULT: bool = false;
-
 /// One policy and the `PolicyDetails$Parameters` every read of it reports.
 struct ParameterCase {
     /// What is particular about this row.
@@ -508,9 +496,17 @@ struct ParameterCase {
     /// The parameters the request states, `None` for a request that states no
     /// `Parameters` structure at all.
     stated: Option<Value>,
-    /// The whole `Parameters` structure a read must report, and `Value::Null` for
-    /// a policy that reports none.
-    reported: Value,
+}
+
+impl ParameterCase {
+    /// The whole `Parameters` structure a read must report: the structure the
+    /// request stated, and nothing — `Value::Null` — for a request that stated
+    /// none. Every member of `Parameters` is optional and non-defaulted
+    /// (`smithy_query(query="shape", shape="Parameters")`), so a read reports the
+    /// stated structure member for member.
+    fn reported(&self) -> Value {
+        self.stated.clone().unwrap_or(Value::Null)
+    }
 }
 
 /// The configuration a row submits: its details with the parameters it states.
@@ -522,9 +518,10 @@ fn details_with_parameters(row: &ParameterCase) -> Value {
     details
 }
 
-/// The table: each combination of policy type and target resource type the two
-/// documented parameters are admitted for, and one that admits neither, each with
-/// and without a stated value.
+/// The table: each combination of policy type and target resource type the
+/// documented parameters are admitted for, plus one that admits none, each stating
+/// no structure, an empty structure, and each admitted member at both of its
+/// values.
 fn parameter_cases() -> Vec<ParameterCase> {
     let instance_snapshot_details = || custom_snapshot_details("INSTANCE");
     vec![
@@ -532,98 +529,105 @@ fn parameter_cases() -> Vec<ParameterCase> {
             case: "a custom AMI policy stating no Parameters",
             details: custom_image_details(),
             stated: None,
-            reported: json!({"NoReboot": NO_REBOOT_DEFAULT}),
         },
         ParameterCase {
             case: "a custom AMI policy stating an empty Parameters structure",
             details: custom_image_details(),
             stated: Some(json!({})),
-            reported: json!({"NoReboot": NO_REBOOT_DEFAULT}),
         },
         ParameterCase {
             case: "a custom AMI policy that asks for its instances to be rebooted",
             details: custom_image_details(),
             stated: Some(json!({"NoReboot": false})),
-            reported: json!({"NoReboot": false}),
         },
         ParameterCase {
-            case: "a custom AMI policy restating the documented NoReboot",
+            case: "a custom AMI policy stating the NoReboot its documentation calls the default",
             details: custom_image_details(),
             stated: Some(json!({"NoReboot": true})),
-            reported: json!({"NoReboot": true}),
         },
         ParameterCase {
             case: "a custom snapshot policy targeting instances, stating no Parameters",
             details: instance_snapshot_details(),
             stated: None,
-            reported: json!({"ExcludeBootVolume": EXCLUDE_BOOT_VOLUME_DEFAULT}),
+        },
+        ParameterCase {
+            case: "a custom snapshot policy targeting instances, stating an empty Parameters \
+                   structure",
+            details: instance_snapshot_details(),
+            stated: Some(json!({})),
         },
         ParameterCase {
             case: "a custom snapshot policy targeting instances, stating only the data volume tags",
             details: instance_snapshot_details(),
             stated: Some(json!({"ExcludeDataVolumeTags": [{"Key": "data", "Value": "keep"}]})),
-            reported: json!({
-                "ExcludeBootVolume": EXCLUDE_BOOT_VOLUME_DEFAULT,
-                "ExcludeDataVolumeTags": [{"Key": "data", "Value": "keep"}],
-            }),
         },
         ParameterCase {
             case: "a custom snapshot policy targeting instances, excluding the boot volume",
             details: instance_snapshot_details(),
             stated: Some(json!({"ExcludeBootVolume": true})),
-            reported: json!({"ExcludeBootVolume": true}),
+        },
+        ParameterCase {
+            case: "a custom snapshot policy targeting instances, stating the ExcludeBootVolume \
+                   its documentation calls the default",
+            details: instance_snapshot_details(),
+            stated: Some(json!({"ExcludeBootVolume": false})),
+        },
+        ParameterCase {
+            case: "a custom snapshot policy targeting instances, stating both members it admits",
+            details: instance_snapshot_details(),
+            stated: Some(json!({
+                "ExcludeBootVolume": true,
+                "ExcludeDataVolumeTags": [{"Key": "data", "Value": "keep"}],
+            })),
         },
         ParameterCase {
             case: "a custom snapshot policy targeting volumes, stating no Parameters",
             details: custom_snapshot_details("VOLUME"),
             stated: None,
-            // Neither documented member is admitted for this combination, so
-            // nothing is materialized and the policy reports no parameters.
-            reported: Value::Null,
         },
         ParameterCase {
             case: "a custom snapshot policy targeting volumes, stating an empty Parameters \
                    structure",
             details: custom_snapshot_details("VOLUME"),
             stated: Some(json!({})),
-            reported: json!({}),
         },
         ParameterCase {
             case: "a custom event-based policy",
             details: event_based_details(),
             stated: None,
             // `Parameters` is "[Custom snapshot and AMI policies only]", so an
-            // event-based policy carries none.
-            reported: Value::Null,
+            // event-based policy states none either way.
         },
     ]
 }
 
-/// A created policy reports the optional parameters its combination of policy type
-/// and target resource type runs on: each documented value the request stated none
-/// for, every value it did state, and nothing for a combination no documented value
-/// belongs to.
+/// A created policy reports the optional parameters its request STATED and no
+/// others: the structure member for member when the request carried one, and no
+/// `Parameters` member at all when it carried none — whichever combination of
+/// policy type and target resource type the policy is, since every member of
+/// `Parameters` is optional and non-defaulted.
 #[tokio::test]
-async fn a_created_policy_reports_the_parameters_its_combination_runs_on() {
+async fn a_created_policy_reports_the_parameters_its_request_stated() {
     let router = emulator();
 
     for row in parameter_cases() {
         let case = row.case;
         let request = create_request(
-            "optional parameter materialization",
+            "optional parameters as stated",
             json!({"PolicyDetails": details_with_parameters(&row)}),
         );
         let id = create(&router, case, request).await;
         let read = get(&router, case, &id).await;
         let reported = at(read.policy(), "/PolicyDetails/Parameters");
         assert_eq!(
-            reported, row.reported,
+            reported,
+            row.reported(),
             "case {case:?}: expected Parameters {:?}, got {reported:?}",
-            row.reported
+            row.reported()
         );
 
-        // Reading twice is reading one record: the parameters were materialized
-        // when the policy was stored, not synthesized per read.
+        // Reading twice is reading one record: what the create stored, not
+        // something synthesized per read.
         let again = at(get(&router, case, &id).await.policy(), "/PolicyDetails/Parameters");
         assert_eq!(
             again, reported,
@@ -633,19 +637,19 @@ async fn a_created_policy_reports_the_parameters_its_combination_runs_on() {
     }
 }
 
-/// And an UPDATE that replaces the configuration materializes the same parameters:
-/// the replacement is "the configuration of the lifecycle policy", so a read after
-/// it reports the values the policy runs on exactly as a read after the create
-/// does.
+/// And an UPDATE that replaces the configuration stores the same thing: the
+/// replacement is "the configuration of the lifecycle policy", so a read after it
+/// reports the optional parameters the replacement stated, exactly as a read after
+/// the create does.
 #[tokio::test]
-async fn a_replaced_configuration_reports_the_same_parameters() {
+async fn a_replaced_configuration_reports_the_parameters_it_stated() {
     let router = emulator();
 
     for row in parameter_cases() {
         let case = row.case;
         let configuration = details_with_parameters(&row);
         let request = create_request(
-            "optional parameter materialization",
+            "optional parameters as stated",
             json!({"PolicyDetails": configuration.clone()}),
         );
         let id = create(&router, case, request).await;
@@ -665,9 +669,49 @@ async fn a_replaced_configuration_reports_the_same_parameters() {
 
         let reported = at(get(&router, case, &id).await.policy(), "/PolicyDetails/Parameters");
         assert_eq!(
-            reported, row.reported,
+            reported,
+            row.reported(),
             "case {case:?}: after an update expected Parameters {:?}, got {reported:?}",
-            row.reported
+            row.reported()
+        );
+    }
+}
+
+/// The invariant that follows: the configuration a read reports is one an update
+/// accepts back unchanged, so feeding a read of a policy straight into
+/// `UpdateLifecyclePolicy` leaves the configuration exactly as it was — no optional
+/// parameter appears, disappears or changes value on the round trip.
+#[tokio::test]
+async fn a_read_configuration_round_trips_through_an_update() {
+    let router = emulator();
+
+    for row in parameter_cases() {
+        let case = row.case;
+        let request = create_request(
+            "optional parameters as stated",
+            json!({"PolicyDetails": details_with_parameters(&row)}),
+        );
+        let id = create(&router, case, request).await;
+        let stored = at(get(&router, case, &id).await.policy(), "/PolicyDetails");
+
+        let patched = call(
+            &router,
+            "PATCH",
+            &format!("/policies/{id}"),
+            Some(json!({"PolicyDetails": stored.clone()})),
+        )
+        .await;
+        assert_eq!(
+            patched.status, 200,
+            "case {case:?}: a read configuration must be accepted back, got {} with {:?}",
+            patched.status, patched.body
+        );
+
+        let after = at(get(&router, case, &id).await.policy(), "/PolicyDetails");
+        assert_eq!(
+            after, stored,
+            "case {case:?}: expected the read configuration {stored:?} back unchanged, got \
+             {after:?}"
         );
     }
 }

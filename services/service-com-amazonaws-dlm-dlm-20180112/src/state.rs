@@ -17,7 +17,7 @@ use std::time::SystemTime;
 use crate::ops::types::{
     CreateRule, CrossRegionCopyTarget, DeprecateRule, Exclusions, FastRestoreRule,
     InternalServerException, InvalidRequestException, LifecyclePolicy, LifecyclePolicySummary,
-    LimitExceededException, Parameters, PolicyDetails, ResourceNotFoundException, RetainRule,
+    LimitExceededException, PolicyDetails, ResourceNotFoundException, RetainRule,
     RetentionArchiveTier, Schedule, Tag,
 };
 
@@ -35,7 +35,7 @@ pub use archive_creation_frequency::{
 /// first write.
 mod target_resource_type;
 
-pub use target_resource_type::{target_resource_type_violation, targets_instances_only};
+pub use target_resource_type::target_resource_type_violation;
 
 /// The region a request belongs to — the policies it reaches, and the region a
 /// policy ARN it mints names — when it carries no SigV4 credential scope to read
@@ -164,21 +164,6 @@ pub const DEFAULT_SCHEDULE_COPY_TAGS: bool = false;
 /// unless the rule turns that off. Like the members above, it is materialized at
 /// create, so a rule that states `false` keeps `false`.
 pub const DEFAULT_COPY_TAGS_ON_COPY: bool = true;
-
-/// Whether targeted instances are left un-rebooted when a custom AMI policy runs
-/// and its optional parameters state no `Parameters$NoReboot`: the member is
-/// documented "`true` indicates that targeted instances are not rebooted when the
-/// policy runs ... The default is `true` (instances are not rebooted)". Like the
-/// members above it is materialized when the policy is written, so parameters
-/// that state `false` keep `false`.
-pub const DEFAULT_NO_REBOOT: bool = true;
-
-/// Whether a custom snapshot policy that targets instances leaves the root volume
-/// out of its multi-volume snapshot sets when its optional parameters state no
-/// `Parameters$ExcludeBootVolume`: the member is documented "Indicates whether to
-/// exclude the root volume from multi-volume snapshot sets. The default is
-/// `false`."
-pub const DEFAULT_EXCLUDE_BOOT_VOLUME: bool = false;
 
 /// The value a schedule rule's interval carries when the request states none.
 ///
@@ -543,19 +528,19 @@ pub fn no_default_policy_manages(stated: &str) -> InvalidRequestException {
 ///   cross-Region copy rule's `CopyTags`. This applies to EVERY element of
 ///   `Schedules` (`@length(min: 1, max: 4)`) and of `CrossRegionCopyRules`, not
 ///   just the first.
-/// * `Parameters` — the optional parameters whose own documentation states the
-///   value the service fills in, each for the policy its documentation admits:
-///   `NoReboot` true for an AMI policy ("[Custom AMI policies only] ... The
-///   default is `true` (instances are not rebooted)") and `ExcludeBootVolume`
-///   false for a snapshot policy that targets instances ("[Custom snapshot
-///   policies that target instances only] ... The default is `false`"). See
-///   [`materialized_parameters`].
 ///
 /// What is NOT stamped: a member for which neither the model, the documentation
-/// nor a recorded read states a value the service fills in — a count, an
-/// interval unit, `Parameters$ExcludeDataVolumeTags`, a nested
-/// deprecate/archive/fast-restore rule's members. They keep exactly what the
-/// request stated, because inventing one would be fabrication.
+/// nor a recorded read states a value this API's own responses carry — a count,
+/// an interval unit, the whole `Parameters` structure and each of its members, a
+/// nested deprecate/archive/fast-restore rule's members. They keep exactly what
+/// the request stated, because inventing one would be fabrication. A value a
+/// member's documentation publishes as the one the policy RUNS on when it is
+/// unstated (`Parameters$NoReboot`'s "The default is `true` (instances are not
+/// rebooted)", `Parameters$ExcludeBootVolume`'s "The default is `false`") is a
+/// statement about policy execution, not a value written into the configuration
+/// a read echoes back: those members are optional and non-defaulted in the model,
+/// so an unstated one stays unstated and a read reports only what the caller
+/// configured.
 pub fn materialized_policy_details(
     mut details: PolicyDetails,
     kind: PolicyKind<'_>,
@@ -631,54 +616,7 @@ pub fn materialized_policy_details(
             copy_rule.copy_tags.get_or_insert(DEFAULT_COPY_TAGS_ON_COPY);
         }
     }
-    materialized_parameters(&mut details, creates_snapshots);
     details
-}
-
-/// Stamp the optional parameters a custom snapshot or AMI policy RUNS on onto the
-/// configuration being stored.
-///
-/// `Parameters` is "[Custom snapshot and AMI policies only] ... optional
-/// parameters for snapshot and AMI policies. The set of valid parameters depends
-/// on the combination of policy type and target resource type", and two of them
-/// document the value the service itself fills in for a policy that states none:
-///
-/// * `NoReboot` — "[Custom AMI policies only] Indicates whether targeted
-///   instances are rebooted when the lifecycle policy runs ... The default is
-///   `true` (instances are not rebooted)", so it is stamped for a policy whose
-///   `PolicyType` is the one that manages AMIs ([`DEFAULT_NO_REBOOT`]);
-/// * `ExcludeBootVolume` — "[Custom snapshot policies that target instances only]
-///   Indicates whether to exclude the root volume from multi-volume snapshot
-///   sets. The default is `false`", so it is stamped for a snapshot policy whose
-///   `ResourceTypes` targets instances ([`DEFAULT_EXCLUDE_BOOT_VOLUME`]).
-///
-/// Each is stamped only where the combination its own documentation names admits
-/// it, because the value a policy runs on is a value of that combination alone; a
-/// policy whose combination admits neither — a snapshot policy targeting volumes —
-/// is left with exactly the parameters its request stated, the empty structure
-/// included, since there is no member of it the service fills in. The third
-/// member, `ExcludeDataVolumeTags`, documents no value the service supplies, so
-/// it keeps what the request stated like every other unstamped member.
-///
-/// A policy that stated no parameters at all runs on the same values as one that
-/// stated an empty structure, so the structure is materialized for it too: which
-/// members a read reports follows the policy, never whether the request happened
-/// to carry the structure that declares them.
-fn materialized_parameters(details: &mut PolicyDetails, creates_snapshots: bool) {
-    let no_reboot = !creates_snapshots;
-    let exclude_boot_volume = creates_snapshots && targets_instances_only(details);
-    if !no_reboot && !exclude_boot_volume {
-        return;
-    }
-    let parameters = details.parameters.get_or_insert_with(Parameters::default);
-    if no_reboot {
-        parameters.no_reboot.get_or_insert(DEFAULT_NO_REBOOT);
-    }
-    if exclude_boot_volume {
-        parameters
-            .exclude_boot_volume
-            .get_or_insert(DEFAULT_EXCLUDE_BOOT_VOLUME);
-    }
 }
 
 /// A DEFAULT policy's `[Default policies only]` configuration, in the ONE form
