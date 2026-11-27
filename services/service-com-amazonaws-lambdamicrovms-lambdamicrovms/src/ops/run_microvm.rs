@@ -421,6 +421,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     execution_role_arn: input.execution_role_arn,
                     idle_policy: input.idle_policy,
                     logging: input.logging,
+                    // The key the caller named for this MicroVM's configuration at rest,
+                    // kept exactly as the request spelled it; a run naming none rests on
+                    // an AWS owned key and records no identifier.
+                    kms_key_identifier: input.kms_key_identifier,
                     maximum_duration_in_seconds,
                     started_at,
                     terminated_at: None,
@@ -599,6 +603,7 @@ fn output_of(vm: &Microvm) -> RunMicrovmOutput {
         started_at: vm.started_at,
         terminated_at: vm.terminated_at,
         state_reason: vm.state_reason.clone(),
+        kms_key_identifier: vm.kms_key_identifier.clone(),
         ingress_network_connectors: crate::state::wire_list(&vm.ingress_network_connectors),
         egress_network_connectors: crate::state::wire_list(&vm.egress_network_connectors),
     }

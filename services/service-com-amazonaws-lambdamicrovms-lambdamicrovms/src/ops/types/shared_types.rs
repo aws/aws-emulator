@@ -171,7 +171,7 @@ pub struct IdlePolicy {
 }
 
 /// The values `Architecture` accepts on the wire.
-pub const ARCHITECTURE_VALUES: &[&str] = &["ARM_64"];
+pub const ARCHITECTURE_VALUES: &[&str] = &["ARM_64", "X86_64"];
 
 
 /// The values `BuildState` accepts on the wire.
@@ -183,7 +183,7 @@ pub const CAPABILITY_VALUES: &[&str] = &["ALL"];
 
 
 /// The values `Chipset` accepts on the wire.
-pub const CHIPSET_VALUES: &[&str] = &["GRAVITON"];
+pub const CHIPSET_VALUES: &[&str] = &["GRAVITON", "INTEL"];
 
 
 /// The values `HookState` accepts on the wire.
@@ -191,7 +191,7 @@ pub const HOOK_STATE_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 
 
 /// The values `ManagedMicrovmImageVersionStatus` accepts on the wire.
-pub const MANAGED_MICROVM_IMAGE_VERSION_STATUS_VALUES: &[&str] = &["AVAILABLE", "DEPRECATED"];
+pub const MANAGED_MICROVM_IMAGE_VERSION_STATUS_VALUES: &[&str] = &["AVAILABLE", "DEPRECATED", "RECALLED"];
 
 
 /// The values `MicrovmImageState` accepts on the wire.

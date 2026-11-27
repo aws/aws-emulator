@@ -147,7 +147,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     for ListMicrovmImageBuilds<Eng>
 {
     type Input = ListMicrovmImageBuildsInput;
-    type Output = ListMicrovmImageBuildsOutput;
+    type Output = ListMicrovmImageBuildsResponse;
     type Error = ListMicrovmImageBuildsError;
 
     const NAME: &'static str = "ListMicrovmImageBuilds";
@@ -275,7 +275,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             _ => None,
         };
 
-        Ok(ListMicrovmImageBuildsOutput {
+        Ok(ListMicrovmImageBuildsResponse {
             next_token,
             // `items` is `@required`, so it is always projected — an empty page included.
             items: page
@@ -323,10 +323,82 @@ fn payload_of(
 /// The TERMINAL EMPTY PAGE: `items` is `@required`, so a listing with nothing to report
 /// projects it empty rather than omitting it, and issues no `nextToken` — there is no
 /// further page for a paginator to ask for.
-fn empty_page() -> ListMicrovmImageBuildsOutput {
-    ListMicrovmImageBuildsOutput {
+fn empty_page() -> ListMicrovmImageBuildsResponse {
+    ListMicrovmImageBuildsResponse {
         next_token: None,
         items: Vec::new(),
+    }
+}
+
+/// One row of this listing: the modelled `MicrovmImageBuildSummary` plus the build's own
+/// recorded `terminationReasonCode` — see [`crate::ops::types::recorded_wire`].
+pub type MicrovmImageBuildRow = RecordedMembers<MicrovmImageBuildSummary>;
+
+/// What `ListMicrovmImageBuilds` answers: the modelled `ListMicrovmImageBuildsOutput` with
+/// rows that carry the recorded `terminationReasonCode` beside the modelled summary.
+///
+/// Its schema and serializer are written out instead of derived, because its rows carry a
+/// member the model does not declare ([`TERMINATION_REASON_CODE_ON_BUILD_SUMMARY`]), and
+/// `#[smithy_macros::smithy(shape = …)]` admits exactly the model's member list, so a
+/// derived `items` could only hold rows without it. It lives HERE, in the operation's own
+/// hand-written module, rather than beside the shapes rendered from the model: a model
+/// refresh rewrites every file marked `@generated`, so a declaration a refresh must not
+/// take with it belongs in a file the refresh does not write.
+///
+/// The member set, order and indices are the model's own
+/// (`smithy_query(query="shape",shape="ListMicrovmImageBuildsOutput")`: `nextToken` then
+/// the `@required` `items`), and each row is written against the modelled
+/// `MicrovmImageBuildSummary` schema — the way the vendored codegen writes a list of
+/// structures. `DeserializableStruct` is deliberately absent: this shape is an operation
+/// OUTPUT and the server only ever serializes those.
+#[derive(Debug, Clone, Default)]
+pub struct ListMicrovmImageBuildsResponse {
+    pub next_token: Option<String>,
+    pub items: Vec<MicrovmImageBuildRow>,
+}
+
+#[allow(non_upper_case_globals)]
+impl ListMicrovmImageBuildsResponse {
+    pub const M_NEXT_TOKEN: ::aws_smithy_schema::Schema =
+        ::aws_smithy_schema::Schema::new_member(
+            ::aws_smithy_schema::ShapeId::from_static(
+                "com.amazonaws.lambdamicrovms#ListMicrovmImageBuildsOutput$nextToken",
+                "com.amazonaws.lambdamicrovms",
+                "nextToken",
+            ),
+            ::aws_smithy_schema::ShapeType::String,
+            "nextToken",
+            0,
+        );
+
+    pub const M_ITEMS: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
+        ::aws_smithy_schema::ShapeId::from_static(
+            "com.amazonaws.lambdamicrovms#ListMicrovmImageBuildsOutput$items",
+            "com.amazonaws.lambdamicrovms",
+            "items",
+        ),
+        ::aws_smithy_schema::ShapeType::List,
+        "items",
+        1,
+    );
+}
+
+impl ::aws_smithy_schema::serde::SerializableStruct for ListMicrovmImageBuildsResponse {
+    fn serialize_members(
+        &self,
+        serializer: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
+    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
+        if let ::std::option::Option::Some(token) = self.next_token.as_ref() {
+            serializer.write_string(&Self::M_NEXT_TOKEN, token.as_str())?;
+        }
+        // `items` is `@required`, so it is always written — an empty page included.
+        serializer.write_list(&Self::M_ITEMS, &|elements| {
+            for row in self.items.iter() {
+                elements.write_struct(&MicrovmImageBuildSummary::SCHEMA, row)?;
+            }
+            Ok(())
+        })?;
+        Ok(())
     }
 }
 

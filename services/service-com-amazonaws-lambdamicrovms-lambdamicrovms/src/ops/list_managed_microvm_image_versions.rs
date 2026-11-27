@@ -89,13 +89,10 @@
 //! * `ValidationException` (HTTP 400) — The input does not satisfy the constraints specified
 //!   by the service.
 //!
-//! ## Beside the model
-//!
-//! Each recorded row carries one further member the model declares on no shape:
-//! `supportedCpuConfigurations`, the CPU architectures that published generation of the
-//! base image supports, projected out of the catalogue table through
-//! [`crate::state::ManagedBaseImageVersion::recorded_supported_cpu_configurations_member`]
-//! under the member schema [`SUPPORTED_CPU_CONFIGURATIONS_ON_MANAGED_VERSION`].
+//! Each row's `supportedCpuConfigurations` — the CPU architectures that published
+//! generation of the base image supports — is projected out of the catalogue table
+//! ([`crate::state::managed_base_image_supported_architectures`]), so what the catalogue
+//! publishes and what this listing reports cannot disagree.
 
 #[allow(unused_imports)]
 use super::types::*;
@@ -258,22 +255,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // `items` is `@required`, so it is always projected — an empty page included.
             items: page
                 .into_iter()
-                .map(|entry| {
-                    ManagedMicrovmImageVersionRow::new(
-                        ManagedMicrovmImageVersion {
-                            image_arn: entry.image_arn.clone(),
-                            image_version: entry.image_version.clone(),
-                            status: Some(entry.status.clone()),
-                            created_at: entry.created_at,
-                            updated_at: entry.updated_at,
-                        },
-                        // Which architectures the generation supports, read from the one
-                        // catalogue table rather than from the request, so a caller can
-                        // select a base image by architecture.
-                        entry.recorded_supported_cpu_configurations_member(
-                            &SUPPORTED_CPU_CONFIGURATIONS_ON_MANAGED_VERSION,
-                        ),
-                    )
+                .map(|entry| ManagedMicrovmImageVersion {
+                    image_arn: entry.image_arn.clone(),
+                    image_version: entry.image_version.clone(),
+                    status: Some(entry.status.clone()),
+                    // Which architectures the generation supports, read from the one
+                    // catalogue table rather than from the request, so a caller can
+                    // select a base image by architecture.
+                    supported_cpu_configurations: crate::state::wire_list(
+                        &entry.supported_cpu_configurations,
+                    ),
+                    created_at: entry.created_at,
+                    updated_at: entry.updated_at,
                 })
                 .collect(),
         })

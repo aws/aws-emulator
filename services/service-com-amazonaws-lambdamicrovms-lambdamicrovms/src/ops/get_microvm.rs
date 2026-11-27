@@ -209,6 +209,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             started_at: vm.started_at,
             terminated_at: vm.terminated_at,
             state_reason: vm.state_reason.clone(),
+            kms_key_identifier: vm.kms_key_identifier.clone(),
             ingress_network_connectors: crate::state::wire_list(&vm.ingress_network_connectors),
             egress_network_connectors: crate::state::wire_list(&vm.egress_network_connectors),
         })

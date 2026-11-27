@@ -327,6 +327,7 @@ fn payload_of(
         additional_os_capabilities: crate::state::wire_list(&version.additional_os_capabilities),
         hooks: version.hooks.clone(),
         environment_variables: crate::state::wire_map(&version.environment_variables),
+        kms_key_identifier: version.kms_key_identifier.clone(),
         created_at: version.created_at,
         updated_at: version.updated_at,
         state_reason: version.reported_state_reason(),

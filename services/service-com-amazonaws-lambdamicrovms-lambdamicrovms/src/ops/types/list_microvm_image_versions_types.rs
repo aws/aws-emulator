@@ -19,84 +19,11 @@ pub struct ListMicrovmImageVersionsInput {
     pub image_identifier: String,
 }
 
-/// One row of this listing: the modelled `MicrovmImageVersionSummary` plus the
-/// version's own recorded `versionStateTimeBucket` — see [`super::recorded_wire`].
-pub type MicrovmImageVersionRow = RecordedMembers<MicrovmImageVersionSummary>;
-
-/// The listing's response, with its schema and serializer written out instead of
-/// derived: its rows carry a member the model does not declare
-/// ([`VERSION_STATE_TIME_BUCKET_ON_VERSION_SUMMARY`]), and
-/// `#[smithy_macros::smithy(shape = …)]` admits exactly the model's member list, so a
-/// derived `items` could only hold rows without it.
-///
-/// The member set, order and indices are the model's own
-/// (`smithy_query(query="shape",shape="ListMicrovmImageVersionsOutput")`: `nextToken`
-/// then the `@required` `items`), and each row is written against the modelled
-/// `MicrovmImageVersionSummary` schema — the way the vendored codegen writes a list of
-/// structures. `DeserializableStruct` is deliberately absent: this shape is an operation
-/// OUTPUT and the server only ever serializes those.
+#[smithy_macros::smithy(shape = "com.amazonaws.lambdamicrovms#ListMicrovmImageVersionsOutput")]
 #[derive(Debug, Clone, Default)]
 pub struct ListMicrovmImageVersionsOutput {
     pub next_token: Option<String>,
-    pub items: Vec<MicrovmImageVersionRow>,
-}
-
-#[allow(non_upper_case_globals)]
-impl ListMicrovmImageVersionsOutput {
-    pub const M_NEXT_TOKEN: ::aws_smithy_schema::Schema =
-        ::aws_smithy_schema::Schema::new_member(
-            ::aws_smithy_schema::ShapeId::from_static(
-                "com.amazonaws.lambdamicrovms#ListMicrovmImageVersionsOutput$nextToken",
-                "com.amazonaws.lambdamicrovms",
-                "nextToken",
-            ),
-            ::aws_smithy_schema::ShapeType::String,
-            "nextToken",
-            0,
-        );
-
-    pub const M_ITEMS: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.lambdamicrovms#ListMicrovmImageVersionsOutput$items",
-            "com.amazonaws.lambdamicrovms",
-            "items",
-        ),
-        ::aws_smithy_schema::ShapeType::List,
-        "items",
-        1,
-    );
-
-    pub const SCHEMA: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_struct(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.lambdamicrovms#ListMicrovmImageVersionsOutput",
-            "com.amazonaws.lambdamicrovms",
-            "ListMicrovmImageVersionsOutput",
-        ),
-        ::aws_smithy_schema::ShapeType::Structure,
-        &[&Self::M_NEXT_TOKEN, &Self::M_ITEMS],
-    );
-}
-
-pub static LIST_MICROVM_IMAGE_VERSIONS_OUTPUT_SCHEMA: &::aws_smithy_schema::Schema =
-    &ListMicrovmImageVersionsOutput::SCHEMA;
-
-impl ::aws_smithy_schema::serde::SerializableStruct for ListMicrovmImageVersionsOutput {
-    fn serialize_members(
-        &self,
-        serializer: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        if let ::std::option::Option::Some(token) = self.next_token.as_ref() {
-            serializer.write_string(&Self::M_NEXT_TOKEN, token.as_str())?;
-        }
-        // `items` is `@required`, so it is always written — an empty page included.
-        serializer.write_list(&Self::M_ITEMS, &|elements| {
-            for row in self.items.iter() {
-                elements.write_struct(&MicrovmImageVersionSummary::SCHEMA, row)?;
-            }
-            Ok(())
-        })?;
-        Ok(())
-    }
+    pub items: Vec<MicrovmImageVersionSummary>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.lambdamicrovms#MicrovmImageVersionSummary")]
@@ -114,6 +41,7 @@ pub struct MicrovmImageVersionSummary {
     pub additional_os_capabilities: Option<Vec<String>>,
     pub hooks: Option<Hooks>,
     pub environment_variables: Option<std::collections::HashMap<String, String>>,
+    pub kms_key_identifier: Option<String>,
     pub image_arn: String,
     pub image_version: String,
     pub state: String,

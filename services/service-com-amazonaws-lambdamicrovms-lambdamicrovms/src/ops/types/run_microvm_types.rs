@@ -21,6 +21,7 @@ pub struct RunMicrovmInput {
     pub execution_role_arn: Option<String>,
     pub idle_policy: Option<IdlePolicy>,
     pub logging: Option<Logging>,
+    pub kms_key_identifier: Option<String>,
     pub run_hook_payload: Option<String>,
     pub maximum_duration_in_seconds: Option<i32>,
     pub client_token: Option<String>,
@@ -40,6 +41,7 @@ pub struct RunMicrovmOutput {
     pub started_at: ::aws_smithy_types::DateTime,
     pub terminated_at: Option<::aws_smithy_types::DateTime>,
     pub state_reason: Option<String>,
+    pub kms_key_identifier: Option<String>,
     pub ingress_network_connectors: Option<Vec<String>>,
     pub egress_network_connectors: Option<Vec<String>>,
 }

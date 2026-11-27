@@ -23,84 +23,11 @@ pub struct ListMicrovmImageBuildsInput {
     pub chipset_generation: Option<String>,
 }
 
-/// One row of this listing: the modelled `MicrovmImageBuildSummary` plus the build's own
-/// recorded `terminationReasonCode` — see [`super::recorded_wire`].
-pub type MicrovmImageBuildRow = RecordedMembers<MicrovmImageBuildSummary>;
-
-/// The listing's response, with its schema and serializer written out instead of
-/// derived: its rows carry a member the model does not declare
-/// ([`TERMINATION_REASON_CODE_ON_BUILD_SUMMARY`]), and
-/// `#[smithy_macros::smithy(shape = …)]` admits exactly the model's member list, so a
-/// derived `items` could only hold rows without it.
-///
-/// The member set, order and indices are the model's own
-/// (`smithy_query(query="shape",shape="ListMicrovmImageBuildsOutput")`: `nextToken` then
-/// the `@required` `items`), and each row is written against the modelled
-/// `MicrovmImageBuildSummary` schema — the way the vendored codegen writes a list of
-/// structures. `DeserializableStruct` is deliberately absent: this shape is an operation
-/// OUTPUT and the server only ever serializes those.
+#[smithy_macros::smithy(shape = "com.amazonaws.lambdamicrovms#ListMicrovmImageBuildsOutput")]
 #[derive(Debug, Clone, Default)]
 pub struct ListMicrovmImageBuildsOutput {
     pub next_token: Option<String>,
-    pub items: Vec<MicrovmImageBuildRow>,
-}
-
-#[allow(non_upper_case_globals)]
-impl ListMicrovmImageBuildsOutput {
-    pub const M_NEXT_TOKEN: ::aws_smithy_schema::Schema =
-        ::aws_smithy_schema::Schema::new_member(
-            ::aws_smithy_schema::ShapeId::from_static(
-                "com.amazonaws.lambdamicrovms#ListMicrovmImageBuildsOutput$nextToken",
-                "com.amazonaws.lambdamicrovms",
-                "nextToken",
-            ),
-            ::aws_smithy_schema::ShapeType::String,
-            "nextToken",
-            0,
-        );
-
-    pub const M_ITEMS: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.lambdamicrovms#ListMicrovmImageBuildsOutput$items",
-            "com.amazonaws.lambdamicrovms",
-            "items",
-        ),
-        ::aws_smithy_schema::ShapeType::List,
-        "items",
-        1,
-    );
-
-    pub const SCHEMA: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_struct(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.lambdamicrovms#ListMicrovmImageBuildsOutput",
-            "com.amazonaws.lambdamicrovms",
-            "ListMicrovmImageBuildsOutput",
-        ),
-        ::aws_smithy_schema::ShapeType::Structure,
-        &[&Self::M_NEXT_TOKEN, &Self::M_ITEMS],
-    );
-}
-
-pub static LIST_MICROVM_IMAGE_BUILDS_OUTPUT_SCHEMA: &::aws_smithy_schema::Schema =
-    &ListMicrovmImageBuildsOutput::SCHEMA;
-
-impl ::aws_smithy_schema::serde::SerializableStruct for ListMicrovmImageBuildsOutput {
-    fn serialize_members(
-        &self,
-        serializer: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        if let ::std::option::Option::Some(token) = self.next_token.as_ref() {
-            serializer.write_string(&Self::M_NEXT_TOKEN, token.as_str())?;
-        }
-        // `items` is `@required`, so it is always written — an empty page included.
-        serializer.write_list(&Self::M_ITEMS, &|elements| {
-            for row in self.items.iter() {
-                elements.write_struct(&MicrovmImageBuildSummary::SCHEMA, row)?;
-            }
-            Ok(())
-        })?;
-        Ok(())
-    }
+    pub items: Vec<MicrovmImageBuildSummary>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.lambdamicrovms#MicrovmImageBuildSummary")]
@@ -116,4 +43,3 @@ pub struct MicrovmImageBuildSummary {
     pub state_reason: Option<String>,
     pub created_at: ::aws_smithy_types::DateTime,
 }
-

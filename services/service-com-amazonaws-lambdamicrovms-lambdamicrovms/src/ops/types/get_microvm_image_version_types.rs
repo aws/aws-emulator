@@ -33,6 +33,7 @@ pub struct GetMicrovmImageVersionOutput {
     pub additional_os_capabilities: Option<Vec<String>>,
     pub hooks: Option<Hooks>,
     pub environment_variables: Option<std::collections::HashMap<String, String>>,
+    pub kms_key_identifier: Option<String>,
     pub image_arn: String,
     pub image_version: String,
     pub state: String,

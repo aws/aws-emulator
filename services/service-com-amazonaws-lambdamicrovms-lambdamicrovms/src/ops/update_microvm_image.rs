@@ -404,6 +404,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             additional_os_capabilities: input.additional_os_capabilities.unwrap_or_default(),
             hooks: input.hooks,
             environment_variables: crate::state::sorted_map(input.environment_variables),
+            // The key the caller named for this version's encryption, kept exactly as the
+            // request spelled it; an update naming none mints a version that rests on an
+            // AWS owned key and records no identifier.
+            kms_key_identifier: input.kms_key_identifier,
             // The version is minted by THIS call, so it is created now; minting it is
             // also its first write, so both stamps are this instant.
             created_at: updated_at,
@@ -571,6 +575,7 @@ fn output_payload_of(
         additional_os_capabilities: crate::state::wire_list(&version.additional_os_capabilities),
         hooks: version.hooks.clone(),
         environment_variables: crate::state::wire_map(&version.environment_variables),
+        kms_key_identifier: version.kms_key_identifier.clone(),
         updated_at: image
             .updated_at
             .or(version.updated_at)

@@ -26,6 +26,7 @@ pub struct UpdateMicrovmImageInput {
     pub additional_os_capabilities: Option<Vec<String>>,
     pub hooks: Option<Hooks>,
     pub environment_variables: Option<std::collections::HashMap<String, String>>,
+    pub kms_key_identifier: Option<String>,
     pub image_identifier: String,
     pub client_token: Option<String>,
 }
@@ -51,6 +52,7 @@ pub struct UpdateMicrovmImageOutput {
     pub additional_os_capabilities: Option<Vec<String>>,
     pub hooks: Option<Hooks>,
     pub environment_variables: Option<std::collections::HashMap<String, String>>,
+    pub kms_key_identifier: Option<String>,
     pub updated_at: ::aws_smithy_types::DateTime,
     pub image_version: String,
 }

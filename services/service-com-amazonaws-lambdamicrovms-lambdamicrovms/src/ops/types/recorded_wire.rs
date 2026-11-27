@@ -19,10 +19,6 @@
 //!   `state`, `latestActiveImageVersion`, `latestFailedImageVersion`, `createdAt` (and
 //!   the configuration members) and no `id`
 //!   (`smithy_query(query="shape",shape="CreateMicrovmImageResponse,GetMicrovmImageOutput,MicrovmImageSummary",model_path="services/service-com-amazonaws-lambdamicrovms-lambdamicrovms/smithy-model/com-amazonaws-lambdamicrovms-lambdamicrovms.json")`).
-//! * `supportedCpuConfigurations` on `ManagedMicrovmImageVersion` — which CPU
-//!   architectures that published generation of an AWS-managed base image supports. The
-//!   shape declares `imageArn`, `imageVersion`, `status`, `createdAt` and `updatedAt`
-//!   alone (same `smithy_query`).
 //! * `versionStateTimeBucket` on every response that reports one VERSION of a MicroVM
 //!   image — the state that version settled in and the time bucket it settled in
 //!   ([`crate::state::MicrovmImageVersion::reported_state_time_bucket`]), which a client
@@ -52,7 +48,15 @@
 //! shape id must neither claim it is nor collide with a member the model may declare
 //! later. The member INDEX is the next free one after the modelled members, so a later
 //! model refresh that declares the member only has to move it into place and put the
-//! derive back.
+//! derive back — and a refresh that adds any OTHER member to one of these shapes moves
+//! that free index along with it, which is why each index is stated here beside the
+//! modelled member count it follows.
+//!
+//! The row and response types that WRITE these members ([`RecordedMembers`] aliases, and
+//! the listing responses whose `items` hold them) live in each operation's own module
+//! under `ops/`, never beside the shapes rendered from the model: a model refresh
+//! rewrites every file marked `@generated`, so a declaration a refresh must not take
+//! with it belongs in a file the refresh does not write.
 //!
 //! Deliberately absent, for the reasons the derive's own output would be inert here:
 //! the constraint traits (the validating walk runs on operation INPUTS only, and these
@@ -67,8 +71,8 @@ use super::*;
 /// module's own documentation.
 const RECORDED_NAMESPACE: &str = "com.amazonaws.lambdamicrovms.recorded";
 
-/// `id` on `CreateMicrovmImageResponse`, whose 21 modelled members occupy indices
-/// `0..=20`.
+/// `id` on `CreateMicrovmImageResponse`, whose 22 modelled members occupy indices
+/// `0..=21`.
 pub const IMAGE_ID_ON_CREATE_RESPONSE: ::aws_smithy_schema::Schema =
     ::aws_smithy_schema::Schema::new_member(
         ::aws_smithy_schema::ShapeId::from_static(
@@ -78,7 +82,7 @@ pub const IMAGE_ID_ON_CREATE_RESPONSE: ::aws_smithy_schema::Schema =
         ),
         ::aws_smithy_schema::ShapeType::String,
         "id",
-        21,
+        22,
     );
 
 /// `id` on `GetMicrovmImageOutput`, whose eight modelled members occupy indices
@@ -95,8 +99,8 @@ pub const IMAGE_ID_ON_GET_OUTPUT: ::aws_smithy_schema::Schema =
         8,
     );
 
-/// `id` on `UpdateMicrovmImageResponse`, whose 20 modelled members occupy indices
-/// `0..=19`.
+/// `id` on `UpdateMicrovmImageResponse`, whose 21 modelled members occupy indices
+/// `0..=20`.
 pub const IMAGE_ID_ON_UPDATE_RESPONSE: ::aws_smithy_schema::Schema =
     ::aws_smithy_schema::Schema::new_member(
         ::aws_smithy_schema::ShapeId::from_static(
@@ -106,7 +110,7 @@ pub const IMAGE_ID_ON_UPDATE_RESPONSE: ::aws_smithy_schema::Schema =
         ),
         ::aws_smithy_schema::ShapeType::String,
         "id",
-        20,
+        21,
     );
 
 /// `id` on `MicrovmImageSummary` — one listing row — whose six modelled members occupy
@@ -123,23 +127,8 @@ pub const IMAGE_ID_ON_SUMMARY: ::aws_smithy_schema::Schema =
         6,
     );
 
-/// `supportedCpuConfigurations` on `ManagedMicrovmImageVersion`, whose five modelled
-/// members occupy indices `0..=4`. A list of `CpuConfiguration`, the modelled structure
-/// whose one member is the `architecture`.
-pub const SUPPORTED_CPU_CONFIGURATIONS_ON_MANAGED_VERSION: ::aws_smithy_schema::Schema =
-    ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.lambdamicrovms.recorded#ManagedMicrovmImageVersion$supportedCpuConfigurations",
-            RECORDED_NAMESPACE,
-            "supportedCpuConfigurations",
-        ),
-        ::aws_smithy_schema::ShapeType::List,
-        "supportedCpuConfigurations",
-        5,
-    );
-
-/// `versionStateTimeBucket` on `GetMicrovmImageVersionOutput`, whose 20 modelled members
-/// occupy indices `0..=19`.
+/// `versionStateTimeBucket` on `GetMicrovmImageVersionOutput`, whose 21 modelled members
+/// occupy indices `0..=20`.
 pub const VERSION_STATE_TIME_BUCKET_ON_GET_VERSION_OUTPUT: ::aws_smithy_schema::Schema =
     ::aws_smithy_schema::Schema::new_member(
         ::aws_smithy_schema::ShapeId::from_static(
@@ -149,11 +138,11 @@ pub const VERSION_STATE_TIME_BUCKET_ON_GET_VERSION_OUTPUT: ::aws_smithy_schema::
         ),
         ::aws_smithy_schema::ShapeType::String,
         "versionStateTimeBucket",
-        20,
+        21,
     );
 
 /// `versionStateTimeBucket` on `MicrovmImageVersionSummary` — one row of the version
-/// listing — whose 20 modelled members occupy indices `0..=19`.
+/// listing — whose 21 modelled members occupy indices `0..=20`.
 pub const VERSION_STATE_TIME_BUCKET_ON_VERSION_SUMMARY: ::aws_smithy_schema::Schema =
     ::aws_smithy_schema::Schema::new_member(
         ::aws_smithy_schema::ShapeId::from_static(
@@ -163,11 +152,11 @@ pub const VERSION_STATE_TIME_BUCKET_ON_VERSION_SUMMARY: ::aws_smithy_schema::Sch
         ),
         ::aws_smithy_schema::ShapeType::String,
         "versionStateTimeBucket",
-        20,
+        21,
     );
 
-/// `versionStateTimeBucket` on `UpdateMicrovmImageVersionResponse`, whose 20 modelled
-/// members occupy indices `0..=19`.
+/// `versionStateTimeBucket` on `UpdateMicrovmImageVersionResponse`, whose 21 modelled
+/// members occupy indices `0..=20`.
 pub const VERSION_STATE_TIME_BUCKET_ON_UPDATE_VERSION_RESPONSE: ::aws_smithy_schema::Schema =
     ::aws_smithy_schema::Schema::new_member(
         ::aws_smithy_schema::ShapeId::from_static(
@@ -177,7 +166,7 @@ pub const VERSION_STATE_TIME_BUCKET_ON_UPDATE_VERSION_RESPONSE: ::aws_smithy_sch
         ),
         ::aws_smithy_schema::ShapeType::String,
         "versionStateTimeBucket",
-        20,
+        21,
     );
 
 /// `terminationReasonCode` on `MicrovmImageBuildSummary` — one row of the build listing
@@ -218,10 +207,6 @@ pub enum RecordedMember {
     /// value is the wire's own absent value, so a client reading the member finds the key
     /// whether or not the record has something to report under it.
     Absent(&'static ::aws_smithy_schema::Schema),
-    /// A list of `CpuConfiguration`, each element written against that modelled
-    /// structure's own schema — the way the vendored codegen writes a list of
-    /// structures.
-    CpuConfigurations(&'static ::aws_smithy_schema::Schema, Vec<CpuConfiguration>),
 }
 
 /// A modelled response (or one row of one) plus the members the recorded service
@@ -256,14 +241,6 @@ impl<T: ::aws_smithy_schema::serde::SerializableStruct>
             match member {
                 RecordedMember::Text(schema, value) => serializer.write_string(schema, value)?,
                 RecordedMember::Absent(schema) => serializer.write_null(schema)?,
-                RecordedMember::CpuConfigurations(schema, configurations) => {
-                    serializer.write_list(schema, &|elements| {
-                        for configuration in configurations {
-                            elements.write_struct(&CpuConfiguration::SCHEMA, configuration)?;
-                        }
-                        Ok(())
-                    })?;
-                }
             }
         }
         Ok(())

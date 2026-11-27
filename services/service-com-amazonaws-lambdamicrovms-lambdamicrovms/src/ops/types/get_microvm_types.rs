@@ -31,6 +31,7 @@ pub struct GetMicrovmOutput {
     pub started_at: ::aws_smithy_types::DateTime,
     pub terminated_at: Option<::aws_smithy_types::DateTime>,
     pub state_reason: Option<String>,
+    pub kms_key_identifier: Option<String>,
     pub ingress_network_connectors: Option<Vec<String>>,
     pub egress_network_connectors: Option<Vec<String>>,
 }

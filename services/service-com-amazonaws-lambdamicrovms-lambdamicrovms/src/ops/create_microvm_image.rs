@@ -419,6 +419,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             additional_os_capabilities: input.additional_os_capabilities.unwrap_or_default(),
             hooks: input.hooks,
             environment_variables: crate::state::sorted_map(input.environment_variables),
+            // The key the caller named for this version's encryption, kept exactly as the
+            // request spelled it; a create naming none rests on an AWS owned key and
+            // records no identifier.
+            kms_key_identifier: input.kms_key_identifier,
             created_at,
             // "The timestamp when the MicroVM image was last updated": the create IS
             // the record's first update, so the stamp is set here rather than left
@@ -572,6 +576,7 @@ fn output_payload_of(
         additional_os_capabilities: crate::state::wire_list(&version.additional_os_capabilities),
         hooks: version.hooks.clone(),
         environment_variables: crate::state::wire_map(&version.environment_variables),
+        kms_key_identifier: version.kms_key_identifier.clone(),
         tags: crate::state::wire_map(&image.tags),
         updated_at: image.updated_at,
         image_version: version.image_version.clone(),

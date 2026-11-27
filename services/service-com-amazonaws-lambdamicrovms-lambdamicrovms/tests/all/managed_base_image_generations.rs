@@ -10,12 +10,12 @@
 //! each reporting the CPU architectures a MicroVM built on it can target
 //! (`supportedCpuConfigurations`, one `{architecture}` entry per architecture).
 //!
-//! `supportedCpuConfigurations` is RECORDED rather than modelled:
-//! `ManagedMicrovmImageVersion` declares `imageArn`, `imageVersion`, `status`,
-//! `createdAt` and `updatedAt` alone (`smithy_query(query="shape",
+//! `supportedCpuConfigurations` is a MODELLED member of `ManagedMicrovmImageVersion`,
+//! beside `imageArn`, `imageVersion`, `status`, `createdAt` and `updatedAt`
+//! (`smithy_query(query="shape",
 //! shape="ManagedMicrovmImageVersion",
 //! model_path="services/service-com-amazonaws-lambdamicrovms-lambdamicrovms/smithy-model/com-amazonaws-lambdamicrovms-lambdamicrovms.json")`),
-//! so it is written beside the modelled payload.
+//! so a listing row reports it as it reports every other member of that shape.
 //!
 //! Each test states that rule and exercises it over a SET of inputs; the values any one
 //! row happens to carry are examples, not the specification. The paging, the ARN, the

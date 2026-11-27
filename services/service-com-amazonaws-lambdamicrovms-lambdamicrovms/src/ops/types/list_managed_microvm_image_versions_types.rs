@@ -19,80 +19,11 @@ pub struct ListManagedMicrovmImageVersionsInput {
     pub image_identifier: String,
 }
 
-/// One row of this listing: the modelled `ManagedMicrovmImageVersion` plus the
-/// generation's recorded `supportedCpuConfigurations` — see [`super::recorded_wire`].
-pub type ManagedMicrovmImageVersionRow = RecordedMembers<ManagedMicrovmImageVersion>;
-
-/// The listing's response, with its schema and serializer written out instead of
-/// derived, for the reason (and in the form) `super::list_microvm_images_types`'s own
-/// response documents: its rows carry a member the model does not declare
-/// ([`SUPPORTED_CPU_CONFIGURATIONS_ON_MANAGED_VERSION`]).
-///
-/// The member set, order and indices are the model's own
-/// (`smithy_query(query="shape",shape="ListManagedMicrovmImageVersionsOutput")`:
-/// `nextToken` then the `@required` `items`).
+#[smithy_macros::smithy(shape = "com.amazonaws.lambdamicrovms#ListManagedMicrovmImageVersionsOutput")]
 #[derive(Debug, Clone, Default)]
 pub struct ListManagedMicrovmImageVersionsOutput {
     pub next_token: Option<String>,
-    pub items: Vec<ManagedMicrovmImageVersionRow>,
-}
-
-#[allow(non_upper_case_globals)]
-impl ListManagedMicrovmImageVersionsOutput {
-    pub const M_NEXT_TOKEN: ::aws_smithy_schema::Schema =
-        ::aws_smithy_schema::Schema::new_member(
-            ::aws_smithy_schema::ShapeId::from_static(
-                "com.amazonaws.lambdamicrovms#ListManagedMicrovmImageVersionsOutput$nextToken",
-                "com.amazonaws.lambdamicrovms",
-                "nextToken",
-            ),
-            ::aws_smithy_schema::ShapeType::String,
-            "nextToken",
-            0,
-        );
-
-    pub const M_ITEMS: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.lambdamicrovms#ListManagedMicrovmImageVersionsOutput$items",
-            "com.amazonaws.lambdamicrovms",
-            "items",
-        ),
-        ::aws_smithy_schema::ShapeType::List,
-        "items",
-        1,
-    );
-
-    pub const SCHEMA: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_struct(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.lambdamicrovms#ListManagedMicrovmImageVersionsOutput",
-            "com.amazonaws.lambdamicrovms",
-            "ListManagedMicrovmImageVersionsOutput",
-        ),
-        ::aws_smithy_schema::ShapeType::Structure,
-        &[&Self::M_NEXT_TOKEN, &Self::M_ITEMS],
-    );
-}
-
-pub static LIST_MANAGED_MICROVM_IMAGE_VERSIONS_OUTPUT_SCHEMA: &::aws_smithy_schema::Schema =
-    &ListManagedMicrovmImageVersionsOutput::SCHEMA;
-
-impl ::aws_smithy_schema::serde::SerializableStruct for ListManagedMicrovmImageVersionsOutput {
-    fn serialize_members(
-        &self,
-        serializer: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        if let ::std::option::Option::Some(token) = self.next_token.as_ref() {
-            serializer.write_string(&Self::M_NEXT_TOKEN, token.as_str())?;
-        }
-        // `items` is `@required`, so it is always written — an empty page included.
-        serializer.write_list(&Self::M_ITEMS, &|elements| {
-            for row in self.items.iter() {
-                elements.write_struct(&ManagedMicrovmImageVersion::SCHEMA, row)?;
-            }
-            Ok(())
-        })?;
-        Ok(())
-    }
+    pub items: Vec<ManagedMicrovmImageVersion>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.lambdamicrovms#ManagedMicrovmImageVersion")]
@@ -101,6 +32,7 @@ pub struct ManagedMicrovmImageVersion {
     pub image_arn: String,
     pub image_version: String,
     pub status: Option<String>,
+    pub supported_cpu_configurations: Option<Vec<CpuConfiguration>>,
     pub created_at: ::aws_smithy_types::DateTime,
     pub updated_at: Option<::aws_smithy_types::DateTime>,
 }

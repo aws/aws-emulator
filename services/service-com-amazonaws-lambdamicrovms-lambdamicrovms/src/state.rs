@@ -638,9 +638,9 @@ pub const MANAGED_BASE_IMAGE_VERSIONS: &[(&str, &str, &str, i64, &[&str])] = &[
 /// (`MANAGED_MICROVM_IMAGE_VERSION_STATUS_VALUES`): "the version is available for
 /// use".
 ///
-/// The other value, `DEPRECATED`, is for a version AWS has retired ("Do not use this
-/// version for new MicroVM images"); the catalogue publishes nothing retired, so
-/// every entry it serves is available for use.
+/// The other values are for a generation AWS has taken out of service — `DEPRECATED`
+/// ("Do not use this version for new MicroVM images") and `RECALLED`; the catalogue
+/// publishes nothing retired, so every entry it serves is available for use.
 pub const MANAGED_VERSION_STATUS_AVAILABLE: &str = "AVAILABLE";
 
 /// The generations the catalogue publishes for the base image `image_id`, in the order
@@ -1579,6 +1579,12 @@ pub struct MicrovmImageVersion {
     pub additional_os_capabilities: Vec<String>,
     pub hooks: Option<Hooks>,
     pub environment_variables: BTreeMap<String, String>,
+    /// The customer managed key the caller asked for this version's contents and metadata
+    /// to be encrypted with, exactly as the request named it (a key ARN or an alias ARN).
+    /// `None` for a version whose create named none, which is the version that "uses an
+    /// Amazon Web Services owned key" — AWS's own key is not a customer resource, so a
+    /// version resting on it reports no identifier at all.
+    pub kms_key_identifier: Option<String>,
     pub created_at: DateTime,
     pub updated_at: Option<DateTime>,
     pub tags: BTreeMap<String, String>,
@@ -2022,6 +2028,12 @@ pub struct Microvm {
     pub execution_role_arn: Option<String>,
     pub idle_policy: Option<IdlePolicy>,
     pub logging: Option<Logging>,
+    /// The customer managed key the caller asked for this MicroVM's configuration at rest
+    /// to be encrypted with, exactly as the request named it (a key ARN or an alias ARN).
+    /// `None` for a MicroVM run without one, which is the MicroVM that "uses an Amazon Web
+    /// Services owned key" — AWS's own key is not a customer resource, so a MicroVM resting
+    /// on it reports no identifier at all.
+    pub kms_key_identifier: Option<String>,
     pub maximum_duration_in_seconds: i32,
     pub started_at: DateTime,
     pub terminated_at: Option<DateTime>,
@@ -2229,25 +2241,6 @@ pub struct ManagedBaseImageVersion {
     /// The CPU architectures this published generation supports — see
     /// [`managed_base_image_supported_architectures`].
     pub supported_cpu_configurations: Vec<CpuConfiguration>,
-}
-
-impl ManagedBaseImageVersion {
-    /// This entry's `supportedCpuConfigurations`, as the recorded-only member a listing
-    /// row writes beside its modelled payload, under the member schema `member`.
-    ///
-    /// The ONE projection of the published architectures, read from the catalogue table
-    /// rather than from the request, so what the catalogue publishes and what a listing
-    /// reports cannot disagree. See [`crate::ops::types::RecordedMembers`] for why the
-    /// member is written beside the payload rather than on it.
-    pub fn recorded_supported_cpu_configurations_member(
-        &self,
-        member: &'static ::aws_smithy_schema::Schema,
-    ) -> Vec<RecordedMember> {
-        vec![RecordedMember::CpuConfigurations(
-            member,
-            self.supported_cpu_configurations.clone(),
-        )]
-    }
 }
 
 impl ComAmazonawsLambdamicrovmsLambdamicrovmsState {
