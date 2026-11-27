@@ -1,13 +1,13 @@
 Issue-Severity: HIGH
 Issue-Corpus: simparity-behavioral-aws-v1
 Issue-Corpus-Kind: behavioral
-Issue-Trace-Ids: acm__route53.acm-caa-records-authorizing-the-amazon-ca-domains-are-answered-for-the-certificate-domain acm__route53.acm-dns-validation-cname-in-the-delegated-zone-is-answered-with-the-published-target acm__route53.acm-wildcard-and-apex-validation-name-is-answered-and-an-unpublished-sibling-is-rejected-with-nxdomain
-Issue-Key: acm__route53.acm-caa-records-authorizing-the-amazon-ca-domains-are-answered-for-the-certificate-domain|_ask#11|AssertionError|assert "reply" in body, f"the query to {server} got no reply: {body.get('error')!r}"
-Issue-Key: acm__route53.acm-dns-validation-cname-in-the-delegated-zone-is-answered-with-the-published-target|_ask#13|AssertionError|assert "reply" in body, f"the query to {server} got no reply: {body.get('error')!r}"
+Issue-Trace-Ids: acm__route53.acm-wildcard-and-apex-validation-name-is-answered-and-an-unpublished-sibling-is-rejected-with-nxdomain
 Issue-Key: acm__route53.acm-wildcard-and-apex-validation-name-is-answered-and-an-unpublished-sibling-is-rejected-with-nxdomain|run#8|AssertionError|assert (_norm(records[wildcard]["Name"]), _norm(records[wildcard]["Value"])) == shared, (
 Issue-Commit: 0e14ec34ba796ebb423716588b97f90ad61f6019
 
-# acm__route53: 2 net-new causes — a hosted zone's DelegationSet.NameServers are AWS-style hostnames that resolve nowhere, and a wildcard SAN gets its own DNS validation record instead of sharing the apex's
+# acm__route53: a wildcard SAN gets its own DNS validation record instead of sharing the record of the name it wildcards
+
+> _Cause 1 of the original bundle — a hosted zone's `DelegationSet.NameServers` are AWS-style hostnames that resolve nowhere, because this emulator serves no DNS wire — is SPLIT OUT into `issues/things-that-do-not-work/20261127T110935Z-acm-route53-the-published-delegation-set-resolves-nowhere.md`, which carries the three replay keys that do NOT pass so they are not recorded as working. Cause 2, below, is fixed: a covered name's validation challenge is now derived from the name ACM proves control of, so `*.d` and `d` on one certificate carry the identical `ResourceRecord` and publishing that single CNAME proves both. Only cause 2's key is kept above._
 
 > _Note: this issue was identified against the code base at commit `0e14ec34ba796ebb423716588b97f90ad61f6019`. If you are an issue fixer working on this, the code base you are currently working in can have drifted, so you might need to trace the issue back to the current code base._
 
@@ -15,7 +15,8 @@ Issue-Commit: 0e14ec34ba796ebb423716588b97f90ad61f6019
 CreateHostedZone
 
 ## Description
-Two distinct defects behind ACM's DNS-validation data plane. Both must be closed before this issue is submitted.
+Two distinct defects behind ACM's DNS-validation data plane. Cause 1 is split out (see the note
+above); cause 2 is fixed.
 
 Cause 1 of 2: the name servers a hosted zone publishes are not addresses the emulator can be reached on, so they fail at name resolution.
 AWS: route53 CreateHostedZone/GetHostedZone return DelegationSet.NameServers, the authoritative servers for the zone. Those names resolve, and a DNS query for a record in the zone sent to any of them is answered authoritatively; a name outside the zone comes back NXDOMAIN. (Smithy: route53 CreateHostedZone/GetHostedZone output member DelegationSet -> DelegationSet.NameServers; the DNS wire behavior itself is not modeled, so: recorded behavior only.)

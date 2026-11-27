@@ -3938,6 +3938,19 @@ pub fn validation_target(domain_name: &str) -> &str {
     domain_name.strip_prefix("*.").unwrap_or(domain_name)
 }
 
+/// The name a validation's challenge is IDENTIFIED by: the name ACM proves control of
+/// ([`validation_target`]), read the way DNS reads a name — labels are case-insensitive,
+/// so one name in two spellings is one name.
+///
+/// Every label of a challenge is derived from THIS name rather than from the spelling of
+/// the entry it is reported on, which is what makes a wildcard name and the name it
+/// wildcards one challenge: a certificate covering both is handed one record, and
+/// publishing that single record proves both. Any other pair of names proves control of
+/// different names, so each keeps a challenge of its own.
+pub fn validation_challenge_identity(domain_name: &str) -> String {
+    validation_target(domain_name).to_ascii_lowercase()
+}
+
 /// The mailbox local-parts ACM sends a domain-validation email to: "ACM sends email
 /// to the the following five addresses: admin@<suffix> administrator@<suffix>
 /// hostmaster@<suffix> postmaster@<suffix> webmaster@<suffix>"
@@ -4054,9 +4067,14 @@ pub fn domain_validation_record(
         challenge_published_at: minted_at + VALIDATION_CHALLENGE_PUBLICATION_DELAY,
         http_redirect: None,
     };
+    // Whatever the method, the evidence proves control of the name ACM resolves it
+    // under, so it is identified by that name ([`validation_challenge_identity`]) and
+    // not by the spelling of the entry carrying it: a wildcard name and the name it
+    // wildcards share ONE challenge, while any other name keeps its own.
+    let proven = validation_challenge_identity(domain_name);
     match validation_method {
         "DNS" => {
-            let name = validation_label(certificate_id, domain_name, "dns-name");
+            let name = validation_label(certificate_id, &proven, "dns-name");
             record.resource_record = Some(ResourceRecord {
                 name: format!("_{name}.{target}."),
                 r#type: RECORD_TYPE_CNAME.to_string(),
@@ -4064,7 +4082,7 @@ pub fn domain_validation_record(
             });
         }
         "HTTP" => {
-            let token = validation_label(certificate_id, domain_name, "http-token");
+            let token = validation_label(certificate_id, &proven, "http-token");
             let path = HTTP_VALIDATION_PATH;
             record.http_redirect = Some(HttpRedirect {
                 redirect_from: Some(format!("http://{target}{path}{token}.txt")),
@@ -4098,7 +4116,11 @@ pub fn acme_prevalidation_resource_record(
     validation_zone: &str,
 ) -> ResourceRecord {
     let target = validation_target(domain_name);
-    let name = validation_label(validation_id, domain_name, "dns-name");
+    let name = validation_label(
+        validation_id,
+        &validation_challenge_identity(domain_name),
+        "dns-name",
+    );
     ResourceRecord {
         name: format!("_{name}.{target}."),
         r#type: RECORD_TYPE_CNAME.to_string(),
@@ -4123,18 +4145,21 @@ const VALIDATION_ZONE_LABEL_LENGTH: usize = 10;
 /// reads it as.
 ///
 /// Both labels are derived from the id of whatever the validation belongs to (a
-/// certificate, an ACME domain validation) through [`validation_label`], so repeated
-/// reads report the same target, two validations of the same domain differ, and no part
-/// of it comes from anything the caller sent. Rendered here so the certificate path
-/// ([`domain_validation_record`]) and the ACME prevalidation path
-/// ([`acme_prevalidation_resource_record`]) publish one shape.
+/// certificate, an ACME domain validation) through [`validation_label`], and from the
+/// name that validation PROVES control of ([`validation_challenge_identity`]) rather than
+/// from the spelling of the name it is reported under — so repeated reads report the same
+/// target, a wildcard name and the name it wildcards are handed the same one, two
+/// validations of the same domain differ, and no part of it comes from anything the
+/// caller sent. Rendered here so the certificate path ([`domain_validation_record`]) and
+/// the ACME prevalidation path ([`acme_prevalidation_resource_record`]) publish one shape.
 pub fn acm_validations_cname_target(
     owner_id: &str,
     domain_name: &str,
     validation_zone: &str,
 ) -> String {
-    let token = validation_label(owner_id, domain_name, "dns-value");
-    let label: String = validation_label(owner_id, domain_name, "dns-zone-label")
+    let proven = validation_challenge_identity(domain_name);
+    let token = validation_label(owner_id, &proven, "dns-value");
+    let label: String = validation_label(owner_id, &proven, "dns-zone-label")
         .chars()
         .take(VALIDATION_ZONE_LABEL_LENGTH)
         .collect();

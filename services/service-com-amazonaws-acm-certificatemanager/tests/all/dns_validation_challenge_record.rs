@@ -37,6 +37,7 @@ use crate::certificate_lifecycle::{
 };
 
 use crate::certificate_validation_state_machine::make_validation_due_now;
+use crate::dns_validation_record_sharing::distinct_validation_records;
 
 /// The status a validation that has not resolved stands at
 /// (`com.amazonaws.acm#DomainStatus`).
@@ -219,8 +220,9 @@ async fn a_dns_challenge_is_bare_and_the_detail_carries_the_cname() {
         }
         assert_eq!(
             records.len(),
-            names.len(),
-            "case {case}: each covered name is proven by a record of its own, got {records:?}"
+            distinct_validation_records(names),
+            "case {case}: each name being PROVEN is proven by a record of its own \
+             (a wildcard name and the name it covers share one), got {records:?}"
         );
 
         // A second read reports the same summaries and the same records: reading mints

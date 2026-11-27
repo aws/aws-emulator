@@ -37,6 +37,7 @@
 //! that reports it, so nothing here can pass on a response the store does not back.
 
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use crate::certificate_lifecycle::{
@@ -44,6 +45,7 @@ use crate::certificate_lifecycle::{
     ACCOUNT, REGION,
 };
 use crate::certificate_validation_state_machine::make_validation_due_now;
+use crate::dns_validation_record_sharing::proven_name;
 use crate::resource_tagging::{create_endpoint, tag_pairs};
 
 /// The one sentence ACM reports when `UpdateCertificateOptions` asks only about the
@@ -453,18 +455,38 @@ async fn every_dns_challenge_target_sits_under_its_own_validation_label() {
     for (case, body) in rows {
         let arn = request_certificate(&router, body).await;
         let detail = describe(&router, &arn).await;
+        // The target each name of THIS certificate proves control of is pointed at, by
+        // the name being proven: a wildcard name and the name it covers prove one name,
+        // so they are handed one target.
+        let mut row_targets: BTreeMap<String, String> = BTreeMap::new();
         for validation in validations(case, &detail) {
+            let domain = validation["DomainName"]
+                .as_str()
+                .unwrap_or_else(|| panic!("case {case}: no DomainName in {validation}"))
+                .to_string();
             let target = validation["ResourceRecord"]["Value"]
                 .as_str()
                 .unwrap_or_else(|| panic!("case {case}: no ResourceRecord in {validation}"))
                 .to_string();
             assert_challenge_target(case, &target);
-            // One challenge per validation: no two of them point at the same target.
-            assert!(
-                !seen.contains(&target),
-                "case {case}: expected a target of its own, got the repeated {target:?}"
-            );
-            seen.push(target.clone());
+            match row_targets.get(&proven_name(&domain)) {
+                Some(shared) => assert_eq!(
+                    &target, shared,
+                    "case {case}: {domain} proves control of {}, so it must carry that \
+                     name's target {shared:?}, got {target:?}",
+                    proven_name(&domain)
+                ),
+                // One challenge per name being proven: no two of them point at the same
+                // target.
+                None => {
+                    assert!(
+                        !seen.contains(&target),
+                        "case {case}: expected a target of its own, got the repeated {target:?}"
+                    );
+                    seen.push(target.clone());
+                    row_targets.insert(proven_name(&domain), target.clone());
+                }
+            }
             // Reading again reports what was stored rather than minting a new one.
             let again = describe(&router, &arn).await;
             let repeated: Vec<String> = validations(case, &again)

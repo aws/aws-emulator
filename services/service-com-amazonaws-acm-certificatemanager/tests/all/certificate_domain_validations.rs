@@ -39,6 +39,7 @@ use crate::certificate_lifecycle::{
     router, router_with_engine, ACCOUNT, REGION,
 };
 use crate::certificate_validation_state_machine::make_validation_due_now;
+use crate::dns_validation_record_sharing::proven_name;
 
 /// Every `ValidationMethod` the model declares
 /// (`smithy_query(query="shape", shape="com.amazonaws.acm#ValidationMethod")`).
@@ -156,9 +157,9 @@ pub(crate) fn assert_resource_record(case: &str, record: &Value, domain: &Value)
         "case {case}: Name and Value are required members, got {record}"
     );
     let covered = domain.as_str().unwrap_or_default();
-    let proven = covered.strip_prefix("*.").unwrap_or(covered);
+    let proven = proven_name(covered);
     assert!(
-        name.starts_with('_') && name.ends_with(&format!(".{proven}.")),
+        name.starts_with('_') && name.to_ascii_lowercase().ends_with(&format!(".{proven}.")),
         "case {case}: expected a validation label under {proven}, got {name:?}"
     );
 }

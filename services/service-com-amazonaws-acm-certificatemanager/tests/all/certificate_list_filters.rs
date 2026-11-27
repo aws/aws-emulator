@@ -21,6 +21,7 @@ use crate::certificate_lifecycle::{
     call, call_in_region, describe, hold_pending_validations, list_all_arns, request_certificate,
     router, router_with_engine, KEY_ALGORITHMS, REGION,
 };
+use crate::dns_validation_record_sharing::proven_name;
 
 /// The `KeyAlgorithm` values `ListCertificates` reports to a request that supplied no
 /// `Includes` structure at all: "Default filtering returns only RSA_1024 and RSA_2048
@@ -687,14 +688,22 @@ async fn dns_validation_records_are_per_certificate_and_per_domain() {
         );
     }
 
-    // Per domain: within one certificate, each name has its own CNAME, and a wildcard
-    // name is validated through the domain it wildcards.
-    let names: Vec<&String> = first_records.iter().map(|(_, name, _)| name).collect();
-    for (index, name) in names.iter().enumerate() {
-        assert!(
-            !names[index + 1..].contains(name),
-            "expected a distinct validation record per domain name, got {names:?}"
-        );
+    // Per name being PROVEN: within one certificate, two names that prove control of
+    // different domains carry different CNAMEs, while a wildcard name and the name it
+    // covers are proven by the one record they share.
+    for (domain, name, value) in &first_records {
+        for (other_domain, other_name, other_value) in &first_records {
+            if domain == other_domain {
+                continue;
+            }
+            let one_name = proven_name(domain) == proven_name(other_domain);
+            assert_eq!(
+                (name, value) == (other_name, other_value),
+                one_name,
+                "case {domain} against {other_domain}: a record is shared exactly by the names \
+                 proving one domain, got {name}/{value} and {other_name}/{other_value}"
+            );
+        }
     }
     let wildcard = first_records
         .iter()

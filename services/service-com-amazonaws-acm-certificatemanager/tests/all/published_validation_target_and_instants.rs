@@ -42,6 +42,7 @@ use crate::certificate_lifecycle::{
     call, describe, hold_pending_validations, request_certificate, router, router_with_engine,
     validation_zone,
 };
+use crate::dns_validation_record_sharing::proven_name;
 
 /// The DNS suffixes AWS publishes its own endpoints and validation targets under: no
 /// name this emulator hands a client may sit in one of them, because nothing here
@@ -121,6 +122,8 @@ fn assert_published_target(case: &str, value: &str) {
 #[tokio::test]
 async fn a_dns_validation_target_is_a_name_this_emulator_announces() {
     let (router, engine) = router_with_engine();
+    // The DISTINCT targets of each row, collected across rows: a row's own sharing is
+    // asserted inside the loop, and no target may repeat across certificates.
     let mut targets: Vec<String> = Vec::new();
 
     for (case, body, names) in target_cases() {
@@ -148,21 +151,40 @@ async fn a_dns_validation_target_is_a_name_this_emulator_announces() {
                 "case {case:?}: unexpected validation for {domain:?}, got {first:?}"
             );
             assert_published_target(case, value);
-            targets.push(value.clone());
+        }
+
+        // Within ONE certificate, two validations carry one target exactly when they
+        // prove control of one name (a wildcard name and the name it covers): the target
+        // is derived from the name being proven, so neither a constant nor a per-entry
+        // value could pass this.
+        for (domain, value) in &first {
+            for (other, other_value) in &first {
+                assert_eq!(
+                    value == other_value,
+                    proven_name(domain) == proven_name(other),
+                    "case {case:?}: the validation of {domain} proves {} and carries \
+                     {value:?}, while {other} proves {} and carries {other_value:?}",
+                    proven_name(domain),
+                    proven_name(other)
+                );
+            }
+        }
+        // Across certificates no target repeats: it is derived from the certificate's own
+        // id as well as the name being proven, so the row's distinct targets must all be
+        // new ones.
+        for (_, value) in &first {
+            assert!(
+                !targets.contains(value),
+                "case {case:?}: the target {value:?} was already minted for another \
+                 certificate, got {targets:?}"
+            );
+        }
+        for (_, value) in &first {
+            if !targets.contains(value) {
+                targets.push(value.clone());
+            }
         }
     }
-
-    // Two validations never share a target: each is derived from the validation's own
-    // identity, so a constant could not pass this.
-    let mut seen = targets.clone();
-    seen.sort();
-    seen.dedup();
-    assert_eq!(
-        seen.len(),
-        targets.len(),
-        "case {:?}: every validation must get its own target, got {targets:?}",
-        "the targets of every row above"
-    );
 }
 
 /// RULE 1, for the other surface that mints one: an ACME domain validation's

@@ -45,6 +45,7 @@ use crate::certificate_lifecycle::{
     router_with_engine, validation_zone,
 };
 use crate::certificate_validation_state_machine::make_validation_due_now;
+use crate::dns_validation_record_sharing::distinct_validation_records;
 
 /// One row: what it is, the `RequestCertificate` body, and the names the certificate
 /// covers.
@@ -231,8 +232,9 @@ async fn a_landed_dns_challenge_carries_the_minted_cname() {
         }
         assert_eq!(
             published.len(),
-            names.len(),
-            "case {case}: each covered name is proved by a record of its own, got {published:?}"
+            distinct_validation_records(names),
+            "case {case}: each name being PROVEN is proved by a record of its own \
+             (a wildcard name and the name it covers share one), got {published:?}"
         );
 
         // Reading mints nothing: the same summaries come back unchanged.

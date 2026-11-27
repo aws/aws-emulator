@@ -503,6 +503,27 @@ pub(crate) fn assert_issued(case: &str, detail: &Value) {
     }
 }
 
+/// The DISTINCT records in `records`, in the order they were handed out — what a client
+/// that publishes the deduplicated set writes into its zone, which is one record per name
+/// being PROVEN rather than one per covered name. A DNS name is compared the way DNS
+/// compares names, so a record repeated in another spelling is one record.
+///
+/// `pub(crate)` so the suite that owns the sharing rule
+/// ([`crate::dns_validation_record_sharing`]) and this one read it the same way.
+pub(crate) fn distinct_records(records: &[Record]) -> Vec<Record> {
+    let mut distinct: Vec<Record> = Vec::new();
+    for record in records {
+        if !distinct.iter().any(|kept| {
+            kept.name.eq_ignore_ascii_case(&record.name)
+                && kept.rr_type == record.rr_type
+                && kept.value.eq_ignore_ascii_case(&record.value)
+        }) {
+            distinct.push(record.clone());
+        }
+    }
+    distinct
+}
+
 /// One row of the positive table: what it is, the zone apex, the certificate's primary
 /// domain, its subject alternative names, and how the publisher spells the record.
 struct ProvenRow<'a> {
@@ -582,7 +603,9 @@ async fn a_published_validation_record_issues_the_certificate() {
             request_dns_validated(row.case, &router, row.domain_name, row.sans).await;
 
         // Publishing all but the last record proves nothing: every covered name must be
-        // validated.
+        // validated. The records a client publishes are the DISTINCT ones handed out,
+        // since a wildcard name and the name it covers are proven by one shared CNAME.
+        let records = distinct_records(&records);
         for record in &records[..records.len() - 1] {
             submit_change(row.case, &router, &zone, "CREATE", &(row.spelled)(record)).await;
             assert_still_waiting(row.case, &router, &engine, &arn).await;

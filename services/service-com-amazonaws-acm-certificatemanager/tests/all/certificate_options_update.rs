@@ -36,6 +36,7 @@ use crate::certificate_lifecycle::{
 };
 use crate::certificate_revocation::mark_exported;
 use crate::certificate_validation_state_machine::{make_validation_due_now, PRIVATE_CA_ARN};
+use crate::dns_validation_record_sharing::proven_name;
 
 /// Every `ValidationMethod` the model declares
 /// (`smithy_query(query="shape", shape="com.amazonaws.acm#ValidationMethod")`).
@@ -114,12 +115,6 @@ fn migration_certificates() -> Vec<CertificateCase<'static>> {
     ]
 }
 
-/// The domain a validation proves control of: ACM validates `*.example.com` by
-/// proving control of `example.com`.
-fn validation_target(domain_name: &str) -> &str {
-    domain_name.strip_prefix("*.").unwrap_or(domain_name)
-}
-
 /// The `DomainValidationOptions` of a described certificate, in the order it reports
 /// them.
 fn validations(case: &str, detail: &Value) -> Vec<Value> {
@@ -157,7 +152,7 @@ fn assert_evidence(case: &str, validation: &Value, method: &str) {
     let domain = validation["DomainName"]
         .as_str()
         .unwrap_or_else(|| panic!("case {case}: a validation carried no DomainName: {validation}"));
-    let proven = validation_target(domain);
+    let proven = proven_name(domain);
     let validation_domain = validation["ValidationDomain"].as_str().unwrap_or_else(|| {
         panic!("case {case}: every validation names the domain it proves: {validation}")
     });
