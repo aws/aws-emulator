@@ -449,38 +449,49 @@ async fn a_level_this_emulator_does_not_hold_is_a_404_naming_that_level() {
     // naming that level. The rows differ along WHICH level is absent.
     let worker = Worker::new("absent").await;
     let queue_id = worker.queue("present", None).await;
+    let absent_farm = absent_id("farm", &"a".repeat(32));
+    let absent_fleet = absent_id("fleet", &"b".repeat(32));
+    let absent_worker = absent_id("worker", &"c".repeat(32));
+    let absent_queue = absent_id("queue", &"d".repeat(32));
+    // Each row carries the id it expects the refusal to name, because the ids of the
+    // resources this suite CREATED are minted per run: which level a row made absent is the
+    // row's own fact, not something to recover from the text of a generated id.
     let cases = [
         (
             "an absent farm",
-            absent_id("farm", &"a".repeat(32)),
+            absent_farm.clone(),
             worker.fleet_id.clone(),
             worker.worker_id.clone(),
             queue_id.clone(),
+            absent_farm.clone(),
         ),
         (
             "an absent fleet",
             worker.farm_id.clone(),
-            absent_id("fleet", &"b".repeat(32)),
+            absent_fleet.clone(),
             worker.worker_id.clone(),
             queue_id.clone(),
+            absent_fleet.clone(),
         ),
         (
             "an absent worker",
             worker.farm_id.clone(),
             worker.fleet_id.clone(),
-            absent_id("worker", &"c".repeat(32)),
+            absent_worker.clone(),
             queue_id.clone(),
+            absent_worker.clone(),
         ),
         (
             "an absent queue",
             worker.farm_id.clone(),
             worker.fleet_id.clone(),
             worker.worker_id.clone(),
-            absent_id("queue", &"d".repeat(32)),
+            absent_queue.clone(),
+            absent_queue.clone(),
         ),
     ];
 
-    for (case, farm_id, fleet_id, worker_id, queue) in cases {
+    for (case, farm_id, fleet_id, worker_id, queue, absent) in cases {
         let (status, body) = worker
             .emulator
             .get(&queue_roles_path(&farm_id, &fleet_id, &worker_id, &queue))
@@ -490,18 +501,9 @@ async fn a_level_this_emulator_does_not_hold_is_a_404_naming_that_level() {
             (404, "ResourceNotFoundException"),
             "case {case:?}: expected a 404 naming the absent level, got {status} with {body}"
         );
-        let absent = [
-            farm_id.as_str(),
-            fleet_id.as_str(),
-            worker_id.as_str(),
-            queue.as_str(),
-        ]
-        .into_iter()
-        .find(|id| id.contains("aaaa") || id.contains("bbbb") || id.contains("cccc") || id.contains("dddd"))
-        .expect("one id of each row is absent");
         assert_eq!(
             body.get("resourceId").and_then(Value::as_str),
-            Some(absent),
+            Some(absent.as_str()),
             "case {case:?}: expected the refusal to name {absent}, got {body}"
         );
     }
