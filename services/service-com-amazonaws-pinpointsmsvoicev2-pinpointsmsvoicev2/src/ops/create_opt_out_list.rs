@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateOptOutList
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateOptOutList`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateOptOutList::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! IMPLEMENTED: stores a new opt-out list in [`crate::state`] and answers from the stored
+//! record. A repeat of the same name is a `ConflictException`; a repeat of the same
+//! `ClientToken` returns the record that token already created.
 //!
 //! ## Shape of an operation
 //!
@@ -170,18 +165,123 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateOptOutList` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateOptOutListErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateOptOutList"))
+        let region = crate::state::request_region(ctx);
+        let Some(store) = crate::state::service_state(&*self.engine) else {
+            return Err(CreateOptOutListErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: Some("the opt-out-list store is unavailable".to_string()),
+                    request_id: None,
+                },
+            )
+            .into());
+        };
+        let mut state = store.lock();
+        let name = input.opt_out_list_name;
+
+        // The request this `ClientToken` is scoped to: every member that shapes the list.
+        let mut fingerprinted: Vec<String> = vec![name.clone()];
+        for tag in input.tags.iter().flatten() {
+            fingerprinted.push(format!("{}={}", tag.key, tag.value));
+        }
+        let fingerprint = crate::state::request_fingerprint(
+            &fingerprinted
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<&str>>(),
+        );
+
+        // Idempotency: the same `ClientToken` must not create a second list. A token
+        // replayed with a DIFFERENT request is a different request, which AWS does not
+        // answer idempotently, so it is refused.
+        if let Some(token) = input.client_token.as_deref() {
+            if let Some(seen) = state.client_token_record(Self::NAME, token).cloned() {
+                if seen.fingerprint != fingerprint {
+                    return Err(CreateOptOutListErrorModeled::ConflictException(
+                        ConflictException {
+                            message: Some(
+                                crate::state::CLIENT_TOKEN_CONFLICT_MESSAGE.to_string(),
+                            ),
+                            reason: None,
+                            resource_type: None,
+                            resource_id: None,
+                        },
+                    )
+                    .into());
+                }
+                if let Some(existing) = state.opt_out_lists.get(&seen.resource) {
+                    return Ok(opt_out_list_output(existing));
+                }
+            }
+        }
+
+        // "If the opt-out list name already exists, an error is returned": the name is
+        // unique per account, and this service words the conflict as a restatement of the
+        // exception's own members.
+        if state.opt_out_lists.contains_key(&name) {
+            return Err(CreateOptOutListErrorModeled::ConflictException(
+                ConflictException {
+                    message: Some(crate::state::conflict_message(
+                        "RESOURCE_ALREADY_EXISTS",
+                        "opt-out-list",
+                        &name,
+                    )),
+                    reason: Some("RESOURCE_ALREADY_EXISTS".to_string()),
+                    resource_type: Some("opt-out-list".to_string()),
+                    resource_id: Some(name),
+                },
+            )
+            .into());
+        }
+
+        // The per-account quota bounds this store: past it the create is refused, so a
+        // loop of creates cannot grow the emulator's memory without limit.
+        if state.opt_out_lists.len() >= crate::state::MAX_OPT_OUT_LISTS_PER_ACCOUNT {
+            return Err(
+                CreateOptOutListErrorModeled::ServiceQuotaExceededException(
+                    ServiceQuotaExceededException {
+                        message: Some(format!(
+                            "the account already holds {} opt-out lists",
+                            crate::state::MAX_OPT_OUT_LISTS_PER_ACCOUNT
+                        )),
+                        reason: Some("OPT_OUT_LISTS_PER_ACCOUNT".to_string()),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        let record = crate::state::OptOutList {
+            arn: ::emulator_server::emulator_arn(
+                crate::state::SIGNING_NAME,
+                &region,
+                &format!("opt-out-list/{name}"),
+            ),
+            name: name.clone(),
+            tags: input.tags.unwrap_or_default(),
+            created_timestamp: ::std::time::SystemTime::now(),
+        };
+        state.opt_out_lists.insert(name.clone(), record);
+        if let Some(token) = input.client_token.as_deref() {
+            state.remember_client_token(Self::NAME, token, &name, fingerprint);
+        }
+
+        // Read the response back out of the store: what the caller sees is what was
+        // persisted, not what was passed in.
+        let stored = state
+            .opt_out_lists
+            .get(&name)
+            .expect("the opt-out list just inserted is present");
+        Ok(opt_out_list_output(stored))
+    }
+}
+
+/// The response for one stored opt-out list, every member read from the record.
+fn opt_out_list_output(record: &crate::state::OptOutList) -> CreateOptOutListOutput {
+    CreateOptOutListOutput {
+        opt_out_list_arn: Some(record.arn.clone()),
+        opt_out_list_name: Some(record.name.clone()),
+        created_timestamp: Some(crate::state::to_timestamp(record.created_timestamp)),
+        // `Tags` is optional and AWS omits it when the resource carries none.
+        tags: (!record.tags.is_empty()).then(|| record.tags.clone()),
     }
 }

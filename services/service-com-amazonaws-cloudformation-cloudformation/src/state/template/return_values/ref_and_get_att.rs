@@ -2806,6 +2806,81 @@ pub(crate) fn return_values(
             }
             (arn, attributes)
         }
+        // AWS End User Messaging SMS and Voice's own control plane: the seven
+        // `AWS::SMSVOICE::*` resources a template declares
+        // ([`super::provisioner::sms_voice`]).
+        //
+        // A CONFIGURATION SET and an OPT-OUT LIST are NAMED by the declaration: "Ref returns
+        // the configuration set name" / "the opt-out list name", which is the identifier
+        // every call of that service addresses one by, so the physical id is that name and
+        // the one attribute each publishes is the `Arn` built around it — the same ARN the
+        // owning service mints, since both are built from the one account id this emulator
+        // mints and the resource's own name.
+        SMSVOICE_CONFIGURATION_SET | SMSVOICE_OPT_OUT_LIST => {
+            let path = if resource_type == SMSVOICE_CONFIGURATION_SET {
+                SMSVOICE_CONFIGURATION_SET_PATH
+            } else {
+                SMSVOICE_OPT_OUT_LIST_PATH
+            };
+            attributes.insert(
+                SMSVOICE_ARN_ATTRIBUTE.to_string(),
+                ::emulator_server::emulator_arn(
+                    SMSVOICE_ARN_NAMESPACE,
+                    region,
+                    &format!("{path}/{name}"),
+                ),
+            );
+            (name.to_string(), attributes)
+        }
+        // The four whose identity that service ASSIGNS: a PROTECT CONFIGURATION, an RCS
+        // AGENT, a REGISTRATION and a REGISTRATION ATTACHMENT. None of their creates takes an
+        // identifier for the resource, and each answers the identifier it drew — which is
+        // what that type's `Ref` returns and the handle every later call on the resource
+        // takes — so the id here is a STAND-IN of that service's own form (its resource kind
+        // followed by [`SMSVOICE_ID_HEX_DIGITS`] hexadecimal digits), with the ARN built
+        // around it, and `super::provisioning` re-points both at what the create really
+        // answered ([`super::provisioner::Provisioner::SmsVoiceResource`]).
+        SMSVOICE_PROTECT_CONFIGURATION
+        | SMSVOICE_RCS_AGENT
+        | SMSVOICE_REGISTRATION
+        | SMSVOICE_REGISTRATION_ATTACHMENT => {
+            let (prefix, path, id_attribute) = match resource_type {
+                SMSVOICE_PROTECT_CONFIGURATION => (
+                    SMSVOICE_PROTECT_CONFIGURATION_ID_PREFIX,
+                    SMSVOICE_PROTECT_CONFIGURATION_PATH,
+                    SMSVOICE_PROTECT_CONFIGURATION_ID_ATTRIBUTE,
+                ),
+                SMSVOICE_RCS_AGENT => (
+                    SMSVOICE_RCS_AGENT_ID_PREFIX,
+                    SMSVOICE_RCS_AGENT_PATH,
+                    SMSVOICE_RCS_AGENT_ID_ATTRIBUTE,
+                ),
+                SMSVOICE_REGISTRATION => (
+                    SMSVOICE_REGISTRATION_ID_PREFIX,
+                    SMSVOICE_REGISTRATION_PATH,
+                    SMSVOICE_REGISTRATION_ID_ATTRIBUTE,
+                ),
+                _ => (
+                    SMSVOICE_REGISTRATION_ATTACHMENT_ID_PREFIX,
+                    SMSVOICE_REGISTRATION_ATTACHMENT_PATH,
+                    SMSVOICE_REGISTRATION_ATTACHMENT_ID_ATTRIBUTE,
+                ),
+            };
+            let id = format!(
+                "{prefix}{}",
+                derived_digits(resource_type, name, SMSVOICE_ID_HEX_DIGITS, Alphabet::Lower)
+            );
+            attributes.insert(
+                SMSVOICE_ARN_ATTRIBUTE.to_string(),
+                ::emulator_server::emulator_arn(
+                    SMSVOICE_ARN_NAMESPACE,
+                    region,
+                    &format!("{path}/{id}"),
+                ),
+            );
+            attributes.insert(id_attribute.to_string(), id.clone());
+            (id, attributes)
+        }
         // Amazon GameLift Servers' own control plane: the custom game BUILD an
         // `AWS::GameLift::Build` declares and the Realtime SCRIPT an `AWS::GameLift::Script`
         // declares. "Ref returns the build ID" / "the script ID" (each type's primary

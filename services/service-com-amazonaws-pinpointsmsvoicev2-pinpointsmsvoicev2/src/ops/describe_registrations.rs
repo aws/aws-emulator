@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DescribeRegistrations
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DescribeRegistrations`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DescribeRegistrations::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! IMPLEMENTED: reports the registrations stored in [`crate::state`], selected by the ids
+//! (or ARNs) the request lists, narrowed by its filters and paged through this service's
+//! shared cursor. An id this account does not hold is a `ResourceNotFoundException`.
 //!
 //! ## Shape of an operation
 //!
@@ -86,6 +81,13 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+/// The prefix every `NextToken` this operation issues carries, and which one it accepts
+/// must carry, so a cursor another paginated read issued is not one of this one's.
+const NEXT_TOKEN_PREFIX: &str = "registrations-";
+
+/// The model's `ResourceType` for this resource, which this operation's refusal names.
+const REGISTRATION_RESOURCE_TYPE: &str = "registration";
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -158,18 +160,125 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DescribeRegistrations` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DescribeRegistrationsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DescribeRegistrations"))
+        let _ = ctx;
+        let Some(store) = crate::state::service_state(&*self.engine) else {
+            return Err(DescribeRegistrationsErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: Some("the registration store is unavailable".to_string()),
+                    request_id: None,
+                },
+            )
+            .into());
+        };
+        // A describe reports; it never writes. The guard is taken read-only.
+        let state = store.lock();
+
+        // `RegistrationIds` SELECTS: each entry is a `RegistrationIdOrArn`, so it may name
+        // the registration by ARN, and each one must name a stored registration. Absent (or
+        // empty), the whole account is reported in the store's stable key order.
+        let selected: Vec<&crate::state::Registration> = match input.registration_ids {
+            Some(ref ids) if !ids.is_empty() => {
+                let mut records = Vec::with_capacity(ids.len());
+                for named in ids {
+                    let id = crate::state::name_from_name_or_arn(named);
+                    let Some(record) = state.registrations.get(id) else {
+                        return Err(
+                            DescribeRegistrationsErrorModeled::ResourceNotFoundException(
+                                ResourceNotFoundException {
+                                    message: Some(crate::state::resource_not_found_message(
+                                        REGISTRATION_RESOURCE_TYPE,
+                                        id,
+                                    )),
+                                    resource_type: Some(
+                                        REGISTRATION_RESOURCE_TYPE.to_string(),
+                                    ),
+                                    resource_id: Some(id.to_string()),
+                                },
+                            )
+                            .into(),
+                        );
+                    };
+                    records.push(record);
+                }
+                records
+            }
+            _ => state.registrations.values().collect(),
+        };
+
+        // Every filter must match (AND); within one filter any value matches (OR).
+        let filters = input.filters.unwrap_or_default();
+        let matching: Vec<&crate::state::Registration> = selected
+            .into_iter()
+            .filter(|record| {
+                filters.iter().all(|filter| {
+                    record.filterable(&filter.name).is_some_and(|actual| {
+                        actual.iter().any(|value| filter.values.contains(value))
+                    })
+                })
+            })
+            .collect();
+
+        let start = match crate::state::page_start(
+            NEXT_TOKEN_PREFIX,
+            input.next_token.as_deref(),
+            matching.len(),
+        ) {
+            Ok(start) => start,
+            Err(rejection) => {
+                return Err(DescribeRegistrationsErrorModeled::ValidationException(
+                    ValidationException {
+                        message: Some(rejection.message.to_string()),
+                        reason: Some(crate::state::INVALID_NEXT_TOKEN_REASON.to_string()),
+                        fields: Some(vec![ValidationExceptionField {
+                            name: crate::state::NEXT_TOKEN_FIELD.to_string(),
+                            message: rejection.field_message.to_string(),
+                        }]),
+                    },
+                )
+                .into())
+            }
+        };
+
+        // `MaxResults` caps one page; absent, the whole remainder is returned. The page is
+        // taken through a CHECKED read of the range, so no caller-supplied cursor or maximum
+        // can index past the result set: `page_start` refuses an offset past the end and
+        // `page_end` clamps to it, which makes the range valid, and an empty page rather
+        // than a panic is what a range they could not make valid would answer.
+        let end = crate::state::page_end(start, input.max_results, matching.len());
+        let page: Vec<RegistrationInformation> = matching
+            .get(start..end)
+            .unwrap_or_default()
+            .iter()
+            .copied()
+            .map(registration_information)
+            .collect();
+        let next_token =
+            (end < matching.len()).then(|| crate::state::page_cursor(NEXT_TOKEN_PREFIX, end));
+
+        Ok(DescribeRegistrationsOutput {
+            registrations: page,
+            next_token,
+        })
+    }
+}
+
+/// One stored registration as the modelled `RegistrationInformation`, every member read
+/// from the record.
+fn registration_information(
+    record: &crate::state::Registration,
+) -> RegistrationInformation {
+    RegistrationInformation {
+        registration_arn: record.arn.clone(),
+        registration_id: record.id.clone(),
+        registration_type: record.registration_type.clone(),
+        registration_status: record.status.clone(),
+        current_version_number: record.current_version_number,
+        // No version of this registration was ever submitted for review, so neither an
+        // approved nor a denied version number exists to report, and this emulator records
+        // no type-specific metadata for one.
+        approved_version_number: None,
+        latest_denied_version_number: None,
+        additional_attributes: None,
+        created_timestamp: crate::state::to_timestamp(record.created_timestamp),
     }
 }

@@ -1030,6 +1030,23 @@ impl Provisioner {
             Self::BraketSpendingLimit => {
                 create_braket_spending_limit(ctx, region, resource, propagated).await
             }
+            // Every `AWS::SMSVOICE::*` type but the resource policy publishes `Tags` as the
+            // `[{Key, Value}]` list its create's own `Tags` member takes, so each resource a
+            // stack creates carries the tags CloudFormation gives it beside the ones its
+            // declaration asks for; a resource policy is a document on another resource and
+            // takes no tags at all. Boxed, as the arms that reach a service through another
+            // of this emulator's own are, so this arm's future does not widen the one every
+            // create is polled through.
+            Self::SmsVoiceResource(resource_kind) => {
+                Box::pin(create_sms_voice_resource(
+                    ctx,
+                    region,
+                    resource_kind,
+                    resource,
+                    propagated,
+                ))
+                .await
+            }
             // `AWS::AIOps::InvestigationGroup` publishes `Tags` as the usual `[{Key, Value}]`
             // list while `CreateInvestigationGroup` takes a tag MAP, so the tags
             // CloudFormation gives the group travel beside the declaration's own in that

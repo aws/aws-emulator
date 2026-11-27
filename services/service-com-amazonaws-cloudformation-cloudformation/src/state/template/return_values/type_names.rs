@@ -2577,3 +2577,77 @@ pub(super) const GAMELIFT_SCRIPT_ATTRIBUTES: &[&str] =
 pub const GAMELIFT_ARN_ATTRIBUTE: &str = "Arn";
 pub const GAMELIFT_BUILD_ID_ATTRIBUTE: &str = "BuildId";
 pub const GAMELIFT_ID_ATTRIBUTE: &str = "Id";
+
+/// The seven AWS End User Messaging SMS and Voice resource types a template declares, under
+/// the `SMSVOICE` namespace the CloudFormation resource and property types reference
+/// publishes them under. The owning service's own model is `Pinpoint SMS Voice V2`
+/// (`smithy_query(query="service_info")` on that model), which signs and names its ARNs
+/// `sms-voice`; the types are created in that control plane
+/// ([`crate::state::provisioner::sms_voice`]).
+///
+/// A CONFIGURATION SET and an OPT-OUT LIST are NAMED by the declaration: each type's `Ref`
+/// returns that name, which is the identifier every call of the owning service addresses one
+/// by (`ConfigurationSetName`, `OptOutListName`), and the convention finds the property it is
+/// read from. The other five are not: four are identified by what their create MINTED
+/// ([`identity_is_service_assigned`]) and a RESOURCE POLICY by the ARN of the resource it is
+/// attached to, which is the type's own `ResourceArn` property
+/// ([`declared_name_property`]).
+pub const SMSVOICE_CONFIGURATION_SET: &str = "AWS::SMSVOICE::ConfigurationSet";
+pub const SMSVOICE_OPT_OUT_LIST: &str = "AWS::SMSVOICE::OptOutList";
+pub const SMSVOICE_PROTECT_CONFIGURATION: &str = "AWS::SMSVOICE::ProtectConfiguration";
+pub const SMSVOICE_RESOURCE_POLICY: &str = "AWS::SMSVOICE::ResourcePolicy";
+pub const SMSVOICE_RCS_AGENT: &str = "AWS::SMSVOICE::RcsAgent";
+pub const SMSVOICE_REGISTRATION: &str = "AWS::SMSVOICE::Registration";
+pub const SMSVOICE_REGISTRATION_ATTACHMENT: &str = "AWS::SMSVOICE::RegistrationAttachment";
+
+/// That service's ARN namespace, which its model carries as `awsService.arnNamespace`
+/// (`sms-voice`) and every one of these resources' ARNs is named under.
+pub(super) const SMSVOICE_ARN_NAMESPACE: &str = "sms-voice";
+
+/// The resource path each of those ARNs carries before the resource's name or minted id,
+/// which is the `ResourceType` the owning service's own exceptions name the resource by
+/// (`smithy_query(query="shape",shape="ResourceType")` on that model).
+pub(super) const SMSVOICE_CONFIGURATION_SET_PATH: &str = "configuration-set";
+pub(super) const SMSVOICE_OPT_OUT_LIST_PATH: &str = "opt-out-list";
+pub(super) const SMSVOICE_PROTECT_CONFIGURATION_PATH: &str = "protect-configuration";
+pub(super) const SMSVOICE_RCS_AGENT_PATH: &str = "rcs-agent";
+pub(super) const SMSVOICE_REGISTRATION_PATH: &str = "registration";
+pub(super) const SMSVOICE_REGISTRATION_ATTACHMENT_PATH: &str = "registration-attachment";
+
+/// How wide the identifier each of the four service-identified types carries is, and the
+/// prefix it carries before it: that service mints an identifier as its resource kind
+/// followed by hexadecimal digits, so the STAND-IN computed before the create has that form
+/// too.
+pub(super) const SMSVOICE_ID_HEX_DIGITS: usize = 32;
+pub(super) const SMSVOICE_PROTECT_CONFIGURATION_ID_PREFIX: &str = "protect-configuration-";
+pub(super) const SMSVOICE_RCS_AGENT_ID_PREFIX: &str = "rcsagent-";
+pub(super) const SMSVOICE_REGISTRATION_ID_PREFIX: &str = "registration-";
+pub(super) const SMSVOICE_REGISTRATION_ATTACHMENT_ID_PREFIX: &str = "attachment-";
+
+/// Every `Fn::GetAtt` attribute each of those types publishes, in the sorted order a
+/// resource's own attribute map holds them in: the ARN that service minted, and for a type
+/// whose identity that service assigns the identifier inside it.
+///
+/// A RESOURCE POLICY carries no entry: its one return value is the ARN its `Ref` returns,
+/// which is the physical resource id rather than an attribute.
+pub(super) const SMSVOICE_NAMED_ATTRIBUTES: &[&str] = &[SMSVOICE_ARN_ATTRIBUTE];
+pub(super) const SMSVOICE_PROTECT_CONFIGURATION_ATTRIBUTES: &[&str] = &[
+    SMSVOICE_ARN_ATTRIBUTE,
+    SMSVOICE_PROTECT_CONFIGURATION_ID_ATTRIBUTE,
+];
+pub(super) const SMSVOICE_RCS_AGENT_ATTRIBUTES: &[&str] =
+    &[SMSVOICE_ARN_ATTRIBUTE, SMSVOICE_RCS_AGENT_ID_ATTRIBUTE];
+pub(super) const SMSVOICE_REGISTRATION_ATTRIBUTES: &[&str] =
+    &[SMSVOICE_ARN_ATTRIBUTE, SMSVOICE_REGISTRATION_ID_ATTRIBUTE];
+pub(super) const SMSVOICE_REGISTRATION_ATTACHMENT_ATTRIBUTES: &[&str] = &[
+    SMSVOICE_ARN_ATTRIBUTE,
+    SMSVOICE_REGISTRATION_ATTACHMENT_ID_ATTRIBUTE,
+];
+
+/// Those attributes by name, so the arms that compute a stand-in and the provisioner that
+/// re-points them at what the create really answered cannot spell them differently.
+pub const SMSVOICE_ARN_ATTRIBUTE: &str = "Arn";
+pub const SMSVOICE_PROTECT_CONFIGURATION_ID_ATTRIBUTE: &str = "ProtectConfigurationId";
+pub const SMSVOICE_RCS_AGENT_ID_ATTRIBUTE: &str = "RcsAgentId";
+pub const SMSVOICE_REGISTRATION_ID_ATTRIBUTE: &str = "RegistrationId";
+pub const SMSVOICE_REGISTRATION_ATTACHMENT_ID_ATTRIBUTE: &str = "RegistrationAttachmentId";

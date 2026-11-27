@@ -240,6 +240,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The configuration is gone, so the idempotency entry that points at it is dead
         // bookkeeping: drop it with the resource rather than retaining it forever.
         state.forget_client_tokens_for(crate::state::CREATE_PROTECT_CONFIGURATION, &removed.id);
+        // A resource-based policy attached to the configuration is attached to nothing once
+        // the configuration is gone, so it goes with it.
+        state.resource_policies.remove(&removed.arn);
 
         // The response is the record that was removed, so it reports what the service held
         // rather than what the request named.

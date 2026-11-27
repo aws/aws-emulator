@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DescribeRegistrationAttachments
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DescribeRegistrationAttachments`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DescribeRegistrationAttachments::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! IMPLEMENTED: reports the registration attachments stored in [`crate::state`], selected
+//! by the ids (or ARNs) the request lists, narrowed by its filters and paged through this
+//! service's shared cursor. An id this account does not hold is a
+//! `ResourceNotFoundException`. An upload the clock has already finished is materialised
+//! here before the page is read, so a report never shows an upload as still running past
+//! the instant it was due.
 //!
 //! ## Shape of an operation
 //!
@@ -89,6 +87,13 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+/// The prefix every `NextToken` this operation issues carries, and which one it accepts
+/// must carry, so a cursor another paginated read issued is not one of this one's.
+const NEXT_TOKEN_PREFIX: &str = "attachments-";
+
+/// The model's `ResourceType` for this resource, which this operation's refusal names.
+const REGISTRATION_ATTACHMENT_RESOURCE_TYPE: &str = "registration-attachment";
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -161,18 +166,135 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DescribeRegistrationAttachments` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DescribeRegistrationAttachmentsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DescribeRegistrationAttachments"))
+        let _ = ctx;
+        let Some(store) = crate::state::service_state(&*self.engine) else {
+            return Err(
+                DescribeRegistrationAttachmentsErrorModeled::InternalServerException(
+                    InternalServerException {
+                        message: Some(
+                            "the registration-attachment store is unavailable".to_string(),
+                        ),
+                        request_id: None,
+                    },
+                )
+                .into(),
+            );
+        };
+        let mut state = store.lock();
+        // An upload that was DUE to finish before this instant finished whether or not
+        // anybody asked, so the one write this read makes is to materialise it; nothing
+        // else about an attachment changes because it was read.
+        state.settle_attachment_uploads(::std::time::SystemTime::now());
+
+        // `RegistrationAttachmentIds` SELECTS: each entry is a
+        // `RegistrationAttachmentIdOrArn`, so it may name the attachment by ARN, and each
+        // one must name a stored attachment. Absent (or empty), the whole account is
+        // reported in the store's stable key order.
+        let selected: Vec<&crate::state::RegistrationAttachment> =
+            match input.registration_attachment_ids {
+                Some(ref ids) if !ids.is_empty() => {
+                    let mut records = Vec::with_capacity(ids.len());
+                    for named in ids {
+                        let id = crate::state::name_from_name_or_arn(named);
+                        let Some(record) = state.registration_attachments.get(id) else {
+                            return Err(
+                                DescribeRegistrationAttachmentsErrorModeled::ResourceNotFoundException(
+                                    ResourceNotFoundException {
+                                        message: Some(
+                                            crate::state::resource_not_found_message(
+                                                REGISTRATION_ATTACHMENT_RESOURCE_TYPE,
+                                                id,
+                                            ),
+                                        ),
+                                        resource_type: Some(
+                                            REGISTRATION_ATTACHMENT_RESOURCE_TYPE.to_string(),
+                                        ),
+                                        resource_id: Some(id.to_string()),
+                                    },
+                                )
+                                .into(),
+                            );
+                        };
+                        records.push(record);
+                    }
+                    records
+                }
+                _ => state.registration_attachments.values().collect(),
+            };
+
+        // Every filter must match (AND); within one filter any value matches (OR).
+        let filters = input.filters.unwrap_or_default();
+        let matching: Vec<&crate::state::RegistrationAttachment> = selected
+            .into_iter()
+            .filter(|record| {
+                filters.iter().all(|filter| {
+                    record.filterable(&filter.name).is_some_and(|actual| {
+                        actual.iter().any(|value| filter.values.contains(value))
+                    })
+                })
+            })
+            .collect();
+
+        let start = match crate::state::page_start(
+            NEXT_TOKEN_PREFIX,
+            input.next_token.as_deref(),
+            matching.len(),
+        ) {
+            Ok(start) => start,
+            Err(rejection) => {
+                return Err(
+                    DescribeRegistrationAttachmentsErrorModeled::ValidationException(
+                        ValidationException {
+                            message: Some(rejection.message.to_string()),
+                            reason: Some(crate::state::INVALID_NEXT_TOKEN_REASON.to_string()),
+                            fields: Some(vec![ValidationExceptionField {
+                                name: crate::state::NEXT_TOKEN_FIELD.to_string(),
+                                message: rejection.field_message.to_string(),
+                            }]),
+                        },
+                    )
+                    .into(),
+                )
+            }
+        };
+
+        // `MaxResults` caps one page; absent, the whole remainder is returned. The page is
+        // taken through a CHECKED read of the range, so no caller-supplied cursor or maximum
+        // can index past the result set: `page_start` refuses an offset past the end and
+        // `page_end` clamps to it, which makes the range valid, and an empty page rather
+        // than a panic is what a range they could not make valid would answer.
+        let end = crate::state::page_end(start, input.max_results, matching.len());
+        let page: Vec<RegistrationAttachmentsInformation> = matching
+            .get(start..end)
+            .unwrap_or_default()
+            .iter()
+            .copied()
+            .map(attachment_information)
+            .collect();
+        let next_token =
+            (end < matching.len()).then(|| crate::state::page_cursor(NEXT_TOKEN_PREFIX, end));
+
+        Ok(DescribeRegistrationAttachmentsOutput {
+            registration_attachments: page,
+            next_token,
+        })
+    }
+}
+
+/// One stored registration attachment as the modelled
+/// `RegistrationAttachmentsInformation`, every member read from the record.
+fn attachment_information(
+    record: &crate::state::RegistrationAttachment,
+) -> RegistrationAttachmentsInformation {
+    RegistrationAttachmentsInformation {
+        registration_attachment_arn: record.arn.clone(),
+        registration_attachment_id: record.id.clone(),
+        attachment_status: record.status.clone(),
+        // No upload ever failed, so there is no error reason to report.
+        attachment_upload_error_reason: None,
+        created_timestamp: crate::state::to_timestamp(record.created_timestamp),
+        // The URL is reported only for an attachment that was supplied from one; one whose
+        // document came inline has no URL of its own.
+        attachment_url: record.attachment_url.clone(),
     }
 }

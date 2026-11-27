@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeleteRcsAgent
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DeleteRcsAgent`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DeleteRcsAgent::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! IMPLEMENTED: removes the stored RCS agent in [`crate::state`] and answers from the
+//! record it removed. An agent this account does not hold is a
+//! `ResourceNotFoundException`; one whose deletion protection is on is a
+//! `ConflictException`.
 //!
 //! ## Shape of an operation
 //!
@@ -102,6 +98,9 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+/// The model's `ResourceType` for this resource, which both this operation's refusals name.
+const RCS_AGENT_RESOURCE_TYPE: &str = "rcs-agent";
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -175,18 +174,83 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DeleteRcsAgent` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DeleteRcsAgentErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DeleteRcsAgent"))
+        let _ = ctx;
+        let Some(store) = crate::state::service_state(&*self.engine) else {
+            return Err(DeleteRcsAgentErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: Some("the RCS-agent store is unavailable".to_string()),
+                    request_id: None,
+                },
+            )
+            .into());
+        };
+        let mut state = store.lock();
+
+        // `RcsAgentId` here is an `RcsAgentIdOrArn`, so the caller may name the agent by
+        // ARN; the store is keyed by the id this service minted.
+        let id = crate::state::name_from_name_or_arn(&input.rcs_agent_id).to_string();
+        let Some(record) = state.rcs_agents.get(&id) else {
+            return Err(DeleteRcsAgentErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: Some(crate::state::resource_not_found_message(
+                        RCS_AGENT_RESOURCE_TYPE,
+                        &id,
+                    )),
+                    resource_type: Some(RCS_AGENT_RESOURCE_TYPE.to_string()),
+                    resource_id: Some(id),
+                },
+            )
+            .into());
+        };
+
+        // "When set to true the RCS agent can't be deleted": the delete is refused with
+        // the modelled reason that names the blocker, and the record is left exactly as it
+        // was — so a caller can clear the setting and retry.
+        if record.deletion_protection_enabled {
+            return Err(DeleteRcsAgentErrorModeled::ConflictException(
+                ConflictException {
+                    // AWS words this service's conflict message as a restatement of the
+                    // exception's own members, so both carry the same values.
+                    message: Some(crate::state::conflict_message(
+                        DELETION_PROTECTION_ENABLED,
+                        RCS_AGENT_RESOURCE_TYPE,
+                        &id,
+                    )),
+                    reason: Some(DELETION_PROTECTION_ENABLED.to_string()),
+                    resource_type: Some(RCS_AGENT_RESOURCE_TYPE.to_string()),
+                    resource_id: Some(id),
+                },
+            )
+            .into());
+        }
+
+        let removed = state
+            .rcs_agents
+            .remove(&id)
+            .expect("the RCS agent resolved above is present");
+        // The agent is gone, so the idempotency entry that points at it is dead
+        // bookkeeping, and a resource-based policy attached to it is attached to nothing.
+        state.forget_client_tokens_for(crate::state::CREATE_RCS_AGENT, &removed.id);
+        state.resource_policies.remove(&removed.arn);
+
+        // The response is the record that was removed, so it reports what the service held
+        // rather than what the request named.
+        Ok(DeleteRcsAgentOutput {
+            rcs_agent_arn: removed.arn,
+            rcs_agent_id: removed.id,
+            status: removed.status,
+            created_timestamp: crate::state::to_timestamp(removed.created_timestamp),
+            deletion_protection_enabled: removed.deletion_protection_enabled,
+            opt_out_list_name: removed.opt_out_list_name,
+            self_managed_opt_outs_enabled: removed.self_managed_opt_outs_enabled,
+            two_way_channel_arn: removed.two_way_channel_arn,
+            two_way_channel_role: removed.two_way_channel_role,
+            two_way_enabled: removed.two_way_enabled,
+            two_way_rcs_events_enabled: (!removed.two_way_rcs_events_enabled.is_empty())
+                .then_some(removed.two_way_rcs_events_enabled),
+        })
     }
 }
+
+/// The `ConflictExceptionReason` a delete blocked by deletion protection carries.
+const DELETION_PROTECTION_ENABLED: &str = "DELETION_PROTECTION_ENABLED";

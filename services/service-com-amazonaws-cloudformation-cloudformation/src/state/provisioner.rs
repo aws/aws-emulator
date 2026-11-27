@@ -1468,6 +1468,14 @@ pub(super) enum Provisioner {
     /// the `spendingLimitArn` the type publishes — the handle every spending-limit API takes
     /// — so it is read off that create's own answer and is the identity a `Ref` resolves to.
     BraketSpendingLimit,
+    /// `AWS::SMSVOICE::*`: the seven AWS End User Messaging SMS and Voice resources a
+    /// template declares, each created by that service's own `Create…`/`Put…` call and
+    /// removed by its own `Delete…` ([`sms_voice`]). A configuration set and an opt-out list
+    /// are NAMED by the declaration; the other four resources carry the identifier that
+    /// service MINTED, read off the create's own answer, and a resource policy is identified
+    /// by the ARN of the resource it is attached to. Each value names which of the seven the
+    /// declaration is, so the one set of arms serves them all.
+    SmsVoiceResource(sms_voice::Resource),
     /// `AWS::AIOps::InvestigationGroup`: the per-Region investigation group Amazon CloudWatch
     /// investigations' own `CreateInvestigationGroup` makes, `UpdateInvestigationGroup`
     /// reconfigures and `DeleteInvestigationGroup` removes. That service MINTS the `arn` the
@@ -2186,6 +2194,9 @@ pub(super) fn provisioner_for(resource_type: &str) -> Option<Provisioner> {
         // arms the same way ([`vpc_lattice_resources`]); every other type answers `None` and
         // is left declared-only.
         _ => agentcore_provisioner_for(resource_type)
+            .or_else(|| {
+                sms_voice_provisioner_for(resource_type).map(Provisioner::SmsVoiceResource)
+            })
             .or_else(|| {
                 vpc_lattice_provisioner_for(resource_type)
                     .map(Provisioner::VpcLatticeResource)
@@ -3035,6 +3046,12 @@ impl Provisioner {
             Self::BraketSpendingLimit => {
                 delete_braket_spending_limit(ctx, region, physical_resource_id).await
             }
+            // Each delete addresses the resource by this resource's physical id: the name the
+            // declaration resolved to, the identifier that service minted, or the ARN a
+            // policy is attached to.
+            Self::SmsVoiceResource(resource_kind) => {
+                delete_sms_voice_resource(ctx, region, resource_kind, physical_resource_id).await
+            }
             // The investigation group is removed by the ARN Amazon CloudWatch investigations
             // minted for it, which is this resource's physical id and the `identifier` that
             // delete takes.
@@ -3754,6 +3771,18 @@ use client_vpn::*;
 /// their entries for them by those names.
 pub(in crate::state) mod rekognition_resources;
 use rekognition_resources::*;
+
+/// The AWS End User Messaging SMS and Voice family — the configuration set, the opt-out
+/// list, the protect configuration, the resource policy, the RCS agent, the registration and
+/// the registration attachment a template declares — whose arms are [`sms_voice`]'s. Visible
+/// to the rest of this service's state because that module names the seven types it serves,
+/// and the catalogue of declarable types, the naming rules and the return-value catalogue
+/// key their entries for them by those names.
+pub(in crate::state) mod sms_voice;
+use sms_voice::{
+    create_sms_voice_resource, delete_sms_voice_resource, describe_sms_voice_resource,
+    sms_voice_provisioner_for, update_sms_voice_resource_policy,
+};
 
 /// The Amazon VPC Lattice RESOURCE-ACCESS family — the resource gateway, the resource
 /// configuration and the two associations — whose arms are [`vpc_lattice_resources`]'s,

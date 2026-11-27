@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateRcsAgent
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateRcsAgent`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateRcsAgent::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! IMPLEMENTED: stores a new RCS agent in [`crate::state`] under the identifier this
+//! service mints for it and answers from the stored record. An `OptOutListName` naming no
+//! stored list is a `ResourceNotFoundException`; a repeat of the same `ClientToken`
+//! returns the record that token already created.
 //!
 //! ## Shape of an operation
 //!
@@ -125,6 +121,9 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+/// The `RcsAgentStatus` a created agent is in: "CREATED: The RCS agent has been created."
+const CREATED_STATUS: &str = "CREATED";
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -199,18 +198,161 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateRcsAgent` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateRcsAgentErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateRcsAgent"))
+        let region = crate::state::request_region(ctx);
+        let Some(store) = crate::state::service_state(&*self.engine) else {
+            return Err(CreateRcsAgentErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: Some("the RCS-agent store is unavailable".to_string()),
+                    request_id: None,
+                },
+            )
+            .into());
+        };
+        let mut state = store.lock();
+
+        // The agent's opt-out list, when the request names one: the member is an
+        // `OptOutListNameOrArn`, so it may name the list by ARN, and it has to name a list
+        // this account holds — an agent pointing at a list nobody created would honour no
+        // opt-out at all.
+        let opt_out_list_name = match input.opt_out_list_name.as_deref() {
+            Some(named) => {
+                let name = crate::state::name_from_name_or_arn(named).to_string();
+                if !state.opt_out_lists.contains_key(&name) {
+                    return Err(CreateRcsAgentErrorModeled::ResourceNotFoundException(
+                        ResourceNotFoundException {
+                            message: Some(crate::state::resource_not_found_message(
+                                "opt-out-list",
+                                &name,
+                            )),
+                            resource_type: Some("opt-out-list".to_string()),
+                            resource_id: Some(name),
+                        },
+                    )
+                    .into());
+                }
+                Some(name)
+            }
+            None => None,
+        };
+
+        // The request this `ClientToken` is scoped to: every member that shapes the agent.
+        let deletion_protection_enabled = input.deletion_protection_enabled.unwrap_or(false);
+        let mut fingerprinted: Vec<String> = vec![
+            deletion_protection_enabled.to_string(),
+            opt_out_list_name.clone().unwrap_or_default(),
+        ];
+        for tag in input.tags.iter().flatten() {
+            fingerprinted.push(format!("{}={}", tag.key, tag.value));
+        }
+        let fingerprint = crate::state::request_fingerprint(
+            &fingerprinted
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<&str>>(),
+        );
+
+        // Idempotency: the same `ClientToken` must not create a second agent. A token
+        // replayed with a DIFFERENT request is a different request, which AWS does not
+        // answer idempotently, so it is refused.
+        if let Some(token) = input.client_token.as_deref() {
+            if let Some(seen) = state.client_token_record(Self::NAME, token).cloned() {
+                if seen.fingerprint != fingerprint {
+                    return Err(CreateRcsAgentErrorModeled::ConflictException(
+                        ConflictException {
+                            message: Some(
+                                crate::state::CLIENT_TOKEN_CONFLICT_MESSAGE.to_string(),
+                            ),
+                            reason: None,
+                            resource_type: None,
+                            resource_id: None,
+                        },
+                    )
+                    .into());
+                }
+                if let Some(existing) = state.rcs_agents.get(&seen.resource) {
+                    return Ok(rcs_agent_output(existing));
+                }
+            }
+        }
+
+        // The per-account quota bounds this store: past it the create is refused, so a
+        // loop of creates cannot grow the emulator's memory without limit.
+        if state.rcs_agents.len() >= crate::state::MAX_RCS_AGENTS_PER_ACCOUNT {
+            return Err(CreateRcsAgentErrorModeled::ServiceQuotaExceededException(
+                ServiceQuotaExceededException {
+                    message: Some(format!(
+                        "the account already holds {} RCS agents",
+                        crate::state::MAX_RCS_AGENTS_PER_ACCOUNT
+                    )),
+                    reason: Some("RCS_AGENTS_PER_ACCOUNT".to_string()),
+                },
+            )
+            .into());
+        }
+
+        // The resource carries no caller-supplied name, so the service mints its
+        // identifier: from the store's monotonic sequence, so no two agents collide.
+        let sequence = state.next_sequence();
+        let id = format!("rcsagent-{sequence:032x}");
+        let record = crate::state::RcsAgent {
+            arn: ::emulator_server::emulator_arn(
+                crate::state::SIGNING_NAME,
+                &region,
+                &format!("rcs-agent/{id}"),
+            ),
+            id: id.clone(),
+            // A created agent is `CREATED`: it leaves that status only when the caller
+            // submits the registration that launches it.
+            status: CREATED_STATUS.to_string(),
+            created_timestamp: ::std::time::SystemTime::now(),
+            deletion_protection_enabled,
+            opt_out_list_name,
+            // The two-way channel and the self-managed opt-out setting are not members of
+            // the create at all: only `UpdateRcsAgent` turns either on, so a fresh agent
+            // carries the documented defaults.
+            self_managed_opt_outs_enabled: false,
+            two_way_enabled: false,
+            two_way_channel_arn: None,
+            two_way_channel_role: None,
+            two_way_rcs_events_enabled: Vec::new(),
+            tags: input.tags.unwrap_or_default(),
+        };
+        state.rcs_agents.insert(id.clone(), record);
+        if let Some(token) = input.client_token.as_deref() {
+            state.remember_client_token(Self::NAME, token, &id, fingerprint);
+        }
+
+        // Read the response back out of the store: what the caller sees is what was
+        // persisted, not what was passed in.
+        let stored = state
+            .rcs_agents
+            .get(&id)
+            .expect("the RCS agent just inserted is present");
+        Ok(rcs_agent_output(stored))
+    }
+}
+
+/// The response for one stored RCS agent, every member read from the record.
+fn rcs_agent_output(record: &crate::state::RcsAgent) -> CreateRcsAgentOutput {
+    CreateRcsAgentOutput {
+        rcs_agent_arn: record.arn.clone(),
+        rcs_agent_id: record.id.clone(),
+        status: record.status.clone(),
+        deletion_protection_enabled: record.deletion_protection_enabled,
+        opt_out_list_name: record.opt_out_list_name.clone(),
+        created_timestamp: crate::state::to_timestamp(record.created_timestamp),
+        self_managed_opt_outs_enabled: record.self_managed_opt_outs_enabled,
+        two_way_channel_arn: record.two_way_channel_arn.clone(),
+        two_way_channel_role: record.two_way_channel_role.clone(),
+        two_way_enabled: record.two_way_enabled,
+        // The inbound-media destination is part of the two-way channel, which a created
+        // agent has none of.
+        two_way_media_s3_bucket_name: None,
+        two_way_media_s3_key_prefix: None,
+        two_way_media_s3_role: None,
+        two_way_rcs_events_enabled: (!record.two_way_rcs_events_enabled.is_empty())
+            .then(|| record.two_way_rcs_events_enabled.clone()),
+        // `Tags` is optional and AWS omits it when the resource carries none.
+        tags: (!record.tags.is_empty()).then(|| record.tags.clone()),
     }
 }

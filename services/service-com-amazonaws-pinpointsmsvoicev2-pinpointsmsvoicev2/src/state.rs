@@ -45,6 +45,14 @@ pub const REQUEST_PHONE_NUMBER: &str = "RequestPhoneNumber";
 pub const CREATE_EVENT_DESTINATION: &str = "CreateEventDestination";
 /// See [`CREATE_CONFIGURATION_SET`].
 pub const CREATE_PROTECT_CONFIGURATION: &str = "CreateProtectConfiguration";
+/// See [`CREATE_CONFIGURATION_SET`].
+pub const CREATE_OPT_OUT_LIST: &str = "CreateOptOutList";
+/// See [`CREATE_CONFIGURATION_SET`].
+pub const CREATE_RCS_AGENT: &str = "CreateRcsAgent";
+/// See [`CREATE_CONFIGURATION_SET`].
+pub const CREATE_REGISTRATION: &str = "CreateRegistration";
+/// See [`CREATE_CONFIGURATION_SET`].
+pub const CREATE_REGISTRATION_ATTACHMENT: &str = "CreateRegistrationAttachment";
 
 /// What a `ClientToken` for an event-destination create points at: a destination is named
 /// only within one configuration set, so the set's name is part of the key. Neither name
@@ -81,6 +89,33 @@ pub const MAX_PROTECT_CONFIGURATIONS_PER_ACCOUNT: usize = 1_000;
 /// `ServiceQuotaExceededException` / `reason = PHONE_NUMBERS_PER_ACCOUNT`. Chosen for
 /// the same reason as [`MAX_CONFIGURATION_SETS_PER_ACCOUNT`].
 pub const MAX_PHONE_NUMBERS_PER_ACCOUNT: usize = 1_000;
+
+/// The most opt-out lists one account may hold, answered with
+/// `ServiceQuotaExceededException` / `reason = OPT_OUT_LISTS_PER_ACCOUNT`. Chosen for the
+/// same reason as [`MAX_CONFIGURATION_SETS_PER_ACCOUNT`].
+pub const MAX_OPT_OUT_LISTS_PER_ACCOUNT: usize = 1_000;
+
+/// The most RCS agents one account may hold, answered with
+/// `ServiceQuotaExceededException` / `reason = RCS_AGENTS_PER_ACCOUNT`. Chosen for the
+/// same reason as [`MAX_CONFIGURATION_SETS_PER_ACCOUNT`].
+pub const MAX_RCS_AGENTS_PER_ACCOUNT: usize = 1_000;
+
+/// The most registrations one account may hold, answered with
+/// `ServiceQuotaExceededException` / `reason = REGISTRATIONS_PER_ACCOUNT`. Chosen for the
+/// same reason as [`MAX_CONFIGURATION_SETS_PER_ACCOUNT`].
+pub const MAX_REGISTRATIONS_PER_ACCOUNT: usize = 1_000;
+
+/// The most registration attachments one account may hold, answered with
+/// `ServiceQuotaExceededException` / `reason = REGISTRATION_ATTACHMENTS_PER_ACCOUNT`.
+/// Chosen for the same reason as [`MAX_CONFIGURATION_SETS_PER_ACCOUNT`].
+pub const MAX_REGISTRATION_ATTACHMENTS_PER_ACCOUNT: usize = 1_000;
+
+/// The most resource-based policies one account may hold at once. One policy is attached
+/// per resource, so the store cannot outgrow the resources it points at by more than this;
+/// past it `PutResourcePolicy` is refused, so a loop of puts cannot grow the emulator's
+/// heap without limit. `PutResourcePolicy` models no `ServiceQuotaExceededException`, so
+/// the refusal is its `ValidationException`.
+pub const MAX_RESOURCE_POLICIES_PER_ACCOUNT: usize = 1_000;
 
 /// The most event destinations one configuration set may hold, answered with
 /// `ServiceQuotaExceededException` / `reason = EVENT_DESTINATIONS_PER_CONFIGURATION_SET`.
@@ -536,6 +571,188 @@ impl ProtectConfiguration {
     }
 }
 
+/// A stored opt-out list.
+///
+/// The caller NAMES it — `CreateOptOutList` takes the `OptOutListName` and every later
+/// call addresses the list by that name or by the ARN built around it — so the name is the
+/// record's whole identity.
+#[derive(Debug, Clone)]
+pub struct OptOutList {
+    pub name: String,
+    pub arn: String,
+    pub tags: Vec<Tag>,
+    pub created_timestamp: SystemTime,
+}
+
+/// A stored RCS agent.
+///
+/// The resource carries no caller-supplied name: `CreateRcsAgent` takes the agent's
+/// configuration and answers the `RcsAgentId` this service minted with the ARN built
+/// around it, which is what every later call addresses one by.
+#[derive(Debug, Clone)]
+pub struct RcsAgent {
+    pub id: String,
+    pub arn: String,
+    /// An `RcsAgentStatus`. A created agent is `CREATED`: it leaves that status only when
+    /// the caller submits the registration that launches it, which is a caller's action
+    /// rather than something the clock owes.
+    pub status: String,
+    pub created_timestamp: SystemTime,
+    pub deletion_protection_enabled: bool,
+    pub opt_out_list_name: Option<String>,
+    pub self_managed_opt_outs_enabled: bool,
+    pub two_way_enabled: bool,
+    pub two_way_channel_arn: Option<String>,
+    pub two_way_channel_role: Option<String>,
+    pub two_way_rcs_events_enabled: Vec<String>,
+    pub tags: Vec<Tag>,
+}
+
+impl RcsAgent {
+    /// The record's value for one `RcsAgentFilterName`, or `None` when the record carries
+    /// no value for that attribute (so no filter value can match it).
+    ///
+    /// The names are exactly the model's `RcsAgentFilterName` enum, re-exported as
+    /// [`crate::ops::types::RCS_AGENT_FILTER_NAME_VALUES`].
+    pub fn filterable(&self, name: &str) -> Option<Vec<String>> {
+        let single = |value: String| Some(vec![value]);
+        match name {
+            "status" => single(self.status.clone()),
+            "two-way-enabled" => single(self.two_way_enabled.to_string()),
+            "self-managed-opt-outs-enabled" => {
+                single(self.self_managed_opt_outs_enabled.to_string())
+            }
+            "deletion-protection-enabled" => single(self.deletion_protection_enabled.to_string()),
+            "opt-out-list-name" => self.opt_out_list_name.clone().map(|value| vec![value]),
+            "two-way-channel-arn" => self.two_way_channel_arn.clone().map(|arn| vec![arn]),
+            _ => None,
+        }
+    }
+}
+
+/// A stored registration.
+///
+/// `CreateRegistration` takes only the registration's TYPE and answers the
+/// `RegistrationId` this service minted with the ARN built around it; the form's field
+/// values are written afterwards, one call at a time.
+#[derive(Debug, Clone)]
+pub struct Registration {
+    pub id: String,
+    pub arn: String,
+    pub registration_type: String,
+    /// A `RegistrationStatus`. A created registration is `CREATED` — "Your registration is
+    /// created but not submitted" — and leaves that status only when the caller submits a
+    /// version of it, which is a caller's action rather than something the clock owes.
+    pub status: String,
+    /// The version the form's values are being written into, which a created registration
+    /// starts at 1: `CreateRegistration` answers a `CurrentVersionNumber` and the member's
+    /// own `range 1..100000` has no zero.
+    pub current_version_number: i64,
+    pub tags: Vec<Tag>,
+    pub created_timestamp: SystemTime,
+}
+
+impl Registration {
+    /// The record's value for one `RegistrationFilterName`, or `None` when the record
+    /// carries no value for that attribute.
+    ///
+    /// The names are exactly the model's `RegistrationFilterName` enum, re-exported as
+    /// [`crate::ops::types::REGISTRATION_FILTER_NAME_VALUES`].
+    pub fn filterable(&self, name: &str) -> Option<Vec<String>> {
+        match name {
+            "registration-type" => Some(vec![self.registration_type.clone()]),
+            "registration-status" => Some(vec![self.status.clone()]),
+            _ => None,
+        }
+    }
+}
+
+/// How long after the create a registration attachment's upload is reported as finished.
+///
+/// `CreateRegistrationAttachment` answers `UPLOAD_IN_PROGRESS` — the attachment is being
+/// uploaded — and the attachment reaches `UPLOAD_COMPLETE` without anyone asking for it, so
+/// the instant that transition falls due is stored on the record and a read materialises it
+/// ([`ComAmazonawsPinpointsmsvoicev2Pinpointsmsvoicev2State::settle_attachment_uploads`]).
+/// Nothing sleeps for it: the span is this emulator's own and is short enough that a caller
+/// polling the attachment sees both statuses.
+pub const ATTACHMENT_UPLOAD_SPAN: ::std::time::Duration = ::std::time::Duration::from_secs(3);
+
+/// The `AttachmentStatus` a created attachment is in, and the one its upload finishes in.
+pub const ATTACHMENT_UPLOAD_IN_PROGRESS: &str = "UPLOAD_IN_PROGRESS";
+/// See [`ATTACHMENT_UPLOAD_IN_PROGRESS`].
+pub const ATTACHMENT_UPLOAD_COMPLETE: &str = "UPLOAD_COMPLETE";
+
+/// A stored registration attachment: the supporting document a registration form refers to.
+#[derive(Debug, Clone)]
+pub struct RegistrationAttachment {
+    pub id: String,
+    pub arn: String,
+    /// An `AttachmentStatus`, which starts at [`ATTACHMENT_UPLOAD_IN_PROGRESS`].
+    pub status: String,
+    /// The URL the document was supplied from, when the create named one rather than
+    /// carrying the body inline.
+    pub attachment_url: Option<String>,
+    /// When [`ATTACHMENT_UPLOAD_IN_PROGRESS`] becomes [`ATTACHMENT_UPLOAD_COMPLETE`]:
+    /// [`ATTACHMENT_UPLOAD_SPAN`] after the create.
+    pub upload_complete_at: SystemTime,
+    pub tags: Vec<Tag>,
+    pub created_timestamp: SystemTime,
+}
+
+impl RegistrationAttachment {
+    /// The record's value for one `RegistrationAttachmentFilterName`, or `None` when the
+    /// record carries no value for that attribute.
+    ///
+    /// The one name is the model's `RegistrationAttachmentFilterName` enum, re-exported as
+    /// [`crate::ops::types::REGISTRATION_ATTACHMENT_FILTER_NAME_VALUES`].
+    pub fn filterable(&self, name: &str) -> Option<Vec<String>> {
+        match name {
+            "attachment-status" => Some(vec![self.status.clone()]),
+            _ => None,
+        }
+    }
+}
+
+/// The policy document `GetResourcePolicy` reports for a resource that carries NO
+/// resource-based policy: the empty JSON object, which is what AWS answers once a policy
+/// has been deleted.
+pub const EMPTY_RESOURCE_POLICY: &str = "{}";
+
+/// A stored resource-based policy, keyed by the ARN of the resource it is attached to.
+#[derive(Debug, Clone)]
+pub struct ResourcePolicyRecord {
+    pub resource_arn: String,
+    pub policy: String,
+    pub created_timestamp: SystemTime,
+}
+
+/// A resource this service holds, as the `ResourceType`/id pair its own exceptions name it
+/// by — what [`addressed_resource`] reads off an ARN and
+/// [`ComAmazonawsPinpointsmsvoicev2Pinpointsmsvoicev2State::resource_at`] answers for one
+/// this account really holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddressedResource {
+    /// One of the model's `ResourceType` values (`configuration-set`, `opt-out-list`, …).
+    pub resource_type: String,
+    /// The resource's own name or minted id, which is the ARN's last path segment.
+    pub resource_id: String,
+}
+
+/// The resource an ARN of this service ADDRESSES, read off the ARN alone: the
+/// `ResourceType` its resource field carries and the name or id inside it.
+///
+/// An ARN of this service spells the resource as `<kind>/<id>` in its last field
+/// (`arn:aws:sms-voice:<region>:<account>:configuration-set/<name>`), so that is what is
+/// read. `None` for text carrying no such field — an ARN this service cannot read at all,
+/// which is its `INVALID_ARN` rather than a resource it does not hold.
+pub fn addressed_resource(resource_arn: &str) -> Option<AddressedResource> {
+    let (resource_type, resource_id) = resource_arn.splitn(6, ':').nth(5)?.split_once('/')?;
+    (!resource_type.is_empty() && !resource_id.is_empty()).then(|| AddressedResource {
+        resource_type: resource_type.to_string(),
+        resource_id: resource_id.to_string(),
+    })
+}
+
 /// A message this emulator accepted for sending.
 #[derive(Debug, Clone)]
 pub struct SentMessage {
@@ -572,6 +789,23 @@ pub struct ComAmazonawsPinpointsmsvoicev2Pinpointsmsvoicev2State {
     /// [`MAX_PROTECT_CONFIGURATIONS_PER_ACCOUNT`], enforced by
     /// `CreateProtectConfiguration`.
     pub protect_configurations: BTreeMap<String, ProtectConfiguration>,
+    /// Keyed by `OptOutListName`, which AWS makes unique per account. Bounded by
+    /// [`MAX_OPT_OUT_LISTS_PER_ACCOUNT`], enforced by `CreateOptOutList`.
+    pub opt_out_lists: BTreeMap<String, OptOutList>,
+    /// Keyed by `RcsAgentId`. Bounded by [`MAX_RCS_AGENTS_PER_ACCOUNT`], enforced by
+    /// `CreateRcsAgent`.
+    pub rcs_agents: BTreeMap<String, RcsAgent>,
+    /// Keyed by `RegistrationId`. Bounded by [`MAX_REGISTRATIONS_PER_ACCOUNT`], enforced
+    /// by `CreateRegistration`.
+    pub registrations: BTreeMap<String, Registration>,
+    /// Keyed by `RegistrationAttachmentId`. Bounded by
+    /// [`MAX_REGISTRATION_ATTACHMENTS_PER_ACCOUNT`], enforced by
+    /// `CreateRegistrationAttachment`.
+    pub registration_attachments: BTreeMap<String, RegistrationAttachment>,
+    /// The resource-based policies this account holds, keyed by the ARN of the resource
+    /// each is attached to. Bounded by [`MAX_RESOURCE_POLICIES_PER_ACCOUNT`], enforced by
+    /// `PutResourcePolicy`.
+    pub resource_policies: BTreeMap<String, ResourcePolicyRecord>,
     /// The most recent accepted sends, oldest first, dry runs included (`dry_run` tells
     /// them apart). A ring bounded by [`MAX_RETAINED_MESSAGES`].
     messages: VecDeque<SentMessage>,
@@ -611,6 +845,75 @@ impl ComAmazonawsPinpointsmsvoicev2Pinpointsmsvoicev2State {
     /// The retained sends, oldest first.
     pub fn messages(&self) -> impl Iterator<Item = &SentMessage> + '_ {
         self.messages.iter()
+    }
+
+    /// The resource one ARN of this service addresses AND this account holds, as the
+    /// `ResourceType`/id pair its exceptions name it by, or `None` when it holds none.
+    ///
+    /// The ARN says which kind of resource it names ([`addressed_resource`]), so the kind
+    /// says which store to look the id up in — and a kind this emulator holds no store for,
+    /// or an id no store holds, is no resource at all. That is what makes a policy call
+    /// naming a resource nobody created a not-found rather than a stored policy pointing at
+    /// nothing.
+    pub fn resource_at(&self, resource_arn: &str) -> Option<AddressedResource> {
+        let addressed = addressed_resource(resource_arn)?;
+        let id = addressed.resource_id.as_str();
+        let held = match addressed.resource_type.as_str() {
+            "configuration-set" => self.configuration_sets.contains_key(id),
+            "opt-out-list" => self.opt_out_lists.contains_key(id),
+            "protect-configuration" => self.protect_configurations.contains_key(id),
+            "phone-number" => self.phone_numbers.contains_key(id),
+            "rcs-agent" => self.rcs_agents.contains_key(id),
+            "registration" => self.registrations.contains_key(id),
+            "registration-attachment" => self.registration_attachments.contains_key(id),
+            _ => false,
+        };
+        held.then_some(addressed)
+    }
+
+    /// The tags the resource one ARN of this service addresses carries, or `None` when this
+    /// account holds no such resource.
+    ///
+    /// The ONE reading of that question: every record that carries tags is reached through
+    /// the kind the ARN names ([`addressed_resource`]), so a tag read and a policy call
+    /// resolve an ARN exactly the same way. A kind whose records carry no tag set at all
+    /// answers the empty list, which is what a resource with no tags carries anyway.
+    pub fn tags_at(&self, resource_arn: &str) -> Option<Vec<Tag>> {
+        let addressed = addressed_resource(resource_arn)?;
+        let id = addressed.resource_id.as_str();
+        match addressed.resource_type.as_str() {
+            "configuration-set" => self
+                .configuration_sets
+                .get(id)
+                .map(|record| record.tags.clone()),
+            "opt-out-list" => self.opt_out_lists.get(id).map(|record| record.tags.clone()),
+            "protect-configuration" => self
+                .protect_configurations
+                .get(id)
+                .map(|record| record.tags.clone()),
+            "phone-number" => self.phone_numbers.get(id).map(|record| record.tags.clone()),
+            "rcs-agent" => self.rcs_agents.get(id).map(|record| record.tags.clone()),
+            "registration" => self.registrations.get(id).map(|record| record.tags.clone()),
+            "registration-attachment" => self
+                .registration_attachments
+                .get(id)
+                .map(|record| record.tags.clone()),
+            _ => None,
+        }
+    }
+
+    /// Move every registration attachment whose upload is already DUE to
+    /// [`ATTACHMENT_UPLOAD_COMPLETE`], and answer nothing: the transition is the clock's,
+    /// owed [`ATTACHMENT_UPLOAD_SPAN`] after the create whether or not anybody asks, so a
+    /// read materialises what is already owed rather than deciding anything.
+    pub fn settle_attachment_uploads(&mut self, now: SystemTime) {
+        for attachment in self.registration_attachments.values_mut() {
+            if attachment.status == ATTACHMENT_UPLOAD_IN_PROGRESS
+                && now >= attachment.upload_complete_at
+            {
+                attachment.status = ATTACHMENT_UPLOAD_COMPLETE.to_string();
+            }
+        }
     }
 
     /// Record one accepted send, dropping the oldest retained send when the ring is full.

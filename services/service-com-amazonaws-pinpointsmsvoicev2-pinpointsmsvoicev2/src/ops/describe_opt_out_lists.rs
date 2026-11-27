@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DescribeOptOutLists
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DescribeOptOutLists`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DescribeOptOutLists::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! IMPLEMENTED: reports the opt-out lists stored in [`crate::state`], selected by the
+//! names (or ARNs) the request lists and paged through this service's shared cursor. A
+//! name this account does not hold is a `ResourceNotFoundException`.
 //!
 //! ## Shape of an operation
 //!
@@ -93,6 +88,12 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+/// The prefix every `NextToken` this operation issues carries, and which one it accepts
+/// must carry, so a cursor another paginated read issued is not one of this one's. The
+/// cursor itself is minted and parsed by [`crate::state::page_cursor`] /
+/// [`crate::state::page_start`].
+const NEXT_TOKEN_PREFIX: &str = "oollist-";
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -165,18 +166,102 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DescribeOptOutLists` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DescribeOptOutListsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DescribeOptOutLists"))
+        let _ = ctx;
+        let Some(store) = crate::state::service_state(&*self.engine) else {
+            return Err(DescribeOptOutListsErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: Some("the opt-out-list store is unavailable".to_string()),
+                    request_id: None,
+                },
+            )
+            .into());
+        };
+        // A describe reports; it never writes. The guard is taken read-only.
+        let state = store.lock();
+
+        // `OptOutListNames` SELECTS: each entry is an `OptOutListNameOrArn`, so it may name
+        // the list by ARN, and each one must name a stored list. One entry is one reported
+        // list, in the order the request named them. Absent (or empty), the whole account is
+        // reported in the store's stable key order.
+        let selected: Vec<&crate::state::OptOutList> = match input.opt_out_list_names {
+            Some(ref names) if !names.is_empty() => {
+                let mut records = Vec::with_capacity(names.len());
+                for named in names {
+                    let name = crate::state::name_from_name_or_arn(named);
+                    let Some(record) = state.opt_out_lists.get(name) else {
+                        return Err(
+                            DescribeOptOutListsErrorModeled::ResourceNotFoundException(
+                                ResourceNotFoundException {
+                                    message: Some(crate::state::resource_not_found_message(
+                                        "opt-out-list",
+                                        name,
+                                    )),
+                                    resource_type: Some("opt-out-list".to_string()),
+                                    resource_id: Some(name.to_string()),
+                                },
+                            )
+                            .into(),
+                        );
+                    };
+                    records.push(record);
+                }
+                records
+            }
+            _ => state.opt_out_lists.values().collect(),
+        };
+
+        // `NextToken` is this emulator's own cursor, minted and parsed by the one shared
+        // helper every paginated read of this service uses.
+        let start = match crate::state::page_start(
+            NEXT_TOKEN_PREFIX,
+            input.next_token.as_deref(),
+            selected.len(),
+        ) {
+            Ok(start) => start,
+            Err(rejection) => {
+                return Err(DescribeOptOutListsErrorModeled::ValidationException(
+                    ValidationException {
+                        message: Some(rejection.message.to_string()),
+                        reason: Some(crate::state::INVALID_NEXT_TOKEN_REASON.to_string()),
+                        fields: Some(vec![ValidationExceptionField {
+                            name: crate::state::NEXT_TOKEN_FIELD.to_string(),
+                            message: rejection.field_message.to_string(),
+                        }]),
+                    },
+                )
+                .into())
+            }
+        };
+
+        // `MaxResults` caps one page; absent, the whole remainder is returned. The page is
+        // taken through a CHECKED read of the range, so no caller-supplied cursor or maximum
+        // can index past the result set: `page_start` refuses an offset past the end and
+        // `page_end` clamps to it, which makes the range valid, and an empty page rather
+        // than a panic is what a range they could not make valid would answer.
+        let end = crate::state::page_end(start, input.max_results, selected.len());
+        let page: Vec<OptOutListInformation> = selected
+            .get(start..end)
+            .unwrap_or_default()
+            .iter()
+            .copied()
+            .map(opt_out_list_information)
+            .collect();
+        let next_token =
+            (end < selected.len()).then(|| crate::state::page_cursor(NEXT_TOKEN_PREFIX, end));
+
+        Ok(DescribeOptOutListsOutput {
+            opt_out_lists: Some(page),
+            next_token,
+        })
+    }
+}
+
+/// One stored opt-out list as the modelled `OptOutListInformation`, every member read from
+/// the record.
+fn opt_out_list_information(record: &crate::state::OptOutList) -> OptOutListInformation {
+    OptOutListInformation {
+        opt_out_list_arn: record.arn.clone(),
+        opt_out_list_name: record.name.clone(),
+        created_timestamp: crate::state::to_timestamp(record.created_timestamp),
     }
 }

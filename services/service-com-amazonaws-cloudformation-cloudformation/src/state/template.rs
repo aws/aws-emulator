@@ -3213,6 +3213,16 @@ pub const IMPLEMENTED_RESOURCE_TYPES: &[&str] = &[
     // for it, the ARN built around that id and the version label it keeps the suite's live
     // configuration under.
     IOT_CORE_DEVICE_ADVISOR_SUITE_DEFINITION,
+    // The six AWS End User Messaging SMS and Voice types that publish an attribute: each
+    // publishes the ARN that service minted for the resource, and the four whose identity
+    // that service assigns the identifier inside it beside it. (A resource policy has no
+    // entry: its one return value is the ARN its `Ref` returns.)
+    SMSVOICE_CONFIGURATION_SET,
+    SMSVOICE_OPT_OUT_LIST,
+    SMSVOICE_PROTECT_CONFIGURATION,
+    SMSVOICE_RCS_AGENT,
+    SMSVOICE_REGISTRATION,
+    SMSVOICE_REGISTRATION_ATTACHMENT,
     KMS_KEY,
     // The newer Lake Formation permission type, publishing the two halves of the composite
     // identifier of the grant it declares.

@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateRegistrationAttachment
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateRegistrationAttachment`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateRegistrationAttachment::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! IMPLEMENTED: stores a new registration attachment in [`crate::state`] under the
+//! identifier this service mints for it and answers from the stored record. The document
+//! comes either inline or from a URL, never both and never neither; the upload starts
+//! `UPLOAD_IN_PROGRESS` and reaches `UPLOAD_COMPLETE` on its own.
 //!
 //! ## Shape of an operation
 //!
@@ -105,6 +101,10 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+/// The two members the document may be supplied in, exactly one of which a request carries.
+const ATTACHMENT_BODY_FIELD: &str = "AttachmentBody";
+const ATTACHMENT_URL_FIELD: &str = "AttachmentUrl";
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -178,18 +178,164 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateRegistrationAttachment` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateRegistrationAttachmentErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateRegistrationAttachment"))
+        let region = crate::state::request_region(ctx);
+        let Some(store) = crate::state::service_state(&*self.engine) else {
+            return Err(
+                CreateRegistrationAttachmentErrorModeled::InternalServerException(
+                    InternalServerException {
+                        message: Some(
+                            "the registration-attachment store is unavailable".to_string(),
+                        ),
+                        request_id: None,
+                    },
+                )
+                .into(),
+            );
+        };
+        let mut state = store.lock();
+
+        // The document is supplied EITHER inline or from a URL. Both at once is two
+        // documents for one attachment, and neither is no document at all, so each is
+        // refused with the modelled reason that names it — the members, never their
+        // contents.
+        let fields = format!("{ATTACHMENT_BODY_FIELD}, {ATTACHMENT_URL_FIELD}");
+        let reason = match (&input.attachment_body, &input.attachment_url) {
+            (Some(_), Some(_)) => Some("PARAMETERS_CANNOT_BE_USED_TOGETHER"),
+            (None, None) => Some("MISSING_PARAMETER"),
+            _ => None,
+        };
+        if let Some(reason) = reason {
+            return Err(
+                CreateRegistrationAttachmentErrorModeled::ValidationException(
+                    ValidationException {
+                        message: Some(crate::state::validation_error_message(reason, &fields)),
+                        reason: Some(reason.to_string()),
+                        fields: Some(vec![
+                            ValidationExceptionField {
+                                name: ATTACHMENT_BODY_FIELD.to_string(),
+                                message: "exactly one of the two carries the document"
+                                    .to_string(),
+                            },
+                            ValidationExceptionField {
+                                name: ATTACHMENT_URL_FIELD.to_string(),
+                                message: "exactly one of the two carries the document"
+                                    .to_string(),
+                            },
+                        ]),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // The request this `ClientToken` is scoped to: every member that shapes the
+        // attachment. The BODY is fingerprinted by its length, which is what the record
+        // keeps of it.
+        let attachment_bytes = input.attachment_body.as_ref().map_or(0, Vec::len);
+        let mut fingerprinted: Vec<String> = vec![
+            attachment_bytes.to_string(),
+            input.attachment_url.clone().unwrap_or_default(),
+        ];
+        for tag in input.tags.iter().flatten() {
+            fingerprinted.push(format!("{}={}", tag.key, tag.value));
+        }
+        let fingerprint = crate::state::request_fingerprint(
+            &fingerprinted
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<&str>>(),
+        );
+
+        // Idempotency: the same `ClientToken` must not create a second attachment. A token
+        // replayed with a DIFFERENT request is a different request, which AWS does not
+        // answer idempotently, so it is refused.
+        if let Some(token) = input.client_token.as_deref() {
+            if let Some(seen) = state.client_token_record(Self::NAME, token).cloned() {
+                if seen.fingerprint != fingerprint {
+                    return Err(
+                        CreateRegistrationAttachmentErrorModeled::ConflictException(
+                            ConflictException {
+                                message: Some(
+                                    crate::state::CLIENT_TOKEN_CONFLICT_MESSAGE.to_string(),
+                                ),
+                                reason: None,
+                                resource_type: None,
+                                resource_id: None,
+                            },
+                        )
+                        .into(),
+                    );
+                }
+                if let Some(existing) = state.registration_attachments.get(&seen.resource) {
+                    return Ok(attachment_output(existing));
+                }
+            }
+        }
+
+        // The per-account quota bounds this store: past it the create is refused, so a
+        // loop of creates cannot grow the emulator's memory without limit.
+        if state.registration_attachments.len()
+            >= crate::state::MAX_REGISTRATION_ATTACHMENTS_PER_ACCOUNT
+        {
+            return Err(
+                CreateRegistrationAttachmentErrorModeled::ServiceQuotaExceededException(
+                    ServiceQuotaExceededException {
+                        message: Some(format!(
+                            "the account already holds {} registration attachments",
+                            crate::state::MAX_REGISTRATION_ATTACHMENTS_PER_ACCOUNT
+                        )),
+                        reason: Some("REGISTRATION_ATTACHMENTS_PER_ACCOUNT".to_string()),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // The resource carries no caller-supplied name, so the service mints its
+        // identifier: from the store's monotonic sequence, so no two attachments collide.
+        let sequence = state.next_sequence();
+        let id = format!("attachment-{sequence:032x}");
+        let created_at = ::std::time::SystemTime::now();
+        let record = crate::state::RegistrationAttachment {
+            arn: ::emulator_server::emulator_arn(
+                crate::state::SIGNING_NAME,
+                &region,
+                &format!("registration-attachment/{id}"),
+            ),
+            id: id.clone(),
+            // The upload has only just started, which is the status this create answers;
+            // reaching `UPLOAD_COMPLETE` is the clock's, not a caller's.
+            status: crate::state::ATTACHMENT_UPLOAD_IN_PROGRESS.to_string(),
+            attachment_url: input.attachment_url,
+            upload_complete_at: created_at + crate::state::ATTACHMENT_UPLOAD_SPAN,
+            tags: input.tags.unwrap_or_default(),
+            created_timestamp: created_at,
+        };
+        state.registration_attachments.insert(id.clone(), record);
+        if let Some(token) = input.client_token.as_deref() {
+            state.remember_client_token(Self::NAME, token, &id, fingerprint);
+        }
+
+        // Read the response back out of the store: what the caller sees is what was
+        // persisted, not what was passed in.
+        let stored = state
+            .registration_attachments
+            .get(&id)
+            .expect("the registration attachment just inserted is present");
+        Ok(attachment_output(stored))
+    }
+}
+
+/// The response for one stored registration attachment, every member read from the record.
+fn attachment_output(
+    record: &crate::state::RegistrationAttachment,
+) -> CreateRegistrationAttachmentOutput {
+    CreateRegistrationAttachmentOutput {
+        registration_attachment_arn: record.arn.clone(),
+        registration_attachment_id: record.id.clone(),
+        attachment_status: record.status.clone(),
+        // `Tags` is optional and AWS omits it when the resource carries none.
+        tags: (!record.tags.is_empty()).then(|| record.tags.clone()),
+        created_timestamp: crate::state::to_timestamp(record.created_timestamp),
     }
 }

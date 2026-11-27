@@ -1081,6 +1081,14 @@ pub(super) fn declared_name_property(resource_type: &str) -> Option<&'static str
             Some("EcrRepositoryPrefix")
         }
         ECR_PUBLIC_REPOSITORY => Some("RepositoryName"),
+        // An AWS End User Messaging SMS and Voice RESOURCE POLICY *is* the document attached
+        // to another resource: `PutResourcePolicy` takes that resource's `ResourceArn` and
+        // mints no identifier of its own, `GetResourcePolicy` and `DeleteResourcePolicy`
+        // address the document by the same ARN, and "Ref returns the ResourceArn" — so the
+        // declared ARN is this resource's physical id. The type's last segment is
+        // `ResourcePolicy`, so neither `ResourcePolicyName` nor `Name` finds it, and a
+        // generated `<stack>-<logical id>-<unique id>` would name no resource at all.
+        crate::state::provisioner::sms_voice::SMSVOICE_RESOURCE_POLICY => Some("ResourceArn"),
         // An Amazon ECR pull-time-update exclusion IS the IAM principal it excludes:
         // `RegisterPullTimeUpdateExclusion` takes that `principalArn` and no identifier of
         // its own, `DeregisterPullTimeUpdateExclusion` addresses the record by the same ARN,

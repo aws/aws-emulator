@@ -129,6 +129,9 @@ use super::template::{
     NETWORK_SECURITY_MANAGER_POLICY, NETWORK_SECURITY_MANAGER_RULE,
     NETWORK_SECURITY_MANAGER_SCOPE, NETWORK_SECURITY_MANAGER_TEMPLATE,
     RBIN_RULE, SES_EMAIL_IDENTITY, SSM_QUICKSETUP_CONFIGURATION_MANAGER,
+    SMSVOICE_CONFIGURATION_SET, SMSVOICE_OPT_OUT_LIST, SMSVOICE_PROTECT_CONFIGURATION,
+    SMSVOICE_RCS_AGENT, SMSVOICE_REGISTRATION, SMSVOICE_REGISTRATION_ATTACHMENT,
+    SMSVOICE_RESOURCE_POLICY,
     VPCLATTICE_ACCESS_LOG_SUBSCRIPTION, VPCLATTICE_RESOURCE_CONFIGURATION,
     VPCLATTICE_RESOURCE_GATEWAY, VPCLATTICE_SERVICE_NETWORK,
     VPCLATTICE_SERVICE_NETWORK_RESOURCE_ASSOCIATION,
@@ -1111,6 +1114,17 @@ pub const AWS_RESOURCE_TYPES: &[&str] = &[
     // AWS Shield Advanced
     "AWS::Shield::Protection",
     "AWS::Shield::ProtectionGroup",
+    // AWS End User Messaging SMS and Voice. All seven are created in the owning service
+    // (`super::provisioner::sms_voice`), through that service's own `CreateConfigurationSet`,
+    // `CreateOptOutList`, `CreateProtectConfiguration`, `PutResourcePolicy`,
+    // `CreateRcsAgent`, `CreateRegistration` and `CreateRegistrationAttachment`.
+    SMSVOICE_CONFIGURATION_SET,
+    SMSVOICE_OPT_OUT_LIST,
+    SMSVOICE_PROTECT_CONFIGURATION,
+    SMSVOICE_RCS_AGENT,
+    SMSVOICE_REGISTRATION,
+    SMSVOICE_REGISTRATION_ATTACHMENT,
+    SMSVOICE_RESOURCE_POLICY,
     // AWS Signer
     "AWS::Signer::ProfilePermission",
     "AWS::Signer::SigningProfile",

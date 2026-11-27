@@ -561,6 +561,20 @@ pub(super) const SDK_SERVICE_NAMES: &[(&str, &str, SdkDiagnostic)] = &[
     // resource types this emulator provisions over this signing name are both that service's
     // ([`crate::state::provisioner::application_services`]'s queue and queue-policy arms).
     ("sqs", "Sqs", SdkDiagnostic::Attempts),
+    // AWS End User Messaging SMS and Voice' SDK names it `PinpointSmsVoiceV2` — that model's
+    // own `sdkId` (`Pinpoint SMS Voice V2`, `smithy_query(query="service_info")` on that
+    // service's model) written as its SDK client is, which is NOT the signing name the
+    // request was signed with (`sms-voice`). The shape is the ATTEMPT-counting one, as the
+    // recorded `ResourceStatusReason` of an `AWS::SMSVOICE::ConfigurationSet` naming a
+    // protect configuration that service never minted carries it (in the behavioral corpus
+    // `simparity-behavioral-aws-v1`, check `cloudformation__pinpoint-sms-voice-v2.deploy-\
+    // cloudformation-smsvoice-configurationset-invalid-protect-configuration-rejected`,
+    // whose reason reads `Resource handler returned message: "<the service's sentence>
+    // (Service: PinpointSmsVoiceV2, Status Code: 400, Request ID: …) (SDK Attempt Count: …)"
+    // (RequestToken: …, HandlerErrorCode: NotFound)`). The seven resource types this emulator
+    // provisions over this signing name are all that service's
+    // ([`crate::state::provisioner::sms_voice`]).
+    ("sms-voice", "PinpointSmsVoiceV2", SdkDiagnostic::Attempts),
     // AWS Step Functions' SDK names it `Sfn` — that model's own `sdkId` (`SFN`,
     // `smithy_query(query="service_info")` on that service's model) written as its SDK client
     // is, which is NOT the signing name the request was signed with (`states`) nor the service

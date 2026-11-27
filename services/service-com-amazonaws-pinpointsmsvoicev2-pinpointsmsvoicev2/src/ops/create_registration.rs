@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateRegistration
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateRegistration`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateRegistration::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! IMPLEMENTED: stores a new registration in [`crate::state`] under the identifier this
+//! service mints for it and answers from the stored record. A repeat of the same
+//! `ClientToken` returns the record that token already created.
 //!
 //! ## Shape of an operation
 //!
@@ -111,6 +106,15 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+/// The `RegistrationStatus` a created registration is in: "CREATED: Your registration is
+/// created but not submitted."
+const CREATED_STATUS: &str = "CREATED";
+
+/// The version the form's values are first written into. `CurrentVersionNumber`'s own
+/// `range 1..100000` has no zero, so a created registration is already at its first
+/// version.
+const FIRST_VERSION_NUMBER: i64 = 1;
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -184,18 +188,118 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateRegistration` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateRegistrationErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateRegistration"))
+        let region = crate::state::request_region(ctx);
+        let Some(store) = crate::state::service_state(&*self.engine) else {
+            return Err(CreateRegistrationErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: Some("the registration store is unavailable".to_string()),
+                    request_id: None,
+                },
+            )
+            .into());
+        };
+        let mut state = store.lock();
+
+        // The request this `ClientToken` is scoped to: every member that shapes the
+        // registration.
+        let mut fingerprinted: Vec<String> = vec![input.registration_type.clone()];
+        for tag in input.tags.iter().flatten() {
+            fingerprinted.push(format!("{}={}", tag.key, tag.value));
+        }
+        let fingerprint = crate::state::request_fingerprint(
+            &fingerprinted
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<&str>>(),
+        );
+
+        // Idempotency: the same `ClientToken` must not create a second registration. A
+        // token replayed with a DIFFERENT request is a different request, which AWS does
+        // not answer idempotently, so it is refused.
+        if let Some(token) = input.client_token.as_deref() {
+            if let Some(seen) = state.client_token_record(Self::NAME, token).cloned() {
+                if seen.fingerprint != fingerprint {
+                    return Err(CreateRegistrationErrorModeled::ConflictException(
+                        ConflictException {
+                            message: Some(
+                                crate::state::CLIENT_TOKEN_CONFLICT_MESSAGE.to_string(),
+                            ),
+                            reason: None,
+                            resource_type: None,
+                            resource_id: None,
+                        },
+                    )
+                    .into());
+                }
+                if let Some(existing) = state.registrations.get(&seen.resource) {
+                    return Ok(registration_output(existing));
+                }
+            }
+        }
+
+        // The per-account quota bounds this store: past it the create is refused, so a
+        // loop of creates cannot grow the emulator's memory without limit.
+        if state.registrations.len() >= crate::state::MAX_REGISTRATIONS_PER_ACCOUNT {
+            return Err(
+                CreateRegistrationErrorModeled::ServiceQuotaExceededException(
+                    ServiceQuotaExceededException {
+                        message: Some(format!(
+                            "the account already holds {} registrations",
+                            crate::state::MAX_REGISTRATIONS_PER_ACCOUNT
+                        )),
+                        reason: Some("REGISTRATIONS_PER_ACCOUNT".to_string()),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // The resource carries no caller-supplied name, so the service mints its
+        // identifier: from the store's monotonic sequence, so no two registrations collide.
+        let sequence = state.next_sequence();
+        let id = format!("registration-{sequence:032x}");
+        let record = crate::state::Registration {
+            arn: ::emulator_server::emulator_arn(
+                crate::state::SIGNING_NAME,
+                &region,
+                &format!("registration/{id}"),
+            ),
+            id: id.clone(),
+            registration_type: input.registration_type,
+            status: CREATED_STATUS.to_string(),
+            current_version_number: FIRST_VERSION_NUMBER,
+            tags: input.tags.unwrap_or_default(),
+            created_timestamp: ::std::time::SystemTime::now(),
+        };
+        state.registrations.insert(id.clone(), record);
+        if let Some(token) = input.client_token.as_deref() {
+            state.remember_client_token(Self::NAME, token, &id, fingerprint);
+        }
+
+        // Read the response back out of the store: what the caller sees is what was
+        // persisted, not what was passed in.
+        let stored = state
+            .registrations
+            .get(&id)
+            .expect("the registration just inserted is present");
+        Ok(registration_output(stored))
+    }
+}
+
+/// The response for one stored registration, every member read from the record.
+fn registration_output(record: &crate::state::Registration) -> CreateRegistrationOutput {
+    CreateRegistrationOutput {
+        registration_arn: record.arn.clone(),
+        registration_id: record.id.clone(),
+        registration_type: record.registration_type.clone(),
+        registration_status: record.status.clone(),
+        current_version_number: record.current_version_number,
+        // `AdditionalAttributes` is "metadata about a given registration which is specific
+        // to that registration type": this emulator records none, so the member is omitted
+        // rather than carrying an invented entry.
+        additional_attributes: None,
+        // `Tags` is optional and AWS omits it when the resource carries none.
+        tags: (!record.tags.is_empty()).then(|| record.tags.clone()),
+        created_timestamp: crate::state::to_timestamp(record.created_timestamp),
     }
 }

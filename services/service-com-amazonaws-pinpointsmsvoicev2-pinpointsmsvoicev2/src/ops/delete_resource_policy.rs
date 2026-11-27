@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeleteResourcePolicy
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DeleteResourcePolicy`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DeleteResourcePolicy::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! IMPLEMENTED: detaches the resource-based policy stored in [`crate::state`] for the
+//! resource the ARN names and answers the document that was detached. A resource this
+//! account does not hold is a `ResourceNotFoundException`; one that holds no policy is
+//! already in the state the delete asks for and answers the empty document.
 //!
 //! ## Shape of an operation
 //!
@@ -83,6 +79,9 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+/// The input member a refused ARN names in `ValidationException$Fields`.
+const RESOURCE_ARN_FIELD: &str = "ResourceArn";
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -155,18 +154,65 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DeleteResourcePolicy` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DeleteResourcePolicyErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DeleteResourcePolicy"))
+        let _ = ctx;
+        let Some(store) = crate::state::service_state(&*self.engine) else {
+            return Err(DeleteResourcePolicyErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: Some("the resource-policy store is unavailable".to_string()),
+                    request_id: None,
+                },
+            )
+            .into());
+        };
+        let mut state = store.lock();
+
+        // The policy is detached FROM a resource, so the ARN has to name one this account
+        // holds; an ARN whose resource field this service cannot read names no resource at
+        // all, which is its invalid-ARN refusal rather than a not-found.
+        let Some(addressed) = crate::state::addressed_resource(&input.resource_arn) else {
+            return Err(DeleteResourcePolicyErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(crate::state::validation_error_message(
+                        "INVALID_ARN",
+                        RESOURCE_ARN_FIELD,
+                    )),
+                    reason: Some("INVALID_ARN".to_string()),
+                    fields: Some(vec![ValidationExceptionField {
+                        name: RESOURCE_ARN_FIELD.to_string(),
+                        message: "names no resource of this service".to_string(),
+                    }]),
+                },
+            )
+            .into());
+        };
+        if state.resource_at(&input.resource_arn).is_none() {
+            return Err(DeleteResourcePolicyErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: Some(crate::state::resource_not_found_message(
+                        &addressed.resource_type,
+                        &addressed.resource_id,
+                    )),
+                    resource_type: Some(addressed.resource_type),
+                    resource_id: Some(addressed.resource_id),
+                },
+            )
+            .into());
+        }
+
+        // The document that was detached, read off the record before it is dropped. A
+        // resource that carried none is already in the state the delete asks for, so the
+        // empty document is what it answers ([`crate::state::EMPTY_RESOURCE_POLICY`]).
+        let Some(removed) = state.resource_policies.remove(&input.resource_arn) else {
+            return Ok(DeleteResourcePolicyOutput {
+                resource_arn: Some(input.resource_arn),
+                policy: Some(crate::state::EMPTY_RESOURCE_POLICY.to_string()),
+                created_timestamp: None,
+            });
+        };
+        Ok(DeleteResourcePolicyOutput {
+            resource_arn: Some(removed.resource_arn),
+            policy: Some(removed.policy),
+            created_timestamp: Some(crate::state::to_timestamp(removed.created_timestamp)),
+        })
     }
 }

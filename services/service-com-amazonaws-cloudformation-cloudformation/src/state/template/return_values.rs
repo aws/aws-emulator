@@ -419,6 +419,15 @@ pub fn published_attribute_names(resource_type: &str) -> &'static [&'static str]
         // naming rules compute a stand-in for before the resource exists.
         GAMELIFT_BUILD => GAMELIFT_BUILD_ATTRIBUTES,
         GAMELIFT_SCRIPT => GAMELIFT_SCRIPT_ATTRIBUTES,
+        // Each AWS End User Messaging SMS and Voice type publishes the ARN that service
+        // minted for the resource, and the four whose identity that service assigns publish
+        // the identifier inside it beside it. (A RESOURCE POLICY publishes none: its one
+        // return value is the ARN its `Ref` returns.)
+        SMSVOICE_CONFIGURATION_SET | SMSVOICE_OPT_OUT_LIST => SMSVOICE_NAMED_ATTRIBUTES,
+        SMSVOICE_PROTECT_CONFIGURATION => SMSVOICE_PROTECT_CONFIGURATION_ATTRIBUTES,
+        SMSVOICE_RCS_AGENT => SMSVOICE_RCS_AGENT_ATTRIBUTES,
+        SMSVOICE_REGISTRATION => SMSVOICE_REGISTRATION_ATTRIBUTES,
+        SMSVOICE_REGISTRATION_ATTACHMENT => SMSVOICE_REGISTRATION_ATTACHMENT_ATTRIBUTES,
         // Each Amazon VPC Lattice RESOURCE-ACCESS type publishes the ARN that service minted
         // and the id inside it, which are the two return values these naming rules compute a
         // stand-in for before the resource exists.
@@ -1236,6 +1245,20 @@ pub fn identity_is_service_assigned(resource_type: &str) -> bool {
         // service answered.
         || resource_type == GAMELIFT_BUILD
         || resource_type == GAMELIFT_SCRIPT
+        // The four AWS END USER MESSAGING SMS AND VOICE types whose identity that service
+        // assigns are four more: none of their creates takes an identifier for the resource
+        // — a template declares a protect configuration's deletion protection, an RCS
+        // agent's opt-out list, a registration's type and an attachment's document — and
+        // each answers the identifier it drew (a `ProtectConfigurationId`, an `RcsAgentId`,
+        // a `RegistrationId`, a `RegistrationAttachmentId`), which is what that type's `Ref`
+        // returns and the handle every later call on the resource takes. No name
+        // CloudFormation decides is any of them, so the identity in force is the one that
+        // service answered. (Its CONFIGURATION SET and OPT-OUT LIST are not here: each is
+        // named by the declaration, and that name is what the owning service keys it by.)
+        || resource_type == SMSVOICE_PROTECT_CONFIGURATION
+        || resource_type == SMSVOICE_RCS_AGENT
+        || resource_type == SMSVOICE_REGISTRATION
+        || resource_type == SMSVOICE_REGISTRATION_ATTACHMENT
         // The two AWS HEALTHLAKE types are two more: neither create takes an identifier for
         // the resource — a template declares a data store's name and FHIR release version,
         // and a profile's name, source format and initial content — and each answers the

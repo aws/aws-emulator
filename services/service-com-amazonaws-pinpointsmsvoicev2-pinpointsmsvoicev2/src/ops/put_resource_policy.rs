@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op PutResourcePolicy
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `PutResourcePolicy`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`PutResourcePolicy::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! IMPLEMENTED: attaches the resource-based policy document to the resource the ARN
+//! names, in [`crate::state`], and answers from the stored record. The ARN must name a
+//! resource this account holds, or the put is a `ResourceNotFoundException`; a document
+//! that is not a JSON object is a `ValidationException`.
 //!
 //! ## Shape of an operation
 //!
@@ -87,6 +83,12 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+/// The input member a refused policy document names in `ValidationException$Fields`.
+const POLICY_FIELD: &str = "Policy";
+
+/// The input member a refused ARN names in `ValidationException$Fields`.
+const RESOURCE_ARN_FIELD: &str = "ResourceArn";
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -159,18 +161,113 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `PutResourcePolicy` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(PutResourcePolicyErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("PutResourcePolicy"))
+        let _ = ctx;
+        let Some(store) = crate::state::service_state(&*self.engine) else {
+            return Err(PutResourcePolicyErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: Some("the resource-policy store is unavailable".to_string()),
+                    request_id: None,
+                },
+            )
+            .into());
+        };
+        let mut state = store.lock();
+
+        // A policy is attached TO a resource, so the ARN has to name one this account
+        // holds: a policy stored against an ARN nothing answers for would be a grant on
+        // nothing. An ARN whose resource field this service cannot read names no resource
+        // at all, which is its invalid-ARN refusal rather than a not-found.
+        let Some(addressed) = crate::state::addressed_resource(&input.resource_arn) else {
+            return Err(PutResourcePolicyErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(crate::state::validation_error_message(
+                        "INVALID_ARN",
+                        RESOURCE_ARN_FIELD,
+                    )),
+                    reason: Some("INVALID_ARN".to_string()),
+                    fields: Some(vec![ValidationExceptionField {
+                        name: RESOURCE_ARN_FIELD.to_string(),
+                        message: "names no resource of this service".to_string(),
+                    }]),
+                },
+            )
+            .into());
+        };
+        // The exception names the resource exactly as every other not-found of this
+        // service does — the kind the ARN carries and the id inside it.
+        if state.resource_at(&input.resource_arn).is_none() {
+            return Err(PutResourcePolicyErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: Some(crate::state::resource_not_found_message(
+                        &addressed.resource_type,
+                        &addressed.resource_id,
+                    )),
+                    resource_type: Some(addressed.resource_type),
+                    resource_id: Some(addressed.resource_id),
+                },
+            )
+            .into());
+        }
+
+        // The document is a policy, which is a JSON object: one that cannot be parsed as
+        // one is refused rather than stored for a later read to answer with.
+        if !serde_json::from_str::<serde_json::Value>(&input.policy)
+            .is_ok_and(|document| document.is_object())
+        {
+            return Err(PutResourcePolicyErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(crate::state::validation_error_message(
+                        "CANNOT_PARSE",
+                        POLICY_FIELD,
+                    )),
+                    reason: Some("CANNOT_PARSE".to_string()),
+                    fields: Some(vec![ValidationExceptionField {
+                        name: POLICY_FIELD.to_string(),
+                        message: "not a JSON policy document".to_string(),
+                    }]),
+                },
+            )
+            .into());
+        }
+
+        // One policy per resource, so a put REPLACES the document the resource carries
+        // rather than adding a second one; the bound only has to hold for a put that adds
+        // a resource to the store.
+        if !state.resource_policies.contains_key(&input.resource_arn)
+            && state.resource_policies.len() >= crate::state::MAX_RESOURCE_POLICIES_PER_ACCOUNT
+        {
+            return Err(PutResourcePolicyErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(format!(
+                        "the account already holds {} resource policies",
+                        crate::state::MAX_RESOURCE_POLICIES_PER_ACCOUNT
+                    )),
+                    reason: Some("INVALID_REQUEST".to_string()),
+                    fields: None,
+                },
+            )
+            .into());
+        }
+
+        let record = crate::state::ResourcePolicyRecord {
+            resource_arn: input.resource_arn.clone(),
+            policy: input.policy,
+            created_timestamp: ::std::time::SystemTime::now(),
+        };
+        state
+            .resource_policies
+            .insert(input.resource_arn.clone(), record);
+
+        // Read the response back out of the store: what the caller sees is what was
+        // persisted, not what was passed in.
+        let stored = state
+            .resource_policies
+            .get(&input.resource_arn)
+            .expect("the policy just inserted is present");
+        Ok(PutResourcePolicyOutput {
+            resource_arn: Some(stored.resource_arn.clone()),
+            policy: Some(stored.policy.clone()),
+            created_timestamp: Some(crate::state::to_timestamp(stored.created_timestamp)),
+        })
     }
 }

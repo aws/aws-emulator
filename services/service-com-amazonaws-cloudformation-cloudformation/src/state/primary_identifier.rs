@@ -131,6 +131,16 @@ pub(crate) fn identifying_return_value(resource_type: &str) -> Option<&'static s
         // ("Ref returns the spending limit ARN"), which is the handle every spending-limit
         // API takes — the type declares no name a client could name one by.
         BRAKET_SPENDING_LIMIT => "SpendingLimitArn",
+        // The four AWS End User Messaging SMS and Voice types whose identity that service
+        // assigns, each identified by the identifier its create minted — the handle every
+        // later call of that service on the resource takes. None of them declares a name a
+        // client could name one by. (Its configuration set and opt-out list are identified
+        // by their own names, and a resource policy by the ARN it is attached to, which is a
+        // declared property rather than a published return value.)
+        SMSVOICE_PROTECT_CONFIGURATION => SMSVOICE_PROTECT_CONFIGURATION_ID_ATTRIBUTE,
+        SMSVOICE_RCS_AGENT => SMSVOICE_RCS_AGENT_ID_ATTRIBUTE,
+        SMSVOICE_REGISTRATION => SMSVOICE_REGISTRATION_ID_ATTRIBUTE,
+        SMSVOICE_REGISTRATION_ATTACHMENT => SMSVOICE_REGISTRATION_ATTACHMENT_ID_ATTRIBUTE,
         // An Amazon CloudWatch investigations investigation group, identified by the ARN that
         // service minted for it ("Ref returns the Arn"), which is the `identifier` every
         // investigation-group API takes; its own `Name` is only what the group is called, and

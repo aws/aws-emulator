@@ -546,6 +546,20 @@ impl Provisioner {
             Self::BraketSpendingLimit => update_braket_spending_limit(ctx, region, resource, declared)
                 .await
                 .map(Some),
+            // `PutResourcePolicy` attaches the document to the ARN it names whether or not
+            // one is attached already, so the call that created an `AWS::SMSVOICE::
+            // ResourcePolicy` is the call that applies a changed declaration to it. Every
+            // other `AWS::SMSVOICE::*` type answers `Ok(None)`: that service changes a
+            // configuration set's defaults, a protect configuration's deletion protection and
+            // an RCS agent's channel through calls this emulator serves no provisioning path
+            // for yet, so a changed declaration of one is reported as NOT applied rather than
+            // as a success that dropped it.
+            Self::SmsVoiceResource(sms_voice::Resource::Policy) => {
+                update_sms_voice_resource_policy(ctx, region, resource, declared)
+                    .await
+                    .map(Some)
+            }
+            Self::SmsVoiceResource(_) => Ok(None),
             // `UpdateInvestigationGroup` "updates the configuration of the specified
             // investigation group" by the ARN Amazon CloudWatch investigations minted, taking
             // the role it gathers data as, its encryption configuration, its tag key

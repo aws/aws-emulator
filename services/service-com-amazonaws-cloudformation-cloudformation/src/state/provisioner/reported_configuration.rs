@@ -810,6 +810,19 @@ impl Provisioner {
             Self::BraketSpendingLimit => {
                 describe_braket_spending_limit(ctx, region, physical_resource_id).await
             }
+            // That service's own read of the resource this physical id names: each of the six
+            // resources out of its own listing narrowed to the one identifier, and a resource
+            // policy through `GetResourcePolicy` on the ARN it is attached to. Boxed, as the
+            // arms that reach a service through another of this emulator's own are.
+            Self::SmsVoiceResource(resource_kind) => {
+                Box::pin(describe_sms_voice_resource(
+                    ctx,
+                    region,
+                    resource_kind,
+                    physical_resource_id,
+                ))
+                .await
+            }
             // Amazon CloudWatch investigations' own read of ONE investigation group, by the
             // ARN it minted for the group — this resource's physical id.
             Self::AiOpsInvestigationGroup => {
