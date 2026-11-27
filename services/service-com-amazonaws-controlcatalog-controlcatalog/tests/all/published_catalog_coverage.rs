@@ -290,6 +290,19 @@ const PUBLISHED_CONFIG_CONTROLS: &[PublishedConfigControl] = &[
         description: None,
     },
     PublishedConfigControl {
+        rule: "ACM_CERTIFICATE_RSA_CHECK",
+        identifier: "1ysrvaplv6a00p99mim170vqy",
+        designators: &["CONFIG.ACM.DT.1"],
+        release_time: 1_678_060_800,
+        governed_resources: &["AWS::CertificateManager::Certificate"],
+        parameter_requirement_summary: "NONE",
+        description: Some(
+            "Checks if RSA certificates managed by AWS Certificate Manager (ACM) have a \
+             key length of at least '2048' bits. The rule is NON_COMPLIANT if the minimum \
+             key length is less than 2048 bits.",
+        ),
+    },
+    PublishedConfigControl {
         rule: "ACMPCA_CERTIFICATE_AUTHORITY_TAGGED",
         identifier: "6yl9xxuky13vzaxi3n6lm73k5",
         designators: &["CONFIG.ACM-PCA.DT.2"],
@@ -521,4 +534,181 @@ async fn a_filtered_page_serves_the_catalogs_own_published_config_records() {
              {summaries_seen:?}"
         );
     }
+}
+
+/// The published display text of one control the catalog publishes over an AWS Config
+/// managed rule.
+///
+/// Source: the implementing AWS Config managed rule's own published title and description,
+/// which is the text the catalog publishes for such a control, with the severity the
+/// catalog classifies it at. `name` is the published display name and `description` the
+/// published description, each reproduced whole: neither is a summary of the row nor a
+/// paraphrase of the implementing service's current documentation prose. The published
+/// IDENTITY of these controls — the opaque identifier, the designators, the release
+/// instant — is pinned by [`PUBLISHED_CONFIG_CONTROLS`] above rather than re-listed here,
+/// so a row is located in the page by the rule that implements it.
+struct PublishedConfigText {
+    /// The implementing rule's identifier, which is what `Implementation.Identifier`
+    /// reports and an `Implementations.Identifiers` filter names.
+    rule: &'static str,
+    name: &'static str,
+    description: &'static str,
+    severity: &'static str,
+}
+
+/// Published Config-implemented controls, spanning what the rule below generalises over:
+/// the two leading clauses the published catalog text uses ("Checks if …" and "Checks
+/// whether …"), a description of one sentence against ones of two and three, a description
+/// that names the rule's optional parameters against ones that do not, a description that
+/// quotes a numeric threshold, and both severities these rows carry.
+const PUBLISHED_CONFIG_TEXT: &[PublishedConfigText] = &[
+    PublishedConfigText {
+        rule: "ACM_CERTIFICATE_RSA_CHECK",
+        name: "Checks if RSA certificates managed by AWS Certificate Manager (ACM) have a \
+               key length of at least '2048' bits",
+        description: "Checks if RSA certificates managed by AWS Certificate Manager (ACM) \
+                      have a key length of at least '2048' bits. The rule is NON_COMPLIANT \
+                      if the minimum key length is less than 2048 bits.",
+        severity: "HIGH",
+    },
+    PublishedConfigText {
+        rule: "ACM_CERTIFICATE_EXPIRATION_CHECK",
+        name: "Checks whether ACM Certificates in your account are marked for expiration \
+               within the specified number of days",
+        description: "Checks whether ACM Certificates in your account are marked for \
+                      expiration within the specified number of days. Certificates \
+                      provided by ACM are automatically renewed. ACM does not \
+                      automatically renew certificates that you import.",
+        severity: "MEDIUM",
+    },
+    PublishedConfigText {
+        rule: "ELB_LOGGING_ENABLED",
+        name: "Checks whether the Application Load Balancers and the Classic Load \
+               Balancers have logging enabled",
+        description: "Checks whether the Application Load Balancers and the Classic Load \
+                      Balancers have logging enabled.",
+        severity: "MEDIUM",
+    },
+    PublishedConfigText {
+        rule: "SNS_ENCRYPTED_KMS",
+        name: "Checks if SNS topics are encrypted with AWS Key Management Service (AWS \
+               KMS)",
+        description: "Checks if SNS topics are encrypted with AWS Key Management Service \
+                      (AWS KMS). The rule is NON_COMPLIANT if an SNS topic is not \
+                      encrypted with AWS KMS. Optionally, specify the key ARNs, the alias \
+                      ARNs, the alias name, or the key IDs for the rule to check.",
+        severity: "MEDIUM",
+    },
+    PublishedConfigText {
+        rule: "REDSHIFT_REQUIRE_TLS_SSL",
+        name: "Checks if Amazon Redshift clusters require TLS/SSL encryption to connect \
+               to SQL clients",
+        description: "Checks if Amazon Redshift clusters require TLS/SSL encryption to \
+                      connect to SQL clients. The rule is NON_COMPLIANT if any Amazon \
+                      Redshift cluster has parameter require_SSL not set to true.",
+        severity: "MEDIUM",
+    },
+    PublishedConfigText {
+        rule: "VPC_DEFAULT_SECURITY_GROUP_CLOSED",
+        name: "Checks if the default security group of any Amazon Virtual Private Cloud \
+               (Amazon VPC) does not allow inbound or outbound traffic",
+        description: "Checks if the default security group of any Amazon Virtual Private \
+                      Cloud (Amazon VPC) does not allow inbound or outbound traffic. The \
+                      rule is NON_COMPLIANT if the default security group has one or more \
+                      inbound or outbound traffic rules.",
+        severity: "HIGH",
+    },
+];
+
+/// A control the catalog publishes is CARRIED by the page its implementation type selects,
+/// under its published identity and with its published display text: the walk of the
+/// `AWS::Config::ConfigRule` page holds every row below, each reporting the published
+/// `Name` and `Description` whole — no row is absent from the page and no row's text is
+/// re-worded, abridged or extended.
+#[tokio::test]
+async fn the_config_rule_page_carries_every_published_row_with_its_published_text() {
+    let emulator = Emulator::new();
+    let page = drain(
+        &emulator,
+        "/list-controls",
+        "Controls",
+        None,
+        &type_filter(CONFIG_RULE),
+    )
+    .await;
+    let mut leading_clauses: BTreeSet<&str> = BTreeSet::new();
+    let mut severities_seen: BTreeSet<&str> = BTreeSet::new();
+    let mut sentence_counts: BTreeSet<usize> = BTreeSet::new();
+
+    for row in PUBLISHED_CONFIG_TEXT {
+        let case = row.rule;
+        // The row is located by the rule that implements it, so this test pins the
+        // published TEXT the page carries and leaves the published identity to the table
+        // above.
+        let carried: Vec<&Value> = page
+            .iter()
+            .filter(|control| {
+                control["Implementation"]["Identifier"].as_str() == Some(row.rule)
+            })
+            .collect();
+        assert_eq!(
+            carried.len(),
+            1,
+            "case {case}: expected the {CONFIG_RULE} page to carry the one control the \
+             catalog publishes over this rule, got {carried:?} among its {} control(s)",
+            page.len()
+        );
+        let control = carried[0];
+
+        assert_eq!(
+            control["Name"].as_str(),
+            Some(row.name),
+            "case {case}: expected the published name {:?}, got {:?}",
+            row.name,
+            control["Name"]
+        );
+        assert_eq!(
+            control["Description"].as_str(),
+            Some(row.description),
+            "case {case}: expected the published description {:?}, got {:?}",
+            row.description,
+            control["Description"]
+        );
+        assert_eq!(
+            control["Severity"].as_str(),
+            Some(row.severity),
+            "case {case}: expected the published severity {}, got {:?}",
+            row.severity,
+            control["Severity"]
+        );
+
+        leading_clauses.insert(if row.name.starts_with("Checks if") {
+            "Checks if"
+        } else {
+            "Checks whether"
+        });
+        severities_seen.insert(row.severity);
+        sentence_counts.insert(row.description.split(". ").count());
+    }
+
+    // The rows span what the rule generalises over rather than one shape of published
+    // text: both leading clauses, both severities, and descriptions of one, two and three
+    // sentences.
+    assert_eq!(
+        leading_clauses.len(),
+        2,
+        "case table: the rows must span both published leading clauses, saw \
+         {leading_clauses:?}"
+    );
+    assert_eq!(
+        severities_seen.len(),
+        2,
+        "case table: the rows must span more than one published severity, saw \
+         {severities_seen:?}"
+    );
+    assert!(
+        sentence_counts.len() >= 3,
+        "case table: the rows must span descriptions of differing sentence counts, saw \
+         {sentence_counts:?}"
+    );
 }

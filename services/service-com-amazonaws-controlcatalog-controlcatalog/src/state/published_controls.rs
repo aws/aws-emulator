@@ -1369,6 +1369,35 @@ pub(super) const PUBLISHED_CONTROLS: &[ControlSeed] = &[
         frameworks: NO_FRAMEWORK_ITEMS,
     },
     ControlSeed {
+        slug: "acm-certificate-rsa-check",
+        name: "Checks if RSA certificates managed by AWS Certificate Manager (ACM) have a \
+               key length of at least '2048' bits",
+        // The implementing AWS Config managed rule's own published description, reproduced
+        // as the catalog publishes it for a control under a `CONFIG.…` designator: the
+        // rule's documented text, whose first sentence is the control's published name.
+        description: "Checks if RSA certificates managed by AWS Certificate Manager (ACM) \
+                      have a key length of at least '2048' bits. The rule is NON_COMPLIANT \
+                      if the minimum key length is less than 2048 bits.",
+        behavior: DETECTIVE,
+        severity: HIGH,
+        implementation_type: CONFIG_RULE,
+        implementation_identifier: Some("ACM_CERTIFICATE_RSA_CHECK"),
+        control_tower_identifier: None,
+        designators: &["CONFIG.ACM.DT.1"],
+        scope: REGIONAL,
+        deployable_regions: GENERALLY_AVAILABLE_REGIONS,
+        // The implementing rule takes no input parameter, so the control publishes none
+        // (see `CONFIG_RULE_PARAMETERS`) and its summary is `NONE`.
+        parameters: NO_PARAMETERS,
+        governed_resources: &["AWS::CertificateManager::Certificate"],
+        governed_providers: AWS,
+        // The key length of the certificate an endpoint presents is a property of that
+        // certificate, so the control implements the same objective as the catalog's other
+        // control over ACM-managed certificates.
+        implements: "certificate-lifecycle-management",
+        frameworks: NO_FRAMEWORK_ITEMS,
+    },
+    ControlSeed {
         slug: "acm-pca-certificate-authority-tagged",
         name: "Checks if AWS Private CA certificate authorities have tags",
         description: "Checks if AWS Private CA certificate authorities have tags. \
@@ -2683,6 +2712,13 @@ pub(super) const PUBLISHED_CATALOG_RECORDS: &[PublishedCatalogRecord] = &[
         slug: "acm-certificate-expiration-check",
         identifier: "a6kwsgw65ayxiqg7dhzbz2n7w",
         release_time: Some(1_779_840_000),
+    },
+    // The control over the key length of an ACM-managed RSA certificate, released on its
+    // own instant rather than with the controls above.
+    PublishedCatalogRecord {
+        slug: "acm-certificate-rsa-check",
+        identifier: "1ysrvaplv6a00p99mim170vqy",
+        release_time: Some(1_678_060_800),
     },
     PublishedCatalogRecord {
         slug: "elb-logging-enabled",
