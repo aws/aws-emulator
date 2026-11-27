@@ -16,6 +16,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-kms-trentservice.json")
 pub struct ListKeysInput {
     pub limit: Option<i32>,
     pub marker: Option<String>,
+    pub resource_owners: Option<Vec<String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.kms#ListKeysResponse")]

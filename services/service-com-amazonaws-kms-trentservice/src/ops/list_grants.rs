@@ -140,6 +140,58 @@ use super::types::*;
 // `ListGrantsError` enum is never produced.
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-kms-trentservice.json");
 
+/// The `GrantCount` response member: how many grants the `Grants` list of this response
+/// carries.
+///
+/// It is declared here because the model snapshot declares it on neither grant listing
+/// while AWS answers both with it. The member schema carries the wire name, which is what
+/// the JSON codec emits the key from; the index follows the three modelled members of a
+/// listing response (`Grants`, `NextMarker`, `Truncated`).
+///
+/// It lives in this hand-written handler rather than in `super::types`, because every
+/// module there is rendered from the model and is rewritten whenever the snapshot is
+/// refreshed, which drops anything the model does not declare.
+static GRANT_COUNT_MEMBER: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
+    ::aws_smithy_schema::ShapeId::from_static(
+        "com.amazonaws.kms#ListGrantsResponse$GrantCount",
+        "com.amazonaws.kms",
+        "GrantCount",
+    ),
+    ::aws_smithy_schema::ShapeType::Integer,
+    "GrantCount",
+    3,
+);
+
+/// What a grant listing answers: every modelled member of the listing response, plus
+/// `GrantCount`.
+///
+/// The modelled half IS the generated shape, serialized by its own generated
+/// implementation against the generated schema, so no modelled member is re-described
+/// here; this type only adds the one member the snapshot lacks. Both grant readers
+/// (`ListGrants` and `ListRetirableGrants`) answer one of these, so each reports the
+/// count the same way.
+pub struct GrantListing<Modelled> {
+    /// The listing response the model declares.
+    pub modelled: Modelled,
+    /// How many grants `modelled`'s `Grants` list carries.
+    pub grant_count: i32,
+}
+
+impl<Modelled: ::aws_smithy_schema::serde::SerializableStruct>
+    ::aws_smithy_schema::serde::SerializableStruct for GrantListing<Modelled>
+{
+    fn serialize_members(
+        &self,
+        serializer: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
+    ) -> Result<(), ::aws_smithy_schema::serde::SerdeError> {
+        ::aws_smithy_schema::serde::SerializableStruct::serialize_members(
+            &self.modelled,
+            serializer,
+        )?;
+        serializer.write_integer(&GRANT_COUNT_MEMBER, self.grant_count)
+    }
+}
+
 // The operation's MODELED errors. `#[operation_error]` accepts only variants the
 // model declares for this operation, so the scaffold's `NotImplemented` cannot live
 // here — hence the `ListGrantsError` alias below. An operation that models no errors

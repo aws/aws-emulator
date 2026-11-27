@@ -14,15 +14,16 @@
 //!
 //! Every assertion is made over a TABLE whose rows are EVERY `DataKeyPairSpec` value,
 //! so each row differs in the key pair type (RSA modulus size, elliptic curve,
-//! Edwards curve, SM2) — crossed, where the rule is about the ciphertext rather than
-//! the pair, with the encryption context bound into it and with how the request names
-//! the key.
+//! Edwards curve, SM2, ML-KEM parameter set) — crossed, where the rule is about the
+//! ciphertext rather than the pair, with the encryption context bound into it and with
+//! how the request names the key.
 //!
 //! That the two halves of the answer belong to ONE pair is checked by deriving the
 //! public key from the private key `Decrypt` recovers, with the same libraries that
 //! generated it, and comparing the encodings byte for byte.
 
 use aws_lc_rs::encoding::{AsDer, PublicKeyX509Der};
+use aws_lc_rs::kem::{Algorithm, AlgorithmId, ML_KEM_1024, ML_KEM_512, ML_KEM_768};
 use aws_lc_rs::signature::{
     EcdsaKeyPair, EcdsaSigningAlgorithm, Ed25519KeyPair, KeyPair as _,
     ECDSA_P256K1_SHA256_ASN1_SIGNING, ECDSA_P256_SHA256_ASN1_SIGNING,
@@ -34,8 +35,8 @@ use smithy_server_runtime::MultiServiceRouter;
 use sm2::pkcs8::{DecodePrivateKey, EncodePublicKey};
 
 use super::harness::{
-    call, contains, create_alias, create_key, describe, error_code, is_lower_hex, ok, router, text,
-    unb64, REGION,
+    call, contains, create_alias, create_key, describe, error_code, is_lower_hex,
+    ml_kem_public_key_spki, ok, router, text, unb64, REGION,
 };
 
 /// The operation under test.
@@ -76,6 +77,11 @@ enum Pair {
     Ed25519,
     /// An SM2 key pair.
     Sm2,
+    /// An ML-KEM key-encapsulation pair of this parameter set, named in an X.509
+    /// `SubjectPublicKeyInfo` by this object identifier — `id-alg-ml-kem-512`, `-768` and
+    /// `-1024` of the NIST Computer Security Objects Register, under the
+    /// `2.16.840.1.101.3.4.4` arc.
+    MlKem(&'static Algorithm<AlgorithmId>, &'static str),
 }
 
 /// One row: a `DataKeyPairSpec` value and the kind of pair it names.
@@ -86,10 +92,10 @@ struct SpecCase {
 
 /// EVERY `DataKeyPairSpec` value (`smithy_query(query="shape",shape="DataKeyPairSpec")`:
 /// `ECC_NIST_EDWARDS25519`, `ECC_NIST_P256`, `ECC_NIST_P384`, `ECC_NIST_P521`,
-/// `ECC_SECG_P256K1`, `RSA_2048`, `RSA_3072`, `RSA_4096`, `SM2`), each with the kind
-/// of key pair it names — "Use the KeyPairSpec parameter to choose an RSA or Elliptic
-/// Curve (ECC) data key pair. In China Regions, you can also choose an SM2 data key
-/// pair"
+/// `ECC_SECG_P256K1`, `ML_KEM_512`, `ML_KEM_768`, `ML_KEM_1024`, `RSA_2048`, `RSA_3072`,
+/// `RSA_4096`, `SM2`), each with the kind of key pair it names — "Use the KeyPairSpec
+/// parameter to choose an RSA or Elliptic Curve (ECC) data key pair. In China Regions, you
+/// can also choose an SM2 data key pair"
 /// (`smithy_query(query="doc",shape="GenerateDataKeyPairWithoutPlaintext")`).
 const SPEC_CASES: &[SpecCase] = &[
     SpecCase {
@@ -127,6 +133,18 @@ const SPEC_CASES: &[SpecCase] = &[
     SpecCase {
         spec: "SM2",
         pair: Pair::Sm2,
+    },
+    SpecCase {
+        spec: "ML_KEM_512",
+        pair: Pair::MlKem(&ML_KEM_512, "2.16.840.1.101.3.4.4.1"),
+    },
+    SpecCase {
+        spec: "ML_KEM_768",
+        pair: Pair::MlKem(&ML_KEM_768, "2.16.840.1.101.3.4.4.2"),
+    },
+    SpecCase {
+        spec: "ML_KEM_1024",
+        pair: Pair::MlKem(&ML_KEM_1024, "2.16.840.1.101.3.4.4.3"),
     },
 ];
 
@@ -190,6 +208,9 @@ fn derived_public_key(case: &str, pair: &Pair, private: &[u8]) -> Vec<u8> {
                 .unwrap_or_else(|error| panic!("case {case}: {error}"))
                 .as_ref()
                 .to_vec()
+        }
+        Pair::MlKem(algorithm, object_identifier) => {
+            ml_kem_public_key_spki(case, algorithm, object_identifier, private)
         }
     }
 }

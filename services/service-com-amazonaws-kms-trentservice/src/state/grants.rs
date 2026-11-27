@@ -46,6 +46,8 @@ pub const GRANT_OPERATION_ORDER: &[&str] = &[
     "GenerateMac",
     "VerifyMac",
     "DeriveSharedSecret",
+    "Encapsulate",
+    "Decapsulate",
 ];
 
 /// Where `operation` comes in [`GRANT_OPERATION_ORDER`] — past the end for a value the
@@ -643,6 +645,20 @@ pub const GRANT_OPERATION_PROFILES: &[GrantOperationProfile] = &[
     GrantOperationProfile {
         operation: "DeriveSharedSecret",
         usages: &[KEY_USAGE_KEY_AGREEMENT],
+        families: &[FAMILY_ASYMMETRIC],
+        encryption_context: false,
+    },
+    // Both directions of the key-encapsulation mechanism run under the one usage an
+    // ML-KEM key pair carries, and neither takes an `EncryptionContext`.
+    GrantOperationProfile {
+        operation: "Encapsulate",
+        usages: &[KEY_USAGE_ENCAPSULATE_DECAPSULATE],
+        families: &[FAMILY_ASYMMETRIC],
+        encryption_context: false,
+    },
+    GrantOperationProfile {
+        operation: "Decapsulate",
+        usages: &[KEY_USAGE_ENCAPSULATE_DECAPSULATE],
         families: &[FAMILY_ASYMMETRIC],
         encryption_context: false,
     },

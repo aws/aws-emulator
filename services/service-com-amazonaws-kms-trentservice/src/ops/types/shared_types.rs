@@ -254,19 +254,6 @@ pub struct UnsupportedOperationException {
     pub message: Option<String>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.kms#RecipientInfo")]
-#[derive(Debug, Clone, Default)]
-pub struct RecipientInfo {
-    pub key_encryption_algorithm: Option<String>,
-    pub attestation_document: Option<Vec<u8>>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.kms#IncorrectKeyException")]
-#[derive(Debug, Clone, Default)]
-pub struct IncorrectKeyException {
-    pub message: Option<String>,
-}
-
 #[smithy_macros::smithy(shape = "com.amazonaws.kms#InvalidCiphertextException")]
 #[derive(Debug, Clone, Default)]
 pub struct InvalidCiphertextException {
@@ -285,6 +272,19 @@ pub struct KeyUnavailableException {
     pub message: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.kms#RecipientInfo")]
+#[derive(Debug, Clone, Default)]
+pub struct RecipientInfo {
+    pub key_encryption_algorithm: Option<String>,
+    pub attestation_document: Option<Vec<u8>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.kms#IncorrectKeyException")]
+#[derive(Debug, Clone, Default)]
+pub struct IncorrectKeyException {
+    pub message: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.kms#InvalidMarkerException")]
 #[derive(Debug, Clone, Default)]
 pub struct InvalidMarkerException {
@@ -297,58 +297,6 @@ pub struct ListGrantsOutput {
     pub grants: Option<Vec<GrantListEntry>>,
     pub next_marker: Option<String>,
     pub truncated: bool,
-}
-
-/// The `GrantCount` response member both grant listings carry: how many grants the
-/// `Grants` list of THIS response holds.
-///
-/// It is declared here, beside the modelled `ListGrantsResponse` members, because
-/// this model snapshot does not declare it while AWS answers both `ListGrants` and
-/// `ListRetirableGrants` with it — including as `0` beside an empty list, which is
-/// the case a client cannot recover from the list alone. The member schema carries
-/// the wire name, which is what the JSON codec emits the key from; the index follows
-/// the three modelled members of `ListGrantsResponse`.
-static GRANT_COUNT_MEMBER: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-    ::aws_smithy_schema::ShapeId::from_static(
-        "com.amazonaws.kms#ListGrantsResponse$GrantCount",
-        "com.amazonaws.kms",
-        "GrantCount",
-    ),
-    ::aws_smithy_schema::ShapeType::Integer,
-    "GrantCount",
-    3,
-);
-
-/// What a grant listing answers: every modelled member of `ListGrantsResponse`, plus
-/// `GrantCount`.
-///
-/// Both grant readers answer the same shape, so the member the snapshot lacks is
-/// added ONCE here and each reader wraps its own generated output type in it. The
-/// modelled half IS that generated shape, serialized by its own generated
-/// implementation against the generated schema, so no modelled member is
-/// re-described here.
-#[derive(Debug, Clone)]
-pub struct GrantListing<Modelled> {
-    /// The modelled response, holding `Grants`, `NextMarker` and `Truncated`.
-    pub modelled: Modelled,
-    /// How many grants `Grants` carries — counted from the list that is being
-    /// answered, so the two can never disagree.
-    pub grant_count: i32,
-}
-
-impl<Modelled: ::aws_smithy_schema::serde::SerializableStruct>
-    ::aws_smithy_schema::serde::SerializableStruct for GrantListing<Modelled>
-{
-    fn serialize_members(
-        &self,
-        serializer: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
-    ) -> Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        ::aws_smithy_schema::serde::SerializableStruct::serialize_members(
-            &self.modelled,
-            serializer,
-        )?;
-        serializer.write_integer(&GRANT_COUNT_MEMBER, self.grant_count)
-    }
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.kms#GrantListEntry")]
@@ -394,7 +342,7 @@ pub const CUSTOMER_MASTER_KEY_SPEC_VALUES: &[&str] = &["ECC_NIST_P256", "ECC_NIS
 
 
 /// The values `DataKeyPairSpec` accepts on the wire.
-pub const DATA_KEY_PAIR_SPEC_VALUES: &[&str] = &["ECC_NIST_EDWARDS25519", "ECC_NIST_P256", "ECC_NIST_P384", "ECC_NIST_P521", "ECC_SECG_P256K1", "RSA_2048", "RSA_3072", "RSA_4096", "SM2"];
+pub const DATA_KEY_PAIR_SPEC_VALUES: &[&str] = &["ECC_NIST_EDWARDS25519", "ECC_NIST_P256", "ECC_NIST_P384", "ECC_NIST_P521", "ECC_SECG_P256K1", "ML_KEM_1024", "ML_KEM_512", "ML_KEM_768", "RSA_2048", "RSA_3072", "RSA_4096", "SM2"];
 
 
 /// The values `DataKeySpec` accepts on the wire.
@@ -403,6 +351,10 @@ pub const DATA_KEY_SPEC_VALUES: &[&str] = &["AES_128", "AES_256"];
 
 /// The values `DryRunModifierType` accepts on the wire.
 pub const DRY_RUN_MODIFIER_TYPE_VALUES: &[&str] = &["IGNORE_CIPHERTEXT"];
+
+
+/// The values `EncapsulationAlgorithmSpec` accepts on the wire.
+pub const ENCAPSULATION_ALGORITHM_SPEC_VALUES: &[&str] = &["ML_KEM"];
 
 
 /// The values `EncryptionAlgorithmSpec` accepts on the wire.
@@ -414,7 +366,7 @@ pub const EXPIRATION_MODEL_TYPE_VALUES: &[&str] = &["KEY_MATERIAL_DOES_NOT_EXPIR
 
 
 /// The values `GrantOperation` accepts on the wire.
-pub const GRANT_OPERATION_VALUES: &[&str] = &["CreateGrant", "Decrypt", "DeriveSharedSecret", "DescribeKey", "Encrypt", "GenerateDataKey", "GenerateDataKeyPair", "GenerateDataKeyPairWithoutPlaintext", "GenerateDataKeyWithoutPlaintext", "GenerateMac", "GetPublicKey", "ReEncryptFrom", "ReEncryptTo", "RetireGrant", "Sign", "Verify", "VerifyMac"];
+pub const GRANT_OPERATION_VALUES: &[&str] = &["CreateGrant", "Decapsulate", "Decrypt", "DeriveSharedSecret", "DescribeKey", "Encapsulate", "Encrypt", "GenerateDataKey", "GenerateDataKeyPair", "GenerateDataKeyPairWithoutPlaintext", "GenerateDataKeyWithoutPlaintext", "GenerateMac", "GetPublicKey", "ReEncryptFrom", "ReEncryptTo", "RetireGrant", "Sign", "Verify", "VerifyMac"];
 
 
 /// The values `ImportState` accepts on the wire.
@@ -431,10 +383,6 @@ pub const INCLUDE_KEY_MATERIAL_VALUES: &[&str] = &["ALL_KEY_MATERIAL", "ROTATION
 
 /// The values `KeyAgreementAlgorithmSpec` accepts on the wire.
 pub const KEY_AGREEMENT_ALGORITHM_SPEC_VALUES: &[&str] = &["ECDH"];
-
-
-/// The values `KeyEncapsulationAlgorithm` accepts on the wire.
-pub const KEY_ENCAPSULATION_ALGORITHM_VALUES: &[&str] = &["ML_KEM"];
 
 
 /// The values `KeyEncryptionMechanism` accepts on the wire.
@@ -479,6 +427,10 @@ pub const MULTI_REGION_KEY_TYPE_VALUES: &[&str] = &["PRIMARY", "REPLICA"];
 
 /// The values `OriginType` accepts on the wire.
 pub const ORIGIN_TYPE_VALUES: &[&str] = &["AWS_CLOUDHSM", "AWS_KMS", "EXTERNAL", "EXTERNAL_KEY_STORE"];
+
+
+/// The values `ResourceOwnerType` accepts on the wire.
+pub const RESOURCE_OWNER_TYPE_VALUES: &[&str] = &["OTHER_ACCOUNTS_VIA_RAM", "SELF"];
 
 
 /// The values `RotationType` accepts on the wire.

@@ -27,18 +27,16 @@
 //! * `KeyId` (KeyIdType, REQUIRED) — the key whose private half decapsulates.
 //! * `SharedSecretCiphertextBlob` (CiphertextType, REQUIRED) — what `Encapsulate`
 //!   returned.
-//! * `EncapsulationAlgorithm` (KeyEncapsulationAlgorithm) — the mechanism to run.
+//! * `EncapsulationAlgorithm` (EncapsulationAlgorithmSpec, REQUIRED) — the mechanism to
+//!   run.
 //! * `GrantTokens` (GrantTokenList) — grant tokens the caller draws permission from.
-//! * `Recipient` (RecipientInfo) — an attestation document to encrypt the secret to.
 //! * `DryRun` (NullableBooleanType) — check the request and refuse.
 //!
 //! ## Outputs
 //!
-//! * `SharedSecret` (PlaintextType) — the secret the ciphertext decapsulated to.
-//! * `CiphertextForRecipient` (CiphertextType) — the secret under an enclave's key.
 //! * `KeyId` (KeyIdType) — the key ARN of the key that decapsulated.
-//! * `KeyOrigin` (OriginType) — where that key's material came from.
-//! * `EncapsulationAlgorithm` (KeyEncapsulationAlgorithm) — the mechanism that ran.
+//! * `SharedSecret` (PlaintextType) — the secret the ciphertext decapsulated to.
+//! * `EncapsulationAlgorithm` (EncapsulationAlgorithmSpec) — the mechanism that ran.
 //!
 //! ## Errors
 //!
@@ -210,33 +208,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 Self::NAME,
             )));
         };
-        // "The only valid value is ML_KEM" (the `EncapsulationAlgorithm` member): a
-        // mechanism the key's own spec does not name is "incompatible with the type of key
-        // material in the KMS key (KeySpec)"
-        // (`smithy_query(query="doc",shape="InvalidKeyUsageException")`), and a request
-        // naming none runs the one mechanism the key's spec does name.
-        let algorithm = match input.encapsulation_algorithm.clone() {
-            Some(algorithm) => {
-                if !algorithms.contains(&algorithm) {
-                    return Err(invalid_key_usage(
-                        crate::state::incompatible_algorithm_message(&algorithm, &key.key_spec),
-                    ));
-                }
-                algorithm
-            }
-            None => match algorithms.first().cloned() {
-                Some(algorithm) => algorithm,
-                None => return Err(internal("the key encapsulation mechanism is unknown")),
-            },
-        };
-
-        // `Recipient` asks KMS to return the shared secret encrypted under the public key
-        // in a Nitro enclave's attestation document. Nothing here can verify an
-        // attestation, so that capability is reported as not implemented rather than
-        // answered with a `CiphertextForRecipient` no enclave produced.
-        if input.recipient.is_some() {
-            return Err(crate::scaffolded::Scaffolded::not_implemented(
-                "Decapsulate with a Recipient (enclave attestation)",
+        // "Specifies the key encapsulation algorithm used to recover the shared secret. The
+        // only valid value is ML_KEM"
+        // (`smithy_query(query="doc",shape="DecapsulateRequest",member="EncapsulationAlgorithm")`):
+        // the member is required, so the boundary has already refused a request naming
+        // none, and a mechanism the key's own spec does not name is "incompatible with the
+        // type of key material in the KMS key (KeySpec)"
+        // (`smithy_query(query="doc",shape="InvalidKeyUsageException")`).
+        let algorithm = input.encapsulation_algorithm.clone();
+        if !algorithms.contains(&algorithm) {
+            return Err(invalid_key_usage(
+                crate::state::incompatible_algorithm_message(&algorithm, &key.key_spec),
             ));
         }
 
@@ -285,19 +267,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // KMS answers with the key ARN, not the identifier the request used.
         let key_arn = key.arn.clone();
         let key_id = key.key_id.clone();
-        let key_origin = key.origin.clone();
 
         // The key was just used in a successful cryptographic operation, which is what
         // `GetKeyLastUsage` reports once the tracking has produced the record.
         state.record_last_usage(&region, &key_id, Self::NAME);
 
         Ok(DecapsulateOutput {
-            shared_secret: Some(shared_secret),
-            // No enclave took part, so there is nothing to report under the recipient's
-            // key: a `Recipient` is refused above.
-            ciphertext_for_recipient: None,
             key_id: Some(key_arn),
-            key_origin: Some(key_origin),
+            shared_secret: Some(shared_secret),
             encapsulation_algorithm: Some(algorithm),
         })
     }

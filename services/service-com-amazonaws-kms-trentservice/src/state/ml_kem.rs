@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! The key-encapsulation half of this service: the ML-KEM key pair behind a KMS key
-//! whose `KeyUsage` is `ENCAPSULATE_DECAPSULATE`, and the two directions of the
-//! mechanism `Encapsulate` and `Decapsulate` drive.
+//! whose `KeyUsage` is `ENCAPSULATE_DECAPSULATE`, the two directions of the mechanism
+//! `Encapsulate` and `Decapsulate` drive, and the ML-KEM DATA key pair
+//! `GenerateDataKeyPair` hands a caller.
 //!
-//! A key of an `ML_KEM_*` key spec holds a DECAPSULATION key — the private half, which
-//! never leaves this process. Its ENCAPSULATION key (the public half) is derived from
-//! that key on demand, so the two cannot drift apart, and is what `GetPublicKey`
+//! A KMS key of an `ML_KEM_*` key spec holds a DECAPSULATION key — the private half,
+//! which never leaves this process. Its ENCAPSULATION key (the public half) is derived
+//! from that key on demand, so the two cannot drift apart, and is what `GetPublicKey`
 //! answers with, wrapped in the X.509 `SubjectPublicKeyInfo` every public key of this
-//! service is reported in.
+//! service is reported in. A DATA key pair of the same spec is generated per request and
+//! is the caller's: both halves are reported, the private one in the PKCS#8
+//! `PrivateKeyInfo` every other data key pair's private half is reported in.
 //!
 //! Both directions come from `aws-lc-rs` (`aws_lc_rs::kem`), the library this crate
 //! already generates every other key pair with: this file composes the KMS surface over
@@ -21,7 +24,7 @@
 use super::*;
 
 /// The `EncapsulationAlgorithm` every `ML_KEM_*` key spec encapsulates under
-/// (`smithy_query(shape="KeyEncapsulationAlgorithm")`): the mechanism of FIPS 203, whose
+/// (`smithy_query(shape="EncapsulationAlgorithmSpec")`): the mechanism of FIPS 203, whose
 /// parameter set is the one the key's own spec names.
 pub const ENCAPSULATION_ALGORITHM_ML_KEM: &str = "ML_KEM";
 
@@ -75,20 +78,25 @@ fn ml_kem_spec(key_spec: &str) -> Option<&'static MlKemSpec> {
     ML_KEM_SPECS.iter().find(|spec| spec.key_spec == key_spec)
 }
 
-/// The ML-KEM key pair behind one KMS key: the DECAPSULATION key, together with the key
-/// spec whose parameter set it belongs to.
+/// One ML-KEM key pair: the DECAPSULATION key, together with the key spec whose parameter
+/// set it belongs to.
 ///
-/// The private half is held as the library's own key object rather than as bytes, so
-/// nothing in this process can hand it out: the only ways out of this struct are the
-/// PUBLIC encapsulation key and the two directions of the mechanism.
+/// Two kinds of pair are the same mechanism, so both are this one type: the pair behind a
+/// KMS key whose `KeyUsage` is `ENCAPSULATE_DECAPSULATE`, which the store keeps, and the
+/// DATA key pair `GenerateDataKeyPair` generates for one request and hands to the caller.
+///
+/// What may leave the struct differs by what the caller asked for, not by this type: the
+/// public encapsulation key and the two directions of the mechanism are reachable for
+/// either, while [`Self::private_key_pkcs8`] is reached only from the data key pair's
+/// generator ([`generate_key_pair`]) — the private half of a KMS KEY "never leaves KMS
+/// unencrypted" (`smithy_query(query="doc",shape="CreateKey")`), and no operation on a
+/// stored key reads it.
 pub struct MlKemKeyPair {
     /// The parameter set this pair belongs to, resolved once when the pair is generated,
     /// so neither the key spec it reports nor the lengths and identifier that follow from
     /// it can be absent later.
     spec: &'static MlKemSpec,
-    /// The private half. The private key of a KMS key "never leaves KMS unencrypted"
-    /// (`smithy_query(query="doc",shape="CreateKey")`), and here it never leaves this
-    /// struct at all.
+    /// The private half, held as the library's own key object rather than as bytes.
     decapsulation_key: ::aws_lc_rs::kem::DecapsulationKey<::aws_lc_rs::kem::AlgorithmId>,
 }
 
@@ -156,6 +164,41 @@ impl MlKemKeyPair {
             subject_public_key: ::spki::der::asn1::BitString::from_bytes(&encapsulation_key).ok()?,
         };
         spki.to_der().ok()
+    }
+
+    /// The PRIVATE half of this pair as a DER-encoded PKCS#8 `PrivateKeyInfo`, which is
+    /// the encoding `PlaintextType` carries a DATA key pair's private half in — the same
+    /// encoding every other key pair of this service is held and reported in.
+    ///
+    /// Reached only from [`generate_key_pair`], for the pair `GenerateDataKeyPair`
+    /// generates for one request: a KMS key's own private half is never read out.
+    ///
+    /// The algorithm is named by the identifier registered for the pair's parameter set,
+    /// with no parameters, and `privateKey` carries the `expandedKey` alternative of
+    /// `ML-KEM-PrivateKey`: the decapsulation key as FIPS 203 encodes it, inside an OCTET
+    /// STRING (draft-ietf-lamps-kyber-certificates). The structures come from the
+    /// maintained PKCS#8 and DER crates rather than from bytes laid out here, because
+    /// `aws-lc-rs`'s `kem::DecapsulationKey` implements no DER export.
+    ///
+    /// `None` means the library refused to export the private half, or the structure
+    /// could not be encoded.
+    pub fn private_key_pkcs8(&self) -> Option<Vec<u8>> {
+        use ::spki::der::{asn1::OctetStringRef, Encode};
+
+        let decapsulation_key = self.decapsulation_key.key_bytes().ok()?;
+        let expanded_key = OctetStringRef::new(decapsulation_key.as_ref())
+            .ok()?
+            .to_der()
+            .ok()?;
+        let info = ::pkcs8::PrivateKeyInfoRef {
+            algorithm: ::spki::AlgorithmIdentifierRef {
+                oid: ::spki::ObjectIdentifier::new(self.spec.object_identifier).ok()?,
+                parameters: None,
+            },
+            private_key: OctetStringRef::new(&expanded_key).ok()?,
+            public_key: None,
+        };
+        info.to_der().ok()
     }
 
     /// One run of the ENCAPSULATION direction: a fresh shared secret and the ciphertext a

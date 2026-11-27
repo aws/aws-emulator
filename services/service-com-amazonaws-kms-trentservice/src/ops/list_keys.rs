@@ -63,6 +63,16 @@
 //! * `Marker` (MarkerType, len 1..1024, pattern ^[\u0020-\u00FF]*$) — Use this parameter in a
 //!   subsequent request after you receive a response with truncated results. Set it to the
 //!   value of NextMarker from the truncated response you just received.
+//! * `ResourceOwners` (ResourceOwnersList, len 1..2) — Specifies whose KMS keys to list. SELF
+//!   lists the KMS keys in your Amazon Web Services account and Region.
+//!   OTHER_ACCOUNTS_VIA_RAM lists the KMS keys in the Region that other Amazon Web Services
+//!   accounts currently share with your Amazon Web Services account through Resource Access
+//!   Manager (RAM); this list doesn't include KMS keys that your Amazon Web Services account
+//!   owns. If you omit this parameter, ListKeys lists only the KMS keys in your Amazon Web
+//!   Services account. If you specify both values, in either order, ListKeys returns the KMS
+//!   keys in your Amazon Web Services account first, and then the KMS keys that other
+//!   Amazon Web Services accounts shared with you. A single response doesn't contain both
+//!   kinds of KMS keys.
 //!
 //! ## Output
 //!
@@ -172,7 +182,50 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let region = crate::state::request_region(ctx);
         let state = state.lock();
-        let key_ids = state.key_ids_in(&region);
+
+        // "Specifies whose KMS keys to list"
+        // (`smithy_query(query="doc",shape="ListKeysRequest",member="ResourceOwners")`):
+        // `SELF` selects "the KMS keys in your Amazon Web Services account and Region",
+        // `OTHER_ACCOUNTS_VIA_RAM` the ones "that other Amazon Web Services accounts
+        // currently share with your Amazon Web Services account through RAM", a list that
+        // "doesn't include KMS keys that your Amazon Web Services account owns". "If you
+        // omit this parameter, ListKeys lists only the KMS keys in your Amazon Web Services
+        // account", and when both are named "ListKeys returns the KMS keys in your Amazon
+        // Web Services account first, and then the KMS keys that other Amazon Web Services
+        // accounts shared with you" — so the two selections concatenate in that order, and
+        // which of them a key falls in is decided by the account that OWNS it.
+        //
+        // No key of another account is reachable through this endpoint, so the second
+        // selection finds none, and a request for it alone is answered the empty list KMS
+        // answers when nothing is shared — "a response can contain fewer KMS keys than the
+        // Limit value, or none".
+        let serving_account = ::engine::emulator_account_id();
+        let owners = input.resource_owners.as_deref();
+        let lists_own = owners.is_none_or(|owners| owners.iter().any(|owner| owner == SELF));
+        let lists_shared = owners
+            .is_some_and(|owners| owners.iter().any(|owner| owner == OTHER_ACCOUNTS_VIA_RAM));
+        let owned_by_the_serving_account = |key_id: &&str| {
+            state
+                .key_in(&region, key_id)
+                .is_some_and(|key| key.aws_account_id == serving_account)
+        };
+        let mut key_ids: Vec<&str> = Vec::new();
+        if lists_own {
+            key_ids.extend(
+                state
+                    .key_ids_in(&region)
+                    .into_iter()
+                    .filter(owned_by_the_serving_account),
+            );
+        }
+        if lists_shared {
+            key_ids.extend(
+                state
+                    .key_ids_in(&region)
+                    .into_iter()
+                    .filter(|key_id| !owned_by_the_serving_account(key_id)),
+            );
+        }
 
         // "Set it to the value of NextMarker from the truncated response you just
         // received" — so a marker resumes after the last key the previous page
@@ -234,3 +287,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// a value, it defaults to 100."
 /// (`smithy_query(query="doc",shape="ListKeysRequest",member="Limit")`).
 const DEFAULT_LIMIT: i32 = 100;
+
+/// The `ResourceOwnerType` selecting "the KMS keys in your Amazon Web Services account and
+/// Region" (`smithy_query(query="shape",shape="ResourceOwnerType")`).
+const SELF: &str = "SELF";
+
+/// The `ResourceOwnerType` selecting "the KMS keys that other Amazon Web Services accounts
+/// shared with your Amazon Web Services account through Resource Access Manager (RAM)"
+/// (`smithy_query(query="shape",shape="ResourceOwnerType")`).
+const OTHER_ACCOUNTS_VIA_RAM: &str = "OTHER_ACCOUNTS_VIA_RAM";

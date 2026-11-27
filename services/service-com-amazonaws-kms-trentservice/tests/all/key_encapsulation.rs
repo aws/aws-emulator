@@ -25,7 +25,8 @@ use serde_json::json;
 use spki::der::Decode;
 
 use super::harness::{
-    b64, contains, create_key, describe, ok, refused, router, text, unb64, REGION,
+    b64, call, contains, create_key, describe, error_code, ok, one_violation, principal, refused,
+    router, text, unb64, REGION,
 };
 
 /// One ML-KEM key spec as this suite drives it.
@@ -70,9 +71,75 @@ const ML_KEM_SPECS: &[MlKemCase] = &[
 /// (`smithy_query(shape="KeyUsageType")`).
 const ENCAPSULATE_DECAPSULATE: &str = "ENCAPSULATE_DECAPSULATE";
 
-/// The one `KeyEncapsulationAlgorithm` the model declares
-/// (`smithy_query(shape="KeyEncapsulationAlgorithm")`).
+/// The one `EncapsulationAlgorithmSpec` the model declares
+/// (`smithy_query(shape="EncapsulationAlgorithmSpec")`). `EncapsulationAlgorithm` is a
+/// REQUIRED member of both requests
+/// (`smithy_query(query="operation",operation="Encapsulate,Decapsulate")`), so every
+/// call below names it.
 const ML_KEM: &str = "ML_KEM";
+
+/// Every member `EncapsulateResponse` declares
+/// (`smithy_query(query="operation",operation="Encapsulate")`).
+const ENCAPSULATE_RESPONSE_MEMBERS: &[&str] = &[
+    "KeyId",
+    "SharedSecret",
+    "SharedSecretCiphertextBlob",
+    "EncapsulationAlgorithm",
+];
+
+/// Every member `DecapsulateResponse` declares
+/// (`smithy_query(query="operation",operation="Decapsulate")`).
+const DECAPSULATE_RESPONSE_MEMBERS: &[&str] = &["KeyId", "SharedSecret", "EncapsulationAlgorithm"];
+
+/// Algorithm names drawn from the service's OTHER algorithm enums
+/// (`smithy_query(shape="EncryptionAlgorithmSpec")` and
+/// `smithy_query(shape="KeyAgreementAlgorithmSpec")`), one ML-KEM KEY SPEC name, and one
+/// casing of the declared value — none of them a value `EncapsulationAlgorithmSpec`
+/// declares.
+const OTHER_ALGORITHMS: &[&str] = &[
+    "SYMMETRIC_DEFAULT",
+    "RSAES_OAEP_SHA_256",
+    "ECDH",
+    "ML_KEM_768",
+    "ml_kem",
+];
+
+/// A success carries exactly the members the response shape declares, so no member the
+/// model does not declare reaches the wire and none it declares is missing.
+fn assert_members(case: &str, answer: &serde_json::Value, declared: &[&str]) {
+    let mut reported: Vec<&str> = answer
+        .as_object()
+        .unwrap_or_else(|| panic!("case {case}: expected a JSON object, got {answer}"))
+        .keys()
+        .map(String::as_str)
+        .collect();
+    reported.sort_unstable();
+    let mut expected: Vec<&str> = declared.to_vec();
+    expected.sort_unstable();
+    assert_eq!(
+        reported, expected,
+        "case {case}: expected exactly the declared members {expected:?}, got {reported:?} \
+         in {answer}"
+    );
+}
+
+/// The clause the boundary states for a REQUIRED member a request does not carry, under
+/// the member's wire path.
+fn absent_member(member: &str) -> String {
+    one_violation(&format!(
+        "Value null at '{member}' failed to satisfy constraint: Member must not be null"
+    ))
+}
+
+/// The clause the boundary states for a value outside the value set an enum member's
+/// target declares, under the member's wire path.
+fn outside_value_set(member: &str, value: &str, declared: &[&str]) -> String {
+    one_violation(&format!(
+        "Value '{value}' at '{member}' failed to satisfy constraint: Member must satisfy \
+         enum value set: [{}]",
+        declared.join(", ")
+    ))
+}
 
 /// The length of a shared secret the mechanism establishes: 32 bytes, the shared-secret
 /// size FIPS 203 fixes for every ML-KEM parameter set.
@@ -308,11 +375,7 @@ async fn encapsulate_and_decapsulate_round_trip_one_shared_secret() {
             arn,
             "case {case}: Encapsulate answers the key ARN, got {encapsulated}"
         );
-        assert_eq!(
-            text(case, &encapsulated, "KeyOrigin"),
-            "AWS_KMS",
-            "case {case}: expected KeyOrigin AWS_KMS, got {encapsulated}"
-        );
+        assert_members(case, &encapsulated, ENCAPSULATE_RESPONSE_MEMBERS);
         assert!(
             !contains(&ciphertext, &shared_secret),
             "case {case}: the ciphertext must not carry the shared secret"
@@ -323,7 +386,8 @@ async fn encapsulate_and_decapsulate_round_trip_one_shared_secret() {
         let decapsulated = ok(
             &router,
             "Decapsulate",
-            &json!({"KeyId": arn, "SharedSecretCiphertextBlob": b64(&ciphertext)}),
+            &json!({"KeyId": arn, "SharedSecretCiphertextBlob": b64(&ciphertext),
+                    "EncapsulationAlgorithm": ML_KEM}),
         )
         .await;
         assert_eq!(
@@ -342,12 +406,14 @@ async fn encapsulate_and_decapsulate_round_trip_one_shared_secret() {
             arn,
             "case {case}: Decapsulate answers the key ARN, got {decapsulated}"
         );
+        assert_members(case, &decapsulated, DECAPSULATE_RESPONSE_MEMBERS);
         // Reading the same ciphertext again recovers the same secret: decapsulation
         // consumes nothing.
         let repeated = ok(
             &router,
             "Decapsulate",
-            &json!({"KeyId": arn, "SharedSecretCiphertextBlob": b64(&ciphertext)}),
+            &json!({"KeyId": arn, "SharedSecretCiphertextBlob": b64(&ciphertext),
+                    "EncapsulationAlgorithm": ML_KEM}),
         )
         .await;
         assert_eq!(
@@ -358,7 +424,12 @@ async fn encapsulate_and_decapsulate_round_trip_one_shared_secret() {
         );
 
         // A second encapsulation under the same key is a new key establishment.
-        let again = ok(&router, "Encapsulate", &json!({"KeyId": arn})).await;
+        let again = ok(
+            &router,
+            "Encapsulate",
+            &json!({"KeyId": arn, "EncapsulationAlgorithm": ML_KEM}),
+        )
+        .await;
         assert_ne!(
             unb64(case, &again, "SharedSecret"),
             shared_secret,
@@ -374,7 +445,8 @@ async fn encapsulate_and_decapsulate_round_trip_one_shared_secret() {
         let decapsulated = ok(
             &router,
             "Decapsulate",
-            &json!({"KeyId": arn, "SharedSecretCiphertextBlob": b64(&other_ciphertext)}),
+            &json!({"KeyId": arn, "SharedSecretCiphertextBlob": b64(&other_ciphertext),
+                    "EncapsulationAlgorithm": ML_KEM}),
         )
         .await;
         assert_eq!(
@@ -398,14 +470,20 @@ async fn decapsulating_another_keys_ciphertext_yields_an_unrelated_secret() {
         let (mine, _) = encapsulation_key(&router, spec.key_spec).await;
         let (theirs, _) = encapsulation_key(&router, spec.key_spec).await;
 
-        let encapsulated = ok(&router, "Encapsulate", &json!({"KeyId": theirs})).await;
+        let encapsulated = ok(
+            &router,
+            "Encapsulate",
+            &json!({"KeyId": theirs, "EncapsulationAlgorithm": ML_KEM}),
+        )
+        .await;
         let their_secret = unb64(case, &encapsulated, "SharedSecret");
         let ciphertext = unb64(case, &encapsulated, "SharedSecretCiphertextBlob");
 
         let decapsulated = ok(
             &router,
             "Decapsulate",
-            &json!({"KeyId": mine, "SharedSecretCiphertextBlob": b64(&ciphertext)}),
+            &json!({"KeyId": mine, "SharedSecretCiphertextBlob": b64(&ciphertext),
+                    "EncapsulationAlgorithm": ML_KEM}),
         )
         .await;
         let recovered = unb64(case, &decapsulated, "SharedSecret");
@@ -424,7 +502,8 @@ async fn decapsulating_another_keys_ciphertext_yields_an_unrelated_secret() {
         let repeated = ok(
             &router,
             "Decapsulate",
-            &json!({"KeyId": mine, "SharedSecretCiphertextBlob": b64(&ciphertext)}),
+            &json!({"KeyId": mine, "SharedSecretCiphertextBlob": b64(&ciphertext),
+                    "EncapsulationAlgorithm": ML_KEM}),
         )
         .await;
         assert_eq!(
@@ -450,7 +529,12 @@ async fn decapsulate_refuses_a_ciphertext_of_the_wrong_length() {
     for spec in ML_KEM_SPECS {
         let case = spec.key_spec;
         let (key_id, _) = encapsulation_key(&router, spec.key_spec).await;
-        let encapsulated = ok(&router, "Encapsulate", &json!({"KeyId": &key_id})).await;
+        let encapsulated = ok(
+            &router,
+            "Encapsulate",
+            &json!({"KeyId": &key_id, "EncapsulationAlgorithm": ML_KEM}),
+        )
+        .await;
         let ciphertext = unb64(case, &encapsulated, "SharedSecretCiphertextBlob");
 
         let other_len = ML_KEM_SPECS
@@ -484,7 +568,8 @@ async fn decapsulate_refuses_a_ciphertext_of_the_wrong_length() {
                 &router,
                 REGION,
                 "Decapsulate",
-                &json!({"KeyId": &key_id, "SharedSecretCiphertextBlob": b64(&bytes)}),
+                &json!({"KeyId": &key_id, "SharedSecretCiphertextBlob": b64(&bytes),
+                        "EncapsulationAlgorithm": ML_KEM}),
             )
             .await;
             assert_eq!(
@@ -504,7 +589,8 @@ async fn decapsulate_refuses_a_ciphertext_of_the_wrong_length() {
         let decapsulated = ok(
             &router,
             "Decapsulate",
-            &json!({"KeyId": &key_id, "SharedSecretCiphertextBlob": b64(&ciphertext)}),
+            &json!({"KeyId": &key_id, "SharedSecretCiphertextBlob": b64(&ciphertext),
+                    "EncapsulationAlgorithm": ML_KEM}),
         )
         .await;
         assert_eq!(
@@ -545,10 +631,14 @@ async fn encapsulate_and_decapsulate_refuse_a_key_that_does_not_encapsulate() {
         let arn = text(kind, &metadata, "Arn");
 
         for (operation, request) in [
-            ("Encapsulate", json!({"KeyId": &key_id})),
+            (
+                "Encapsulate",
+                json!({"KeyId": &key_id, "EncapsulationAlgorithm": ML_KEM}),
+            ),
             (
                 "Decapsulate",
-                json!({"KeyId": &key_id, "SharedSecretCiphertextBlob": b64(&[0u8; 1088])}),
+                json!({"KeyId": &key_id, "SharedSecretCiphertextBlob": b64(&[0u8; 1088]),
+                       "EncapsulationAlgorithm": ML_KEM}),
             ),
         ] {
             let case = format!("{operation} with a {kind}");
@@ -578,16 +668,25 @@ async fn a_disabled_key_runs_neither_direction() {
     for spec in ML_KEM_SPECS {
         let case = spec.key_spec;
         let (key_id, _) = encapsulation_key(&router, spec.key_spec).await;
-        let encapsulated = ok(&router, "Encapsulate", &json!({"KeyId": &key_id})).await;
+        let encapsulated = ok(
+            &router,
+            "Encapsulate",
+            &json!({"KeyId": &key_id, "EncapsulationAlgorithm": ML_KEM}),
+        )
+        .await;
         let ciphertext = unb64(case, &encapsulated, "SharedSecretCiphertextBlob");
 
         ok(&router, "DisableKey", &json!({"KeyId": &key_id})).await;
 
         for (operation, request) in [
-            ("Encapsulate", json!({"KeyId": &key_id})),
+            (
+                "Encapsulate",
+                json!({"KeyId": &key_id, "EncapsulationAlgorithm": ML_KEM}),
+            ),
             (
                 "Decapsulate",
-                json!({"KeyId": &key_id, "SharedSecretCiphertextBlob": b64(&ciphertext)}),
+                json!({"KeyId": &key_id, "SharedSecretCiphertextBlob": b64(&ciphertext),
+                       "EncapsulationAlgorithm": ML_KEM}),
             ),
         ] {
             let case = format!("{case}: {operation} on a disabled key");
@@ -605,7 +704,8 @@ async fn a_disabled_key_runs_neither_direction() {
         let decapsulated = ok(
             &router,
             "Decapsulate",
-            &json!({"KeyId": &key_id, "SharedSecretCiphertextBlob": b64(&ciphertext)}),
+            &json!({"KeyId": &key_id, "SharedSecretCiphertextBlob": b64(&ciphertext),
+                    "EncapsulationAlgorithm": ML_KEM}),
         )
         .await;
         assert_eq!(
@@ -627,14 +727,23 @@ async fn a_dry_run_refuses_both_directions_and_establishes_nothing() {
     for spec in ML_KEM_SPECS {
         let case = spec.key_spec;
         let (key_id, _) = encapsulation_key(&router, spec.key_spec).await;
-        let encapsulated = ok(&router, "Encapsulate", &json!({"KeyId": &key_id})).await;
+        let encapsulated = ok(
+            &router,
+            "Encapsulate",
+            &json!({"KeyId": &key_id, "EncapsulationAlgorithm": ML_KEM}),
+        )
+        .await;
         let ciphertext = unb64(case, &encapsulated, "SharedSecretCiphertextBlob");
 
         for (operation, request) in [
-            ("Encapsulate", json!({"KeyId": &key_id, "DryRun": true})),
+            (
+                "Encapsulate",
+                json!({"KeyId": &key_id, "EncapsulationAlgorithm": ML_KEM, "DryRun": true}),
+            ),
             (
                 "Decapsulate",
-                json!({"KeyId": &key_id, "SharedSecretCiphertextBlob": b64(&ciphertext), "DryRun": true}),
+                json!({"KeyId": &key_id, "SharedSecretCiphertextBlob": b64(&ciphertext),
+                       "EncapsulationAlgorithm": ML_KEM, "DryRun": true}),
             ),
         ] {
             let case = format!("{case}: {operation} with DryRun");
@@ -655,7 +764,8 @@ async fn a_dry_run_refuses_both_directions_and_establishes_nothing() {
         let decapsulated = ok(
             &router,
             "Decapsulate",
-            &json!({"KeyId": &key_id, "SharedSecretCiphertextBlob": b64(&ciphertext)}),
+            &json!({"KeyId": &key_id, "SharedSecretCiphertextBlob": b64(&ciphertext),
+                    "EncapsulationAlgorithm": ML_KEM}),
         )
         .await;
         assert_eq!(
@@ -663,7 +773,12 @@ async fn a_dry_run_refuses_both_directions_and_establishes_nothing() {
             unb64(case, &encapsulated, "SharedSecret"),
             "case {case}: a dry run must leave the key as it was, got {decapsulated}"
         );
-        let after = ok(&router, "Encapsulate", &json!({"KeyId": &key_id})).await;
+        let after = ok(
+            &router,
+            "Encapsulate",
+            &json!({"KeyId": &key_id, "EncapsulationAlgorithm": ML_KEM}),
+        )
+        .await;
         assert_eq!(
             unb64(case, &after, "SharedSecret").len(),
             SHARED_SECRET_LEN,
@@ -685,10 +800,14 @@ async fn both_directions_refuse_an_identifier_that_names_no_key() {
     let absent = "11111111-2222-3333-4444-555555555555";
 
     for (operation, request) in [
-        ("Encapsulate", json!({"KeyId": absent})),
+        (
+            "Encapsulate",
+            json!({"KeyId": absent, "EncapsulationAlgorithm": ML_KEM}),
+        ),
         (
             "Decapsulate",
-            json!({"KeyId": absent, "SharedSecretCiphertextBlob": b64(&[0u8; 1088])}),
+            json!({"KeyId": absent, "SharedSecretCiphertextBlob": b64(&[0u8; 1088]),
+                   "EncapsulationAlgorithm": ML_KEM}),
         ),
     ] {
         let case = format!("{operation} naming no key");
@@ -697,6 +816,216 @@ async fn both_directions_refuse_an_identifier_that_names_no_key() {
             (status, code.as_str()),
             (400, "NotFoundException"),
             "case {case}: expected HTTP 400 NotFoundException, got {status} {code}"
+        );
+    }
+}
+
+/// A grant can permit either direction of the mechanism: `GrantOperation` declares
+/// `Encapsulate` and `Decapsulate` (`smithy_query(query="shape",shape="GrantOperation")`),
+/// so a request whose permission comes from a grant token is served exactly when that
+/// grant permits the direction it asks for — and a grant permitting a direction can only
+/// be created on a key whose `KeyUsage` can run it.
+///
+/// The rows are every set of the two directions a grant can permit, crossed with both
+/// directions a request can ask for; the parameter set is not what this rule is about, so
+/// one is enough.
+#[tokio::test]
+async fn a_grant_permits_only_the_direction_it_names() {
+    let router = router();
+    let spec = &ML_KEM_SPECS[1];
+    let (key_id, _) = encapsulation_key(&router, spec.key_spec).await;
+    let grantee = principal("user/Alice");
+
+    let mut grants: Vec<(Vec<&str>, String)> = Vec::new();
+    for operations in [
+        vec!["Encapsulate"],
+        vec!["Decapsulate"],
+        vec!["Encapsulate", "Decapsulate"],
+    ] {
+        let answer = ok(
+            &router,
+            "CreateGrant",
+            &json!({"KeyId": &key_id, "GranteePrincipal": &grantee,
+                    "Operations": operations}),
+        )
+        .await;
+        grants.push((operations, text("setup", &answer, "GrantToken")));
+    }
+
+    // A ciphertext for the decapsulating rows, established before any token is presented.
+    let encapsulated = ok(
+        &router,
+        "Encapsulate",
+        &json!({"KeyId": &key_id, "EncapsulationAlgorithm": ML_KEM}),
+    )
+    .await;
+    let ciphertext = unb64(spec.key_spec, &encapsulated, "SharedSecretCiphertextBlob");
+
+    for (operations, token) in &grants {
+        for operation in ["Encapsulate", "Decapsulate"] {
+            let case = format!("a grant permitting {operations:?}: {operation}");
+            let mut body = if operation == "Encapsulate" {
+                json!({"KeyId": &key_id, "EncapsulationAlgorithm": ML_KEM})
+            } else {
+                json!({"KeyId": &key_id, "SharedSecretCiphertextBlob": b64(&ciphertext),
+                       "EncapsulationAlgorithm": ML_KEM})
+            };
+            body["GrantTokens"] = json!([token]);
+
+            let (status, payload) = call(&router, REGION, operation, &body).await;
+            if operations.contains(&operation) {
+                assert_eq!(
+                    status, 200,
+                    "case {case}: the grant permits it, so expected HTTP 200, got {status} \
+                     with {payload}"
+                );
+                assert_eq!(
+                    unb64(&case, &payload, "SharedSecret").len(),
+                    SHARED_SECRET_LEN,
+                    "case {case}: expected a {SHARED_SECRET_LEN}-byte shared secret, got \
+                     {payload}"
+                );
+            } else {
+                let code = error_code(&payload);
+                assert_eq!(
+                    (status, code.as_str()),
+                    (400, "AccessDeniedException"),
+                    "case {case}: the grant does not permit it, so expected HTTP 400 \
+                     AccessDeniedException, got {status} with {payload}"
+                );
+            }
+        }
+    }
+
+    // "the operation must be supported on the KMS key"
+    // (`smithy_query(query="doc",shape="CreateGrantRequest",member="Operations")`): a key
+    // of another usage cannot run either direction, so a grant naming one is refused.
+    let other_keys = [
+        ("symmetric encryption key", "SYMMETRIC_DEFAULT", "ENCRYPT_DECRYPT"),
+        ("RSA signing key", "RSA_2048", "SIGN_VERIFY"),
+        ("elliptic-curve agreement key", "ECC_NIST_P256", "KEY_AGREEMENT"),
+    ];
+    for (kind, key_spec, key_usage) in other_keys {
+        let metadata = create_key(
+            &router,
+            &json!({"Description": kind, "KeySpec": key_spec, "KeyUsage": key_usage}),
+        )
+        .await;
+        let other = text(kind, &metadata, "KeyId");
+        let arn = text(kind, &metadata, "Arn");
+        for operation in ["Encapsulate", "Decapsulate"] {
+            let case = format!("a grant permitting {operation} on a {kind}");
+            let (status, code, message) = refused(
+                &router,
+                REGION,
+                "CreateGrant",
+                &json!({"KeyId": &other, "GranteePrincipal": &grantee,
+                        "Operations": [operation]}),
+            )
+            .await;
+            assert_eq!(
+                (status, code.as_str()),
+                (400, "ValidationException"),
+                "case {case}: expected HTTP 400 ValidationException, got {status} {code}"
+            );
+            assert!(
+                message.contains(operation)
+                    && message.contains(&arn)
+                    && message.contains(key_usage)
+                    && message.contains(ENCAPSULATE_DECAPSULATE),
+                "case {case}: the refusal must name the operation, the key, its usage and \
+                 the usage the operation requires, got {message:?}"
+            );
+        }
+    }
+}
+
+/// `EncapsulationAlgorithm` is a REQUIRED member of both requests whose target declares
+/// one value, so a request that names none, or names anything outside that value set, is
+/// refused by the boundary with `ValidationException` — in the envelope a constraint
+/// refusal is stated in and under the member's own wire path, before any key is read, so
+/// nothing is established. (A value INSIDE the set that the named key's own key spec could
+/// not run is the handler's `InvalidKeyUsageException`; the set holds one value, which
+/// every ML-KEM key spec names, so no request reaches that refusal.)
+///
+/// A table over the three ML-KEM key specs crossed with both directions and with every
+/// algorithm row the member does not admit.
+#[tokio::test]
+async fn both_directions_require_a_declared_encapsulation_algorithm() {
+    let router = router();
+
+    for spec in ML_KEM_SPECS {
+        let (key_id, _) = encapsulation_key(&router, spec.key_spec).await;
+        let encapsulated = ok(
+            &router,
+            "Encapsulate",
+            &json!({"KeyId": &key_id, "EncapsulationAlgorithm": ML_KEM}),
+        )
+        .await;
+        let ciphertext = unb64(spec.key_spec, &encapsulated, "SharedSecretCiphertextBlob");
+
+        for (operation, request) in [
+            (
+                "Encapsulate",
+                json!({"KeyId": &key_id, "EncapsulationAlgorithm": ML_KEM}),
+            ),
+            (
+                "Decapsulate",
+                json!({"KeyId": &key_id, "SharedSecretCiphertextBlob": b64(&ciphertext),
+                       "EncapsulationAlgorithm": ML_KEM}),
+            ),
+        ] {
+            // The member absent altogether: the boundary never reaches the handler.
+            let mut absent = request.clone();
+            absent
+                .as_object_mut()
+                .expect("the request is a JSON object")
+                .remove("EncapsulationAlgorithm");
+            let case = format!("{}: {operation} naming no algorithm", spec.key_spec);
+            let (status, code, message) = refused(&router, REGION, operation, &absent).await;
+            assert_eq!(
+                (status, code.as_str()),
+                (400, "ValidationException"),
+                "case {case}: expected HTTP 400 ValidationException, got {status} {code}"
+            );
+            let expected = absent_member("encapsulationAlgorithm");
+            assert_eq!(
+                message, expected,
+                "case {case}: expected {expected:?}, got {message:?}"
+            );
+
+            // A value the member's enum does not declare: refused the same way.
+            for algorithm in OTHER_ALGORITHMS {
+                let mut named = request.clone();
+                named["EncapsulationAlgorithm"] = json!(algorithm);
+                let case = format!("{}: {operation} naming {algorithm}", spec.key_spec);
+                let (status, code, message) = refused(&router, REGION, operation, &named).await;
+                assert_eq!(
+                    (status, code.as_str()),
+                    (400, "ValidationException"),
+                    "case {case}: expected HTTP 400 ValidationException, got {status} {code}"
+                );
+                let expected = outside_value_set("encapsulationAlgorithm", algorithm, &[ML_KEM]);
+                assert_eq!(
+                    message, expected,
+                    "case {case}: expected {expected:?}, got {message:?}"
+                );
+            }
+        }
+
+        // Every refused call left the key as it was: the ciphertext still decapsulates.
+        let decapsulated = ok(
+            &router,
+            "Decapsulate",
+            &json!({"KeyId": &key_id, "SharedSecretCiphertextBlob": b64(&ciphertext),
+                    "EncapsulationAlgorithm": ML_KEM}),
+        )
+        .await;
+        assert_eq!(
+            unb64(spec.key_spec, &decapsulated, "SharedSecret"),
+            unb64(spec.key_spec, &encapsulated, "SharedSecret"),
+            "case {}: a refused request must leave the key as it was, got {decapsulated}",
+            spec.key_spec
         );
     }
 }

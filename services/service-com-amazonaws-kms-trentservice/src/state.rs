@@ -3963,6 +3963,17 @@ pub fn generate_key_pair(key_spec: &str) -> Option<GeneratedKeyPair> {
     use ::aws_lc_rs::signature::KeyPair as _;
     use ::sm2::pkcs8::{EncodePrivateKey, EncodePublicKey};
 
+    // An `ML_KEM_*` spec names a key-encapsulation pair, which this service runs through
+    // one mechanism ([`MlKemKeyPair`]) wherever it appears: the pair a caller is handed is
+    // of the same parameter set, in the same two encodings, as the one a KMS key of that
+    // spec holds.
+    if let Some(pair) = MlKemKeyPair::generate(key_spec) {
+        return Some(GeneratedKeyPair {
+            public_key_spki: pair.public_key_spki()?,
+            private_key_pkcs8: pair.private_key_pkcs8()?,
+        });
+    }
+
     match key_pair_kind(key_spec)? {
         KeyPairKind::Rsa(modulus_bits) => {
             let private_key =
@@ -4154,8 +4165,8 @@ const RSA_ENCRYPTION_ALGORITHMS: &[&str] = &[
 /// which every spec that can derive a shared secret supports.
 const ECDH: &[&str] = &[KEY_AGREEMENT_ALGORITHM_ECDH];
 
-/// The only `KeyEncapsulationAlgorithm`
-/// (`smithy_query(shape="KeyEncapsulationAlgorithm")`), which every spec that can
+/// The only `EncapsulationAlgorithmSpec`
+/// (`smithy_query(shape="EncapsulationAlgorithmSpec")`), which every spec that can
 /// encapsulate a shared secret supports.
 const ML_KEM: &[&str] = &[ENCAPSULATION_ALGORITHM_ML_KEM];
 
@@ -4336,7 +4347,7 @@ const KEY_SPEC_PROFILES: &[KeySpecProfile] = &[
     },
     // Asymmetric ML-KEM key pairs (key encapsulation only), which share the one
     // key-encapsulation mechanism the model declares
-    // (`smithy_query(shape="KeyEncapsulationAlgorithm")`); the parameter set is the one
+    // (`smithy_query(shape="EncapsulationAlgorithmSpec")`); the parameter set is the one
     // the spec's own name gives.
     KeySpecProfile {
         key_spec: KEY_SPEC_ML_KEM_512,

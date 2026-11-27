@@ -415,6 +415,97 @@ pub(crate) fn oaep_wrapping_key(
         .unwrap_or_else(|error| panic!("case {case}: the public key wraps: {error}"))
 }
 
+/// The ENCAPSULATION key of the ML-KEM decapsulation key the DER PKCS#8 `PrivateKeyInfo`
+/// `private` carries, as a DER-encoded X.509 `SubjectPublicKeyInfo` naming
+/// `object_identifier`.
+///
+/// The public half is read out of the private key as FIPS 203 §7.1 lays a decapsulation
+/// key out — `dk = dk_PKE ‖ ek ‖ H(ek) ‖ z`, whose section lengths follow from the
+/// parameter set's own `dk` length (`dk` is `768k + 96` bytes and `ek` is `384k + 32`) —
+/// and then CONFIRMED through `aws-lc-rs`, the library that implements the mechanism:
+/// both halves are re-imported there and a secret encapsulated under the public half is
+/// recovered by the private one. Bytes that are not a key pair of this parameter set
+/// cannot be imported, or do not round trip, and the case fails.
+pub(crate) fn ml_kem_public_key_spki(
+    case: &str,
+    algorithm: &'static aws_lc_rs::kem::Algorithm<aws_lc_rs::kem::AlgorithmId>,
+    object_identifier: &str,
+    private: &[u8],
+) -> Vec<u8> {
+    use pkcs8::der::Decode as _;
+    use spki::der::Encode as _;
+
+    let info = pkcs8::PrivateKeyInfoRef::from_der(private)
+        .unwrap_or_else(|error| panic!("case {case}: not a PKCS#8 PrivateKeyInfo: {error}"));
+    assert_eq!(
+        info.algorithm.oid.to_string(),
+        object_identifier,
+        "case {case}: the private key must name the parameter set's algorithm identifier, \
+         got {}",
+        info.algorithm.oid
+    );
+    // `privateKey` carries the `expandedKey` alternative of `ML-KEM-PrivateKey`: the
+    // decapsulation key inside an OCTET STRING
+    // (draft-ietf-lamps-kyber-certificates).
+    let expanded: &pkcs8::der::asn1::OctetStringRef =
+        pkcs8::der::Decode::from_der(info.private_key.as_bytes()).unwrap_or_else(|error| {
+            panic!("case {case}: the privateKey must carry an ML-KEM private key: {error}")
+        });
+    let decapsulation_key_bytes = expanded.as_bytes();
+    let decapsulation_key = aws_lc_rs::kem::DecapsulationKey::new(algorithm, decapsulation_key_bytes)
+        .unwrap_or_else(|error| {
+            panic!(
+                "case {case}: not a decapsulation key of this parameter set ({} bytes): {error}",
+                decapsulation_key_bytes.len()
+            )
+        });
+
+    // The parameter set's rank, from the one length that states it.
+    let rank = (decapsulation_key_bytes.len().saturating_sub(96)) / 768;
+    let decapsulation_key_pke_len = 384 * rank;
+    let encapsulation_key_len = 384 * rank + 32;
+    assert_eq!(
+        decapsulation_key_bytes.len(),
+        768 * rank + 96,
+        "case {case}: a decapsulation key is 768k + 96 bytes, got {}",
+        decapsulation_key_bytes.len()
+    );
+    let encapsulation_key_bytes = &decapsulation_key_bytes
+        [decapsulation_key_pke_len..decapsulation_key_pke_len + encapsulation_key_len];
+
+    // The two halves belong to one pair: a secret established under the public half is
+    // the one the private half recovers.
+    let encapsulation_key = aws_lc_rs::kem::EncapsulationKey::new(algorithm, encapsulation_key_bytes)
+        .unwrap_or_else(|error| {
+            panic!("case {case}: not an encapsulation key of this parameter set: {error}")
+        });
+    let (ciphertext, established) = encapsulation_key
+        .encapsulate()
+        .unwrap_or_else(|error| panic!("case {case}: {error}"));
+    let recovered = decapsulation_key
+        .decapsulate(aws_lc_rs::kem::Ciphertext::from(ciphertext.as_ref()))
+        .unwrap_or_else(|error| panic!("case {case}: {error}"));
+    assert_eq!(
+        recovered.as_ref(),
+        established.as_ref(),
+        "case {case}: the public half read out of the private key must establish the secret \
+         that private key recovers"
+    );
+
+    let subject_public_key_info = spki::SubjectPublicKeyInfoOwned {
+        algorithm: spki::AlgorithmIdentifierOwned {
+            oid: spki::ObjectIdentifier::new(object_identifier)
+                .unwrap_or_else(|error| panic!("case {case}: {error}")),
+            parameters: None,
+        },
+        subject_public_key: spki::der::asn1::BitString::from_bytes(encapsulation_key_bytes)
+            .unwrap_or_else(|error| panic!("case {case}: {error}")),
+    };
+    subject_public_key_info
+        .to_der()
+        .unwrap_or_else(|error| panic!("case {case}: {error}"))
+}
+
 /// Create a key and return its `KeyMetadata`.
 pub(crate) async fn create_key(router: &MultiServiceRouter, request: &Value) -> Value {
     ok(router, "CreateKey", request).await["KeyMetadata"].clone()

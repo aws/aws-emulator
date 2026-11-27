@@ -14,19 +14,16 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-kms-trentservice.json")
 #[derive(Debug, Clone, Default)]
 pub struct EncapsulateInput {
     pub key_id: String,
-    pub encapsulation_algorithm: Option<String>,
+    pub encapsulation_algorithm: String,
     pub grant_tokens: Option<Vec<String>>,
-    pub recipient: Option<RecipientInfo>,
     pub dry_run: Option<bool>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.kms#EncapsulateResponse")]
 #[derive(Debug, Clone, Default)]
 pub struct EncapsulateOutput {
+    pub key_id: Option<String>,
     pub shared_secret: Option<Vec<u8>>,
     pub shared_secret_ciphertext_blob: Option<Vec<u8>>,
-    pub ciphertext_for_recipient: Option<Vec<u8>>,
-    pub key_id: Option<String>,
-    pub key_origin: Option<String>,
     pub encapsulation_algorithm: Option<String>,
 }

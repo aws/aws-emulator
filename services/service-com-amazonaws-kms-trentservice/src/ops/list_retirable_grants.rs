@@ -107,8 +107,9 @@
 //!   to the Marker parameter in a subsequent request.
 //!
 //! Beside those, the response carries `GrantCount`, which this model snapshot does not
-//! declare on `ListGrantsResponse` while AWS answers both grant listings with it — see
-//! [`GrantListing`], where the member both readers add is declared.
+//! declare on `ListRetirableGrantsResponse` while AWS answers both grant listings with it
+//! — see [`crate::ops::list_grants::GrantListing`], where the member both readers add is
+//! declared.
 //!
 //! ## Errors
 //!
@@ -125,6 +126,11 @@
 
 #[allow(unused_imports)]
 use super::types::*;
+
+// Both grant readers answer the same wire shape: the modelled listing plus the
+// `GrantCount` member the snapshot declares on neither of them. It is declared beside
+// the primary reader (`ListGrants`), because `super::types` is rendered from the model.
+use super::list_grants::GrantListing;
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the

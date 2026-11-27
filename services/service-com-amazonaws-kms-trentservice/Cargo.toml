@@ -84,6 +84,10 @@ hex = { workspace = true }
 # workspace already encodes public keys with (it is in the lock file through `sm2`'s
 # PKCS#8 support) rather than from a structure laid out here.
 spki = { version = "0.8", features = ["alloc"] }
+# The PKCS#8 `PrivateKeyInfo` an ML-KEM data key pair's private half is reported in, which
+# `aws-lc-rs` exports no DER for: the structure comes from the maintained PKCS#8 crate
+# beside the SPKI one above (both are in the lock file through `sm2`'s PKCS#8 support).
+pkcs8 = { version = "0.11", features = ["alloc"] }
 # Version-4 UUIDs: the form a KMS key id takes.
 uuid = { version = "1", features = ["v4"] }
 # `iam_authorization`: the shared evaluation of IAM policy documents against

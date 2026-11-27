@@ -56,15 +56,15 @@ contents — read that shape in the model above when you need its own members.
 
 ## CreateKey
 
-- **Input:** `Policy` (string, len 1..131072, pattern ^[\u0009\u000A\u000D\u0020-\u00FF]+$), `Description` (string, len 0..8192), `KeyUsage` (KeyUsageType, one of: ENCAPSULATE_DECAPSULATE | ENCRYPT_DECRYPT | GENERATE_VERIFY_MAC | KEY_AGREEMENT | SIGN_VERIFY), `CustomerMasterKeySpec` (CustomerMasterKeySpec, one of: ECC_NIST_P256 | ECC_NIST_P384 | ECC_NIST_P521 | ECC_SECG_P256K1 | HMAC_224 | HMAC_256 | HMAC_384 | HMAC_512 | RSA_2048 | RSA_3072 | RSA_4096 | SM2 | SYMMETRIC_DEFAULT), `KeySpec` (KeySpec, one of: ECC_NIST_EDWARDS25519 | ECC_NIST_P256 | ECC_NIST_P384 | ECC_NIST_P521 | ECC_SECG_P256K1 | HMAC_224 | HMAC_256 | HMAC_384 | HMAC_512 | ML_DSA_44 | ML_DSA_65 | ML_DSA_87 | ML_KEM_1024 | ML_KEM_512 | ML_KEM_768 | RSA_2048 | RSA_3072 | RSA_4096 | SM2 | SYMMETRIC_DEFAULT), `Origin` (OriginType, one of: AWS_CLOUDHSM | AWS_KMS | EXTERNAL | EXTERNAL_KEY_STORE), `CustomKeyStoreId` (string, len 1..64), `BypassPolicyLockoutSafetyCheck` (boolean, default false, required), `Tags` (list<Tag>), `MultiRegion` (boolean), `XksKeyId` (string, len 1..128, pattern ^[a-zA-Z0-9-_.]+$)
+- **Input:** `Policy` (string, len 1..131072, pattern ^[\u0009\u000A\u000D\u0020-\u00FF]+$), `Description` (string, len 0..8192), `KeyUsage` (KeyUsageType, one of: ENCAPSULATE_DECAPSULATE | ENCRYPT_DECRYPT | GENERATE_VERIFY_MAC | KEY_AGREEMENT | SIGN_VERIFY), `CustomerMasterKeySpec` (CustomerMasterKeySpec, one of: ECC_NIST_P256 | ECC_NIST_P384 | ECC_NIST_P521 | ECC_SECG_P256K1 | HMAC_224 | HMAC_256 | HMAC_384 | HMAC_512 | RSA_2048 | RSA_3072 | RSA_4096 | SM2 | SYMMETRIC_DEFAULT), `KeySpec` (KeySpec, one of: ECC_NIST_EDWARDS25519 | ECC_NIST_P256 | ECC_NIST_P384 | ECC_NIST_P521 | ECC_SECG_P256K1 | HMAC_224 | HMAC_256 | HMAC_384 | HMAC_512 | ML_DSA_44 | ML_DSA_65 | ML_DSA_87 | ML_KEM_1024 | ML_KEM_512 | ML_KEM_768 | RSA_2048 | RSA_3072 | …), `Origin` (OriginType, one of: AWS_CLOUDHSM | AWS_KMS | EXTERNAL | EXTERNAL_KEY_STORE), `CustomKeyStoreId` (string, len 1..64), `BypassPolicyLockoutSafetyCheck` (boolean, default false, required), `Tags` (list<Tag>), `MultiRegion` (boolean), `XksKeyId` (string, len 1..128, pattern ^[a-zA-Z0-9-_.]+$)
 - **Output:** `KeyMetadata` (KeyMetadata)
 - **Errors:** `CloudHsmClusterInvalidConfigurationException (HTTP 400)`, `CustomKeyStoreInvalidStateException (HTTP 400)`, `CustomKeyStoreNotFoundException (HTTP 400)`, `DependencyTimeoutException (HTTP 503)`, `InvalidArnException (HTTP 400)`, `KMSInternalException (HTTP 500)`, `LimitExceededException (HTTP 400)`, `MalformedPolicyDocumentException (HTTP 400)`, `TagException (HTTP 400)`, `UnsupportedOperationException (HTTP 400)`, `XksKeyAlreadyInUseException (HTTP 400)`, `XksKeyInvalidConfigurationException (HTTP 400)`, `XksKeyNotFoundException (HTTP 400)`
 
 ## Decapsulate
 
-- **Input:** `KeyId` (string, len 1..2048, required), `SharedSecretCiphertextBlob` (blob, len 1..6144, required), `EncapsulationAlgorithm` (KeyEncapsulationAlgorithm, one of: ML_KEM), `GrantTokens` (list<string>, len 0..10), `Recipient` (RecipientInfo), `DryRun` (boolean)
-- **Output:** `SharedSecret` (blob, len 1..4096), `CiphertextForRecipient` (blob, len 1..6144), `KeyId` (string, len 1..2048), `KeyOrigin` (OriginType, one of: AWS_CLOUDHSM | AWS_KMS | EXTERNAL | EXTERNAL_KEY_STORE), `EncapsulationAlgorithm` (KeyEncapsulationAlgorithm, one of: ML_KEM)
-- **Errors:** `DependencyTimeoutException (HTTP 503)`, `DisabledException (HTTP 409)`, `DryRunOperationException (HTTP 412)`, `InvalidCiphertextException (HTTP 400)`, `InvalidGrantTokenException (HTTP 400)`, `InvalidKeyUsageException (HTTP 400)`, `KMSInternalException (HTTP 500)`, `KMSInvalidStateException (HTTP 409)`, `KeyUnavailableException (HTTP 500)`, `NotFoundException (HTTP 404)`
+- **Input:** `KeyId` (string, len 1..2048, required), `SharedSecretCiphertextBlob` (blob, len 1..6144, required), `EncapsulationAlgorithm` (EncapsulationAlgorithmSpec, one of: ML_KEM, required), `GrantTokens` (list<string>, len 0..10), `DryRun` (boolean)
+- **Output:** `KeyId` (string, len 1..2048), `SharedSecret` (blob, len 1..4096), `EncapsulationAlgorithm` (EncapsulationAlgorithmSpec, one of: ML_KEM)
+- **Errors:** `DependencyTimeoutException (HTTP 503)`, `DisabledException (HTTP 409)`, `DryRunOperationException (HTTP 412)`, `InvalidCiphertextException (HTTP 400)`, `InvalidGrantTokenException (HTTP 400)`, `InvalidKeyUsageException (HTTP 400)`, `KeyUnavailableException (HTTP 500)`, `KMSInternalException (HTTP 500)`, `KMSInvalidStateException (HTTP 409)`, `NotFoundException (HTTP 404)`
 
 ## Decrypt
 
@@ -141,9 +141,9 @@ contents — read that shape in the model above when you need its own members.
 
 ## Encapsulate
 
-- **Input:** `KeyId` (string, len 1..2048, required), `EncapsulationAlgorithm` (KeyEncapsulationAlgorithm, one of: ML_KEM), `GrantTokens` (list<string>, len 0..10), `Recipient` (RecipientInfo), `DryRun` (boolean)
-- **Output:** `SharedSecret` (blob, len 1..4096), `SharedSecretCiphertextBlob` (blob, len 1..6144), `CiphertextForRecipient` (blob, len 1..6144), `KeyId` (string, len 1..2048), `KeyOrigin` (OriginType, one of: AWS_CLOUDHSM | AWS_KMS | EXTERNAL | EXTERNAL_KEY_STORE), `EncapsulationAlgorithm` (KeyEncapsulationAlgorithm, one of: ML_KEM)
-- **Errors:** `DependencyTimeoutException (HTTP 503)`, `DisabledException (HTTP 409)`, `DryRunOperationException (HTTP 412)`, `InvalidGrantTokenException (HTTP 400)`, `InvalidKeyUsageException (HTTP 400)`, `KMSInternalException (HTTP 500)`, `KMSInvalidStateException (HTTP 409)`, `KeyUnavailableException (HTTP 500)`, `NotFoundException (HTTP 404)`
+- **Input:** `KeyId` (string, len 1..2048, required), `EncapsulationAlgorithm` (EncapsulationAlgorithmSpec, one of: ML_KEM, required), `GrantTokens` (list<string>, len 0..10), `DryRun` (boolean)
+- **Output:** `KeyId` (string, len 1..2048), `SharedSecret` (blob, len 1..4096), `SharedSecretCiphertextBlob` (blob, len 1..6144), `EncapsulationAlgorithm` (EncapsulationAlgorithmSpec, one of: ML_KEM)
+- **Errors:** `DependencyTimeoutException (HTTP 503)`, `DisabledException (HTTP 409)`, `DryRunOperationException (HTTP 412)`, `InvalidGrantTokenException (HTTP 400)`, `InvalidKeyUsageException (HTTP 400)`, `KeyUnavailableException (HTTP 500)`, `KMSInternalException (HTTP 500)`, `KMSInvalidStateException (HTTP 409)`, `NotFoundException (HTTP 404)`
 
 ## Encrypt
 
@@ -159,14 +159,14 @@ contents — read that shape in the model above when you need its own members.
 
 ## GenerateDataKeyPair
 
-- **Input:** `EncryptionContext` (map<string,string>), `KeyId` (string, len 1..2048, required), `KeyPairSpec` (DataKeyPairSpec, one of: ECC_NIST_EDWARDS25519 | ECC_NIST_P256 | ECC_NIST_P384 | ECC_NIST_P521 | ECC_SECG_P256K1 | RSA_2048 | RSA_3072 | RSA_4096 | SM2, required), `GrantTokens` (list<string>, len 0..10), `Recipient` (RecipientInfo), `DryRun` (boolean)
-- **Output:** `PrivateKeyCiphertextBlob` (blob, len 1..6144), `PrivateKeyPlaintext` (blob, len 1..4096), `PublicKey` (blob, len 1..8192), `KeyId` (string, len 1..2048), `KeyPairSpec` (DataKeyPairSpec, one of: ECC_NIST_EDWARDS25519 | ECC_NIST_P256 | ECC_NIST_P384 | ECC_NIST_P521 | ECC_SECG_P256K1 | RSA_2048 | RSA_3072 | RSA_4096 | SM2), `CiphertextForRecipient` (blob, len 1..6144), `KeyMaterialId` (string, len 64..64, pattern ^[a-f0-9]+$)
+- **Input:** `EncryptionContext` (map<string,string>), `KeyId` (string, len 1..2048, required), `KeyPairSpec` (DataKeyPairSpec, one of: ECC_NIST_EDWARDS25519 | ECC_NIST_P256 | ECC_NIST_P384 | ECC_NIST_P521 | ECC_SECG_P256K1 | ML_KEM_1024 | ML_KEM_512 | ML_KEM_768 | RSA_2048 | RSA_3072 | RSA_4096 | SM2, required), `GrantTokens` (list<string>, len 0..10), `Recipient` (RecipientInfo), `DryRun` (boolean)
+- **Output:** `PrivateKeyCiphertextBlob` (blob, len 1..6144), `PrivateKeyPlaintext` (blob, len 1..4096), `PublicKey` (blob, len 1..8192), `KeyId` (string, len 1..2048), `KeyPairSpec` (DataKeyPairSpec, one of: ECC_NIST_EDWARDS25519 | ECC_NIST_P256 | ECC_NIST_P384 | ECC_NIST_P521 | ECC_SECG_P256K1 | ML_KEM_1024 | ML_KEM_512 | ML_KEM_768 | RSA_2048 | RSA_3072 | RSA_4096 | SM2), `CiphertextForRecipient` (blob, len 1..6144), `KeyMaterialId` (string, len 64..64, pattern ^[a-f0-9]+$)
 - **Errors:** `DependencyTimeoutException (HTTP 503)`, `DisabledException (HTTP 409)`, `DryRunOperationException (HTTP 412)`, `InvalidGrantTokenException (HTTP 400)`, `InvalidKeyUsageException (HTTP 400)`, `KeyUnavailableException (HTTP 500)`, `KMSInternalException (HTTP 500)`, `KMSInvalidStateException (HTTP 409)`, `NotFoundException (HTTP 404)`, `UnsupportedOperationException (HTTP 400)`
 
 ## GenerateDataKeyPairWithoutPlaintext
 
-- **Input:** `EncryptionContext` (map<string,string>), `KeyId` (string, len 1..2048, required), `KeyPairSpec` (DataKeyPairSpec, one of: ECC_NIST_EDWARDS25519 | ECC_NIST_P256 | ECC_NIST_P384 | ECC_NIST_P521 | ECC_SECG_P256K1 | RSA_2048 | RSA_3072 | RSA_4096 | SM2, required), `GrantTokens` (list<string>, len 0..10), `DryRun` (boolean)
-- **Output:** `PrivateKeyCiphertextBlob` (blob, len 1..6144), `PublicKey` (blob, len 1..8192), `KeyId` (string, len 1..2048), `KeyPairSpec` (DataKeyPairSpec, one of: ECC_NIST_EDWARDS25519 | ECC_NIST_P256 | ECC_NIST_P384 | ECC_NIST_P521 | ECC_SECG_P256K1 | RSA_2048 | RSA_3072 | RSA_4096 | SM2), `KeyMaterialId` (string, len 64..64, pattern ^[a-f0-9]+$)
+- **Input:** `EncryptionContext` (map<string,string>), `KeyId` (string, len 1..2048, required), `KeyPairSpec` (DataKeyPairSpec, one of: ECC_NIST_EDWARDS25519 | ECC_NIST_P256 | ECC_NIST_P384 | ECC_NIST_P521 | ECC_SECG_P256K1 | ML_KEM_1024 | ML_KEM_512 | ML_KEM_768 | RSA_2048 | RSA_3072 | RSA_4096 | SM2, required), `GrantTokens` (list<string>, len 0..10), `DryRun` (boolean)
+- **Output:** `PrivateKeyCiphertextBlob` (blob, len 1..6144), `PublicKey` (blob, len 1..8192), `KeyId` (string, len 1..2048), `KeyPairSpec` (DataKeyPairSpec, one of: ECC_NIST_EDWARDS25519 | ECC_NIST_P256 | ECC_NIST_P384 | ECC_NIST_P521 | ECC_SECG_P256K1 | ML_KEM_1024 | ML_KEM_512 | ML_KEM_768 | RSA_2048 | RSA_3072 | RSA_4096 | SM2), `KeyMaterialId` (string, len 64..64, pattern ^[a-f0-9]+$)
 - **Errors:** `DependencyTimeoutException (HTTP 503)`, `DisabledException (HTTP 409)`, `DryRunOperationException (HTTP 412)`, `InvalidGrantTokenException (HTTP 400)`, `InvalidKeyUsageException (HTTP 400)`, `KeyUnavailableException (HTTP 500)`, `KMSInternalException (HTTP 500)`, `KMSInvalidStateException (HTTP 409)`, `NotFoundException (HTTP 404)`, `UnsupportedOperationException (HTTP 400)`
 
 ## GenerateDataKeyWithoutPlaintext
@@ -214,7 +214,7 @@ contents — read that shape in the model above when you need its own members.
 ## GetPublicKey
 
 - **Input:** `KeyId` (string, len 1..2048, required), `GrantTokens` (list<string>, len 0..10)
-- **Output:** `KeyId` (string, len 1..2048), `PublicKey` (blob, len 1..8192), `CustomerMasterKeySpec` (CustomerMasterKeySpec, one of: ECC_NIST_P256 | ECC_NIST_P384 | ECC_NIST_P521 | ECC_SECG_P256K1 | HMAC_224 | HMAC_256 | HMAC_384 | HMAC_512 | RSA_2048 | RSA_3072 | RSA_4096 | SM2 | SYMMETRIC_DEFAULT), `KeySpec` (KeySpec, one of: ECC_NIST_EDWARDS25519 | ECC_NIST_P256 | ECC_NIST_P384 | ECC_NIST_P521 | ECC_SECG_P256K1 | HMAC_224 | HMAC_256 | HMAC_384 | HMAC_512 | ML_DSA_44 | ML_DSA_65 | ML_DSA_87 | ML_KEM_1024 | ML_KEM_512 | ML_KEM_768 | RSA_2048 | RSA_3072 | RSA_4096 | SM2 | SYMMETRIC_DEFAULT), `KeyUsage` (KeyUsageType, one of: ENCAPSULATE_DECAPSULATE | ENCRYPT_DECRYPT | GENERATE_VERIFY_MAC | KEY_AGREEMENT | SIGN_VERIFY), `EncryptionAlgorithms` (list<EncryptionAlgorithmSpec>), `SigningAlgorithms` (list<SigningAlgorithmSpec>), `KeyAgreementAlgorithms` (list<KeyAgreementAlgorithmSpec>), `EncapsulationAlgorithms` (list<KeyEncapsulationAlgorithm>)
+- **Output:** `KeyId` (string, len 1..2048), `PublicKey` (blob, len 1..8192), `CustomerMasterKeySpec` (CustomerMasterKeySpec, one of: ECC_NIST_P256 | ECC_NIST_P384 | ECC_NIST_P521 | ECC_SECG_P256K1 | HMAC_224 | HMAC_256 | HMAC_384 | HMAC_512 | RSA_2048 | RSA_3072 | RSA_4096 | SM2 | SYMMETRIC_DEFAULT), `KeySpec` (KeySpec, one of: ECC_NIST_EDWARDS25519 | ECC_NIST_P256 | ECC_NIST_P384 | ECC_NIST_P521 | ECC_SECG_P256K1 | HMAC_224 | HMAC_256 | HMAC_384 | HMAC_512 | ML_DSA_44 | ML_DSA_65 | ML_DSA_87 | ML_KEM_1024 | ML_KEM_512 | ML_KEM_768 | RSA_2048 | RSA_3072 | …), `KeyUsage` (KeyUsageType, one of: ENCAPSULATE_DECAPSULATE | ENCRYPT_DECRYPT | GENERATE_VERIFY_MAC | KEY_AGREEMENT | SIGN_VERIFY), `EncryptionAlgorithms` (list<EncryptionAlgorithmSpec>), `SigningAlgorithms` (list<SigningAlgorithmSpec>), `KeyAgreementAlgorithms` (list<KeyAgreementAlgorithmSpec>), `EncapsulationAlgorithms` (list<EncapsulationAlgorithmSpec>)
 - **Errors:** `DependencyTimeoutException (HTTP 503)`, `DisabledException (HTTP 409)`, `InvalidArnException (HTTP 400)`, `InvalidGrantTokenException (HTTP 400)`, `InvalidKeyUsageException (HTTP 400)`, `KeyUnavailableException (HTTP 500)`, `KMSInternalException (HTTP 500)`, `KMSInvalidStateException (HTTP 409)`, `NotFoundException (HTTP 404)`, `UnsupportedOperationException (HTTP 400)`
 
 ## ImportKeyMaterial
@@ -254,7 +254,7 @@ contents — read that shape in the model above when you need its own members.
 ## ListKeys
 
 - **Traits:** @paginated(inputToken=Marker, outputToken=NextMarker, items=Keys)
-- **Input:** `Limit` (integer, range 1..1000), `Marker` (string, len 1..1024, pattern ^[\u0020-\u00FF]*$)
+- **Input:** `Limit` (integer, range 1..1000), `Marker` (string, len 1..1024, pattern ^[\u0020-\u00FF]*$), `ResourceOwners` (list<ResourceOwnerType>, len 1..2)
 - **Output:** `Keys` (list<KeyListEntry>), `NextMarker` (string, len 1..1024, pattern ^[\u0020-\u00FF]*$), `Truncated` (boolean, default false, required)
 - **Errors:** `DependencyTimeoutException (HTTP 503)`, `InvalidMarkerException (HTTP 400)`, `KMSInternalException (HTTP 500)`
 

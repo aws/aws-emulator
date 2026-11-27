@@ -65,6 +65,8 @@ const GRANT_OPERATION_DECLARATION_ORDER: &[&str] = &[
     "GenerateMac",
     "VerifyMac",
     "DeriveSharedSecret",
+    "Encapsulate",
+    "Decapsulate",
 ];
 
 /// Every `OriginType` the model declares
