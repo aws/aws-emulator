@@ -27,6 +27,11 @@
 //! anonymous endpoint vends for a refresh token it holds are `oauth2_token_lifecycle.rs`.
 
 use serde_json::{json, Value};
+// The values `OAuth2ErrorCode` declares, as the crate generates them from the model: an
+// `error` member outside this list is one a client deserializing `ValidationException$error`
+// into the generated enum reads as a variant the model does not declare. Taken from the
+// crate rather than copied here, so the assertion cannot drift from the model.
+use service_com_amazonaws_signin_signin::ops::types::shared_types::O_AUTH2_ERROR_CODE_VALUES;
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::signin_harness::{emulator, post, post_unsigned, Answer};
@@ -795,6 +800,152 @@ async fn a_mint_returns_its_own_token_for_each_accepted_request() {
         distinct,
         minted.len(),
         "each mint must return its own token, got {minted:?}"
+    );
+}
+
+/// Which class the IAM form of `/v1/token` refuses a grant type under is decided by
+/// whether the body SUPPLIES a value, not by which other grant the value names.
+///
+/// `CreateOAuth2TokenWithIAMRequest$grantType` is `@required` and targets
+/// `ClientCredentialsGrantType`, whose `@pattern` is `^client_credentials$`, so the member
+/// admits exactly ONE value: every other value the body supplies is an invalid parameter
+/// value, which is the `INVALID_REQUEST` class — the `error` a member of `OAuth2ErrorCode`
+/// and the sentence that member's own documentation, wholly fixed text that interpolates
+/// nothing from the request. A body that supplies NO value leaves the authorization server
+/// with no grant to act on at all, which is the grant-type class and keeps RFC 6749 §5.2's
+/// `unsupported_grant_type` wording.
+///
+/// The rows span what the rule generalises over rather than the one value a recording
+/// carried: the grant-type values the OAuth 2.0 specifications publish other than this
+/// one — RFC 6749 §4.1.3 `authorization_code`, §4.3.2 `password`, §6 `refresh_token`, RFC
+/// 8628 §3.4 device code, RFC 7523 §2.1 JWT bearer, RFC 7522 §2.1 SAML 2.0 bearer and RFC
+/// 8693 §2.1 token exchange — then every proper prefix of the admitted value (the pattern
+/// is anchored at both ends, so no truncation of it is admitted either), then mutations of
+/// it generated along case, surrounding and inner whitespace, separator, suffix and
+/// repetition, and a value that is whitespace alone. The unsupplied rows differ along HOW
+/// a body supplies nothing: it binds no parameter, binds only the resource, binds the
+/// parameter with the empty value, or names the grant under the OTHER form's binding key.
+#[tokio::test]
+async fn the_iam_forms_grant_type_class_follows_whether_a_value_was_supplied() {
+    let resource = "aws-mcp.amazonaws.com";
+
+    let mut supplied: Vec<(String, String)> = [
+        "authorization_code",
+        "password",
+        "refresh_token",
+        "urn:ietf:params:oauth:grant-type:device_code",
+        "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        "urn:ietf:params:oauth:grant-type:saml2-bearer",
+        "urn:ietf:params:oauth:grant-type:token-exchange",
+    ]
+    .into_iter()
+    .map(|grant| (format!("the published {grant} grant"), grant.to_string()))
+    .collect();
+    for length in 1..CLIENT_CREDENTIALS.len() {
+        supplied.push((
+            format!("the admitted value truncated to {length} character(s)"),
+            CLIENT_CREDENTIALS[..length].to_string(),
+        ));
+    }
+    for (mutation, value) in [
+        ("upper case", CLIENT_CREDENTIALS.to_uppercase()),
+        ("the words capitalised", "Client_Credentials".to_string()),
+        ("a trailing space", format!("{CLIENT_CREDENTIALS} ")),
+        ("a trailing newline", format!("{CLIENT_CREDENTIALS}\n")),
+        ("a space on either side", format!(" {CLIENT_CREDENTIALS} ")),
+        ("a space for the separator", "client credentials".to_string()),
+        ("a dot for the separator", "client.credentials".to_string()),
+        ("no separator at all", "clientcredentials".to_string()),
+        (
+            "a non-ASCII dash for the separator",
+            "client\u{2013}credentials".to_string(),
+        ),
+        ("a digit appended", format!("{CLIENT_CREDENTIALS}2")),
+        (
+            "the value stated twice",
+            format!("{CLIENT_CREDENTIALS}{CLIENT_CREDENTIALS}"),
+        ),
+    ] {
+        supplied.push((format!("the admitted value with {mutation}"), value));
+    }
+    supplied.push((
+        "a grant type that is whitespace alone".to_string(),
+        " ".to_string(),
+    ));
+
+    let unsupplied: Vec<(&str, Value)> = vec![
+        ("a body that binds no parameter at all", json!({})),
+        (
+            "a body that states the resource and no grant type",
+            json!({"resource": resource}),
+        ),
+        (
+            "a grant type present with the empty value, which RFC 6749 §3.1 reads as \
+             omitted",
+            json!({"grant_type": "", "resource": resource}),
+        ),
+        (
+            "the grant named under the anonymous form's binding key, which this form does \
+             not read",
+            json!({"grantType": CLIENT_CREDENTIALS, "resource": resource}),
+        ),
+    ];
+
+    let router = emulator();
+    for (case, value) in supplied {
+        let answer =
+            create_token(&router, json!({"grant_type": value, "resource": resource})).await;
+        assert_oauth2_error(
+            &case,
+            &answer,
+            (
+                VALIDATION_ERROR_CODE,
+                INVALID_REQUEST_MESSAGE,
+                INVALID_REQUEST_MESSAGE,
+            ),
+            JSON_WITH_CHARSET,
+        );
+        assert!(
+            O_AUTH2_ERROR_CODE_VALUES.contains(&answer.error_member()),
+            "case {case:?}: the error code must be one of the {:?} the model declares, got \
+             {:?}",
+            O_AUTH2_ERROR_CODE_VALUES,
+            answer.error_member()
+        );
+        assert_ne!(
+            answer.error_description(),
+            UNSUPPORTED_GRANT_TYPE_DESCRIPTION,
+            "case {case:?}: a value the member does not admit is not the grant-type \
+             class, got {:?}",
+            answer.body
+        );
+    }
+
+    for (case, request) in unsupplied {
+        let answer = create_token(&router, request).await;
+        assert_oauth2_error(
+            case,
+            &answer,
+            (
+                UNSUPPORTED_GRANT_TYPE,
+                UNSUPPORTED_GRANT_TYPE_DESCRIPTION,
+                UNSUPPORTED_GRANT_TYPE_DESCRIPTION,
+            ),
+            JSON,
+        );
+    }
+
+    // The positive control: the one value the member admits is still served, after every
+    // refusal above, and the token it reports is one introspection reports active.
+    let token = mint(&router, "the positive control", resource).await;
+    let answer = introspect_token(&router, json!({"token": token})).await;
+    assert_eq!(
+        (answer.status, answer.body["active"].as_bool()),
+        (200, Some(true)),
+        "case {:?}: the minted token must introspect as active, got {} with {:?}",
+        "the positive control",
+        answer.status,
+        answer.body
     );
 }
 
