@@ -1,0 +1,59 @@
+Issue-Severity: HIGH
+Issue-Corpus: simparity-behavioral-aws-v1
+Issue-Corpus-Kind: behavioral
+Issue-Trace-Ids: apigatewayv2.websocket-post-to-client-closed-connection-rejected-gone apigatewayv2.websocket-post-to-connection-delivers-exact-bytes-to-that-socket-only
+Issue-Key: apigatewayv2.websocket-post-to-client-closed-connection-rejected-gone|_connect#11|TimeoutError|raise TimeoutError(
+Issue-Key: apigatewayv2.websocket-post-to-connection-delivers-exact-bytes-to-that-socket-only|_connect#12|TimeoutError|raise TimeoutError(
+Issue-Commit: af007de286377294faf8721f963c7a04ad7dcdf8
+
+# apigatewayv2: the WebSocket upgrade to a deployed WEBSOCKET stage that declares no $connect route is refused 403 Forbidden, so @connections delivery and the post-close GoneException contract are unreachable (1 cause)
+
+> _Note: this issue was identified against the code base at commit `af007de286377294faf8721f963c7a04ad7dcdf8`. If you are an issue fixer working on this, the code base you are currently working in can have drifted, so you might need to trace the issue back to the current code base._
+
+## Operation
+CreateApi
+
+## Description
+Cause 1 of 1: an RFC 6455 opening handshake against a deployed WEBSOCKET apigatewayv2 stage whose only route is a non-special, MOCK-backed route (no $connect route declared) is answered `HTTP/1.1 403 Forbidden` with `content-type: application/json` instead of `101 Switching Protocols`, for the whole retry window. Both checks of the `websocket-connections` group dial the api's OWN announced `ApiEndpoint` (not the emulator front door) and never obtain a socket, so every assertion downstream of the handshake is unreachable.
+
+AWS: Smithy apigatewayv2 2018-11-29 `CreateApi` (POST /v2/apis, 201) takes `ProtocolType` (enum, WEBSOCKET) and `RouteSelectionExpression`; `CreateRoute` (POST /v2/apis/{ApiId}/routes, 201) takes an arbitrary `RouteKey` plus `Target`/`RouteResponseSelectionExpression` — nothing in the model makes a `$connect` route required, and the WebSocket API documentation states the `$connect` route is optional: when it is absent the gateway accepts the connection. Recorded behavior for the handshake itself (the execute-api data plane is not modelled): a `GET /<stage>` with `Connection: Upgrade`, `Upgrade: websocket`, `Sec-WebSocket-Key: <base64 16 bytes>`, `Sec-WebSocket-Version: 13` to the deployed stage's `wss://` address is answered `HTTP/1.1 101 Switching Protocols` with `Sec-WebSocket-Accept` derived from the client key, and a distinct connection id is minted per socket. Only then do the modelled @connections operations apply, and they are what the two checks grade: apigatewaymanagementapi `PostToConnection` (POST /@connections/{ConnectionId}, 200, `Data` httpPayload blob @length 0..131072) delivers the posted bytes to THAT socket only, always as a text frame (so each byte that is not valid UTF-8 arrives as U+FFFD); `GetConnection` (GET /@connections/{ConnectionId}, 200) returns `Identity.SourceIp`, `ConnectedAt` inside the window in which the socket was opened and `LastActiveAt >= ConnectedAt`; after the CLIENT closes its socket, `PostToConnection`, `GetConnection` and `DeleteConnection` on that id are each refused `GoneException` with HTTP 410 (modelled errors: ForbiddenException 403 / GoneException 410 / LimitExceededException 429 / PayloadTooLargeException 413; recorded: the 410 carries an empty message) while a sibling still-open connection on the same stage keeps receiving posts. Where AWS does refuse a handshake it answers the gateway's own `{"message":"Forbidden"}` 403 — e.g. a `$connect` integration that denies — not for an api that simply declares no `$connect` route.
+
+Emulator: both checks create the api (`ProtocolType=WEBSOCKET`, `RouteSelectionExpression=$request.body.op`), one MOCK integration + integration response + route (`id` resp. `whoami`) + route response, a stage and a deployment that reaches `DEPLOYED` (all control-plane calls succeed and the deployment poll is satisfied), then open a websocket to `ctx.stage_url(api["ApiEndpoint"], <stage>)`, retrying every 2 s. Every attempt is refused identically: `WebSocketBadStatusException("Handshake status 403 Forbidden -+-+- {'content-type': 'application/json'} -+-+- None")`. No attempt ever returned 101, so no connection id was minted and not one @connections assertion was evaluated; the retry loop ran out and reported `TimeoutError: the WebSocket handshake to the stage never succeeded: ... the run budget ended first`. The status (403) and the `application/json` content type are the requirement here; the host/port in the dialled URL and the run's timing are per-environment and are not. Hypothesis: the stage's upgrade path requires a `$connect` route (or an authorizer decision) to exist before it will switch protocols and falls through to a gateway `403 Forbidden` when the api declares only a non-special route — it is a refusal computed by the api's own socket, not the front-door `UnknownService`/`500`/`501` answers recorded in the related reports below.
+
+Why: a client that builds the simplest documented WebSocket API — a route selected by `$request.body.*` and no `$connect` route at all — cannot connect, so server push via @connections, the per-connection isolation of `PostToConnection`, the text-frame/U+FFFD encoding of non-UTF-8 payloads, the `ConnectedAt`/`LastActiveAt`/`Identity.SourceIp` record, and the `GoneException` 410 pruning contract a backend relies on to evict dead connections are all unobservable. Code written against the emulator will believe the api needs a `$connect` route to be connectable, which AWS does not require.
+
+Fix: the apigatewayv2 execute-api WebSocket data plane that serves a deployed WEBSOCKET stage's announced address — the handshake resolution/authorization step must complete the upgrade with 101 + `Sec-WebSocket-Accept` for a stage whose api declares NO `$connect` route (treating a missing `$connect` as implicit allow, and reserving the gateway 403 for an actual deny), register the minted connection so the apigatewaymanagementapi @connections handlers can describe it, post to it and mark it gone once the client closes.
+
+Traces: apigatewayv2.websocket-post-to-client-closed-connection-rejected-gone, apigatewayv2.websocket-post-to-connection-delivers-exact-bytes-to-that-socket-only. Related open reports describe the same WebSocket surface but a DIFFERENT answer and do not carry these two checks' replay keys, so none of them covers this: 20261025T023548Z-apigatewayv2-websocket-stage-never-completes-the-rfc-6455.md (no listener / 404), 20261104T160000Z-apigatewayv2-websocket-execute-api-upgrade-remains-unservable.md (front door 404 UnknownService / 500, core upgrade seam), 20261029T192401Z-apigatewayv2-a-websocket-two-way-route-s-routeresponse.md, and 20261124T063020Z-apigatewayv2-lambda-the-execute-api-front-door-refuses.md (an Origin-bearing HTTP request refused 403 'cross-site origin'); the blocked apigatewaymanagementapi twin is 20261116T051841Z-apigatewaymanagementapi-the-backend-route-management-trajectory-never-starts.md.
+
+## Evidence
+Checks: apigatewayv2.websocket-post-to-client-closed-connection-rejected-gone ([error]) and apigatewayv2.websocket-post-to-connection-delivers-exact-bytes-to-that-socket-only ([error]). apigatewayv2 pass rate this run: 3/5 (60%).
+
+expected: `websocket.create_connection(ctx.stage_url(api["ApiEndpoint"], <stage>))` -> HTTP/1.1 101 Switching Protocols on a DEPLOYED WEBSOCKET stage whose api declares one MOCK route (`id` / `whoami`) and no `$connect` route; then
+  (a) a `{"op":"id"}` / `{"op":"whoami"}` frame answered on the same socket with the MOCK response template `{"conn":"$context.connectionId"}`, the id a padded base64 token and distinct per socket;
+  (b) PostToConnection(Data="café ☃ résumé #41".encode()) arriving on that socket as ONE text frame of the same bytes, PostToConnection(Data=b"\x00\xff\x10\x80\x7f") arriving as text with U+FFFD per invalid byte, and neither reaching the sibling socket (whose first frame is its own marker);
+  (c) GetConnection on each id: `Identity.SourceIp` a valid IP, `ConnectedAt` within the open window, `LastActiveAt >= ConnectedAt`, first socket's ConnectedAt <= second's;
+  (d) after the client closes one socket, PostToConnection/GetConnection/DeleteConnection on that id each refused ('GoneException', 410, '') while the still-open socket keeps receiving posts.
+
+actual: the upgrade is refused for every retry in the window. Replay output (both checks, in `_connect`):
+  File "check_apigatewayv2_websocket_post_to_client_closed_connection_rejected_gone.py", line 170, in run
+    leaving = _connect(ctx, url)
+  File "...", line 100, in _connect
+    raise TimeoutError(
+  TimeoutError: the WebSocket handshake to the stage never succeeded: WebSocketBadStatusException("Handshake status 403 Forbidden -+-+- {'content-type': 'application/json'} -+-+- None"): the run budget ended first; not graded
+  File "check_apigatewayv2_websocket_post_to_connection_delivers_exact_bytes_to_that_socket_only.py", line 162, in run
+    first = _connect(ctx, url)
+  File "...", line 103, in _connect
+    raise TimeoutError(
+  TimeoutError: the WebSocket handshake to the stage never succeeded: WebSocketBadStatusException("Handshake status 403 Forbidden -+-+- {'content-type': 'application/json'} -+-+- None"): the run budget ended first; not graded
+
+The `websocket` module was present (both checks raise RequiredToolMissing otherwise, and neither did), and every control-plane step before the handshake succeeded including the deployment poll asserting DeploymentStatus == DEPLOYED, so the divergence is isolated to the upgrade on the deployed stage. Model citations used: apigatewayv2 CreateApi (ProtocolType/RouteSelectionExpression, POST /v2/apis 201), CreateRoute (RouteKey/Target/RouteResponseSelectionExpression, POST /v2/apis/{ApiId}/routes 201); apigatewaymanagementapi PostToConnection (POST /@connections/{ConnectionId}, 200, Data @length 0..131072, GoneException 410), GetConnection (GET, 200, connectedAt/identity/lastActiveAt, GoneException 410).
+
+## Steps to Reproduce
+1. Boot the emulator from this checkout and point an SDK at it.
+2. apigatewayv2 CreateApi(Name=..., ProtocolType='WEBSOCKET', RouteSelectionExpression='$request.body.op'). Note the returned ApiEndpoint.
+3. CreateIntegration(IntegrationType='MOCK', RequestTemplates={'$default': '{"statusCode": 200}'}, TemplateSelectionExpression='\\$default'); CreateIntegrationResponse(IntegrationResponseKey='$default', ResponseTemplates={'$default': '{"conn":"$context.connectionId"}'}); CreateRoute(RouteKey='whoami', Target='integrations/<id>', RouteResponseSelectionExpression='$default'); CreateRouteResponse(RouteResponseKey='$default'). Declare NO $connect and NO $disconnect route.
+4. CreateStage(StageName='push'); CreateDeployment(StageName='push') and poll GetDeployment until DeploymentStatus == 'DEPLOYED' (it does reach DEPLOYED).
+5. Open a WebSocket to that stage on the announced ApiEndpoint (GET /push with Connection: Upgrade, Upgrade: websocket, Sec-WebSocket-Key, Sec-WebSocket-Version: 13), retrying every 2 s. Observe every attempt answered `HTTP/1.1 403 Forbidden` with `content-type: application/json` where AWS answers `101 Switching Protocols` — a missing $connect route must not refuse the handshake.
+6. Consequently none of the following is reachable: the MOCK route reply carrying $context.connectionId (distinct per socket), PostToConnection delivering UTF-8 bytes as one text frame and non-UTF-8 bytes as text with U+FFFD to that socket only, GetConnection's Identity.SourceIp / ConnectedAt / LastActiveAt ordering, and the ('GoneException', 410, '') refusal of PostToConnection/GetConnection/DeleteConnection after the client closes one socket while the sibling stays live.
+7. Re-replay both check ids in trace_ids to confirm the fix.
