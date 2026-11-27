@@ -284,7 +284,7 @@ pub const HOST_STATE_VALUES: &[&str] = &["CREATED", "CREATE_FAILED", "CREATING",
 
 
 /// The values `InstanceType` accepts on the wire.
-pub const INSTANCE_TYPE_VALUES: &[&str] = &["i4i.metal", "i7i.metal-24xl", "i7i.metal-48xl"];
+pub const INSTANCE_TYPE_VALUES: &[&str] = &["i4i.metal", "i7i.metal-24xl", "i7i.metal-48xl", "r7i.metal-24xl", "r7i.metal-48xl"];
 
 
 /// The values `ValidationExceptionReason` accepts on the wire.

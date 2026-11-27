@@ -50,10 +50,16 @@ use crate::environment_lifecycle::{
 /// the service, so this suite cannot drift along with the catalogue it checks.
 ///
 /// Source: `smithy_query(query="shape", shape="InstanceType")` — `i4i.metal`,
-/// `i7i.metal-24xl`, `i7i.metal-48xl`.
+/// `i7i.metal-24xl`, `i7i.metal-48xl`, `r7i.metal-24xl`, `r7i.metal-48xl`.
 /// [`the_rows_cover_every_instance_type_the_model_declares`] holds this list to the enum
 /// values this crate generates FROM that model.
-const INSTANCE_TYPES: [&str; 3] = ["i4i.metal", "i7i.metal-24xl", "i7i.metal-48xl"];
+const INSTANCE_TYPES: [&str; 5] = [
+    "i4i.metal",
+    "i7i.metal-24xl",
+    "i7i.metal-48xl",
+    "r7i.metal-24xl",
+    "r7i.metal-48xl",
+];
 
 /// A VCF version Amazon EVS INSTALLS and provides `instance_type` on, read from this
 /// service's own version catalogue.
@@ -231,21 +237,27 @@ async fn listed_instance_types(router: &Emulator, case: &str, environment: &str)
 /// exactly four entries.
 const HOSTS_LENGTH: usize = 4;
 
-/// The instance types the four `hosts` entries of one create ask for: one per modelled
-/// instance type, and the remaining entries repeating a type the version IS provided on —
-/// so a refusal names exactly the entries that asked for hardware it is not provided on.
-fn entry_instance_types(provided: &[String]) -> Vec<&'static str> {
+/// The instance types the `hosts` entries of each create ask for, one entry list per
+/// create: the modelled instance types spread over as many creates as it takes at
+/// `HOSTS_LENGTH` entries each, with any entry past the last modelled type repeating a type
+/// the version IS provided on — so a refusal names exactly the entries that asked for
+/// hardware it is not provided on, and the creates together ask for every modelled type.
+fn entry_instance_types(provided: &[String]) -> Vec<Vec<&'static str>> {
     let filler = INSTANCE_TYPES
         .iter()
         .copied()
         .find(|instance_type| provided.iter().any(|listed| listed == instance_type))
         .unwrap_or(INSTANCE_TYPES[0]);
-    let mut asked_for: Vec<&'static str> =
-        INSTANCE_TYPES.iter().copied().take(HOSTS_LENGTH).collect();
-    while asked_for.len() < HOSTS_LENGTH {
-        asked_for.push(filler);
-    }
-    asked_for
+    INSTANCE_TYPES
+        .chunks(HOSTS_LENGTH)
+        .map(|chunk| {
+            let mut asked_for: Vec<&'static str> = chunk.to_vec();
+            while asked_for.len() < HOSTS_LENGTH {
+                asked_for.push(filler);
+            }
+            asked_for
+        })
+        .collect()
 }
 
 #[test]
@@ -256,13 +268,27 @@ fn the_rows_cover_every_instance_type_the_model_declares() {
         under_test, modelled,
         "case \"the modelled InstanceType values\": expected {modelled:?}, got {under_test:?}"
     );
-    // And one create can ask for all of them at once, which is what lets the `hosts` rows
-    // below cover every type in one request.
-    assert!(
-        INSTANCE_TYPES.len() <= HOSTS_LENGTH,
-        "case \"the modelled InstanceType values\": a create carries {HOSTS_LENGTH} hosts, \
-         too few for the {} modelled instance types",
-        INSTANCE_TYPES.len()
+    // And the creates the `hosts` rows below make ask for all of them between them: a
+    // create carries exactly `HOSTS_LENGTH` hosts, so the types are spread over as many
+    // creates as that takes and none of them is left unasked for.
+    let every_type: Vec<String> = INSTANCE_TYPES
+        .iter()
+        .map(|instance_type| (*instance_type).to_string())
+        .collect();
+    let creates = entry_instance_types(&every_type);
+    for (ordinal, asked_for) in creates.iter().enumerate() {
+        assert_eq!(
+            asked_for.len(),
+            HOSTS_LENGTH,
+            "case \"the modelled InstanceType values\": create {ordinal} must carry \
+             {HOSTS_LENGTH} hosts, got {asked_for:?}"
+        );
+    }
+    let asked_for: BTreeSet<&str> = creates.iter().flatten().copied().collect();
+    assert_eq!(
+        asked_for, modelled,
+        "case \"the modelled InstanceType values\": the creates must ask for every modelled \
+         instance type, expected {modelled:?}, got {asked_for:?}"
     );
 }
 
@@ -357,107 +383,113 @@ async fn create_environment_refuses_every_hosts_entry_on_a_type_its_version_is_n
     let router = emulator();
     let catalogue = published_catalogue(&router).await;
 
-    // One create per provided VCF version, each carrying an entry for every modelled
-    // instance type: every entry asking for a type the version is not provided on draws its
-    // own `fieldList` entry, named by the index of the entry that asked for it, and a create
-    // whose entries all ask for provided types adds them all.
+    // Per provided VCF version, the creates that ask for every modelled instance type
+    // between them — a create carries exactly `HOSTS_LENGTH` hosts, so one per chunk of
+    // that many types: every entry asking for a type the version is not provided on draws
+    // its own `fieldList` entry, named by the index of the entry that asked for it, and a
+    // create whose entries all ask for provided types adds them all.
     for (index, (vcf_version, provided)) in catalogue.iter().enumerate() {
-        let case = format!("a create of {vcf_version} carrying one host per instance type");
-        let asked_for = entry_instance_types(provided);
-        let hosts: Vec<Value> = asked_for
-            .iter()
-            .enumerate()
-            .map(|(ordinal, instance_type)| {
-                json!({
-                    "hostName": format!("req-{}-{index}-{ordinal}", slug(instance_type)),
-                    "keyName": HOST_KEY_PAIR_NAME,
-                    "instanceType": instance_type,
+        for (chunk, asked_for) in entry_instance_types(provided).into_iter().enumerate() {
+            let case = format!("a create of {vcf_version} carrying the hosts {asked_for:?}");
+            let hosts: Vec<Value> = asked_for
+                .iter()
+                .enumerate()
+                .map(|(ordinal, instance_type)| {
+                    json!({
+                        "hostName": format!(
+                            "req-{}-{index}-{chunk}-{ordinal}",
+                            slug(instance_type),
+                        ),
+                        "keyName": HOST_KEY_PAIR_NAME,
+                        "instanceType": instance_type,
+                    })
                 })
-            })
-            .collect();
-        let expected_members: Vec<String> = asked_for
-            .iter()
-            .enumerate()
-            .filter(|(_, instance_type)| {
-                !provided.iter().any(|listed| listed == *instance_type)
-            })
-            .map(|(ordinal, _)| format!("hosts[{ordinal}].instanceType"))
-            .collect();
-        let (vpc_id, subnet_id) = router.fresh_network();
-        let environment_name = format!("entry-types-{index}");
-        let request = json!({
-            "vpcId": vpc_id,
-            "serviceAccessSubnetId": subnet_id,
-            "vcfVersion": vcf_version,
-            "termsAccepted": true,
-            "environmentName": environment_name,
-            "initialVlans": vlans_with_prefix(24),
-            "hosts": hosts,
-        });
-        let (status, body) = call(&router, "CreateEnvironment", &request).await;
+                .collect();
+            let expected_members: Vec<String> = asked_for
+                .iter()
+                .enumerate()
+                .filter(|(_, instance_type)| {
+                    !provided.iter().any(|listed| listed == *instance_type)
+                })
+                .map(|(ordinal, _)| format!("hosts[{ordinal}].instanceType"))
+                .collect();
+            let (vpc_id, subnet_id) = router.fresh_network();
+            let environment_name = format!("entry-types-{index}-{chunk}");
+            let request = json!({
+                "vpcId": vpc_id,
+                "serviceAccessSubnetId": subnet_id,
+                "vcfVersion": vcf_version,
+                "termsAccepted": true,
+                "environmentName": environment_name,
+                "initialVlans": vlans_with_prefix(24),
+                "hosts": hosts,
+            });
+            let (status, body) = call(&router, "CreateEnvironment", &request).await;
 
-        if expected_members.is_empty() {
+            if expected_members.is_empty() {
+                assert_eq!(
+                    status, 200,
+                    "case {case:?}: every entry asks for a provided instance type, got \
+                     {status} ({}) {body}",
+                    error_type(&body)
+                );
+                let environment = body["environment"]["environmentId"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("case {case:?}: no environmentId in {body}"))
+                    .to_string();
+                settle(&router);
+                let listed = listed_instance_types(&router, &case, &environment).await;
+                let expected: BTreeSet<String> =
+                    asked_for.iter().map(|value| (*value).to_string()).collect();
+                // "no hosts are added and no VCF installation is performed" for the
+                // self-deployed mode, so an environment that installs none holds none.
+                let expected = if evs::installs_vcf(vcf_version) {
+                    expected
+                } else {
+                    BTreeSet::new()
+                };
+                assert_eq!(
+                    listed, expected,
+                    "case {case:?}: expected the hosts {expected:?}, got {listed:?}"
+                );
+                continue;
+            }
+
+            assert_eq!(
+                status, 400,
+                "case {case:?}: an entry asking for an instance type the catalogue does not \
+                 provide for this VCF version must refuse the create, got {status} {body}"
+            );
+            assert_eq!(
+                error_type(&body),
+                "ValidationException",
+                "case {case:?}: expected a ValidationException, got {body}"
+            );
+            assert_eq!(
+                named_members(&body),
+                expected_members,
+                "case {case:?}: the refusal must name one entry per host that asked for an \
+                 unprovided instance type, got {body}"
+            );
+            // A refused create mints nothing, so no environment of that name exists.
+            let (status, listed) = call(&router, "ListEnvironments", &json!({})).await;
             assert_eq!(
                 status, 200,
-                "case {case:?}: every entry asks for a provided instance type, got {status} \
-                 ({}) {body}",
-                error_type(&body)
+                "case {case:?}: expected 200 from ListEnvironments, got {status} ({}) \
+                 {listed}",
+                error_type(&listed)
             );
-            let environment = body["environment"]["environmentId"]
-                .as_str()
-                .unwrap_or_else(|| panic!("case {case:?}: no environmentId in {body}"))
-                .to_string();
-            settle(&router);
-            let listed = listed_instance_types(&router, &case, &environment).await;
-            let expected: BTreeSet<String> =
-                asked_for.iter().map(|value| (*value).to_string()).collect();
-            // "no hosts are added and no VCF installation is performed" for the
-            // self-deployed mode, so an environment that installs none holds none.
-            let expected = if evs::installs_vcf(vcf_version) {
-                expected
-            } else {
-                BTreeSet::new()
-            };
-            assert_eq!(
-                listed, expected,
-                "case {case:?}: expected the hosts {expected:?}, got {listed:?}"
+            let names: Vec<&str> = listed["environmentSummaries"]
+                .as_array()
+                .unwrap_or_else(|| panic!("case {case:?}: no environmentSummaries in {listed}"))
+                .iter()
+                .filter_map(|summary| summary["environmentName"].as_str())
+                .collect();
+            assert!(
+                !names.contains(&environment_name.as_str()),
+                "case {case:?}: a refused create must mint no environment, got {names:?}"
             );
-            continue;
         }
-
-        assert_eq!(
-            status, 400,
-            "case {case:?}: an entry asking for an instance type the catalogue does not \
-             provide for this VCF version must refuse the create, got {status} {body}"
-        );
-        assert_eq!(
-            error_type(&body),
-            "ValidationException",
-            "case {case:?}: expected a ValidationException, got {body}"
-        );
-        assert_eq!(
-            named_members(&body),
-            expected_members,
-            "case {case:?}: the refusal must name one entry per host that asked for an \
-             unprovided instance type, got {body}"
-        );
-        // A refused create mints nothing, so no environment of that name exists.
-        let (status, listed) = call(&router, "ListEnvironments", &json!({})).await;
-        assert_eq!(
-            status, 200,
-            "case {case:?}: expected 200 from ListEnvironments, got {status} ({}) {listed}",
-            error_type(&listed)
-        );
-        let names: Vec<&str> = listed["environmentSummaries"]
-            .as_array()
-            .unwrap_or_else(|| panic!("case {case:?}: no environmentSummaries in {listed}"))
-            .iter()
-            .filter_map(|summary| summary["environmentName"].as_str())
-            .collect();
-        assert!(
-            !names.contains(&environment_name.as_str()),
-            "case {case:?}: a refused create must mint no environment, got {names:?}"
-        );
     }
 }
 

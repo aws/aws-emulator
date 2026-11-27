@@ -91,9 +91,17 @@ fn slug(vcf_version: &str) -> String {
 /// Every `InstanceType` value the model declares.
 ///
 /// Source: `smithy_query(query="shape", shape="InstanceType")` — `i4i.metal`,
-/// `i7i.metal-24xl`, `i7i.metal-48xl`. The suites that already cover host creation cite
-/// `i4i.metal`; the rows below cover all three.
-const INSTANCE_TYPES: [&str; 3] = ["i4i.metal", "i7i.metal-24xl", "i7i.metal-48xl"];
+/// `i7i.metal-24xl`, `i7i.metal-48xl`, `r7i.metal-24xl`, `r7i.metal-48xl`. The suites that
+/// already cover host creation cite `i4i.metal`; the rows below cover them all, and
+/// `tests/all/host_instance_type_catalogue.rs` holds this list to the enum values this
+/// crate generates FROM the model.
+const INSTANCE_TYPES: [&str; 5] = [
+    "i4i.metal",
+    "i7i.metal-24xl",
+    "i7i.metal-48xl",
+    "r7i.metal-24xl",
+    "r7i.metal-48xl",
+];
 
 /// The `VcfVersionInfo$status` values the member's own documentation declares: "Valid
 /// values are: `AVAILABLE` - This VCF version is available to you. `RESTRICTED` - This VCF
