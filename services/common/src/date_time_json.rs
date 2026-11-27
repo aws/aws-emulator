@@ -104,7 +104,12 @@ static DATE_TIME_TIMESTAMP: Schema = Schema::new(
 /// An instant with no date-time rendering at all (one outside the range the formatter can
 /// express) keeps the protocol's own number rather than being given a fake string — see
 /// [`DateTimeWriter::write_timestamp`].
-fn date_time_text(value: &DateTime) -> Option<String> {
+///
+/// Public because a service that also renders an instant OUTSIDE a modelled member — into a
+/// document it serves, say — must render it the same way as the member reporting it does,
+/// and one renderer is what makes those two agree.
+#[must_use]
+pub fn date_time_text(value: &DateTime) -> Option<String> {
     value.fmt(Format::DateTime).ok()
 }
 

@@ -29,6 +29,7 @@ pub mod list_reports_types;
 pub mod list_tags_for_resource_types;
 pub mod put_account_settings_types;
 pub mod put_compliance_inquiry_feedback_types;
+pub mod report_catalog_types;
 pub mod shared_types;
 pub mod tag_resource_types;
 pub mod untag_resource_types;
@@ -63,6 +64,8 @@ pub use list_tags_for_resource_types::*;
 pub use put_account_settings_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use put_compliance_inquiry_feedback_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use report_catalog_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

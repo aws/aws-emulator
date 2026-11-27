@@ -64,7 +64,7 @@ contents — read that shape in the model above when you need its own members.
 ## CreateComplianceInquiry
 
 - **Route:** `POST /v1/compliance-inquiry/create -> 202`
-- **Input:** `name` (string, required), `inquiryContent` (InquiryContent, required), `clientToken` (string, len 1..128, pattern ^[\w\-]+$, @idempotencyToken), `supportMode` (InquirySupportMode, one of: AI_ONLY | FULL_SUPPORT), `tags` (map<string,string>, len ..50)
+- **Input:** `name` (string, required), `inquiryContent` (InquiryContent, required), `clientToken` (string, len 1..128, pattern ^[\w\-]+$, @idempotencyToken), `supportMode` (InquirySupportMode, one of: AI_ONLY), `tags` (map<string,string>, len ..50)
 - **Output:** `complianceInquirySummary` (InquirySummary), `tags` (map<string,string>, len ..50)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 

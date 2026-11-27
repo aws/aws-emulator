@@ -19,9 +19,9 @@
 //! resolution (the identifier is bound to the query string on two of them and to the
 //! request body on the other two, and two of them go on to record against the inquiry),
 //! the form of the submitted content (a typed query, an uploaded document, an upload
-//! carrying no bytes at all), the support mode the submission asked for (absent, `AI_ONLY`,
-//! `FULL_SUPPORT`) and therefore the terminal status the materialised record reports
-//! (`COMPLETED`, `HUMAN_REVIEW`, `FAILED`), and — for the refusal — the alphabet and case
+//! carrying no bytes at all), whether the submission named a support mode (`AI_ONLY` is the
+//! one the model admits) and therefore the terminal status the materialised record reports
+//! (`COMPLETED`, `FAILED`), and — for the refusal — the alphabet and case
 //! of the 16-character suffix the identifier pattern admits.
 //!
 //! Every case goes through the router, so each one exercises the same path a client takes:
@@ -62,16 +62,12 @@ const SLEPT_SECONDS: f64 = 0.9;
 /// (`smithy_query(query="shape",shape="InquiryStatusMessage")`).
 const INQUIRY_COMPLETE: &str = "Compliance inquiry processing is complete.";
 /// See [`INQUIRY_COMPLETE`].
-const INQUIRY_HUMAN_REVIEW: &str = "Human review is in progress.";
-/// See [`INQUIRY_COMPLETE`].
 const INQUIRY_INTERNAL_ERROR: &str =
     "An internal error occurred while processing the inquiry. Try again at a later time.";
 
-/// `QueryStatusMessage`'s values, from the same model
+/// `QueryStatusMessage`'s value, from the same model
 /// (`smithy_query(query="shape",shape="QueryStatusMessage")`).
 const QUERY_COMPLETE: &str = "Query processing is complete.";
-/// See [`QUERY_COMPLETE`].
-const QUERY_PENDING_HUMAN_REVIEW: &str = "Query is pending human review.";
 
 /// One rating `FeedbackRating` admits
 /// (`smithy_query(query="shape",shape="FeedbackRating")`).
@@ -188,7 +184,6 @@ struct Submission {
 /// The submissions this suite drives every operation against.
 fn submissions() -> Vec<Submission> {
     let completed = ("COMPLETED", QUERY_COMPLETE);
-    let pending_review = ("PROCESSING", QUERY_PENDING_HUMAN_REVIEW);
     vec![
         Submission {
             label: "a typed query, no support mode named",
@@ -212,17 +207,17 @@ fn submissions() -> Vec<Submission> {
             query_terminal: completed,
         },
         Submission {
-            label: "an uploaded document submitted for expert review",
+            label: "an uploaded document naming one section",
             body: json!({
                 "name": "Controls walkthrough",
                 "inquiryContent": {
                     "fileContent": { "content": UPLOAD, "fileSections": ["Controls 1-20"] },
                 },
-                "supportMode": "FULL_SUPPORT",
+                "supportMode": "AI_ONLY",
             }),
-            terminal: ("HUMAN_REVIEW", INQUIRY_HUMAN_REVIEW),
+            terminal: ("COMPLETED", INQUIRY_COMPLETE),
             reported_queries: 1,
-            query_terminal: pending_review,
+            query_terminal: completed,
         },
         Submission {
             label: "an upload carrying no bytes, so nothing to process",

@@ -69,11 +69,6 @@ fn reserved_key_requirement() -> String {
     format!("Member must not contain a tag key beginning with {RESERVED_PREFIX}")
 }
 
-/// The requirement a `supportMode` the submitted content cannot be processed under failed,
-/// from that member's own documentation — "Only supported for file upload mode."
-/// (`smithy_query(query="doc",shape="CreateComplianceInquiryRequest",member="supportMode")`).
-const SUPPORT_MODE_REQUIREMENT: &str = "FULL_SUPPORT is only supported for file upload mode";
-
 /// The requirement a query identifier naming no query of the targeted inquiry failed.
 const UNKNOWN_QUERY_IDENTIFIER_REQUIREMENT: &str =
     "every query identifier must name a query of the compliance inquiry";
@@ -395,21 +390,6 @@ async fn rows(router: &MultiServiceRouter) -> Vec<Row> {
             body: Bytes::new(),
             member: "tagKeys",
             requirement: reserved_key_requirement(),
-        },
-        Row {
-            case: "a support mode the submitted content cannot be processed under".to_string(),
-            method: "POST",
-            uri: "/v1/compliance-inquiry/create".to_string(),
-            body: Bytes::from(
-                json!({
-                    "name": "a text submission asking for full support",
-                    "inquiryContent": { "query": "Which controls does this report cover?" },
-                    "supportMode": "FULL_SUPPORT",
-                })
-                .to_string(),
-            ),
-            member: "supportMode",
-            requirement: SUPPORT_MODE_REQUIREMENT.to_string(),
         },
         Row {
             case: "an export naming a query the inquiry does not own".to_string(),

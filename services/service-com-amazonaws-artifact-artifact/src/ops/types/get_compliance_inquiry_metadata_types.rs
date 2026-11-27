@@ -8,7 +8,6 @@
 #![allow(unused_imports)]
 
 use super::*;
-use crate::ops::types::shared_types::{artifact_date_time_member_schema, artifact_member_schema};
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-artifact-artifact.json");
 
@@ -25,12 +24,7 @@ pub struct GetComplianceInquiryMetadataOutput {
     pub tags: Option<std::collections::HashMap<String, String>>,
 }
 
-/// `InquiryDetail`, with its schema written out instead of derived: `createdAt` and
-/// `updatedAt` target `TimestampAttribute`, so they are RFC 3339 date-time strings on the
-/// wire rather than the restJson1 default of epoch seconds. See the note on
-/// `crate::artifact_member_schema` in `types/shared_types.rs` for why this is hand-written
-/// and what deletes it. Member set, order and nullability from
-/// `smithy_query(query="shape",shape="InquiryDetail")`.
+#[smithy_macros::smithy(shape = "com.amazonaws.artifact#InquiryDetail")]
 #[derive(Debug, Clone)]
 pub struct InquiryDetail {
     pub arn: String,
@@ -43,119 +37,3 @@ pub struct InquiryDetail {
     pub updated_at: Option<::aws_smithy_types::DateTime>,
     pub support_mode: Option<String>,
 }
-
-#[allow(non_upper_case_globals)]
-impl InquiryDetail {
-    pub const M_ARN: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("InquiryDetail", "arn", String, 0);
-    pub const M_NAME: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("InquiryDetail", "name", String, 1);
-    pub const M_ID: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("InquiryDetail", "id", String, 2);
-    pub const M_STATUS: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("InquiryDetail", "status", String, 3);
-    pub const M_STATUS_MESSAGE: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("InquiryDetail", "statusMessage", String, 4);
-    pub const M_INPUT_SOURCE: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("InquiryDetail", "inputSource", String, 5);
-    /// `TimestampAttribute`, `@timestampFormat("date-time")`.
-    pub const M_CREATED_AT: ::aws_smithy_schema::Schema =
-        artifact_date_time_member_schema!("InquiryDetail", "createdAt", 6);
-    /// `TimestampAttribute`, `@timestampFormat("date-time")`.
-    pub const M_UPDATED_AT: ::aws_smithy_schema::Schema =
-        artifact_date_time_member_schema!("InquiryDetail", "updatedAt", 7);
-    pub const M_SUPPORT_MODE: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("InquiryDetail", "supportMode", String, 8);
-
-    pub const SCHEMA: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_struct(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.artifact#InquiryDetail",
-            "com.amazonaws.artifact",
-            "InquiryDetail",
-        ),
-        ::aws_smithy_schema::ShapeType::Structure,
-        &[
-            &Self::M_ARN,
-            &Self::M_NAME,
-            &Self::M_ID,
-            &Self::M_STATUS,
-            &Self::M_STATUS_MESSAGE,
-            &Self::M_INPUT_SOURCE,
-            &Self::M_CREATED_AT,
-            &Self::M_UPDATED_AT,
-            &Self::M_SUPPORT_MODE,
-        ],
-    );
-}
-
-pub static INQUIRY_DETAIL_SCHEMA: &::aws_smithy_schema::Schema = &InquiryDetail::SCHEMA;
-
-impl ::aws_smithy_schema::serde::SerializableStruct for InquiryDetail {
-    fn serialize_members(
-        &self,
-        s: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        s.write_string(&Self::M_ARN, self.arn.as_str())?;
-        s.write_string(&Self::M_NAME, self.name.as_str())?;
-        s.write_string(&Self::M_ID, self.id.as_str())?;
-        s.write_string(&Self::M_STATUS, self.status.as_str())?;
-        s.write_string(&Self::M_STATUS_MESSAGE, self.status_message.as_str())?;
-        s.write_string(&Self::M_INPUT_SOURCE, self.input_source.as_str())?;
-        write_artifact_date_time(s, &Self::M_CREATED_AT, &self.created_at)?;
-        if let Some(v) = self.updated_at.as_ref() {
-            write_artifact_date_time(s, &Self::M_UPDATED_AT, v)?;
-        }
-        if let Some(v) = self.support_mode.as_ref() {
-            s.write_string(&Self::M_SUPPORT_MODE, v.as_str())?;
-        }
-        Ok(())
-    }
-}
-
-/// See the note beside `InquirySummary`'s reader in `types/shared_types.rs`: the enclosing
-/// output shape keeps the derive, and the reader the derive emits for it requires this one.
-impl ::aws_smithy_schema_server::DeserializableStruct for InquiryDetail {
-    fn deserialize(
-        d: &mut dyn ::aws_smithy_schema::serde::ShapeDeserializer,
-    ) -> ::std::result::Result<Self, ::aws_smithy_schema::serde::SerdeError> {
-        let mut arn: Option<String> = None;
-        let mut name: Option<String> = None;
-        let mut id: Option<String> = None;
-        let mut status: Option<String> = None;
-        let mut status_message: Option<String> = None;
-        let mut input_source: Option<String> = None;
-        let mut created_at: Option<::aws_smithy_types::DateTime> = None;
-        let mut updated_at: Option<::aws_smithy_types::DateTime> = None;
-        let mut support_mode: Option<String> = None;
-        d.read_struct(&Self::SCHEMA, &mut |member, d| {
-            match member.member_index() {
-                Some(0) => arn = Some(d.read_string(&Self::M_ARN)?),
-                Some(1) => name = Some(d.read_string(&Self::M_NAME)?),
-                Some(2) => id = Some(d.read_string(&Self::M_ID)?),
-                Some(3) => status = Some(d.read_string(&Self::M_STATUS)?),
-                Some(4) => status_message = Some(d.read_string(&Self::M_STATUS_MESSAGE)?),
-                Some(5) => input_source = Some(d.read_string(&Self::M_INPUT_SOURCE)?),
-                Some(6) => created_at = Some(d.read_timestamp(&Self::M_CREATED_AT)?),
-                Some(7) => updated_at = Some(d.read_timestamp(&Self::M_UPDATED_AT)?),
-                Some(8) => support_mode = Some(d.read_string(&Self::M_SUPPORT_MODE)?),
-                _ => {}
-            }
-            Ok(())
-        })?;
-        Ok(Self {
-            arn: arn.ok_or_else(|| ::aws_smithy_schema_server::missing_member("arn"))?,
-            name: name.ok_or_else(|| ::aws_smithy_schema_server::missing_member("name"))?,
-            id: id.ok_or_else(|| ::aws_smithy_schema_server::missing_member("id"))?,
-            status: status.ok_or_else(|| ::aws_smithy_schema_server::missing_member("status"))?,
-            status_message: status_message
-                .ok_or_else(|| ::aws_smithy_schema_server::missing_member("statusMessage"))?,
-            input_source: input_source
-                .ok_or_else(|| ::aws_smithy_schema_server::missing_member("inputSource"))?,
-            created_at: created_at
-                .ok_or_else(|| ::aws_smithy_schema_server::missing_member("createdAt"))?,
-            updated_at,
-            support_mode,
-        })
-    }
-}
-

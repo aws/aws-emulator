@@ -12,12 +12,11 @@
 //!   the document as a whole when the request names no section — so
 //!   `ListComplianceInquiryQueries` reports them in ascending `queryIdentifier` and
 //!   `PutComplianceInquiryFeedback` can name each one;
-//! * `supportMode` selects the REVIEW each of those queries carries: `FULL_SUPPORT`
-//!   "includes human expert review" and is "[o]nly supported for file upload mode", so an
-//!   uploaded document submitted under it carries `ReviewType` `HUMAN` and rests in
-//!   `InquiryStatus` `HUMAN_REVIEW` with "Human review is in progress." while that review
-//!   is pending, and everything else is `AI`-reviewed and reaches `COMPLETED` with
-//!   "Compliance inquiry processing is complete.";
+//! * every one of those queries carries the REVIEW the inquiry's support mode asks for,
+//!   and `InquirySupportMode` admits exactly one mode — `AI_ONLY`, which "[d]efaults" for
+//!   a request naming none (`smithy_query(query="shape",shape="InquirySupportMode")`) — so
+//!   every query is `ReviewType` `AI` and reaches `COMPLETED` with "Compliance inquiry
+//!   processing is complete.";
 //! * the modelled internal-error state is reserved for a submission that carried NOTHING
 //!   to process (an upload with no bytes); a submission that carried content reaches a
 //!   non-failure terminal status even when no unit of work of it could be reported inside
@@ -31,7 +30,7 @@
 //! The rows differ along what the rule generalises over: the form of the content, how many
 //! sections an upload names (none, one, several, and `FileSectionList`'s published
 //! maximum), the section labels themselves, how many bytes the upload carries, whether
-//! `supportMode` is given and which of its values, and whether the handle a unit of work
+//! `supportMode` is given, and whether the handle a unit of work
 //! is reported under fits the modelled bounds of `QuerySummary$query`.
 
 use std::sync::Arc;
@@ -54,16 +53,12 @@ const PAST_THE_PROCESSING_SPAN: Duration = Duration::from_millis(900);
 /// (`smithy_query(query="shape",shape="InquiryStatusMessage")`).
 const INQUIRY_COMPLETE: &str = "Compliance inquiry processing is complete.";
 /// See [`INQUIRY_COMPLETE`].
-const INQUIRY_HUMAN_REVIEW: &str = "Human review is in progress.";
-/// See [`INQUIRY_COMPLETE`].
 const INQUIRY_INTERNAL_ERROR: &str =
     "An internal error occurred while processing the inquiry. Try again at a later time.";
 
-/// `QueryStatusMessage`'s values this suite expects
+/// `QueryStatusMessage`'s value this suite expects
 /// (`smithy_query(query="shape",shape="QueryStatusMessage")`).
 const QUERY_COMPLETE: &str = "Query processing is complete.";
-/// See [`QUERY_COMPLETE`].
-const QUERY_PENDING_HUMAN_REVIEW: &str = "Query is pending human review.";
 
 /// `FileSectionList`'s published maximum length
 /// (`smithy_query(query="shape",shape="FileSectionList")`: `@length(min: 0, max: 30)`).
@@ -258,11 +253,8 @@ fn upload(
     } else {
         sections.clone()
     };
-    let human = support_mode == Some("FULL_SUPPORT") && !owned.is_empty();
     let query_terminal = if owned.is_empty() {
         None
-    } else if human {
-        Some(("PROCESSING", QUERY_PENDING_HUMAN_REVIEW))
     } else {
         Some(("COMPLETED", QUERY_COMPLETE))
     };
@@ -270,11 +262,11 @@ fn upload(
         label,
         body: file_body(title, content, &sections, support_mode),
         owned,
-        review_type: if human { "HUMAN" } else { "AI" },
-        terminal: match (human, content.is_empty()) {
-            (true, _) => ("HUMAN_REVIEW", INQUIRY_HUMAN_REVIEW),
-            (false, true) => ("FAILED", INQUIRY_INTERNAL_ERROR),
-            (false, false) => ("COMPLETED", INQUIRY_COMPLETE),
+        review_type: "AI",
+        terminal: if content.is_empty() {
+            ("FAILED", INQUIRY_INTERNAL_ERROR)
+        } else {
+            ("COMPLETED", INQUIRY_COMPLETE)
         },
         query_terminal,
     }
@@ -313,18 +305,18 @@ fn cases() -> Vec<Case> {
             Some("AI_ONLY"),
         ),
         upload(
-            "an upload naming two sections under FULL_SUPPORT",
+            "an upload naming two sections",
             "Annual audit workbook",
             UPLOAD,
             &["Section A", "Section B"],
-            Some("FULL_SUPPORT"),
+            Some("AI_ONLY"),
         ),
         upload(
-            "an upload naming one section under FULL_SUPPORT",
+            "an upload naming one section, a larger document",
             "Security addendum",
             &long_upload(),
             &["Controls 1-20"],
-            Some("FULL_SUPPORT"),
+            Some("AI_ONLY"),
         ),
         upload(
             "an upload naming the most sections the list admits",
@@ -345,12 +337,12 @@ fn cases() -> Vec<Case> {
             "Empty questionnaire",
             EMPTY_UPLOAD,
             &[],
-            Some("FULL_SUPPORT"),
+            Some("AI_ONLY"),
         ),
         // The rows for a handle the modelled `query` shape cannot report verbatim: it is
         // reported inside that shape's bounds, a handle nothing is left of reports no
         // query at all, and reporting no query is not a processing failure — the inquiry
-        // still reaches the terminal status its submitted content and support mode select.
+        // still reaches the terminal status its submitted content selects.
         Case {
             label: "an upload whose title carries characters the query shape excludes",
             body: file_body("Workbook <2026> edition", UPLOAD, &[], None),
@@ -384,11 +376,11 @@ fn cases() -> Vec<Case> {
             query_terminal: None,
         },
         Case {
-            label: "an upload under FULL_SUPPORT whose title leaves no reportable handle",
-            body: file_body("<>", &long_upload(), &[], Some("FULL_SUPPORT")),
+            label: "a larger upload whose title leaves no reportable handle",
+            body: file_body("<>", &long_upload(), &[], Some("AI_ONLY")),
             owned: Vec::new(),
-            review_type: "HUMAN",
-            terminal: ("HUMAN_REVIEW", INQUIRY_HUMAN_REVIEW),
+            review_type: "AI",
+            terminal: ("COMPLETED", INQUIRY_COMPLETE),
             query_terminal: None,
         },
         Case {
@@ -405,8 +397,7 @@ fn cases() -> Vec<Case> {
             query_terminal: Some(("COMPLETED", QUERY_COMPLETE)),
         },
         // The contrast rows: a text submission owns the one query it carries, and it is
-        // AI-reviewed — `FULL_SUPPORT` is "[o]nly supported for file upload mode", so a
-        // text submission cannot be created under it at all (see
+        // AI-reviewed like every other submission — the model admits one support mode (see
         // `compliance_inquiry_support_mode.rs`).
         Case {
             label: "a submitted query",

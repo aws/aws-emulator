@@ -249,10 +249,10 @@ struct Case {
     tags: &'static [(&'static str, &'static str)],
     /// The `InquiryStatus` the clock owes this inquiry, and the message that goes with
     /// it. A submission's units of work become its queries, so a submission that carries
-    /// any reaches a non-failure state: `COMPLETED` once the service's own model has
-    /// processed them, or `HUMAN_REVIEW` while the human expert review `FULL_SUPPORT`
-    /// asked for is pending. A submission carrying nothing to process — an upload with no
-    /// bytes — owns no query, so its processing failed.
+    /// any reaches `COMPLETED` once the service's own model has processed them — the one
+    /// support mode the model admits (`AI_ONLY`) is an AI review. A submission carrying
+    /// nothing to process — an upload with no bytes — owns no query, so its processing
+    /// failed.
     terminal_status: &'static str,
     /// See [`Case::terminal_status`].
     terminal_message: &'static str,
@@ -264,7 +264,6 @@ struct Case {
 /// `supportMode` is given and which value, and how many tags come with it.
 fn cases() -> Vec<Case> {
     const COMPLETED: &str = "Compliance inquiry processing is complete.";
-    const HUMAN_REVIEW: &str = "Human review is in progress.";
     const INQUIRY_INTERNAL_ERROR: &str =
         "An internal error occurred while processing the inquiry. Try again at a later time.";
     vec![
@@ -315,19 +314,19 @@ fn cases() -> Vec<Case> {
             terminal_message: COMPLETED,
         },
         Case {
-            label: "an uploaded document, two sections, FULL_SUPPORT",
+            label: "an uploaded document, two sections, AI_ONLY",
             body: file_body(
                 "Annual audit workbook",
                 FILE_CONTENT,
                 &["Section A", "Section B"],
-                Some("FULL_SUPPORT"),
+                Some("AI_ONLY"),
                 &[("env", "staging")],
             ),
             input_source: "FILE",
-            support_mode: "FULL_SUPPORT",
+            support_mode: "AI_ONLY",
             tags: &[("env", "staging")],
-            terminal_status: "HUMAN_REVIEW",
-            terminal_message: HUMAN_REVIEW,
+            terminal_status: "COMPLETED",
+            terminal_message: COMPLETED,
         },
         Case {
             label: "an uploaded document, one section, other content",
@@ -690,7 +689,7 @@ async fn a_client_token_reused_on_different_content_is_refused() {
     for (label, mutate) in [
         ("the title", 0usize),
         ("the query", 1),
-        ("the content form and its supportMode", 2),
+        ("the content form and the sections it names", 2),
         ("a tag value", 3),
         ("an added tag", 4),
         ("the content form", 5),
@@ -700,11 +699,13 @@ async fn a_client_token_reused_on_different_content_is_refused() {
             0 => body["name"] = json!("Renamed"),
             1 => body["inquiryContent"] = json!({ "query": "Is customer data encrypted in transit?" }),
             2 => {
-                // `supportMode` can only differ on content the other mode is available
-                // for: `FULL_SUPPORT` is "only supported for file upload mode", so the
-                // row that changes the mode changes the content's form with it.
-                body["inquiryContent"] = json!({ "fileContent": { "content": FILE_CONTENT } });
-                body["supportMode"] = json!("FULL_SUPPORT");
+                // `supportMode` cannot differ between two submissions: the model admits
+                // one value and it is also the default, so a request naming it and one
+                // leaving it out are processed under the same mode. The row differs on the
+                // sections the uploaded content names instead.
+                body["inquiryContent"] = json!({
+                    "fileContent": { "content": FILE_CONTENT, "fileSections": ["Section A"] }
+                });
             }
             3 => body["tags"] = json!({ "team": "legal" }),
             4 => body["tags"] = json!({ "team": "compliance", "env": "prod" }),

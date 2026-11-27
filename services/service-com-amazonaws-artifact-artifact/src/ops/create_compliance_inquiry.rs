@@ -36,16 +36,14 @@
 //!   names no section. The one enumeration
 //!   ([`crate::state::InquiryContentRecord::work_units`]) serves every content form, so
 //!   `ListComplianceInquiryQueries` reports what was submitted for processing whatever
-//!   form it took, and `supportMode` selects the review each of them carries
-//!   ([`crate::state::review_type_for`]).
-//! * A request member the model restricts to one FORM of the submitted content is refused
-//!   when the content takes another: `supportMode` is "[o]nly supported for file upload
-//!   mode", so the mode that adds human expert review cannot be asked for of a submission
-//!   that is not an upload, and such a request is answered with the modelled 400
-//!   `ValidationException` naming the member
-//!   ([`crate::state::support_mode_available_for`]). The inquiry therefore only ever
-//!   stores — and every read only ever reports — a support mode its queries really were
-//!   reviewed under.
+//!   form it took, and every one of them carries the review the one support mode the model
+//!   admits asks for ([`crate::state::REVIEW_TYPE_AI`]).
+//! * `supportMode` "[d]efaults to AI_ONLY if not specified."
+//!   (`CreateComplianceInquiryRequest$supportMode`), and `AI_ONLY` is the whole of the
+//!   modelled `InquirySupportMode` enum, so a request naming no mode is processed under
+//!   that documented default and a request naming any other value is refused against the
+//!   enum before this handler runs. The inquiry therefore only ever stores — and every read
+//!   only ever reports — a support mode its queries really were reviewed under.
 //! * A tag the request carries is written onto the inquiry it creates, under the same rule
 //!   the tag write enforces: a key in the reserved `aws:` namespace
 //!   ([`crate::state::RESERVED_TAG_KEY_PREFIX`]) is Amazon Web Services' own, so such a
@@ -119,7 +117,7 @@
 //! * `inquiryContent` (InquiryContent) **required** — Content for creating a compliance
 //!   inquiry - either a single query or file content.
 //! * `name` (InquiryName) **required** — Title of the inquiry.
-//! * `supportMode` (InquirySupportMode, one of: AI_ONLY | FULL_SUPPORT) — Support mode for
+//! * `supportMode` (InquirySupportMode, one of: AI_ONLY) — Support mode for
 //!   inquiry processing. Only supported for file upload mode. Defaults to AI_ONLY if not
 //!   specified.
 //! * `tags` (TagsMap, len ..50) — Tags to associate with the compliance inquiry resource.
@@ -249,33 +247,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // WHICH form the submission took, which is a label this API itself reports
         // (`InquirySummary$inputSource`) and not caller content.
         let input_source = content.input_source();
-        // `supportMode` is "[o]nly supported for file upload mode. Defaults to AI_ONLY if
-        // not specified." (`CreateComplianceInquiryRequest$supportMode`), so BOTH
-        // sentences apply: a mode the submitted content cannot be processed under is
-        // refused as a field validation failure naming the member
-        // ([`crate::state::support_mode_available_for`]), rather than stored and reported
-        // back on an inquiry that was processed under another one; and a request naming no
-        // mode is processed under the documented default.
-        let support_mode = match input.support_mode {
-            Some(mode) if !crate::state::support_mode_available_for(&mode, &content) => {
-                ::tracing::info!(
-                    target: "emulator::audit",
-                    operation = "CreateComplianceInquiry",
-                    akid = %akid,
-                    region = %region,
-                    input_source,
-                    outcome = "refused",
-                    reason = "supportMode is not available for the submitted content",
-                    "state-changing operation"
-                );
-                return Err(CreateComplianceInquiryErrorModeled::ValidationException(
-                    crate::state::unsupported_support_mode(),
-                )
-                .into());
-            }
-            Some(mode) => mode,
-            None => crate::state::SUPPORT_MODE_AI_ONLY.to_string(),
-        };
+        // `supportMode` "[d]efaults to AI_ONLY if not specified."
+        // (`CreateComplianceInquiryRequest$supportMode`), and that is the one value the
+        // modelled enum admits, so a request naming no mode is processed under the
+        // documented default and a request naming any other value is refused against the
+        // enum before this handler runs.
+        let support_mode = input
+            .support_mode
+            .unwrap_or_else(|| crate::state::SUPPORT_MODE_AI_ONLY.to_string());
         let tags: ::std::collections::BTreeMap<String, String> =
             input.tags.unwrap_or_default().into_iter().collect();
         // The same reserved-namespace rule the tag write enforces
@@ -303,7 +282,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // retrieval below runs WITHOUT holding it: the catalog is service-owned and never
         // written, so what was copied cannot go stale.
         let corpus = crate::state::AnswerCorpus::from_catalog(&state.lock().reports);
-        let queries = enumerate_queries(&input.name, &support_mode, &content, now, &corpus);
+        let queries = enumerate_queries(&input.name, &content, now, &corpus);
 
         let mut store = state.lock();
 
@@ -453,8 +432,7 @@ fn content_record(content: InquiryContent) -> crate::state::InquiryContentRecord
 /// order they are processed ("[s]equential identifier of the query within the inquiry").
 ///
 /// Every query starts non-terminal, like the inquiry itself, and carries the review the
-/// inquiry's support mode selects ([`crate::state::review_type_for`]) — which is the mode
-/// the submission can be processed under, the others having been refused above; the clock
+/// one support mode the model admits asks for ([`crate::state::REVIEW_TYPE_AI`]); the clock
 /// moves them on (see [`crate::state::ComplianceInquiry::materialise`]).
 ///
 /// A unit whose handle cannot be reported inside the modelled bounds of
@@ -471,12 +449,11 @@ fn content_record(content: InquiryContent) -> crate::state::InquiryContentRecord
 /// none.
 fn enumerate_queries(
     title: &str,
-    support_mode: &str,
     content: &crate::state::InquiryContentRecord,
     now: ::std::time::SystemTime,
     catalog: &crate::state::AnswerCorpus,
 ) -> Vec<crate::state::InquiryQuery> {
-    let review_type = crate::state::review_type_for(support_mode);
+    let review_type = crate::state::REVIEW_TYPE_AI;
     let texts: Vec<String> = content
         .work_units(title)
         .iter()

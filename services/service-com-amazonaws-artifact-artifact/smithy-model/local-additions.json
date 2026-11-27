@@ -1,0 +1,119 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.artifact#ReportSummary": {
+      "type": "structure",
+      "members": {
+        "id": { "target": "com.amazonaws.artifact#ReportId" },
+        "name": { "target": "com.amazonaws.artifact#ShortStringAttribute" },
+        "state": { "target": "com.amazonaws.artifact#PublishedState" },
+        "arn": { "target": "com.amazonaws.artifact#LongStringAttribute" },
+        "version": { "target": "com.amazonaws.artifact#VersionAttribute" },
+        "uploadState": { "target": "com.amazonaws.artifact#UploadState" },
+        "description": { "target": "com.amazonaws.artifact#LongStringAttribute" },
+        "periodStart": { "target": "com.amazonaws.artifact#TimestampAttribute" },
+        "periodEnd": { "target": "com.amazonaws.artifact#TimestampAttribute" },
+        "series": { "target": "com.amazonaws.artifact#ShortStringAttribute" },
+        "category": { "target": "com.amazonaws.artifact#ShortStringAttribute" },
+        "companyName": { "target": "com.amazonaws.artifact#ShortStringAttribute" },
+        "productName": { "target": "com.amazonaws.artifact#ShortStringAttribute" },
+        "statusMessage": { "target": "com.amazonaws.artifact#StatusMessage" },
+        "acceptanceType": { "target": "com.amazonaws.artifact#AcceptanceType" },
+        "visibility": { "target": "com.amazonaws.artifact#Visibility" }
+      }
+    },
+    "com.amazonaws.artifact#ReportDetail": {
+      "type": "structure",
+      "members": {
+        "id": { "target": "com.amazonaws.artifact#ReportId" },
+        "name": { "target": "com.amazonaws.artifact#ShortStringAttribute" },
+        "description": { "target": "com.amazonaws.artifact#LongStringAttribute" },
+        "periodStart": { "target": "com.amazonaws.artifact#TimestampAttribute" },
+        "periodEnd": { "target": "com.amazonaws.artifact#TimestampAttribute" },
+        "createdAt": { "target": "com.amazonaws.artifact#TimestampAttribute" },
+        "lastModifiedAt": { "target": "com.amazonaws.artifact#TimestampAttribute" },
+        "deletedAt": { "target": "com.amazonaws.artifact#TimestampAttribute" },
+        "state": { "target": "com.amazonaws.artifact#PublishedState" },
+        "arn": { "target": "com.amazonaws.artifact#LongStringAttribute" },
+        "series": { "target": "com.amazonaws.artifact#ShortStringAttribute" },
+        "category": { "target": "com.amazonaws.artifact#ShortStringAttribute" },
+        "companyName": { "target": "com.amazonaws.artifact#ShortStringAttribute" },
+        "productName": { "target": "com.amazonaws.artifact#ShortStringAttribute" },
+        "termArn": { "target": "com.amazonaws.artifact#LongStringAttribute" },
+        "version": { "target": "com.amazonaws.artifact#VersionAttribute" },
+        "acceptanceType": { "target": "com.amazonaws.artifact#AcceptanceType" },
+        "sequenceNumber": { "target": "com.amazonaws.artifact#SequenceNumberAttribute" },
+        "uploadState": { "target": "com.amazonaws.artifact#UploadState" },
+        "statusMessage": { "target": "com.amazonaws.artifact#StatusMessage" },
+        "visibility": { "target": "com.amazonaws.artifact#Visibility" }
+      }
+    },
+    "com.amazonaws.artifact#Visibility": {
+      "type": "string"
+    },
+    "com.amazonaws.artifact#ReportId": {
+      "type": "string",
+      "traits": {
+        "smithy.api#pattern": "^report-[a-zA-Z0-9]{16}$"
+      }
+    },
+    "com.amazonaws.artifact#ShortStringAttribute": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 256 },
+        "smithy.api#pattern": "^[a-zA-Z0-9_\\-\\s]*$"
+      }
+    },
+    "com.amazonaws.artifact#LongStringAttribute": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 2048 },
+        "smithy.api#pattern": "^[^<>]*$"
+      }
+    },
+    "com.amazonaws.artifact#StatusMessage": {
+      "type": "string"
+    },
+    "com.amazonaws.artifact#TimestampAttribute": {
+      "type": "timestamp",
+      "traits": {
+        "smithy.api#timestampFormat": "date-time"
+      }
+    },
+    "com.amazonaws.artifact#VersionAttribute": {
+      "type": "long",
+      "traits": {
+        "smithy.api#range": { "min": 1 }
+      }
+    },
+    "com.amazonaws.artifact#SequenceNumberAttribute": {
+      "type": "long",
+      "traits": {
+        "smithy.api#range": { "min": 1 }
+      }
+    },
+    "com.amazonaws.artifact#PublishedState": {
+      "type": "enum",
+      "members": {
+        "PUBLISHED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "PUBLISHED" } },
+        "UNPUBLISHED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "UNPUBLISHED" } }
+      }
+    },
+    "com.amazonaws.artifact#UploadState": {
+      "type": "enum",
+      "members": {
+        "PROCESSING": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "PROCESSING" } },
+        "COMPLETE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "COMPLETE" } },
+        "FAILED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "FAILED" } },
+        "FAULT": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "FAULT" } }
+      }
+    },
+    "com.amazonaws.artifact#AcceptanceType": {
+      "type": "enum",
+      "members": {
+        "PASSTHROUGH": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "PASSTHROUGH" } },
+        "EXPLICIT": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "EXPLICIT" } }
+      }
+    }
+  }
+}

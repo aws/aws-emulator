@@ -1,34 +1,34 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! `CreateComplianceInquiry`'s `supportMode` against the FORM of the submitted content,
-//! end to end over HTTP.
+//! `CreateComplianceInquiry`'s `supportMode`, end to end over HTTP.
 //!
 //! Every assertion goes through the router, so each case exercises routing,
 //! deserialization, the handler, the persisted state and serialization — the same path a
 //! client takes. The rule under test is one rule:
 //!
-//! * a request member the model documents as supported only for one form of the submitted
-//!   content is REFUSED when the content takes another form, with the modelled 400
-//!   `ValidationException` whose `reason` is `fieldValidationFailed` and whose `fieldList`
-//!   names that member — it is never accepted, stored and reported back. Here the member
-//!   is `supportMode`: "Support mode for inquiry processing. Only supported for file
-//!   upload mode. Defaults to AI_ONLY if not specified."
-//!   (`smithy_query(query="doc",shape="CreateComplianceInquiryRequest",member="supportMode")`),
-//!   so `FULL_SUPPORT` — the mode that "includes human expert review"
-//!   (`InquiryDetail$supportMode`) — can only be asked for of an uploaded document, while
-//!   the mode the same sentence makes every submission's default asks for nothing a
-//!   submission cannot be given;
-//! * so every accepted inquiry reports a support mode it really is processed under: the
-//!   `supportMode` a read reports and the `ReviewType` its queries carry agree —
-//!   `FULL_SUPPORT` with `HUMAN`, `AI_ONLY` with `AI` — rather than advertising a human
-//!   expert review of queries the service's own model reviewed.
+//! * `InquirySupportMode` admits exactly ONE value — `AI_ONLY`
+//!   (`smithy_query(query="shape",shape="InquirySupportMode")`), which is also the value
+//!   the member's own documentation makes the default: "Support mode for inquiry
+//!   processing. Only supported for file upload mode. Defaults to AI_ONLY if not
+//!   specified."
+//!   (`smithy_query(query="doc",shape="CreateComplianceInquiryRequest",member="supportMode")`).
+//!   So every accepted submission is processed under that mode and every read of the
+//!   inquiry reports it, whether the request named it or left it out, whatever form the
+//!   submitted content took;
+//! * and the mode a read reports agrees with the `ReviewType` the inquiry's queries carry:
+//!   the one mode the model admits "provides AI-generated responses", so every query is
+//!   `AI`-reviewed and no read advertises a review nothing performed;
+//! * a value OUTSIDE that enum is refused before an inquiry is created. This service is
+//!   reached through a gateway that binds the request body against the modelled shape, so
+//!   such a request is answered with that gateway's 400 `BadRequestException` (the refusal
+//!   itself is pinned per member in `front_door_errors.rs`), nothing is persisted, and the
+//!   `clientToken` the refused call carried is not spent.
 //!
 //! The rows differ along what the rule generalises over: the form of the content (a
-//! submitted query versus an uploaded document), the value of the member (each of
-//! `InquirySupportMode`'s two, and the member left out), the size of the query text (one
-//! character, a sentence, and the longest `LongStringAttribute` admits), how many sections
-//! an upload names, whether the upload carries any bytes, and whether the request also
-//! carries tags and a `clientToken`.
+//! submitted query versus an uploaded document), whether the member is named or left out,
+//! the size of the query text (one character, a sentence, and the longest
+//! `LongStringAttribute` admits), how many sections an upload names, whether the upload
+//! carries any bytes, and whether the request also carries tags and a `clientToken`.
 
 use std::sync::Arc;
 
@@ -51,18 +51,19 @@ const UPLOAD: &str = "cXVlc3Rpb25uYWlyZQ==";
 /// bound as well as below it.
 const QUERY_TEXT_CEILING: usize = 2048;
 
-/// `ValidationExceptionReason`'s value for a member the service itself refused
-/// (`smithy_query(query="shape",shape="ValidationExceptionReason")`).
-const REASON_FIELD_VALIDATION_FAILED: &str = "fieldValidationFailed";
+/// The one value `InquirySupportMode` admits, and the member's documented default
+/// (`smithy_query(query="shape",shape="InquirySupportMode")`).
+const SUPPORT_MODE: &str = "AI_ONLY";
 
-/// The member the refusal names.
-const MEMBER: &str = "supportMode";
-
-/// `ReviewType`'s value for a response the service's own model reviews, and the one a
-/// human expert reviews (`smithy_query(query="shape",shape="ReviewType")`).
+/// `ReviewType`'s value for a response the service's own model reviews
+/// (`smithy_query(query="shape",shape="ReviewType")`).
 const REVIEW_AI: &str = "AI";
-/// See [`REVIEW_AI`].
-const REVIEW_HUMAN: &str = "HUMAN";
+
+/// The front door's refusal of a body it cannot bind to the modelled shape: the status and
+/// the wire error code a restJson1 client resolves the shape from. Values outside a
+/// modelled enum are among the bodies it cannot bind, so this is what a `supportMode`
+/// outside `InquirySupportMode` is answered with.
+const INVALID_BODY: (u16, &str) = (400, "BadRequestException");
 
 /// One emulator: a router carrying only this service, over one shared engine.
 fn emulator() -> MultiServiceRouter {
@@ -83,29 +84,6 @@ impl Answer {
     /// The wire error code (`__type`), or the empty string on a success.
     fn error_code(&self) -> &str {
         self.body["__type"].as_str().unwrap_or_default()
-    }
-
-    /// The `message` the error body carries, or the empty string when it carries none.
-    fn message(&self) -> &str {
-        self.body["message"].as_str().unwrap_or_default()
-    }
-
-    /// The `fieldList` entries the refusal names, as (name, message) pairs.
-    fn field_list(&self) -> Vec<(String, String)> {
-        self.body["fieldList"]
-            .as_array()
-            .map(|entries| {
-                entries
-                    .iter()
-                    .map(|entry| {
-                        (
-                            entry["name"].as_str().unwrap_or_default().to_string(),
-                            entry["message"].as_str().unwrap_or_default().to_string(),
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
     }
 
     /// The id of the inquiry whichever projection this answer carries names.
@@ -212,113 +190,87 @@ fn body(name: &str, inquiry_content: Value, support_mode: Option<&str>) -> Value
     body
 }
 
-/// One submission, and what the service must answer it with.
+/// One submission the service accepts.
 struct Case {
     label: &'static str,
     body: Value,
-    /// `Some(mode)` when the submission is accepted and every read of the inquiry must
-    /// report that `supportMode`; `None` when the request must be refused.
-    reported_mode: Option<&'static str>,
 }
 
-/// The submissions this suite covers.
+/// The submissions this suite covers: every one of them is accepted, and every one of them
+/// reports the one mode the model admits.
 fn cases() -> Vec<Case> {
     let longest_query = "a".repeat(QUERY_TEXT_CEILING);
     let mut tagged = text_body(
         "Subprocessors",
         "Which subprocessors handle customer content?",
-        Some("FULL_SUPPORT"),
+        Some(SUPPORT_MODE),
     );
     tagged["tags"] = json!({ "team": "legal", "env": "prod" });
-    tagged["clientToken"] = json!("token-tagged-full-support");
+    tagged["clientToken"] = json!("token-tagged-submission");
 
     vec![
-        // A submission that is not a file upload cannot be made under the mode the model
-        // restricts to one, whatever the query text is and whatever else the request
-        // carries.
+        // A submitted query, with the member named and left out, over the sizes the query
+        // shape admits.
         Case {
-            label: "a submitted query under FULL_SUPPORT",
+            label: "a submitted query naming the mode",
             body: text_body(
                 "Data residency",
                 "Where is customer data stored?",
-                Some("FULL_SUPPORT"),
+                Some(SUPPORT_MODE),
             ),
-            reported_mode: None,
+            },
+        Case {
+            label: "a one-character query naming the mode",
+            body: text_body("Shortest", "?", Some(SUPPORT_MODE)),
         },
         Case {
-            label: "a one-character query under FULL_SUPPORT",
-            body: text_body("Shortest", "?", Some("FULL_SUPPORT")),
-            reported_mode: None,
+            label: "the longest query the shape admits, naming the mode",
+            body: text_body("Longest", &longest_query, Some(SUPPORT_MODE)),
         },
         Case {
-            label: "the longest query the shape admits, under FULL_SUPPORT",
-            body: text_body("Longest", &longest_query, Some("FULL_SUPPORT")),
-            reported_mode: None,
-        },
-        Case {
-            label: "a query under FULL_SUPPORT with tags and a clientToken",
+            label: "a query naming the mode, with tags and a clientToken",
             body: tagged,
-            reported_mode: None,
-        },
-        // The same content under the mode every submission defaults to is accepted, named
-        // or left out.
-        Case {
-            label: "a submitted query under AI_ONLY",
-            body: text_body(
-                "Encryption at rest",
-                "Is customer data encrypted at rest?",
-                Some("AI_ONLY"),
-            ),
-            reported_mode: Some("AI_ONLY"),
         },
         Case {
             label: "a submitted query naming no supportMode",
             body: text_body("Retention", "How long are audit logs retained?", None),
-            reported_mode: Some("AI_ONLY"),
         },
         Case {
             label: "the longest query the shape admits, naming no supportMode",
             body: text_body("Longest", &longest_query, None),
-            reported_mode: Some("AI_ONLY"),
         },
-        // File upload mode is the form the member is supported for, so both values are
-        // accepted there — however many sections the upload names, and even when it
-        // carries no bytes.
+        // And an uploaded document — the form the member's documentation names — however
+        // many sections it names, and even when it carries no bytes.
         Case {
-            label: "an upload naming no section, under FULL_SUPPORT",
-            body: file_body("Vendor questionnaire", UPLOAD, &[], Some("FULL_SUPPORT")),
-            reported_mode: Some("FULL_SUPPORT"),
+            label: "an upload naming no section, naming the mode",
+            body: file_body("Vendor questionnaire", UPLOAD, &[], Some(SUPPORT_MODE)),
         },
         Case {
-            label: "an upload naming two sections, under FULL_SUPPORT",
+            label: "an upload naming two sections, naming the mode",
             body: file_body(
                 "Annual audit workbook",
                 UPLOAD,
                 &["Section A", "Section B"],
-                Some("FULL_SUPPORT"),
+                Some(SUPPORT_MODE),
             ),
-            reported_mode: Some("FULL_SUPPORT"),
         },
         Case {
-            label: "an upload carrying no bytes, under FULL_SUPPORT",
-            body: file_body("Empty workbook", "", &["Section A"], Some("FULL_SUPPORT")),
-            reported_mode: Some("FULL_SUPPORT"),
+            label: "an upload carrying no bytes, naming the mode",
+            body: file_body("Empty workbook", "", &["Section A"], Some(SUPPORT_MODE)),
         },
         Case {
-            label: "an upload naming one section, under AI_ONLY",
-            body: file_body("Customer DDQ", UPLOAD, &["Sheet 1"], Some("AI_ONLY")),
-            reported_mode: Some("AI_ONLY"),
+            label: "an upload naming one section, naming the mode",
+            body: file_body("Customer DDQ", UPLOAD, &["Sheet 1"], Some(SUPPORT_MODE)),
         },
         Case {
             label: "an upload naming no supportMode",
             body: file_body("Security addendum", UPLOAD, &[], None),
-            reported_mode: Some("AI_ONLY"),
         },
     ]
 }
 
 #[tokio::test]
-async fn a_support_mode_the_submitted_content_is_not_processed_under_is_refused() {
+async fn every_accepted_submission_reports_the_one_support_mode_the_model_admits() {
     for case in cases() {
         let label = case.label;
         // One emulator per case, so what one case created cannot decide what another
@@ -326,51 +278,9 @@ async fn a_support_mode_the_submitted_content_is_not_processed_under_is_refused(
         let router = emulator();
         let created = create(&router, &case.body).await;
 
-        let Some(expected_mode) = case.reported_mode else {
-            assert_eq!(
-                created.status, 400,
-                "case {label:?}: expected the modelled ValidationException's HTTP 400, \
-                 got {} with {:?}",
-                created.status, created.body
-            );
-            assert_eq!(
-                created.error_code(),
-                "ValidationException",
-                "case {label:?}: expected the modelled ValidationException, got {:?}",
-                created.body
-            );
-            assert_eq!(
-                created.body["reason"].as_str(),
-                Some(REASON_FIELD_VALIDATION_FAILED),
-                "case {label:?}: expected reason {REASON_FIELD_VALIDATION_FAILED:?}, got {:?}",
-                created.body["reason"]
-            );
-            let fields = created.field_list();
-            assert_eq!(
-                fields.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
-                vec![MEMBER],
-                "case {label:?}: the fieldList must name exactly the refused member, got {:?}",
-                created.body["fieldList"]
-            );
-            let (_, clause) = &fields[0];
-            assert!(
-                clause.contains(MEMBER) && clause.contains("file upload mode"),
-                "case {label:?}: the clause must name {MEMBER} and the requirement it \
-                 failed, got {clause:?}"
-            );
-            assert!(
-                created.message().starts_with("1 validation error detected:")
-                    && created.message().contains(clause),
-                "case {label:?}: the message must state the one clause the fieldList \
-                 carries, got {:?}",
-                created.message()
-            );
-            continue;
-        };
-
         assert_eq!(
             created.status, 202,
-            "case {label:?}: a submission the member is supported for must be accepted \
+            "case {label:?}: a submission the model admits must be accepted \
              with HTTP 202, got {} with {:?}",
             created.status, created.body
         );
@@ -384,19 +294,14 @@ async fn a_support_mode_the_submitted_content_is_not_processed_under_is_refused(
         );
         assert_eq!(
             read.detail_support_mode(),
-            Some(expected_mode),
+            Some(SUPPORT_MODE),
             "case {label:?}: expected the detail to report supportMode \
-             {expected_mode:?}, got {:?}",
+             {SUPPORT_MODE:?}, got {:?}",
             read.body["complianceInquiryDetail"]["supportMode"]
         );
 
-        // The reported mode and the review its queries carry are one decision: a reader
-        // never sees a human expert support mode on queries the model reviewed.
-        let expected_review = if expected_mode == "FULL_SUPPORT" {
-            REVIEW_HUMAN
-        } else {
-            REVIEW_AI
-        };
+        // The reported mode and the review its queries carry are one decision: the mode
+        // the model admits is an AI review, so that is what every query reports.
         let listed = list_queries(&router, &id).await;
         assert_eq!(
             listed.status, 200,
@@ -406,9 +311,9 @@ async fn a_support_mode_the_submitted_content_is_not_processed_under_is_refused(
         for query in listed.queries() {
             assert_eq!(
                 query["reviewType"].as_str(),
-                Some(expected_review),
-                "case {label:?}: a query of an inquiry reported under {expected_mode:?} \
-                 must carry reviewType {expected_review:?}, got {:?}",
+                Some(REVIEW_AI),
+                "case {label:?}: a query of an inquiry reported under {SUPPORT_MODE:?} \
+                 must carry reviewType {REVIEW_AI:?}, got {:?}",
                 query["reviewType"]
             );
         }
@@ -416,66 +321,89 @@ async fn a_support_mode_the_submitted_content_is_not_processed_under_is_refused(
 }
 
 #[tokio::test]
-async fn a_refused_support_mode_creates_nothing_and_spends_no_client_token() {
-    let router = emulator();
+async fn a_support_mode_outside_the_modelled_enum_creates_nothing_and_spends_no_client_token() {
     let token = "token-refused-support-mode";
 
-    let mut refused_body = text_body(
-        "Subprocessors",
-        "Which subprocessors handle customer content?",
-        Some("FULL_SUPPORT"),
-    );
-    refused_body["clientToken"] = json!(token);
+    // The rows differ along the shape of the value that is not in the enum — a value of
+    // another name, the one value in the wrong case, and the empty string — and along the
+    // form of the submitted content.
+    let rows: [(&str, Value); 4] = [
+        (
+            "a mode of another name",
+            text_body(
+                "Subprocessors",
+                "Which subprocessors handle customer content?",
+                Some("FULL_SUPPORT"),
+            ),
+        ),
+        (
+            "the admitted mode in the wrong case",
+            text_body("Data residency", "Where is customer data stored?", Some("ai_only")),
+        ),
+        ("an empty mode", text_body("Retention", "How long are audit logs retained?", Some(""))),
+        (
+            "a mode of another name on an upload",
+            file_body("Annual audit workbook", UPLOAD, &["Section A"], Some("BOGUS_MODE")),
+        ),
+    ];
 
-    let refused = create(&router, &refused_body).await;
-    assert_eq!(
-        (refused.status, refused.error_code()),
-        (400, "ValidationException"),
-        "the refused submission must answer the modelled ValidationException, got {:?}",
-        refused.body
-    );
+    for (label, body) in rows {
+        let router = emulator();
+        let mut refused_body = body;
+        refused_body["clientToken"] = json!(token);
 
-    let listed = list_inquiries(&router).await;
-    assert_eq!(
-        listed.status, 200,
-        "ListComplianceInquiries must answer, got {} with {:?}",
-        listed.status, listed.body
-    );
-    assert!(
-        listed.inquiries().is_empty(),
-        "a refused create must persist no inquiry, got {:?}",
-        listed.body
-    );
+        let refused = create(&router, &refused_body).await;
+        assert_eq!(
+            (refused.status, refused.error_code()),
+            INVALID_BODY,
+            "case {label:?}: a supportMode outside the modelled enum must be refused by \
+             the front door, got {:?}",
+            refused.body
+        );
 
-    // The refused call spent nothing: the same token on a submission the member IS
-    // supported for creates the inquiry, and repeating it replays that one.
-    let mut accepted_body = text_body(
-        "Subprocessors",
-        "Which subprocessors handle customer content?",
-        Some("AI_ONLY"),
-    );
-    accepted_body["clientToken"] = json!(token);
-    let accepted = create(&router, &accepted_body).await;
-    assert_eq!(
-        accepted.status, 202,
-        "the token must still be available to a submission the member is supported for, \
-         got {} with {:?}",
-        accepted.status, accepted.body
-    );
-    let id = accepted.inquiry_id();
-    let replay = create(&router, &accepted_body).await;
-    assert_eq!(
-        (replay.status, replay.inquiry_id()),
-        (202, id.clone()),
-        "the token must replay the inquiry it created, got {:?}",
-        replay.body
-    );
+        let listed = list_inquiries(&router).await;
+        assert_eq!(
+            listed.status, 200,
+            "case {label:?}: ListComplianceInquiries must answer, got {} with {:?}",
+            listed.status, listed.body
+        );
+        assert!(
+            listed.inquiries().is_empty(),
+            "case {label:?}: a refused create must persist no inquiry, got {:?}",
+            listed.body
+        );
 
-    let read = get_metadata(&router, &id).await;
-    assert_eq!(
-        read.detail_support_mode(),
-        Some("AI_ONLY"),
-        "the created inquiry must report the mode it was created under, got {:?}",
-        read.body["complianceInquiryDetail"]["supportMode"]
-    );
+        // The refused call spent nothing: the same token on a submission the model admits
+        // creates the inquiry, and repeating it replays that one.
+        let mut accepted_body = text_body(
+            "Subprocessors",
+            "Which subprocessors handle customer content?",
+            Some(SUPPORT_MODE),
+        );
+        accepted_body["clientToken"] = json!(token);
+        let accepted = create(&router, &accepted_body).await;
+        assert_eq!(
+            accepted.status, 202,
+            "case {label:?}: the token must still be available to a submission the model \
+             admits, got {} with {:?}",
+            accepted.status, accepted.body
+        );
+        let id = accepted.inquiry_id();
+        let replay = create(&router, &accepted_body).await;
+        assert_eq!(
+            (replay.status, replay.inquiry_id()),
+            (202, id.clone()),
+            "case {label:?}: the token must replay the inquiry it created, got {:?}",
+            replay.body
+        );
+
+        let read = get_metadata(&router, &id).await;
+        assert_eq!(
+            read.detail_support_mode(),
+            Some(SUPPORT_MODE),
+            "case {label:?}: the created inquiry must report the mode it was created \
+             under, got {:?}",
+            read.body["complianceInquiryDetail"]["supportMode"]
+        );
+    }
 }

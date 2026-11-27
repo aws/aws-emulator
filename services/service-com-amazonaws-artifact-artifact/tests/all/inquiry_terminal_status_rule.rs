@@ -9,10 +9,9 @@
 //! * an inquiry's terminal `InquiryStatus`/`InquiryStatusMessage` report what became of
 //!   the content it was SUBMITTED with. The modelled processing-failure pair is reserved
 //!   for a submission that carried nothing to process (an upload with no bytes); a
-//!   submission that carried content is processed and reaches a non-failure pair —
-//!   `HUMAN_REVIEW` while the expert review its `supportMode` asked for is pending, and
-//!   `COMPLETED` otherwise — whatever handle its units of work turn out to be reportable
-//!   under;
+//!   submission that carried content is processed and reaches `COMPLETED` — the one support
+//!   mode `InquirySupportMode` admits is an AI review, which the clock finishes — whatever
+//!   handle its units of work turn out to be reportable under;
 //! * how many queries the inquiry can REPORT is a bound of the member that reports them
 //!   (`QuerySummary$query` is `@required`, `@length(min: 1, max: 2048)`, `@pattern
 //!   ^[^<>]*$`), so a unit of work the submission gave no handle this member can carry is
@@ -27,8 +26,7 @@
 //! submitted query versus an uploaded document), how many bytes the upload carries (none,
 //! a few, many), how many sections it names (none, one, two), the title it was submitted
 //! under (ordinary, absent, only characters the `query` member excludes, a single space,
-//! longer than the member admits) and the support mode (absent, `AI_ONLY`,
-//! `FULL_SUPPORT`).
+//! longer than the member admits) and whether `supportMode` is given.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -52,8 +50,6 @@ const INQUIRY_IN_PROGRESS: &str = "Compliance inquiry processing is in-progress.
 /// See [`INQUIRY_IN_PROGRESS`].
 const INQUIRY_COMPLETE: &str = "Compliance inquiry processing is complete.";
 /// See [`INQUIRY_IN_PROGRESS`].
-const INQUIRY_HUMAN_REVIEW: &str = "Human review is in progress.";
-/// See [`INQUIRY_IN_PROGRESS`].
 const INQUIRY_INTERNAL_ERROR: &str =
     "An internal error occurred while processing the inquiry. Try again at a later time.";
 /// See [`INQUIRY_IN_PROGRESS`]. The value no inquiry may report: nothing in this emulator
@@ -66,8 +62,6 @@ const INQUIRY_COMPLETE_WITH_QUERY_ERRORS: &str = "Compliance inquiry processing 
 const QUERY_IN_PROGRESS: &str = "Query processing is in-progress.";
 /// See [`QUERY_IN_PROGRESS`].
 const QUERY_COMPLETE: &str = "Query processing is complete.";
-/// See [`QUERY_IN_PROGRESS`].
-const QUERY_PENDING_HUMAN_REVIEW: &str = "Query is pending human review.";
 /// See [`QUERY_IN_PROGRESS`]. The values no query may report: nothing in this emulator
 /// fails a query.
 const QUERY_INTERNAL_ERROR: &str =
@@ -233,7 +227,6 @@ struct Case {
 /// The submissions this suite covers.
 fn cases() -> Vec<Case> {
     let completed = ("COMPLETED", QUERY_COMPLETE);
-    let pending_review = ("PROCESSING", QUERY_PENDING_HUMAN_REVIEW);
     vec![
         Case {
             label: "a submitted query",
@@ -288,18 +281,18 @@ fn cases() -> Vec<Case> {
             query_terminal: completed,
         },
         Case {
-            label: "an upload under no title submitted for expert review",
-            body: file_body("", &long_upload(), &[], Some("FULL_SUPPORT")),
-            terminal: ("HUMAN_REVIEW", INQUIRY_HUMAN_REVIEW),
+            label: "a larger upload under no title",
+            body: file_body("", &long_upload(), &[], Some("AI_ONLY")),
+            terminal: ("COMPLETED", INQUIRY_COMPLETE),
             reported: Vec::new(),
-            query_terminal: pending_review,
+            query_terminal: completed,
         },
         Case {
-            label: "an upload titled with excluded characters, one section, expert review",
-            body: file_body("<>", UPLOAD, &["Controls 1-20"], Some("FULL_SUPPORT")),
-            terminal: ("HUMAN_REVIEW", INQUIRY_HUMAN_REVIEW),
+            label: "an upload titled with excluded characters, one section",
+            body: file_body("<>", UPLOAD, &["Controls 1-20"], Some("AI_ONLY")),
+            terminal: ("COMPLETED", INQUIRY_COMPLETE),
             reported: vec!["Controls 1-20".to_string()],
-            query_terminal: pending_review,
+            query_terminal: completed,
         },
         Case {
             label: "an upload whose title is longer than the query member admits",
@@ -316,11 +309,11 @@ fn cases() -> Vec<Case> {
             query_terminal: completed,
         },
         Case {
-            label: "an upload carrying no bytes under no title, for expert review",
-            body: file_body("", EMPTY_UPLOAD, &[], Some("FULL_SUPPORT")),
+            label: "an upload carrying no bytes under no title",
+            body: file_body("", EMPTY_UPLOAD, &[], Some("AI_ONLY")),
             terminal: ("FAILED", INQUIRY_INTERNAL_ERROR),
             reported: Vec::new(),
-            query_terminal: pending_review,
+            query_terminal: completed,
         },
     ]
 }

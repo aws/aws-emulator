@@ -35,6 +35,11 @@
 //!   body). The default returns `None`, keeping the entry's protocol-correct
 //!   rendering. Return `Some(resp)` to reword it if desired.
 //!
+//! A sixth seam, `override_protocol`, is the one this service also takes: every timestamp
+//! member of this model declares the `date-time` form, so the codec that reads and writes
+//! one is the workspace's shared [`service_common::date_time_json::DateTimeRestJson`] — the
+//! model's own `restJson1` in every other respect.
+//!
 //! The model-derived half of this service — its identity, wire protocol, routing
 //! table, and the default error renderers — lives in the generated `ServiceDefinition`
 //! and is reached, not edited, through the one `definition` method below. You
@@ -892,6 +897,9 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     invalid_input: ConstraintRefusal<Eng>,
     /// Serves the report and term documents the control plane announces URLs for.
     documents: Documents<Eng>,
+    /// This service's wire protocol, built ONCE here because
+    /// [`Service::override_protocol`] hands back a borrow of it.
+    protocol: ::service_common::date_time_json::DateTimeRestJson,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -908,6 +916,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
                 engine: PhantomData,
             },
             documents: Documents { engine },
+            protocol: ::service_common::date_time_json::DateTimeRestJson::new(),
         }
     }
 
@@ -1278,6 +1287,17 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // consume it on `None`.
         let _ = error;
         None
+    }
+
+    fn override_protocol(&self) -> Option<&dyn smithy_server_runtime::ServerHttpProtocol> {
+        // This model declares ONE timestamp shape, `com.amazonaws.artifact#TimestampAttribute`,
+        // and it carries `@timestampFormat("date-time")`
+        // (`smithy_query(query="shape",shape="TimestampAttribute")`), so every timestamp member
+        // of every shape of this service is a date-time one: an RFC 3339 string rather than the
+        // protocol's default epoch-seconds number, in both directions. The generated member
+        // schemas drop that format, and the shared codec supplies it — it never overrides a
+        // member that declares one, so a member whose schema does carry a format keeps it.
+        Some(&self.protocol)
     }
 }
 

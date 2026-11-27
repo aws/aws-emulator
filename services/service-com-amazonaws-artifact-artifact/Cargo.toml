@@ -49,5 +49,10 @@ uuid = { version = "1", features = ["v4"] }
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
 
+[dev-dependencies]
+# Declares one suite per `tests/all/<name>.rs`, so the single integration-test target
+# needs no hand-written module list.
+automod = { workspace = true }
+
 [lints]
 workspace = true

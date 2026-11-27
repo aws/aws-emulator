@@ -14,10 +14,12 @@ cargo test  -p service-com-amazonaws-artifact-artifact
 service-com-amazonaws-artifact-artifact/
 ├── build.rs              # calls emulator_core_build_support::generate(...)
 ├── smithy-model/
-│   └── com-amazonaws-artifact-artifact.json      # the Smithy model — drives routing + wire shapes
+│   ├── com-amazonaws-artifact-artifact.json      # the Smithy model — drives routing + wire shapes
+│   ├── local-additions.json  # overlay model for the member AWS reports that the model lacks
+│   └── LOCAL-ADDITIONS.md    # what that overlay declares, and why
 ├── OPERATIONS.md         # every operation's contract, re-rendered from the model
 ├── tests/
-│   └── state_roundtrip.rs  # compiled example of the state API
+│   └── all/              # one test target; every `all/<name>.rs` is a suite
 └── src/
     ├── lib.rs            # #[smithy_service] decl (generated — do not hand-edit)
     ├── service.rs        # impl Service — can_handle + routing/refusal overrides (yours to edit)

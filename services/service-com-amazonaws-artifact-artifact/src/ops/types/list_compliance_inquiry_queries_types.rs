@@ -8,7 +8,6 @@
 #![allow(unused_imports)]
 
 use super::*;
-use crate::ops::types::shared_types::{artifact_date_time_member_schema, artifact_member_schema};
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-artifact-artifact.json");
 
@@ -27,11 +26,7 @@ pub struct ListComplianceInquiryQueriesOutput {
     pub next_token: Option<String>,
 }
 
-/// `QuerySummary`, with its schema written out instead of derived: `createdAt` targets
-/// `TimestampAttribute`, so it is an RFC 3339 date-time string on the wire rather than the
-/// restJson1 default of epoch seconds. See the note on `crate::artifact_member_schema` in
-/// `types/shared_types.rs` for why this is hand-written and what deletes it. Member set,
-/// order and nullability from `smithy_query(query="shape",shape="QuerySummary")`.
+#[smithy_macros::smithy(shape = "com.amazonaws.artifact#QuerySummary")]
 #[derive(Debug, Clone)]
 pub struct QuerySummary {
     pub query_identifier: i32,
@@ -45,154 +40,6 @@ pub struct QuerySummary {
     pub updated_response_versions: Option<Vec<ResponseVersion>>,
 }
 
-#[allow(non_upper_case_globals)]
-impl QuerySummary {
-    pub const M_QUERY_IDENTIFIER: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("QuerySummary", "queryIdentifier", Integer, 0);
-    pub const M_QUERY: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("QuerySummary", "query", String, 1);
-    pub const M_RESPONSE: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("QuerySummary", "response", String, 2);
-    pub const M_REVIEW_TYPE: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("QuerySummary", "reviewType", String, 3);
-    pub const M_CITATIONS: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("QuerySummary", "citations", List, 4);
-    pub const M_STATUS: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("QuerySummary", "status", String, 5);
-    pub const M_STATUS_MESSAGE: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("QuerySummary", "statusMessage", String, 6);
-    /// `TimestampAttribute`, `@timestampFormat("date-time")`.
-    pub const M_CREATED_AT: ::aws_smithy_schema::Schema =
-        artifact_date_time_member_schema!("QuerySummary", "createdAt", 7);
-    pub const M_UPDATED_RESPONSE_VERSIONS: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("QuerySummary", "updatedResponseVersions", List, 8);
-
-    pub const SCHEMA: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_struct(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.artifact#QuerySummary",
-            "com.amazonaws.artifact",
-            "QuerySummary",
-        ),
-        ::aws_smithy_schema::ShapeType::Structure,
-        &[
-            &Self::M_QUERY_IDENTIFIER,
-            &Self::M_QUERY,
-            &Self::M_RESPONSE,
-            &Self::M_REVIEW_TYPE,
-            &Self::M_CITATIONS,
-            &Self::M_STATUS,
-            &Self::M_STATUS_MESSAGE,
-            &Self::M_CREATED_AT,
-            &Self::M_UPDATED_RESPONSE_VERSIONS,
-        ],
-    );
-}
-
-pub static QUERY_SUMMARY_SCHEMA: &::aws_smithy_schema::Schema = &QuerySummary::SCHEMA;
-
-impl ::aws_smithy_schema::serde::SerializableStruct for QuerySummary {
-    fn serialize_members(
-        &self,
-        s: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        s.write_integer(&Self::M_QUERY_IDENTIFIER, self.query_identifier)?;
-        s.write_string(&Self::M_QUERY, self.query.as_str())?;
-        if let Some(v) = self.response.as_ref() {
-            s.write_string(&Self::M_RESPONSE, v.as_str())?;
-        }
-        if let Some(v) = self.review_type.as_ref() {
-            s.write_string(&Self::M_REVIEW_TYPE, v.as_str())?;
-        }
-        // A list of structures writes each element against the ELEMENT shape's own
-        // `SCHEMA`, exactly as the codegen's own list arm does.
-        if let Some(v) = self.citations.as_ref() {
-            s.write_list(&Self::M_CITATIONS, &|sl| {
-                for citation in v.iter() {
-                    sl.write_struct(&Citation::SCHEMA, citation)?;
-                }
-                Ok(())
-            })?;
-        }
-        s.write_string(&Self::M_STATUS, self.status.as_str())?;
-        s.write_string(&Self::M_STATUS_MESSAGE, self.status_message.as_str())?;
-        write_artifact_date_time(s, &Self::M_CREATED_AT, &self.created_at)?;
-        if let Some(v) = self.updated_response_versions.as_ref() {
-            s.write_list(&Self::M_UPDATED_RESPONSE_VERSIONS, &|sl| {
-                for version in v.iter() {
-                    sl.write_struct(&ResponseVersion::SCHEMA, version)?;
-                }
-                Ok(())
-            })?;
-        }
-        Ok(())
-    }
-}
-
-/// See the note beside `InquirySummary`'s reader in `types/shared_types.rs`: the enclosing
-/// output shape keeps the derive, and the reader the derive emits for it requires this one.
-impl ::aws_smithy_schema_server::DeserializableStruct for QuerySummary {
-    fn deserialize(
-        d: &mut dyn ::aws_smithy_schema::serde::ShapeDeserializer,
-    ) -> ::std::result::Result<Self, ::aws_smithy_schema::serde::SerdeError> {
-        let mut query_identifier: Option<i32> = None;
-        let mut query: Option<String> = None;
-        let mut response: Option<String> = None;
-        let mut review_type: Option<String> = None;
-        let mut citations: Option<Vec<Citation>> = None;
-        let mut status: Option<String> = None;
-        let mut status_message: Option<String> = None;
-        let mut created_at: Option<::aws_smithy_types::DateTime> = None;
-        let mut updated_response_versions: Option<Vec<ResponseVersion>> = None;
-        d.read_struct(&Self::SCHEMA, &mut |member, d| {
-            match member.member_index() {
-                Some(0) => query_identifier = Some(d.read_integer(&Self::M_QUERY_IDENTIFIER)?),
-                Some(1) => query = Some(d.read_string(&Self::M_QUERY)?),
-                Some(2) => response = Some(d.read_string(&Self::M_RESPONSE)?),
-                Some(3) => review_type = Some(d.read_string(&Self::M_REVIEW_TYPE)?),
-                Some(4) => {
-                    let mut items: Vec<Citation> = Vec::new();
-                    d.read_list(&Self::M_CITATIONS, &mut |dl| {
-                        items.push(
-                            <Citation as ::aws_smithy_schema_server::DeserializableStruct>::deserialize(dl)?,
-                        );
-                        Ok(())
-                    })?;
-                    citations = Some(items);
-                }
-                Some(5) => status = Some(d.read_string(&Self::M_STATUS)?),
-                Some(6) => status_message = Some(d.read_string(&Self::M_STATUS_MESSAGE)?),
-                Some(7) => created_at = Some(d.read_timestamp(&Self::M_CREATED_AT)?),
-                Some(8) => {
-                    let mut items: Vec<ResponseVersion> = Vec::new();
-                    d.read_list(&Self::M_UPDATED_RESPONSE_VERSIONS, &mut |dl| {
-                        items.push(
-                            <ResponseVersion as ::aws_smithy_schema_server::DeserializableStruct>::deserialize(dl)?,
-                        );
-                        Ok(())
-                    })?;
-                    updated_response_versions = Some(items);
-                }
-                _ => {}
-            }
-            Ok(())
-        })?;
-        Ok(Self {
-            query_identifier: query_identifier
-                .ok_or_else(|| ::aws_smithy_schema_server::missing_member("queryIdentifier"))?,
-            query: query.ok_or_else(|| ::aws_smithy_schema_server::missing_member("query"))?,
-            response,
-            review_type,
-            citations,
-            status: status.ok_or_else(|| ::aws_smithy_schema_server::missing_member("status"))?,
-            status_message: status_message
-                .ok_or_else(|| ::aws_smithy_schema_server::missing_member("statusMessage"))?,
-            created_at: created_at
-                .ok_or_else(|| ::aws_smithy_schema_server::missing_member("createdAt"))?,
-            updated_response_versions,
-        })
-    }
-}
-
 #[smithy_macros::smithy(shape = "com.amazonaws.artifact#Citation")]
 #[derive(Debug, Clone, Default)]
 pub struct Citation {
@@ -201,71 +48,9 @@ pub struct Citation {
     pub source_link: Option<String>,
 }
 
-/// `ResponseVersion`, with its schema written out instead of derived: `timestamp` targets
-/// `TimestampAttribute`, so it is an RFC 3339 date-time string on the wire rather than the
-/// restJson1 default of epoch seconds. See the note on `crate::artifact_member_schema` in
-/// `types/shared_types.rs` for why this is hand-written and what deletes it. Member set,
-/// order and nullability from `smithy_query(query="shape",shape="ResponseVersion")`.
+#[smithy_macros::smithy(shape = "com.amazonaws.artifact#ResponseVersion")]
 #[derive(Debug, Clone)]
 pub struct ResponseVersion {
     pub response_text: String,
     pub timestamp: ::aws_smithy_types::DateTime,
 }
-
-#[allow(non_upper_case_globals)]
-impl ResponseVersion {
-    pub const M_RESPONSE_TEXT: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("ResponseVersion", "responseText", String, 0);
-    /// `TimestampAttribute`, `@timestampFormat("date-time")`.
-    pub const M_TIMESTAMP: ::aws_smithy_schema::Schema =
-        artifact_date_time_member_schema!("ResponseVersion", "timestamp", 1);
-
-    pub const SCHEMA: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_struct(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.artifact#ResponseVersion",
-            "com.amazonaws.artifact",
-            "ResponseVersion",
-        ),
-        ::aws_smithy_schema::ShapeType::Structure,
-        &[&Self::M_RESPONSE_TEXT, &Self::M_TIMESTAMP],
-    );
-}
-
-pub static RESPONSE_VERSION_SCHEMA: &::aws_smithy_schema::Schema = &ResponseVersion::SCHEMA;
-
-impl ::aws_smithy_schema::serde::SerializableStruct for ResponseVersion {
-    fn serialize_members(
-        &self,
-        s: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        s.write_string(&Self::M_RESPONSE_TEXT, self.response_text.as_str())?;
-        write_artifact_date_time(s, &Self::M_TIMESTAMP, &self.timestamp)?;
-        Ok(())
-    }
-}
-
-/// See the note beside `InquirySummary`'s reader in `types/shared_types.rs`: the enclosing
-/// shape keeps the derive, and the reader the derive emits for it requires this one.
-impl ::aws_smithy_schema_server::DeserializableStruct for ResponseVersion {
-    fn deserialize(
-        d: &mut dyn ::aws_smithy_schema::serde::ShapeDeserializer,
-    ) -> ::std::result::Result<Self, ::aws_smithy_schema::serde::SerdeError> {
-        let mut response_text: Option<String> = None;
-        let mut timestamp: Option<::aws_smithy_types::DateTime> = None;
-        d.read_struct(&Self::SCHEMA, &mut |member, d| {
-            match member.member_index() {
-                Some(0) => response_text = Some(d.read_string(&Self::M_RESPONSE_TEXT)?),
-                Some(1) => timestamp = Some(d.read_timestamp(&Self::M_TIMESTAMP)?),
-                _ => {}
-            }
-            Ok(())
-        })?;
-        Ok(Self {
-            response_text: response_text
-                .ok_or_else(|| ::aws_smithy_schema_server::missing_member("responseText"))?,
-            timestamp: timestamp
-                .ok_or_else(|| ::aws_smithy_schema_server::missing_member("timestamp"))?,
-        })
-    }
-}
-

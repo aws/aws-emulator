@@ -29,8 +29,9 @@
 //! timestamp (so the rows differ along operation, shape, member, whether the member is
 //! `@required`, and whether the instant has a sub-second part: a created inquiry's
 //! `createdAt` comes from the clock, a catalog period is a whole second), and directly on
-//! the member schemas, which is the only reach a shape no operation of this service
-//! reports (`ResponseVersion`) has. `PutComplianceInquiryFeedbackResponse$submittedAt` is
+//! the CODEC this service serves, which is the only reach a shape no operation of this
+//! service reports (`ResponseVersion`) has.
+//! `PutComplianceInquiryFeedbackResponse$submittedAt` is
 //! reported over HTTP by `PutComplianceInquiryFeedback`, and its end-to-end row lives in
 //! `implemented_inquiry_operations.rs`, beside that operation's other rows.
 //!
@@ -44,18 +45,19 @@
 
 use std::sync::Arc;
 
-use aws_smithy_schema::traits::TimestampFormat;
+use aws_smithy_schema::serde::SerializableStruct;
 use aws_smithy_schema::Schema;
+use aws_smithy_schema_server::protocol::ServerProtocol;
 use aws_smithy_types::date_time::Format;
 use aws_smithy_types::DateTime;
 use bytes::Bytes;
 use serde_json::{json, Value};
 use service_com_amazonaws_artifact_artifact::ops::types::{
-    artifact_date_time_text, CustomerAgreementSummary, InquiryDetail, InquirySummary,
-    PutComplianceInquiryFeedbackOutput, QuerySummary, ReportDetail, ReportSummary,
-    ResponseVersion,
+    CustomerAgreementSummary, InquiryDetail, InquirySummary, PutComplianceInquiryFeedbackOutput,
+    QuerySummary, ReportDetail, ReportSummary, ResponseVersion,
 };
 use service_com_amazonaws_artifact_artifact::EmulatedService;
+use service_common::date_time_json::{date_time_text, DateTimeRestJson};
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::harness::{assert_rendered_date_time, settled_inquiry_status};
@@ -358,71 +360,227 @@ async fn every_reported_date_time_member_is_an_rfc3339_string() {
     );
 }
 
-/// The member schema the codec reads the wire form off: every timestamp member this
-/// service models carries `@timestampFormat("date-time")`, and a member the model does not
-/// annotate carries none.
+/// The instant the codec rows below report, on the second, and its date-time rendering.
+const CODEC_INSTANT: i64 = 1_730_419_200;
+
+/// One shape serialized by the codec this service serves, as JSON.
+fn codec_body(case: &str, protocol: &DateTimeRestJson, value: &dyn SerializableStruct, schema: &Schema) -> Value {
+    let answered = protocol
+        .serialize_output(value, schema, "TimestampWireForm", 200)
+        .unwrap_or_else(|error| {
+            panic!("case {case:?}: the codec must serialize this shape ({error})")
+        });
+    let bytes = answered
+        .body()
+        .bytes()
+        .expect("the codec answers an in-memory body")
+        .to_vec();
+    serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+        panic!(
+            "case {case:?}: the codec must answer JSON ({error}): {:?}",
+            String::from_utf8_lossy(&bytes)
+        )
+    })
+}
+
+/// The CODEC this service serves writes a timestamp member as a date-time STRING, whichever
+/// shape carries it: `service_common::date_time_json::DateTimeRestJson`, which
+/// `src/service.rs` hands the dispatch sequence through `Service::override_protocol`,
+/// supplies the `date-time` form the model declares and the generated member schemas drop.
 ///
-/// This is the only reach `ResponseVersion` has, the one shape here no operation of this
-/// service reports — only an edited response would carry it — and it is what fails if any
-/// of these schemas goes back to the vendored codegen's output.
+/// Driven on the codec itself, which is the only reach `ResponseVersion` has — the one shape
+/// here no operation of this service reports, an edited response being the only thing that
+/// carries one — while the rows above assert the same rule end to end over HTTP. The rows
+/// differ along what the rule generalises over: the shape, the member, whether the member is
+/// `@required` or optional-and-set, and whether the instant falls on the second.
 #[test]
-fn every_modelled_timestamp_member_carries_the_date_time_format() {
+fn the_served_codec_writes_every_timestamp_member_as_a_date_time_string() {
+    let protocol = DateTimeRestJson::new();
+    let on_second = DateTime::from_secs(CODEC_INSTANT);
+    let off_second = DateTime::from_secs_f64(CODEC_INSTANT as f64 + 0.25);
+
     // Source: `smithy_query(query="shape",shape="InquirySummary,InquiryDetail,QuerySummary,
     // ResponseVersion,ReportSummary,ReportDetail,CustomerAgreementSummary,
     // PutComplianceInquiryFeedbackResponse")` — every member of this service targeting
     // `TimestampAttribute`.
-    let date_time_members: Vec<(&str, &Schema)> = vec![
-        ("InquirySummary$createdAt", &InquirySummary::M_CREATED_AT),
-        ("InquiryDetail$createdAt", &InquiryDetail::M_CREATED_AT),
-        ("InquiryDetail$updatedAt", &InquiryDetail::M_UPDATED_AT),
-        ("QuerySummary$createdAt", &QuerySummary::M_CREATED_AT),
-        ("ResponseVersion$timestamp", &ResponseVersion::M_TIMESTAMP),
-        ("ReportSummary$periodStart", &ReportSummary::M_PERIOD_START),
-        ("ReportSummary$periodEnd", &ReportSummary::M_PERIOD_END),
-        ("ReportDetail$periodStart", &ReportDetail::M_PERIOD_START),
-        ("ReportDetail$periodEnd", &ReportDetail::M_PERIOD_END),
-        ("ReportDetail$createdAt", &ReportDetail::M_CREATED_AT),
+    let inquiry_summary = InquirySummary {
+        arn: "arn:aws:artifact:::compliance-inquiry/compliance-inquiry-0000000000000001"
+            .to_string(),
+        name: "Data residency".to_string(),
+        id: "compliance-inquiry-0000000000000001".to_string(),
+        status: "PROCESSING".to_string(),
+        status_message: "Compliance inquiry processing is in-progress.".to_string(),
+        input_source: "TEXT".to_string(),
+        created_at: off_second,
+    };
+    let inquiry_detail = InquiryDetail {
+        arn: inquiry_summary.arn.clone(),
+        name: inquiry_summary.name.clone(),
+        id: inquiry_summary.id.clone(),
+        status: inquiry_summary.status.clone(),
+        status_message: inquiry_summary.status_message.clone(),
+        input_source: inquiry_summary.input_source.clone(),
+        created_at: off_second,
+        updated_at: Some(on_second),
+        support_mode: Some("AI_ONLY".to_string()),
+    };
+    let query_summary = QuerySummary {
+        query_identifier: 1,
+        query: "Where is customer data stored?".to_string(),
+        response: None,
+        review_type: None,
+        citations: None,
+        status: "PROCESSING".to_string(),
+        status_message: "Query processing is in-progress.".to_string(),
+        created_at: off_second,
+        updated_response_versions: None,
+    };
+    let response_version = ResponseVersion {
+        response_text: "The edited response.".to_string(),
+        timestamp: on_second,
+    };
+    let report_summary = ReportSummary {
+        id: Some("report-0000000000000001".to_string()),
+        version: Some(1),
+        period_start: Some(on_second),
+        period_end: Some(on_second),
+        ..ReportSummary::default()
+    };
+    let report_detail = ReportDetail {
+        id: report_summary.id.clone(),
+        version: Some(1),
+        period_start: Some(on_second),
+        period_end: Some(on_second),
+        created_at: Some(on_second),
+        last_modified_at: Some(off_second),
+        deleted_at: Some(on_second),
+        ..ReportDetail::default()
+    };
+    let agreement = CustomerAgreementSummary {
+        id: Some("customer-agreement-0000000000000001".to_string()),
+        effective_start: Some(on_second),
+        effective_end: Some(on_second),
+        ..CustomerAgreementSummary::default()
+    };
+    let feedback = PutComplianceInquiryFeedbackOutput {
+        submitted_at: off_second,
+    };
+
+    let rows: Vec<(&str, Value, &[&str])> = vec![
         (
-            "ReportDetail$lastModifiedAt",
-            &ReportDetail::M_LAST_MODIFIED_AT,
+            "InquirySummary",
+            codec_body(
+                "InquirySummary",
+                &protocol,
+                &inquiry_summary,
+                &InquirySummary::SCHEMA,
+            ),
+            &["createdAt"],
         ),
-        ("ReportDetail$deletedAt", &ReportDetail::M_DELETED_AT),
         (
-            "CustomerAgreementSummary$effectiveStart",
-            &CustomerAgreementSummary::M_EFFECTIVE_START,
+            "InquiryDetail",
+            codec_body(
+                "InquiryDetail",
+                &protocol,
+                &inquiry_detail,
+                &InquiryDetail::SCHEMA,
+            ),
+            &["createdAt", "updatedAt"],
         ),
         (
-            "CustomerAgreementSummary$effectiveEnd",
-            &CustomerAgreementSummary::M_EFFECTIVE_END,
+            "QuerySummary",
+            codec_body(
+                "QuerySummary",
+                &protocol,
+                &query_summary,
+                &QuerySummary::SCHEMA,
+            ),
+            &["createdAt"],
         ),
         (
-            "PutComplianceInquiryFeedbackResponse$submittedAt",
-            &PutComplianceInquiryFeedbackOutput::M_SUBMITTED_AT,
+            "ResponseVersion",
+            codec_body(
+                "ResponseVersion",
+                &protocol,
+                &response_version,
+                &ResponseVersion::SCHEMA,
+            ),
+            &["timestamp"],
+        ),
+        (
+            "ReportSummary",
+            codec_body(
+                "ReportSummary",
+                &protocol,
+                &report_summary,
+                &ReportSummary::SCHEMA,
+            ),
+            &["periodStart", "periodEnd"],
+        ),
+        (
+            "ReportDetail",
+            codec_body(
+                "ReportDetail",
+                &protocol,
+                &report_detail,
+                &ReportDetail::SCHEMA,
+            ),
+            &[
+                "periodStart",
+                "periodEnd",
+                "createdAt",
+                "lastModifiedAt",
+                "deletedAt",
+            ],
+        ),
+        (
+            "CustomerAgreementSummary",
+            codec_body(
+                "CustomerAgreementSummary",
+                &protocol,
+                &agreement,
+                &CustomerAgreementSummary::SCHEMA,
+            ),
+            &["effectiveStart", "effectiveEnd"],
+        ),
+        (
+            "PutComplianceInquiryFeedbackResponse",
+            codec_body(
+                "PutComplianceInquiryFeedbackResponse",
+                &protocol,
+                &feedback,
+                &PutComplianceInquiryFeedbackOutput::SCHEMA,
+            ),
+            &["submittedAt"],
         ),
     ];
 
-    for (case, schema) in date_time_members {
-        let format = schema.timestamp_format().map(|trait_| trait_.format());
-        assert!(
-            matches!(format, Some(TimestampFormat::DateTime)),
-            "case {case:?}: the member schema must carry @timestampFormat(date-time), got \
-             {format:?}"
-        );
+    for (shape, body, members) in rows {
+        for member in members {
+            let case = format!("{shape}${member}");
+            let reported = at(&body, &format!("/{member}"));
+            assert_rendered_date_time(&case, member, &reported);
+        }
     }
 
-    // A member the model does not annotate keeps the protocol default, so the fix did not
-    // put a format where the model names none.
-    for (case, schema) in [
-        ("InquirySummary$arn", &InquirySummary::M_ARN),
-        ("ReportSummary$version", &ReportSummary::M_VERSION),
-        ("QuerySummary$citations", &QuerySummary::M_CITATIONS),
-    ] {
-        let format = schema.timestamp_format().map(|trait_| trait_.format());
-        assert!(
-            format.is_none(),
-            "case {case:?}: the model annotates no format for this member, got {format:?}"
-        );
-    }
+    // A member that is not a timestamp keeps the type the protocol gives it, so the codec
+    // rewrites nothing the model did not declare a date-time.
+    let untouched = codec_body(
+        "ReportSummary",
+        &protocol,
+        &report_summary,
+        &ReportSummary::SCHEMA,
+    );
+    assert!(
+        at(&untouched, "/version").is_i64(),
+        "case \"ReportSummary$version\": a long member stays a JSON number, got {:?}",
+        at(&untouched, "/version")
+    );
+    assert!(
+        at(&untouched, "/id").is_string(),
+        "case \"ReportSummary$id\": a string member stays a JSON string, got {:?}",
+        at(&untouched, "/id")
+    );
 }
 
 /// An inquiry's terminal `status`/`statusMessage` are derived from its queries, so the
@@ -604,7 +762,7 @@ fn instant(case: &str, text: &str) -> DateTime {
 #[test]
 fn a_date_time_carries_a_fraction_only_where_the_instant_has_one() {
     for (case, written, expected) in WHOLE_SECONDS {
-        let rendered = artifact_date_time_text(&instant(case, written))
+        let rendered = date_time_text(&instant(case, written))
             .unwrap_or_else(|| panic!("case {case:?}: {written:?} must render as a date-time"));
         assert_eq!(
             &rendered, expected,
@@ -615,7 +773,7 @@ fn a_date_time_carries_a_fraction_only_where_the_instant_has_one() {
 
     for (case, written) in SUB_SECOND_INSTANTS {
         let named = instant(case, written);
-        let rendered = artifact_date_time_text(&named)
+        let rendered = date_time_text(&named)
             .unwrap_or_else(|| panic!("case {case:?}: {written:?} must render as a date-time"));
         assert!(
             rendered.contains('.'),

@@ -8,7 +8,6 @@
 #![allow(unused_imports)]
 
 use super::*;
-use crate::ops::types::shared_types::{artifact_date_time_member_schema, artifact_member_schema};
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-artifact-artifact.json");
 
@@ -26,12 +25,7 @@ pub struct ListCustomerAgreementsOutput {
     pub next_token: Option<String>,
 }
 
-/// `CustomerAgreementSummary`, with its schema written out instead of derived:
-/// `effectiveStart` and `effectiveEnd` target `TimestampAttribute`, so they are RFC 3339
-/// date-time strings on the wire rather than the restJson1 default of epoch seconds. See
-/// the note on `crate::artifact_member_schema` in `types/shared_types.rs` for why this is
-/// hand-written and what deletes it. Member set, order and nullability from
-/// `smithy_query(query="shape",shape="CustomerAgreementSummary")`.
+#[smithy_macros::smithy(shape = "com.amazonaws.artifact#CustomerAgreementSummary")]
 #[derive(Debug, Clone, Default)]
 pub struct CustomerAgreementSummary {
     pub name: Option<String>,
@@ -48,167 +42,3 @@ pub struct CustomerAgreementSummary {
     pub terminate_terms: Option<Vec<String>>,
     pub r#type: Option<String>,
 }
-
-#[allow(non_upper_case_globals)]
-impl CustomerAgreementSummary {
-    pub const M_NAME: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("CustomerAgreementSummary", "name", String, 0);
-    pub const M_ARN: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("CustomerAgreementSummary", "arn", String, 1);
-    pub const M_ID: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("CustomerAgreementSummary", "id", String, 2);
-    pub const M_AGREEMENT_ARN: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("CustomerAgreementSummary", "agreementArn", String, 3);
-    pub const M_AWS_ACCOUNT_ID: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("CustomerAgreementSummary", "awsAccountId", String, 4);
-    pub const M_ORGANIZATION_ARN: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("CustomerAgreementSummary", "organizationArn", String, 5);
-    /// `TimestampAttribute`, `@timestampFormat("date-time")`.
-    pub const M_EFFECTIVE_START: ::aws_smithy_schema::Schema =
-        artifact_date_time_member_schema!("CustomerAgreementSummary", "effectiveStart", 6);
-    /// `TimestampAttribute`, `@timestampFormat("date-time")`.
-    pub const M_EFFECTIVE_END: ::aws_smithy_schema::Schema =
-        artifact_date_time_member_schema!("CustomerAgreementSummary", "effectiveEnd", 7);
-    pub const M_STATE: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("CustomerAgreementSummary", "state", String, 8);
-    pub const M_DESCRIPTION: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("CustomerAgreementSummary", "description", String, 9);
-    pub const M_ACCEPTANCE_TERMS: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("CustomerAgreementSummary", "acceptanceTerms", List, 10);
-    pub const M_TERMINATE_TERMS: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("CustomerAgreementSummary", "terminateTerms", List, 11);
-    pub const M_TYPE: ::aws_smithy_schema::Schema =
-        artifact_member_schema!("CustomerAgreementSummary", "type", String, 12);
-
-    pub const SCHEMA: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_struct(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.artifact#CustomerAgreementSummary",
-            "com.amazonaws.artifact",
-            "CustomerAgreementSummary",
-        ),
-        ::aws_smithy_schema::ShapeType::Structure,
-        &[
-            &Self::M_NAME,
-            &Self::M_ARN,
-            &Self::M_ID,
-            &Self::M_AGREEMENT_ARN,
-            &Self::M_AWS_ACCOUNT_ID,
-            &Self::M_ORGANIZATION_ARN,
-            &Self::M_EFFECTIVE_START,
-            &Self::M_EFFECTIVE_END,
-            &Self::M_STATE,
-            &Self::M_DESCRIPTION,
-            &Self::M_ACCEPTANCE_TERMS,
-            &Self::M_TERMINATE_TERMS,
-            &Self::M_TYPE,
-        ],
-    );
-}
-
-pub static CUSTOMER_AGREEMENT_SUMMARY_SCHEMA: &::aws_smithy_schema::Schema =
-    &CustomerAgreementSummary::SCHEMA;
-
-impl ::aws_smithy_schema::serde::SerializableStruct for CustomerAgreementSummary {
-    fn serialize_members(
-        &self,
-        s: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        if let Some(v) = self.name.as_ref() {
-            s.write_string(&Self::M_NAME, v.as_str())?;
-        }
-        if let Some(v) = self.arn.as_ref() {
-            s.write_string(&Self::M_ARN, v.as_str())?;
-        }
-        if let Some(v) = self.id.as_ref() {
-            s.write_string(&Self::M_ID, v.as_str())?;
-        }
-        if let Some(v) = self.agreement_arn.as_ref() {
-            s.write_string(&Self::M_AGREEMENT_ARN, v.as_str())?;
-        }
-        if let Some(v) = self.aws_account_id.as_ref() {
-            s.write_string(&Self::M_AWS_ACCOUNT_ID, v.as_str())?;
-        }
-        if let Some(v) = self.organization_arn.as_ref() {
-            s.write_string(&Self::M_ORGANIZATION_ARN, v.as_str())?;
-        }
-        if let Some(v) = self.effective_start.as_ref() {
-            write_artifact_date_time(s, &Self::M_EFFECTIVE_START, v)?;
-        }
-        if let Some(v) = self.effective_end.as_ref() {
-            write_artifact_date_time(s, &Self::M_EFFECTIVE_END, v)?;
-        }
-        if let Some(v) = self.state.as_ref() {
-            s.write_string(&Self::M_STATE, v.as_str())?;
-        }
-        if let Some(v) = self.description.as_ref() {
-            s.write_string(&Self::M_DESCRIPTION, v.as_str())?;
-        }
-        // A list of strings writes each element against the LIST member's own schema,
-        // exactly as the codegen's own list arm does for a scalar element.
-        if let Some(v) = self.acceptance_terms.as_ref() {
-            s.write_list(&Self::M_ACCEPTANCE_TERMS, &|sl| {
-                for term in v.iter() {
-                    sl.write_string(&Self::M_ACCEPTANCE_TERMS, term.as_str())?;
-                }
-                Ok(())
-            })?;
-        }
-        if let Some(v) = self.terminate_terms.as_ref() {
-            s.write_list(&Self::M_TERMINATE_TERMS, &|sl| {
-                for term in v.iter() {
-                    sl.write_string(&Self::M_TERMINATE_TERMS, term.as_str())?;
-                }
-                Ok(())
-            })?;
-        }
-        if let Some(v) = self.r#type.as_ref() {
-            s.write_string(&Self::M_TYPE, v.as_str())?;
-        }
-        Ok(())
-    }
-}
-
-/// See the note beside `InquirySummary`'s reader in `types/shared_types.rs`: the enclosing
-/// output shape keeps the derive, and the reader the derive emits for it requires this one.
-impl ::aws_smithy_schema_server::DeserializableStruct for CustomerAgreementSummary {
-    fn deserialize(
-        d: &mut dyn ::aws_smithy_schema::serde::ShapeDeserializer,
-    ) -> ::std::result::Result<Self, ::aws_smithy_schema::serde::SerdeError> {
-        let mut out = Self::default();
-        d.read_struct(&Self::SCHEMA, &mut |member, d| {
-            match member.member_index() {
-                Some(0) => out.name = Some(d.read_string(&Self::M_NAME)?),
-                Some(1) => out.arn = Some(d.read_string(&Self::M_ARN)?),
-                Some(2) => out.id = Some(d.read_string(&Self::M_ID)?),
-                Some(3) => out.agreement_arn = Some(d.read_string(&Self::M_AGREEMENT_ARN)?),
-                Some(4) => out.aws_account_id = Some(d.read_string(&Self::M_AWS_ACCOUNT_ID)?),
-                Some(5) => out.organization_arn = Some(d.read_string(&Self::M_ORGANIZATION_ARN)?),
-                Some(6) => out.effective_start = Some(d.read_timestamp(&Self::M_EFFECTIVE_START)?),
-                Some(7) => out.effective_end = Some(d.read_timestamp(&Self::M_EFFECTIVE_END)?),
-                Some(8) => out.state = Some(d.read_string(&Self::M_STATE)?),
-                Some(9) => out.description = Some(d.read_string(&Self::M_DESCRIPTION)?),
-                Some(10) => {
-                    let mut terms: Vec<String> = Vec::new();
-                    d.read_list(&Self::M_ACCEPTANCE_TERMS, &mut |dl| {
-                        terms.push(dl.read_string(&Self::M_ACCEPTANCE_TERMS)?);
-                        Ok(())
-                    })?;
-                    out.acceptance_terms = Some(terms);
-                }
-                Some(11) => {
-                    let mut terms: Vec<String> = Vec::new();
-                    d.read_list(&Self::M_TERMINATE_TERMS, &mut |dl| {
-                        terms.push(dl.read_string(&Self::M_TERMINATE_TERMS)?);
-                        Ok(())
-                    })?;
-                    out.terminate_terms = Some(terms);
-                }
-                Some(12) => out.r#type = Some(d.read_string(&Self::M_TYPE)?),
-                _ => {}
-            }
-            Ok(())
-        })?;
-        Ok(out)
-    }
-}
-

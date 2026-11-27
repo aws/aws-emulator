@@ -422,7 +422,7 @@ async fn a_request_body_the_front_door_cannot_bind_is_refused_with_400_bad_reque
     // one. Each names the member and the modelled rule it breaks; the value is always
     // the only thing wrong with the request.
     let cases: Vec<(String, &str, &str, Value)> = vec![
-        // `supportMode`: InquirySupportMode, enum AI_ONLY | FULL_SUPPORT.
+        // `supportMode`: InquirySupportMode, enum AI_ONLY.
         (
             "CreateComplianceInquiry supportMode outside its set".to_string(),
             "POST",
@@ -615,20 +615,17 @@ async fn a_value_the_uri_carries_keeps_the_services_own_validation_error() {
 async fn a_body_that_binds_reaches_the_operation() {
     let router = emulator();
 
-    // Every value the model admits for `supportMode`, plus the member left out
-    // entirely ("Defaults to AI_ONLY if not specified"): the front door passes each
-    // one, so none of them is answered as a refusal of the request.
-    //
-    // `FULL_SUPPORT` is "[o]nly supported for file upload mode", so the row carrying it
-    // submits an upload — the front door's job is to BIND the member, and what the
-    // operation then does with the pair is asserted in
-    // `compliance_inquiry_support_mode.rs`.
+    // Every value the model admits for `supportMode` — `AI_ONLY` is the whole enum — plus
+    // the member left out entirely ("Defaults to AI_ONLY if not specified"): the front door
+    // passes each one, so none of them is answered as a refusal of the request. The row
+    // that submits an upload is there because the front door's job is to BIND the member
+    // whatever form the content takes.
     let rows = [
         ("AI_ONLY", create_body(json!({ "supportMode": "AI_ONLY" }))),
         (
-            "FULL_SUPPORT",
+            "AI_ONLY on an upload",
             create_body(json!({
-                "supportMode": "FULL_SUPPORT",
+                "supportMode": "AI_ONLY",
                 // Base64 of an uploaded document's bytes, as restJson1 carries a blob.
                 "inquiryContent": { "fileContent": { "content": "cXVlc3Rpb25uYWlyZQ==" } },
             })),

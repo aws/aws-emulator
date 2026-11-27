@@ -299,10 +299,10 @@ fn cases() -> Vec<Case> {
             &[],
         ),
         file(
-            "an uploaded document, two sections, FULL_SUPPORT, one tag",
+            "an uploaded document, two sections, AI_ONLY, one tag",
             "annual audit workbook",
             &["Sheet1", "Sheet2"],
-            Some("FULL_SUPPORT"),
+            Some("AI_ONLY"),
             &[("team", "audit")],
         ),
         file(

@@ -361,10 +361,6 @@ pub const INQUIRY_STATUS_COMPLETED: &str = "COMPLETED";
 /// `InquiryStatus`'s value for an inquiry whose processing could not be performed.
 pub const INQUIRY_STATUS_FAILED: &str = "FAILED";
 
-/// `InquiryStatus`'s value for an inquiry whose own processing is over and whose queries
-/// are waiting on the human expert review `SUPPORT_MODE_FULL_SUPPORT` asked for.
-pub const INQUIRY_STATUS_HUMAN_REVIEW: &str = "HUMAN_REVIEW";
-
 /// `InquiryStatusMessage`'s value for an inquiry that is still being processed.
 pub const INQUIRY_MESSAGE_IN_PROGRESS: &str = "Compliance inquiry processing is in-progress.";
 
@@ -374,9 +370,6 @@ pub const INQUIRY_MESSAGE_COMPLETE: &str = "Compliance inquiry processing is com
 /// `InquiryStatusMessage`'s value for an inquiry whose processing itself failed.
 pub const INQUIRY_MESSAGE_INTERNAL_ERROR: &str =
     "An internal error occurred while processing the inquiry. Try again at a later time.";
-
-/// `InquiryStatusMessage`'s value for an inquiry waiting on a human expert review.
-pub const INQUIRY_MESSAGE_HUMAN_REVIEW: &str = "Human review is in progress.";
 
 /// `QueryStatus`'s non-terminal value.
 pub const QUERY_STATUS_PROCESSING: &str = "PROCESSING";
@@ -390,29 +383,27 @@ pub const QUERY_MESSAGE_IN_PROGRESS: &str = "Query processing is in-progress.";
 /// `QueryStatusMessage`'s value for a query whose processing is over.
 pub const QUERY_MESSAGE_COMPLETE: &str = "Query processing is complete.";
 
-/// `QueryStatusMessage`'s value for a query whose own processing is over and which is
-/// waiting on the human expert review it was submitted for.
-pub const QUERY_MESSAGE_PENDING_HUMAN_REVIEW: &str = "Query is pending human review.";
-
 /// `InputSource`'s value for an inquiry submitted as a single query.
 pub const INPUT_SOURCE_TEXT: &str = "TEXT";
 
 /// `InputSource`'s value for an inquiry submitted as an uploaded document.
 pub const INPUT_SOURCE_FILE: &str = "FILE";
 
-/// `InquirySupportMode`'s default: "Defaults to AI_ONLY if not specified."
-/// (`CreateComplianceInquiryRequest$supportMode`).
+/// `InquirySupportMode`'s one value, which is also the default the member's own
+/// documentation states: "Defaults to AI_ONLY if not specified."
+/// (`CreateComplianceInquiryRequest$supportMode`). It is the whole of the modelled enum
+/// (`smithy_query(query="shape",shape="InquirySupportMode")`), so it is the mode every
+/// inquiry this service holds is processed under: a request carrying any other value is
+/// refused against that enum before a handler runs.
 pub const SUPPORT_MODE_AI_ONLY: &str = "AI_ONLY";
 
-/// `InquirySupportMode`'s value that "includes human expert review" and is "[o]nly
-/// supported for file upload mode" (`CreateComplianceInquiryRequest$supportMode`).
-pub const SUPPORT_MODE_FULL_SUPPORT: &str = "FULL_SUPPORT";
-
 /// `ReviewType`'s value for a response reviewed by the service's own model.
+///
+/// The review every query of every inquiry this service holds carries: the one support
+/// mode the model admits ([`SUPPORT_MODE_AI_ONLY`]) "provides AI-generated responses"
+/// (`CreateComplianceInquiryRequest$supportMode`), and no request can ask for another, so
+/// nothing here is submitted for a human expert review.
 pub const REVIEW_TYPE_AI: &str = "AI";
-
-/// `ReviewType`'s value for a response a human expert reviews.
-pub const REVIEW_TYPE_HUMAN: &str = "HUMAN";
 
 /// The longest text a `LongStringAttribute` member of this service can report:
 /// `QuerySummary$query`, `QuerySummary$response` and `Citation$sourceContent` all target
@@ -429,47 +420,6 @@ pub const QUERY_TEXT_LIMIT: usize = 2048;
 /// read off a member with looser constraints, such as the inquiry's title.
 pub fn reportable_query_text(label: &str) -> Option<String> {
     reportable_long_text(label)
-}
-
-/// The `ReviewType` the queries of one submission carry, from the support mode the
-/// inquiry is processed under.
-///
-/// `FULL_SUPPORT` "includes human expert review", `AI_ONLY` "provides AI-generated
-/// responses" (`InquiryDetail$supportMode`), so the stored mode decides the review and
-/// the two can never disagree: a mode a submission cannot be processed under never
-/// reaches the record ([`support_mode_available_for`]).
-pub fn review_type_for(support_mode: &str) -> &'static str {
-    if support_mode == SUPPORT_MODE_FULL_SUPPORT {
-        REVIEW_TYPE_HUMAN
-    } else {
-        REVIEW_TYPE_AI
-    }
-}
-
-/// Whether `support_mode` is available for a submission made of `content`.
-///
-/// `FULL_SUPPORT` is "[o]nly supported for file upload mode"
-/// (`CreateComplianceInquiryRequest$supportMode`), so it can only be asked for of an
-/// uploaded document; `AI_ONLY` is the mode the same sentence makes every submission's
-/// default, so it asks for nothing no submission can be given.
-pub fn support_mode_available_for(support_mode: &str, content: &InquiryContentRecord) -> bool {
-    support_mode != SUPPORT_MODE_FULL_SUPPORT || content.input_source() == INPUT_SOURCE_FILE
-}
-
-/// The requirement a `supportMode` the submitted content cannot be processed under failed
-/// — the restriction the member's own documentation states
-/// ([`support_mode_available_for`]).
-pub const SUPPORT_MODE_REQUIREMENT: &str =
-    "FULL_SUPPORT is only supported for file upload mode";
-
-/// The modelled `ValidationException` for a `supportMode` the submitted content cannot be
-/// processed under ([`support_mode_available_for`]).
-///
-/// `ValidationExceptionReason`'s `fieldValidationFailed`, naming `supportMode` in the
-/// field list: the refused value came in on that member, and the clause states the
-/// requirement rather than echoing the value back.
-pub fn unsupported_support_mode() -> ValidationException {
-    field_validation_failed("supportMode", SUPPORT_MODE_REQUIREMENT)
 }
 
 /// How many tags one resource carries at most.
@@ -979,10 +929,8 @@ pub struct InquiryQuery {
     /// processing due ([`Self::reported_answer`]) — the catalog is service-owned and never
     /// written, so the answer does not depend on when the retrieval ran.
     pub answer: Option<QueryAnswer>,
-    /// One of `ReviewType`'s values — the review the inquiry was submitted for
-    /// ([`review_type_for`]). A query awaiting [`REVIEW_TYPE_HUMAN`] stays non-terminal:
-    /// a human expert's review is not the clock's to finish (see
-    /// [`ComplianceInquiry::materialise`]).
+    /// One of `ReviewType`'s values — the review the inquiry's support mode asks for,
+    /// which for the one mode the model admits is [`REVIEW_TYPE_AI`].
     pub review_type: Option<String>,
     /// One of `QueryStatus`'s values.
     pub status: String,
@@ -995,10 +943,9 @@ impl InquiryQuery {
     /// The answer this query REPORTS, which is the one it holds once its processing is no
     /// longer in progress.
     ///
-    /// A query still being processed — including one resting on the human expert review its
-    /// inquiry's support mode asked for, which nothing here performs — reports no response
-    /// and no citation: the answer is released when the processing that produced it is
-    /// over, so a client polling for it sees it appear exactly when the status says it may.
+    /// A query still being processed reports no response and no citation: the answer is
+    /// released when the processing that produced it is over, so a client polling for it
+    /// sees it appear exactly when the status says it may.
     pub fn reported_answer(&self) -> Option<&QueryAnswer> {
         self.answer
             .as_ref()
@@ -1105,11 +1052,9 @@ pub struct ComplianceInquiry {
     /// One of `InquiryStatusMessage`'s values.
     pub status_message: String,
     /// One of `InquirySupportMode`'s values, defaulted to [`SUPPORT_MODE_AI_ONLY`] when
-    /// the request named none — and always one this submission IS processed under: a mode
-    /// the content cannot be processed under is refused at the create
-    /// ([`support_mode_available_for`]) rather than stored, so no read advertises a
-    /// support mode the inquiry's queries were not reviewed in
-    /// ([`review_type_for`]).
+    /// the request named none — and always the mode this submission IS processed under:
+    /// the modelled enum admits that one mode, so a read can never advertise a support
+    /// mode the inquiry's queries were not reviewed in ([`REVIEW_TYPE_AI`]).
     pub support_mode: String,
     pub content: InquiryContentRecord,
     /// The queries this inquiry owns, by ascending `queryIdentifier`.
@@ -1139,21 +1084,14 @@ impl ComplianceInquiry {
     /// the work its content submitted is, and the inquiry-level message says what became
     /// of it.
     ///
-    /// * a query the service's own model reviews ([`REVIEW_TYPE_AI`]) is processed by the
-    ///   due instant, so it reaches `COMPLETED`, and an inquiry whose queries all did
+    /// * a query the service's own model reviews ([`REVIEW_TYPE_AI`], the review every
+    ///   query of every inquiry this service holds carries) is processed by the due
+    ///   instant, so it reaches `COMPLETED`, and an inquiry whose queries all did
     ///   reaches the modelled clean-completion message. From that instant the query
     ///   REPORTS the answer it holds ([`InquiryQuery::reported_answer`]) — the passages the
     ///   retrieval over the published catalog found for it and the citations naming where
     ///   they are published — and a query the catalog holds nothing bearing on reports
     ///   none, which is the honest signal rather than a query-level error that never
-    ///   happened;
-    /// * a query submitted for HUMAN expert review ([`REVIEW_TYPE_HUMAN`]) is not the
-    ///   CLOCK's to finish — a human has to look at it, and nothing in this emulator
-    ///   stands in for one — so it stays non-terminal, reports that it is waiting and
-    ///   reports no answer while the review that would release it is pending,
-    ///   and the inquiry RESTS in `HUMAN_REVIEW` while the review its support mode asked
-    ///   for is pending ([`review_type_for`], the one thing that decides the review every
-    ///   query of this inquiry carries), rather than being moved on as though a review had
     ///   happened. Every reader of an inquiry (`GetComplianceInquiryMetadata`,
     ///   `ListComplianceInquiries`, `ListComplianceInquiryQueries`) and every writer
     ///   against one (`PutComplianceInquiryFeedback`) reports or records in whatever
@@ -1167,6 +1105,11 @@ impl ComplianceInquiry {
     ///   under: how many queries the inquiry can REPORT ([`reportable_query_text`]) is a
     ///   property of the member that reports them, and reporting fewer than were submitted
     ///   is not a processing failure.
+    ///
+    /// The modelled `HUMAN_REVIEW` status and `Query is pending human review.` message are
+    /// not reported by this emulator: `InquirySupportMode` admits one mode
+    /// ([`SUPPORT_MODE_AI_ONLY`]), so nothing a caller can submit asks for a human expert
+    /// review, and no status is reported for a review nothing performed.
     ///
     /// No query of an inquiry this emulator holds ever fails, so no inquiry reports the
     /// modelled completed-with-query-errors message: a query is processed by reading the
@@ -1187,24 +1130,12 @@ impl ComplianceInquiry {
             if query.status != QUERY_STATUS_PROCESSING {
                 continue;
             }
-            if query.review_type.as_deref() == Some(REVIEW_TYPE_HUMAN) {
-                query.status_message = QUERY_MESSAGE_PENDING_HUMAN_REVIEW.to_string();
-            } else {
-                query.status = QUERY_STATUS_COMPLETED.to_string();
-                query.status_message = QUERY_MESSAGE_COMPLETE.to_string();
-            }
+            query.status = QUERY_STATUS_COMPLETED.to_string();
+            query.status_message = QUERY_MESSAGE_COMPLETE.to_string();
         }
-        // The review this submission is processed under, which is the review every query
-        // of it carries — so the inquiry and its queries cannot disagree about whether a
-        // human expert still has to look at it, and an inquiry that reports no query is
-        // still waiting on the review it was submitted for.
-        let awaiting_human_review = review_type_for(&self.support_mode) == REVIEW_TYPE_HUMAN;
         if self.content.nothing_to_process() {
             self.status = INQUIRY_STATUS_FAILED.to_string();
             self.status_message = INQUIRY_MESSAGE_INTERNAL_ERROR.to_string();
-        } else if awaiting_human_review {
-            self.status = INQUIRY_STATUS_HUMAN_REVIEW.to_string();
-            self.status_message = INQUIRY_MESSAGE_HUMAN_REVIEW.to_string();
         } else {
             self.status = INQUIRY_STATUS_COMPLETED.to_string();
             self.status_message = INQUIRY_MESSAGE_COMPLETE.to_string();
@@ -1468,12 +1399,11 @@ impl ComplianceInquiry {
 /// date-time, which is the `@timestampFormat` the model declares for them, carrying a
 /// fractional-seconds component only when the instant itself has one.
 ///
-/// The ONE renderer, shared with the output serializers
-/// ([`crate::ops::types::artifact_date_time_text`]), so a document this service renders an
-/// instant into and the response member reporting the same instant cannot disagree about
-/// its form.
-fn rendered_timestamp(value: SystemTime) -> String {
-    crate::ops::types::artifact_date_time_text(&::aws_smithy_types::DateTime::from(value))
+/// The ONE renderer, shared with the codec this service's responses are written by
+/// ([`service_common::date_time_json`]), so a document this service renders an instant into
+/// and the response member reporting the same instant cannot disagree about its form.
+pub fn rendered_timestamp(value: SystemTime) -> String {
+    ::service_common::date_time_json::date_time_text(&::aws_smithy_types::DateTime::from(value))
         .unwrap_or_default()
 }
 

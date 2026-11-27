@@ -67,10 +67,6 @@ const QUERY_IN_PROGRESS: &str = "Query processing is in-progress.";
 /// instant — which is also when the query starts reporting the answer it holds.
 const QUERY_TERMINAL: (&str, &str) = ("COMPLETED", "Query processing is complete.");
 
-/// The pair a query submitted for HUMAN review rests in: a human expert's review is not
-/// the clock's to finish, so the query stays non-terminal and reports what it waits for.
-const QUERY_PENDING_HUMAN_REVIEW: (&str, &str) = ("PROCESSING", "Query is pending human review.");
-
 /// The span after which an inquiry's processing is due to be over, plus slack. The handler
 /// stores the due instant rather than sleeping, so only the test waits.
 ///
@@ -246,17 +242,15 @@ struct Case {
 
 /// The submissions this suite covers. The rows differ along the form of the content, the
 /// query text, how many sections a document names, whether the upload carries any bytes
-/// at all, and whether `supportMode` is given and which of its values.
+/// at all, and whether `supportMode` is given.
 fn cases() -> Vec<Case> {
     vec![
         Case {
             label: "a query, no supportMode",
             body: text_body("Data residency", "Where is customer data stored?", None),
             queries: vec!["Where is customer data stored?"],
-            // Every query read off submitted text is AI-reviewed: `supportMode`'s
-            // `FULL_SUPPORT` is "only supported for file upload mode", so a text
-            // submission cannot be created under it at all (see
-            // `compliance_inquiry_support_mode.rs`).
+            // Every query of every inquiry is AI-reviewed: `InquirySupportMode` admits one
+            // mode, `AI_ONLY` (see `compliance_inquiry_support_mode.rs`).
             review_type: Some("AI"),
             terminal_pair: QUERY_TERMINAL,
         },
@@ -301,16 +295,16 @@ fn cases() -> Vec<Case> {
             terminal_pair: QUERY_TERMINAL,
         },
         Case {
-            label: "an uploaded document, two sections, FULL_SUPPORT",
+            label: "an uploaded document, two sections, AI_ONLY",
             body: file_body(
                 "Annual audit workbook",
                 FILE_CONTENT,
                 &["Section A", "Section B"],
-                Some("FULL_SUPPORT"),
+                Some("AI_ONLY"),
             ),
             queries: vec!["Section A", "Section B"],
-            review_type: Some("HUMAN"),
-            terminal_pair: QUERY_PENDING_HUMAN_REVIEW,
+            review_type: Some("AI"),
+            terminal_pair: QUERY_TERMINAL,
         },
         Case {
             label: "an uploaded document, three sections, AI_ONLY",

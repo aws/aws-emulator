@@ -71,9 +71,9 @@ const GATED_VERSION: i64 = 2;
 /// `VersionAttribute`'s `@range(min: 1)`, so the request reaches the handler.
 const UNPUBLISHED_VERSION: i64 = 9999;
 
-/// `InquirySupportMode`'s two values. Source:
+/// `InquirySupportMode`'s one value. Source:
 /// `smithy_query(query="shape",shape="InquirySupportMode")`.
-const SUPPORT_MODES: [&str; 2] = ["AI_ONLY", "FULL_SUPPORT"];
+const SUPPORT_MODE: &str = "AI_ONLY";
 
 /// `FeedbackRating`'s values. Source: `smithy_query(query="shape",shape="FeedbackRating")`.
 const RATINGS: [&str; 2] = ["THUMBS_UP", "THUMBS_DOWN"];
@@ -315,14 +315,14 @@ async fn every_inquiry_write_emits_exactly_one_attributable_audit_record() {
             names: Names::CreatedInquiry,
         },
         Case {
-            case: "an uploaded document under the mode only an upload may ask for",
+            case: "an uploaded document under the mode the model admits",
             operation: "CreateComplianceInquiry",
             method: "POST",
             uri: "/v1/compliance-inquiry/create".to_string(),
             body: Some(json!({
                 "name": sensitive(11),
                 "inquiryContent": { "fileContent": { "content": FILE_CONTENT } },
-                "supportMode": SUPPORT_MODES[1]
+                "supportMode": SUPPORT_MODE
             })),
             region: REGION,
             status: 202,
@@ -401,25 +401,6 @@ async fn every_inquiry_write_emits_exactly_one_attributable_audit_record() {
             fields: vec![
                 "input_source=TEXT".to_string(),
                 "reason=tags name a key in the reserved namespace".to_string(),
-            ],
-            names: Names::Nothing,
-        },
-        Case {
-            case: "the upload-only support mode asked of a text submission",
-            operation: "CreateComplianceInquiry",
-            method: "POST",
-            uri: "/v1/compliance-inquiry/create".to_string(),
-            body: Some(json!({
-                "name": sensitive(17),
-                "inquiryContent": { "query": sensitive(18) },
-                "supportMode": SUPPORT_MODES[1]
-            })),
-            region: REGION,
-            status: 400,
-            outcome: "refused",
-            fields: vec![
-                "input_source=TEXT".to_string(),
-                "reason=supportMode is not available for the submitted content".to_string(),
             ],
             names: Names::Nothing,
         },
