@@ -45,6 +45,13 @@
 //! stream whose enhanced monitoring names the shard-level spelling of that lag. The figure is
 //! positive while records remain ahead of the reader and zero once it has read to the tip, and
 //! the zero is published too, so a client alarming on the lag evaluates either way.
+//!
+//! WHAT a call contributes to those series is the fourth rule, and the one the last cases are
+//! about: a call is counted for what it ACTUALLY did, so the incoming-volume series count the
+//! records and the record data the shards stored, a record a shard's published write rate
+//! turned down is counted into the throughput-exceeded series instead of into the volume, and
+//! one `PutRecords` call's outcome split reports which of the entries it carried ended up each
+//! way.
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -52,7 +59,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use bytes::Bytes;
 use serde_json::{json, Value};
 use service_com_amazonaws_kinesis_kinesis_20131202::state::{
-    shard_id, stream_not_found_message, STREAM_CREATING, STREAM_IDENTIFIER_REQUIRED_MESSAGE,
+    counted, shard_id, stream_not_found_message, STREAM_CREATING,
+    STREAM_IDENTIFIER_REQUIRED_MESSAGE, THROUGHPUT_EXCEEDED_ERROR_CODE,
 };
 use service_com_amazonaws_kinesis_kinesis_20131202::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
@@ -882,13 +890,22 @@ async fn put_one(monitored: &Monitored, case: &str, stream: &str) {
 
 /// Create `stream` with one shard and wait for the ACTIVE its create owes it.
 async fn active_stream(monitored: &Monitored, case: &str, stream: &str) {
-    monitored
-        .kinesis(
-            case,
-            "CreateStream",
-            &json!({ "StreamName": stream, "ShardCount": 1 }),
-        )
-        .await;
+    active_stream_sized(monitored, case, stream, None).await;
+}
+
+/// Create `stream` with one shard, configured for records of `max_record_kib` where a case
+/// asks for a record size of its own, and wait for the ACTIVE its create owes it.
+async fn active_stream_sized(
+    monitored: &Monitored,
+    case: &str,
+    stream: &str,
+    max_record_kib: Option<i64>,
+) {
+    let mut body = json!({ "StreamName": stream, "ShardCount": 1 });
+    if let Some(kib) = max_record_kib {
+        body["MaxRecordSizeInKiB"] = json!(kib);
+    }
+    monitored.kinesis(case, "CreateStream", &body).await;
     poll_until(case, &format!("the stream {stream} is active"), || async {
         let (status, response) = monitored
             .call(
@@ -1565,4 +1582,379 @@ async fn a_push_delivery_publishes_its_own_lag_series() {
         pull.datapoints, 0,
         "case {case}: expected no {PULL_LAG} where nothing called GetRecords, got {pull:?}"
     );
+}
+
+/// The records a producer put into the stream, which is what the volume of accepted writes is
+/// counted into; a member of the enhanced-monitoring catalog ([`EVERY_METRIC`]), so it has a
+/// shard-dimensioned form beside the stream-level one.
+const INCOMING_RECORDS: &str = "IncomingRecords";
+
+/// The record data those accepted writes carried.
+const INCOMING_BYTES: &str = "IncomingBytes";
+
+/// The series a record a shard's write quota turned down is counted into, for the shard that
+/// refused it: "Each shard can support writes up to 1,000 records per second, up to a maximum
+/// data write total of 1 MB per second" (`PutRecords`), and a record past that rate is not
+/// stored. Another member of that same catalog.
+const WRITE_THROTTLED: &str = "WriteProvisionedThroughputExceeded";
+
+/// The per-API family counting the entries one `PutRecords` call carried, stored or not.
+const BATCH_TOTAL: &str = "PutRecords.TotalRecords";
+
+/// The entries of one such call that were stored.
+const BATCH_STORED: &str = "PutRecords.SuccessfulRecords";
+
+/// The entries of one such call that were not.
+const BATCH_FAILED: &str = "PutRecords.FailedRecords";
+
+/// The entries of one such call a shard's write quota turned down.
+const BATCH_THROTTLED: &str = "PutRecords.ThrottledRecords";
+
+/// Whether one `PutRecord` call stored its record: an observation of 1 for a stored record and
+/// of 0 for one the shard turned down, so the SUM over a window is the writes that were taken
+/// and the sample count is the calls that asked.
+const SINGLE_SUCCESS: &str = "PutRecord.Success";
+
+/// The record data one `PutRecord` call stored.
+const SINGLE_BYTES: &str = "PutRecord.Bytes";
+
+/// The unit a tally of records or of calls is published in.
+const COUNT: &str = "Count";
+
+/// One mebibyte, the unit the published write-byte rate of a shard is expressed in.
+const MI_B: usize = 1024 * 1024;
+
+/// What one series must hold: the `Sum` of its datapoints, carried by `observations`
+/// observations — and NO datapoint at all where the calls contributed none of that kind, which
+/// is what `observations` of zero asks for.
+fn holds(case: &str, metric: &str, reading: &Reading, sum: f64, observations: usize) {
+    if observations == 0 {
+        assert_eq!(
+            reading.datapoints, 0,
+            "case {case}: expected no {metric} datapoint where no call contributed one, got \
+             {reading:?}"
+        );
+        return;
+    }
+    assert!(
+        (reading.sum - sum).abs() < TOLERANCE,
+        "case {case}: expected {metric} to sum to {sum}, got {reading:?}"
+    );
+    assert!(
+        (reading.sample_count - counted(observations)).abs() < TOLERANCE,
+        "case {case}: expected {observations} observation(s) of {metric}, got {reading:?}"
+    );
+}
+
+/// Every `AWS/Kinesis` metric CloudWatch lists for `stream`, as a client DISCOVERS the series
+/// a stream publishes: the names of the series dimensioned on that stream's name, sorted and
+/// without repeats.
+async fn listed_metrics(monitored: &Monitored, case: &str, stream: &str) -> Vec<String> {
+    let answered = monitored
+        .cloudwatch(
+            case,
+            "ListMetrics",
+            &json!({
+                "Namespace": KINESIS_NAMESPACE,
+                "Dimensions": [{ "Name": STREAM_NAME_DIMENSION, "Value": stream }],
+            }),
+        )
+        .await;
+    let mut names: Vec<String> = answered["Metrics"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|metric| metric["MetricName"].as_str().map(str::to_string))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// One row of the write-accounting table: the batch one `PutRecords` call carries, and whether
+/// the shard's published write rate is expected to turn part of it down.
+struct BatchRow {
+    case: &'static str,
+    /// How many entries the call carries.
+    entries: usize,
+    /// The bytes of data each of those entries carries.
+    entry_bytes: usize,
+    /// Whether the shard admits only PART of the batch at one instant.
+    partial: bool,
+}
+
+/// RULE: a data-plane call contributes to the stream's `AWS/Kinesis` series what it ACTUALLY
+/// did — the incoming-volume series count the records and the record data the shards STORED, a
+/// record a shard's published write rate turned down is counted into the throughput-exceeded
+/// series instead of into the volume, and one `PutRecords` call's outcome split
+/// (`SuccessfulRecords`, `FailedRecords`, `ThrottledRecords`) reports which way each of the
+/// `TotalRecords` entries it carried ended up.
+///
+/// The rows differ along what the rule generalises over: how many entries one call carries, the
+/// bytes each of them holds, which of the two published rates the batch passes, and so whether
+/// the shard takes the batch whole or only part of it.
+#[tokio::test]
+async fn a_batch_counts_what_it_stored_apart_from_what_the_quota_turned_down() {
+    assert!(
+        EVERY_METRIC.contains(&WRITE_THROTTLED) && EVERY_METRIC.contains(&INCOMING_RECORDS),
+        "the volume and the throughput-exceeded counters are members of the \
+         enhanced-monitoring catalog, which is what a stream enables their per-shard form \
+         through"
+    );
+    let shard = shard_id(0);
+    let rows = [
+        // Inside both published rates: the shard takes the whole batch, and nothing is
+        // counted as refused.
+        BatchRow {
+            case: "a batch of tiny entries inside both published rates",
+            entries: 20,
+            entry_bytes: 8,
+            partial: false,
+        },
+        // Past the write-BYTE rate with many small entries: 300 entries of 16 KiB is more
+        // than twice what one shard holds at an instant, so part of the batch is turned down.
+        BatchRow {
+            case: "a batch of 16 KiB entries past the write-byte rate",
+            entries: 300,
+            entry_bytes: 16 * 1024,
+            partial: true,
+        },
+        // The same rate reached with FEWER and LARGER entries, so the split does not depend on
+        // how many entries the call carries.
+        BatchRow {
+            case: "a batch of mebibyte entries past the write-byte rate",
+            entries: 4,
+            entry_bytes: MI_B,
+            partial: true,
+        },
+    ];
+
+    for row in rows {
+        let case = row.case;
+        // One engine per row, so a row's series hold only that row's own observations, and one
+        // PutRecords call per row, so the whole batch is metered at a single instant of the
+        // shard's refill rather than at a point that depends on how fast the host runs.
+        let monitored = Monitored::new();
+        let stream = "write-accounting";
+        active_stream(&monitored, case, stream).await;
+        // Armed for the volume and for the refusals, so every figure below is checked under
+        // BOTH identities the metric has.
+        monitored
+            .kinesis(
+                case,
+                "EnableEnhancedMonitoring",
+                &json!({
+                    "StreamName": stream,
+                    "ShardLevelMetrics": [INCOMING_RECORDS, INCOMING_BYTES, WRITE_THROTTLED],
+                }),
+            )
+            .await;
+
+        // One partition key for every entry, so the whole batch is placed in the one shard
+        // whose quota the row is about and each entry occupies the same bytes.
+        let entries: Vec<Value> = (0..row.entries)
+            .map(|_| {
+                json!({
+                    "PartitionKey": PARTITION_KEY,
+                    "Data": aws_smithy_types::base64::encode(vec![b'x'; row.entry_bytes]),
+                })
+            })
+            .collect();
+        let answer = monitored
+            .kinesis(
+                case,
+                "PutRecords",
+                &json!({ "StreamName": stream, "Records": entries }),
+            )
+            .await;
+        let results = answer["Records"].as_array().cloned().unwrap_or_default();
+        assert_eq!(
+            results.len(),
+            row.entries,
+            "case {case}: PutRecords answers one result per entry, got {answer}"
+        );
+        let stored = results
+            .iter()
+            .filter(|result| result["ErrorCode"].is_null())
+            .count();
+        let throttled = results
+            .iter()
+            .filter(|result| {
+                result["ErrorCode"].as_str() == Some(THROUGHPUT_EXCEEDED_ERROR_CODE)
+            })
+            .count();
+        assert_eq!(
+            stored + throttled,
+            row.entries,
+            "case {case}: expected every entry either stored or turned down by the shard's \
+             write rate, got {stored} stored and {throttled} refused of {} entries",
+            row.entries
+        );
+        if row.partial {
+            assert!(
+                stored > 0 && throttled > 0,
+                "case {case}: expected the shard to take part of the batch and to turn the \
+                 rest down, got {stored} stored and {throttled} refused"
+            );
+        } else {
+            assert_eq!(
+                stored, row.entries,
+                "case {case}: expected a batch inside both published rates to be stored whole, \
+                 got {stored} stored"
+            );
+        }
+        // What a record OCCUPIES: "The record size limit applies to the total size of the
+        // partition key and data blob" (`PutRecords`), which is the measure the byte series
+        // carry.
+        let record_bytes = counted(row.entry_bytes + PARTITION_KEY.len());
+
+        // The volume counts what the shard STORED — not what the call carried — under both
+        // identities, and the refusals are counted for the shard that turned them down.
+        for dimensions in [stream_level(stream), shard_level(stream, &shard)] {
+            let records = series(&monitored, case, INCOMING_RECORDS, dimensions.clone()).await;
+            holds(
+                case,
+                INCOMING_RECORDS,
+                &records,
+                counted(stored),
+                usize::from(stored > 0),
+            );
+            let bytes = series(&monitored, case, INCOMING_BYTES, dimensions.clone()).await;
+            holds(
+                case,
+                INCOMING_BYTES,
+                &bytes,
+                counted(stored) * record_bytes,
+                usize::from(stored > 0),
+            );
+            let refused = series(&monitored, case, WRITE_THROTTLED, dimensions).await;
+            holds(
+                case,
+                WRITE_THROTTLED,
+                &refused,
+                counted(throttled),
+                usize::from(throttled > 0),
+            );
+            assert!(
+                refused.units.iter().all(|unit| unit == COUNT),
+                "case {case}: expected a tally of refused records in {COUNT}, got {refused:?}"
+            );
+        }
+
+        // The call's own outcome split: what it carried, what it stored, and what the shard's
+        // rate turned down — one observation each, published whether or not the figure is zero,
+        // so a client reading the split after the fact can tell an accepted write from a
+        // throttled one.
+        for (metric, expected) in [
+            (BATCH_TOTAL, row.entries),
+            (BATCH_STORED, stored),
+            (BATCH_FAILED, throttled),
+            (BATCH_THROTTLED, throttled),
+        ] {
+            let reading = series(&monitored, case, metric, stream_level(stream)).await;
+            holds(case, metric, &reading, counted(expected), 1);
+            // A per-API family is about the CALL, so it exists under the stream's name alone.
+            let dimensioned = series(&monitored, case, metric, shard_level(stream, &shard)).await;
+            assert_eq!(
+                dimensioned.datapoints, 0,
+                "case {case}: expected no ShardId-dimensioned {metric}, got {dimensioned:?}"
+            );
+        }
+
+        // A client finds these series through ListMetrics, which lists one where the call
+        // published it and nowhere else — so the throughput-exceeded series is listed for a
+        // stream whose shard turned a record down and absent for one that took its batch
+        // whole.
+        let listed = listed_metrics(&monitored, case, stream).await;
+        for metric in [
+            INCOMING_RECORDS,
+            INCOMING_BYTES,
+            BATCH_TOTAL,
+            BATCH_STORED,
+            BATCH_FAILED,
+            BATCH_THROTTLED,
+        ] {
+            assert!(
+                listed.iter().any(|name| name == metric),
+                "case {case}: expected ListMetrics to list {metric} for {stream}, got {listed:?}"
+            );
+        }
+        assert_eq!(
+            listed.iter().any(|name| name == WRITE_THROTTLED),
+            throttled > 0,
+            "case {case}: expected ListMetrics to list {WRITE_THROTTLED} exactly where the \
+             shard turned a record down ({throttled} refused), got {listed:?}"
+        );
+    }
+}
+
+/// RULE for the single writer: a `PutRecord` the shard's published write rate turned down adds
+/// nothing to the volume series and is counted as a refusal — the throughput-exceeded series
+/// for the shard, and a zero in the call's own success family — while the write that WAS stored
+/// is counted in full.
+#[tokio::test]
+async fn a_single_write_the_quota_turned_down_is_counted_as_a_refusal_not_as_traffic() {
+    let monitored = Monitored::new();
+    let case = "two records at the stream's own maximum";
+    let stream = "write-accounting-single";
+    // A stream configured for the largest record the model admits (`MaxRecordSizeInKiB` is
+    // modelled `range 1024..10240`), so ONE record of that size spends ten seconds of the
+    // shard's published write rate: the second such record is turned down however fast the host
+    // runs, and nothing here waits for a duration.
+    let max_record_kib = 10 * 1024_i64;
+    let data_bytes = 10 * MI_B;
+    active_stream_sized(&monitored, case, stream, Some(max_record_kib)).await;
+    monitored
+        .kinesis(
+            case,
+            "EnableEnhancedMonitoring",
+            &json!({
+                "StreamName": stream,
+                "ShardLevelMetrics": [INCOMING_RECORDS, INCOMING_BYTES, WRITE_THROTTLED],
+            }),
+        )
+        .await;
+    let shard = shard_id(0);
+    let record = json!({
+        "StreamName": stream,
+        "PartitionKey": PARTITION_KEY,
+        "Data": aws_smithy_types::base64::encode(vec![b'x'; data_bytes]),
+    });
+
+    let stored_at = monitored.kinesis(case, "PutRecord", &record).await;
+    assert!(
+        stored_at["SequenceNumber"].is_string(),
+        "case {case}: expected the first record stored, got {stored_at}"
+    );
+    let (status, response) = monitored
+        .call("kinesis", "Kinesis_20131202.PutRecord", &record)
+        .await;
+    assert_eq!(
+        (status, error_code(&response).as_str()),
+        (400, THROUGHPUT_EXCEEDED_ERROR_CODE),
+        "case {case}: expected the second record refused with the modelled throughput error, \
+         got {status} with {response}"
+    );
+
+    let record_bytes = counted(data_bytes + PARTITION_KEY.len());
+    for dimensions in [stream_level(stream), shard_level(stream, &shard)] {
+        // One record was stored, so the volume counts exactly that one — the refused write
+        // contributed nothing to it.
+        let records = series(&monitored, case, INCOMING_RECORDS, dimensions.clone()).await;
+        holds(case, INCOMING_RECORDS, &records, 1.0, 1);
+        let bytes = series(&monitored, case, INCOMING_BYTES, dimensions.clone()).await;
+        holds(case, INCOMING_BYTES, &bytes, record_bytes, 1);
+        // ... and the write the shard turned down is counted for that shard.
+        let refused = series(&monitored, case, WRITE_THROTTLED, dimensions).await;
+        holds(case, WRITE_THROTTLED, &refused, 1.0, 1);
+    }
+
+    // The call's own family saw BOTH calls: the stored one as a 1 and the refused one as a 0,
+    // so the sum is the writes that were taken while the sample count is the calls that asked.
+    let success = series(&monitored, case, SINGLE_SUCCESS, stream_level(stream)).await;
+    holds(case, SINGLE_SUCCESS, &success, 1.0, 2);
+    // The byte family reports what was STORED, so only the accepted call contributed to it.
+    let written = series(&monitored, case, SINGLE_BYTES, stream_level(stream)).await;
+    holds(case, SINGLE_BYTES, &written, record_bytes, 1);
 }
