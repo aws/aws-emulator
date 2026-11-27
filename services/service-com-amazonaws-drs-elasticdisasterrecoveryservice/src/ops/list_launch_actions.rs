@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListLaunchActions
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListLaunchActions`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListLaunchActions::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports the launch actions the resource the request's `resourceId` names carries, as
+//! `PutLaunchAction` wrote them, in the order they run — `order` ascending, then
+//! `actionId` — one `@paginated` page at a time (`crate::state::launch_actions::ordered`,
+//! `crate::state::paginate`). `filters.actionIds` selects among them; a resource that
+//! carries no action reports the empty list.
+//!
+//! A `resourceId` naming a resource this service does not hold is the modelled
+//! `ResourceNotFoundException` (404), the same refusal the put and the delete answer it
+//! with (`crate::state::launch_actions`). `@readonly`: nothing here writes.
 //!
 //! ## Shape of an operation
 //!
@@ -119,6 +120,10 @@ impl From<ListLaunchActionsErrorModeled> for ListLaunchActionsError {
     }
 }
 
+/// Namespaces this operation's page tokens, so a token minted here is not accepted by
+/// another `@paginated` operation of this service (`crate::state::paginate`).
+const PAGE_TOKEN_KIND: &str = "LaunchActions";
+
 /// The `ListLaunchActions` operation.
 ///
 /// Owns the shared engine (the constructor seam) and implements
@@ -155,18 +160,70 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListLaunchActions` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListLaunchActionsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListLaunchActions"))
+        let _ = ctx;
+
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(ListLaunchActionsErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: "the service store is unavailable".to_string(),
+                    retry_after_seconds: 0,
+                },
+            )
+            .into());
+        };
+        // Shared-reference guard only: `@readonly`, so nothing here mutates the store.
+        let store = state.lock();
+
+        // An action hangs off a resource, so a read is about a resource this service
+        // holds; one it does not hold is refused rather than answered with an empty list,
+        // which would say the resource exists and carries nothing.
+        if !crate::state::launch_actions::holds_resource(&store, &input.resource_id) {
+            return Err(ListLaunchActionsErrorModeled::ResourceNotFoundException(
+                crate::state::launch_actions::resource_not_found(&input.resource_id),
+            )
+            .into());
+        }
+
+        // A resource that carries no action at all has no entry in the store, which is
+        // the empty list rather than a missing resource.
+        let empty = crate::state::launch_actions::LaunchActions::new();
+        let actions = store
+            .launch_actions
+            .get(&input.resource_id)
+            .unwrap_or(&empty);
+
+        // The resource's actions in the order they run, narrowed by the action ids the
+        // request named. An absent (or empty) filter selects every action; a filter
+        // naming an id the resource does not carry selects nothing for it, the way a
+        // selection narrows a read rather than refusing it.
+        let wanted = input
+            .filters
+            .as_ref()
+            .and_then(|filters| filters.action_ids.as_deref())
+            .filter(|ids| !ids.is_empty());
+        let selected: Vec<(&str, &crate::state::launch_actions::LaunchActionRecord)> =
+            crate::state::launch_actions::ordered(actions)
+                .into_iter()
+                .filter(|(action_id, _)| {
+                    wanted.is_none_or(|ids| ids.iter().any(|wanted| wanted == action_id))
+                })
+                .collect();
+
+        let page = crate::state::paginate(
+            PAGE_TOKEN_KIND,
+            selected,
+            input.max_results,
+            input.next_token.as_deref(),
+            crate::state::launch_actions::LaunchActionRecord::to_wire,
+        )
+        // This operation models no client-input error, so a token it cannot resume from
+        // is refused through the service's own validation channel: HTTP 400
+        // `ValidationException`, never a 501.
+        .map_err(crate::scaffolded::Scaffolded::validation)?;
+
+        Ok(ListLaunchActionsOutput {
+            items: Some(page.items),
+            next_token: page.next_token,
+        })
     }
 }

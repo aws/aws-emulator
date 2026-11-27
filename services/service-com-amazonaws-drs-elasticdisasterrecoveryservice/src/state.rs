@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 pub mod ec2_subnets;
+pub mod launch_actions;
 pub mod launch_configuration_templates;
 pub mod recovery_plans;
 pub mod tags;
@@ -46,6 +47,14 @@ pub struct ComAmazonawsDrsElasticdisasterrecoveryserviceState {
     /// creation order.
     pub launch_configuration_templates:
         BTreeMap<String, launch_configuration_templates::LaunchConfigurationTemplateRecord>,
+    /// The launch actions each resource carries, keyed by the `resourceId` they hang
+    /// off (a Launch Configuration Template id or a Source Server id) and, within one
+    /// resource, by the `actionId` the caller chose.
+    ///
+    /// A launch action is not a resource of its own: it belongs to the resource it was
+    /// put on, so a resource with no action at all simply has no entry here (see
+    /// `crate::state::launch_actions`).
+    pub launch_actions: BTreeMap<String, launch_actions::LaunchActions>,
     /// Source servers, keyed by `sourceServerID`. Registered by the replication
     /// agent, which this emulator does not model yet, so the map is empty — but
     /// `DescribeSourceServers` reads it rather than returning a canned empty list.

@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeleteLaunchAction
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DeleteLaunchAction`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DeleteLaunchAction::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Takes the launch action the request's `actionId` names off the resource its
+//! `resourceId` names, so `ListLaunchActions` stops reporting it, and answers the
+//! modelled empty 204.
+//!
+//! Both halves of the address are resolved, and each missing one is the modelled
+//! `ResourceNotFoundException` (404) naming what was looked for: a `resourceId` this
+//! service does not hold, and an `actionId` the resource does not carry — so a repeat of
+//! a delete that already removed the action is a not-found, the reading every id-keyed
+//! delete of this service performs (`crate::state::launch_actions`).
 //!
 //! ## Shape of an operation
 //!
@@ -146,18 +147,48 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DeleteLaunchAction` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DeleteLaunchActionErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DeleteLaunchAction"))
+        let _ = ctx;
+
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(DeleteLaunchActionErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: "the service store is unavailable".to_string(),
+                    retry_after_seconds: 0,
+                },
+            )
+            .into());
+        };
+        let mut store = state.lock();
+
+        // The resource the action hangs off, then the action itself: a resource this
+        // service does not hold carries no action to delete.
+        if !crate::state::launch_actions::holds_resource(&store, &input.resource_id) {
+            return Err(DeleteLaunchActionErrorModeled::ResourceNotFoundException(
+                crate::state::launch_actions::resource_not_found(&input.resource_id),
+            )
+            .into());
+        }
+
+        let removed = store
+            .launch_actions
+            .get_mut(&input.resource_id)
+            .and_then(|actions| actions.remove(&input.action_id));
+        if removed.is_none() {
+            return Err(DeleteLaunchActionErrorModeled::ResourceNotFoundException(
+                crate::state::launch_actions::not_found(&input.action_id),
+            )
+            .into());
+        }
+        // A resource carrying no action holds no entry at all, which is how a resource
+        // that never had one is held: the two cannot be told apart by a later read.
+        if store
+            .launch_actions
+            .get(&input.resource_id)
+            .is_some_and(crate::state::launch_actions::LaunchActions::is_empty)
+        {
+            store.launch_actions.remove(&input.resource_id);
+        }
+
+        Ok(DeleteLaunchActionOutput {})
     }
 }

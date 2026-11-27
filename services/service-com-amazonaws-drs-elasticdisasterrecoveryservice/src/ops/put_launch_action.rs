@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op PutLaunchAction
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `PutLaunchAction`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`PutLaunchAction::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Writes one launch action onto the resource the request's `resourceId` names, keyed by
+//! the `actionId` it names: a put whose action id the resource does not carry yet adds an
+//! action, and a put of an id it does carry REPLACES that action with the one the request
+//! describes, which is what makes the operation a put. The answer is the action as it now
+//! stands IN the store, so `ListLaunchActions` reports exactly what the put reported.
+//!
+//! A launch action exists only on a resource this service holds, so a `resourceId` naming
+//! none is the modelled `ResourceNotFoundException` (404) and nothing is written
+//! (`crate::state::launch_actions`). The resource's set of actions is bounded at the
+//! greatest number the modelled list can report, and a put that would grow it past that
+//! is the modelled `ValidationException` (400).
 //!
 //! ## Shape of an operation
 //!
@@ -189,18 +192,83 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `PutLaunchAction` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(PutLaunchActionErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("PutLaunchAction"))
+        let _ = ctx;
+
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(PutLaunchActionErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: "the service store is unavailable".to_string(),
+                    retry_after_seconds: 0,
+                },
+            )
+            .into());
+        };
+        let mut store = state.lock();
+
+        // An action hangs off a resource, so one can be written only onto a resource this
+        // service holds — checked BEFORE anything is written, so a refused put leaves the
+        // store exactly as it was.
+        if !crate::state::launch_actions::holds_resource(&store, &input.resource_id) {
+            return Err(PutLaunchActionErrorModeled::ResourceNotFoundException(
+                crate::state::launch_actions::resource_not_found(&input.resource_id),
+            )
+            .into());
+        }
+
+        // The emulator's own bound on this store, at the greatest number of actions the
+        // modelled list can report for one resource: without it a caller that can reach
+        // the port could loop this call until the host is out of memory. A put that
+        // REPLACES an action the resource already carries does not grow the set, so it is
+        // served however full the set is.
+        let full = store
+            .launch_actions
+            .get(&input.resource_id)
+            .is_some_and(|actions| {
+                actions.len() >= crate::state::launch_actions::PER_RESOURCE_LIMIT
+                    && !actions.contains_key(&input.action_id)
+            });
+        if full {
+            return Err(PutLaunchActionErrorModeled::ValidationException(
+                crate::state::field_validation_failed(format!(
+                    "Cannot put more than {} launch actions on resource '{}'",
+                    crate::state::launch_actions::PER_RESOURCE_LIMIT,
+                    input.resource_id
+                )),
+            )
+            .into());
+        }
+
+        let record = crate::state::launch_actions::LaunchActionRecord {
+            resource_id: input.resource_id.clone(),
+            action_id: input.action_id.clone(),
+            // The one member no part of the request supplies: the kind of SSM document
+            // the action code names (see `crate::state::launch_actions::action_type`).
+            action_type: crate::state::launch_actions::action_type(&input.action_code),
+            action_code: input.action_code,
+            action_version: input.action_version,
+            name: input.name,
+            active: input.active,
+            optional: input.optional,
+            order: input.order,
+            category: input.category,
+            description: input.description,
+            parameters: input.parameters,
+        };
+
+        // Write, then report the record as it now stands IN the store, so the answer can
+        // only describe what was persisted — never the request echoed past a failed
+        // write. A put of an action id the resource already carries replaces it, which is
+        // what makes this operation a put; either way the entry the write went through is
+        // what the answer is rendered from.
+        let actions = store.launch_actions.entry(input.resource_id).or_default();
+        let stored = match actions.entry(input.action_id) {
+            ::std::collections::btree_map::Entry::Occupied(mut held) => {
+                held.insert(record);
+                held.into_mut().to_put_wire()
+            }
+            ::std::collections::btree_map::Entry::Vacant(slot) => slot.insert(record).to_put_wire(),
+        };
+
+        Ok(stored)
     }
 }
