@@ -248,6 +248,10 @@ pub(crate) async fn api_with_paths(
                 json!({ "authorizationType": "NONE" }),
             )
             .await;
+            // Every method gets the integration a deployment requires of it — `MOCK`, the
+            // type that needs no backend — so the API this helper builds is deployable. A
+            // case that wants another integration puts its own over this one.
+            create_integration(gateway, &api, &parent, verb, json!({ "type": "MOCK" })).await;
         }
     }
     (api, by_path)
@@ -479,6 +483,7 @@ async fn an_export_renders_the_deployment_the_stage_serves_and_follows_a_redeplo
         json!({ "authorizationType": "NONE" }),
     )
     .await;
+    create_integration(&gateway, &api, &orders, "POST", json!({ "type": "MOCK" })).await;
     let unchanged = export(&gateway, &api, "dev", "oas30", None, &[])
         .await
         .json("before the redeploy");
@@ -585,6 +590,7 @@ async fn method_request_parameters_become_the_operations_parameters() {
             );
         }
         put_method(&gateway, &api, &pet, "GET", request).await;
+        create_integration(&gateway, &api, &pet, "GET", json!({ "type": "MOCK" })).await;
         deploy(&gateway, &api, "dev").await;
 
         for dialect in DIALECTS {
@@ -805,6 +811,7 @@ async fn a_methods_authorization_becomes_the_operations_security_and_the_documen
             request["authorizationScopes"] = json!(["pets/read"]);
         }
         put_method(&gateway, &api, &pets, "GET", request).await;
+        create_integration(&gateway, &api, &pets, "GET", json!({ "type": "MOCK" })).await;
         deploy(&gateway, &api, "dev").await;
 
         for dialect in DIALECTS {
@@ -1070,6 +1077,7 @@ async fn a_method_whose_authorizer_record_is_missing_still_exports_its_authoriza
             }),
         )
         .await;
+        create_integration(&gateway, &api, &pets, "GET", json!({ "type": "MOCK" })).await;
         deploy(&gateway, &api, "dev").await;
 
         // The live tree gives the reference up; the deployed snapshot keeps it.

@@ -219,6 +219,15 @@ async fn deployed_api(gateway: &Gateway, name: &str) -> String {
         json!({ "authorizationType": "SOMETHING_ELSE" }),
     )
     .await;
+    // Its integration, without which the api could not be deployed at all: what this row
+    // drives is the authorization the stage cannot serve, not a missing backend.
+    accepted(
+        gateway,
+        "PUT",
+        &format!("/restapis/{api}/resources/{broken}/methods/GET/integration"),
+        json!({ "type": "MOCK" }),
+    )
+    .await;
     deploy(gateway, &api, "prod").await;
     api
 }

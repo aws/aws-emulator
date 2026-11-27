@@ -355,44 +355,74 @@ pub(crate) async fn resource_under(
     string_member(&created, "id", &format!("CreateResource({path_part})"))
 }
 
-/// Put one method on `api`'s ROOT resource, which is what makes the API DEPLOYABLE:
-/// `CreateDeployment` refuses an API that carries no method, since a deployment is the
-/// snapshot of the API's methods a stage serves.
+/// Make `api` DEPLOYABLE: give it a method if it carries none, and give every method it
+/// carries an integration if it has none.
 ///
-/// The method goes on the root resource, which every API is created with, so nothing is
-/// added to the API's resource TREE and a suite that asserts the tree is unaffected. This
-/// crate's one copy of that step, shared by every suite that deploys an API only to have
-/// a deployment or a stage to address.
+/// Both are preconditions of `CreateDeployment`: a deployment is the snapshot of the API's
+/// methods a stage serves, and what a stage serves a matched request WITH is the method's
+/// integration, so an API with no method has nothing to deploy and a method with no
+/// integration cannot be deployed at all.
+///
+/// The method this puts goes on the root resource, which every API is created with, so
+/// nothing is added to the API's resource TREE and a suite that asserts the tree is
+/// unaffected. The integration is a `MOCK` one — the integration type that needs no
+/// backend, "for testing without actually invoking the backend" (`IntegrationType`) — and
+/// is put ONLY on a method that has none, so a suite that configured its own integration
+/// keeps it. This crate's one copy of those steps, shared by every suite that deploys an
+/// API only to have a deployment or a stage to address.
 pub(crate) async fn make_deployable(gateway: &Gateway, api: &str) {
-    // Idempotent, so a suite may call it beside a helper that already does: a method is
-    // only put when the API carries none at all, which is what `embed=methods` reports.
+    // Idempotent, so a suite may call it beside a helper that already does: what the API
+    // already carries is what `embed=methods` reports.
     let listed = gateway
         .call("GET", &format!("/restapis/{api}/resources?embed=methods"), None)
         .await;
-    let carries_a_method = page_items(&listed.body, &format!("GetResources({api})"))
+    let mut methods: Vec<(String, String)> = page_items(&listed.body, &format!("GetResources({api})"))
         .iter()
-        .any(|resource| {
+        .flat_map(|resource| {
+            let resource_id = string_member(resource, "id", &format!("GetResources({api})"));
             resource["resourceMethods"]
                 .as_object()
-                .is_some_and(|methods| !methods.is_empty())
-        });
-    if carries_a_method {
-        return;
+                .map(|methods| {
+                    methods
+                        .keys()
+                        .map(|verb| (resource_id.clone(), verb.clone()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        })
+        .collect();
+    if methods.is_empty() {
+        let read = gateway.call("GET", &format!("/restapis/{api}"), None).await;
+        let root = string_member(&read.body, "rootResourceId", &format!("GetRestApi({api})"));
+        let answer = gateway
+            .call(
+                "PUT",
+                &format!("/restapis/{api}/resources/{root}/methods/GET"),
+                Some(json!({ "authorizationType": "NONE" })),
+            )
+            .await;
+        assert_eq!(
+            answer.status, 201,
+            "case PutMethod on the root of {api}: expected 201, got {} with {:?}",
+            answer.status, answer.body
+        );
+        methods.push((root, "GET".to_string()));
     }
-    let read = gateway.call("GET", &format!("/restapis/{api}"), None).await;
-    let root = string_member(&read.body, "rootResourceId", &format!("GetRestApi({api})"));
-    let answer = gateway
-        .call(
-            "PUT",
-            &format!("/restapis/{api}/resources/{root}/methods/GET"),
-            Some(json!({ "authorizationType": "NONE" })),
-        )
-        .await;
-    assert_eq!(
-        answer.status, 201,
-        "case PutMethod on the root of {api}: expected 201, got {} with {:?}",
-        answer.status, answer.body
-    );
+    for (resource, verb) in &methods {
+        let integration = format!("/restapis/{api}/resources/{resource}/methods/{verb}/integration");
+        let read = gateway.call("GET", &integration, None).await;
+        if read.status == 200 {
+            continue;
+        }
+        let answer = gateway
+            .call("PUT", &integration, Some(json!({ "type": "MOCK" })))
+            .await;
+        assert_eq!(
+            answer.status, 201,
+            "case PutIntegration({resource}/{verb}) on {api}: expected 201, got {} with {:?}",
+            answer.status, answer.body
+        );
+    }
 }
 
 /// A required string member of a response body, with the case named on failure.

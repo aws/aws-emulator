@@ -383,6 +383,19 @@ async fn a_stage_serving_another_deployment_is_left_as_it_is() {
         code, 201,
         "case {case:?}: expected PutMethod to answer 201, got {code} with {method}"
     );
+    // And its integration, which is what a stage serves a matched request with: an api
+    // holding a method with none cannot be deployed at all.
+    let (code, integration) = apigateway_with_body(
+        &router,
+        "PUT",
+        &format!("/restapis/{api_id}/resources/{root_id}/methods/GET/integration"),
+        Some(&json!({ "type": "MOCK" })),
+    )
+    .await;
+    assert_eq!(
+        code, 201,
+        "case {case:?}: expected PutIntegration to answer 201, got {code} with {integration}"
+    );
 
     // The stack holds the deployment and the stage that serves it, against that api.
     let declared = json!({

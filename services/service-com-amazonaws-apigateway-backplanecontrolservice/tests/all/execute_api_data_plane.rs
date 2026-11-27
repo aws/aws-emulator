@@ -1448,9 +1448,10 @@ async fn an_integration_this_emulator_cannot_perform_is_answered_as_one_that_fai
 
     // Rows differ along the integration configuration that cannot be served: each type
     // that names a backend (Lambda, another AWS action, an HTTP endpoint, a private
-    // endpoint), a method with no integration at all, a MOCK with no default integration
-    // response, and a MOCK whose response template is a Velocity template rather than a
-    // literal body.
+    // endpoint), a MOCK with no default integration response, and a MOCK whose response
+    // template is a Velocity template rather than a literal body. A method with NO
+    // integration is not among them: such an api cannot be deployed at all, so the data
+    // plane is never reached with one (`crate::deployment_preconditions`).
     let lambda_uri = format!(
         "arn:aws:apigateway:{REGION}:lambda:path/2015-03-31/functions/\
          arn:aws:lambda:{REGION}:123456789012:function:handler/invocations"
@@ -1498,7 +1499,6 @@ async fn an_integration_this_emulator_cannot_perform_is_answered_as_one_that_fai
             })),
             None,
         ),
-        ("a method carrying no integration", "bare", None, None),
         (
             "a MOCK whose only integration response carries a selection pattern",
             "patterned",
@@ -1636,7 +1636,10 @@ async fn a_customized_gateway_response_is_what_the_refused_caller_sees() {
     for case in &cases {
         let gateway = Gateway::new();
         let (api, root) = create_api(&gateway, "invoke-gateway-responses").await;
-        // One method with no integration, so the 5xx class is reachable too.
+        // One method whose integration cannot be served, so the 5xx class is reachable
+        // too: a MOCK whose only integration response carries a selection pattern, so
+        // nothing maps the call the mock returns. The method DOES carry an integration,
+        // because an api holding a method with none cannot be deployed at all.
         let bare = create_resource(&gateway, &api, &root, "bare").await;
         let bare = string_member(&bare, "id", case.name);
         put_method(
@@ -1645,6 +1648,17 @@ async fn a_customized_gateway_response_is_what_the_refused_caller_sees() {
             &bare,
             "GET",
             json!({ "authorizationType": "NONE" }),
+        )
+        .await;
+        put_integration(&gateway, &api, &bare, "GET", json!({ "type": "MOCK" })).await;
+        method_response(&gateway, &api, &bare, "GET", "200", json!({})).await;
+        integration_response(
+            &gateway,
+            &api,
+            &bare,
+            "GET",
+            "200",
+            json!({ "selectionPattern": "4\\d\\d" }),
         )
         .await;
         if let Some((response_type, body)) = &case.customization {
@@ -1755,9 +1769,11 @@ async fn a_stage_serves_the_deployed_configuration_of_a_method_until_the_api_is_
     // deployment its `deploymentId` names, so an edit to a method takes effect at the stage
     // only once the api is deployed again. The rows differ along WHICH part of the method's
     // configuration the edit changes — the body the integration response renders, the
-    // integration request that selects which response answers (and so the status), and
-    // whether the method has an integration at all — because the rule is about the whole
-    // configuration rather than about one member of it.
+    // integration request that selects which response answers (and so the status) —
+    // because the rule is about the whole configuration rather than about one member of
+    // it. Deleting the integration outright is not among the rows: the api could then not
+    // be deployed again at all, which is the sibling
+    // `crate::deployment_preconditions` suite's rule.
     struct Row {
         case: &'static str,
         /// The control-plane call that edits the method after the deployment.
@@ -1802,14 +1818,6 @@ async fn a_stage_serves_the_deployed_configuration_of_a_method_until_the_api_is_
             })),
             accepted: 200,
             redeployed: (201, r#"{"v":"created"}"#),
-        },
-        Row {
-            case: "the integration itself, deleted",
-            verb: "DELETE",
-            path: "/integration",
-            body: None,
-            accepted: 204,
-            redeployed: (500, r#"{"message":"Internal server error"}"#),
         },
     ];
 

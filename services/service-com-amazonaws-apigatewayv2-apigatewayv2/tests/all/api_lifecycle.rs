@@ -115,6 +115,21 @@ pub(crate) async fn rest_endpoint(
         "case {name:?}: expected 201 from PutMethod, got {status} {method}"
     );
 
+    // The method's integration, which is what a stage serves a matched request with: an
+    // API holding a method with none cannot be deployed at all. `MOCK` is the integration
+    // type that needs no backend.
+    let (status, integration) = call(
+        emulator,
+        "PUT",
+        &format!("/restapis/{rest_api_id}/resources/{root}/methods/GET/integration"),
+        Some(json!({ "type": "MOCK" })),
+    )
+    .await;
+    assert_eq!(
+        status, 201,
+        "case {name:?}: expected 201 from PutIntegration, got {status} {integration}"
+    );
+
     let (status, deployment) = call(
         emulator,
         "POST",

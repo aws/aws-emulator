@@ -284,6 +284,19 @@ async fn create_rows(router: &MultiServiceRouter) -> (Vec<Row>, String) {
         status, 201,
         "case \"method\": expected HTTP 201 from PutMethod, got {status} {method}"
     );
+    // And the method's integration, which is what a stage serves a matched request with:
+    // an API holding a method with none cannot be deployed at all.
+    let (status, integration) = apigateway(
+        router,
+        "PUT",
+        &format!("/restapis/{rest_api_id}/resources/{root_resource_id}/methods/GET/integration"),
+        Some(serde_json::json!({ "type": "MOCK" })),
+    )
+    .await;
+    assert_eq!(
+        status, 201,
+        "case \"integration\": expected HTTP 201 from PutIntegration, got {status} {integration}"
+    );
     // A stage needs a deployment to point at; the deployment itself carries no tags.
     let deployment_id = created_id(
         router,

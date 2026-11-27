@@ -188,7 +188,8 @@ async fn root_resource(router: &MultiServiceRouter, case: &str, api: &str) -> St
         .to_string()
 }
 
-/// A method on the API's root resource, so the API has something a deployment can snapshot.
+/// A method on the API's root resource, with the integration a deployment requires of it,
+/// so the API has something a deployment can snapshot and serve.
 async fn put_root_method(router: &MultiServiceRouter, case: &str, api: &str, resource: &str) {
     let answer = gateway(
         router,
@@ -200,6 +201,19 @@ async fn put_root_method(router: &MultiServiceRouter, case: &str, api: &str, res
     assert_eq!(
         answer.status, 201,
         "case {case:?}: expected PutMethod to answer 201, got {} ({:?})",
+        answer.status, answer.body
+    );
+    // `MOCK` is the integration type that needs no backend at all.
+    let answer = gateway(
+        router,
+        "PUT",
+        &format!("/restapis/{api}/resources/{resource}/methods/GET/integration"),
+        &json!({ "type": "MOCK" }),
+    )
+    .await;
+    assert_eq!(
+        answer.status, 201,
+        "case {case:?}: expected PutIntegration to answer 201, got {} ({:?})",
         answer.status, answer.body
     );
 }

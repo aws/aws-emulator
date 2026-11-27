@@ -950,6 +950,17 @@ async fn a_deployments_empty_description_is_stored_as_an_absent_one() {
             .await,
         "PutMethod(root GET)",
     );
+    // And the method's integration, without which the api cannot be deployed at all.
+    accepted(
+        &gateway
+            .call(
+                "PUT",
+                &format!("/restapis/{api}/resources/{root}/methods/GET/integration"),
+                Some(json!({ "type": "MOCK" })),
+            )
+            .await,
+        "PutIntegration(root GET)",
+    );
 
     for (row, description, stored) in description_rows() {
         let case = format!("a Deployment created with {row}");

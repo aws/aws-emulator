@@ -200,31 +200,32 @@ async fn a_deployment_created_with_canary_settings_is_the_canarys_not_the_stages
 }
 
 #[tokio::test]
-async fn a_deployment_with_canary_settings_for_a_new_stage_is_served_by_both() {
+async fn a_canary_deployment_for_a_stage_the_api_does_not_have_is_refused() {
     let gateway = Gateway::new();
     let (api, _root) = create_api(&gateway, "canary-new-stage").await;
-    // A stage this call CREATES serves the deployment it was created from, and its canary
-    // serves the same one: there is no earlier deployment for either to point at.
-    let deployment = create_deployment(
-        &gateway,
-        &api,
-        "a canary on a stage the call creates",
-        json!({
-            "stageName": "fresh",
-            "canarySettings": { "percentTraffic": 30.0, "useStageCache": false }
-        }),
-    )
-    .await;
+    // A canary is a share of an EXISTING stage's traffic, so a canary release deployment
+    // naming a stage the API holds none of is refused rather than minting that stage. The
+    // api is made deployable first, so the refusal is about the stage the canary names and
+    // nothing else; the whole table of this rule is the sibling
+    // `crate::deployment_preconditions` suite's.
+    crate::rest_api_lifecycle::make_deployable(&gateway, &api).await;
+    let case = "a canary on a stage the api does not have";
+    let refused = gateway
+        .call(
+            "POST",
+            &format!("/restapis/{api}/deployments"),
+            Some(json!({
+                "stageName": "fresh",
+                "canarySettings": { "percentTraffic": 30.0, "useStageCache": false }
+            })),
+        )
+        .await;
+    assert_failure(&refused, 400, "BadRequestException", case);
     let read = get_stage(&gateway, &api, "fresh").await;
-    assert_members(
-        &read.body,
-        &[
-            ("deploymentId", json!(deployment)),
-            ("canarySettings/deploymentId", json!(deployment)),
-            ("canarySettings/percentTraffic", json!(30.0)),
-        ],
-        "a canary on a stage the call creates",
-        "GetStage",
+    assert_eq!(
+        read.status, 404,
+        "case {case}: expected the refused call to leave no stage behind, got {} with {:?}",
+        read.status, read.body
     );
 }
 

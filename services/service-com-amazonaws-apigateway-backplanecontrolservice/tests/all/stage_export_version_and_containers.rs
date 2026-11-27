@@ -26,7 +26,7 @@
 
 use serde_json::{json, Value};
 
-use crate::execute_api_data_plane::{deploy, put_method};
+use crate::execute_api_data_plane::{deploy, put_integration, put_method};
 use crate::rest_api_lifecycle::{create_api, create_resource, string_member, Gateway};
 use crate::stage_export::export;
 
@@ -78,6 +78,9 @@ async fn deployed_api(gateway: &Gateway, api: &str, root: &str, stage: &str) {
         json!({ "authorizationType": "NONE" }),
     )
     .await;
+    // The integration a deployment requires of every method: `MOCK`, the type that needs
+    // no backend.
+    put_integration(gateway, api, &resource, "GET", json!({ "type": "MOCK" })).await;
     deploy(gateway, api, stage).await;
 }
 
@@ -197,6 +200,7 @@ async fn an_oas30_document_carries_its_components_and_every_response_s_content()
             json!({ "authorizationType": "NONE" }),
         )
         .await;
+        put_integration(&gateway, &api, &resource, "GET", json!({ "type": "MOCK" })).await;
         for status in *declared {
             crate::method_response::put_method_response(
                 &gateway,

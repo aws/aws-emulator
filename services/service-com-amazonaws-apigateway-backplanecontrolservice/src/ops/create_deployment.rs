@@ -5,7 +5,10 @@
 //! at this instant — and, when the request names a `stageName`, points that stage at it.
 //! A request that carries `canarySettings` for a stage the API already has deploys to
 //! that stage's CANARY: the new deployment becomes `canarySettings.deploymentId` and the
-//! stage keeps serving the deployment it already points at.
+//! stage keeps serving the deployment it already points at. An EMPTY `stageName` names no
+//! stage, so the deployment is taken and the stage-scoped members are ignored; a blank
+//! one, `canarySettings` that name no existing stage, an API with no method, and a method
+//! with no integration are all refused, and such a call stores nothing.
 //!
 //! ## Shape of an operation
 //!
@@ -159,6 +162,27 @@ pub fn deployment_body(entry: &DeploymentEntry, embed_api_summary: bool) -> Crea
     }
 }
 
+/// How a `stageName` the request did not carry at all is spelled in the refusal below:
+/// the absent-value spelling, which is what distinguishes "the member was not sent" from
+/// "the member was sent empty" in the one sentence both earn.
+const ABSENT_STAGE_NAME: &str = "null";
+
+/// The `BadRequestException` message for a request that carries `canarySettings` with no
+/// stage for the canary to be configured on.
+///
+/// A canary is a share of ONE stage's traffic (`Stage$canarySettings`, "settings for the
+/// canary deployment in this stage"), so a canary release deployment is only meaningful
+/// against a named stage. The sentence is fixed text and the value the request actually
+/// supplied is appended to it: the name as sent when a value was sent, and
+/// [`ABSENT_STAGE_NAME`] for a member the request did not carry.
+pub fn canary_needs_stage_name(stage_name: Option<&str>) -> String {
+    format!(
+        "Invalid deployment content specified.Non null and non empty stageName must be \
+         provided for canary deployment. Provided value is {}",
+        stage_name.unwrap_or(ABSENT_STAGE_NAME)
+    )
+}
+
 /// Refuse a request whose caller-sized members would grow the store past a bound.
 ///
 /// Called BEFORE the store lock is taken, so an over-sized request never reaches the
@@ -296,7 +320,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Nothing caller-sized reaches the store unchecked, and the checks run before
         // the store lock is taken.
         bound_input(&input).map_err(bad_request)?;
-        if let Some(stage_name) = input.stage_name.as_deref() {
+        // `canarySettings` is "the input configuration for the canary deployment when the
+        // deployment IS a canary release deployment"
+        // (`CreateDeployment$canarySettings`), and a canary is a share of ONE stage's
+        // traffic: a request that carries them while naming no stage — the member absent,
+        // or present and empty — leaves the canary nothing to be configured on, so the
+        // call is refused rather than taking a deployment no canary serves. A value that
+        // names no stage OF THIS API is refused too, once the store can be read (below).
+        if input.canary_settings.is_some() && input.stage_name.as_deref().is_none_or(str::is_empty)
+        {
+            return Err(bad_request(canary_needs_stage_name(
+                input.stage_name.as_deref(),
+            )));
+        }
+        // `stageName` is OPTIONAL on this operation, and an EMPTY value names no stage:
+        // the deployment is taken and no stage is created, so the members that configure
+        // the stage this call would have created — `stageDescription`, `variables`,
+        // `cacheClusterEnabled`/`cacheClusterSize`, `tracingEnabled` — have nothing to
+        // configure and are ignored. Any other value names the stage this call deploys to,
+        // and is held to the rule a stage name is spelled by: the SAME rule `CreateStage`
+        // holds its own required `stageName` to.
+        let stage_name = input.stage_name.filter(|stage_name| !stage_name.is_empty());
+        if let Some(stage_name) = stage_name.as_deref() {
             super::create_stage::validate_stage_name(stage_name).map_err(bad_request)?;
         }
 
@@ -315,6 +360,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // refused rather than minting an identifier for an empty snapshot.
             if api.resources.values().all(|resource| resource.methods.is_empty()) {
                 return Err(bad_request(crate::state::NO_METHODS_TO_DEPLOY.to_string()));
+            }
+            // What a stage serves a matched request WITH is the method's integration — the
+            // backend the deployment snapshots alongside the method — so a method carrying
+            // none cannot be deployed at all, and the whole snapshot is refused rather than
+            // publishing a stage that answers that method with a fault at invoke time.
+            if api
+                .resources
+                .values()
+                .flat_map(|resource| resource.methods.values())
+                .any(|method| method.integration.is_none())
+            {
+                return Err(bad_request(crate::state::NO_INTEGRATION_DEFINED.to_string()));
             }
             // A PRIVATE api is reached only through an interface VPC endpoint, and what
             // admits a request arriving at one is the api's own resource policy
@@ -343,8 +400,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
             // A `stageName` the API has no stage for creates one, which is bounded at
             // API Gateway's published per-API stage quota.
-            let creates_stage = input
-                .stage_name
+            // A canary is configured ON a stage, and the deployment it serves is the one
+            // the canary's share of that stage's traffic reaches, so the `stageName` a
+            // canary release deployment names has to be a stage the API HAS. A `stageName`
+            // the REQUEST supplies that names no stage of the addressed API is a bad INPUT
+            // to the call rather than a report that the resource being created was not
+            // found, and it is stated with this service's one sentence for a stage
+            // identifier that names no record (`crate::state::NO_SUCH_STAGE`), which every
+            // operation taking such a value answers with. Deploying to a stage the API does
+            // not have yet is what the same call WITHOUT `canarySettings` does.
+            let canary_stage = input.canary_settings.as_ref().and(stage_name.as_deref());
+            if canary_stage.is_some_and(|stage_name| !api.stages.contains_key(stage_name)) {
+                return Err(bad_request(crate::state::NO_SUCH_STAGE.to_string()));
+            }
+            let creates_stage = stage_name
                 .as_deref()
                 .is_some_and(|stage_name| !api.stages.contains_key(stage_name));
             if creates_stage && api.stages.len() >= crate::state::MAX_STAGES_PER_API {
@@ -397,9 +466,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // configure a stage this call CREATES. A name the API already has a stage for
         // is therefore re-pointed at the new deployment — that is how an API is
         // redeployed — and keeps its own configuration, which `UpdateStage` is the call
-        // that changes; a request that carries `canarySettings` deploys to that stage's
+        // that changes; a request that carries `canarySettings` names such a stage (one
+        // that names no existing stage is refused above) and deploys to that stage's
         // CANARY instead, see below.
-        if let Some(stage_name) = input.stage_name {
+        if let Some(stage_name) = stage_name {
             let cache_cluster_enabled = input.cache_cluster_enabled.unwrap_or(false);
             let canary_settings = input.canary_settings;
             // The stage this call may CREATE is configured with the `variables` the
@@ -459,13 +529,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                             authorizers_cache_flushed_at: None,
                             variables,
                             documentation_version: None,
-                            canary_settings: canary_settings.map(|canary| CanarySettings {
-                                percent_traffic: canary.percent_traffic,
-                                // The canary serves the deployment this call created.
-                                deployment_id: Some(id.clone()),
-                                stage_variable_overrides: canary.stage_variable_overrides,
-                                use_stage_cache: canary.use_stage_cache,
-                            }),
+                            // A canary is a share of an EXISTING stage's traffic, so a
+                            // request carrying `canarySettings` names a stage the API
+                            // already has — one that names none is refused above — and a
+                            // stage this call CREATES therefore carries no canary.
+                            canary_settings: None,
                             tracing_enabled: input.tracing_enabled.unwrap_or(false),
                             // Access logging and a client certificate are configured by
                             // `UpdateStage`, the only call that sets either on a stage.

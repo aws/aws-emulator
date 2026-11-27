@@ -133,14 +133,23 @@ use crate::state::StageEntry;
 /// deployment WITH a stage say the same thing about the same name.
 pub const INVALID_STAGE_NAME: &str = "Stage name only allows a-zA-Z0-9_";
 
+/// The refusal for a `stageName` that carries no name at all — nothing, or nothing but
+/// blanks. A fixed sentence, quoting the rejected value back nowhere, in the one copy the
+/// call that creates a stage and the one that creates a deployment WITH a stage share.
+pub const EMPTY_STAGE_NAME: &str = "Stage name must be non-empty";
+
 /// Refuse a `stageName` that is not one API Gateway accepts.
 ///
 /// From the member's own documentation: "Stage names can only contain alphanumeric
-/// characters, hyphens, and underscores. Maximum length is 128 characters." An empty
-/// name is no name at all: a stage name is the first path segment of an invoke URL.
+/// characters, hyphens, and underscores. Maximum length is 128 characters." A name that
+/// is blank is no name at all: a stage name is the first path segment of an invoke URL,
+/// so what is left of the value once its blanks are taken off is the name, and nothing
+/// left is nothing to name a stage by — which is a DIFFERENT fact from a name spelled
+/// with a character the member does not admit ([`INVALID_STAGE_NAME`]), so it is reported
+/// as its own sentence.
 pub fn validate_stage_name(stage_name: &str) -> Result<(), String> {
-    if stage_name.is_empty() {
-        return Err("stageName must not be empty".to_string());
+    if stage_name.trim().is_empty() {
+        return Err(EMPTY_STAGE_NAME.to_string());
     }
     crate::state::bound_chars("stageName", stage_name, crate::state::MAX_STAGE_NAME_CHARS)?;
     if !stage_name

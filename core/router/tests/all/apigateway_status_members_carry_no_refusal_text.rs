@@ -219,6 +219,22 @@ async fn rest_endpoint(router: &MultiServiceRouter, name: &str, stage: &str) -> 
         method.status, method.body
     );
 
+    // The method's integration, which is what a stage serves a matched request with: an API
+    // holding a method with none cannot be deployed at all. `MOCK` is the integration type
+    // that needs no backend.
+    let integration = apigw(
+        router,
+        "PUT",
+        &format!("/restapis/{rest_api_id}/resources/{root}/methods/GET/integration"),
+        Some(json!({ "type": "MOCK" })),
+    )
+    .await;
+    assert_eq!(
+        integration.status, 201,
+        "setup: expected 201 from PutIntegration, got {} with {}",
+        integration.status, integration.body
+    );
+
     let deployment = apigw(
         router,
         "POST",

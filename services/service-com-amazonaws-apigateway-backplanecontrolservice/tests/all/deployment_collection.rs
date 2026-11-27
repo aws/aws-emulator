@@ -27,6 +27,7 @@ use serde_json::{json, Value};
 use service_com_amazonaws_apigateway_backplanecontrolservice::state::MAX_STRING_CHARS;
 
 use crate::control_plane_fidelity_rules::call_as;
+use crate::execute_api_data_plane::put_integration;
 use crate::rest_api_lifecycle::{
     assert_failure, create_api, create_resource, page_items, string_member, Answer, Gateway,
 };
@@ -85,6 +86,10 @@ async fn api_with_a_method(gateway: &Gateway, name: &str) -> String {
         "case {name}: expected 201 from PutMethod, got {} with {:?}",
         answer.status, answer.body
     );
+    // The method's integration, which is what a stage serves a matched request with: a
+    // deployment of a method that has none is refused, so the API is only deployable once
+    // its method carries one. `MOCK` is the type that needs no backend at all.
+    put_integration(gateway, &api, &resource_id, "GET", json!({ "type": "MOCK" })).await;
     api
 }
 
@@ -115,10 +120,12 @@ async fn get_deployments_reports_every_deployment_as_get_deployment_reports_it()
             }),
         ),
         (
-            "a long description and a canary",
+            "a long description and a canary on a stage already deployed",
             json!({
                 "description": "d".repeat(512),
-                "stageName": "canary_stage",
+                // A canary is a share of an EXISTING stage's traffic, so it names the
+                // stage an earlier row deployed rather than a new one.
+                "stageName": "prod",
                 "canarySettings": { "percentTraffic": 10.0 }
             }),
         ),

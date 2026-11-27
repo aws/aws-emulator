@@ -247,9 +247,11 @@ pub(crate) async fn api_gateway_created(
     parsed
 }
 
-/// Put one method on the API's ROOT resource, which is what makes the API
-/// DEPLOYABLE: a deployment is the snapshot of the API's methods a stage serves,
-/// so API Gateway refuses to deploy an API that carries none.
+/// Put one method on the API's ROOT resource, with the integration a deployment requires
+/// of it, which is what makes the API DEPLOYABLE: a deployment is the snapshot of the
+/// API's methods a stage serves, and what a stage serves a matched request with is the
+/// method's integration, so API Gateway refuses to deploy an API that carries no method —
+/// or one whose method carries no integration.
 ///
 /// `created` is the `CreateRestApi` body, which reports the root resource the API
 /// was created with.
@@ -272,6 +274,14 @@ pub(crate) async fn api_gateway_method_on_root(
     assert_eq!(
         status, 201,
         "case \"method\": expected HTTP 201 from PUT {uri}, got {status} with {parsed}"
+    );
+    // `MOCK` is the integration type that needs no backend at all.
+    let uri = format!("{uri}/integration");
+    let (status, parsed) =
+        api_gateway_call(router, "PUT", &uri, Some(json!({ "type": "MOCK" }))).await;
+    assert_eq!(
+        status, 201,
+        "case \"integration\": expected HTTP 201 from PUT {uri}, got {status} with {parsed}"
     );
 }
 

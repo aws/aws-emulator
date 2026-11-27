@@ -212,9 +212,10 @@ enum Declared {
     IamAuthorized,
     /// A `GET` whose `apiKeyRequired` is true, reached by a request presenting no key.
     KeyRequired,
-    /// A `GET` carrying no integration at all, so the method's configuration cannot serve
-    /// the call.
-    WithoutIntegration,
+    /// A `GET` whose `MOCK` integration has no integration response that maps the call —
+    /// its only one carries a selection pattern — so the method's configuration cannot
+    /// serve the call.
+    UnservableIntegration,
     /// A `GET` on `NONE` authorization whose `MOCK` integration answers `200`.
     Served,
 }
@@ -271,7 +272,7 @@ const ROWS: [Row; 5] = [
     Row {
         case: "a method whose configuration cannot serve the call at all",
         path_part: "unwired",
-        declared: Declared::WithoutIntegration,
+        declared: Declared::UnservableIntegration,
         own_status: 500,
         own_message: "Internal server error",
         metrics_enabled: true,
@@ -407,9 +408,10 @@ async fn deployed_api(edge: &Edge, name: &str, stages: &[&str]) -> String {
             201,
         )
         .await;
-        if row.declared == Declared::WithoutIntegration {
-            continue;
-        }
+        // Every method carries an integration, because an api holding one that does not
+        // cannot be deployed at all. The row whose configuration cannot serve the call
+        // carries a `MOCK` whose ONLY integration response is patterned, so nothing maps
+        // the call the mock returns — which is the fault class that row drives.
         edge.api_ok(
             "PUT",
             &format!("/restapis/{api}/resources/{resource}/methods/GET/integration"),
@@ -417,16 +419,21 @@ async fn deployed_api(edge: &Edge, name: &str, stages: &[&str]) -> String {
             201,
         )
         .await;
+        let mapped = if row.declared == Declared::UnservableIntegration {
+            json!({ "selectionPattern": "4\\d\\d" })
+        } else {
+            json!({
+                "responseTemplates": {
+                    "application/json": format!("{{\"at\":\"{}\"}}", row.path_part)
+                }
+            })
+        };
         edge.api_ok(
             "PUT",
             &format!(
                 "/restapis/{api}/resources/{resource}/methods/GET/integration/responses/200"
             ),
-            Some(json!({
-                "responseTemplates": {
-                    "application/json": format!("{{\"at\":\"{}\"}}", row.path_part)
-                }
-            })),
+            Some(mapped),
             201,
         )
         .await;

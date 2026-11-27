@@ -299,6 +299,7 @@ async fn deployed_api(gateway: &Gateway) -> (String, String, String) {
 
     // The root resource: a method whose name the generator derives from the verb alone.
     put_method(gateway, &api, &root, "GET", json!({ "authorizationType": "NONE" })).await;
+    put_integration(gateway, &api, &root, "GET", json!({ "type": "MOCK" })).await;
 
     let pets = string_member(
         &create_resource(gateway, &api, &root, "pets").await,
@@ -321,6 +322,7 @@ async fn deployed_api(gateway: &Gateway) -> (String, String, String) {
         }),
     )
     .await;
+    put_integration(gateway, &api, &pets, "GET", json!({ "type": "MOCK" })).await;
     put_method(
         gateway,
         &api,
@@ -363,6 +365,7 @@ async fn deployed_api(gateway: &Gateway) -> (String, String, String) {
         }),
     )
     .await;
+    put_integration(gateway, &api, &one_pet, "GET", json!({ "type": "MOCK" })).await;
     put_method(
         gateway,
         &api,
@@ -371,6 +374,9 @@ async fn deployed_api(gateway: &Gateway) -> (String, String, String) {
         json!({ "authorizationType": "NONE" }),
     )
     .await;
+    // Every method carries the integration a deployment requires of it: `MOCK`, the type
+    // that needs no backend.
+    put_integration(gateway, &api, &one_pet, "ANY", json!({ "type": "MOCK" })).await;
 
     let deployment = deploy(gateway, &api, STAGE).await;
     (api, deployment, root)
@@ -987,6 +993,7 @@ async fn the_sdk_is_of_the_deployment_the_stage_serves_and_generating_one_change
         json!({ "authorizationType": "NONE" }),
     )
     .await;
+    put_integration(&gateway, &api, &undeployed, "GET", json!({ "type": "MOCK" })).await;
     let unchanged = get_sdk(&gateway, &api, STAGE, "javascript", &[]).await;
     assert_eq!(
         unchanged.entries("GetSdk(javascript, before redeploying)"),

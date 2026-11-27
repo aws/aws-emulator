@@ -264,6 +264,20 @@ async fn api_outside_the_stack(router: &MultiServiceRouter, case: &str, name: &s
         code, 201,
         "case {case:?}: PutMethod must answer 201, got {code} with {method}"
     );
+    // The method's integration, which is what a stage serves a matched request with: an
+    // api holding a method with none cannot be deployed at all. `MOCK` is the integration
+    // type that needs no backend.
+    let (code, integration) = apigateway_with_body(
+        router,
+        "PUT",
+        &format!("/restapis/{api_id}/resources/{root_id}/methods/{VERB}/integration"),
+        Some(&json!({ "type": "MOCK" })),
+    )
+    .await;
+    assert_eq!(
+        code, 201,
+        "case {case:?}: PutIntegration must answer 201, got {code} with {integration}"
+    );
     api_id
 }
 

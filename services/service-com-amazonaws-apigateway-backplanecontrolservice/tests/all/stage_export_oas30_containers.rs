@@ -32,7 +32,7 @@
 
 use serde_json::{json, Value};
 
-use crate::execute_api_data_plane::{deploy, put_method};
+use crate::execute_api_data_plane::{deploy, put_integration, put_method};
 use crate::method_response::put_method_response;
 use crate::rest_api_lifecycle::{create_api, resource_under, Gateway};
 use crate::stage_export::export;
@@ -80,6 +80,9 @@ async fn deployed_api(
     )
     .await;
     put_method(gateway, &api, &resource, VERB, method).await;
+    // The integration a deployment requires of every method: `MOCK`, the type that needs
+    // no backend.
+    put_integration(gateway, &api, &resource, VERB, json!({ "type": "MOCK" })).await;
     for status in responses {
         let answer =
             put_method_response(gateway, &api, &resource, VERB, status, json!({})).await;
