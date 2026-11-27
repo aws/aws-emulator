@@ -834,12 +834,12 @@ async fn describe_stream_agrees_with_list_streams_and_reports_the_shard_topology
     );
     assert_eq!(
         second_page["StreamDescription"]["LastEvaluatedShardId"].as_str(),
-        Some(child_id.as_str()),
-        "a shard page reports the shard it stopped at, whether or not another follows \
-         it, got {second_page}"
+        None,
+        "the page that stopped at the end of the shard list offers no cursor, got \
+         {second_page}"
     );
-    // The page AFTER the last shard is the one that evaluated nothing, and that is the
-    // page without a cursor — which is what ends a consumer's walk.
+    // A client that asks anyway, resuming after the last shard, is served an empty page
+    // without a cursor rather than a refusal.
     let (status, past_end) = call(
         &router,
         "DescribeStream",

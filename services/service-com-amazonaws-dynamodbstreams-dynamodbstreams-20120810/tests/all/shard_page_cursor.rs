@@ -2,24 +2,24 @@
 
 //! What `DescribeStream` reports as the shard its page stopped at.
 //!
-//! The rule pinned here: `LastEvaluatedShardId` is the RESUME POINT a page offers — the
-//! last shard the page carried — reported from the page that was served and never from
-//! peeking past it for a further shard, because that is not what the member claims:
-//! "If LastEvaluatedShardId is not empty, it does not necessarily mean that there is
-//! more data in the result set. The only way to know when you have reached the end of
-//! the result set is when LastEvaluatedShardId is empty"
-//! (`StreamDescription$LastEvaluatedShardId`). So the one page that offers no cursor is
-//! the one that evaluated no shard at all, which is what ends a consumer's walk.
+//! The rule pinned here: `LastEvaluatedShardId` is the RESUME POINT a shard walk is
+//! driven by, so a page offers it only while the shard list CONTINUES past the page
+//! that was served; a page that stopped at the end of the list offers none, because an
+//! empty member is the walk's only terminator — "if LastEvaluatedShardId is empty, then
+//! the 'last page' of results has been processed and there is currently no more data to
+//! be retrieved" (`StreamDescription$LastEvaluatedShardId`).
 //!
 //! The rows span what the rule generalises over: how many shards the stream serves,
 //! how wide the page asked for is (absent, narrower than the shard list, exactly as
 //! wide, wider, and the published ceiling), where the page resumes from, whether a
-//! `ShardFilter` narrowed it, and the two ways a page can evaluate nothing — a resume
-//! point past the last shard, and a stream whose asynchronous enable is not due so it
-//! serves no shard yet.
+//! `ShardFilter` narrowed the list the walk runs over, and the ways a page can reach the
+//! end of that list — carrying all of it, carrying its tail, evaluating nothing because
+//! the resume point was the last shard, because a filter matched nothing, or because a
+//! stream's asynchronous enable is not due so it serves no shard yet.
 //!
 //! A consumer's whole walk is then driven by the cursor, which is what the member is
-//! for: it must visit every shard once and terminate.
+//! for: it must visit every shard once and terminate on the page that carried the last
+//! shard, without being driven one page further for an empty page it never asked for.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -169,10 +169,79 @@ fn stream_with_shards(engine: &engine::InMemoryEngine, table_name: &str, shards:
     stream_arn
 }
 
-/// Whatever page was asked for, the cursor is the last shard the page carries — and a
-/// page that carried no shard at all reports none.
+/// However many shards a stream serves, a response that stopped at the end of its shard
+/// list offers no cursor: the unlimited call that carried the whole list, and the last
+/// page of a bounded walk over it, both come back without the member, while every page
+/// before that one carries it.
+///
+/// The rows differ in how many shards the stream serves and how the asked-for width
+/// falls against that count, so the terminator is pinned on a list of one shard (the
+/// shape a freshly enabled stream has) as well as on longer ones.
 #[tokio::test]
-async fn the_cursor_is_the_last_shard_of_the_page() {
+async fn the_page_that_ends_the_shard_list_offers_no_cursor_at_any_shard_count() {
+    let (engine, router) = build();
+    for shard_count in [1_usize, 2, 3, 5] {
+        let stream_arn = stream_with_shards(
+            &engine,
+            &format!("ledger-{shard_count}"),
+            u64::try_from(shard_count).expect("a small shard count"),
+        );
+        let unlimited = format!("{shard_count} shards, no Limit");
+        let (all_shards, cursor) = page(
+            &router,
+            &unlimited,
+            serde_json::json!({ "StreamArn": stream_arn }),
+        )
+        .await;
+        assert_eq!(
+            all_shards.len(),
+            shard_count,
+            "case {unlimited:?}: expected {shard_count} shards, got {all_shards:?}"
+        );
+        assert_eq!(
+            cursor, None,
+            "case {unlimited:?}: the response carried every shard, so it must offer no \
+             cursor, got {cursor:?}"
+        );
+
+        // The same terminator one page at a time: every page but the one that carries
+        // the final shard offers a cursor, and that one does not.
+        for width in [1_usize, shard_count, shard_count + 1] {
+            for start in (0..shard_count).step_by(width) {
+                let case = format!("{shard_count} shards, Limit {width}, resuming at {start}");
+                let width_sent = i64::try_from(width).expect("a small page width");
+                let mut body =
+                    serde_json::json!({ "StreamArn": stream_arn, "Limit": width_sent });
+                if let (Some(target), true) = (body.as_object_mut(), start > 0) {
+                    target.insert(
+                        "ExclusiveStartShardId".to_string(),
+                        serde_json::json!(all_shards[start - 1]),
+                    );
+                }
+                let (shard_ids, cursor) = page(&router, &case, body).await;
+                let end = (start + width).min(shard_count);
+                assert_eq!(
+                    shard_ids,
+                    all_shards[start..end].to_vec(),
+                    "case {case:?}: unexpected page, got {shard_ids:?}"
+                );
+                let expected_cursor = (end < shard_count)
+                    .then(|| shard_ids.last().cloned())
+                    .flatten();
+                assert_eq!(
+                    cursor, expected_cursor,
+                    "case {case:?}: expected the cursor {expected_cursor:?}, got {cursor:?}"
+                );
+            }
+        }
+    }
+}
+
+/// A page offers the cursor only while shards remain after it; a page that reached the
+/// end of the shard list — including an unlimited call that carried the whole of it —
+/// offers none.
+#[tokio::test]
+async fn the_cursor_is_offered_only_while_shards_remain_after_the_page() {
     let (engine, router) = build();
     let stream_arn = stream_with_shards(&engine, "ledger", 4);
     let (all_shards, cursor) = page(
@@ -187,10 +256,9 @@ async fn the_cursor_is_the_last_shard_of_the_page() {
         "the fixture must serve four shards, got {all_shards:?}"
     );
     assert_eq!(
-        cursor.as_deref(),
-        all_shards.last().map(String::as_str),
-        "case the whole shard list: the page stopped at its last shard, so that is the \
-         cursor it offers, got {cursor:?}"
+        cursor, None,
+        "case the whole shard list: the page carried every shard, so it is the last page \
+         and offers no cursor, got {cursor:?}"
     );
 
     // Each row: the page width asked for (None for an absent member), where to resume
@@ -230,8 +298,10 @@ async fn the_cursor_is_the_last_shard_of_the_page() {
             all_shards[expected.clone()].to_vec(),
             "case {case:?}: unexpected page, got {shard_ids:?}"
         );
-        // The page offers the shard it stopped at, whether or not shards remain.
-        let expected_cursor = shard_ids.last().cloned();
+        // The cursor is there exactly when the shard list continues past this page.
+        let expected_cursor = (expected.end < all_shards.len())
+            .then(|| shard_ids.last().cloned())
+            .flatten();
         assert_eq!(
             cursor, expected_cursor,
             "case {case:?}: expected the cursor {expected_cursor:?}, got {cursor:?}"
@@ -279,8 +349,9 @@ async fn the_cursor_is_the_last_shard_of_the_page() {
         "case a filter that matches no child shard: expected no cursor, got {cursor:?}"
     );
 
-    // And a filter that DOES match reports the one shard it carried, which the next
-    // call resumes after — one child, whose own child list is empty.
+    // And a filter narrows the list the walk runs over: the page carries the whole of
+    // that narrowed list — one child — so it is that walk's last page and offers no
+    // cursor.
     let (shard_ids, cursor) = page(
         &router,
         "a filter that matches one child shard",
@@ -296,10 +367,9 @@ async fn the_cursor_is_the_last_shard_of_the_page() {
         "case a filter that matches one child shard: expected that one child, got {shard_ids:?}"
     );
     assert_eq!(
-        cursor.as_deref(),
-        Some(all_shards[1].as_str()),
-        "case a filter that matches one child shard: the page stopped at that child, got \
-         {cursor:?}"
+        cursor, None,
+        "case a filter that matches one child shard: the page carried every shard the \
+         filter matched, got {cursor:?}"
     );
 }
 
@@ -340,7 +410,9 @@ async fn a_stream_serving_no_shard_reports_no_cursor() {
 }
 
 /// The cursor is what a consumer's walk is driven by: following it visits every shard
-/// exactly once, in order, and terminates — which is what an absent cursor means.
+/// exactly once, in order, and ENDS on the page that carried the last shard — no page
+/// of the walk is empty, because the terminator arrives with the final shards rather
+/// than one call later.
 #[tokio::test]
 async fn following_the_cursor_visits_every_shard_once_and_terminates() {
     let (engine, router) = build();
@@ -358,13 +430,15 @@ async fn following_the_cursor_visits_every_shard_once_and_terminates() {
     );
 
     // Each row is a page width to walk the same stream with, so the walk is shown to
-    // terminate whether a page carries one shard, some of them or all of them.
-    for limit in [1_i64, 2, 5, 100] {
+    // terminate whether a page carries one shard, some of them, exactly all of them or
+    // more than there are — including a width that divides the shard list exactly.
+    for limit in [1_usize, 2, 4, 5, 100] {
         let case = format!("walking with Limit {limit}");
         let mut seen: Vec<String> = Vec::new();
         let mut resume: Option<String> = None;
-        // Generous: one call per shard plus the terminating one, and a few spare, so a
-        // walk that fails to terminate is caught instead of looping for ever.
+        let mut calls = 0_usize;
+        // Generous: one call per shard plus a few spare, so a walk that fails to
+        // terminate is caught instead of looping for ever.
         for _ in 0..all_shards.len() + 4 {
             let mut body = serde_json::json!({ "StreamArn": stream_arn, "Limit": limit });
             if let (Some(target), Some(resume)) = (body.as_object_mut(), resume.as_ref()) {
@@ -374,6 +448,11 @@ async fn following_the_cursor_visits_every_shard_once_and_terminates() {
                 );
             }
             let (shard_ids, cursor) = page(&router, &case, body).await;
+            calls += 1;
+            assert!(
+                !shard_ids.is_empty(),
+                "case {case:?}: the walk was driven to an empty page on call {calls}"
+            );
             seen.extend(shard_ids);
             match cursor {
                 Some(cursor) => resume = Some(cursor),
@@ -383,6 +462,13 @@ async fn following_the_cursor_visits_every_shard_once_and_terminates() {
         assert_eq!(
             seen, all_shards,
             "case {case:?}: the walk must visit every shard once, in order"
+        );
+        // Exactly as many calls as there are pages of that width: the last of them
+        // carried the final shards AND terminated.
+        let expected_calls = all_shards.len().div_ceil(limit);
+        assert_eq!(
+            calls, expected_calls,
+            "case {case:?}: expected {expected_calls} calls to walk the shard list, got {calls}"
         );
     }
 }

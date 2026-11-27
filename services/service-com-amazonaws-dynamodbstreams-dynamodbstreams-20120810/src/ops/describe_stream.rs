@@ -20,10 +20,12 @@
 //! a wider page request is refused (`ValidationException`), not quietly served a
 //! narrower page.
 //!
-//! `LastEvaluatedShardId` names the shard the page STOPPED at whenever the page
-//! evaluated one, whether or not a further shard follows — the member documents that
-//! a non-empty value "does not necessarily mean that there is more data in the result
-//! set" — and is empty only for a page that evaluated no shard at all.
+//! `LastEvaluatedShardId` is the resume point of a shard walk, so it is offered only
+//! when the shard list CONTINUES past the page just served: a page that stopped at the
+//! end of the list — an unlimited call that carried every shard, or the last page of a
+//! `Limit`-bounded walk — omits the member, because "if LastEvaluatedShardId is empty,
+//! then the 'last page' of results has been processed and there is currently no more
+//! data to be retrieved" is the ONLY terminator a consumer has.
 //!
 //! ## Shape of an operation
 //!
@@ -291,21 +293,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         )
         .unwrap_or(1);
 
-        let remaining = &shards[start_at.min(shards.len())..];
+        let start_at = start_at.min(shards.len());
+        let remaining = &shards[start_at..];
         let page = &remaining[..remaining.len().min(limit)];
-        // The RESUME POINT this page offers: the last shard it carried. The member is
-        // the pagination cursor of this operation — "the shard ID of the item where the
+        // The RESUME POINT this page offers: "the shard ID of the item where the
         // operation stopped, inclusive of the previous result set. Use this value to
         // start a new operation, excluding this value in the new request"
-        // (`StreamDescription$LastEvaluatedShardId`) — and it reports where this page
-        // stopped WITHOUT looking past it for a further shard, because that is not what
-        // it claims: "If LastEvaluatedShardId is not empty, it does not necessarily mean
-        // that there is more data in the result set. The only way to know when you have
-        // reached the end of the result set is when LastEvaluatedShardId is empty." So
-        // the one page that offers no cursor is the one that evaluated no shard at all
-        // (a stream whose enable is not due, a filter nothing matched, a resume point
-        // past the last shard), and that is what terminates a consumer's walk.
-        let last_evaluated_shard_id = page.last().map(|shard| shard.shard_id.clone());
+        // (`StreamDescription$LastEvaluatedShardId`). A walk is terminated by the member
+        // being EMPTY — "if LastEvaluatedShardId is empty, then the 'last page' of
+        // results has been processed and there is currently no more data to be
+        // retrieved" — so the cursor is offered only while the shard list CONTINUES past
+        // this page, and a page that stopped at the end of the list (an unlimited call
+        // that carried every shard, the last page of a bounded walk, a filter nothing
+        // matched, a stream whose enable is not due) reports none. Anything else would
+        // drive the consumer one page past the shards there are.
+        let last_evaluated_shard_id = if start_at + page.len() < shards.len() {
+            page.last().map(|shard| shard.shard_id.clone())
+        } else {
+            None
+        };
 
         let shards_out: Vec<Shard> = page
             .iter()
