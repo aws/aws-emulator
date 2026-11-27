@@ -137,8 +137,13 @@ where
 /// collection quotes — or `None` for a request those constraints do not refuse at all, which
 /// is every request the operation goes on to serve.
 fn quoting_refusal<Op: Operation>(svc: &dyn Service, req: &RtRequest) -> Option<RtResponse> {
+    // The collecting walk reads the request with the codec of the protocol THIS REQUEST is
+    // served in, which this model declares two of (`awsJson1_1` and `rpcv2Cbor`): the
+    // first-declared codec would read a CBOR body as JSON, find no member at all and so
+    // state nothing about a request it cannot parse.
+    let wire = svc.definition().wire_protocol(req);
     let (refusing, submitted_lists): (Vec<(Violation, _)>, HashMap<String, String>) =
-        refusing_violations_with_mapped_echoes::<Op>(svc.definition().protocol(), req);
+        refusing_violations_with_mapped_echoes::<Op>(wire.protocol(), req);
     if refusing.is_empty() {
         return None;
     }

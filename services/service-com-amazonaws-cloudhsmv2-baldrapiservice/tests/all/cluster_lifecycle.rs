@@ -6,7 +6,10 @@
 //!
 //! Every case drives the real wire path — `POST /` with
 //! `X-Amz-Target: BaldrApiService.<Operation>` through the multi-service router — so
-//! what is asserted is what a client sees, body and HTTP status included.
+//! what is asserted is what a client sees, body and HTTP status included. The last
+//! section drives the same endpoint over the OTHER protocol this model declares, Smithy
+//! RPC v2 CBOR, which names the service and the operation in the request path and sends
+//! no `X-Amz-Target` at all: one store, read and written through either.
 //!
 //! Every wait here is on a CONDITION — a record reaching the state the clock owes it, or
 //! leaving the store — so a case looks again until that holds rather than sleeping for a
@@ -18,6 +21,11 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+// The CBOR implementation the framework's own codec is built on: the last section writes
+// its request bodies and reads its response bodies with it, so what is asserted there is
+// what a client of that protocol sends and reads.
+use aws_smithy_cbor::data::Type;
+use aws_smithy_cbor::{Decoder, Encoder};
 use bytes::Bytes;
 use serde_json::{json, Value};
 use service_com_amazonaws_cloudhsmv2_baldrapiservice::state::{
@@ -1542,5 +1550,375 @@ async fn list_tags_refuses_an_identifier_and_a_token_it_cannot_resolve() {
                 "case {name:?}: expected the refusal to say {sentence:?}, got {message:?}"
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The same endpoint over the OTHER protocol this model declares.
+//
+// RULE: a request is read, dispatched and answered in the protocol THE REQUEST
+// names — the `awsJson1_1` one above, which posts to `/` and names its operation
+// in `X-Amz-Target`, or Smithy RPC v2 CBOR, which names the service and the
+// operation in the path `/service/{Service}/operation/{Operation}`, declares
+// itself with `smithy-protocol: rpc-v2-cbor`, carries its body as CBOR and sends
+// no `X-Amz-Target` at all (`smithy_query(query="service_info")` lists both).
+// Both decode to the same modelled input, are served by the same operation over
+// the same store, and answer the same payload and the same refusal wording, each
+// in its own envelope.
+// ---------------------------------------------------------------------------
+
+/// The `{Service}` label of this service's RPC v2 CBOR paths: the local name of the
+/// model's service shape, which is also the `X-Amz-Target` prefix of its awsJson1_1
+/// wire (`smithy_query(query="service_info")` -> service `BaldrApiService`).
+pub(crate) const SERVICE_LABEL: &str = "BaldrApiService";
+
+/// The header that protocol's specification requires on every request and response of
+/// it, and the value it carries.
+pub(crate) const SMITHY_PROTOCOL: (&str, &str) = ("smithy-protocol", "rpc-v2-cbor");
+
+/// The media type it carries its bodies under.
+pub(crate) const CBOR_MEDIA_TYPE: &str = "application/cbor";
+
+impl Emulator {
+    /// Call `operation` over the RPC v2 CBOR wire with the input `body` names, signed for
+    /// `region` exactly as [`Emulator::call_in`] signs its awsJson request — answering the
+    /// status, the `smithy-protocol` header the response carries, and its decoded body.
+    pub(crate) async fn call_cbor_in(
+        &self,
+        region: &str,
+        operation: &str,
+        body: &Value,
+    ) -> (u16, String, Value) {
+        let request = http::Request::builder()
+            .method("POST")
+            .uri(format!("/service/{SERVICE_LABEL}/operation/{operation}"))
+            .header("content-type", CBOR_MEDIA_TYPE)
+            .header("accept", CBOR_MEDIA_TYPE)
+            .header(SMITHY_PROTOCOL.0, SMITHY_PROTOCOL.1)
+            .header(
+                "authorization",
+                format!(
+                    "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260101/{region}/cloudhsm/\
+                     aws4_request, SignedHeaders=host;x-amz-date, Signature=deadbeef"
+                ),
+            )
+            .body(Bytes::from(cbor_bytes(body)))
+            .expect("build the request");
+        let response = self.router.dispatch(request).await;
+        let status = response.status().as_u16();
+        let protocol = response
+            .headers()
+            .get(SMITHY_PROTOCOL.0)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let decoded = if response.body().is_empty() {
+            Value::Null
+        } else {
+            cbor_value(response.body())
+        };
+        (status, protocol, decoded)
+    }
+
+    /// [`Emulator::call_cbor_in`] in the default test region.
+    pub(crate) async fn call_cbor(&self, operation: &str, body: &Value) -> (u16, String, Value) {
+        self.call_cbor_in(REGION, operation, body).await
+    }
+}
+
+/// `value` as the CBOR item carrying the same members, every container declaring its
+/// length up front — one of the two forms a client of this protocol writes.
+pub(crate) fn cbor_bytes(value: &Value) -> Vec<u8> {
+    fn write(encoder: &mut Encoder, value: &Value) {
+        match value {
+            Value::Null => {
+                encoder.null();
+            }
+            Value::Bool(flag) => {
+                encoder.boolean(*flag);
+            }
+            Value::Number(number) => match number.as_i64() {
+                Some(whole) => {
+                    encoder.long(whole);
+                }
+                None => {
+                    encoder.double(number.as_f64().unwrap_or_default());
+                }
+            },
+            Value::String(text) => {
+                encoder.str(text);
+            }
+            Value::Array(elements) => {
+                encoder.array(elements.len());
+                for element in elements {
+                    write(encoder, element);
+                }
+            }
+            Value::Object(members) => {
+                encoder.map(members.len());
+                for (name, held) in members {
+                    encoder.str(name);
+                    write(encoder, held);
+                }
+            }
+        }
+    }
+    let mut encoder = Encoder::new(Vec::new());
+    write(&mut encoder, value);
+    encoder.into_writer()
+}
+
+/// A CBOR body as the same shape the awsJson bodies above are asserted on, so one
+/// assertion reads either envelope. Decoded with the CBOR implementation the framework's
+/// own codec is built on rather than scanned as text, so what is asserted is the whole
+/// decoded value a client of this protocol reads.
+///
+/// A timestamp arrives as the tagged epoch item that protocol writes one as and is read
+/// back as the same number of seconds the JSON wire reports.
+pub(crate) fn cbor_value(body: &[u8]) -> Value {
+    fn number(value: f64) -> Value {
+        serde_json::Number::from_f64(value).map_or(Value::Null, Value::Number)
+    }
+
+    fn read(decoder: &mut Decoder<'_>) -> Value {
+        let datatype = decoder
+            .datatype()
+            .unwrap_or_else(|error| panic!("the body ends where an item was expected: {error}"));
+        match datatype {
+            Type::String | Type::StringIndef => Value::String(
+                decoder
+                    .string()
+                    .unwrap_or_else(|error| panic!("a text item does not read: {error}")),
+            ),
+            Type::Bool => Value::Bool(
+                decoder
+                    .boolean()
+                    .unwrap_or_else(|error| panic!("a boolean does not read: {error}")),
+            ),
+            Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::I8 | Type::I16 | Type::I32
+            | Type::I64 | Type::Int => number(
+                decoder
+                    .long()
+                    .unwrap_or_else(|error| panic!("a whole number does not read: {error}"))
+                    as f64,
+            ),
+            Type::F16 | Type::F32 | Type::F64 => number(
+                decoder
+                    .double()
+                    .unwrap_or_else(|error| panic!("a number does not read: {error}")),
+            ),
+            Type::Tag => number(
+                decoder
+                    .timestamp()
+                    .unwrap_or_else(|error| panic!("a timestamp does not read: {error}"))
+                    .as_secs_f64(),
+            ),
+            Type::Null => {
+                decoder.null().expect("a null reads");
+                Value::Null
+            }
+            Type::Array | Type::ArrayIndef => {
+                let declared = decoder
+                    .list()
+                    .unwrap_or_else(|error| panic!("an array header does not read: {error}"));
+                let mut elements = Vec::new();
+                while !at_end(decoder, declared, elements.len()) {
+                    elements.push(read(decoder));
+                }
+                end_container(decoder, declared);
+                Value::Array(elements)
+            }
+            Type::Map | Type::MapIndef => {
+                let declared = decoder
+                    .map()
+                    .unwrap_or_else(|error| panic!("a map header does not read: {error}"));
+                let mut entries = serde_json::Map::new();
+                while !at_end(decoder, declared, entries.len()) {
+                    let key = decoder
+                        .string()
+                        .unwrap_or_else(|error| panic!("a map key is not text: {error}"));
+                    entries.insert(key, read(decoder));
+                }
+                end_container(decoder, declared);
+                Value::Object(entries)
+            }
+            other => panic!("a response body carries no item of type {other:?}"),
+        }
+    }
+
+    /// Whether a container that declared `declared` entries (or none, for an
+    /// indefinite one) ends here, `read` entries in.
+    fn at_end(decoder: &mut Decoder<'_>, declared: Option<u64>, read: usize) -> bool {
+        match declared {
+            Some(entries) => read as u64 == entries,
+            None => matches!(
+                decoder
+                    .datatype()
+                    .unwrap_or_else(|error| panic!("a container ends mid-entry: {error}")),
+                Type::Break
+            ),
+        }
+    }
+
+    /// Consume the break that terminates an indefinite-length container.
+    fn end_container(decoder: &mut Decoder<'_>, declared: Option<u64>) {
+        if declared.is_none() {
+            decoder
+                .skip()
+                .unwrap_or_else(|error| panic!("the break of a container does not read: {error}"));
+        }
+    }
+
+    read(&mut Decoder::new(body))
+}
+
+/// `value` with every number it carries rendered as a whole number of seconds, so two
+/// answers can be compared across the two protocols.
+///
+/// Every number in a `Cluster` is an instant (`CreateTimestamp`), and each protocol writes
+/// an instant in its own representation: the JSON wire writes epoch seconds with the
+/// fraction the clock read, the CBOR wire the tagged epoch item that codec writes, whose
+/// fraction is its own. The INSTANT is the payload and is the same; its rendering is the
+/// codec's, so the comparison is to the second.
+fn alike(value: &Value) -> Value {
+    match value {
+        Value::Number(number) => {
+            serde_json::Number::from_f64(number.as_f64().unwrap_or_default().trunc())
+                .map_or(Value::Null, Value::Number)
+        }
+        Value::Array(elements) => Value::Array(elements.iter().map(alike).collect()),
+        Value::Object(members) => Value::Object(
+            members
+                .iter()
+                .map(|(name, held)| (name.clone(), alike(held)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// The cluster `DescribeClusters` reports for `cluster_id`, read over the CBOR wire when
+/// `cbor`, over the awsJson one otherwise.
+async fn described_over(emulator: &Emulator, cbor: bool, cluster_id: &str) -> Value {
+    let body = json!({ "Filters": { "clusterIds": [cluster_id] } });
+    let (status, response) = if cbor {
+        let (status, protocol, response) = emulator.call_cbor("DescribeClusters", &body).await;
+        assert_eq!(
+            protocol, SMITHY_PROTOCOL.1,
+            "expected the CBOR read to answer in its own protocol, got {protocol:?}"
+        );
+        (status, response)
+    } else {
+        emulator.call("DescribeClusters", &body).await
+    };
+    assert_eq!(
+        status, 200,
+        "expected DescribeClusters to answer 200, got {status} {response}"
+    );
+    response["Clusters"]
+        .as_array()
+        .and_then(|clusters| clusters.first())
+        .cloned()
+        .unwrap_or_else(|| panic!("expected the cluster {cluster_id} to be reported: {response}"))
+}
+
+/// RULE, over a table of inputs: a `CreateCluster` sent over the RPC v2 CBOR wire is the
+/// same call as over the awsJson one — one store, one computed answer — and the cluster it
+/// mints is reported by a read in either protocol.
+///
+/// The rows differ along what the rule generalises over: how many subnets the input names,
+/// which optional members it carries (a nested structure, a list of structures, an enum,
+/// none at all), and which protocol the read-back arrives in.
+#[tokio::test]
+async fn a_create_over_the_rpcv2_cbor_wire_is_the_same_call_as_over_the_json_wire() {
+    let emulator = Emulator::new();
+    let subnets = emulator.subnets_in(REGION).await;
+
+    // (case, how many subnets, the optional members the input adds)
+    let rows: Vec<(&str, usize, Value)> = vec![
+        ("the required members alone", 1, json!({})),
+        (
+            "two subnets and the tags a cluster carries",
+            2,
+            json!({ "TagList": [{ "Key": "Team", "Value": "crypto" }] }),
+        ),
+        (
+            "an enum member and a nested structure",
+            1,
+            json!({
+                "Mode": "NON_FIPS",
+                "NetworkType": "DUALSTACK",
+                "BackupRetentionPolicy": { "Type": "DAYS", "Value": "7" },
+            }),
+        ),
+    ];
+
+    let mut minted: Vec<String> = Vec::new();
+    for (case, count, extra) in rows {
+        let placed: Vec<(String, String)> = subnets.iter().take(count).cloned().collect();
+        let mut body = json!({
+            "HsmType": "hsm2m.medium",
+            "SubnetIds": placed.iter().map(|(_, id)| id.clone()).collect::<Vec<_>>(),
+        });
+        for (name, value) in extra.as_object().expect("the row's members are an object") {
+            body[name] = value.clone();
+        }
+
+        let (status, protocol, response) = emulator.call_cbor("CreateCluster", &body).await;
+        assert_eq!(
+            (status, protocol.as_str()),
+            (200, SMITHY_PROTOCOL.1),
+            "case {case:?}: expected CreateCluster to answer 200 in its own protocol, got \
+             {status} {protocol:?} {response}"
+        );
+        let cluster = response["Cluster"].clone();
+        let cluster_id = cluster["ClusterId"].as_str().unwrap_or_default().to_string();
+        assert!(
+            is_modelled_id(&cluster_id, "cluster-"),
+            "case {case:?}: expected an id matching ^cluster-[2-7a-zA-Z]{{11,16}}$, got \
+             {cluster_id:?}"
+        );
+        assert!(
+            !minted.contains(&cluster_id),
+            "case {case:?}: expected a fresh cluster id, got the already-minted {cluster_id:?}"
+        );
+        minted.push(cluster_id.clone());
+        assert_eq!(
+            subnet_mapping(&cluster),
+            placed.iter().cloned().collect::<BTreeMap<String, String>>(),
+            "case {case:?}: expected each requested subnet mapped under the Availability Zone \
+             EC2 reports for it, got {cluster}"
+        );
+        assert!(
+            cluster["CreateTimestamp"].is_number(),
+            "case {case:?}: expected a CreateTimestamp, got {:?}",
+            cluster["CreateTimestamp"]
+        );
+        for member in ["HsmType", "State", "Mode", "NetworkType", "BackupPolicy", "VpcId"] {
+            assert!(
+                cluster[member].is_string(),
+                "case {case:?}: expected {member} on the created cluster, got {cluster}"
+            );
+        }
+
+        // ONE STORE: the cluster the CBOR call created is the cluster the awsJson read
+        // reports, member for member with the CBOR read of the same resource.
+        let over_json = described_over(&emulator, false, &cluster_id).await;
+        let mut over_cbor = described_over(&emulator, true, &cluster_id).await;
+        // The only member that may legitimately differ between two answers is the state,
+        // which the clock moves on its own between the two reads.
+        over_cbor["State"] = over_json["State"].clone();
+        assert_eq!(
+            alike(&over_json),
+            alike(&over_cbor),
+            "case {case:?}: expected one cluster read alike in either protocol"
+        );
+        let mut stored = over_json;
+        stored["State"] = cluster["State"].clone();
+        assert_eq!(
+            alike(&stored),
+            alike(&cluster),
+            "case {case:?}: expected the describe to report the created cluster unchanged"
+        );
     }
 }

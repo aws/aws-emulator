@@ -35,6 +35,10 @@ aws-sdk-ec2 = { version = "1", default-features = false }
 # wording of a constraint refusal, and the one renaming of the member a JSON error body
 # carries its text in.
 service-common = { path = "../common" }
+# The CBOR implementation the framework's own `rpcv2Cbor` codec is built on, at the version
+# that codec uses: `src/service/cbor_error_bodies.rs` reads and writes an error body of that
+# envelope with it, so what it rewrites is what the codec wrote.
+aws-smithy-cbor = "0.62.2"
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

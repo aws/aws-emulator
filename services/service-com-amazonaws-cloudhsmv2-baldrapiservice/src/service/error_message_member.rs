@@ -7,9 +7,11 @@
 //! Every error shape this model declares carries one member for its text, `Message`,
 //! targeting `errorMessage`, and none of them carries a `@jsonName`
 //! (`smithy_query(query="shape",shape="CloudHsmAccessDeniedException,CloudHsmInternalFailureException,CloudHsmInvalidRequestException,CloudHsmResourceLimitExceededException,CloudHsmResourceNotFoundException,CloudHsmServiceException,CloudHsmTagException",model_path="services/service-com-amazonaws-cloudhsmv2-baldrapiservice/smithy-model/com-amazonaws-cloudhsmv2-baldrapiservice.json")`),
-//! and an `awsJson1_1` member with no `@jsonName` goes on the wire under its Smithy name.
-//! So `Message` is where one of this service's errors carries its text, whatever produced
-//! it:
+//! and an `awsJson1_1` member with no `@jsonName` goes on the wire under its Smithy name —
+//! as does an `rpcv2Cbor` member, that protocol having no name override of its own. So
+//! `Message` is where one of this service's errors carries its text, whatever produced it
+//! and in whichever of the two envelopes this model declares it is answered in
+//! ([`super::cbor_error_bodies`] is the CBOR half):
 //!
 //! ```json
 //! HTTP/1.1 400 Bad Request
@@ -21,15 +23,17 @@
 //! An error a HANDLER returns is serialized from the model's own shape, so it already
 //! carries that member. The body the FRAMEWORK renders for a request it refused before
 //! any handler ran does not: that body is built from a synthetic shape whose own member is
-//! spelled `message`, and the JSON error renderer writes that spelling even when the
+//! spelled `message`, and both error renderers write that spelling even when the
 //! service names one of its MODELLED error shapes as the code
 //! (`vendor/smithy-server-runtime/src/pre_dispatch.rs`). A client — or an SDK
 //! deserializing the modelled exception the code names — then finds no `Message` member at
 //! all and surfaces the refusal with no text, though its status and its code are right.
 //!
 //! This layer therefore reports that text in `Message` on the error bodies this service
-//! answers, wherever it was produced. The renaming itself is `service-common`'s, so this
-//! file states only the two member names and the shapes the rule covers; the status, the
+//! answers, wherever it was produced and whichever envelope it was written in. The renaming
+//! itself is shared — `service-common`'s for a JSON body, [`super::cbor_error_bodies`]'s for
+//! a CBOR one — so this file states only the two member names and the shapes the rule
+//! covers; the status, the
 //! `__type` discriminator, every other member and the whole success path stay with the
 //! renderer that owns them. A failure whose class this model does not declare — the
 //! scaffold's own 501 — keeps the member the framework wrote it in, because the rename is
@@ -75,6 +79,17 @@ const MODELLED_ERROR_SHAPES: [&str; 7] = [
 /// member differs from the one a layer wrote.
 #[must_use]
 pub(super) fn with_modelled_message_member(resp: RtResponse) -> RtResponse {
+    // The renaming is over the body as the envelope that request was served in wrote it:
+    // this model declares two, and `service-common`'s renaming reads a JSON document, so a
+    // CBOR body is rewritten by the CBOR half of the same rule instead.
+    if super::cbor_error_bodies::is_a_cbor_body(&resp) {
+        return super::cbor_error_bodies::with_modelled_message_member(
+            resp,
+            &MODELLED_ERROR_SHAPES,
+            RENDERED_MESSAGE_MEMBER,
+            MODELLED_MESSAGE_MEMBER,
+        );
+    }
     ::service_common::error_detail_member::with_renamed_detail_member(
         resp,
         &MODELLED_ERROR_SHAPES,

@@ -16,10 +16,9 @@
 //! Five opt-in seams are yours to change; every one defaults to the framework's
 //! own behaviour, so an unedited service still routes and answers correctly:
 //!
-//! - `can_handle` — which requests this service claims. The default matches the
-//!   request's resolved route key against this service's signing name. Edit it
-//!   for anything the model does not express: a signing name shared by several
-//!   services, or routing that keys on the access-key id.
+//! - `can_handle` — which requests this service claims. EDITED HERE: this service's
+//!   SigV4 signing name is shared with CloudHSM V2, which the model cannot express, so
+//!   the discriminator is the service the request's own RPC wire form names.
 //! - `override_operation` — serve a request the model's routing key cannot name
 //!   correctly. The default returns `None`, so every request resolves through the
 //!   generated routing table. Return `Some(op)` to route one yourself.
@@ -45,21 +44,12 @@ use smithy_server_runtime::{
 };
 use std::sync::Arc;
 
-/// The service key `::emulator_server::service_from_target` reads out of a CloudHSM V2
-/// request's `X-Amz-Target` header. That service signs as `cloudhsm` too
-/// (`smithy_query(query="service_info")` on either model gives the same `sigv4Name`), so
-/// this key is what tells its traffic apart from ours: the shared reader takes the segment
-/// before the `.`, strips a `_<version>` suffix and lower-cases it, so
-/// `BaldrApiService.<Operation>` normalises to this key while this service's own
-/// `CloudHsmFrontendService.<Operation>` normalises to `cloudhsmfrontendservice`. The V2
-/// crate's `can_handle` compares against the same key, so one discriminator is read one way
-/// on both sides.
-const V2_TARGET_SERVICE_KEY: &str = "baldrapiservice";
-
 /// The service key this service's OWN `X-Amz-Target` prefix resolves to
-/// (`CloudHsmFrontendService.<Operation>`), read by the same shared reader. An unsigned
-/// request carries no credential scope, so that prefix is the routing key the resolver
-/// hands back, and it names this service.
+/// (`CloudHsmFrontendService.<Operation>`): the framework takes the segment before the
+/// `.`, strips a `_<version>` suffix and lower-cases it. An unsigned request carries no
+/// credential scope, so that prefix is the routing key the resolver hands back, and it
+/// names this service — while CloudHSM V2's own `BaldrApiService.<Operation>` normalises
+/// to a different key and so names that service.
 const TARGET_SERVICE_KEY: &str = "cloudhsmfrontendservice";
 
 /// The `com-amazonaws-cloudhsm-cloudhsmfrontendservice` emulated service: the generated [`ServiceDefinition`] plus
@@ -94,20 +84,27 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // CloudHSM Classic and CloudHSM V2 are two services behind ONE SigV4 signing
         // name (`cloudhsm`), which the model cannot express, so the default
         // signing-name match makes BOTH claim every CloudHSM-signed request and the
-        // router rejects all of it rather than serving it from an arbitrary one. On
-        // awsJson1_1 the request names its service in `X-Amz-Target`, so a
-        // `BaldrApiService.*` target belongs to the V2 service and is declined here.
-        match smithy_server_runtime::resolve_route_key(parts) {
-            Some(key) if key == self.entry.identity().signing_name() => {
-                ::emulator_server::service_from_target(&parts.headers).as_deref()
-                    != Some(V2_TARGET_SERVICE_KEY)
-            }
-            // An UNSIGNED request carries no credential scope, so the resolver's next
-            // signal is the `X-Amz-Target` prefix itself: a key that IS this service's
-            // target prefix names this service by the same discriminator.
-            Some(key) => key == TARGET_SERVICE_KEY,
-            None => false,
+        // router rejects all of it rather than serving it from an arbitrary one. What
+        // tells the two apart is the service the request's own RPC wire form NAMES —
+        // `X-Amz-Target: CloudHsmFrontendService.<Operation>` here — which is the one rule
+        // `claims_request` reads against this model's shape name. The V2 model declares
+        // `rpcv2Cbor` beside `awsJson1_1`, and such a request names ITS service in the path
+        // (`POST /service/BaldrApiService/operation/<Operation>`) and carries no
+        // `X-Amz-Target`; the same rule reads that form too, so V2's CBOR traffic is
+        // declined here instead of being claimed by a service that cannot route it.
+        if ::service_common::claims_request(
+            parts,
+            self.entry.identity().signing_name(),
+            crate::ROUTE_PATH_SEGMENTS,
+            Some(self.entry.identity().shape_id()),
+        ) {
+            return true;
         }
+        // An UNSIGNED request carries no credential scope, so the resolver's next
+        // signal is the `X-Amz-Target` prefix itself: a key that IS this service's
+        // target prefix names this service by the same discriminator, and V2's own
+        // prefix normalises to a different key, so it names that service.
+        smithy_server_runtime::resolve_route_key(parts).as_deref() == Some(TARGET_SERVICE_KEY)
     }
 
     fn override_operation(

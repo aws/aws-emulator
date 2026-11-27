@@ -24,16 +24,24 @@
 //! 5. `SubnetIds` names a SET of subnets: an identifier repeated in it names the subnet it
 //!    already named, so the request is served and the cluster is placed once in that
 //!    subnet, while two DIFFERENT subnets of one Availability Zone are refused.
+//! 6. Rule 1 holds in either protocol this model declares: the same request is refused
+//!    with the same code and the same words over the RPC v2 CBOR wire, in that wire's own
+//!    envelope.
 //!
 //! Every case drives the real wire path (`POST /` with
-//! `X-Amz-Target: BaldrApiService.<Operation>` through the multi-service router), so what
+//! `X-Amz-Target: BaldrApiService.<Operation>` through the multi-service router, or
+//! `POST /service/BaldrApiService/operation/<Operation>` for the CBOR one), so what
 //! is asserted is what a client sees, body and HTTP status included.
 
 use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
 
-use crate::cluster_lifecycle::{error_code, Emulator, REGION};
+use crate::cluster_lifecycle::{error_code, Emulator, SMITHY_PROTOCOL, REGION};
+
+/// The value the `smithy-protocol` header carries on every request and response of the
+/// RPC v2 CBOR wire this model declares beside its awsJson1_1 one.
+const RPC_V2_CBOR: &str = SMITHY_PROTOCOL.1;
 
 /// The `Message` member every error shape of this model declares — where a failure's text
 /// is, whichever layer produced it.
@@ -74,11 +82,71 @@ async fn a_request_outside_the_modelled_input_shape_is_refused_as_an_invalid_req
     let subnets = emulator.subnet_ids_in(REGION).await;
     let held = subnets[0].clone();
 
-    // (case, the request, the whole message it must answer with). The message is the AWS
-    // input-validation envelope: `<n> validation error(s) detected: ` over one clause per
-    // violated constraint, naming the member as a path spells it and the requirement it
-    // failed.
-    let rows: Vec<(&str, Value, String)> = vec![
+    for (case, body, expected) in modelled_input_refusal_rows(&held) {
+        let (status, response) = emulator.call("CreateCluster", &body).await;
+        assert_eq!(
+            (status, error_code(&response).as_str()),
+            (400, INVALID_REQUEST),
+            "case {case:?}: expected 400 {INVALID_REQUEST}, got {status} {response}"
+        );
+        assert_eq!(
+            error_message(&response),
+            expected,
+            "case {case:?}: expected the AWS validation envelope, got {response}"
+        );
+    }
+}
+
+/// RULE: a request is refused for the same reason, with the same code and in the same
+/// words whichever of the two protocols this model declares carries it — the refusal is a
+/// property of the modelled input shape, not of the envelope the request arrived in. Only
+/// the envelope differs: a CBOR map rather than a JSON object, with the text under the same
+/// `Message` member every error shape of this model declares.
+///
+/// The rows are the ones above, so the two wires cannot drift into two sets of words; what
+/// varies is the protocol, which is what this rule generalises over. A clause quoting a
+/// list proves more than the wording: the collecting walk that states the submitted
+/// collection read the request with the CBOR codec, so the value it quotes is the one that
+/// request really carried.
+#[tokio::test]
+async fn the_same_request_is_refused_in_the_same_words_over_the_rpcv2_cbor_wire() {
+    let emulator = Emulator::new();
+    let subnets = emulator.subnet_ids_in(REGION).await;
+    let held = subnets[0].clone();
+
+    for (case, body, expected) in modelled_input_refusal_rows(&held) {
+        let (status, protocol, response) = emulator.call_cbor("CreateCluster", &body).await;
+        assert_eq!(
+            (status, protocol.as_str(), error_code(&response).as_str()),
+            (400, RPC_V2_CBOR, INVALID_REQUEST),
+            "case {case:?}: expected 400 {INVALID_REQUEST} in the rpcv2Cbor envelope, got \
+             {status} {protocol:?} {response}"
+        );
+        assert_eq!(
+            error_message(&response),
+            expected,
+            "case {case:?}: expected the AWS validation envelope, got {response}"
+        );
+        assert!(
+            response.get("message").is_none(),
+            "case {case:?}: the text must be carried under ONE member, got {response}"
+        );
+    }
+}
+
+/// One request that violates the modelled input shape, and the whole message it must be
+/// refused with. The message is the AWS input-validation envelope: `<n> validation
+/// error(s) detected: ` over one clause per violated constraint, naming the member as a
+/// path spells it and the requirement it failed.
+///
+/// `held` is a subnet the account really has, so a row about ANOTHER member is refused for
+/// that member alone.
+///
+/// Rows span the constraint classes the input shape declares: a missing `@required`
+/// member, `@pattern` on a member and on a list's elements, `@length` on a list at each
+/// bound, an enum's value set, and two violations in one request.
+fn modelled_input_refusal_rows(held: &str) -> Vec<(&'static str, Value, String)> {
+    vec![
         (
             "a required member absent",
             json!({ "SubnetIds": [held] }),
@@ -169,21 +237,7 @@ async fn a_request_outside_the_modelled_input_shape_is_refused_as_an_invalid_req
                  constraint: Member must have length greater than or equal to 1"
             ),
         ),
-    ];
-
-    for (case, body, expected) in rows {
-        let (status, response) = emulator.call("CreateCluster", &body).await;
-        assert_eq!(
-            (status, error_code(&response).as_str()),
-            (400, INVALID_REQUEST),
-            "case {case:?}: expected 400 {INVALID_REQUEST}, got {status} {response}"
-        );
-        assert_eq!(
-            error_message(&response),
-            expected,
-            "case {case:?}: expected the AWS validation envelope, got {response}"
-        );
-    }
+    ]
 }
 
 #[tokio::test]
