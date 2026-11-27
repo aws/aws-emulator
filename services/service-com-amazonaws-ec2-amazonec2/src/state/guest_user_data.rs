@@ -37,7 +37,11 @@
 //!   text declares — so the program a part carries runs at its own form's cadence beside
 //!   the others;
 //! * COMPRESSED bytes: cloud-init decompresses user data that arrives gzipped, so what the
-//!   guest runs is the document inside, read as whatever form THAT declares.
+//!   guest runs is the document inside, read as whatever form THAT declares;
+//! * BASE64 text: cloud-init decodes base64-encoded user data before it reads the form, so a
+//!   payload a client encoded itself — which the API's own encoding then wrapped a second
+//!   time — gives the guest the document inside it rather than nothing
+//!   ([`base64_document`]).
 //!
 //! The one form left unread is the `#include` family, which names documents to FETCH over
 //! the network: this emulator makes no outbound request, so there is nothing to run. Such a
@@ -247,7 +251,7 @@ impl GuestProgram {
 /// instance", which the API carries base64-encoded), so it is decoded here before it is
 /// read.
 pub fn guest_program(user_data: Option<&str>) -> GuestProgram {
-    let Some(bytes) = user_data.and_then(decoded_user_data) else {
+    let Some(bytes) = user_data.and_then(base64_document) else {
         return GuestProgram::default();
     };
     document_program(&bytes, 0)
@@ -296,7 +300,38 @@ fn text_program(text: &str, nesting: usize) -> GuestProgram {
         // A user-data script is run ONCE per instance, so its lines are the first boot's.
         return first_boot_program(trimmed);
     }
+    // A text that declares no form of its own may still CARRY a document: cloud-init accepts
+    // base64-encoded user data and decodes it before it reads the form, exactly as it
+    // decompresses a gzipped one, so a payload a client encoded itself — which the API
+    // encoding then wrapped a second time — arrives here as the base64 text of the real
+    // document. What the guest runs is that document, read as whatever form IT declares.
+    if let Some(carried) = base64_document(trimmed) {
+        let program = document_program(&carried, nesting + 1);
+        if !program.is_empty() {
+            return program;
+        }
+    }
     GuestProgram::default()
+}
+
+/// The document the base64 text `text` stands for, or `None` when it is not base64 text at
+/// all.
+///
+/// The ONE reading of "this text is base64 of a document" in this module, taken both of the
+/// value the API carries ("the user data to make available to the instance", which travels
+/// base64-encoded) and of a document found INSIDE it. Held to the same ceiling every other
+/// reading of a carried document is ([`MAX_GUEST_DOCUMENT_BYTES`], tested on the text before
+/// it is decoded, since base64 is longer than what it stands for) and to the shortest text
+/// that can encode anything, so a stray word is not decoded as a document.
+fn base64_document(text: &str) -> Option<Vec<u8>> {
+    let packed: String = text.chars().filter(|value| !value.is_whitespace()).collect();
+    if packed.len() < 4 || packed.len() > MAX_GUEST_DOCUMENT_BYTES {
+        return None;
+    }
+    ::base64::engine::general_purpose::STANDARD
+        .decode(packed.as_bytes())
+        .ok()
+        .filter(|carried| !carried.is_empty())
 }
 
 /// The script `text` as a program run on every boot.
@@ -476,14 +511,6 @@ fn add(program: &mut GuestProgram, part: GuestProgram) {
     program.every_boot.truncate(MAX_GUEST_COMMANDS);
     program.first_boot.truncate(MAX_GUEST_COMMANDS);
     program.written_files.truncate(MAX_GUEST_WRITTEN_FILES);
-}
-
-/// `user_data` as the BYTES the guest was given, or `None` when it is not base64 at all —
-/// "the user data to make available to the instance", which the API carries base64-encoded.
-fn decoded_user_data(user_data: &str) -> Option<Vec<u8>> {
-    ::base64::engine::general_purpose::STANDARD
-        .decode(user_data.trim())
-        .ok()
 }
 
 /// The commands a `#cloud-config` document names, from its `bootcmd` and its `runcmd`.

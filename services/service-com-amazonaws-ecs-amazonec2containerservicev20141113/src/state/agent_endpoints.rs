@@ -78,3 +78,15 @@ pub fn agent_telemetry_endpoint(emulator_endpoint: &str) -> String {
 pub fn agent_service_connect_endpoint(emulator_endpoint: &str) -> String {
     announced_agent_endpoint(emulator_endpoint, Some(SERVICE_CONNECT_PLANE_PATH))
 }
+
+/// `ClientException$message` for a `containerInstance` this operation cannot resolve to an
+/// instance of the cluster it was called for.
+///
+/// Entirely fixed text, and the agent plane's OWN sentence for the condition: the call comes
+/// from the agent on the instance, not from a client holding a reference it can correct, so
+/// Amazon ECS states that the resources the call is about could not be located rather than
+/// naming the identifier back. The identifier-naming sentence the client-facing operations
+/// answer that condition with ([`super::container_instance_not_found_message`]) is theirs:
+/// `DeregisterContainerInstance` and `UpdateContainerAgent` are called ABOUT an instance a
+/// client named, and this one is called BY it.
+pub const AGENT_RESOURCES_NOT_LOCATED_MESSAGE: &str = "Could not locate resources";

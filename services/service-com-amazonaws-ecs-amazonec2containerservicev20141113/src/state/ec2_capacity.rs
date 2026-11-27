@@ -9,10 +9,12 @@
 //! cluster", and `RegisterContainerInstance` — "this action is only used by the Amazon ECS
 //! agent, and it is not intended for use outside of the agent" — is how an instance becomes
 //! one of them. The agent is not a client: it runs ON the instance, reads the cluster it is
-//! to join from its own configuration, and registers itself once the instance is up. The
-//! cluster that configuration names is what a launch puts in the instance's USER DATA — the
-//! agent's `ECS_CLUSTER` variable, which the documented way of joining a cluster writes into
-//! the agent's configuration file.
+//! to join from its own configuration file ([`AGENT_CONFIG_PATH`]), and registers itself once
+//! the instance is up. That file is what the instance's own user-data program writes — the
+//! agent's `ECS_CLUSTER` variable, which the documented way of joining a cluster appends to
+//! it — and Amazon EC2 RUNS that program in the instance's guest when it comes up, so the
+//! file on the machine's storage is what this module reads ([`joined_cluster`]), whatever the
+//! document the launch carried did to write it.
 //!
 //! So: a RUNNING instance of the account whose user data configures the agent with a cluster
 //! of the account is a registered container instance of that cluster, from one
@@ -170,7 +172,7 @@ fn read_launched_capacity(
     for instance in store.instances.values() {
         match reached_state(instance) {
             ReachedState::Running => {
-                let Some(cluster_name) = configured_cluster(instance.user_data.as_deref()) else {
+                let Some(cluster_name) = joined_cluster(store, instance) else {
                     continue;
                 };
                 let registered_at = instance.launch_time + AGENT_REGISTRATION_SPAN;
@@ -245,6 +247,82 @@ fn reached_state(
     }
 }
 
+/// The file the container agent reads its configuration out of ON the instance it runs on:
+/// `/etc/ecs/ecs.config`, the file the documented way of joining a cluster appends the
+/// [`AGENT_CLUSTER_VARIABLE`] assignment to ("echo ECS_CLUSTER=<cluster> >>
+/// /etc/ecs/ecs.config").
+pub const AGENT_CONFIG_PATH: &str = "/etc/ecs/ecs.config";
+
+/// The cluster the agent on `instance` is configured with, or `None` when nothing on the
+/// instance configures one — which is every instance that was not launched into a cluster.
+///
+/// The agent reads ITS OWN CONFIGURATION FILE on the machine it runs on
+/// ([`AGENT_CONFIG_PATH`]), so that file is what this reads too: the one the instance's own
+/// user-data program WROTE, whatever that program did to write it. Amazon EC2 runs that
+/// program in the instance's guest when it comes up and keeps the storage it left behind, so
+/// a launch that appends the assignment with a shell line, writes the file from a heredoc or
+/// assembles it from values of its own all leave the same file, read the same way.
+///
+/// Before that file exists — an instance whose guest has not come up yet, or one whose user
+/// data Amazon EC2 runs nothing for — the cluster is the one the LAUNCH configured
+/// ([`launched_cluster`]): the document the user data carries is read for it rather than the
+/// machine's storage.
+fn joined_cluster(
+    store: &::service_com_amazonaws_ec2_amazonec2::ComAmazonawsEc2Amazonec2State,
+    instance: &::service_com_amazonaws_ec2_amazonec2::state::InstanceRecord,
+) -> Option<String> {
+    store
+        .read_in_instance_guest(&instance.instance_id, AGENT_CONFIG_PATH)
+        .as_deref()
+        .and_then(assigned_cluster_in)
+        .or_else(|| launched_cluster(instance.user_data.as_deref()))
+}
+
+/// The cluster the user data a launch carried configures the agent with, or `None` when it
+/// configures none.
+///
+/// Read through Amazon EC2's OWN reading of user data
+/// ([`::service_com_amazonaws_ec2_amazonec2::state::guest_program`]), which is what decides
+/// what the instance's guest does with the document: that reading decompresses user data that
+/// arrived compressed, unpacks an archive of documents and resolves a cloud-config module, so
+/// a launch that configures the agent through any of those forms names its cluster here as
+/// plainly as one carrying a shell script does. What is read of the program is what WRITES
+/// the agent's configuration — the files it puts at [`AGENT_CONFIG_PATH`], then the commands
+/// it runs — and, for user data that gives the guest no program at all, the document's own
+/// text ([`configured_cluster`]), since a file of `NAME=value` lines configures the agent
+/// without running anything.
+fn launched_cluster(user_data: Option<&str>) -> Option<String> {
+    let program = ::service_com_amazonaws_ec2_amazonec2::state::guest_program(user_data);
+    program
+        .written_files
+        .iter()
+        .rev()
+        .filter(|file| names_agent_config(&file.path))
+        .find_map(|file| assigned_cluster_in(&file.content))
+        .or_else(|| {
+            program
+                .commands_for_boot(1)
+                .iter()
+                .rev()
+                .find_map(|command| assigned_cluster_in(command))
+        })
+        .or_else(|| configured_cluster(user_data))
+}
+
+/// Whether `path` names the agent's configuration file ([`AGENT_CONFIG_PATH`]), resolved the
+/// way the tree a guest program runs in resolves a path, so the file a document names and the
+/// file the agent reads are one file however the document spelled it.
+fn names_agent_config(path: &str) -> bool {
+    ::service_common::posix_shell_volume::resolved_path(path).as_deref() == Some(AGENT_CONFIG_PATH)
+}
+
+/// The cluster `text` assigns, reading it as the agent reads its configuration: lines of
+/// `NAME=value`, of which the LAST assignment of [`AGENT_CLUSTER_VARIABLE`] is the one in
+/// force — a line appended after another is what the file ends up saying.
+fn assigned_cluster_in(text: &str) -> Option<String> {
+    text.lines().rev().find_map(assigned_cluster)
+}
+
 /// The cluster the agent on an instance with this `user_data` is configured with, or `None`
 /// when the user data configures none — which is every instance that was not launched into
 /// a cluster.
@@ -255,7 +333,7 @@ fn reached_state(
 fn configured_cluster(user_data: Option<&str>) -> Option<String> {
     let raw = user_data?;
     let text = decoded_user_data(raw);
-    text.lines().rev().find_map(assigned_cluster)
+    assigned_cluster_in(&text)
 }
 
 /// The user data as the INSTANCE sees it: "user data must be base64-encoded"
@@ -443,71 +521,7 @@ fn apply_registrations(
         if !store.has_active_cluster(&registration.region, &registration.cluster_name) {
             continue;
         }
-        let existing = store
-            .container_instances
-            .values()
-            .find(|instance| {
-                instance.cluster_name == registration.cluster_name
-                    && instance.ec2_instance_id == registration.ec2_instance_id
-            })
-            .map(|instance| instance.arn.clone());
-        if let Some(arn) = existing {
-            if let Some(instance) = store.container_instances.get_mut(&arn) {
-                if instance.status != CONTAINER_INSTANCE_INACTIVE {
-                    instance.private_ipv4_address = registration.private_ipv4_address.clone();
-                    instance.agent_connection_lost_due_at = None;
-                    if !instance.agent_connected {
-                        instance.agent_connected = true;
-                        instance.version += 1;
-                    }
-                }
-            }
-            continue;
-        }
-        if store.container_instances.len() >= MAX_CONTAINER_INSTANCES {
-            continue;
-        }
-        let instance_id = store.next_container_instance_id();
-        let record = ContainerInstanceRecord {
-            arn: container_instance_arn(
-                &registration.region,
-                &registration.cluster_name,
-                &instance_id,
-            ),
-            instance_id,
-            cluster_name: registration.cluster_name.clone(),
-            ec2_instance_id: registration.ec2_instance_id.clone(),
-            // The address of the machine the agent runs on, as Amazon EC2 holds it: what a
-            // task of this instance that shares its network is reached at.
-            private_ipv4_address: registration.private_ipv4_address.clone(),
-            // The registration completes as it does for the agent's own call: the trunk
-            // interface that would hold an instance in `REGISTERING` is only provisioned
-            // for an account opted in to `awsvpcTrunking`, which nothing here turns on.
-            status: CONTAINER_INSTANCE_ACTIVE.to_string(),
-            status_reason: None,
-            // The agent is what registered, so it is connected.
-            agent_connected: true,
-            version_info: Some(VersionInfo {
-                agent_version: Some(LATEST_CONTAINER_AGENT_VERSION.to_string()),
-                ..VersionInfo::default()
-            }),
-            // "If an update wasn't ever requested, this value is NULL."
-            agent_update_status: None,
-            agent_update_due_at: None,
-            // The agent that registered is reporting in, so its connection is timing out
-            // nowhere.
-            agent_connection_lost_due_at: None,
-            registered_resources: registration.resources.clone(),
-            attributes: registration.attributes.clone(),
-            platform_devices: Vec::new(),
-            tags: Vec::new(),
-            // The instant the registration was owed at, not the instant this pass ran.
-            registered_at: reported_instant(registration.registered_at),
-            version: 0,
-        };
-        let cluster_name = record.cluster_name.clone();
-        store.container_instances.insert(record.arn.clone(), record);
-        registered_into.push(cluster_name);
+        register_one(store, registration, &mut registered_into);
     }
     // The capacity a task parked on a capacity provider was waiting for has just arrived,
     // so Amazon ECS has somewhere to place it — the same placement the agent's own
@@ -515,6 +529,84 @@ fn apply_registrations(
     for cluster_name in registered_into {
         store.place_tasks_awaiting_capacity(&cluster_name, now);
     }
+}
+
+/// Register ONE instance into the cluster its agent reported into, and note the cluster a
+/// registration was made in so the tasks parked on it can be placed.
+///
+/// The write half of [`apply_registrations`], which decides WHETHER a registration is made;
+/// one instance is one container instance of one cluster, so this is where that record is
+/// minted and where a repeat report of an instance already registered reconnects its agent.
+fn register_one(
+    store: &mut ComAmazonawsEcsAmazonec2containerservicev20141113State,
+    registration: &AgentRegistration,
+    registered_into: &mut Vec<String>,
+) {
+    let existing = store
+        .container_instances
+        .values()
+        .find(|instance| {
+            instance.cluster_name == registration.cluster_name
+                && instance.ec2_instance_id == registration.ec2_instance_id
+        })
+        .map(|instance| instance.arn.clone());
+    if let Some(arn) = existing {
+        if let Some(instance) = store.container_instances.get_mut(&arn) {
+            if instance.status != CONTAINER_INSTANCE_INACTIVE {
+                instance.private_ipv4_address = registration.private_ipv4_address.clone();
+                instance.agent_connection_lost_due_at = None;
+                if !instance.agent_connected {
+                    instance.agent_connected = true;
+                    instance.version += 1;
+                }
+            }
+        }
+        return;
+    }
+    if store.container_instances.len() >= MAX_CONTAINER_INSTANCES {
+        return;
+    }
+    let instance_id = store.next_container_instance_id();
+    let record = ContainerInstanceRecord {
+        arn: container_instance_arn(
+            &registration.region,
+            &registration.cluster_name,
+            &instance_id,
+        ),
+        instance_id,
+        cluster_name: registration.cluster_name.clone(),
+        ec2_instance_id: registration.ec2_instance_id.clone(),
+        // The address of the machine the agent runs on, as Amazon EC2 holds it: what a
+        // task of this instance that shares its network is reached at.
+        private_ipv4_address: registration.private_ipv4_address.clone(),
+        // The registration completes as it does for the agent's own call: the trunk
+        // interface that would hold an instance in `REGISTERING` is only provisioned
+        // for an account opted in to `awsvpcTrunking`, which nothing here turns on.
+        status: CONTAINER_INSTANCE_ACTIVE.to_string(),
+        status_reason: None,
+        // The agent is what registered, so it is connected.
+        agent_connected: true,
+        version_info: Some(VersionInfo {
+            agent_version: Some(LATEST_CONTAINER_AGENT_VERSION.to_string()),
+            ..VersionInfo::default()
+        }),
+        // "If an update wasn't ever requested, this value is NULL."
+        agent_update_status: None,
+        agent_update_due_at: None,
+        // The agent that registered is reporting in, so its connection is timing out
+        // nowhere.
+        agent_connection_lost_due_at: None,
+        registered_resources: registration.resources.clone(),
+        attributes: registration.attributes.clone(),
+        platform_devices: Vec::new(),
+        tags: Vec::new(),
+        // The instant the registration was owed at, not the instant this pass ran.
+        registered_at: reported_instant(registration.registered_at),
+        version: 0,
+    };
+    let cluster_name = record.cluster_name.clone();
+    store.container_instances.insert(record.arn.clone(), record);
+    registered_into.push(cluster_name);
 }
 
 #[cfg(test)]

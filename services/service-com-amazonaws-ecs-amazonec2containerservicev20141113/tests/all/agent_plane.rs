@@ -59,6 +59,17 @@ const SECOND_CONTAINER: &str = "sidecar";
 const LATEST_AGENT_VERSION: &str = "1.89.3";
 const OLDER_AGENT_VERSION: &str = "1.70.0";
 
+/// The sentence a `containerInstance` whose id is of neither length a container-instance id has
+/// is refused with: AWS's own fixed text for the condition, which names those lengths and no
+/// value of the request (the same sentence `StartTask` and `UpdateContainerInstancesState`
+/// answer it with — [`crate::start_task_container_instance_ids`]).
+const INSTANCE_ID_LENGTH_MESSAGE: &str = "instanceId length should be one of [32,36]";
+
+/// The sentence the AGENT plane is refused with when it cannot locate the resources the call
+/// is about: entirely fixed text, naming nothing of the request — this call comes from the
+/// agent ON the instance rather than from a client holding a reference it can correct.
+const RESOURCES_NOT_LOCATED_MESSAGE: &str = "Could not locate resources";
+
 /// The sentence a `containerInstance` that is not a container-instance id is refused with.
 const INSTANCE_ID_PATTERN_MESSAGE: &str = "ContainerInstanceId must match ^[a-f0-9-]{1,36}$";
 
@@ -294,8 +305,8 @@ async fn discover_poll_endpoint_announces_this_emulators_own_address_for_a_regis
     }
 
     // A `containerInstance` that is not a container-instance id at all names no instance in
-    // any cluster, so the FORM is what the refusal states — whatever else the request
-    // names.
+    // any cluster, so the LENGTH an id has is what the refusal states — whatever else the
+    // request names, and whichever of the two forms the value is nowhere near.
     let malformed = [
         ("a value with spaces", "not a valid identifier".to_string()),
         ("a value outside the alphabet", "ZZZZ".to_string()),
@@ -318,27 +329,20 @@ async fn discover_poll_endpoint_announces_this_emulators_own_address_for_a_regis
         .await;
         assert_eq!(
             (code.as_str(), message.as_str()),
-            ("ClientException", INSTANCE_ID_PATTERN_MESSAGE),
-            "case {case:?}: expected the id-form refusal for {reference:?}, got {code} with \
+            ("ClientException", INSTANCE_ID_LENGTH_MESSAGE),
+            "case {case:?}: expected the id-length refusal for {reference:?}, got {code} with \
              {message:?}"
         );
     }
 
     // A well-formed id that names no instance OF THAT CLUSTER — never registered, or
-    // registered elsewhere — is the not-found refusal, naming the instance referred to.
+    // registered elsewhere — is the agent plane's own refusal: the resources the call is about
+    // could not be located.
     let unknown = [
-        (
-            "an id nothing registered",
-            "0".repeat(32),
-            "0".repeat(32),
-        ),
-        (
-            "an instance of another cluster",
-            instance_id_of(&elsewhere),
-            instance_id_of(&elsewhere),
-        ),
+        ("an id nothing registered", "0".repeat(32)),
+        ("an instance of another cluster", instance_id_of(&elsewhere)),
     ];
-    for (case, reference, named) in &unknown {
+    for (case, reference) in &unknown {
         let (code, message) = refusal(
             &router,
             "DiscoverPollEndpoint",
@@ -348,11 +352,8 @@ async fn discover_poll_endpoint_announces_this_emulators_own_address_for_a_regis
         .await;
         assert_eq!(
             (code.as_str(), message.as_str()),
-            (
-                "ClientException",
-                format!("Referenced container instance {named} not found.").as_str()
-            ),
-            "case {case:?}: expected the not-found refusal, got {code} with {message:?}"
+            ("ClientException", RESOURCES_NOT_LOCATED_MESSAGE),
+            "case {case:?}: expected the not-located refusal, got {code} with {message:?}"
         );
     }
 

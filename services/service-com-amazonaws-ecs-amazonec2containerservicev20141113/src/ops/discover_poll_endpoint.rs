@@ -191,24 +191,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let cluster_name = crate::state::cluster_name_from_reference(input.cluster.as_deref());
 
         // "The container instance ID or full ARN of the container instance": the agent
-        // polling for updates names the instance it runs on. The id is checked for FORM
-        // first — before any cluster or instance is resolved — because a value that is not
-        // an id names no instance in any cluster, and the refusal states the form an id
-        // takes rather than the value it was given.
+        // polling for updates names the instance it runs on. The LENGTH of that id is checked
+        // first — before any cluster or instance is resolved — because an id Amazon ECS mints
+        // is a UUID in one of its two spellings
+        // ([`crate::state::CONTAINER_INSTANCE_ID_LENGTHS`]), so a value of any other length
+        // names no instance of any account and the refusal states those lengths rather than
+        // the value it was given. The same reading, and the same sentence, every member of
+        // this service that resolves a container-instance identifier answers that condition
+        // with ([`crate::state::container_instance_id_length_violation`]).
         let named_instance = input
             .container_instance
             .as_deref()
             .filter(|reference| !reference.trim().is_empty());
-        if let Some(reference) = named_instance {
-            let instance_id = crate::state::container_instance_id_from_reference(reference);
-            if !crate::state::is_container_instance_id(instance_id) {
-                return Err(DiscoverPollEndpointErrorModeled::ClientException(
-                    ClientException {
-                        message: Some(crate::state::container_instance_id_pattern_message()),
-                    },
-                )
-                .into());
-            }
+        if let Some(message) = crate::state::container_instance_id_length_violation(named_instance)
+        {
+            return Err(
+                DiscoverPollEndpointErrorModeled::ClientException(ClientException {
+                    message: Some(message),
+                })
+                .into(),
+            );
         }
 
         let now = ::std::time::SystemTime::now();
@@ -233,7 +235,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // An instance named in a form an id takes but never registered into that cluster
-        // is no instance of it, so there is no agent of it to hand endpoints to.
+        // is no instance of it, so there is no agent of it to hand endpoints to — answered
+        // with the agent plane's own sentence for resources it could not locate
+        // ([`crate::state::AGENT_RESOURCES_NOT_LOCATED_MESSAGE`]).
         if let Some(reference) = named_instance {
             if guard
                 .resolve_container_instance(&region, &cluster_name, reference)
@@ -241,9 +245,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             {
                 return Err(DiscoverPollEndpointErrorModeled::ClientException(
                     ClientException {
-                        message: Some(crate::state::container_instance_not_found_message(
-                            reference,
-                        )),
+                        message: Some(
+                            crate::state::AGENT_RESOURCES_NOT_LOCATED_MESSAGE.to_string(),
+                        ),
                     },
                 )
                 .into());
