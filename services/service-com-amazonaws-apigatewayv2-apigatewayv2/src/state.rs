@@ -57,7 +57,7 @@ pub mod wire_status;
 /// modelled `@http code` — see [`wire_status`], which says which operations each governs.
 pub use wire_status::{
     ACCEPTED_TEARDOWN_STATUS, FLUSHED_CACHE_OK_STATUS, REWRITTEN_RESOURCE_STATUS,
-    WRITTEN_RESOURCE_OK_STATUS,
+    TAG_WRITE_NO_CONTENT_STATUS, WRITTEN_RESOURCE_OK_STATUS,
 };
 
 /// What every `Update…` handler stores for an optional string member a request carries —

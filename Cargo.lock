@@ -602,6 +602,7 @@ dependencies = [
  "service-com-amazonaws-connectcontactlens-amazonconnectcontactlens",
  "service-com-amazonaws-connecthealth-connecthealth",
  "service-com-amazonaws-connectparticipant-amazonconnectparticipantservicelambda",
+ "service-com-amazonaws-connectscheduling-amazonconnectscheduling",
  "service-com-amazonaws-continuum-continuumcontrolplane",
  "service-com-amazonaws-controlcatalog-controlcatalog",
  "service-com-amazonaws-controltower-awscontroltowerapis",
@@ -13785,6 +13786,30 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "service-com-amazonaws-connectscheduling-amazonconnectscheduling"
+version = "0.1.0"
+dependencies = [
+ "automod",
+ "aws-emulator-build-support",
+ "aws-emulator-emulator-telemetry",
+ "aws-emulator-engine",
+ "aws-emulator-server",
+ "aws-emulator-smithy-macros",
+ "aws-emulator-smithy-schema-server",
+ "aws-emulator-smithy-server-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema 0.2.1",
+ "aws-smithy-types",
+ "bytes",
+ "hex",
+ "http",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

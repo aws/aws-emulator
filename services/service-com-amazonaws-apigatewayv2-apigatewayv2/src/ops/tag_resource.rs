@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op TagResource
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `TagResource`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`TagResource::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Writes the tags the request carries onto the resource its `ResourceArn` names: the ARN is
+//! read into the record it addresses by [`crate::state::parse_tagged_resource`] — the one
+//! place this service reads a `ResourceArn` — and the entries are MERGED into that record's
+//! own tag collection, the very one the resource's reader and the tag reader report.
 //!
 //! ## Shape of an operation
 //!
@@ -136,25 +132,59 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     const NAME: &'static str = "TagResource";
     const INPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::TAG_RESOURCE_INPUT_SCHEMA;
     const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::TAG_RESOURCE_OUTPUT_SCHEMA;
-    const SUCCESS_STATUS: u16 = 201u16;
+    // The status API Gateway answers this tag write with, which is not the `code: 201` the
+    // model declares for it — see [`crate::state::wire_status`].
+    const SUCCESS_STATUS: u16 = crate::state::TAG_WRITE_NO_CONTENT_STATUS;
 
     async fn handle(
         &self,
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `TagResource` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(TagResourceErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("TagResource"))
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            // Unreachable in the assembled emulator — see the note in `create_api`.
+            return Err(crate::scaffolded::Scaffolded::not_implemented("TagResource"));
+        };
+
+        // The ARN is read BEFORE the store lock is taken. A value that is no ARN of this
+        // service's namespace, or whose resource portion names a kind this service does
+        // not tag, addresses nothing here at all: that is a bad REQUEST — permanent and
+        // caller-side — rather than a resource that happens to be missing. It is the same
+        // reading the tag reader and the tag removal take, so one string can never resolve
+        // to two different records.
+        let resource = crate::state::parse_tagged_resource(&input.resource_arn).ok_or_else(|| {
+            TagResourceErrorModeled::BadRequestException(BadRequestException {
+                message: Some(crate::state::INVALID_ARN_MESSAGE.to_string()),
+            })
+        })?;
+        // The request's own entries, read out of the input before the lock. A request that
+        // names no `Tags` member at all carries no entry, which is what merging an empty
+        // collection means: nothing about the resource changes.
+        let requested = input.tags.unwrap_or_default();
+
+        let mut store = state.lock();
+        let Some(stored) = store.tags_of_mut(&resource) else {
+            // The ARN is well formed and names a kind this service tags, so what it
+            // addresses is a resource that is not there — including one a delete has
+            // already taken away. The sentence is the ARN-level one every tag operation
+            // answers, not the kind-specific sentence the typed operations report.
+            return Err(TagResourceErrorModeled::NotFoundException(NotFoundException {
+                message: Some(crate::state::TAGGED_RESOURCE_NOT_FOUND_MESSAGE.to_string()),
+                resource_type: ::std::option::Option::None,
+            })
+            .into());
+        };
+        // "Creates a new Tag resource to represent a tag" is add-or-update on the
+        // collection the resource ALREADY carries: a key the request names takes the value
+        // it was sent with — whether the resource carried that key or not — and a key the
+        // request does not name keeps the value it had. So this is a merge over the stored
+        // collection and never a replacement of it, which is what makes a tag written after
+        // the create show up beside the tags the create stored.
+        for (key, value) in requested {
+            stored.insert(key, value);
+        }
+
+        Ok(TagResourceOutput::default())
     }
 }

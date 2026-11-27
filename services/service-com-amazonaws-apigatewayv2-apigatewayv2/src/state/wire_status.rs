@@ -45,6 +45,16 @@ pub const WRITTEN_RESOURCE_OK_STATUS: u16 = 200;
 /// (`crate::service`'s framing seam).
 pub const FLUSHED_CACHE_OK_STATUS: u16 = 200;
 
+/// `204 No Content`, the status a tag WRITE is answered with: `TagResource`
+/// (`POST /v2/tags/{ResourceArn}`), modelled `code: 201`. The answer has no members at all
+/// — a caller reads the collection it wrote back through `GetTags` — so there is no created
+/// entity for the answer to report, and `204` is what tells a caller the write was applied.
+/// It is the status this model itself declares for the other write of the tag plane,
+/// `UntagResource` (`smithy_query(query="operation", operation="UntagResource")`:
+/// `code: 204`). The answer carries no content, and states the length of that nothing like
+/// every other empty answer of this service (`crate::service`'s framing seam).
+pub const TAG_WRITE_NO_CONTENT_STATUS: u16 = 204;
+
 /// `202 Accepted`, the status a teardown that CONTINUES after the answer is answered with:
 /// `DeleteDomainName` (`DELETE /v2/domainnames/{DomainName}`), modelled `code: 204`. The
 /// domain's own record and the api mappings under it are gone when the call returns, while
