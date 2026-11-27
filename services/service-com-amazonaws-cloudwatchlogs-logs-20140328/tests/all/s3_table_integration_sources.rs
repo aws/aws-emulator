@@ -240,37 +240,37 @@ async fn an_associated_source_is_reported_for_its_own_integration() {
             case: "an S3 Tables table, a typed data source",
             integration_arn: table_arn(),
             name: "amazon_vpc".to_string(),
-            source_type: Some("VPC_FLOW_LOGS"),
+            source_type: Some("vpc_flow_logs"),
         },
         Row {
             case: "the same integration, the same name under another type",
             integration_arn: table_arn(),
             name: "amazon_vpc".to_string(),
-            source_type: Some("OCSF_VPC_FLOW_LOGS"),
+            source_type: Some("ocsf_vpc_flow_logs"),
         },
         Row {
             case: "the same integration, another data source",
             integration_arn: table_arn(),
             name: "aws_lambda_orders".to_string(),
-            source_type: Some("LAMBDA_LOGS"),
+            source_type: Some("lambda_logs"),
         },
         Row {
             case: "a second integration, a one-character name",
             integration_arn: logs_integration_arn(),
             name: "w".to_string(),
-            source_type: Some("WAF_LOGS"),
+            source_type: Some("waf_logs"),
         },
         Row {
             case: "another integration, a 256-character name",
             integration_arn: gov_arn(),
             name: long_name.clone(),
-            source_type: Some("CLOUDTRAIL"),
+            source_type: Some("cloudtrail"),
         },
         Row {
             case: "an integration whose id is a UUID",
             integration_arn: telemetry_integration_arn(),
             name: "amazon_logs".to_string(),
-            source_type: Some("CLOUDWATCH_LOGS"),
+            source_type: Some("cloudwatch_logs"),
         },
     ];
 
@@ -376,13 +376,13 @@ async fn associating_a_pair_that_already_has_access_names_the_same_association()
             case: "a typed data source",
             integration_arn: table_arn(),
             name: "amazon_vpc".to_string(),
-            source_type: Some("VPC_FLOW_LOGS"),
+            source_type: Some("vpc_flow_logs"),
         },
         Row {
             case: "another data source",
             integration_arn: logs_integration_arn(),
             name: "aws_lambda_orders".to_string(),
-            source_type: Some("LAMBDA_LOGS"),
+            source_type: Some("lambda_logs"),
         },
     ];
 
@@ -417,19 +417,19 @@ async fn a_disassociated_source_is_deleting_until_the_clock_has_removed_it() {
             case: "a typed data source",
             integration_arn: table_arn(),
             name: "amazon_vpc".to_string(),
-            source_type: Some("VPC_FLOW_LOGS"),
+            source_type: Some("vpc_flow_logs"),
         },
         Row {
             case: "another data source",
             integration_arn: table_arn(),
             name: "aws_lambda_orders".to_string(),
-            source_type: Some("LAMBDA_LOGS"),
+            source_type: Some("lambda_logs"),
         },
         Row {
             case: "another integration",
             integration_arn: gov_arn(),
             name: "cloudtrail".to_string(),
-            source_type: Some("CLOUDTRAIL"),
+            source_type: Some("cloudtrail"),
         },
     ];
     let mut identifiers: Vec<String> = Vec::new();
@@ -533,7 +533,7 @@ async fn reading_an_integrations_sources_changes_nothing() {
         case: "one association, read twice",
         integration_arn: table_arn(),
         name: "amazon_vpc".to_string(),
-        source_type: Some("VPC_FLOW_LOGS"),
+        source_type: Some("vpc_flow_logs"),
     };
     let identifier = associate(&logs, &row).await;
     // Pinned well past any wall-clock drift between the two reads, so the only thing that
@@ -569,9 +569,9 @@ async fn pagination_walks_each_association_once() {
             integration_arn: integration_arn.clone(),
             name: format!("aws_vended_{index}"),
             source_type: Some(if index % 2 == 0 {
-                "VENDED_LOGS"
+                "vended_logs"
             } else {
-                "CLOUDTRAIL"
+                "cloudtrail"
             }),
         };
         expected.push(associate(&logs, &row).await);
@@ -633,7 +633,7 @@ async fn a_request_the_family_cannot_accept_is_refused_and_stores_nothing() {
             case: "the one association the refusals must not disturb",
             integration_arn: integration_arn.clone(),
             name: "amazon_vpc".to_string(),
-            source_type: Some("VPC_FLOW_LOGS"),
+            source_type: Some("vpc_flow_logs"),
         },
     )
     .await;
@@ -658,7 +658,7 @@ async fn a_request_the_family_cannot_accept_is_refused_and_stores_nothing() {
         for operation in [ASSOCIATE, LIST] {
             let mut body = json!({"integrationArn": value});
             if operation == ASSOCIATE {
-                body["dataSource"] = data_source("amazon_vpc", Some("VPC_FLOW_LOGS"));
+                body["dataSource"] = data_source("amazon_vpc", Some("vpc_flow_logs"));
             }
             let (code, message) = logs.refusal(operation, &body).await;
             assert_eq!(
@@ -694,7 +694,7 @@ async fn a_request_the_family_cannot_accept_is_refused_and_stores_nothing() {
             case: "an association of another integration",
             integration_arn: other.clone(),
             name: "cloudtrail".to_string(),
-            source_type: Some("CLOUDTRAIL"),
+            source_type: Some("cloudtrail"),
         },
     )
     .await;
@@ -791,7 +791,7 @@ async fn an_associate_past_the_store_cap_retains_nothing() {
                     &integration_arn,
                     &DataSource {
                         name: format!("aws_seeded_{seq}"),
-                        r#type: Some("VENDED_LOGS".to_string()),
+                        r#type: Some("vended_logs".to_string()),
                     },
                     now_ms(),
                 ),
@@ -801,7 +801,7 @@ async fn an_associate_past_the_store_cap_retains_nothing() {
 
     let body = json!({
         "integrationArn": integration_arn,
-        "dataSource": data_source("one_too_many", Some("VENDED_LOGS")),
+        "dataSource": data_source("one_too_many", Some("vended_logs")),
     });
     let (code, message) = logs.refusal(ASSOCIATE, &body).await;
     assert_eq!(

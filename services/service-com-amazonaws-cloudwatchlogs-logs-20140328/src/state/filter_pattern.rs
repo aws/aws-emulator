@@ -20,9 +20,10 @@
 //! * `[ … ]` — a space-delimited pattern: a comma-separated field list, optionally with
 //!   conditions on the fields it names, matched against the event's fields. A field of the
 //!   EVENT is a run of non-space characters, except that a `"…"` or `[…]` group is ONE field
-//!   and the delimiters are not part of its value. A list of N fields matches an event of
-//!   exactly N fields; `...` stands for any number of fields, so a list using it matches an
-//!   event of at least as many fields as it names.
+//!   and the delimiters are not part of its value. A list of N fields matches an event of at
+//!   least N fields, naming its leading fields in order; `...` stands for any number of
+//!   fields, so a list using it names the fields before it from the event's start and the
+//!   fields after it from its end.
 //! * anything else — an unstructured pattern: the terms the message has to carry. A term is
 //!   a bare word of the syntax's word characters, a `"…"` string (which may carry any
 //!   character, including spaces) or a `%…%` regular expression; a term prefixed `-` must
@@ -585,9 +586,15 @@ impl SpaceDelimitedPattern {
         let named = declared - usize::from(wildcard.is_some());
         let mut mapping: Vec<(usize, usize)> = Vec::with_capacity(named);
         match wildcard {
-            // A list of N fields describes an event of exactly N fields.
+            // A list of N fields describes an event of AT LEAST N fields: the slots name the
+            // event's leading fields, in order, and a field past the last slot is one the list
+            // says nothing about rather than one that makes the event a different shape
+            // (recorded: a list naming the first three fields of a space-delimited event
+            // matches an event carrying a fourth). An event with FEWER fields than the list
+            // names leaves a named slot with no field to align to, so the list does not
+            // describe it.
             None => {
-                if fields.len() != declared {
+                if fields.len() < declared {
                     return None;
                 }
                 for index in 0..declared {

@@ -68,6 +68,12 @@ const ACCOUNT: &str = "000000000000";
 const SOURCE_NAME_MESSAGE: &str =
     "Source name must only contain letters, numbers, and underscores";
 
+/// The fixed sentence a source TYPE that is not spelled the way a data source type is spelled
+/// is refused with — one sentence for either fault, a character outside the set and a letter
+/// in the wrong case. Stated here independently of the crate under test.
+const SOURCE_TYPE_MESSAGE: &str =
+    "Source type must only contain letters, numbers, and underscores";
+
 /// The ARN that is the handle on the S3 Table Integration `id` in the Region the calls are
 /// signed for: the one the service that owns one mints, which is what an `integrationArn`
 /// names.
@@ -114,7 +120,7 @@ fn short_arn_message(member: &str) -> String {
 fn body(operation: &str, integration_arn: &str) -> Value {
     let mut body = json!({"integrationArn": integration_arn});
     if operation == ASSOCIATE {
-        body["dataSource"] = json!({"name": "amazon_vpc", "type": "VENDED_LOGS"});
+        body["dataSource"] = json!({"name": "amazon_vpc", "type": "vended_logs"});
     }
     body
 }
@@ -125,7 +131,7 @@ async fn associate(logs: &Logs, integration_arn: &str, name: &str) -> (u16, Valu
         ASSOCIATE,
         &json!({
             "integrationArn": integration_arn,
-            "dataSource": {"name": name, "type": "VENDED_LOGS"},
+            "dataSource": {"name": name, "type": "vended_logs"},
         }),
     )
     .await
@@ -551,8 +557,9 @@ async fn an_associate_that_names_no_source_type_is_refused() {
         "case \"after every refusal\": nothing is associated, got {reported:?}"
     );
 
-    // A type names the kind of logs the source carries, whichever kind it is.
-    for source_type in ["VENDED_LOGS", "CLOUDTRAIL", "a"] {
+    // A type names the kind of logs the source carries, whichever kind it is — spelled the way
+    // a data source type is spelled.
+    for source_type in ["vended_logs", "cloudtrail", "a", "flow", "ocsf_2", "_"] {
         let (status, answered) = logs
             .call(
                 ASSOCIATE,
@@ -567,6 +574,35 @@ async fn an_associate_that_names_no_source_type_is_refused() {
             "case {source_type:?}: expected HTTP 200, got {status} {answered}"
         );
     }
+
+    // The same words spelled in capitals are no data source type — that spelling belongs to the
+    // vended-log `logType` catalogue — so each is refused with the sentence stating the rule,
+    // and the associations already held are left alone.
+    let held_before = listed(&logs, &arn).await;
+    for source_type in ["VENDED_LOGS", "CLOUDTRAIL", "A", "Flow", "application_Logs"] {
+        let (status, answered) = logs
+            .call(
+                ASSOCIATE,
+                &json!({
+                    "integrationArn": arn,
+                    "dataSource": {"name": "amazon_vpc", "type": source_type},
+                }),
+            )
+            .await;
+        let code = crate::harness::error_code(&answered);
+        assert_eq!(
+            (status, code.as_str(), answered.get("message").and_then(Value::as_str)),
+            (400, VALIDATION, Some(SOURCE_TYPE_MESSAGE)),
+            "case {source_type:?}: expected 400 {VALIDATION} {SOURCE_TYPE_MESSAGE:?}, got \
+             {status} {answered}"
+        );
+    }
+    let held_after = listed(&logs, &arn).await;
+    assert_eq!(
+        held_after, held_before,
+        "case \"after every type refusal\": expected the associations {held_before:?}, got \
+         {held_after:?}"
+    );
 }
 
 /// RULE 3: an ARN-typed member of this family is held to the minimum length an ARN takes
@@ -763,7 +799,7 @@ async fn an_integration_the_owning_service_created_is_one_a_source_can_be_associ
             ASSOCIATE,
             &json!({
                 "integrationArn": arn,
-                "dataSource": {"name": "amazon_vpc", "type": "VENDED_LOGS"},
+                "dataSource": {"name": "amazon_vpc", "type": "vended_logs"},
             }),
         )
         .await;
@@ -811,7 +847,7 @@ async fn an_integration_the_owning_service_created_is_one_a_source_can_be_associ
                 operation,
                 &json!({
                     "integrationArn": arn,
-                    "dataSource": {"name": "amazon_vpc", "type": "VENDED_LOGS"},
+                    "dataSource": {"name": "amazon_vpc", "type": "vended_logs"},
                 }),
             )
             .await;

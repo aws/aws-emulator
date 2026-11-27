@@ -518,6 +518,112 @@ where
     None
 }
 
+/// The ARN of the resource a `destinationArn` actually delivers to, for a caller OUTSIDE this
+/// module: one reading of that question, so the destination a put validates is the one a
+/// delivery through the stored filter would reach ([`physical_destination`]).
+pub fn physical_destination_arn(
+    store: &ComAmazonawsCloudwatchlogsLogs20140328State,
+    destination_arn: &str,
+) -> Option<String> {
+    physical_destination(store, destination_arn)
+}
+
+/// AWS's refusal for a subscription destination whose RESOURCE the service that owns it reports
+/// it does not hold: the sentence this service states for a destination its test message could
+/// not be delivered to at all ([`TEST_MESSAGE_UNDELIVERABLE`]) — the one it answers for the
+/// identical condition on the other put that configures a delivery to a stream
+/// (`PutDestination`, whose target that service reports missing earns exactly this sentence),
+/// naming nothing of the request.
+///
+/// `PutSubscriptionFilter` validates the destination while it configures the filter — it writes
+/// one record to it ([`health_check`]) — so a destination resolving to a stream that does not
+/// exist is a `destinationArn` that could never deliver anything, and the put is refused rather
+/// than storing a filter whose every delivery would be dropped.
+///
+/// Only the OWNING SERVICE'S OWN ANSWER grounds the refusal, and only one answer does: that
+/// service reporting the resource MISSING. Every other outcome establishes nothing — an
+/// emulator assembled with that service absent, a call that could not be made, any other fault
+/// — so it refuses nothing, and a destination of no stream-like kind is not asked about at all
+/// (a Lambda function is resolved through its own resource policy instead,
+/// [`super::lambda_destination`]).
+///
+/// `region` is the Region the request was signed for, used only for a `destination_arn` that
+/// names no Region of its own; the Region that reaches the endpoint is held to the grammar a
+/// Region is written in, so no value a request carried can name a host.
+pub async fn missing_destination_resource_message(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    destination_arn: &str,
+) -> Option<&'static str> {
+    let destination_type = destination_type(destination_arn)?;
+    let fallback_region =
+        ::service_common::arn::region_label(region).unwrap_or(super::DEFAULT_REGION);
+    let target_region = super::arn_region(destination_arn)
+        .and_then(::service_common::arn::region_label)
+        .unwrap_or(fallback_region)
+        .to_string();
+    if destination_type == KINESIS_DESTINATION_TYPE {
+        let stream_name =
+            ::service_common::arn::resource_id_of_type(destination_arn, KINESIS_STREAM.1)?;
+        let client = callback_client!(aws_sdk_kinesis, ctx.callback(), "kinesis", target_region);
+        let answer = client
+            .describe_stream_summary()
+            .stream_name(stream_name)
+            .send()
+            .await;
+        answer.err().and_then(|error| {
+            let reported_absent = error.as_service_error().is_some_and(
+                ::aws_sdk_kinesis::operation::describe_stream_summary::DescribeStreamSummaryError::is_resource_not_found_exception,
+            );
+            refused_destination(reported_absent, &error, destination_arn)
+        })
+    } else if destination_type == FIREHOSE_DESTINATION_TYPE {
+        let stream_name = ::service_common::arn::resource_id_of_type(
+            destination_arn,
+            FIREHOSE_DELIVERY_STREAM.1,
+        )?;
+        let client = callback_client!(aws_sdk_firehose, ctx.callback(), "firehose", target_region);
+        let answer = client
+            .describe_delivery_stream()
+            .delivery_stream_name(stream_name)
+            .send()
+            .await;
+        answer.err().and_then(|error| {
+            let reported_absent = error.as_service_error().is_some_and(
+                ::aws_sdk_firehose::operation::describe_delivery_stream::DescribeDeliveryStreamError::is_resource_not_found_exception,
+            );
+            refused_destination(reported_absent, &error, destination_arn)
+        })
+    } else {
+        None
+    }
+}
+
+/// [`TEST_MESSAGE_UNDELIVERABLE`] when the destination's own service reported the resource
+/// MISSING, and `None` for every other failed answer — this emulator failing to make the call,
+/// or a fault that says nothing about whether the resource is there — which is worth a warning
+/// instead. The caller's own value is rendered in its escaped `Debug` form, so an ARN carrying a
+/// newline cannot forge a log line.
+fn refused_destination<E, R>(
+    reported_absent: bool,
+    error: &::aws_sdk_kinesis::error::SdkError<E, R>,
+    destination_arn: &str,
+) -> Option<&'static str>
+where
+    E: ::std::error::Error + 'static,
+    R: ::std::fmt::Debug,
+{
+    if reported_absent {
+        return Some(TEST_MESSAGE_UNDELIVERABLE);
+    }
+    ::tracing::warn!(
+        destination_arn = ?destination_arn,
+        error = %::aws_smithy_types::error::display::DisplayErrorContext(error),
+        "a subscription destination's own service reported no missing resource for it"
+    );
+    None
+}
+
 /// Every envelope the events `PutLogEvents` just stored on `log_stream_name` owe the
 /// subscription filters in force on `log_group_name`, ingested in `region`.
 ///

@@ -370,9 +370,8 @@ struct Refusal {
     code: &'static str,
 }
 
-/// A document that is not a field index policy is an invalid parameter, a document naming
-/// more field indexes than the quota admits is a limit reached, and either way the put
-/// stores nothing.
+/// A document that is not a field index policy, and one naming more field indexes than the
+/// quota admits, are both an invalid parameter, and either way the put stores nothing.
 #[tokio::test]
 async fn a_document_outside_its_contract_is_refused_and_stores_nothing() {
     const GROUP: &str = "/index/refused-documents";
@@ -427,7 +426,12 @@ async fn a_document_outside_its_contract_is_refused_and_stores_nothing() {
         Refusal {
             case: "one field index past the policy's field quota",
             document: document_with_fields(MAX_FIELDS + 1),
-            code: "LimitExceededException",
+            code: INVALID,
+        },
+        Refusal {
+            case: "far more field indexes than the policy's field quota",
+            document: document_with_fields(MAX_FIELDS * 15),
+            code: INVALID,
         },
     ];
 

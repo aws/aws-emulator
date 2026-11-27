@@ -28,8 +28,8 @@
 //!
 //! The second and third tests are the rest of the same rule: a `destinationArn` that names
 //! a LOGICAL destination is resolved to the physical target that destination names, and a
-//! batch that owes no delivery — no filter, a filter nothing matches, or a destination that
-//! does not exist — is still ingested and still answered.
+//! batch that owes no delivery — no filter, a filter nothing matches, or a destination that has
+//! gone away since the filter was configured — is still ingested and still answered.
 //!
 //! Every case drives the real wire path (`POST /` with `X-Amz-Target:
 //! <Service>.<Operation>` through `MultiServiceRouter::dispatch`), so what is asserted here
@@ -859,13 +859,18 @@ async fn a_logical_destination_delivers_to_the_physical_target_it_names() {
 }
 
 /// An ingestion that owes no delivery is still answered: a group with no filter at all, and
-/// a filter whose destination names a stream nothing created.
+/// a filter whose destination has GONE AWAY since it was configured.
+///
+/// A destination that does not exist cannot be configured at all — `PutSubscriptionFilter`
+/// validates it and refuses one its own service holds nothing under — so the undeliverable
+/// case is reached the one way it can arise: the stream is there when the filter is put, and
+/// deleted afterwards.
 #[tokio::test]
 async fn an_undeliverable_or_unsubscribed_batch_is_still_ingested() {
     let emulator = Emulator::new();
     let cases: [(&str, Option<&str>); 2] = [
         ("no subscription filter", None),
-        ("destination that does not exist", Some("never-created")),
+        ("destination deleted after the filter was configured", Some("deleted-after-put")),
     ];
     for (index, (case, destination)) in cases.iter().enumerate() {
         let group = format!("quiet-group-{index}");
@@ -881,6 +886,7 @@ async fn an_undeliverable_or_unsubscribed_batch_is_still_ingested() {
             )
             .await;
         if let Some(stream) = destination {
+            emulator.usable_stream(case, stream).await;
             emulator
                 .logs(
                     case,
@@ -892,6 +898,13 @@ async fn an_undeliverable_or_unsubscribed_batch_is_still_ingested() {
                         "destinationArn": stream_arn(stream),
                         "roleArn": role_arn(),
                     }),
+                )
+                .await;
+            emulator
+                .kinesis(
+                    case,
+                    "DeleteStream",
+                    &json!({"StreamName": stream, "EnforceConsumerDeletion": true}),
                 )
                 .await;
         }

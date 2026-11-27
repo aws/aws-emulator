@@ -336,39 +336,30 @@ pub fn check_field_index_policy_document(document: &str) -> Result<Vec<IndexedFi
     Ok(indexed)
 }
 
-/// Why a log-group-level field index policy breaches one of the quotas `PutIndexPolicy`
-/// states for "each index policy", carrying the sentence to refuse it with.
-///
-/// The two breaches are refused differently: too many field indexes is a count of what the
-/// policy would create, and an over-long field name is one value of the document being
-/// wrong — so the caller maps each onto the error its operation declares for that.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum IndexPolicyQuotaBreach {
-    /// The document names more than [`MAX_INDEX_POLICY_FIELDS`] field indexes.
-    TooManyFields(String),
-    /// One field name is longer than [`MAX_INDEX_FIELD_NAME_CHARS`] characters.
-    FieldNameTooLong(String),
-}
-
 /// Judge the field indexes of a log-group-level field index policy against the quotas
 /// `PutIndexPolicy` states for "each index policy": [`MAX_INDEX_POLICY_FIELDS`] fields in
 /// the policy, and [`MAX_INDEX_FIELD_NAME_CHARS`] characters in each field name. The names
 /// are the ones [`check_field_index_policy_document`] read out of the document.
-pub fn check_index_policy_quotas(fields: &[IndexedField]) -> Result<(), IndexPolicyQuotaBreach> {
+///
+/// Both breaches are a fault of the DOCUMENT this request carries — a value of a parameter,
+/// which no retry of the same request can turn into an accepted one — so the `Err` carries
+/// the sentence stating the rule and the caller refuses the request as the incorrectly
+/// specified parameter it is. Neither is a count of what the account HOLDS, which is what a
+/// resource-limit refusal reports.
+pub fn check_index_policy_quotas(fields: &[IndexedField]) -> Result<(), String> {
     if let Some(length) = fields
         .iter()
         .map(|field| field.name.chars().count())
         .find(|length| *length > MAX_INDEX_FIELD_NAME_CHARS)
     {
-        return Err(IndexPolicyQuotaBreach::FieldNameTooLong(format!(
+        return Err(format!(
             "a field name in policyDocument is {length} characters; each field name can include as many as {MAX_INDEX_FIELD_NAME_CHARS} characters"
-        )));
+        ));
     }
     if fields.len() > MAX_INDEX_POLICY_FIELDS {
-        return Err(IndexPolicyQuotaBreach::TooManyFields(format!(
-            "policyDocument names {} field indexes; as many as {MAX_INDEX_POLICY_FIELDS} fields can be included in an index policy",
-            fields.len()
-        )));
+        return Err(format!(
+            "Policy document contains more than {MAX_INDEX_POLICY_FIELDS} fields."
+        ));
     }
     Ok(())
 }

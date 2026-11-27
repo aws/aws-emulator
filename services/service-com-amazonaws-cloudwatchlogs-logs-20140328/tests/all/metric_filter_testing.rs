@@ -192,8 +192,8 @@ async fn a_pattern_selects_the_events_its_form_describes() {
             sample: &["anything at all", "{\"a\":1}"],
             expected: &[1, 2],
         },
-        // Space-delimited: a list of N fields describes an event of exactly N fields, where
-        // a `"…"` or `[…]` run counts as one.
+        // Space-delimited: a list of N fields describes an event of AT LEAST N fields, naming
+        // its leading fields, where a `"…"` or `[…]` run counts as one field.
         MatchCase {
             pattern: "[ip, user, username, timestamp, request, status_code, bytes]",
             sample: &[APACHE_EVENT, "one two three"],
@@ -202,7 +202,7 @@ async fn a_pattern_selects_the_events_its_form_describes() {
         MatchCase {
             pattern: "[w1, w2, w3]",
             sample: &["a b c", "a b", "a b c d"],
-            expected: &[1],
+            expected: &[1, 3],
         },
         // Space-delimited: `...` stands for any number of fields.
         MatchCase {

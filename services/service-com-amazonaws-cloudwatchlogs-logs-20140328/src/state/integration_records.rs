@@ -1106,17 +1106,34 @@ pub fn unresolved_integration<Eng: ::std::marker::Send + ::std::marker::Sync + '
 /// variable part — nothing of the submitted value is reflected back.
 pub const DATA_SOURCE_NAME_MESSAGE: &str =
     "Source name must only contain letters, numbers, and underscores";
-/// See [`DATA_SOURCE_NAME_MESSAGE`].
+/// See [`DATA_SOURCE_NAME_MESSAGE`]. A data source TYPE is held to the LOWER-CASE spelling
+/// ([`is_data_source_type`]), which is what "letters" means for a type: the service states
+/// this one sentence for either fault.
 pub const DATA_SOURCE_TYPE_MESSAGE: &str =
     "Source type must only contain letters, numbers, and underscores";
 
-/// Whether `value` is spelled in the characters a data source's name and type are spelled
-/// in: letters, digits and underscores — the character set the names of this service's own
-/// data sources use (`amazon_vpc`, `aws_cloudtrail`).
+/// Whether `value` is spelled in the characters a data source's NAME is spelled in: letters,
+/// digits and underscores — the character set the names of this service's own data sources use
+/// (`amazon_vpc`, `aws_cloudtrail`).
 fn is_data_source_word(value: &str) -> bool {
     value
         .chars()
         .all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
+
+/// Whether `value` is a data source TYPE: the same word characters, spelled in LOWER CASE.
+///
+/// A type is not a free label a caller picks the way a name is — it "categorizes logs by
+/// originating service and log type" (`DataSource`), and the types this service states for its
+/// own data sources are lower-case words (`flow`, beside the source names `amazon_vpc` and
+/// `aws_cloudtrail`). Recorded: one and the same type is associated when it is spelled in
+/// lower case and refused when the identical word is spelled in capitals — which is the
+/// spelling a vended-log `logType` uses (`APPLICATION_LOGS`), a different catalogue from this
+/// one.
+fn is_data_source_type(value: &str) -> bool {
+    value.chars().all(|character| {
+        character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+    })
 }
 
 /// The refusal for a `dataSource` whose NAME carries anything but those characters
@@ -1125,13 +1142,13 @@ pub fn invalid_data_source_name_message(name: &str) -> Option<&'static str> {
     (!is_data_source_word(name)).then_some(DATA_SOURCE_NAME_MESSAGE)
 }
 
-/// The refusal for a `dataSource` whose TYPE carries anything but those characters
-/// ([`DATA_SOURCE_TYPE_MESSAGE`]) — the same rule the name is held to, stated for the type.
-/// `None` for a type inside that set, and for a request that names no type at all
-/// ([`missing_data_source_type_message`] is what states that).
+/// The refusal for a `dataSource` whose TYPE is not spelled the way a data source type is
+/// ([`is_data_source_type`], [`DATA_SOURCE_TYPE_MESSAGE`]). `None` for a type that is, and for
+/// a request that names no type at all ([`missing_data_source_type_message`] is what states
+/// that).
 pub fn invalid_data_source_type_message(source_type: Option<&str>) -> Option<&'static str> {
     source_type
-        .filter(|source_type| !is_data_source_word(source_type))
+        .filter(|source_type| !is_data_source_type(source_type))
         .map(|_| DATA_SOURCE_TYPE_MESSAGE)
 }
 

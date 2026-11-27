@@ -200,22 +200,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // "Each index policy has the following quotas and restrictions: As many as 20
         // fields can be included in the policy. Each field name can include as many as 100
-        // characters." An over-long field name is one value of the document being wrong; a
-        // policy naming more fields than the quota admits is a count of the indexes it
-        // would create, which is what this service's limit error reports.
-        if let Err(breach) = crate::state::check_index_policy_quotas(&fields) {
-            return Err(match breach {
-                crate::state::IndexPolicyQuotaBreach::FieldNameTooLong(message) => {
-                    invalid(message)
-                }
-                crate::state::IndexPolicyQuotaBreach::TooManyFields(message) => {
-                    PutIndexPolicyErrorModeled::LimitExceededException(LimitExceededException {
-                        message: Some(message),
-                    })
-                    .into()
-                }
-            });
-        }
+        // characters." A document that breaks either is a `policyDocument` stated
+        // incorrectly — a value of this request, which no retry of it can make acceptable —
+        // rather than a count of the resources the account holds, which is what this
+        // operation's limit error reports.
+        crate::state::check_index_policy_quotas(&fields).map_err(invalid)?;
 
         // `logGroupIdentifier` is "either the log group name or log group ARN", so an ARN
         // resolves to the name the store is keyed by.

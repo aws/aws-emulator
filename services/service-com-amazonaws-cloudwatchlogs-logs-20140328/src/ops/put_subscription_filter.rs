@@ -274,12 +274,44 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &crate::state::log_group_arn(&region, &input.log_group_name, false),
         )
         .await;
+        // A STREAM destination is validated at configuration time by the record the put writes
+        // to it ([`crate::state::subscription_delivery::health_check`]), so whether the service
+        // that owns that stream holds it at all is asked of that service here — before the
+        // store's guard is taken, for the reason above. The destination the question is about
+        // is the PHYSICAL one a delivery would reach, so a logical destination is resolved to
+        // its target first; that read holds the guard for its own duration only, and the guard
+        // is gone before the call is made. What the answer decides is applied inside the
+        // configuration step, in the place the service answers it: after everything about the
+        // request itself, and before anything is stored.
+        let physical_destination = crate::state::service_state(&*self.engine).and_then(|state| {
+            let store = state.lock();
+            crate::state::subscription_delivery::physical_destination_arn(
+                &store,
+                &input.destination_arn,
+            )
+        });
+        let missing_destination = match physical_destination.as_deref() {
+            Some(destination_arn) => {
+                crate::state::subscription_delivery::missing_destination_resource_message(
+                    ctx,
+                    &region,
+                    destination_arn,
+                )
+                .await
+            }
+            None => None,
+        };
         // Configuring the filter holds the store's guard, so it is done in a SYNCHRONOUS
         // step ([`PutSubscriptionFilter::configure`]) and the guard is gone by the time the
         // health check it resolved is handed over below: a lock guard must not be held
         // across an in-process call into another service.
-        let health_check =
-            self.configure(input, &region, unassumable_role, unpermitted_destination)?;
+        let health_check = self.configure(
+            input,
+            &region,
+            unassumable_role,
+            unpermitted_destination,
+            missing_destination,
+        )?;
         // The put VALIDATES the destination: CloudWatch Logs writes one health-check record
         // to it, before any log event of this filter exists
         // ([`crate::state::subscription_delivery::health_check`]).
@@ -309,6 +341,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> PutSubscriptionFi
         region: &str,
         unassumable_role: Option<String>,
         unpermitted_destination: Option<String>,
+        missing_destination: Option<&'static str>,
     ) -> Result<Option<crate::state::subscription_delivery::Delivery>, PutSubscriptionFilterError>
     {
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
@@ -498,6 +531,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> PutSubscriptionFi
         // ([`crate::state::lambda_destination`]).
         if let Some(message) = unpermitted_destination {
             return Err(invalid(message));
+        }
+
+        // The same validation for a STREAM destination: the service that owns the stream the
+        // filter would deliver to reports it holds no such stream, so the configuration could
+        // never deliver a record and the filter is not stored
+        // ([`crate::state::subscription_delivery::missing_destination_resource_message`]).
+        if let Some(message) = missing_destination {
+            return Err(invalid(message.to_string()));
         }
 
         // An update keeps the filter's creation time: it is still the same filter, so
