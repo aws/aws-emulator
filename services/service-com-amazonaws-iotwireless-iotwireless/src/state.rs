@@ -310,10 +310,10 @@ pub fn device_profile_settings(requested: &LoRaWANDeviceProfile) -> LoRaWANDevic
 /// that device's: a second, distinct device colliding on one identifier.
 ///
 /// FIXED text, with no variable part at all: it states that a device with the submitted
-/// `DevEui` is already registered, and so names neither the identifier the request sent (which
-/// the caller already holds) nor the device that holds it (which the caller may not be able to
-/// read). A client tells this conflict from the idempotency-token conflict the same operation
-/// raises with the same error code by matching the text.
+/// `DevEui` is already registered, and so names neither the identifier the request sent
+/// (which the caller already holds) nor the device that holds it (which the caller may not
+/// be able to read). A client tells this conflict from the idempotency-token conflict the
+/// same operation raises with the same error code by matching the text.
 pub const DUPLICATE_DEV_EUI_MESSAGE: &str = "Device with given DevEui already exists";
 
 /// The sentence the same 409 carries when the create presents the SAME join key material as

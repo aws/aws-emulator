@@ -21,7 +21,10 @@
 //!   sentence when that material differs — each the same across every other difference
 //!   between the two requests, neither disclosing anything about the device that holds the
 //!   identifier, and both distinct from the sentence the other `ConflictException` of the
-//!   same operation carries.
+//!   same operation carries;
+//! * the already-claimed sentence's one variable part is the `DevEui` the request submitted,
+//!   so a client can recover the colliding identifier from the text and no two identifiers
+//!   answer the same sentence.
 //!
 //! The wire harness is the one the destination/device suite already has: `tests/all/*.rs`
 //! are modules of ONE test target, so `router`, `call` and `error_code` are shared from
@@ -39,10 +42,29 @@ use super::destination_and_wireless_device_lifecycle::{call, error_code, router}
 /// happens to emit.
 const DUPLICATE_DEV_EUI_MESSAGE: &str = "Device with given DevEui already exists";
 
+/// The two fixed halves of the already-claimed sentence, between which the submitted
+/// identifier sits. The trailing double space of the prefix belongs to the template.
+const CLAIMED_DEV_EUI_PREFIX: &str = "DevEui ";
+const CLAIMED_DEV_EUI_SUFFIX: &str = "  with same key has been claimed";
+
+/// `DevEui` values spanning what the model admits: sixteen hex digits in either case.
+/// Source: `smithy_query(query="shape", shape="DevEui")` — `pattern ^[a-fA-F0-9]{16}$`.
+/// The rows differ along the one thing the already-claimed sentence's variable part
+/// generalises over, the identifier's value: hex case, the two extremes of the range, and
+/// digits only.
+const DEV_EUI_CASES: &[(&str, &str)] = &[
+    ("lowercase hex", "bbb78a67f1193555"),
+    ("uppercase hex", "ABCDEF0123456789"),
+    ("mixed-case hex", "aBcDeF9876543210"),
+    ("all-zero, the low extreme", "0000000000000000"),
+    ("all-f, the high extreme", "ffffffffffffffff"),
+    ("digits only", "1234567890123456"),
+];
+
 /// The sentence a create gets when it re-presents the `DevEui` AND the join key material of a
 /// device already registered: the identifier it was claimed under is its only variable part.
 fn claimed_dev_eui_message(dev_eui: &str) -> String {
-    format!("DevEui {dev_eui}  with same key has been claimed")
+    format!("{CLAIMED_DEV_EUI_PREFIX}{dev_eui}{CLAIMED_DEV_EUI_SUFFIX}")
 }
 
 /// AWS's sentence for key material the referenced device profile's `MacVersion` cannot
@@ -745,5 +767,85 @@ async fn the_conflict_classes_of_a_device_create_carry_their_own_sentences() {
         token_message,
         expected_claimed.as_str(),
         "the token conflict must not carry the already-claimed sentence, got {token_message:?}"
+    );
+}
+
+/// The already-claimed sentence is the class's fixed text around the identifier THAT request
+/// submitted, for every identifier the model admits: a client can strip the fixed halves and
+/// recover the colliding `DevEui`, and two different identifiers never answer the same text.
+#[tokio::test]
+async fn the_already_claimed_sentence_names_the_identifier_the_request_submitted() {
+    let router = router();
+    seed_destination(&router, "SubmittedEuiDest").await;
+
+    let mut messages: Vec<String> = Vec::new();
+    for (case, dev_eui) in DEV_EUI_CASES {
+        // The two creates are identical, so the second re-presents the registered device's
+        // own join key material and the refusal is the already-claimed one.
+        let body = json!({
+            "Type": "LoRaWAN",
+            "Name": "first",
+            "DestinationName": "SubmittedEuiDest",
+            "LoRaWAN": { "DevEui": dev_eui, "OtaaV1_0_x": provisioning_member("OtaaV1_0_x") },
+        });
+        let (status, first) = create_device(&router, body.clone()).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "case {case:?}: the first create must be 201, got {status} {first}"
+        );
+        let owner = first["Id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("case {case:?}: expected an Id, got {first}"))
+            .to_string();
+
+        let (status, response) = create_device(&router, body).await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "case {case:?}: expected 409, got {status} {response}"
+        );
+        assert_eq!(
+            error_code(&response),
+            "ConflictException",
+            "case {case:?}: expected ConflictException, got {response}"
+        );
+        let expected = claimed_dev_eui_message(dev_eui);
+        assert_eq!(
+            response["Message"],
+            json!(expected),
+            "case {case:?}: expected Message {expected:?}, got {response}"
+        );
+
+        // Stripping the two fixed halves leaves exactly what the request submitted,
+        // which is what a client reporting the collision or retrying with another
+        // identifier reads out of the text.
+        let message = response["Message"].as_str().unwrap_or_default().to_string();
+        let recovered = message
+            .strip_prefix(CLAIMED_DEV_EUI_PREFIX)
+            .and_then(|rest| rest.strip_suffix(CLAIMED_DEV_EUI_SUFFIX));
+        assert_eq!(
+            recovered,
+            Some(*dev_eui),
+            "case {case:?}: the submitted identifier must be recoverable from {message:?}, \
+             got {recovered:?}"
+        );
+        assert!(
+            !response.to_string().contains(&owner),
+            "case {case:?}: the refusal must disclose nothing about the owning device, got \
+             {response}"
+        );
+        messages.push(message);
+    }
+
+    // The identifier is the sentence's VARIABLE part, so no two rows answered the same
+    // text: a sentence with no variable part would collapse them all into one.
+    let mut distinct = messages.clone();
+    distinct.sort();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        messages.len(),
+        "each submitted identifier must get its own message, got {messages:?}"
     );
 }
