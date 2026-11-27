@@ -461,6 +461,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             changed = true;
         }
         if let Some(slurm) = input.slurm_configuration {
+            // Merged member by member, with the one member whose value can be an
+            // INSTRUCTION rather than a setting — `scaleDownIdleTimeInSeconds`, whose
+            // documented sentinel removes the per-group override — read where both the
+            // create and the update path write it
+            // ([`crate::state::stored_scale_down_idle_time_override`]).
             let stored = group.slurm_configuration.take();
             group.slurm_configuration =
                 Some(crate::state::apply_compute_node_group_slurm_update(stored, slurm));

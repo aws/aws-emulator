@@ -17,8 +17,8 @@
 use serde_json::{json, Value};
 use service_com_amazonaws_pcs_awsparallelcomputingservice::service::wire::CLIENT_ERROR_STATUS;
 use service_com_amazonaws_pcs_awsparallelcomputingservice::state::{
-    service_state, MAX_STORED_LIST_ENTRIES, STATUS_ACTIVE, STATUS_CREATING, STATUS_DELETED,
-    STATUS_DELETING, STATUS_UPDATING,
+    service_state, MAX_STORED_LIST_ENTRIES, REMOVE_SCALE_DOWN_IDLE_TIME_OVERRIDE, STATUS_ACTIVE,
+    STATUS_CREATING, STATUS_DELETED, STATUS_DELETING, STATUS_UPDATING,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -44,8 +44,11 @@ const SPOT_ALLOCATION_STRATEGIES: &[&str] =
 /// The published bounds of `scaleDownIdleTimeInSeconds`
 /// (`@range(min: -1, max: 10000000)` on
 /// `UpdateComputeNodeGroupSlurmConfigurationRequest$scaleDownIdleTimeInSeconds`), and a
-/// value between them.
-const SCALE_DOWN_SECONDS: &[i64] = &[-1, 900, 10_000_000];
+/// value between them. The minimum is the value that member documents as REMOVING the
+/// per-group override, so it is driven after a row that stored one, and its row expects the
+/// member GONE rather than set; the rule itself is read over a set of inputs by
+/// `crate::cluster_update_and_endpoints::compute_node_group_idle_time_override`.
+const SCALE_DOWN_SECONDS: &[i64] = &[900, REMOVE_SCALE_DOWN_IDLE_TIME_OVERRIDE as i64, 10_000_000];
 
 /// A subnet id of the form `SubnetId`'s `@pattern` admits (`^subnet-\w{8,17}$`).
 fn subnet(index: usize) -> String {
@@ -221,7 +224,15 @@ fn updatable_members() -> Vec<MemberRow> {
     // expectation keeps what the rows before it stored.
     let mut slurm = json!({});
     for seconds in SCALE_DOWN_SECONDS {
-        slurm["scaleDownIdleTimeInSeconds"] = json!(seconds);
+        if *seconds == i64::from(REMOVE_SCALE_DOWN_IDLE_TIME_OVERRIDE) {
+            // The value the member documents as removing the override: the stored group
+            // reports no `scaleDownIdleTimeInSeconds` at all once this row is applied.
+            if let Some(members) = slurm.as_object_mut() {
+                members.remove("scaleDownIdleTimeInSeconds");
+            }
+        } else {
+            slurm["scaleDownIdleTimeInSeconds"] = json!(seconds);
+        }
         rows.push((
             format!("slurmConfiguration-scaleDownIdleTimeInSeconds-{seconds}"),
             json!({"slurmConfiguration": {"scaleDownIdleTimeInSeconds": seconds}}),

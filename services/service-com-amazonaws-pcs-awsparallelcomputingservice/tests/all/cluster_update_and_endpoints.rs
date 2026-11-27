@@ -23,6 +23,11 @@ mod children_must_be_active;
 #[path = "cluster_update_and_endpoints/compute_node_group_update.rs"]
 mod compute_node_group_update;
 
+// What the value `scaleDownIdleTimeInSeconds` documents as REMOVING a compute node group's
+// override leaves stored is its own suite, declared the same way.
+#[path = "cluster_update_and_endpoints/compute_node_group_idle_time_override.rs"]
+mod compute_node_group_idle_time_override;
+
 // Which scheduler releases an `UpdateCluster` can move a cluster to — the ORDERING rule the
 // member's own documentation states — is its own suite, declared the same way.
 #[path = "cluster_update_and_endpoints/scheduler_version_ordering.rs"]

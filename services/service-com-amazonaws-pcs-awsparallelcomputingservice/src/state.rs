@@ -186,6 +186,15 @@ pub const NETWORK_TYPE_IPV4: &str = "IPV4";
 /// request sets it, and the cluster's is the one that answers for it.
 pub const DEFAULT_SCALE_DOWN_IDLE_TIME_IN_SECONDS: i32 = 600;
 
+/// The value a compute node group's `scaleDownIdleTimeInSeconds` names to DROP the
+/// per-group override rather than to set one: "A value of -1 removes the override and
+/// applies the cluster-level setting to this compute node group"
+/// (`ComputeNodeGroupSlurmConfigurationRequest$scaleDownIdleTimeInSeconds`, worded
+/// identically on `UpdateComputeNodeGroupSlurmConfigurationRequest` and on the output shape
+/// `ComputeNodeGroupSlurmConfiguration`). It is also the member's `@range` minimum, which
+/// is why a request may carry it at all; it is never a value the member HOLDS.
+pub const REMOVE_SCALE_DOWN_IDLE_TIME_OVERRIDE: i32 = -1;
+
 /// The `defaultPurgeTimeInDays` an accounting configuration carries when the request named
 /// none: "The default value for defaultPurgeTimeInDays is -1" (`AccountingRequest`,
 /// `Accounting` and `UpdateAccountingRequest` all state it), "A value of -1 means there is
@@ -1836,17 +1845,41 @@ pub fn apply_slurm_update(
     merged
 }
 
+/// The per-group `scaleDownIdleTimeInSeconds` override a request leaves behind — the ONE
+/// place every path that stores a compute node group's override writes it, create and
+/// update alike.
+///
+/// The member's own documentation defines a value that REMOVES the override rather than
+/// setting one ([`REMOVE_SCALE_DOWN_IDLE_TIME_OVERRIDE`]), and states how "no override" is
+/// expressed: "If not specified, the cluster-level setting applies". So a request naming
+/// that value stores NO override, which is what every later read of the group reports; any
+/// other value it names replaces the stored override, and a request that omits the member
+/// leaves the stored override alone.
+pub fn stored_scale_down_idle_time_override(
+    stored: Option<i32>,
+    requested: Option<i32>,
+) -> Option<i32> {
+    match requested {
+        None => stored,
+        Some(REMOVE_SCALE_DOWN_IDLE_TIME_OVERRIDE) => None,
+        Some(seconds) => Some(seconds),
+    }
+}
+
 /// The stored Slurm configuration an `UpdateComputeNodeGroup` leaves behind: a member the
 /// request carries replaces the stored one, a member it omits leaves the stored one alone —
-/// the compute-node-group counterpart of [`apply_slurm_update`].
+/// the compute-node-group counterpart of [`apply_slurm_update`]. The one member whose value
+/// can be an instruction rather than a setting goes through
+/// [`stored_scale_down_idle_time_override`].
 pub fn apply_compute_node_group_slurm_update(
     stored: Option<ComputeNodeGroupSlurmConfiguration>,
     update: UpdateComputeNodeGroupSlurmConfigurationRequest,
 ) -> ComputeNodeGroupSlurmConfiguration {
     let mut merged = stored.unwrap_or_default();
-    if let Some(seconds) = update.scale_down_idle_time_in_seconds {
-        merged.scale_down_idle_time_in_seconds = Some(seconds);
-    }
+    merged.scale_down_idle_time_in_seconds = stored_scale_down_idle_time_override(
+        merged.scale_down_idle_time_in_seconds,
+        update.scale_down_idle_time_in_seconds,
+    );
     if let Some(settings) = update.slurm_custom_settings {
         merged.slurm_custom_settings = Some(settings);
     }
@@ -2152,7 +2185,12 @@ impl From<ScalingConfigurationRequest> for ScalingConfiguration {
 impl From<ComputeNodeGroupSlurmConfigurationRequest> for ComputeNodeGroupSlurmConfiguration {
     fn from(request: ComputeNodeGroupSlurmConfigurationRequest) -> Self {
         Self {
-            scale_down_idle_time_in_seconds: request.scale_down_idle_time_in_seconds,
+            // A create starts the group with no override, so the request's member is read
+            // against nothing stored — and the value that REMOVES an override stores none.
+            scale_down_idle_time_in_seconds: stored_scale_down_idle_time_override(
+                None,
+                request.scale_down_idle_time_in_seconds,
+            ),
             slurm_custom_settings: request.slurm_custom_settings,
             gres_custom_settings: request.gres_custom_settings,
         }
