@@ -915,3 +915,160 @@ async fn the_resource_decision_precedes_member_constraints_for_every_target_kind
         "a no-op unlink leaves every other link in place"
     );
 }
+
+#[tokio::test]
+async fn the_resource_decision_precedes_the_members_length_bounds() {
+    let router = router();
+    // The dimension this test spans is the LENGTH of the `Resource` the unlink names: the
+    // resource-scoped authorization decision precedes EVERY modelled constraint on that
+    // member, its `@length` as much as its `@pattern`, so a value naming no custom action
+    // this account could mint is refused alike at each published bound of
+    // `ResourceIdentifier`'s @length (min 1, max 1011; smithy_query query="operation"
+    // operation="DisassociateFromConfiguration") and one value past each.
+    let chime = given_chime_webhook_configuration(&router, "disassoc-bounds-chime").await;
+    let slack = given_slack_channel_configuration(&router, "disassoc-bounds-slack").await;
+    // A link that really is there, so a refusal can be seen to remove nothing. It is made
+    // against the Slack channel configuration because a Chime webhook configuration hosts no
+    // link at all (the table above), which leaves the Chime target holding none.
+    let linked = given_custom_action(&router, "bounds-linked").await;
+    let associated = post(
+        &router,
+        REGION,
+        "/associate-to-configuration",
+        &json!({"Resource": linked, "ChatConfiguration": slack}),
+    )
+    .await;
+    assert_eq!(
+        associated.status, 201,
+        "linking the control resource: expected HTTP 201, got {} with {}",
+        associated.status, associated.body
+    );
+
+    // Each length is spelled two ways, so what is refused cannot follow from one spelling:
+    // a value that is no ARN at all, and a custom-action ARN of this service padded to that
+    // length whose region segment is filled in — a custom action is account-scoped, so the
+    // ARN a create mints carries none and no action of this account could ever be minted
+    // under it. The two shortest lengths admit only the first spelling, the ARN prefix
+    // alone being longer than that.
+    let prefix = format!("arn:aws:chatbot:{REGION}:{ACCOUNT}:custom-action/");
+    let mut rows: Vec<(String, String)> = Vec::new();
+    for length in [0usize, 1, 1011, 1012] {
+        rows.push((
+            format!("a Resource of {length} characters that is no ARN at all"),
+            "x".repeat(length),
+        ));
+        if let Some(padding) = length.checked_sub(prefix.len()).filter(|pad| *pad > 0) {
+            rows.push((
+                format!("a foreign custom-action ARN of {length} characters"),
+                format!("{prefix}{}", "a".repeat(padding)),
+            ));
+        }
+    }
+
+    let targets: [(&str, &str); 2] = [
+        ("a Chime webhook configuration", chime.as_str()),
+        ("a Slack channel configuration", slack.as_str()),
+    ];
+    for (case, resource) in &rows {
+        for (target_case, target) in targets {
+            let answer = post(
+                &router,
+                REGION,
+                "/disassociate-from-configuration",
+                &json!({"Resource": resource, "ChatConfiguration": target}),
+            )
+            .await;
+            assert_unauthorized(&answer, &format!("{case:?} against {target_case}"));
+        }
+    }
+
+    // None of those refusals touched the store: the link made above is still reported, and
+    // the configuration that never held one still holds none.
+    assert_eq!(
+        associated_resources(&router, &slack, None).await,
+        vec![linked],
+        "a refused unlink removes no link the configuration holds"
+    );
+    assert_eq!(
+        associated_resources(&router, &chime, None).await,
+        Vec::<String>::new(),
+        "a refused unlink leaves a configuration holding no link empty"
+    );
+}
+
+#[tokio::test]
+async fn a_never_associated_resource_unlinks_as_a_no_op_across_the_action_name_bounds() {
+    let router = router();
+    // The dimension this test spans is the SPELLING of the well-formed `Resource` a no-op
+    // unlink names: the operation is @idempotent with a 204 success code, so an in-namespace
+    // custom-action ARN this configuration was never associated with answers the empty
+    // success whatever the action name is — and removes nothing else.
+    let chime = given_chime_webhook_configuration(&router, "disassoc-noop-chime").await;
+    let slack = given_slack_channel_configuration(&router, "disassoc-noop-slack").await;
+    let linked = given_custom_action(&router, "noop-linked").await;
+    let associated = post(
+        &router,
+        REGION,
+        "/associate-to-configuration",
+        &json!({"Resource": linked, "ChatConfiguration": slack}),
+    )
+    .await;
+    assert_eq!(
+        associated.status, 201,
+        "linking the control resource: expected HTTP 201, got {} with {}",
+        associated.status, associated.body
+    );
+
+    // The names span the published bounds and charset of the action name
+    // (`CustomActionName`, @length 1..64, @pattern ^[a-zA-Z0-9_-]{1,64}$; smithy_query
+    // query="operation" operation="CreateCustomAction"): the length minimum, the length
+    // maximum, and the upper case, digits, underscore and hyphen it admits.
+    let longest = "n".repeat(64);
+    let names: [&str; 5] = ["q", longest.as_str(), "Mixed_Case-9", "9", "_-under-score_"];
+
+    // Both kinds of target this model can create: the one holding a link, and one holding
+    // none. Neither hosts a link for the resources below, so every call is a no-op.
+    let targets: [(&str, &str); 2] = [
+        ("a Slack channel configuration", slack.as_str()),
+        ("a Chime webhook configuration", chime.as_str()),
+    ];
+    for name in names {
+        let never_associated = given_custom_action(&router, name).await;
+        for (target_case, target) in targets {
+            for attempt in 0..2 {
+                let answer = post(
+                    &router,
+                    REGION,
+                    "/disassociate-from-configuration",
+                    &json!({"Resource": never_associated, "ChatConfiguration": target}),
+                )
+                .await;
+                assert_eq!(
+                    answer.status, 204,
+                    "case {name:?} against {target_case} attempt {attempt}: expected HTTP 204, \
+                     got {} with {}",
+                    answer.status, answer.body
+                );
+                assert!(
+                    answer
+                        .body
+                        .as_object()
+                        .is_none_or(|members| members.is_empty()),
+                    "case {name:?} against {target_case} attempt {attempt}: the success carries \
+                     no members, got {}",
+                    answer.body
+                );
+            }
+        }
+        assert_eq!(
+            associated_resources(&router, &slack, None).await,
+            vec![linked.clone()],
+            "case {name:?}: a no-op unlink leaves the link that IS there in place"
+        );
+        assert_eq!(
+            associated_resources(&router, &chime, None).await,
+            Vec::<String>::new(),
+            "case {name:?}: a no-op unlink links nothing to a configuration holding none"
+        );
+    }
+}

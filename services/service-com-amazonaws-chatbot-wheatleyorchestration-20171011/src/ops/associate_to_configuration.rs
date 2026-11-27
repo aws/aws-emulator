@@ -8,17 +8,22 @@
 //!
 //! ## The order the checks run in
 //!
-//! 1. **The modelled input constraints**, at the centralized boundary before this handler
-//!    runs: a `Resource` or `ChatConfiguration` outside the member's `@length`/`@pattern`
-//!    is malformed client input, refused 400 `InvalidRequestException` (`crate::service`).
-//! 2. **IAM**, for the principal the request's credentials speak for
+//! 1. **The resource-scoped authorization check on `Resource`**, taken at the
+//!    [`crate::service::resource_authorization`] seam BEFORE the request is deserialized and
+//!    its modelled constraints are judged: a value no custom action of this account can be
+//!    minted under names no target in the account's namespace — whether or not it also
+//!    satisfies the member's `@length`/`@pattern` — so the request fails closed with the
+//!    modelled `UnauthorizedException` (403, [`crate::state::UNAUTHORIZED_MESSAGE`]). The
+//!    handler takes the same decision again below, so it holds for a caller that drives
+//!    `handle` directly.
+//! 2. **The modelled input constraints**, at the centralized boundary before this handler
+//!    runs: a `ChatConfiguration` outside its `@length`/`@pattern`, or a `Resource` the
+//!    account's namespace admits whose action name is outside the member's pattern, is
+//!    malformed client input, refused 400 `InvalidRequestException` (`crate::service`).
+//! 3. **IAM**, for the principal the request's credentials speak for
 //!    ([`crate::service::authorization`]): a principal no identity-based policy allows
 //!    `chatbot:AssociateToConfiguration` on the custom action for is refused
 //!    `AccessDeniedException` (403) and nothing is linked.
-//! 3. **The resource-scoped authorization check on `Resource`**, for an ARN that satisfies
-//!    the member's pattern yet no custom action of this account can be minted under: it
-//!    names no target in the account's namespace, so the request fails closed with the
-//!    modelled `UnauthorizedException` (403, [`crate::state::UNAUTHORIZED_MESSAGE`]).
 //! 4. **The target**: a channel configuration that can HOST the link
 //!    (`ComAmazonawsChatbotWheatleyorchestration20171011State::hosts_resource_associations`).
 //!    Anything else — an Amazon Chime webhook configuration, which is a webhook
