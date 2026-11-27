@@ -2,7 +2,11 @@
 
 //! @op TerminateEnvironment
 //! Implemented: moves the stored environment into `Terminating` and answers with its
-//! description; the move to `Terminated` is due shortly after. This is the ONLY file to
+//! description; the move to `Terminated` is due shortly after. An environment whose
+//! initial launch has not got past its first phase is not one this call can take
+//! down, so such a request is refused and names that phase. Whether the caller may
+//! terminate it at all is IAM's decision, taken before anything is read or written
+//! (`crate::service::authorization`). This is the ONLY file to
 //! touch for this operation.
 //!
 //! ## Shape of an operation
@@ -195,7 +199,46 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
+        let region = crate::state::request_region(ctx);
+        // IAM decides whether this caller may tear the environment down BEFORE
+        // anything is read or written, so a caller its policies do not permit is
+        // refused and the environment goes on running.
+        if let Some(message) = crate::service::authorization::refusal(
+            &*self.engine,
+            ctx,
+            <Self as smithy_server_runtime::Operation>::NAME,
+            &crate::state::environment_resource(
+                &*self.engine,
+                &region,
+                input.environment_id.as_deref(),
+                input.environment_name.as_deref(),
+            ),
+        ) {
+            return Err(TerminateEnvironmentError::access_denied(message));
+        }
+        // This call ACTS ON the environment, which Elastic Beanstalk does with the
+        // permissions of the operations role the environment carries: one it
+        // cannot act under leaves the call nothing to carry it out with, which is
+        // the privileges error this operation models
+        // ([`crate::state::operations_role`]).
+        if let Some(message) = crate::state::unusable_operations_role_refusal(
+            &*self.engine,
+            ctx,
+            &region,
+            input.environment_id.as_deref(),
+            input.environment_name.as_deref(),
+        )
+        .await
+        {
+            return Err(
+                TerminateEnvironmentErrorModeled::InsufficientPrivilegesException(
+                    InsufficientPrivilegesException {
+                        message: Some(message),
+                    },
+                )
+                .into(),
+            );
+        }
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             TerminateEnvironmentError::internal_failure(
                 "the Elastic Beanstalk store is unavailable",
@@ -253,6 +296,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 ),
             )
         })?;
+        // An environment whose INITIAL launch has not got past its first phase
+        // is not one a termination can take down: Elastic Beanstalk refuses the
+        // call and names the phase the launch is in
+        // ([`crate::state::Environment::initial_launch_phase`]), so a client's
+        // immediate-rollback path waits for the launch to get past it rather
+        // than tearing down a provisioning that is still running.
+        if let Some(phase) = environment.initial_launch_phase() {
+            return Err(TerminateEnvironmentError::invalid_parameter_value(
+                crate::state::cannot_terminate_environment_message(
+                    &environment.environment_name,
+                    phase,
+                ),
+            ));
+        }
         // "Ready: Environment is available to have an action performed on it,
         // such as update or terminate." An environment already shutting down or
         // shut down cannot be terminated again.

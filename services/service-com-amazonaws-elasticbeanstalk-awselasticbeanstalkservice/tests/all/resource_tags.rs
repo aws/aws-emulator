@@ -20,7 +20,9 @@
 //! metacharacters, over the raw document rather than through the harness's reader,
 //! so a value reflected unescaped fails it.
 
-use crate::lifecycle::{account, Answer, Emulator, PAST_DUE, SOLUTION_STACK, TEST_REGION};
+use crate::lifecycle::{
+    account, wait_for_status, Answer, Emulator, SOLUTION_STACK, TEST_REGION,
+};
 
 /// The key/value pairs `ListTagsForResource` reported, sorted so the assertion is
 /// about the SET of tags on the resource and not about a list order the model does
@@ -689,6 +691,10 @@ async fn a_terminated_environment_is_no_longer_a_taggable_resource() {
     let tags = vec![tag("tier", "web")];
     assert_tags(&emulator, "while launching", &arn, &tags).await;
 
+    // A termination can only take down an environment whose launch has got past
+    // its initial phase, which is what the clock owes it: waited for as a
+    // CONDITION, never as a fixed time.
+    wait_for_status(&emulator, "doomed-env", "doomed-env", "Ready").await;
     let terminated = emulator
         .call("TerminateEnvironment", &[("EnvironmentName", "doomed-env")])
         .await;
@@ -701,8 +707,9 @@ async fn a_terminated_environment_is_no_longer_a_taggable_resource() {
     assert_tags(&emulator, "while terminating", &arn, &tags).await;
 
     // Once the clock has made the move to `Terminated` due, the environment is
-    // gone and its ARN names no resource.
-    std::thread::sleep(PAST_DUE);
+    // gone and its ARN names no resource — waited for as the CONDITION the
+    // environment reaches, never as a fixed time.
+    wait_for_status(&emulator, "doomed-env", "doomed-env", "Terminated").await;
     assert_refused(
         &emulator,
         "once terminated",

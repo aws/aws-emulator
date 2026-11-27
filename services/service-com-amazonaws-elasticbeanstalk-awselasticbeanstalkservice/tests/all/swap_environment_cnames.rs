@@ -72,6 +72,15 @@ async fn create_environment(
 /// The stored `CNAME` of `environment_id`, read back through
 /// `DescribeEnvironments` — never from the swap's own answer.
 async fn stored_cname(emulator: &Emulator, environment_id: &str, case: &str) -> String {
+    reported_cname(emulator, environment_id)
+        .await
+        .unwrap_or_else(|| panic!("case {case:?}: expected a CNAME on environment {environment_id}"))
+}
+
+/// The `CNAME` `DescribeEnvironments` reports for `environment_id`, or `None`
+/// when it publishes none — which an environment whose launch is still
+/// provisioning does.
+async fn reported_cname(emulator: &Emulator, environment_id: &str) -> Option<String> {
     let described = emulator
         .call(
             "DescribeEnvironments",
@@ -79,8 +88,8 @@ async fn stored_cname(emulator: &Emulator, environment_id: &str, case: &str) -> 
         )
         .await;
     described
-        .expect("Environments/member/CNAME", case)
-        .to_string()
+        .value("Environments/member/CNAME")
+        .map(str::to_string)
 }
 
 /// Block until a status change the clock owed is due and materialised.
@@ -536,7 +545,13 @@ async fn an_environment_that_is_not_ready_cannot_be_swapped() {
     let launching_id = create_environment(&emulator, "launching-env", Some("launching")).await;
 
     let settled_before = stored_cname(&emulator, &settled_id, "launching").await;
-    let launching_before = stored_cname(&emulator, &launching_id, "launching").await;
+    // The still-launching environment has been assigned no name yet, so it
+    // publishes none: what it RESERVED becomes its CNAME when the launch
+    // finishes, which is read below once it has.
+    assert!(
+        reported_cname(&emulator, &launching_id).await.is_none(),
+        "case \"launching\": an environment still launching publishes no CNAME"
+    );
 
     // Each row names the side the still-launching environment is on, so the
     // refusal does not depend on which side carries it.
@@ -571,8 +586,10 @@ async fn an_environment_that_is_not_ready_cannot_be_swapped() {
         );
     }
 
-    // Once the clock has made the launch due, the same request succeeds.
+    // Once the clock has made the launch due, the environment is assigned the
+    // name it reserved and the same request succeeds.
     wait_for_ready();
+    let launching_before = stored_cname(&emulator, &launching_id, "ready").await;
     let swapped = emulator
         .call(
             "SwapEnvironmentCNAMEs",

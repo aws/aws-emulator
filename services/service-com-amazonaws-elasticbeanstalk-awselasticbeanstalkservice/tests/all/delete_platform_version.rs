@@ -29,12 +29,45 @@
 
 use service_com_amazonaws_elasticbeanstalk_awselasticbeanstalkservice as eb;
 
-use crate::harness::{Emulator, PAST_DUE, SOLUTION_STACK};
+use crate::harness::{wait_for_status, Emulator, PAST_DUE, SOLUTION_STACK};
 use crate::lifecycle::{account, TEST_REGION};
 
 /// Another Region, so a Region-derived ARN is asserted against something that is
 /// not the one the harness signs with.
 const OTHER_REGION: &str = "eu-west-1";
+
+/// How long the poll below waits for a change the CLOCK owes to be materialised
+/// before it gives up: generous, so a loaded host is not what decides the
+/// outcome. The change itself is the service's own span, which is far shorter.
+const PLATFORM_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How long that poll waits between two looks.
+const PLATFORM_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Look again until the platform version `platform_arn` reports `expected` — the
+/// CONDITION a client waiting for a build polls for, never a fixed wait for the
+/// clock — or until [`PLATFORM_DEADLINE`] has passed.
+async fn wait_for_platform_status(
+    emulator: &Emulator,
+    case: &str,
+    region: &str,
+    platform_arn: &str,
+    expected: &str,
+) {
+    let started = std::time::Instant::now();
+    loop {
+        let status = reported_status(emulator, case, region, platform_arn).await;
+        if status.as_deref() == Some(expected) {
+            return;
+        }
+        assert!(
+            started.elapsed() < PLATFORM_DEADLINE,
+            "case {case:?}: platform version {platform_arn} never reached {expected}, last \
+             status {status:?}"
+        );
+        tokio::time::sleep(PLATFORM_POLL_INTERVAL).await;
+    }
+}
 
 /// The template the service refuses a `PlatformArn` whose version this account
 /// does not own with.
@@ -584,8 +617,9 @@ async fn a_version_a_running_environment_uses_is_refused() {
         created.status, created.body
     );
 
-    // The version has to be built before an environment can be launched on it.
-    std::thread::sleep(PAST_DUE);
+    // The version has to be built before an environment can be launched on it:
+    // waited for as the CONDITION the version reaches, never as a fixed time.
+    wait_for_platform_status(&emulator, case, TEST_REGION, &arn, "Ready").await;
     let launched = emulator
         .call(
             "CreateEnvironment",
@@ -651,8 +685,11 @@ async fn a_version_a_running_environment_uses_is_refused() {
         "case {case:?}: a refused delete must not touch the store"
     );
 
-    // Terminate the environment, and once the termination the clock owes has
-    // completed the version carries no running environment any more.
+    // Terminate the environment — which a launch has to have got past its
+    // initial phase for, waited for as a CONDITION — and once the termination
+    // the clock owes has completed the version carries no running environment
+    // any more.
+    wait_for_status(&emulator, case, "running-env", eb::state::STATUS_READY).await;
     let terminated = emulator
         .call("TerminateEnvironment", &[("EnvironmentName", "running-env")])
         .await;
@@ -661,7 +698,7 @@ async fn a_version_a_running_environment_uses_is_refused() {
         "case {case:?}: expected 200 from TerminateEnvironment, got {} and body {}",
         terminated.status, terminated.body
     );
-    std::thread::sleep(PAST_DUE);
+    wait_for_status(&emulator, case, "running-env", eb::state::STATUS_TERMINATED).await;
     let deleted = emulator
         .call("DeletePlatformVersion", &[("PlatformArn", &arn)])
         .await;

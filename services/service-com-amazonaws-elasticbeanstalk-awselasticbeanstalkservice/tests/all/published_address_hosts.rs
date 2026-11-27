@@ -244,8 +244,26 @@ async fn no_published_environment_address_is_an_aws_production_name() {
         }
         let launched = ok_in(&emulator, case, row.region, "CreateEnvironment", &params).await;
         let environment_id = launched.expect("EnvironmentId", case).to_string();
-        let cname = launched.expect("CNAME", case).to_string();
+        // The launch reports the address of what answers BEHIND the name from the
+        // start; the NAME itself is published once the provisioning that assigns
+        // it has finished, so it is read off the environment below.
+        assert!(
+            launched.value("CNAME").is_none(),
+            "case {case:?}: a launch still provisioning reports no CNAME, got {}",
+            launched.body
+        );
         let endpoint_url = launched.expect("EndpointURL", case).to_string();
+        wait_for_status(&emulator, case, row.environment_name, eb::state::STATUS_READY).await;
+        let cname = ok_in(
+            &emulator,
+            case,
+            row.region,
+            "DescribeEnvironments",
+            &[("EnvironmentIds.member.1", environment_id.as_str())],
+        )
+        .await
+        .expect("Environments/member/CNAME", case)
+        .to_string();
 
         // Both published addresses obey the rule …
         emulator_address(case, "CNAME", &cname);
@@ -260,7 +278,10 @@ async fn no_published_environment_address_is_an_aws_production_name() {
         // The prefix the NAME carries — its first dot-label, the documented route
         // back to it — is what the PUBLIC DNS name is formed from, and the two
         // values are never the same string: one is an address a client dials, the
-        // other the name the service reports ON.
+        // other the name the service reports ON. The environment HOLDS that prefix,
+        // so the report says the name is not available and reserves none for this
+        // caller; the public name it forms is built here from the same two parts
+        // the service builds it from.
         let prefix = cname.split('.').next().unwrap_or_default().to_string();
         let checked = ok_in(
             &emulator,
@@ -270,14 +291,13 @@ async fn no_published_environment_address_is_an_aws_production_name() {
             &[("CNAMEPrefix", prefix.as_str())],
         )
         .await;
-        let reported_name = checked.expect("FullyQualifiedCNAME", case).to_string();
         assert_eq!(
-            reported_name,
-            format!("{prefix}.{}.{PUBLISHED_CNAME_ZONE}", row.region),
-            "case {case:?}: the reported name must be the one this prefix forms in its Region, \
-             got body {}",
+            checked.expect("Available", case),
+            "false",
+            "case {case:?}: the launched environment holds that prefix, got body {}",
             checked.body
         );
+        let reported_name = format!("{prefix}.{}.{PUBLISHED_CNAME_ZONE}", row.region);
         assert_ne!(
             cname, reported_name,
             "case {case:?}: the address a client dials must not be the public DNS name the prefix \
@@ -303,18 +323,12 @@ async fn no_published_environment_address_is_an_aws_production_name() {
         }
 
         // And the client the address exists for: a request stating the published
-        // host, on the port the plane answers at.
-        let expected = match row.version_label {
-            // "Ready: Environment is available to have an action performed on
-            // it" — waited for as a CONDITION, never as a fixed time, because the
-            // application behind the address is deployed by the launch.
-            Some(_) => {
-                wait_for_status(&emulator, case, row.environment_name, eb::state::STATUS_READY)
-                    .await;
-                Some(String::from_utf8_lossy(LAUNCH_DOCUMENT).to_string())
-            }
-            None => None,
-        };
+        // host, on the port the plane answers at. The application behind the
+        // address is deployed by the launch, which has finished above — waited
+        // for as a CONDITION, never as a fixed time.
+        let expected = row
+            .version_label
+            .map(|_| String::from_utf8_lossy(LAUNCH_DOCUMENT).to_string());
         for (member, address) in [("CNAME", &cname), ("EndpointURL", &endpoint_url)] {
             let answered = answer_at(&emulator, case, member, address).await;
             match expected.as_deref() {
@@ -392,12 +406,28 @@ async fn a_composed_environment_publishes_an_address_this_emulator_serves() {
              body {}",
             composed.body
         );
-        let cname = element.expect("CNAME", case).to_string();
+        // The composition reports the address of what answers behind the name
+        // from the start; the NAME is published once the launch has finished.
+        assert!(
+            element.value("CNAME").is_none(),
+            "case {case:?}: a launch still provisioning reports no CNAME, got body {}",
+            composed.body
+        );
         let endpoint_url = element.expect("EndpointURL", case).to_string();
-        emulator_address(case, "CNAME", &cname);
         emulator_address(case, "EndpointURL", &endpoint_url);
 
         wait_for_status(&emulator, case, environment_name, eb::state::STATUS_READY).await;
+        let cname = ok_in(
+            &emulator,
+            case,
+            TEST_REGION,
+            "DescribeEnvironments",
+            &[("EnvironmentNames.member.1", environment_name)],
+        )
+        .await
+        .expect("Environments/member/CNAME", case)
+        .to_string();
+        emulator_address(case, "CNAME", &cname);
         let document = String::from_utf8_lossy(document).to_string();
         for (member, address) in [("CNAME", &cname), ("EndpointURL", &endpoint_url)] {
             let answered = answer_at(&emulator, case, member, address).await;

@@ -20,7 +20,7 @@
 //! binary.
 
 use crate::lifecycle::{
-    assert_published_cname, Answer, Emulator, PAST_DUE, SOLUTION_STACK, TEST_REGION,
+    assert_published_cname, wait_for_status, Answer, Emulator, SOLUTION_STACK, TEST_REGION,
 };
 
 /// The application every environment below belongs to.
@@ -111,7 +111,9 @@ async fn a_name_is_held_until_its_environment_is_terminated_and_can_then_be_take
 
         let launched = launch(&emulator, case, "reuse-first").await;
         let first_id = launched.expect("EnvironmentId", case).to_string();
-        std::thread::sleep(PAST_DUE);
+        // The launch the clock owes is waited for as the CONDITION the
+        // environment reaches, never as a fixed time.
+        wait_for_status(&emulator, case, ENVIRONMENT, "Ready").await;
         assert_eq!(
             polled_status(&emulator, case).await,
             "Ready",
@@ -162,7 +164,7 @@ async fn a_name_is_held_until_its_environment_is_terminated_and_can_then_be_take
             "case {case:?}: the terminate must report Terminating, got {}",
             terminating.body
         );
-        std::thread::sleep(PAST_DUE);
+        wait_for_status(&emulator, case, ENVIRONMENT, "Terminated").await;
         let terminated = ok(
             &emulator,
             case,
@@ -192,7 +194,11 @@ async fn a_name_is_held_until_its_environment_is_terminated_and_can_then_be_take
             second_id, first_id,
             "case {case:?}: the re-created environment must carry a new EnvironmentId"
         );
-        assert_published_cname(case, again.expect("CNAME", case), TEST_REGION, prefix);
+        assert!(
+            again.value("CNAME").is_none(),
+            "case {case:?}: a launch still provisioning reports no CNAME, got {}",
+            again.body
+        );
 
         // And a client polling that NAME reads the record it has just created,
         // not the terminated one it replaced: the newest record is the first.
@@ -201,11 +207,26 @@ async fn a_name_is_held_until_its_environment_is_terminated_and_can_then_be_take
             "Launching",
             "case {case:?}: the first record reported for a reused name is the new one"
         );
-        std::thread::sleep(PAST_DUE);
+        wait_for_status(&emulator, case, ENVIRONMENT, "Ready").await;
         assert_eq!(
             polled_status(&emulator, case).await,
             "Ready",
             "case {case:?}: the new environment's own launch must complete"
+        );
+        // Once that launch has finished the environment is assigned the name it
+        // reserved, under whichever prefix the re-create asked for.
+        let published = ok(
+            &emulator,
+            case,
+            "DescribeEnvironments",
+            &[("EnvironmentNames.member.1", ENVIRONMENT)],
+        )
+        .await;
+        assert_published_cname(
+            case,
+            published.expect("Environments/member/CNAME", case),
+            TEST_REGION,
+            prefix,
         );
         let both = ok(
             &emulator,

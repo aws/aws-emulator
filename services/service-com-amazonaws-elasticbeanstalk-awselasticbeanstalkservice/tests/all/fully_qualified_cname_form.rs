@@ -16,10 +16,12 @@
 //!
 //! `dns_availability.rs` holds the `Available` rule and spells the whole name
 //! out; this suite holds the name apart into its parts and checks the form that
-//! every row must share, including rows whose prefix is one no environment could
-//! ever hold. The service domain is not written here: it is the serving target's
-//! own, so what is asserted is that it is a domain and that every row agrees on
-//! it.
+//! every row must share. The member states the name the prefix WOULD reserve, so
+//! it is reported exactly for a prefix that can be had: a prefix another
+//! environment holds, or one no host name label can carry, reserves nothing and
+//! reports no name — the rows below cover both. The service domain is not written
+//! here: it is the serving target's own, so what is asserted is that it is a
+//! domain and that every row agrees on it.
 //!
 //! The HTTP harness is the shared one, so this suite adds no second copy of it.
 
@@ -92,9 +94,8 @@ fn parts<'a>(value: &'a str, case: &str) -> Parts<'a> {
 async fn fully_qualified_cname_is_a_dns_name_built_from_the_prefix_and_the_region() {
     let emulator = Emulator::new();
 
-    // One live environment, so one row below asks about a prefix that is HELD:
-    // the member reports which name the prefix forms either way, so the form
-    // cannot depend on the answer beside it.
+    // One live environment, so the rows below can ask about a prefix that is
+    // HELD as well as free ones.
     let setup = emulator
         .call("CreateApplication", &[("ApplicationName", "cname-form")])
         .await;
@@ -134,11 +135,6 @@ async fn fully_qualified_cname_is_a_dns_name_built_from_the_prefix_and_the_regio
             region: TEST_REGION,
         },
         FormCase {
-            name: "prefix held by a live environment",
-            prefix: "form-held",
-            region: TEST_REGION,
-        },
-        FormCase {
             name: "shortest legal prefix",
             prefix: "abcd",
             region: TEST_REGION,
@@ -167,13 +163,6 @@ async fn fully_qualified_cname_is_a_dns_name_built_from_the_prefix_and_the_regio
             name: "a region whose name has three parts",
             prefix: "form-free",
             region: "ap-southeast-2",
-        },
-        FormCase {
-            name: "a prefix no environment could hold",
-            // Unavailable, and still reported: the member says which name the
-            // prefix WOULD form.
-            prefix: "form_bad",
-            region: TEST_REGION,
         },
     ];
 
@@ -215,6 +204,29 @@ async fn fully_qualified_cname_is_a_dns_name_built_from_the_prefix_and_the_regio
             "case {name:?}: expected the same service domain as case {first_name:?} ({first_domain:?}), got {domain:?}"
         );
     }
+
+    // The other side of the rule: a prefix that cannot be had reserves no name,
+    // so none is reported — one another environment holds, and one no host name
+    // label can carry.
+    for (name, prefix) in [
+        ("prefix held by a live environment", "form-held"),
+        ("a prefix no environment could hold", "form_bad"),
+    ] {
+        let answer = emulator
+            .call("CheckDNSAvailability", &[("CNAMEPrefix", prefix)])
+            .await;
+        assert_eq!(
+            answer.expect("Available", name),
+            "false",
+            "case {name:?}: expected the prefix to report unavailable, got {}",
+            answer.body
+        );
+        assert!(
+            answer.value("FullyQualifiedCNAME").is_none(),
+            "case {name:?}: a prefix that is not available reserves no name, got {}",
+            answer.body
+        );
+    }
 }
 
 #[tokio::test]
@@ -252,7 +264,10 @@ async fn the_reported_name_does_not_change_between_calls() {
                 ("ApplicationName", "cname-form"),
                 ("EnvironmentName", "stable-env"),
                 ("SolutionStackName", SOLUTION_STACK.as_str()),
-                ("CNAMEPrefix", prefix),
+                // ANOTHER prefix, so what the second read below reports is the
+                // name of a prefix that is still free: the launch in between is
+                // what could have changed it.
+                ("CNAMEPrefix", "form-other"),
             ],
         )
         .await;
@@ -267,8 +282,8 @@ async fn the_reported_name_does_not_change_between_calls() {
         .await;
     assert_eq!(
         second.expect("Available", case),
-        "false",
-        "case {case:?}: the created environment holds the name, got {}",
+        "true",
+        "case {case:?}: no environment holds this prefix, got {}",
         second.body
     );
     let second_value = second.expect("FullyQualifiedCNAME", case).to_string();
@@ -276,6 +291,22 @@ async fn the_reported_name_does_not_change_between_calls() {
         second_value, first_value,
         "case {case:?}: the name a prefix forms must not change, got {}",
         second.body
+    );
+    // The prefix the launch DID take reserves nothing for this caller any more,
+    // so no name comes back for it.
+    let taken = emulator
+        .call("CheckDNSAvailability", &[("CNAMEPrefix", "form-other")])
+        .await;
+    assert_eq!(
+        taken.expect("Available", case),
+        "false",
+        "case {case:?}: the created environment holds the name it took, got {}",
+        taken.body
+    );
+    assert!(
+        taken.value("FullyQualifiedCNAME").is_none(),
+        "case {case:?}: a prefix that is not available reserves no name, got {}",
+        taken.body
     );
     // Held to the form on its own as well, so a regression that made BOTH reads
     // equally wrong fails here rather than passing the equality above.

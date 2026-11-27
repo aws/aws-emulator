@@ -16,14 +16,19 @@
 //! and the terminal `Terminated` status rather than `Ready`.
 //!
 //! The rows span what the rule generalises over: the document in force on the
-//! caller (none at all, an allow of this service's actions alone, an explicit
-//! deny of the pass beside an allow of everything, an allow of the pass on
-//! every role, an allow of the pass on exactly the role the launch passes, an
-//! allow of the pass on another role), the instance profile the configuration
+//! caller (an allow of this service's actions alone, an explicit deny of the
+//! pass beside an allow of everything, an allow of the pass on every role, an
+//! allow of the pass on exactly the role the launch passes, an allow of the pass
+//! on another role), the instance profile the configuration
 //! names (none, so the published default, and one of its own), the principal
 //! (an assumed-role session and the account's own published credential), and
 //! the operation that launches — `CreateEnvironment`, from the request's own
 //! configuration, and `ComposeEnvironments`, from an environment manifest's.
+//!
+//! Every row's caller is one IAM lets launch at all: whether the caller may make
+//! the CALL is decided before any of this, and a caller no policy allows is
+//! refused it outright (`request_authorization.rs`). So each document below
+//! allows this service's actions, and what the row varies is the PASS.
 //!
 //! The role, its policies and the session live in the IAM store of the SAME
 //! shared engine — the records `iam:CreateRole`, `iam:PutRolePolicy` and
@@ -219,12 +224,6 @@ fn rows() -> Vec<Row> {
     let pass_role = "\"iam:PassRole\"";
     vec![
         Row {
-            case: "no policy at all",
-            document: None,
-            instance_profile: None,
-            launched: false,
-        },
-        Row {
             case: "an allow of this service's actions alone",
             document: Some(allow("\"elasticbeanstalk:DescribeEnvironments\"")),
             instance_profile: None,
@@ -358,16 +357,16 @@ async fn assert_launch_failure_events(emulator: &Emulator, case: &str, environme
         "case {case:?}: expected the {ERROR} event {:?}, got {events:?}",
         eb::state::LAUNCH_FAILED_EVENT
     );
-    let expected_prefix = format!(
-        "User: {} is not authorized to perform: iam:PassRole on resource: {} ",
+    let expected = format!(
+        "User: {} is not authorized to perform: iam:PassRole on resource: {}",
         session_arn(),
         passed_role_arn(profile)
     );
     assert!(
         events
             .iter()
-            .any(|(severity, message)| severity == ERROR && message.starts_with(&expected_prefix)),
-        "case {case:?}: expected an {ERROR} event opening {expected_prefix:?}, got {events:?}"
+            .any(|(severity, message)| severity == ERROR && message == &expected),
+        "case {case:?}: expected an {ERROR} event stating {expected:?}, got {events:?}"
     );
 }
 

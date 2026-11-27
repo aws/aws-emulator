@@ -16,7 +16,7 @@
 //! owns — the router this service is mounted in, spoken to with a
 //! form-urlencoded `Action=…` body.
 
-use crate::lifecycle::{Emulator, PAST_DUE, SOLUTION_STACK};
+use crate::lifecycle::{wait_for_status, Emulator, SOLUTION_STACK};
 
 /// One environment the table below creates: the name it is created under, and
 /// the operations role it is created with (`None` — created without one, so
@@ -243,6 +243,10 @@ async fn disassociate_refuses_a_name_that_names_no_live_environment() {
         200,
         "expected 200 from CreateEnvironment"
     );
+    // A termination can only take down an environment whose launch has got past
+    // its initial phase, which is what the clock owes it: waited for as a
+    // CONDITION, never as a fixed time.
+    wait_for_status(&emulator, "dead-env", "dead-env", "Ready").await;
     assert_eq!(
         emulator
             .call("TerminateEnvironment", &[("EnvironmentName", "dead-env")])
@@ -251,8 +255,9 @@ async fn disassociate_refuses_a_name_that_names_no_live_environment() {
         200,
         "expected 200 from TerminateEnvironment"
     );
-    // Let the clock finish the termination, after which the name holds nothing.
-    std::thread::sleep(PAST_DUE);
+    // The termination the clock owes, after which the name holds nothing: waited
+    // for as the CONDITION the environment reaches, never as a fixed time.
+    wait_for_status(&emulator, "dead-env", "dead-env", "Terminated").await;
 
     let cases = vec![
         RefusalCase {

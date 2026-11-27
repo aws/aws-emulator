@@ -49,6 +49,8 @@ use crate::ops::types::{
 };
 pub mod application_runtime;
 pub mod application_process;
+/// WHICH resource the IAM decision about a request to this service is taken on.
+pub mod authorized_resource;
 pub mod caller_archive;
 pub mod composed_environments;
 pub mod configuration_option_catalog;
@@ -56,6 +58,9 @@ pub mod configuration_option_descriptions;
 pub mod configuration_option_namespaces;
 pub mod configuration_setting_validation;
 pub mod deployed_application;
+/// What this service reports when a call it makes FOR THE CALLER in another
+/// service is refused there.
+pub mod downstream_refusal;
 pub mod ebextensions;
 pub mod environment_health;
 pub mod environment_launch;
@@ -71,6 +76,9 @@ pub mod managed_action_schedule;
 /// The account's object storage — the Elastic Beanstalk storage bucket and
 /// everything this service writes into or reads out of it.
 pub mod object_storage;
+/// The OPERATIONS ROLE an environment acts under, and how a value naming no
+/// usable role is refused.
+pub mod operations_role;
 pub mod platform_build;
 pub mod platform_catalog;
 pub mod procfile;
@@ -88,6 +96,7 @@ pub mod version_processing;
 
 pub use application_runtime::*;
 pub use application_process::*;
+pub use authorized_resource::*;
 pub use caller_archive::*;
 pub use composed_environments::*;
 pub use configuration_option_catalog::*;
@@ -95,6 +104,7 @@ pub use configuration_option_descriptions::*;
 pub use configuration_option_namespaces::*;
 pub use configuration_setting_validation::*;
 pub use deployed_application::*;
+pub use downstream_refusal::*;
 pub use ebextensions::*;
 pub use environment_health::*;
 pub use environment_launch::*;
@@ -105,6 +115,7 @@ pub use instance_log_streaming::*;
 pub use instance_provisioning::*;
 pub use managed_action_schedule::*;
 pub use object_storage::*;
+pub use operations_role::*;
 pub use platform_build::*;
 pub use platform_catalog::*;
 pub use procfile::*;
@@ -198,6 +209,17 @@ pub const STATUS_ABORTING: &str = "Aborting";
 /// environment reports while the update `UpdateEnvironment` starts is in
 /// flight.
 pub const STATUS_UPDATING: &str = "Updating";
+
+/// The sub-phase of an environment's INITIAL launch, which Elastic Beanstalk
+/// names in the refusal of an action on an environment whose launch has not got
+/// past it ("It is currently initial.").
+///
+/// NOT an `EnvironmentStatus`: the status of such an environment is
+/// [`STATUS_LAUNCHING`] ("Environment is in the process of initial deployment"),
+/// and this names where inside that deployment it is — the phase before the
+/// resources the launch provisions are its to tear down again, which is why a
+/// termination asked for during it is refused rather than accepted.
+pub const LAUNCH_PHASE_INITIAL: &str = "initial";
 
 /// The `ConfigurationDeploymentStatus` values this service writes, read from
 /// the modelled value set [`CONFIGURATION_DEPLOYMENT_STATUS_VALUES`] rather
@@ -2276,15 +2298,24 @@ pub struct Environment {
     pub platform_arn: Option<String>,
     pub template_name: Option<String>,
     pub description: Option<String>,
+    /// The DNS name this environment ANSWERS at — "the URL to the CNAME for this
+    /// environment" — which it is ASSIGNED when the provisioning its launch
+    /// started has finished, and which a `SwapEnvironmentCNAMEs` then moves
+    /// between two environments.
+    ///
+    /// EMPTY while the launch is still provisioning (and for a launch that never
+    /// was): the environment has reserved a name but answers at none, so the
+    /// reads of it report no `CNAME` at all rather than an address that is not
+    /// serving.
     pub cname: String,
     /// The CNAME this environment RESERVED: the name its own `CNAMEPrefix`
     /// formed when it was created.
     ///
-    /// A reservation is what `CheckDNSAvailability` reports on, and an
-    /// environment answers for the name it took only while it still carries it
-    /// — so a `SwapEnvironmentCNAMEs` that hands its CNAME to the other
-    /// environment leaves it carrying a name it never reserved, and the name it
-    /// gave away is reserved by nobody. See [`environment_reserving_cname`].
+    /// A live environment HOLDS the name it reserved from the moment of the
+    /// launch, whether or not it has been assigned it yet and whether or not a
+    /// `SwapEnvironmentCNAMEs` has since handed its address to another
+    /// environment — so the name stays taken for as long as this environment
+    /// lives. See [`environment_holding_cname_prefix`].
     pub reserved_cname: String,
     /// The DNS zone the names this environment publishes sit in: the zone this
     /// emulator announced its own names in when the launch minted them
@@ -2515,6 +2546,20 @@ impl Environment {
     /// performed on it, such as update or terminate."
     pub fn is_ready(&self) -> bool {
         self.status == STATUS_READY
+    }
+
+    /// The sub-phase of its INITIAL launch this environment is still in, when it
+    /// is in one at all: `Launching` ("Environment is in the process of initial
+    /// deployment") with the completion of that launch still owed by the clock.
+    ///
+    /// Elastic Beanstalk will not act on an environment whose launch has not got
+    /// past that phase and names the phase in the refusal
+    /// ([`cannot_terminate_environment_message`]), so this is what that guard asks.
+    /// An environment that has reached any later status — one that is running,
+    /// updating or shutting down — is in no launch phase.
+    pub fn initial_launch_phase(&self) -> Option<&'static str> {
+        (self.status == STATUS_LAUNCHING && self.pending_status.is_some())
+            .then_some(LAUNCH_PHASE_INITIAL)
     }
 
     /// The resources an event about this environment belongs to.
@@ -2781,6 +2826,14 @@ impl Environment {
             // its draft `failed` rather than `pending`, so the abort's own
             // return to `Ready` deploys nothing.
             self.deploy_pending_draft();
+            // The provisioning the launch started has finished, so the name the
+            // launch RESERVED is the one this environment now answers at: it is
+            // ASSIGNED here, which is what makes `CNAME` appear on the reads of
+            // it. A later assignment cannot move it, because the environment is
+            // only ever assigned the name once ([`Self::cname`]).
+            if self.cname.is_empty() {
+                self.cname = self.reserved_cname.clone();
+            }
         }
         if self.status == STATUS_TERMINATED {
             self.date_terminated = Some(pending.due_date);
@@ -2937,7 +2990,13 @@ macro_rules! environment_description {
             template_name: env.template_name.clone(),
             description: env.description.clone(),
             endpoint_url: env.endpoint_url(),
-            cname: Some(env.cname.clone()),
+            // "The URL to the CNAME for this environment": the address the
+            // environment ANSWERS at, which it is assigned when the provisioning
+            // its launch started has finished ([`$crate::state::Environment::cname`]).
+            // A launch still provisioning has reserved the name and been assigned
+            // none, so the member is absent rather than claiming an address that
+            // is not serving yet.
+            cname: (!env.cname.is_empty()).then(|| env.cname.clone()),
             date_created: Some(env.date_created),
             date_updated: Some(env.date_updated),
             status: Some(env.status.clone()),
@@ -4382,9 +4441,28 @@ pub const MISSING_ENVIRONMENT_SELECTOR_MESSAGE: &str =
 /// cannot word one class of refusal several ways.
 pub fn environment_invalid_state_message(environment_name: &str, required_state: &str) -> String {
     format!(
-        "Environment named {environment_name} is in an invalid state for this operation. \
-         Must be {required_state}."
+        "{} Must be {required_state}.",
+        environment_in_an_invalid_state(environment_name)
     )
+}
+
+/// The same refusal for a TERMINATION that cannot take an environment down
+/// because of the PHASE its initial launch is still in, which the real service
+/// words in its own sentence: `Cannot terminate environment named <name>. It is
+/// currently <phase>.`
+///
+/// `phase` is the launch sub-phase the environment is in
+/// ([`Environment::initial_launch_phase`]) — not an `EnvironmentStatus`, which is
+/// why the sentence reports what the environment IS in rather than what the
+/// operation needs.
+pub fn cannot_terminate_environment_message(environment_name: &str, phase: &str) -> String {
+    format!("Cannot terminate environment named {environment_name}. It is currently {phase}.")
+}
+
+/// The clause [`environment_invalid_state_message`] opens with, so an operation
+/// that states what it needs cannot word that opening a second way.
+fn environment_in_an_invalid_state(environment_name: &str) -> String {
+    format!("Environment named {environment_name} is in an invalid state for this operation.")
 }
 
 /// The state [`environment_invalid_state_message`] names for an operation that
@@ -4636,14 +4714,15 @@ pub fn service_state<Eng: Send + Sync + 'static>(
 // ---------------------------------------------------------------------------
 // The CNAME reservation rule
 //
-// A CNAME ([`fully_qualified_cname`]) is RESERVED by at most ONE live environment —
-// the one that took it when it was created and still carries it
-// ([`environment_reserving_cname_prefix`]) — and is SERVED by at most one live
+// A CNAME ([`fully_qualified_cname`]) is RESERVED by at most ONE live environment
+// — the one that took it when it was created — and is SERVED by at most one live
 // environment, which is whichever one carries it now
 // ([`environment_serving_cname`]); the two differ exactly for a name a
 // `SwapEnvironmentCNAMEs` has moved, which is also what separates the
 // environment a NAME reaches from the one its own address reaches
-// ([`environment_at_own_address`]). A prefix that cannot be a host name label
+// ([`environment_at_own_address`]). Either HOLDS the name
+// ([`environment_holding_cname_prefix`]), so a name in either hand is a name
+// nothing else can take. A prefix that cannot be a host name label
 // names no CNAME at all. All of it lives here, together, because
 // `CheckDNSAvailability` reports on the reservations and `CreateEnvironment`
 // enforces both, and the three must not disagree.
@@ -4668,20 +4747,32 @@ pub fn is_legal_cname_prefix(prefix: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
-/// The live environment in `store` that holds the RESERVATION for the CNAME the
-/// prefix `cname_prefix` forms in `region` — the one that took that DNS name when
-/// it was created and still carries it, which is what `CheckDNSAvailability`
-/// reports a prefix as unavailable for. A terminated environment holds nothing,
-/// and neither does one whose CNAME a swap has moved: it carries a name it never
-/// reserved, and the name it reserved is now carried by the environment it
-/// swapped with.
-pub fn environment_reserving_cname_prefix<'store>(
+/// The live environment in `store` that HOLDS the CNAME the prefix
+/// `cname_prefix` forms in `region` — the one that RESERVED that DNS name when it
+/// was created, or the one ANSWERING at it now, which after a
+/// `SwapEnvironmentCNAMEs` are two different environments. Either one makes the
+/// name taken, which is what `CheckDNSAvailability` reports a prefix as
+/// unavailable for and what a launch asking for that prefix is refused for: the
+/// name is in use whoever took it. A terminated environment holds nothing, so a
+/// name it held is free again.
+///
+/// The name it holds is the one to name in a refusal: the address it answers at
+/// when it has been assigned one, and otherwise the name its launch reserved.
+pub fn environment_holding_cname_prefix<'store>(
     store: &'store ComAmazonawsElasticbeanstalkAwselasticbeanstalkserviceState,
     region: &str,
     cname_prefix: &str,
-) -> Option<&'store Environment> {
-    environment_serving_cname_prefix(store, region, cname_prefix)
-        .filter(|environment| addresses(&environment.reserved_cname, region, cname_prefix))
+) -> Option<(&'store Environment, &'store str)> {
+    store.environments.values().find_map(|environment| {
+        if environment.is_terminated() {
+            return None;
+        }
+        if addresses(&environment.cname, region, cname_prefix) {
+            return Some((environment, environment.cname.as_str()));
+        }
+        addresses(&environment.reserved_cname, region, cname_prefix)
+            .then_some((environment, environment.reserved_cname.as_str()))
+    })
 }
 
 /// The live environment in `store` whose URL IS `cname` — the one answering at

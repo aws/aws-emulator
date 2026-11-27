@@ -252,12 +252,14 @@ async fn a_terminated_environment_is_absent_to_the_operations_role_calls() {
     application(&emulator, APPLICATION).await;
     let role = format!("arn:aws:iam::{}:role/eb-operations", account());
 
-    // Rows differ along the status the environment was terminated FROM (a
-    // settled one and one still launching) and whether it carried an operations
-    // role while it lived.
+    // Rows differ along what the rule generalises over: whether the environment
+    // carried an operations role while it lived, and whether that role was put
+    // on it by the launch or by a later association. Every row terminates from
+    // `Ready`: a launch that has not got past its initial phase is one no
+    // termination can take down.
     let rows: [(&str, &str, bool, bool); 3] = [
         ("terminated from Ready", "role-env-ready", true, false),
-        ("terminated while launching", "role-env-launching", false, false),
+        ("terminated carrying no role", "role-env-launching", true, false),
         (
             "terminated after carrying a role",
             "role-env-associated",

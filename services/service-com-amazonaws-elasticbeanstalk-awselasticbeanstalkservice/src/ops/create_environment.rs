@@ -13,7 +13,12 @@
 //! deploys, completed by `GroupName`. The launch is provisioned only if IAM lets this
 //! caller pass the IAM instance profile the configuration gives the environment's
 //! instances: one it will not reaches `Terminated` with that refusal in its event stream
-//! rather than `Ready` (`crate::state::environment_launch_failure`). This is the ONLY file
+//! rather than `Ready` (`crate::state::environment_launch_failure`). Whether the caller
+//! may launch at all is IAM's decision, taken before anything is read or written
+//! (`crate::service::authorization`), and an `OperationsRole` the launch carries has to
+//! name a role this service can act under (`crate::state::operations_role`). The
+//! environment is ASSIGNED the CNAME its launch reserved once that provisioning finishes,
+//! so this response reports no `CNAME` yet. This is the ONLY file
 //! to touch for this operation.
 //!
 //! ## Shape of an operation
@@ -247,6 +252,47 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let region = crate::state::request_region(ctx);
+        // IAM decides whether this caller may launch the environment the request
+        // names BEFORE anything is read or written, so a caller its policies do
+        // not permit is refused and no environment is launched for it.
+        if let Some(message) = crate::service::authorization::refusal(
+            &*self.engine,
+            ctx,
+            <Self as smithy_server_runtime::Operation>::NAME,
+            &crate::state::launched_environment_resource(
+                &region,
+                &input.application_name,
+                input.environment_name.as_deref(),
+            ),
+        ) {
+            return Err(CreateEnvironmentError::access_denied(message));
+        }
+        // "OperationsRole: The ARN of an existing IAM role to be used as the
+        // environment's operations role" — the launch may carry one from the
+        // start, and it is the same member `AssociateEnvironmentOperationsRole`
+        // sets later, so handing it over is decided here the same way: IAM says
+        // whether this caller may pass the role, and the role itself has to
+        // EXIST ([`crate::state::operations_role`]).
+        if let Some(operations_role) = input.operations_role.as_deref() {
+            if !crate::service::authorization::may_pass_role(&*self.engine, ctx, operations_role) {
+                return Err(
+                    CreateEnvironmentErrorModeled::InsufficientPrivilegesException(
+                        InsufficientPrivilegesException {
+                            message: Some(
+                                crate::service::authorization::INSUFFICIENT_PASS_ROLE_PRIVILEGES
+                                    .to_string(),
+                            ),
+                        },
+                    )
+                    .into(),
+                );
+            }
+            if let Some(message) =
+                crate::state::operations_role_refusal(ctx, &region, operations_role).await
+            {
+                return Err(CreateEnvironmentError::invalid_parameter_value(message));
+            }
+        }
         // WHERE this launch publishes the environment's addresses: the zone this
         // emulator announces its own names in, and the address the environment
         // plane answers on — whose socket is opened on the first call that needs
@@ -490,11 +536,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> CreateEnvironment
                 )));
             }
             let cname_prefix_taken =
-                crate::state::environment_serving_cname_prefix(&store, &region, cname_prefix)
-                    .map(|serving| serving.cname.clone());
-            // Two environments cannot answer at one address, so the name any
-            // live environment is serving cannot be taken — including one it
-            // took in a swap rather than reserved itself.
+                crate::state::environment_holding_cname_prefix(&store, &region, cname_prefix)
+                    .map(|(_, held)| held.to_string());
+            // Two environments cannot hold one name, so a name any live
+            // environment holds cannot be taken — the one it reserved when it
+            // was launched, and the one it answers at now, which a swap may
+            // have handed it.
             if let Some(cname) = cname_prefix_taken {
                 return Err(CreateEnvironmentError::invalid_parameter_value(format!(
                     "DNS name ({cname}) is not available."

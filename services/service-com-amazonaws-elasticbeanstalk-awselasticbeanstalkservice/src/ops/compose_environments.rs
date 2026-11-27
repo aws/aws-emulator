@@ -29,7 +29,9 @@
 //! bundle holds no readable manifest describes no environment either, so it is refused
 //! rather than composing an environment whose name was invented. The application the
 //! request names is resolved FIRST, so a name no application exists under is reported as
-//! that rather than as a version that cannot be composed. This is the ONLY file to touch
+//! that rather than as a version that cannot be composed. Whether the caller may compose
+//! the group at all is IAM's decision, taken before any of that is read or written
+//! (`crate::service::authorization`). This is the ONLY file to touch
 //! for this operation.
 //!
 //! ## Shape of an operation
@@ -176,6 +178,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let region = crate::state::request_region(ctx);
+        // IAM decides whether this caller may compose the application's group of
+        // environments BEFORE anything is read or written, so a caller its
+        // policies do not permit is refused — ahead of every statement this call
+        // makes about the request's own parameters — and no environment of the
+        // group is created or updated.
+        if let Some(message) = crate::service::authorization::refusal(
+            &*self.engine,
+            ctx,
+            <Self as smithy_server_runtime::Operation>::NAME,
+            &crate::state::application_resource(&region, input.application_name.as_deref()),
+        ) {
+            return Err(ComposeEnvironmentsError::access_denied(message));
+        }
         // WHERE an environment this composition launches publishes its addresses:
         // the zone this emulator announces its own names in, and the address the
         // environment plane answers on — whose socket is opened on the first call

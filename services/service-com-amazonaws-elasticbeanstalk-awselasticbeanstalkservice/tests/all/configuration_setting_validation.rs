@@ -986,6 +986,10 @@ async fn a_request_that_names_no_single_configuration_set_is_refused() {
 #[tokio::test]
 async fn a_terminated_environment_runs_no_configuration_to_validate_against() {
     let emulator = emulator_with_configuration_sets().await;
+    // A termination can only take down an environment whose launch has got past
+    // its initial phase, which is what the clock owes it: waited for as a
+    // CONDITION, never as a fixed time.
+    polled_until(&emulator, "a launched environment", "Ready").await;
     created(
         &emulator,
         "TerminateEnvironment",

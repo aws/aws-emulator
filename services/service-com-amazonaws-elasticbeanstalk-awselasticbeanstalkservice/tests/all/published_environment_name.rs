@@ -266,7 +266,25 @@ async fn an_environment_publishes_the_dns_name_its_prefix_forms() {
         }
         let launched = ok_in(&emulator, case, row.region, "CreateEnvironment", &params).await;
         let environment_id = launched.expect("EnvironmentId", case).to_string();
-        let cname = launched.expect("CNAME", case).to_string();
+        // The name is published once the provisioning the launch started has
+        // finished, so the launch itself reports none and the CNAME is read off
+        // the environment.
+        assert!(
+            launched.value("CNAME").is_none(),
+            "case {case:?}: a launch still provisioning reports no CNAME, got {}",
+            launched.body
+        );
+        wait_for_status(&emulator, case, row.environment_name, eb::state::STATUS_READY).await;
+        let cname = ok_in(
+            &emulator,
+            case,
+            row.region,
+            "DescribeEnvironments",
+            &[("EnvironmentIds.member.1", environment_id.as_str())],
+        )
+        .await
+        .expect("Environments/member/CNAME", case)
+        .to_string();
 
         // The prefix the launch holds: the one it supplied, or the environment's
         // own name with its unique id body appended for a launch that supplied
@@ -355,14 +373,12 @@ async fn an_environment_publishes_the_dns_name_its_prefix_forms() {
             "case {case:?}: the prefix this environment holds must not be available, got body {}",
             checked.body
         );
-        // The name that operation REPORTS for the recovered prefix is Elastic
-        // Beanstalk's own published name for it — a name the report is about, not
-        // the address this environment is reached at, which is the `CNAME` above.
-        assert_eq!(
-            checked.expect("FullyQualifiedCNAME", case),
-            emulator.reserved_cname(row.region, recovered),
-            "case {case:?}: the reported name must be the one this prefix forms in its Region, \
-             got body {}",
+        // A prefix that is not available reserves nothing, so the report carries
+        // no name for it: the name belongs to this environment, which publishes
+        // it as the `CNAME` above.
+        assert!(
+            checked.value("FullyQualifiedCNAME").is_none(),
+            "case {case:?}: a prefix that is not available reserves no name, got body {}",
             checked.body
         );
         assert_eq!(

@@ -242,10 +242,13 @@ async fn deployed(emulator: &Emulator, case: &str, prefix: &str, bundle: Bundle)
     )
     .await;
     let address = published_address(emulator, prefix);
-    // The environment publishes the name its prefix forms, under a sub-domain of
-    // its own: the prefix is the first label either way, which is what the address
-    // above dials.
-    assert_published_cname(case, launched.expect("CNAME", case), TEST_REGION, prefix);
+    // The launch has not been assigned its address yet, so it reports none; the
+    // name the environment publishes is read once the launch has finished, below.
+    assert!(
+        launched.value("CNAME").is_none(),
+        "case {case:?}: a launch still provisioning reports no CNAME, got {}",
+        launched.body
+    );
     // The `EndpointURL` beside the name is the address of what answers BEHIND it,
     // which is a host too — never the name, and never a host carrying a port or a
     // path. WHICH address it is (the environment's load balancer, or its single
@@ -257,7 +260,26 @@ async fn deployed(emulator: &Emulator, case: &str, prefix: &str, bundle: Bundle)
          {endpoint:?} and body {}",
         launched.body
     );
-    std::thread::sleep(PAST_DUE);
+    // The launch the clock owes is waited for as the CONDITION the environment
+    // reaches, never as a fixed time: the application behind the address is
+    // deployed by it, and the name it publishes is assigned when it finishes.
+    wait_for_status(emulator, case, "deployed-env-1", eb::state::STATUS_READY).await;
+    // The environment publishes the name its prefix forms, under a sub-domain of
+    // its own: the prefix is the first label either way, which is what the address
+    // above dials.
+    let described = ok(
+        emulator,
+        case,
+        "DescribeEnvironments",
+        &[("EnvironmentNames.member.1", "deployed-env-1")],
+    )
+    .await;
+    assert_published_cname(
+        case,
+        described.expect("Environments/member/CNAME", case),
+        TEST_REGION,
+        prefix,
+    );
 }
 
 /// RULE: the address an environment publishes is served by the application the

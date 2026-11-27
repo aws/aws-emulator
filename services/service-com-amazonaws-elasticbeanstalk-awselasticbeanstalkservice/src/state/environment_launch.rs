@@ -121,11 +121,17 @@ impl Environment {
             platform_arn,
             template_name,
             description,
-            // The launch RESERVES the name it publishes, which is what
-            // `CheckDNSAvailability` reports the prefix as taken for until this
-            // environment stops carrying that name.
-            reserved_cname: cname.clone(),
-            cname,
+            // The launch RESERVES the name it will publish, which is what
+            // `CheckDNSAvailability` reports the prefix as taken for, and what a
+            // second launch asking for the same prefix is refused for, from this
+            // call onwards.
+            reserved_cname: cname,
+            // The environment is ASSIGNED that name when the provisioning this
+            // launch starts has finished — not here: a launch still provisioning
+            // answers at no address, so it publishes none and the reads of it
+            // report no `CNAME` yet ([`Environment::materialize_due`] assigns
+            // it).
+            cname: String::new(),
             // Where the OTHER address it publishes is announced, and the address
             // its instances answer at: what its `EndpointURL` is derived from once
             // the resources below are provisioned ([`Environment::endpoint_url`]).

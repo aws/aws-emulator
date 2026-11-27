@@ -4,12 +4,13 @@
 //!
 //! The rules under test: the DNS name a prefix forms is
 //! `<prefix>.<region>.elasticbeanstalk.<zone>`, which is what
-//! `FullyQualifiedCNAME` reports — the name the check is ABOUT — and which is also
-//! the name the environment created under that prefix PUBLISHES as its `CNAME`.
-//! The name can be RESERVED by at most ONE live
-//! environment in its Region — the one that took it when it was created and still
-//! carries it — and it is available exactly when the prefix can be a host name
-//! label at all and no live environment holds that reservation. Checking a prefix
+//! `FullyQualifiedCNAME` reports for a prefix that is AVAILABLE — the name that
+//! prefix would reserve — and which is also the name the environment created under
+//! that prefix publishes as its `CNAME`. The name is HELD by at most ONE live
+//! environment in its Region — the one that reserved it when it was created, or the
+//! one answering at it now — and it is available exactly when the prefix can be a
+//! host name label at all and no live environment holds it; a prefix that is not
+//! available reserves nothing, so no name is reported for it. Checking a prefix
 //! is a REPORT: it reserves nothing and releases nothing. What a swap leaves of
 //! those reservations is `cname_reservation.rs`.
 //!
@@ -17,7 +18,9 @@
 //! the one `lifecycle.rs` already owns in this same test binary, so this suite
 //! adds no second copy of it.
 
-use crate::lifecycle::{assert_published_cname, Emulator, CNAME_ZONE, SOLUTION_STACK, TEST_REGION};
+use crate::lifecycle::{
+    assert_published_cname, wait_for_status, Emulator, CNAME_ZONE, SOLUTION_STACK, TEST_REGION,
+};
 
 /// How long a poll below waits for a transition the CLOCK owes to be completed before it
 /// gives up: generous, so a loaded host is not what decides the outcome. The transition
@@ -80,12 +83,13 @@ async fn availability_is_derived_from_the_prefix_and_the_live_environments() {
         "case \"setup\": expected 200 from CreateEnvironment, got {} and body {}",
         held.status, held.body
     );
-    assert_published_cname(
-        "setup",
-        held.expect("CNAME", "setup"),
-        TEST_REGION,
-        "held-prefix",
+    assert!(
+        held.value("CNAME").is_none(),
+        "case \"setup\": a launch still provisioning reports no CNAME, got {}",
+        held.body
     );
+    // The prefix is held from the launch onwards — the launch RESERVED it — so
+    // the rows below do not wait for the provisioning to finish.
 
     // Rows differ along what the rule generalises over: whether the name is
     // held, the region the name is asked about, the case it is spelled in, the
@@ -183,10 +187,23 @@ async fn availability_is_derived_from_the_prefix_and_the_live_environments() {
             case.name,
             answer.body
         );
-        assert_eq!(
-            answer.expect("FullyQualifiedCNAME", case.name),
-            dns_name(case.prefix, case.region),
-            "case {:?}: unexpected FullyQualifiedCNAME in {}",
+        // "The fully qualified CNAME to RESERVE when CreateEnvironment is called
+        // with the provided prefix": a prefix that can be had reports the name
+        // it would take, and one that cannot reports no name at all — the name
+        // belongs to whoever holds it.
+        if case.available {
+            assert_eq!(
+                answer.expect("FullyQualifiedCNAME", case.name),
+                dns_name(case.prefix, case.region),
+                "case {:?}: unexpected FullyQualifiedCNAME in {}",
+                case.name,
+                answer.body
+            );
+            continue;
+        }
+        assert!(
+            answer.value("FullyQualifiedCNAME").is_none(),
+            "case {:?}: a prefix that is not available reserves no name, got {}",
             case.name,
             answer.body
         );
@@ -276,7 +293,17 @@ async fn checking_a_prefix_neither_reserves_nor_releases_it() {
         created.status, created.body
     );
     let environment_id = created.expect("EnvironmentId", case).to_string();
-    let held_cname = created.expect("CNAME", case).to_string();
+    // The environment is assigned the name its launch reserved once that launch
+    // has finished, which is where the held CNAME is read.
+    wait_for_status(&emulator, case, "pure-env", "Ready").await;
+    let held_cname = emulator
+        .call(
+            "DescribeEnvironments",
+            &[("EnvironmentIds.member.1", environment_id.as_str())],
+        )
+        .await
+        .expect("Environments/member/CNAME", case)
+        .to_string();
 
     // Now it is held, and repeated checks do not release it.
     for round in 0..3 {
@@ -439,9 +466,16 @@ async fn create_environment_holds_the_same_cname_rule() {
         "case \"another region\": the same prefix names another CNAME there, got {} and body {}",
         elsewhere.status, elsewhere.body
     );
+    wait_for_status(&emulator, "another region", "taken-env-elsewhere", "Ready").await;
+    let published = emulator
+        .call(
+            "DescribeEnvironments",
+            &[("EnvironmentNames.member.1", "taken-env-elsewhere")],
+        )
+        .await;
     assert_published_cname(
         "another region",
-        elsewhere.expect("CNAME", "another region"),
+        published.expect("Environments/member/CNAME", "another region"),
         "eu-central-1",
         "taken-prefix",
     );

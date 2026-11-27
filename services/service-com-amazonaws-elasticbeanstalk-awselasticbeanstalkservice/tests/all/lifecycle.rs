@@ -276,20 +276,6 @@ impl Emulator {
         )
     }
 
-    /// The NAME the CNAME prefix `prefix` forms in `region` in Elastic Beanstalk's
-    /// own zone — what `CheckDNSAvailability` REPORTS for it.
-    ///
-    /// The FORM is spelled out here rather than read off the crate, so a suite
-    /// that asserts the reported value holds the service to it: the prefix exactly
-    /// as the caller wrote it, the Region, then that zone ([`CNAME_ZONE`]).
-    ///
-    /// Not an address: the address an environment under that prefix is REACHED at
-    /// is published in the zone this emulator answers in
-    /// ([`Emulator::dialable_name`], [`assert_published_cname`]).
-    pub(crate) fn reserved_cname(&self, region: &str, prefix: &str) -> String {
-        format!("{prefix}.{region}.{CNAME_ZONE}")
-    }
-
     /// A name under the zone this emulator announces in that reaches the
     /// environment carrying the CNAME prefix `prefix` in `region`: the plane serves
     /// a request naming a prefix for whichever environment carries that prefix
@@ -983,7 +969,14 @@ async fn the_application_and_environment_lifecycle_runs_end_to_end() {
         "case {case:?}: expected an e-<lowercase alnum> EnvironmentId of the published length, \
          got {environment_id:?}"
     );
-    let cname = environment.expect("CNAME", case).to_string();
+    // The launch has not been assigned its address yet, so it reports none: the
+    // environment is assigned the name its launch reserved once that
+    // provisioning finishes, which is where the CNAME is read below.
+    assert!(
+        environment.value("CNAME").is_none(),
+        "case {case:?}: a launch still provisioning reports no CNAME, got {}",
+        environment.body
+    );
     assert_eq!(
         environment.expect("Status", case),
         "Launching",
@@ -1012,7 +1005,10 @@ async fn the_application_and_environment_lifecycle_runs_end_to_end() {
         environment.body
     );
 
-    // 5. DescribeEnvironments returns exactly what was persisted.
+    // 5. DescribeEnvironments returns exactly what was persisted — once the
+    //    provisioning the launch started has finished, which is when the
+    //    environment is assigned the CNAME its launch reserved.
+    wait_for_status(&emulator, case, "my-env-1", "Ready").await;
     let described = emulator
         .call("DescribeEnvironments", &[("ApplicationName", "my-app")])
         .await;
@@ -1021,6 +1017,14 @@ async fn the_application_and_environment_lifecycle_runs_end_to_end() {
         vec![environment_id.as_str()],
         "case {case:?}: DescribeEnvironments must return the created environment, got {}",
         described.body
+    );
+    let cname = described
+        .expect("Environments/member/CNAME", case)
+        .to_string();
+    assert!(
+        cname.starts_with("my-env-1-"),
+        "case {case:?}: the assigned CNAME must carry the generated prefix of this \
+         environment, got {cname:?}"
     );
     assert_eq!(
         described.values_at("Environments/member/CNAME"),
@@ -1054,7 +1058,9 @@ async fn the_application_and_environment_lifecycle_runs_end_to_end() {
         "case {case:?}: TerminateEnvironment reports Terminating, got {}",
         terminated.body
     );
-    std::thread::sleep(PAST_DUE);
+    // The termination the clock owes is waited for as the CONDITION the
+    // environment reaches, never as a fixed time.
+    wait_for_status(&emulator, case, "my-env-1", "Terminated").await;
 
     let after = emulator.call("DescribeEnvironments", &[]).await;
     assert!(
@@ -1103,8 +1109,24 @@ async fn the_application_and_environment_lifecycle_runs_end_to_end() {
          described, got {}",
         deleting.body
     );
-    std::thread::sleep(PAST_DUE);
-    let gone = emulator.call("DescribeApplications", &[]).await;
+    // The application's removal is waited for as the CONDITION a client polling
+    // the report sees, never as a fixed time.
+    let started = std::time::Instant::now();
+    let gone = loop {
+        let described = emulator.call("DescribeApplications", &[]).await;
+        if described
+            .values_at("Applications/member/ApplicationName")
+            .is_empty()
+        {
+            break described;
+        }
+        assert!(
+            started.elapsed() < STATUS_DEADLINE,
+            "case {case:?}: the deleted application was still listed, got {}",
+            described.body
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    };
     assert!(
         gone.values_at("Applications/member/ApplicationName").is_empty(),
         "case {case:?}: the deleted application must not be listed, got {}",
@@ -1283,14 +1305,20 @@ async fn created_environments_are_derived_from_the_request_and_persisted() {
         );
 
         let environment_id = created.expect("EnvironmentId", name).to_string();
-        let cname = created.expect("CNAME", name).to_string();
+        // The launch reports no address yet: the environment is assigned the
+        // name its launch reserved when the provisioning finishes, which is
+        // where the CNAME is read below.
+        assert!(
+            created.value("CNAME").is_none(),
+            "case {name:?}: a launch still provisioning reports no CNAME, got {}",
+            created.body
+        );
         let expected_prefix = case
             .cname_prefix
             .map(str::to_string)
             // With no prefix the environment name carries one appended
             // alphanumeric string — its own unique id body.
             .unwrap_or_else(|| format!("{name}-{}", environment_id.trim_start_matches("e-")));
-        assert_published_cname(name, &cname, case.region, &expected_prefix);
         assert_eq!(
             created.expect("EnvironmentArn", name),
             format!(
@@ -1314,7 +1342,9 @@ async fn created_environments_are_derived_from_the_request_and_persisted() {
             created.body
         );
 
-        // The round trip: everything above must come back from the store.
+        // The round trip: everything above must come back from the store, with
+        // the address the environment is assigned once its launch has finished.
+        wait_for_status(&emulator, name, name, "Ready").await;
         let described = emulator
             .call(
                 "DescribeEnvironments",
@@ -1327,12 +1357,10 @@ async fn created_environments_are_derived_from_the_request_and_persisted() {
             "case {name:?}: the id filter must return that environment, got {}",
             described.body
         );
-        assert_eq!(
-            described.values_at("Environments/member/CNAME"),
-            vec![cname.as_str()],
-            "case {name:?}: the stored CNAME must come back, got {}",
-            described.body
-        );
+        let cname = described
+            .expect("Environments/member/CNAME", name)
+            .to_string();
+        assert_published_cname(name, &cname, case.region, &expected_prefix);
         assert_eq!(
             described.values_at("Environments/member/Tier/Name"),
             vec![case.tier_name.unwrap_or("WebServer")],

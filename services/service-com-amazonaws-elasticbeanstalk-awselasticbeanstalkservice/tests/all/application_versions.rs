@@ -16,7 +16,7 @@
 //! speaks to the service over the same router and in the same dialect the rest of
 //! the crate's tests do.
 
-use crate::lifecycle::{Emulator, PAST_DUE, SOLUTION_STACK};
+use crate::lifecycle::{wait_for_status, Emulator, SOLUTION_STACK};
 
 /// `VersionLabel`'s modelled length bound is 1..100
 /// (`smithy_query(query="operation",operation="DeleteApplicationVersion")`), so a
@@ -505,6 +505,10 @@ async fn a_version_becomes_deletable_once_its_environment_has_terminated() {
         environment.status, environment.body
     );
 
+    // A termination can only take down an environment whose launch has got past
+    // its initial phase, which is what the clock owes it: waited for as a
+    // CONDITION, never as a fixed time.
+    wait_for_status(&emulator, case, "app-env", "Ready").await;
     let terminating = emulator
         .call("TerminateEnvironment", &[("EnvironmentName", "app-env")])
         .await;
@@ -541,8 +545,9 @@ async fn a_version_becomes_deletable_once_its_environment_has_terminated() {
     );
 
     // Once the clock has made the termination due, nothing running is deployed
-    // from the version and the same call succeeds.
-    std::thread::sleep(PAST_DUE);
+    // from the version and the same call succeeds — waited for as the CONDITION
+    // the environment reaches, never as a fixed time.
+    wait_for_status(&emulator, case, "app-env", "Terminated").await;
     let deleted = emulator
         .call(
             "DeleteApplicationVersion",

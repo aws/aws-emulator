@@ -2,7 +2,9 @@
 
 //! @op RebuildEnvironment
 //! Implemented: puts the stored environment back through its deployment — `Launching`,
-//! with the move back to `Ready` due shortly after — and answers empty. This is the ONLY
+//! with the move back to `Ready` due shortly after — and answers empty. Whether the
+//! caller may rebuild it at all is IAM's decision, taken before anything is read or
+//! written (`crate::service::authorization`). This is the ONLY
 //! file to touch for this operation.
 //!
 //! ## Shape of an operation
@@ -150,7 +152,64 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
+        let region = crate::state::request_region(ctx);
+        // IAM decides whether this caller may rebuild the environment the
+        // request names BEFORE anything is read or written, so a caller its
+        // policies do not permit is refused and nothing of the environment is
+        // deleted or recreated.
+        if let Some(message) = crate::service::authorization::refusal(
+            &*self.engine,
+            ctx,
+            <Self as smithy_server_runtime::Operation>::NAME,
+            &crate::state::environment_resource(
+                &*self.engine,
+                &region,
+                input.environment_id.as_deref(),
+                input.environment_name.as_deref(),
+            ),
+        ) {
+            return Err(RebuildEnvironmentError::access_denied(message));
+        }
+        // "Deletes and recreates all of the Amazon Web Services resources (for
+        // example: the Auto Scaling group, load balancer, etc.) for a specified
+        // environment": those resources are created FOR THE CALLER in the
+        // services that own them, so the recreation is made with the caller's own
+        // permissions — and nothing is recreated without launching the
+        // environment's Amazon EC2 instances again. A caller EC2 would refuse
+        // that launch to cannot have the environment rebuilt, and what this call
+        // reports is the refusal EC2 answered with
+        // ([`crate::state::unauthorized_operation_message`]).
+        if let Some(refused) = crate::service::authorization::classified_refusal(
+            &*self.engine,
+            ctx,
+            crate::state::ACTION_RUN_INSTANCES,
+            &crate::state::environment_instances_resource(&region),
+        ) {
+            return Err(RebuildEnvironmentError::invalid_parameter_value(
+                crate::state::unauthorized_operation_message(&refused),
+            ));
+        }
+        // The environment's own operations role has to be one this service can
+        // act under, since this call acts on that environment
+        // ([`crate::state::operations_role`]).
+        if let Some(message) = crate::state::unusable_operations_role_refusal(
+            &*self.engine,
+            ctx,
+            &region,
+            input.environment_id.as_deref(),
+            input.environment_name.as_deref(),
+        )
+        .await
+        {
+            return Err(
+                RebuildEnvironmentErrorModeled::InsufficientPrivilegesException(
+                    InsufficientPrivilegesException {
+                        message: Some(message),
+                    },
+                )
+                .into(),
+            );
+        }
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             RebuildEnvironmentError::internal_failure("the Elastic Beanstalk store is unavailable")
         })?;

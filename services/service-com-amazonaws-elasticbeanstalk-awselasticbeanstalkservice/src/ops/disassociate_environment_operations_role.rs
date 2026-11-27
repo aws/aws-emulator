@@ -150,7 +150,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
+        let region = crate::state::request_region(ctx);
+        // IAM decides whether this caller may change the environment the request
+        // names BEFORE anything is read or written, so a caller its policies do
+        // not permit is refused and the environment keeps its operations role.
+        if let Some(message) = crate::service::authorization::refusal(
+            &*self.engine,
+            ctx,
+            <Self as smithy_server_runtime::Operation>::NAME,
+            &crate::state::environment_resource(
+                &*self.engine,
+                &region,
+                None,
+                Some(input.environment_name.as_str()),
+            ),
+        ) {
+            return Err(DisassociateEnvironmentOperationsRoleError::access_denied(
+                message,
+            ));
+        }
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             DisassociateEnvironmentOperationsRoleError::internal_failure(
                 "the Elastic Beanstalk store is unavailable",

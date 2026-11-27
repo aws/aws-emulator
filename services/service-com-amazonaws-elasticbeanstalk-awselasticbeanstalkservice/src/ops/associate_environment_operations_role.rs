@@ -4,7 +4,12 @@
 //! Implemented: stores the operations role on the named environment, so every later
 //! read of that environment reports it. An environment whose termination has
 //! completed is no environment this operation acts on, so naming one is refused as
-//! naming no environment is. This is the ONLY file to touch for this
+//! naming no environment is. The role itself has to be one this service can act
+//! under — an existing IAM role of this account whose trust policy admits it — and a
+//! value naming none is refused with the environment left as it was
+//! (`crate::state::operations_role`). Whether the caller may change the environment at
+//! all is IAM's decision, taken before anything is read or written
+//! (`crate::service::authorization`). This is the ONLY file to touch for this
 //! operation.
 //!
 //! ## Shape of an operation
@@ -152,7 +157,62 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
+        let region = crate::state::request_region(ctx);
+        // IAM decides whether this caller may change the environment the request
+        // names BEFORE anything is read or written, so a caller its policies do
+        // not permit is refused and the environment is left exactly as it was.
+        if let Some(message) = crate::service::authorization::refusal(
+            &*self.engine,
+            ctx,
+            <Self as smithy_server_runtime::Operation>::NAME,
+            &crate::state::environment_resource(
+                &*self.engine,
+                &region,
+                None,
+                Some(input.environment_name.as_str()),
+            ),
+        ) {
+            return Err(AssociateEnvironmentOperationsRoleError::access_denied(
+                message,
+            ));
+        }
+        // "The Amazon Resource Name (ARN) of an EXISTING IAM role to be used as
+        // the environment's operations role", which Elastic Beanstalk then uses
+        // "for permissions to downstream services during subsequent calls
+        // acting on this environment": handing that role over is the CALLER's
+        // act, so IAM decides whether this caller may pass it — and a caller
+        // that may not lacks the privileges this feature needs, which is the
+        // error this operation models for it. Asked before the store is locked,
+        // since it asks IAM.
+        if !crate::service::authorization::may_pass_role(
+            &*self.engine,
+            ctx,
+            &input.operations_role,
+        ) {
+            return Err(
+                AssociateEnvironmentOperationsRoleErrorModeled::InsufficientPrivilegesException(
+                    InsufficientPrivilegesException {
+                        message: Some(
+                            crate::service::authorization::INSUFFICIENT_PASS_ROLE_PRIVILEGES
+                                .to_string(),
+                        ),
+                    },
+                )
+                .into(),
+            );
+        }
+        // And the role has to EXIST: a value IAM holds no role under names
+        // nothing that can be associated, so the request is refused and the
+        // environment keeps the role it carried. Whether this service can act
+        // under the role it does name is paid by the calls that follow, not here
+        // ([`crate::state::operations_role`]).
+        if let Some(message) =
+            crate::state::operations_role_refusal(ctx, &region, &input.operations_role).await
+        {
+            return Err(
+                AssociateEnvironmentOperationsRoleError::invalid_parameter_value(message),
+            );
+        }
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             AssociateEnvironmentOperationsRoleError::internal_failure(
                 "the Elastic Beanstalk store is unavailable",

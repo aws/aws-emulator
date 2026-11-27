@@ -276,16 +276,16 @@ async fn creating_a_platform_version_is_authorized_against_the_callers_policies(
             answer.body
         );
         let message = answer.error_message();
-        let expected_prefix = format!(
+        let expected = format!(
             "User: {} is not authorized to perform: elasticbeanstalk:CreatePlatformVersion \
-             on resource: {} ",
+             on resource: {}",
             session_arn(),
             platform_arn()
         );
-        assert!(
-            message.starts_with(&expected_prefix),
+        assert_eq!(
+            message, expected,
             "case {case:?}: expected a refusal naming the principal, the action and the \
-             resource ({expected_prefix:?}), got {message:?}"
+             resource ({expected:?}), got {message:?}"
         );
         assert!(
             !version_exists(&emulator).await,

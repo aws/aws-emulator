@@ -237,6 +237,46 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let region = crate::state::request_region(ctx);
+        // IAM decides whether this caller may change the environment the request
+        // names BEFORE anything is read or written, so a caller its policies do
+        // not permit is refused and nothing of the environment is updated or
+        // deployed.
+        if let Some(message) = crate::service::authorization::refusal(
+            &*self.engine,
+            ctx,
+            <Self as smithy_server_runtime::Operation>::NAME,
+            &crate::state::environment_resource(
+                &*self.engine,
+                &region,
+                input.environment_id.as_deref(),
+                input.environment_name.as_deref(),
+            ),
+        ) {
+            return Err(UpdateEnvironmentError::access_denied(message));
+        }
+        // This call ACTS ON the environment, which Elastic Beanstalk does with the
+        // permissions of the operations role the environment carries: one it
+        // cannot act under leaves the call nothing to carry it out with, which is
+        // the privileges error this operation models
+        // ([`crate::state::operations_role`]).
+        if let Some(message) = crate::state::unusable_operations_role_refusal(
+            &*self.engine,
+            ctx,
+            &region,
+            input.environment_id.as_deref(),
+            input.environment_name.as_deref(),
+        )
+        .await
+        {
+            return Err(
+                UpdateEnvironmentErrorModeled::InsufficientPrivilegesException(
+                    InsufficientPrivilegesException {
+                        message: Some(message),
+                    },
+                )
+                .into(),
+            );
+        }
         // The update takes this service's store and gives it back before this call
         // awaits anything: what the configuration it deploys owes CloudWatch Logs
         // is delivered afterwards, and that delivery calls another service and

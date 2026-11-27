@@ -2,9 +2,9 @@
 
 //! @op CheckDNSAvailability
 //! Implemented: reports whether the CNAME the requested prefix forms in the request's
-//! region is still free — no live environment in the store holds the RESERVATION for
-//! that prefix ([`crate::state::environment_reserving_cname_prefix`]), and the prefix
-//! can form a DNS label at all — and the fully qualified CNAME that prefix would
+//! region is still free — no live environment in the store HOLDS that prefix
+//! ([`crate::state::environment_holding_cname_prefix`]), and the prefix can form a DNS
+//! label at all — and, for a prefix that is free, the fully qualified CNAME it would
 //! reserve. Reserves nothing: this is a report on the store, not a claim on the name.
 //! This is the ONLY file to touch for this operation.
 //!
@@ -143,24 +143,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // was due at an instant already past, whether or not anybody called.
         store.materialize_due_transitions();
 
-        // "The fully qualified CNAME to reserve when CreateEnvironment is called
-        // with the provided prefix" — the DNS NAME the prefix forms in this Region
-        // ([`crate::state::fully_qualified_cname`]), in the zone Elastic Beanstalk
-        // publishes its environments' names in. A name this report is ABOUT, not
-        // an address the caller dials: the address the environment created under
-        // that prefix is REACHED at is its `CNAME`, announced in the zone this
-        // emulator answers in. It is reported for an unusable prefix too: the
-        // member says which name the prefix WOULD form, and `Available` is what
-        // says it cannot be had.
-        let fully_qualified_cname =
-            crate::state::fully_qualified_cname(&region, &input.cname_prefix);
         // Available unless the name cannot exist at all, or a live environment
-        // holds the RESERVATION for that prefix in this Region. Nothing is
+        // HOLDS that prefix in this Region — the one that reserved the name it
+        // forms or the one answering at it now
+        // ([`crate::state::environment_holding_cname_prefix`]). Nothing is
         // written for the answer: checking a prefix neither reserves a free one
         // nor releases a held one, and the report needs no socket of its own —
         // it is a report on the store, not an address for the caller to dial.
         let available = crate::state::is_legal_cname_prefix(&input.cname_prefix)
-            && crate::state::environment_reserving_cname_prefix(
+            && crate::state::environment_holding_cname_prefix(
                 &store,
                 &region,
                 &input.cname_prefix,
@@ -169,7 +160,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         Ok(CheckDNSAvailabilityOutput {
             available: Some(available),
-            fully_qualified_cname: Some(fully_qualified_cname),
+            // "The fully qualified CNAME to RESERVE when CreateEnvironment is
+            // called with the provided prefix" — so the member states the name
+            // this caller would get, which is a name only a prefix it CAN have
+            // has: a prefix that is taken or that no host name label can carry
+            // reserves nothing, and the report carries no name for it rather
+            // than one belonging to whoever holds it.
+            fully_qualified_cname: available
+                .then(|| crate::state::fully_qualified_cname(&region, &input.cname_prefix)),
         })
     }
 }
