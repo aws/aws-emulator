@@ -39,14 +39,14 @@ use ::service_common::served_http_addresses::{AddressAnswer, ServedAddresses, Se
 
 use crate::alb_data_plane::{
     add_rule, create_listener, create_load_balancer, fixed_response, forward_to, health_reaching,
-    ip_target_group, path_pattern, register_address, seed_workload_interface, send, settle,
-    WORKLOAD_ADDRESS, WORKLOAD_VPC,
+    ip_target_group, path_pattern, redirect_to, register_address, seed_workload_interface, send,
+    settle, WORKLOAD_ADDRESS, WORKLOAD_VPC,
 };
 use crate::alb_request_metrics::{
     expected, load_balancer_dimension, series_sum, target_group_dimension, watched_sums,
     LOAD_BALANCER_DIMENSION, TARGET_GROUP_DIMENSION,
 };
-use crate::provisioning_loop::{emulator, p};
+use crate::provisioning_loop::emulator;
 
 /// The series every row asserts by itself, beside the whole catalog.
 const REQUEST_COUNT: &str = "RequestCount";
@@ -66,8 +66,9 @@ const TARGET_BODY: &str = "served-by-the-registered-workload";
 /// published at.
 const TARGET_PORT: i32 = 80;
 
-/// The host the `redirect` action sends the client to.
+/// The host the `redirect` action sends the client to, and the status it answers with.
 const REDIRECT_HOST: &str = "elsewhere.test";
+const REDIRECT_STATUS: &str = "HTTP_301";
 
 /// The server the workload behind the registered address listens with, published exactly where
 /// the service running such a workload publishes one.
@@ -82,16 +83,6 @@ impl ServesHttp for Workload {
             body: TARGET_BODY.as_bytes().to_vec(),
         })
     }
-}
-
-/// A `redirect` action's fields, naming the host it sends the client to.
-fn redirect_to(host: &str) -> Vec<(String, String)> {
-    vec![
-        p("Actions.member.1.Type", "redirect"),
-        p("Actions.member.1.RedirectConfig.StatusCode", "HTTP_301"),
-        p("Actions.member.1.RedirectConfig.Host", host),
-        p("Actions.member.1.RedirectConfig.Path", "/#{path}"),
-    ]
 }
 
 /// One request of the table: what it asks for, what the load balancer must answer, whether the
@@ -133,7 +124,7 @@ async fn a_request_is_counted_as_processed_only_where_a_target_was_chosen() {
     fields.extend(fixed_response("200", FIXED_BODY, None));
     add_rule(&router, "the fixed response", &listener_arn, 10, &fields).await;
     let mut fields = path_pattern(REDIRECT_PATH);
-    fields.extend(redirect_to(REDIRECT_HOST));
+    fields.extend(redirect_to(REDIRECT_STATUS, REDIRECT_HOST));
     add_rule(&router, "the redirect", &listener_arn, 20, &fields).await;
     let mut fields = path_pattern(EMPTY_GROUP_PATH);
     fields.extend(forward_to(&empty_group));

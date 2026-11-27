@@ -222,6 +222,21 @@ pub(crate) fn fixed_response(
     fields
 }
 
+/// A `redirect` action's fields: the `RedirectActionConfig$StatusCode` it answers with, the host
+/// it sends the client to, and the request's own path kept through that action's `#{path}`
+/// placeholder.
+///
+/// `pub(crate)` beside [`fixed_response`]: one spelling of each terminating action's fields, so
+/// two suites of this crate cannot write a rule's action two different ways.
+pub(crate) fn redirect_to(status_code: &str, host: &str) -> Vec<(String, String)> {
+    vec![
+        p("Actions.member.1.Type", "redirect"),
+        p("Actions.member.1.RedirectConfig.StatusCode", status_code),
+        p("Actions.member.1.RedirectConfig.Host", host),
+        p("Actions.member.1.RedirectConfig.Path", "/#{path}"),
+    ]
+}
+
 /// One condition on a path pattern, which most rows carry so they match one path each.
 pub(crate) fn path_pattern(pattern: &str) -> Vec<(String, String)> {
     vec![
@@ -391,10 +406,7 @@ async fn deployment() -> Deployment {
 
     // A redirect that changes the host and keeps the request's own path.
     let mut fields = path_pattern("/old");
-    fields.push(p("Actions.member.1.Type", "redirect"));
-    fields.push(p("Actions.member.1.RedirectConfig.StatusCode", "HTTP_301"));
-    fields.push(p("Actions.member.1.RedirectConfig.Host", "new.example.com"));
-    fields.push(p("Actions.member.1.RedirectConfig.Path", "/#{path}"));
+    fields.extend(redirect_to("HTTP_301", "new.example.com"));
     add_rule(&router, "redirect", &listener_arn, 90, &fields).await;
 
     // A forward to a group with a target, and one to a group with none.
