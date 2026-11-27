@@ -276,7 +276,15 @@ async fn deploy(router: &MultiServiceRouter, row: &Row, giving_up_at: Instant) -
 }
 
 /// What `ListEventSourceMappings` reports for `function`.
-async fn listed_mappings(router: &MultiServiceRouter, case: &str, function: &str) -> Vec<Value> {
+///
+/// `pub(crate)` because a sibling suite that deploys a stack of stream mappings and then reads
+/// them back needs exactly this read, and a second copy of it drifts from this one — which is
+/// also why [`write_item`], [`table_stream`] and [`armed_delivery`] are reachable.
+pub(crate) async fn listed_mappings(
+    router: &MultiServiceRouter,
+    case: &str,
+    function: &str,
+) -> Vec<Value> {
     let answered = lambda(
         router,
         "GET",
@@ -301,7 +309,9 @@ async fn listed_mappings(router: &MultiServiceRouter, case: &str, function: &str
 }
 
 /// Write one item to `table`, as a client drives the pipeline.
-async fn write_item(router: &MultiServiceRouter, case: &str, table: &str, key: &str) {
+///
+/// `pub(crate)` for the reason [`listed_mappings`] is.
+pub(crate) async fn write_item(router: &MultiServiceRouter, case: &str, table: &str, key: &str) {
     let (status, answered) = dynamodb(
         router,
         "PutItem",
@@ -322,7 +332,9 @@ async fn write_item(router: &MultiServiceRouter, case: &str, table: &str, key: &
 }
 
 /// The stream one of the stack's tables publishes — the ARN its mapping has to poll.
-async fn table_stream(router: &MultiServiceRouter, case: &str, table: &str) -> String {
+///
+/// `pub(crate)` for the reason [`listed_mappings`] is.
+pub(crate) async fn table_stream(router: &MultiServiceRouter, case: &str, table: &str) -> String {
     let (status, described) = described_table(router, table).await;
     assert_eq!(
         status, 200,
@@ -339,12 +351,17 @@ async fn table_stream(router: &MultiServiceRouter, case: &str, table: &str) -> S
 /// Write to `table` until the handler's line for one of those writes is in the log group, so a
 /// mapping reading from `LATEST` — which hands over only what was written after it armed — is
 /// ARMED rather than raced. Answers the messages the group last held.
-async fn armed_delivery(
+///
+/// `marker` is what the handler of the estate under test writes its own lines under, which is
+/// the only part of "a record of this stream reached the handler" that differs between the
+/// suites sharing this loop ([`listed_mappings`] says why they share it).
+pub(crate) async fn armed_delivery(
     router: &MultiServiceRouter,
     case: &str,
     function: &str,
     table: &str,
     stream: &str,
+    marker: &str,
     giving_up_at: Instant,
 ) -> Vec<String> {
     let mut attempt = 0usize;
@@ -358,7 +375,7 @@ async fn armed_delivery(
             seen = log_messages(router, function).await;
             if seen
                 .iter()
-                .any(|line| line.contains(RECORD_MARKER) && line.contains(stream))
+                .any(|line| line.contains(marker) && line.contains(stream))
             {
                 return seen;
             }
@@ -502,7 +519,16 @@ async fn every_declared_stream_mapping_of_one_stack_delivers_to_its_function() {
         // Each source really delivers: a write to it reaches the one handler, and the handler's
         // own line for it is in the function's default log group.
         for (table, stream) in &tables {
-            let seen = armed_delivery(&router, case, &function, table, stream, giving_up_at).await;
+            let seen = armed_delivery(
+                &router,
+                case,
+                &function,
+                table,
+                stream,
+                RECORD_MARKER,
+                giving_up_at,
+            )
+            .await;
             assert!(
                 seen.iter()
                     .any(|line| line.contains(RECORD_MARKER) && line.contains(stream)),

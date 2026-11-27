@@ -7,6 +7,32 @@ Issue-Commit: 7ddb4188dd9af5c3d292129d1524d0998b9f045b
 
 # The DynamoDB-stream processing-failure lifecycle never reaches a verdict: the check exhausts its whole budget waiting on the stream event source mapping
 
+> _Resolution: the cause as REPORTED — the hypothesis that "a DynamoDB-stream event source
+> mapping created with StartingPosition LATEST never starts delivering records, so the check's
+> arming loop ... never observes a delivery" — is not present at this commit, measured on the
+> ASSEMBLED emulator binary over its own signed HTTPS wire: a key written straight after the
+> create, while the mapping still reports `Creating`, is handed to the handler inside a second;
+> the whole declared estate (two streamed tables, the role, the function, two LATEST mappings)
+> settles `CREATE_COMPLETE` in 3.6 s and is destroyed to a terminal status 6.2 s after
+> `DeleteStack`, so deploy + arm both streams + destroy costs 10.5 s in all, with 3.3 ms per
+> API call and a 0.6 s boot. Each span inside that total is one the project's own
+> transition rule requires (a created table reaching `ACTIVE`, a created function reaching
+> `Active`, a deleted mapping and table leaving their non-terminal states), one per dependency
+> level, so there is nothing in it to shorten. `core/router/tests/all/`
+> `ddb_stream_lambda_processing_failure_lifecycle.rs` now pins what the report says AWS does for
+> the beats no neighbouring suite covered: a batch the handler cannot process is handed over the
+> first time plus exactly the retries its mapping's `MaximumRetryAttempts` allows (none, one,
+> three) and no more, the record written BEHIND it is then handed over, and the estate is
+> destroyed to `DELETE_COMPLETE` with the mapping and the function gone from Lambda and the table
+> from DynamoDB — whether nothing, a processed record or a given-up record ran through it. What
+> remains of the recorded failure is the harness's own WALL CLOCK: this six-phase scenario, whose
+> client-side poll helper sleeps 3 s between probes and 20 s between arming writes, does not
+> finish inside the 60 s cap, and this report itself records the whole lifecycle as "recorded
+> behavior only" with no AWS-published latency for any step — so no AWS rule fixes it, and the
+> replay of this check keeps timing out until a later change makes the whole scenario fit the cap.
+> Two earlier reports of the same replay key reached the same conclusion from the other end
+> (`20261117T213136Z-dynamodb-lambda-logs-the-two-stream-onyx-stream.md`)._
+
 > _Note: this issue was identified against the code base at commit `7ddb4188dd9af5c3d292129d1524d0998b9f045b`. If you are an issue fixer working on this, the code base you are currently working in can have drifted, so you might need to trace the issue back to the current code base._
 
 ## Operation
