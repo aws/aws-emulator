@@ -62,8 +62,16 @@
 //!    ([`crate::state::ec2_resources::host_key_pair_failures`]). It is resolved whatever
 //!    the host's placement members say, because a key pair is no placement reference and
 //!    the launch below carries the name onto the instance either way.
+//! 9. The `instanceType` the host is built on is one of the EC2 instance types Amazon EVS
+//!    provides for the environment's VCF version: "EC2 instance types provided by Amazon
+//!    EVS for this VCF version for creating environments"
+//!    (`VcfVersionInfo$instanceTypes`) is a PER-VERSION list of the same catalogue entry
+//!    rule 7 reads, so a type outside it names hardware Amazon EVS does not offer that
+//!    version on ([`crate::state::unprovided_instance_type_failure`]). A VCF version the
+//!    catalogue states no instance types for leaves nothing to judge against, exactly as in
+//!    rule 7.
 //!
-//! Rules 2 to 8 are evaluated together, so a request that breaks several is refused
+//! Rules 2 to 9 are evaluated together, so a request that breaks several is refused
 //! ONCE with one `ValidationException` whose `fieldList` carries an entry per failure —
 //! the shape `CreateEnvironment` answers with. A refused request adds nothing.
 //!
@@ -349,6 +357,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 ));
             }
         }
+        // "EC2 instance types provided by Amazon EVS for this VCF version for creating
+        // environments" (`VcfVersionInfo$instanceTypes`): the hardware a host is built on is
+        // one of the instance types that same catalogue provides for THIS environment's VCF
+        // version — the sibling per-version restriction of the entry the `esxVersion` rule
+        // above reads — and a type outside that list names hardware Amazon EVS does not
+        // offer the version on. A VCF version the catalogue states no instance types for
+        // leaves nothing to judge against, so nothing is refused for it.
+        failures.extend(crate::state::unprovided_instance_type_failure(
+            "host.instanceType",
+            &input.host.instance_type,
+            &environment.vcf_version,
+        ));
         // "DNS hostnames for hosts must be unique across Amazon EVS environments and
         // within VCF": the scope is every environment, THIS one included, which is what
         // `host_name_is_taken` walks, comparing the name as the DNS name it is.

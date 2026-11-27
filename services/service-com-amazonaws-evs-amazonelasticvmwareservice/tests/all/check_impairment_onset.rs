@@ -48,6 +48,7 @@ use service_com_amazonaws_evs_amazonelasticvmwareservice::state as evs;
 use crate::environment_check_input_recompute::{cores, get_environment, INSTANCE_TYPE};
 use crate::environment_health_checks::check_of;
 use crate::environment_lifecycle::{call, emulator, error_type, Emulator, PAST_THE_TRANSITION};
+use crate::host_instance_type_catalogue::vcf_version_providing;
 
 /// The wall-clock gap a test leaves between the environment's last modification and the
 /// change that impairs one of its checks, so the two instants are far enough apart for
@@ -241,6 +242,13 @@ async fn key_coverage_is_impaired_from_the_instant_the_account_stated_its_ported
             json!({
                 "hosts": hosts_json(&name, instance_type),
                 "licenseInfo": license_info("SOLAX", "VSANA"),
+                // A host is built only on hardware its environment's VCF version is
+                // provided on ("EC2 instance types provided by Amazon EVS for this VCF
+                // version for creating environments", `VcfVersionInfo$instanceTypes`), so
+                // the environment of a row runs a version the catalogue provides that
+                // row's instance type on —
+                // `tests/all/host_instance_type_catalogue.rs` owns that rule.
+                "vcfVersion": vcf_version_providing(instance_type),
             }),
         )
         .await;

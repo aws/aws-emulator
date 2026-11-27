@@ -58,6 +58,7 @@ use service_com_amazonaws_evs_amazonelasticvmwareservice::ops::types as evs_type
 use service_com_amazonaws_evs_amazonelasticvmwareservice::state as evs;
 
 use crate::environment_lifecycle::{call, emulator, error_type, Emulator};
+use crate::host_instance_type_catalogue::vcf_version_providing;
 
 /// Long enough for the transition this service owes a new or deleted environment, or a
 /// new host, to come due (its span is under a second by construction).
@@ -303,6 +304,12 @@ async fn host_count_is_the_minimum_host_count_against_the_hosts_the_environment_
             .collect();
         let requested_names: Vec<&str> = names.iter().map(String::as_str).collect();
         let mut extra = json!({});
+        // A host is built only on hardware its environment's VCF version is provided on
+        // ("EC2 instance types provided by Amazon EVS for this VCF version for creating
+        // environments", `VcfVersionInfo$instanceTypes`), so the environment of a row runs
+        // a version the catalogue provides that row's instance type on —
+        // `tests/all/host_instance_type_catalogue.rs` owns that rule.
+        extra["vcfVersion"] = json!(vcf_version_providing(instance_type));
         if requested > 0 {
             extra["hosts"] = hosts_json(&requested_names, instance_type);
         }
@@ -530,6 +537,9 @@ async fn key_coverage_compares_the_deployed_cores_against_the_accounts_ported_co
             .collect();
         let host_names: Vec<&str> = names.iter().map(String::as_str).collect();
         let mut extra = json!({ "hosts": hosts_json(&host_names, instance_type) });
+        // The environment runs a VCF version the catalogue provides this row's instance
+        // type on, for the reason the host-count rows above name.
+        extra["vcfVersion"] = json!(vcf_version_providing(instance_type));
         if licensed {
             extra["licenseInfo"] = license_info("AAAAA", "BBBBB");
         }

@@ -131,6 +131,18 @@
 //!    a plan out of band — and its clause is collected as the FIRST of the request's
 //!    failures, ahead of every member-level check above it.
 //!
+//! 17. The `instanceType` of each `hosts` entry is one of the EC2 instance types Amazon
+//!    EVS provides for the `vcfVersion` the request names: "EC2 instance types provided by
+//!    Amazon EVS for this VCF version for creating environments"
+//!    (`VcfVersionInfo$instanceTypes`) is a PER-VERSION list of this service's own version
+//!    catalogue — the one `GetVersions` reports — so an entry asking for a type outside it
+//!    asks for hardware Amazon EVS does not offer that version on, and is refused
+//!    ([`crate::state::unprovided_instance_type_failure`]), the rule
+//!    `CreateEnvironmentHost` applies to its single `host`. Judged only where Amazon EVS
+//!    INSTALLS VCF, exactly as rules 9, 10 and 12 over this same member are: a mode that
+//!    adds no host builds none, so an inert entry's instance type names no hardware
+//!    anything runs on.
+//!
 //! Supplying a parameter the chosen VCF mode does not support is NOT one of them.
 //! `SELF_DEPLOYED` "does not support" `licenseInfo`, `hosts`, `vcfHostnames`, `siteId`
 //! and `connectivityInfo` in the sense that it does nothing with them — no hosts are
@@ -535,6 +547,31 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 &*self.engine,
                 &references,
             ));
+        }
+        // "EC2 instance types provided by Amazon EVS for this VCF version for creating
+        // environments" (`VcfVersionInfo$instanceTypes`): the hardware each entry is built
+        // on is one of the instance types this service's own version catalogue provides for
+        // the VCF version this request names — the per-version restriction
+        // `CreateEnvironmentHost` applies to its single host, through the same helper. Asked
+        // only where the hosts ARE added, exactly as the placement and key pair rules over
+        // this same member are: a mode that adds no host builds none, so an inert entry's
+        // instance type names no hardware anything runs on.
+        if installs_vcf {
+            failures.extend(
+                input
+                    .hosts
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .zip(host_member_prefixes.iter())
+                    .filter_map(|(host, member_prefix)| {
+                        crate::state::unprovided_instance_type_failure(
+                            &format!("{member_prefix}.instanceType"),
+                            &host.instance_type,
+                            &input.vcf_version,
+                        )
+                    }),
+            );
         }
         // The route server peers `connectivityInfo` names are resources of that same
         // account: "The unique IDs for private route server peers", and "during

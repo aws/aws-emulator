@@ -35,6 +35,7 @@ use crate::environment_lifecycle::{
     call, error_type, register_key_pair, register_network, vlans_with_prefix, HOST_KEY_PAIR_NAME,
     REGION,
 };
+use crate::host_instance_type_catalogue::vcf_version_providing;
 
 /// Long enough for the transitions the two services owe a new environment, host and
 /// instance to come due (each span is under a second by construction).
@@ -92,7 +93,18 @@ impl Emulator {
     /// `name` names the CASE in every assertion message; the environment name it is
     /// given is that case with anything outside the modelled
     /// `^[a-zA-Z0-9_-]+$` replaced, so a case can be described in prose.
-    async fn deployed_environment(&self, name: &str, prefix_len: u8) -> String {
+    ///
+    /// The environment runs a VCF version Amazon EVS provides `instance_type` on, because a
+    /// host is built only on hardware its environment's version provides — "EC2 instance
+    /// types provided by Amazon EVS for this VCF version for creating environments"
+    /// (`VcfVersionInfo$instanceTypes`), the rule
+    /// `tests/all/host_instance_type_catalogue.rs` owns.
+    async fn deployed_environment(
+        &self,
+        name: &str,
+        prefix_len: u8,
+        instance_type: &str,
+    ) -> String {
         let environment_name: String = name
             .chars()
             .map(|character| {
@@ -107,7 +119,7 @@ impl Emulator {
         let request = json!({
             "vpcId": vpc_id,
             "serviceAccessSubnetId": subnet_id,
-            "vcfVersion": "VCF-5.2.1",
+            "vcfVersion": vcf_version_providing(instance_type),
             "termsAccepted": true,
             "environmentName": environment_name,
             "initialVlans": vlans_with_prefix(prefix_len),
@@ -354,7 +366,9 @@ async fn every_created_host_runs_on_an_ec2_instance_the_account_holds() {
 
     for (case, instance_type, key_name, prefix_len) in rows {
         let emulator = Emulator::new();
-        let environment = emulator.deployed_environment(case, prefix_len).await;
+        let environment = emulator
+            .deployed_environment(case, prefix_len, instance_type)
+            .await;
         let management_subnet = emulator.vmk_management_subnet(&environment).await;
 
         let host = emulator
@@ -451,7 +465,9 @@ async fn every_created_host_runs_on_an_ec2_instance_the_account_holds() {
 #[tokio::test]
 async fn hosts_do_not_share_an_instance_or_an_interface() {
     let emulator = Emulator::new();
-    let environment = emulator.deployed_environment("many-hosts", 27).await;
+    let environment = emulator
+        .deployed_environment("many-hosts", 27, "i4i.metal")
+        .await;
     // Before the first host, the environment's own creation has launched nothing.
     assert!(
         emulator.all_instance_ids().await.is_empty(),
@@ -507,7 +523,9 @@ async fn hosts_do_not_share_an_instance_or_an_interface() {
 #[tokio::test]
 async fn a_refused_host_request_launches_no_instance() {
     let emulator = Emulator::new();
-    let deployed = emulator.deployed_environment("refusals", 28).await;
+    let deployed = emulator
+        .deployed_environment("refusals", 28, "i4i.metal")
+        .await;
     let creating = {
         // An environment whose deployment has not come due yet, so a host cannot be
         // added to it.

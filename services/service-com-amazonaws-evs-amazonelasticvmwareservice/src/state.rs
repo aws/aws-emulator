@@ -2969,7 +2969,10 @@ pub struct ProvidedVcfVersion {
     /// (`VcfVersionInfo$instanceTypes`), stated PER version: a version is offered a subset
     /// of the modelled `InstanceType` values, which is the whole of
     /// [`INSTANCE_TYPE_VALUES`] for a version offered on every type Amazon EVS provides
-    /// and a narrower list for one it does not.
+    /// and a narrower list for one it does not. Published AND applied: a host is built on
+    /// one of the types its environment's version names here
+    /// ([`unprovided_instance_type_failure`]), so the discovery call does not report a
+    /// restriction the create paths let through.
     pub instance_types: &'static [&'static str],
 }
 
@@ -3066,6 +3069,62 @@ pub fn unavailable_esx_version_failure(
     )
 }
 
+/// The EC2 instance types Amazon EVS provides `vcf_version` on — the hardware a caller
+/// finds with `GetVersions`: "EC2 instance types provided by Amazon EVS for this VCF
+/// version for creating environments" (`VcfVersionInfo$instanceTypes`).
+///
+/// Read from the catalogue `GetVersions` itself reports, so the discovery call and the
+/// create paths cannot disagree about which hardware a version runs on: a version is
+/// provided on the instance types its own catalogue entry names
+/// ([`ProvidedVcfVersion::instance_types`]) and no others. EMPTY for a string the catalogue
+/// holds no entry for, which is no evidence about any particular instance type rather than
+/// evidence against all of them — the rule [`available_esx_versions`] states for the
+/// sibling per-version restriction of the same entry.
+pub fn provided_instance_types(vcf_version: &str) -> &'static [&'static str] {
+    match provided_vcf_version(vcf_version) {
+        Some(provided) => provided.instance_types,
+        None => &[],
+    }
+}
+
+/// The failure of the precondition that a host is built on EC2 hardware Amazon EVS
+/// provides for its environment's VCF version, or `None` for a host that is: the
+/// `instanceType` a request names is one of [`provided_instance_types`], because that list
+/// is "EC2 instance types provided by Amazon EVS for this VCF version for creating
+/// environments" (`VcfVersionInfo$instanceTypes`) and a type outside it names hardware
+/// Amazon EVS does not offer that version on.
+///
+/// The per-version restriction is the CATALOGUE's, not one operation's, so every operation
+/// that takes a `HostInfoForCreate` applies it through this one helper —
+/// `CreateEnvironment` (per `hosts` entry) and `CreateEnvironmentHost` (for its single
+/// `host`) — exactly as [`placement_conflict_failure`] carries the shape's own rule and
+/// [`unavailable_esx_version_failure`] the sibling restriction of the same catalogue entry.
+/// A VCF version the catalogue states no instance types for leaves nothing to judge a
+/// requested type against, so nothing is refused for it.
+///
+/// The sentence is built from the request and the catalogue: the member, the type that was
+/// asked for, the VCF version it was asked for and the types that ARE provided for it, so a
+/// caller can correct the request without a second call.
+pub fn unprovided_instance_type_failure(
+    member: &str,
+    instance_type: &str,
+    vcf_version: &str,
+) -> Option<crate::ops::types::ValidationExceptionField> {
+    let provided = provided_instance_types(vcf_version);
+    if provided.is_empty() || provided.contains(&instance_type) {
+        return None;
+    }
+    Some(field_failure_stated(
+        member,
+        format!(
+            "{member} {instance_type} is not an EC2 instance type Amazon EVS provides for \
+             VCF version {vcf_version}. The provided EC2 instance types for it are \
+             {provided}.",
+            provided = provided.join(", ")
+        ),
+    ))
+}
+
 /// Every VCF version Amazon EVS PROVIDES, with the status, default ESX version and EC2
 /// instance types of each — what `GetVersions` reports as `vcfVersions`.
 ///
@@ -3098,9 +3157,13 @@ pub fn provided_vcf_versions() -> Vec<VcfVersionInfo> {
 /// One entry per `InstanceType` the model declares, each carrying every build of
 /// [`OFFERED_ESX_BUILDS`] in catalogue order: "The list of ESX versions offered for this
 /// instance type" is what Amazon EVS can install on that hardware, and neither the model
-/// nor this service ties a build to an instance type — `CreateEnvironmentHost` accepts
-/// every modelled instance type on an environment of any version — so narrowing one type's
-/// list would state a restriction the service does not apply.
+/// nor this service ties a build to an instance type — which build a host runs is decided
+/// by its environment's VCF version ([`available_esx_versions`]) and not by its hardware —
+/// so narrowing one type's list would state a restriction the service does not apply. The
+/// per-version halves of this response ARE applied: a host's ESX version and its instance
+/// type are each judged against the entry of [`PROVIDED_VCF_VERSIONS`] its environment's
+/// version owns ([`unavailable_esx_version_failure`],
+/// [`unprovided_instance_type_failure`]).
 ///
 /// Consistent with [`provided_vcf_versions`] BY CONSTRUCTION, because a version's default
 /// is an entry of that same build catalogue, on the release line its own entry names

@@ -435,8 +435,15 @@ async fn a_create_that_carries_hosts_adds_them_to_the_environment() {
             expected_hosts: 4,
         },
         Row {
-            case: "VCF-5.2.1 in /24 blocks, one host on a Dedicated Host",
-            vcf_version: "VCF-5.2.1",
+            // A host is built only on hardware its environment's VCF version is provided
+            // on ("EC2 instance types provided by Amazon EVS for this VCF version for
+            // creating environments", `VcfVersionInfo$instanceTypes`), so the row that
+            // asks for this instance type runs a version the catalogue provides it on —
+            // `tests/all/host_instance_type_catalogue.rs` owns that rule.
+            case: "i7i.metal-48xl in /24 blocks, one host on a Dedicated Host",
+            vcf_version: crate::host_instance_type_catalogue::vcf_version_providing(
+                "i7i.metal-48xl",
+            ),
             prefix_len: 24,
             instance_type: "i7i.metal-48xl",
             key_name: "THIRD-KEY",
