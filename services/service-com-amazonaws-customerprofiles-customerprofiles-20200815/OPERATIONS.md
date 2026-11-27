@@ -396,7 +396,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `GET /templates/{TemplateId} -> 200`
 - **Input:** `TemplateId` (string, len 1..64, pattern ^[a-zA-Z0-9_-]+$, @httpLabel, required)
-- **Output:** `TemplateId` (string, len 1..64, pattern ^[a-zA-Z0-9_-]+$), `SourceName` (string, len 1..64, pattern ^[a-zA-Z0-9_-]+$), `SourceObject` (string, len 1..64, pattern ^[a-zA-Z0-9_-]+$), `AllowProfileCreation` (boolean, default false, required), `SourceLastUpdatedTimestampFormat` (string, len 1..255), `Fields` (map<string,ObjectTypeField>), `Keys` (map<string,list<ObjectTypeKey>>)
+- **Output:** `TemplateId` (string, len 1..64, pattern ^[a-zA-Z0-9_-]+$), `SourceName` (string, len 1..64, pattern ^[a-zA-Z0-9_-]+$), `SourceObject` (string, len 1..64, pattern ^[a-zA-Z0-9_-]+$), `DefaultMaxProfileObjectCount` (integer, range 0..), `DefaultMaxProfileObjectCountEffectiveAfter` (timestamp), `StoreOnly` (boolean, default false, required), `AllowProfileCreation` (boolean, default false, required), `SourceLastUpdatedTimestampFormat` (string, len 1..255), `Fields` (map<string,ObjectTypeField>), `Keys` (map<string,list<ObjectTypeKey>>)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `BadRequestException (HTTP 400)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`
 
 ## GetProfileRecommendations
