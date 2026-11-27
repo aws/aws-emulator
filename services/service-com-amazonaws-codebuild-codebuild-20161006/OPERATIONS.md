@@ -117,9 +117,7 @@ contents — read that shape in the model above when you need its own members.
 ## DeleteProject
 
 - **Input:** `name` (string, len 1.., required)
-- **Output:** `webhookDeletedStatus` (string) — the disposition of the deleted project's
-  webhook. Declared in this crate's model from the operation's RECORDED 200 body, which
-  carries the member although the published `DeleteProjectOutput` declares none.
+- **Output:** (no members)
 - **Errors:** `InvalidInputException (HTTP 400)`
 
 ## DeleteReport

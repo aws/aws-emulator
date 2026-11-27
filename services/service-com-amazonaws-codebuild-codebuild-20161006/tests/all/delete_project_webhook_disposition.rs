@@ -9,8 +9,9 @@
 //! answers the disposition of that webhook in `webhookDeletedStatus`, computed from the
 //! project's webhook state: `state::WEBHOOK_DELETED_STATUS` when the call removed such a
 //! record and `state::WEBHOOK_NOT_DELETED_STATUS` when there was none to remove. The
-//! member is not in the published `DeleteProjectOutput`; it is declared in this
-//! emulator's copy of the model from the operation's recorded 200 body, which carries it.
+//! member is not in the published `DeleteProjectOutput`; it is declared in the overlay
+//! model `smithy-model/local-additions.json` from the operation's recorded 200 body,
+//! which carries it.
 //!
 //! The table spans the ways a project comes to have a webhook or not: every source type
 //! the model allows a webhook for, a source type that allows none, a project that never

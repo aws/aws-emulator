@@ -1,0 +1,133 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.codebuild#DeleteProjectOutput": {
+      "type": "structure",
+      "members": {
+        "webhookDeletedStatus": { "target": "com.amazonaws.codebuild#String" }
+      },
+      "traits": {
+        "smithy.api#output": {}
+      }
+    },
+    "com.amazonaws.codebuild#BuildArtifacts": {
+      "type": "structure",
+      "members": {
+        "location": { "target": "com.amazonaws.codebuild#String" },
+        "sha256sum": { "target": "com.amazonaws.codebuild#String" },
+        "md5sum": { "target": "com.amazonaws.codebuild#String" },
+        "overrideArtifactName": { "target": "com.amazonaws.codebuild#WrapperBoolean" },
+        "encryptionDisabled": { "target": "com.amazonaws.codebuild#WrapperBoolean" },
+        "artifactIdentifier": { "target": "com.amazonaws.codebuild#String" },
+        "bucketOwnerAccess": { "target": "com.amazonaws.codebuild#BucketOwnerAccess" },
+        "type": { "target": "com.amazonaws.codebuild#String" }
+      }
+    },
+    "com.amazonaws.codebuild#ProjectEnvironment": {
+      "type": "structure",
+      "members": {
+        "type": { "target": "com.amazonaws.codebuild#EnvironmentType", "traits": { "smithy.api#required": {} } },
+        "image": { "target": "com.amazonaws.codebuild#NonEmptyString", "traits": { "smithy.api#required": {} } },
+        "computeType": { "target": "com.amazonaws.codebuild#ComputeType", "traits": { "smithy.api#required": {} } },
+        "computeConfiguration": { "target": "com.amazonaws.codebuild#ComputeConfiguration" },
+        "fleet": { "target": "com.amazonaws.codebuild#ProjectFleet" },
+        "environmentVariables": { "target": "com.amazonaws.codebuild#EnvironmentVariables" },
+        "privilegedMode": { "target": "com.amazonaws.codebuild#WrapperBoolean" },
+        "certificate": { "target": "com.amazonaws.codebuild#String" },
+        "registryCredential": { "target": "com.amazonaws.codebuild#RegistryCredential" },
+        "imagePullCredentialsType": { "target": "com.amazonaws.codebuild#ImagePullCredentialsType" },
+        "dockerServer": { "target": "com.amazonaws.codebuild#DockerServer" },
+        "hostKernel": { "target": "com.amazonaws.codebuild#HostKernel" },
+        "customEntrypoint": { "target": "com.amazonaws.codebuild#WrapperBoolean" }
+      }
+    },
+    "com.amazonaws.codebuild#String": {
+      "type": "string"
+    },
+    "com.amazonaws.codebuild#NonEmptyString": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1 }
+      }
+    },
+    "com.amazonaws.codebuild#WrapperBoolean": {
+      "type": "boolean"
+    },
+    "com.amazonaws.codebuild#BucketOwnerAccess": {
+      "type": "enum",
+      "members": {
+        "NONE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "NONE" } },
+        "READ_ONLY": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "READ_ONLY" } },
+        "FULL": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "FULL" } }
+      }
+    },
+    "com.amazonaws.codebuild#EnvironmentType": {
+      "type": "enum",
+      "members": {
+        "WINDOWS_CONTAINER": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "WINDOWS_CONTAINER" } },
+        "LINUX_CONTAINER": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "LINUX_CONTAINER" } },
+        "LINUX_GPU_CONTAINER": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "LINUX_GPU_CONTAINER" } },
+        "ARM_CONTAINER": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "ARM_CONTAINER" } },
+        "WINDOWS_SERVER_2019_CONTAINER": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "WINDOWS_SERVER_2019_CONTAINER" } },
+        "WINDOWS_SERVER_2022_CONTAINER": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "WINDOWS_SERVER_2022_CONTAINER" } },
+        "LINUX_LAMBDA_CONTAINER": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "LINUX_LAMBDA_CONTAINER" } },
+        "ARM_LAMBDA_CONTAINER": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "ARM_LAMBDA_CONTAINER" } },
+        "LINUX_EC2": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "LINUX_EC2" } },
+        "ARM_EC2": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "ARM_EC2" } },
+        "WINDOWS_EC2": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "WINDOWS_EC2" } },
+        "MAC_ARM": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "MAC_ARM" } }
+      }
+    },
+    "com.amazonaws.codebuild#ComputeType": {
+      "type": "enum",
+      "members": {
+        "BUILD_GENERAL1_SMALL": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "BUILD_GENERAL1_SMALL" } },
+        "BUILD_GENERAL1_MEDIUM": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "BUILD_GENERAL1_MEDIUM" } },
+        "BUILD_GENERAL1_LARGE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "BUILD_GENERAL1_LARGE" } },
+        "BUILD_GENERAL1_XLARGE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "BUILD_GENERAL1_XLARGE" } },
+        "BUILD_GENERAL1_2XLARGE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "BUILD_GENERAL1_2XLARGE" } },
+        "BUILD_LAMBDA_1GB": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "BUILD_LAMBDA_1GB" } },
+        "BUILD_LAMBDA_2GB": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "BUILD_LAMBDA_2GB" } },
+        "BUILD_LAMBDA_4GB": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "BUILD_LAMBDA_4GB" } },
+        "BUILD_LAMBDA_8GB": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "BUILD_LAMBDA_8GB" } },
+        "BUILD_LAMBDA_10GB": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "BUILD_LAMBDA_10GB" } },
+        "ATTRIBUTE_BASED_COMPUTE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "ATTRIBUTE_BASED_COMPUTE" } },
+        "CUSTOM_INSTANCE_TYPE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "CUSTOM_INSTANCE_TYPE" } }
+      }
+    },
+    "com.amazonaws.codebuild#ImagePullCredentialsType": {
+      "type": "enum",
+      "members": {
+        "CODEBUILD": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "CODEBUILD" } },
+        "SERVICE_ROLE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "SERVICE_ROLE" } }
+      }
+    },
+    "com.amazonaws.codebuild#HostKernel": {
+      "type": "enum",
+      "members": {
+        "LINUX_KERNEL_4": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "LINUX_KERNEL_4" } },
+        "LINUX_KERNEL_6": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "LINUX_KERNEL_6" } },
+        "LINUX_KERNEL_LATEST": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "LINUX_KERNEL_LATEST" } }
+      }
+    },
+    "com.amazonaws.codebuild#EnvironmentVariables": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.codebuild#EnvironmentVariable" }
+    },
+    "com.amazonaws.codebuild#EnvironmentVariable": {
+      "type": "structure"
+    },
+    "com.amazonaws.codebuild#ComputeConfiguration": {
+      "type": "structure"
+    },
+    "com.amazonaws.codebuild#ProjectFleet": {
+      "type": "structure"
+    },
+    "com.amazonaws.codebuild#RegistryCredential": {
+      "type": "structure"
+    },
+    "com.amazonaws.codebuild#DockerServer": {
+      "type": "structure"
+    }
+  }
+}

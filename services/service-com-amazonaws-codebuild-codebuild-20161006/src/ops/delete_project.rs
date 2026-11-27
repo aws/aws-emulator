@@ -50,9 +50,9 @@
 //! ## Output
 //!
 //! * `webhookDeletedStatus` (String) — The disposition of the deleted project's webhook.
-//!   Declared in this emulator's copy of the model from the operation's RECORDED 200
-//!   body, which carries this member although the published `DeleteProjectOutput`
-//!   declares none.
+//!   Declared in the overlay model `smithy-model/local-additions.json` (see
+//!   `smithy-model/LOCAL-ADDITIONS.md`) from the operation's RECORDED 200 body, which
+//!   carries this member although the published `DeleteProjectOutput` declares none.
 //!
 //! ## Errors
 //!

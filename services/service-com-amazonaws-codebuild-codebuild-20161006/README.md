@@ -14,7 +14,9 @@ cargo test  -p service-com-amazonaws-codebuild-codebuild-20161006
 service-com-amazonaws-codebuild-codebuild-20161006/
 ├── build.rs              # calls emulator_core_build_support::generate(...)
 ├── smithy-model/
-│   └── com-amazonaws-codebuild-codebuild-20161006.json      # the Smithy model — drives routing + wire shapes
+│   ├── com-amazonaws-codebuild-codebuild-20161006.json      # the Smithy model — drives routing + wire shapes
+│   ├── local-additions.json  # overlay model for the members AWS answers with that the snapshot lacks
+│   └── LOCAL-ADDITIONS.md    # what each of those members is, and where it is declared
 ├── OPERATIONS.md         # every operation's contract, re-rendered from the model
 ├── tests/
 │   └── state_roundtrip.rs  # compiled example of the state API

@@ -120,18 +120,9 @@ pub struct ProjectSourceVersion {
     pub source_version: String,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.codebuild#BuildArtifacts")]
-#[derive(Debug, Clone, Default)]
-pub struct BuildArtifacts {
-    pub r#type: Option<String>,
-    pub location: Option<String>,
-    pub sha256sum: Option<String>,
-    pub md5sum: Option<String>,
-    pub override_artifact_name: Option<bool>,
-    pub encryption_disabled: Option<bool>,
-    pub artifact_identifier: Option<String>,
-    pub bucket_owner_access: Option<String>,
-}
+// `BuildArtifacts` is in `recorded_members_types`, with every other shape AWS answers
+// with a member for that the model snapshot does not declare: it is generated from the
+// overlay model beside the snapshot.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.codebuild#ProjectCache")]
 #[derive(Debug, Clone, Default)]
@@ -142,23 +133,8 @@ pub struct ProjectCache {
     pub cache_namespace: Option<String>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.codebuild#ProjectEnvironment")]
-#[derive(Debug, Clone, Default)]
-pub struct ProjectEnvironment {
-    pub r#type: String,
-    pub image: String,
-    pub compute_type: String,
-    pub compute_configuration: Option<ComputeConfiguration>,
-    pub fleet: Option<ProjectFleet>,
-    pub environment_variables: Option<Vec<EnvironmentVariable>>,
-    pub privileged_mode: Option<bool>,
-    pub certificate: Option<String>,
-    pub registry_credential: Option<RegistryCredential>,
-    pub image_pull_credentials_type: Option<String>,
-    pub docker_server: Option<DockerServer>,
-    pub host_kernel: Option<String>,
-    pub custom_entrypoint: Option<bool>,
-}
+// `ProjectEnvironment` is in `recorded_members_types`, for the reason `BuildArtifacts`
+// above is.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.codebuild#ComputeConfiguration")]
 #[derive(Debug, Clone, Default)]

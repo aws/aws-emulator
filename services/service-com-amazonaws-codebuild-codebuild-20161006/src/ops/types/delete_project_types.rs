@@ -17,9 +17,7 @@ pub struct DeleteProjectInput {
     pub name: String,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.codebuild#DeleteProjectOutput")]
-#[derive(Debug, Clone, Default)]
-pub struct DeleteProjectOutput {
-    pub webhook_deleted_status: Option<String>,
-}
+// `DeleteProjectOutput` is in `recorded_members_types`, with every other shape AWS answers
+// with a member for that the model snapshot does not declare: it is generated from the
+// overlay model beside the snapshot.
 

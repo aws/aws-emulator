@@ -58,6 +58,7 @@ pub mod list_shared_projects_types;
 pub mod list_shared_report_groups_types;
 pub mod list_source_credentials_types;
 pub mod put_resource_policy_types;
+pub mod recorded_members_types;
 pub mod retry_build_batch_types;
 pub mod retry_build_types;
 pub mod shared_types;
@@ -163,6 +164,8 @@ pub use list_shared_report_groups_types::*;
 pub use list_source_credentials_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use put_resource_policy_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use recorded_members_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use retry_build_batch_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
