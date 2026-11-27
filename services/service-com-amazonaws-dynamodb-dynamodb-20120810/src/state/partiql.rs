@@ -777,6 +777,33 @@ fn check_statement_type_name(operand: &PredicateOperand) -> Result<(), RequestEr
     )))
 }
 
+/// `begins_with` relates one TEXT to another, so a statement whose prefix operand is of a
+/// type that has no prefix is refused as the statement is read.
+///
+/// The same domain the expression language holds that function's operands to — only `S`
+/// and `B` have a prefix to compare — over the same two operand forms whose type the
+/// STATEMENT settles: a value it carries (a literal it spells or a `?` parameter it
+/// binds), and `size (path)`, which reports a number whatever the location it measures
+/// holds. The clause is stated the way this surface states every other operand-domain
+/// refusal ([`check_scalar_operands`]), naming the function and the type of the offending
+/// operand. An operand that reads an attribute is left to the evaluation, which is the
+/// only place its type is known.
+fn check_statement_begins_with_operand(operand: &PredicateOperand) -> Result<(), RequestError> {
+    let datatype = match operand {
+        PredicateOperand::Value(value) => attribute_value_type(value),
+        // "size (path)" reports a number, so its type is settled by the statement itself.
+        PredicateOperand::Size(_) => "N",
+        PredicateOperand::Path(_) => return Ok(()),
+    };
+    if matches!(datatype, "S" | "B") {
+        return Ok(());
+    }
+    Err(RequestError::Validation(format!(
+        "Incorrect operand type for operator or function; operator or function: begins_with, \
+         operand type: {datatype}"
+    )))
+}
+
 /// The relational operators compare ONE value with another, so each operand is a scalar.
 ///
 /// "<, <=, >, >=" and `BETWEEN` order their operands, and only the scalar types `S`,
@@ -2808,7 +2835,10 @@ impl StatementParser<'_> {
                             self.expect_operand(function, 1)?;
                             let operand = self.operand()?;
                             match function {
-                                "begins_with" => Predicate::BeginsWith(path, operand),
+                                "begins_with" => {
+                                    check_statement_begins_with_operand(&operand)?;
+                                    Predicate::BeginsWith(path, operand)
+                                }
                                 "contains" => Predicate::Contains(path, operand),
                                 _ => {
                                     check_statement_type_name(&operand)?;

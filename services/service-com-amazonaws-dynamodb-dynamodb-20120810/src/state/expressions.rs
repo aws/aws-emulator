@@ -3515,7 +3515,12 @@ impl<'a> ExprParser<'a> {
                 // domain this position holds a literal to ([`Self::states_non_distinct`]).
                 let non_distinct = self.states_non_distinct(name, &value, &[&prefix]);
                 if closed && !non_distinct {
-                    check_begins_with_prefix(self.member, &prefix)?;
+                    // BOTH positions relate one text to another, so an operand whose type
+                    // the request settles is held to the types that have a prefix in
+                    // either of them, in the order the call writes them
+                    // ([`check_begins_with_operand`]).
+                    check_begins_with_operand(self.member, &value)?;
+                    check_begins_with_operand(self.member, &prefix)?;
                 }
                 ConditionNode::BeginsWith(value, prefix)
             }

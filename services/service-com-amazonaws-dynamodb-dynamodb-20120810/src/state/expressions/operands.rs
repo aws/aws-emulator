@@ -63,7 +63,9 @@ pub(super) enum OperandKind {
 /// `begins_with` is read the same way, and for the same reason: AWS is observed to evaluate
 /// `begins_with(:text, #attribute)` per item — the tested text may be one the REQUEST
 /// carried and the prefix one the item holds — and to answer the items that satisfy it
-/// rather than to refuse the call. Only `if_not_exists`, whose first operand is the location
+/// rather than to refuse the call. What an operand in either of those positions may BE is
+/// still the function's own domain ([`check_begins_with_operand`]). Only `if_not_exists`,
+/// whose first operand is the location
 /// an update writes when it is absent, needs a path in that position, and the
 /// `attribute_exists`/`attribute_not_exists`/`size` and `attribute_type` positions above
 /// each state a location or a type NAME rather than a value to compare.
@@ -221,30 +223,53 @@ pub(super) fn check_between_operands(
     check_between_bounds(member, low, high)
 }
 
-/// `begins_with`'s prefix operand is a PREFIX, so it is a string or binary value, and a
-/// literal of any other type is refused when the expression is read.
+/// The `AttributeValue` type an operand IS, where the REQUEST alone settles it, and
+/// `None` for one whose type only the stored item knows.
+///
+/// Two operand forms carry their type in the expression: a value the request bound to a
+/// `:placeholder` is of the type it was sent as, and `size (path)` — "Returns a number
+/// representing an attribute's size" (the `ConditionExpression` function reference) — is a
+/// NUMBER whatever the location it measures holds. So the domain of an operator or
+/// function can be held against either of them where the expression is READ, which is
+/// where every other fact of the request's own text is settled. An operand that reads an
+/// attribute carries no type here: what that location holds is known only once an item is
+/// read.
+pub(super) fn stated_operand_type(operand: &Operand) -> Option<&'static str> {
+    match operand {
+        Operand::Value(value) => Some(attribute_value_type(value)),
+        Operand::Size(_) => Some(SIZE_OPERAND_TYPE),
+        Operand::Path(_) => None,
+    }
+}
+
+/// The type `size (path)` reports, which is the type a refusal names for an operand
+/// written as that call: "Returns a number representing an attribute's size".
+const SIZE_OPERAND_TYPE: &str = "N";
+
+/// `begins_with` relates one TEXT to another, so each of its operands is a string or a
+/// binary value, and an operand of any other type — in EITHER position — is refused when
+/// the expression is read.
 ///
 /// "begins_with (path, substr) — true if the attribute specified by path begins with a
 /// particular substring" (the `ConditionExpression` doc): only `S` and `B` have prefixes
-/// to compare, so a number or a collection cannot be one, and the operand is a literal
-/// the request already carried — the expression is refused whether or not the addressed
-/// table holds an item to evaluate it against. An operand that reads an attribute is
-/// left to the evaluation, which is the only place its type is known.
-pub(super) fn check_begins_with_prefix(
+/// to compare and only they can be compared against one, so a number or a collection can
+/// be neither the tested text nor the prefix. Both positions take an operand
+/// ([`function_signature`]), and an operand whose type the REQUEST settles — a value it
+/// bound, or the number a `size` call reports ([`stated_operand_type`]) — is held to that
+/// domain whether or not the addressed table holds an item to evaluate the call against.
+/// An operand that reads an attribute is left to the evaluation, which is the only place
+/// its type is known.
+pub(super) fn check_begins_with_operand(
     member: &str,
     operand: &Operand,
 ) -> Result<(), RequestError> {
-    let Operand::Value(value) = operand else {
+    let Some(datatype) = stated_operand_type(operand) else {
         return Ok(());
     };
-    if matches!(value, AttributeValue::S(_) | AttributeValue::B(_)) {
+    if matches!(datatype, "S" | "B") {
         return Ok(());
     }
-    Err(incorrect_operand_type(
-        member,
-        "begins_with",
-        attribute_value_type(value),
-    ))
+    Err(incorrect_operand_type(member, "begins_with", datatype))
 }
 
 /// The type codes a type test may name, in the order AWS's own refusal lists them.

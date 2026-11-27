@@ -13,8 +13,9 @@
 //! you cannot mix both in one transaction": a mixed list is refused as a whole, and the
 //! two shapes a well-formed transaction takes are
 //!
-//! * a READ transaction — every statement a `SELECT` that addresses ONE item by an
-//!   equality on every key attribute, reporting it (projected as the statement asks)
+//! * a READ transaction — every statement a `SELECT` whose `WHERE` clause addresses ONE
+//!   item by an equality on every key attribute and states nothing beside those
+//!   equalities, reporting it (projected as the statement asks)
 //!   through `Responses` in statement order and nothing for a key that holds no item.
 //!   It writes nothing at all.
 //! * a WRITE transaction — `INSERT`, `UPDATE` and `DELETE`, applied all-or-nothing.
@@ -442,7 +443,9 @@ const MIXED_TRANSACTION_MESSAGE: &str =
 /// How a `SELECT` that does not address ONE item of the table is refused.
 ///
 /// A transactional read reports the item its statement names, so the `WHERE` clause must
-/// pin every key attribute by equality. The sentence is the one this surface states that
+/// pin every key attribute by equality and state nothing else: a clause leaving a key
+/// attribute free and one carrying a term that is no such equality each address no one
+/// item, and this is the sentence both earn. It is the one this surface states that
 /// rule with, named for the operation that enforces it exactly as `BatchExecuteStatement`
 /// names itself in its own.
 const SINGLE_ITEM_READ_MESSAGE: &str = "Select statements within ExecuteTransaction must specify \
@@ -603,6 +606,18 @@ fn read_transaction<Eng: ::std::marker::Send + ::std::marker::Sync + 'static>(
         let Some(filter) = select.filter.as_ref() else {
             return Err(refused(SINGLE_ITEM_READ_MESSAGE));
         };
+        // A transactional read reports the ONE item its statement names, so the `WHERE`
+        // clause states equality conditions on the key attributes AND NOTHING ELSE: a
+        // term that is no such equality — a boolean function, a comparison that is not
+        // `=`, a membership test, a range, a branch of an `OR` — narrows a result set
+        // instead of addressing an item, which is a read no single-item plan serves
+        // ([`crate::state::states_equalities_only`]). It is refused in the sentence this
+        // operation states that rule with rather than applied as a filter over the item
+        // the equalities beside it address, so a statement this transaction cannot serve
+        // never reads as one that matched nothing.
+        if !crate::state::states_equalities_only(filter) {
+            return Err(refused(SINGLE_ITEM_READ_MESSAGE));
+        }
         let condition = crate::state::parsed_condition(filter)
             .map_err(|error| lift(in_slot(at, error)))?;
         let key = crate::state::singleton_key(table, filter).map_err(|error| {
