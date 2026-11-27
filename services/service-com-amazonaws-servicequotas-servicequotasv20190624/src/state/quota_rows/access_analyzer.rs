@@ -72,14 +72,14 @@ pub(in crate::state) fn access_analyzer_quotas() -> Vec<QuotaRow> {
             .describe("The maximum number of access previews per analyzer per hour."),
         // The CloudTrail history one generation may read, published in GIGABYTES beside
         // the same plane's time range below, and as not adjustable the way that row is.
-        // Its own published sentence is not among the data available here — the evidence
-        // behind this catalog shows the time-range row's wording around a data size is
-        // not what this row carries, and withholds the text — so it publishes none
-        // rather than wording of this catalog's own.
+        // Its published sentence is the one the recorded default-quota listing of this
+        // service code states for this code — a SIZE of data rather than a count, which
+        // is why neither the counted form nor the time-range row's wording reads for it.
         quota("Policy generation CloudTrail data size", 25.0)
             .code("L-94099EDD")
             .unit("Gigabytes")
-            .fixed(),
+            .fixed()
+            .describe("The maximum size of CloudTrail data per policy generation."),
         // A quota measured in DAYS of CloudTrail history, which AWS publishes as not
         // adjustable.
         quota("Policy generation CloudTrail time range", 90.0)

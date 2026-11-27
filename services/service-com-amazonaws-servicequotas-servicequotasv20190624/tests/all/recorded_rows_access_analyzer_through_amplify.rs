@@ -320,11 +320,6 @@ const UNPUBLISHED_QUOTA_CODES: &[(&str, &str, &str)] = &[
         "L-12943EEB",
         "an AWS code whose published per-operation rate this catalog carries no facts for",
     ),
-    (
-        "aidevops",
-        "L-1553F789",
-        "an AWS code whose published default this evidence withholds",
-    ),
 ];
 
 /// RULE: a published row reports the facts AWS publishes under its own code, through the

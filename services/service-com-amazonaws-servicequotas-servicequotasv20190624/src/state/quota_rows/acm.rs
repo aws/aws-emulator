@@ -45,10 +45,11 @@ fn acm_api_request_rate(api_name: &str, requests_per_second: f64) -> QuotaRow {
 ///
 /// SOURCE: the recorded default-quota listing of `acm`, which states this same rate for
 /// EVERY one of its ACME-endpoint rate rows the evidence behind this catalog cites
-/// (`L-DD60D132`, `L-8849A1A8` and `L-A7230D7D`) — so it is the rate that sub-class is
-/// published at rather than one row's own limit, and the fourth cited row of it carries
-/// it too. A rate row OUTSIDE that sub-class is not filled in from here: it stays
-/// unpublished until its own rate is stated.
+/// (`L-DD60D132`, `L-8849A1A8`, `L-A7230D7D` and the domain-validation row
+/// `L-74BB4A99`, whose rate that evidence states member for member) — so it is the rate
+/// that sub-class is published at rather than one row's own limit, and the cited rows of
+/// it carry it alike. A rate row OUTSIDE that sub-class is not filled in from here: it
+/// stays unpublished until its own rate is stated.
 const ACME_API_REQUEST_RATE: f64 = 50.0;
 
 /// AWS Certificate Manager's published default-quota catalog.
@@ -59,7 +60,10 @@ const ACME_API_REQUEST_RATE: f64 = 50.0;
 /// default-quota listing of that code for which `QuotaCode` names which operation's
 /// rate and what that rate is.
 ///
-/// Every row is published under the `L-` code AWS mints for it, in code order. The
+/// Every row is published under the `L-` code AWS mints for it, in code order; the
+/// domain-validation rate (`L-74BB4A99`) is the row that evidence states last, with the
+/// operation its code is published for, its one-second window, its call count and the
+/// sub-class's rate. The
 /// certificate-COUNT quotas this catalog used to publish under descriptive stand-in codes
 /// (`ACMCertificates`, `ImportedCertificates`) are reported by that recording as surplus
 /// entries and it states no AWS code for either quota, so those rows are dropped rather
@@ -74,6 +78,8 @@ pub(in crate::state) fn acm_quotas() -> Vec<QuotaRow> {
         // for that one operation.
         acm_api_request_rate("DescribeAcmeExternalAccountBinding", ACME_API_REQUEST_RATE)
             .code("L-535A8003"),
+        acm_api_request_rate("CreateAcmeDomainValidation", ACME_API_REQUEST_RATE)
+            .code("L-74BB4A99"),
         acm_api_request_rate("UpdateAcmeEndpoint", ACME_API_REQUEST_RATE).code("L-8849A1A8"),
         acm_api_request_rate("CreateAcmeEndpoint", ACME_API_REQUEST_RATE).code("L-A7230D7D"),
         acm_api_request_rate("ListAcmeDomainValidations", ACME_API_REQUEST_RATE)

@@ -43,9 +43,10 @@ fn aco_automation_throttle_rate(api_name: &str, requests_per_second: f64) -> Quo
 ///
 /// SOURCE: the recorded default-quota listing of `aco-automation`, which states this
 /// same rate for every one of its throttle rows the evidence behind this catalog cites
-/// (`L-1501440B`, `L-D0368739`, `L-D0AFC926`, `L-D5E7759E` and `L-E33DC3FB`) — so it is
-/// the rate that class is published at for the operations below rather than one row's
-/// own limit. A row the evidence does not name is NOT filled in from here: without the
+/// (`L-1501440B`, `L-D0368739`, `L-D0AFC926`, `L-D5E7759E`, `L-E33DC3FB` and the
+/// summary-listing and rule rows `L-7EC2BBE4` and `L-AD6FFAA3`) — so it is the rate that
+/// class is published at for the operations below rather than one row's own limit. A row
+/// whose OPERATION the evidence does not name is still not published: without the
 /// operation its code is published for, the row has no identity to publish.
 const ACO_AUTOMATION_THROTTLE_RATE: f64 = 5.0;
 
@@ -65,6 +66,12 @@ pub(in crate::state) fn aco_automation_quotas() -> Vec<QuotaRow> {
     let throttle = |api: &str| aco_automation_throttle_rate(api, ACO_AUTOMATION_THROTTLE_RATE);
     vec![
         throttle("ListAutomationRules").code("L-1501440B"),
+        // The operations the recorded listing names the code of, each published under
+        // that code with the class's window, sentence and adjustability.
+        throttle("ListAutomationEventSummaries").code("L-7EC2BBE4"),
+        throttle("UpdateEnrollmentConfiguration").code("L-AD63CC14"),
+        throttle("DeleteAutomationRule").code("L-AD6FFAA3"),
+        throttle("ListRecommendedActionSummaries").code("L-B314103C"),
         throttle("GetAutomationEvent").code("L-D0368739"),
         throttle("ListAutomationEvents").code("L-D0AFC926"),
         throttle("UntagResource").code("L-D5E7759E"),

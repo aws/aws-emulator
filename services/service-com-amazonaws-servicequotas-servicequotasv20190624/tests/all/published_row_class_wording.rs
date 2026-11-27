@@ -202,10 +202,17 @@ const CLASSES: &[Class] = &[
 /// its category rates, and Amazon Cognito Federated Identities a count of one identity
 /// pool's user pool providers beside its API rates — each with the sentence the service
 /// publishes for that count, a count's text being the quota's own rather than a class
-/// template's. An EMPTY sentence is a count whose published text this catalog cites no
+/// template's. AWS Private CA publishes the revoked certificates of one CA with complete
+/// CRLs enabled (`src/state/quota_rows/acm_pca.rs`) beside its per-operation rates. An
+/// EMPTY sentence is a count whose published text this catalog cites no
 /// source for, which publishes no `Description` member at all rather than wording authored
 /// here.
 const COUNT_ROWS: &[(&str, &str, &str)] = &[
+    (
+        "acm-pca",
+        "Number of revoked private certificates for each CA with complete CRLs enabled",
+        "",
+    ),
     (
         "cognito-identity",
         "Amazon Cognito user pool providers per identity pool",

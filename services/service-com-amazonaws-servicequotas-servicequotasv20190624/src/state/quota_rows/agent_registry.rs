@@ -46,9 +46,11 @@ fn agent_registry_request_rate(api_name: &str, requests_per_second: f64) -> Quot
 ///
 /// SOURCE: the recorded default-quota listing of `agent-registry`. It is cited PER ROW,
 /// not as a fact of the class: a replay of that listing against this catalog reports no
-/// divergence on any of `L-7F384C37`, `L-4BB62FF5` or `L-0CAE3C7F`, so the rate is the
-/// one that listing states for each of them. A further row of the class is not filled in
-/// from here — it is left unpublished until its own rate is stated.
+/// divergence on any of `L-7F384C37`, `L-4BB62FF5` or `L-0CAE3C7F`, and that evidence
+/// states this same rate for the record-listing row (`L-2ECDF0F2`), while the
+/// `GetRegistry` row below carries a rate of its own — so the class has no one rate and a
+/// further row of it is not filled in from here. It is left unpublished until its own
+/// rate is stated.
 const AGENT_REGISTRY_REQUEST_RATE: f64 = 10.0;
 
 /// AWS Agent Registry's published default-quota catalog.
@@ -80,11 +82,14 @@ pub(in crate::state) fn agent_registry_quotas() -> Vec<QuotaRow> {
         // the five-minute window those counts are published over instead of the class's
         // one-second rate window. `Resource` is the series CloudWatch publishes the
         // count under, which is the RESOURCE TYPE the plane counts (the form the
-        // resource planes of `appconfig` carry), not the plane's own name. The plane's
-        // own published sentence is not among the data available here, so the row
-        // publishes none rather than wording of this catalog's own.
+        // resource planes of `appconfig` carry), not the plane's own name. Its published
+        // sentence is the one the recorded listing states for this code, worded around
+        // the registries an account may create rather than around a call rate.
         quota("Registries per Account", 10.0)
             .code("L-197AC8CB")
+            .describe(
+                "The maximum number of registries that can be created per account per Region",
+            )
             .metric(usage_metric(
                 AGENT_REGISTRY_USAGE_SERVICE,
                 &[
@@ -93,6 +98,11 @@ pub(in crate::state) fn agent_registry_quotas() -> Vec<QuotaRow> {
                     ("Type", "Resource"),
                 ],
             )),
+        agent_registry_request_rate("ListRegistryRecords", AGENT_REGISTRY_REQUEST_RATE)
+            .code("L-2ECDF0F2")
+            // One of the rate rows this registry publishes as NOT adjustable, as the
+            // recorded listing states for this code.
+            .fixed(),
         agent_registry_request_rate("DeleteRegistryRecord", AGENT_REGISTRY_REQUEST_RATE)
             .code("L-4BB62FF5")
             // The one row of this class the recorded listing publishes as NOT

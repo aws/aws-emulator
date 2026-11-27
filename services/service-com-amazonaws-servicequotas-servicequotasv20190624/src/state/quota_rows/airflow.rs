@@ -16,18 +16,21 @@ use super::*;
 /// publishes its environment count as TWO planes — one for the small, medium and large
 /// environment classes and one for the larger ones — so each carries its own code, name
 /// and default rather than one row standing in for both. The larger-environment plane's
-/// own published sentence is not among the data available here — the evidence behind this
-/// catalog shows that neither the sentence of the plane beside it nor that sentence's
-/// form around this plane's own name is what this row carries, and withholds the text —
-/// so it publishes none rather than wording of this catalog's own (see
-/// [`super::maximum_number_phrase`]).
+/// published sentence is the one the recorded default-quota listing of this code states
+/// for it: it names the ENVIRONMENT CLASSES it counts (`mw1.xlarge` and `mw1.2xlarge`)
+/// rather than reading the plane's own name as a phrase, which is why the counted form
+/// around that name is not what the row carries (see [`super::maximum_number_phrase`]).
 pub(in crate::state) fn airflow_quotas() -> Vec<QuotaRow> {
     vec![
         quota(
             "Larger environments per account per Region (xlarge, 2xlarge)",
             5.0,
         )
-        .code("L-4BA0CB82"),
+        .code("L-4BA0CB82")
+        .describe(
+            "The maximum number of mw1.xlarge and mw1.2xlarge environments per account per \
+             Region.",
+        ),
         quota("Web servers per environment", 5.0)
             .code("L-52DCDA32")
             .describe("The maximum number of web servers per environment."),
