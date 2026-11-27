@@ -409,8 +409,8 @@ async fn a_created_system_reads_back_through_get_system() {
 
 #[tokio::test]
 async fn a_replayed_client_token_answers_the_system_the_first_call_created() {
-    // Rows differ along the token's form and length: `ClientToken` is `len 1..63` with
-    // pattern `^[A-Za-z0-9_.-]{0,63}$` (`smithy_query(query="shape", shape="ClientToken")`),
+    // Rows differ along the token's form and length: `ClientToken` is `len 1..64` with
+    // pattern `^[A-Za-z0-9_.-]{1,64}$` (`smithy_query(query="shape", shape="ClientToken")`),
     // so the shortest, a UUID-shaped one, one carrying every allowed punctuation class and
     // the longest are all tokens.
     let router = emulator();
@@ -418,7 +418,7 @@ async fn a_replayed_client_token_answers_the_system_the_first_call_created() {
         "t".to_string(),
         "3f2504e0-4f89-11d3-9a0c-0305e82c3301".to_string(),
         "token_1.2-3".to_string(),
-        "k".repeat(63),
+        "k".repeat(64),
     ];
     for (index, token) in tokens.iter().enumerate() {
         let case = format!("client token of {} characters", token.len());

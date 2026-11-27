@@ -55,7 +55,7 @@
 //!
 //! * `availabilitySlo` (AvailabilitySlo) — The availability SLO to set on the imported
 //!   policy.
-//! * `clientToken` (ClientToken, len 1..63, pattern ^[A-Za-z0-9_.-]{0,63}$,
+//! * `clientToken` (ClientToken, len 1..64, pattern ^[A-Za-z0-9_.-]{1,64}$,
 //!   @idempotencyToken) — Idempotency token.
 //! * `kmsKeyId` (KmsKeyId, len 1..2048) — KMS key identifier — accepts key ID, key ARN, alias
 //!   name, or alias ARN.

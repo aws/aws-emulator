@@ -67,6 +67,7 @@
 //! * `AccessDeniedException` (HTTP 403) — Access denied — caller lacks required permissions.
 //! * `InternalServerException` (HTTP 500) — Internal service error.
 //! * `ResourceNotFoundException` (HTTP 404) — Resource not found.
+//! * `ThrottlingException` (HTTP 429) — Too many requests — rate limit exceeded.
 //! * `ValidationException` (HTTP 400) — Validation error — invalid input parameters.
 
 #[allow(unused_imports)]
@@ -89,6 +90,7 @@ pub enum GetTestTemplateErrorModeled {
     AccessDeniedException(AccessDeniedException),
     InternalServerException(InternalServerException),
     ResourceNotFoundException(ResourceNotFoundException),
+    ThrottlingException(ThrottlingException),
     ValidationException(ValidationException),
 }
 

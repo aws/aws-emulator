@@ -52,7 +52,7 @@
 //!
 //! ## Input
 //!
-//! * `clientToken` (ClientToken, len 1..63, pattern ^[A-Za-z0-9_.-]{0,63}$,
+//! * `clientToken` (ClientToken, len 1..64, pattern ^[A-Za-z0-9_.-]{1,64}$,
 //!   @idempotencyToken) — Idempotency token.
 //! * `description` (EntityDescription, len ..500) — Resource description.
 //! * `kmsKeyId` (KmsKeyId, len 1..2048) — KMS key identifier — accepts key ID, key ARN, alias

@@ -2,7 +2,8 @@
 
 //! @op ListTestTemplates
 //! Reports this service's test-template catalog (`crate::state::TEST_TEMPLATE_CATALOG`)
-//! as `TestTemplateSummary`s. This is the ONLY file to touch for this operation.
+//! as `TestTemplateSummary`s, over the modelled `@paginated` window. This is the ONLY
+//! file to touch for this operation.
 //!
 //! A test template is "a pre-configured, AWS recommended test", so the catalog is
 //! SERVICE-owned: no operation in this model creates, updates or deletes one, and this
@@ -51,15 +52,23 @@
 //! Lists the available resilience test templates. A test template is a pre-configured, AWS
 //! recommended test that defines which resilience capability to validate.
 //!
+//! ## Input
+//!
+//! * `maxResults` (MaxResults, range 1..100, default 100) **required** — Pagination page
+//!   size.
+//! * `nextToken` (NextToken, len 1..2000, pattern ^\S{1,2000}$) — Pagination token.
+//!
 //! ## Output
 //!
 //! * `testTemplates` (TestTemplateSummaryList) **required** — The list of test template
 //!   summaries.
+//! * `nextToken` (NextToken, len 1..2000, pattern ^\S{1,2000}$) — Pagination token.
 //!
 //! ## Errors
 //!
 //! * `AccessDeniedException` (HTTP 403) — Access denied — caller lacks required permissions.
 //! * `InternalServerException` (HTTP 500) — Internal service error.
+//! * `ThrottlingException` (HTTP 429) — Too many requests — rate limit exceeded.
 //! * `ValidationException` (HTTP 400) — Validation error — invalid input parameters.
 
 #[allow(unused_imports)]
@@ -81,6 +90,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-resiliencehubv2-ngrhser
 pub enum ListTestTemplatesErrorModeled {
     AccessDeniedException(AccessDeniedException),
     InternalServerException(InternalServerException),
+    ThrottlingException(ThrottlingException),
     ValidationException(ValidationException),
 }
 
@@ -135,20 +145,87 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // `ListTestTemplatesRequest` has no members, and the catalog is service-owned, so
-        // neither the request body nor the per-account store is read: this listing is the
-        // same for every caller.
-        let _ = (&input, &self.engine);
+        // The catalog is service-owned, so the per-account store is never read: this
+        // listing is the same for every caller.
+        let _ = &self.engine;
+        let catalog = crate::state::TEST_TEMPLATE_CATALOG;
+
+        // A `nextToken` must be one this service issued, so it has to decode to a
+        // position this catalog holds; anything else is a bad request, not an empty page.
+        // `None` means "start from the first entry". Positions are 1-based, the way every
+        // other listing in this service numbers them.
+        let resume_from: usize = match input.next_token.as_deref() {
+            None => 0,
+            Some(token) => match crate::state::decode_page_token(token) {
+                Some(position) if position >= 1 && position as usize <= catalog.len() => {
+                    position as usize - 1
+                }
+                _ => {
+                    return Err(
+                        ListTestTemplatesErrorModeled::ValidationException(forged_token()).into(),
+                    );
+                }
+            },
+        };
+
+        // `maxResults` is modelled `range 1..100` with a default of 100, so the boundary
+        // refuses anything outside the range and supplies the default for a request that
+        // omits it. A value that still arrives outside the range is refused here rather
+        // than quietly served at some other page size.
+        let page_size = if (crate::state::MAX_RESULTS_MIN..=crate::state::MAX_RESULTS_MAX)
+            .contains(&input.max_results)
+        {
+            input.max_results as usize
+        } else {
+            return Err(ListTestTemplatesErrorModeled::ValidationException(ValidationException {
+                message: format!(
+                    "maxResults must be between {} and {}",
+                    crate::state::MAX_RESULTS_MIN,
+                    crate::state::MAX_RESULTS_MAX
+                ),
+                reason: Some("INVALID_FIELD_VALUE".to_string()),
+                field_list: Some(vec![ValidationExceptionField {
+                    name: "maxResults".to_string(),
+                    message: format!(
+                        "must be between {} and {}",
+                        crate::state::MAX_RESULTS_MIN,
+                        crate::state::MAX_RESULTS_MAX
+                    ),
+                }]),
+            })
+            .into());
+        };
+
         let region = crate::state::request_region(ctx.parts());
 
-        // The whole catalog, in the table's own (name) order, so two reads answer
+        // One page of the catalog, in the table's own (name) order, so two reads answer
         // identically. `testTemplates` is @required, so the member is always present —
         // every entry projected from the one table the catalog lives in.
+        let remaining = &catalog[resume_from..];
         Ok(ListTestTemplatesOutput {
-            test_templates: crate::state::TEST_TEMPLATE_CATALOG
+            test_templates: remaining
                 .iter()
+                .take(page_size)
                 .map(|entry| entry.to_summary(&region))
                 .collect(),
+            // The token names where the NEXT page resumes, and is emitted only when there
+            // is one: the last page carries no token.
+            next_token: (remaining.len() > page_size)
+                .then(|| crate::state::encode_page_token((resume_from + page_size + 1) as u64)),
         })
+    }
+}
+
+/// The refusal for a `nextToken` this service did not issue: the member is named and its
+/// rule stated, the way the boundary validator words a refusal.
+fn forged_token() -> ValidationException {
+    ValidationException {
+        message: "nextToken is not a token this service issued".to_string(),
+        reason: Some("INVALID_FIELD_VALUE".to_string()),
+        field_list: Some(vec![ValidationExceptionField {
+            name: "nextToken".to_string(),
+            message: "must be a nextToken returned by a previous ListTestTemplates call"
+                .to_string(),
+        }]),
     }
 }

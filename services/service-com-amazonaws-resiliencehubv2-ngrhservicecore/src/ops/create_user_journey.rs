@@ -47,7 +47,7 @@
 //!
 //! ## Input
 //!
-//! * `clientToken` (ClientToken, len 1..63, pattern ^[A-Za-z0-9_.-]{0,63}$,
+//! * `clientToken` (ClientToken, len 1..64, pattern ^[A-Za-z0-9_.-]{1,64}$,
 //!   @idempotencyToken) — Idempotency token.
 //! * `description` (EntityDescription, len ..500) — Resource description.
 //! * `name` (EntityLabel, len 2..60, pattern ^[A-Za-z0-9][A-Za-z0-9 _\-]{1,59}$) **required**

@@ -426,3 +426,71 @@ async fn a_delete_leaves_every_survivor_whole_in_every_later_listing() {
         "another service's assertions must survive every delete aimed elsewhere, got {listed:?}"
     );
 }
+
+/// RULE: a delete releases EVERY piece of state the create wrote, the index of consumed
+/// idempotency tokens included, and the per-service ceiling is held against that index as
+/// well — so a caller repeating "create under a token, delete what it created" keeps
+/// creating however many times it repeats, and the token the delete dropped names no
+/// removed record afterwards.
+///
+/// The rows differ along how the churn uses tokens: a fresh token every cycle, and one
+/// token reused every cycle. Both run one cycle more than the ceiling, so an index that
+/// grew with every token consumed rather than with the records stored would refuse before
+/// the last cycle.
+#[tokio::test]
+async fn a_delete_releases_the_token_index_so_token_churn_stays_bounded() {
+    let router = emulator();
+
+    for (case, reuse_one_token) in [
+        ("a fresh token each cycle", false),
+        ("one token reused", true),
+    ] {
+        let service_arn = create_service(&router, &case.replace(' ', "-")).await;
+        for cycle in 0..=MAX_ASSERTIONS_PER_SERVICE {
+            let token = if reuse_one_token {
+                "churned-token".to_string()
+            } else {
+                format!("churned-token-{cycle}")
+            };
+            // The text differs every cycle, so a token still held by the index would be
+            // refused as a conflict rather than answered as a retry.
+            let (status, body) = call(
+                &router,
+                "POST",
+                CREATE_ASSERTION,
+                Some(json!({
+                    "serviceArn": service_arn,
+                    "text": text_for(case, cycle),
+                    "clientToken": token,
+                })),
+            )
+            .await;
+            assert_eq!(
+                status, 200,
+                "case {case:?}: cycle {cycle} under token {token:?} expected HTTP 200 from \
+                 CreateAssertion, got {status} {body:?}"
+            );
+            let assertion_id = body["assertion"]["assertionId"]
+                .as_str()
+                .unwrap_or_else(|| {
+                    panic!("case {case:?}: cycle {cycle} answered no assertionId: {body:?}")
+                })
+                .to_string();
+
+            let (status, deleted) = delete_assertion(&router, &service_arn, &assertion_id).await;
+            assert_eq!(
+                status, 200,
+                "case {case:?}: cycle {cycle} expected HTTP 200 from DeleteAssertion, got \
+                 {status} {deleted:?}"
+            );
+        }
+
+        // Every cycle removed what it created, so the parent holds nothing at the end.
+        let listed = list_every_assertion(&router, case, &service_arn, None, None).await;
+        assert!(
+            listed.is_empty(),
+            "case {case:?}: every cycle deleted what it created, so the service must hold no \
+             assertion, got {listed:?}"
+        );
+    }
+}

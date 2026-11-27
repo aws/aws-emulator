@@ -43,6 +43,7 @@ pub struct TestRun {
     pub test_template_arn: String,
     pub report_configuration: Option<TestRunReportConfiguration>,
     pub policy: Option<TestRunPolicySnapshot>,
+    pub effective_policy_values: Option<TestRunEffectivePolicyValues>,
     pub report_output: Option<ReportGenerationResult>,
     pub region_switch_plan_arn: Option<String>,
     pub region_switch_execution_id: Option<String>,
@@ -74,6 +75,19 @@ pub struct TestRunPolicySnapshot {
     pub multi_az: Option<MultiAzTargets>,
     pub multi_region: Option<MultiRegionTargets>,
     pub data_recovery: Option<DataRecoveryTargets>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.resiliencehubv2#TestRunEffectivePolicyValues")]
+#[derive(Debug, Clone, Default)]
+pub struct TestRunEffectivePolicyValues {
+    pub availability_slo: Option<SloSource>,
+    pub multi_az_rto: Option<TargetSource>,
+    pub multi_az_rpo: Option<TargetSource>,
+    pub multi_az_dr_approach: Option<DisasterRecoverySource>,
+    pub multi_region_rto: Option<TargetSource>,
+    pub multi_region_rpo: Option<TargetSource>,
+    pub multi_region_dr_approach: Option<DisasterRecoverySource>,
+    pub data_recovery_time_between_backups: Option<TargetSource>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.resiliencehubv2#DevOpsAgentInvestigation")]

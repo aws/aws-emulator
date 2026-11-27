@@ -26,42 +26,42 @@ contents — read that shape in the model above when you need its own members.
 ## CreateAssertion
 
 - **Route:** `POST /v2/create-assertion`
-- **Input:** `serviceArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …, required), `text` (string, len 1..1000, required), `clientToken` (string, len 1..63, pattern ^[A-Za-z0-9_.-]{0,63}$, @idempotencyToken)
+- **Input:** `serviceArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …, required), `text` (string, len 1..1000, required), `clientToken` (string, len 1..64, pattern ^[A-Za-z0-9_.-]{1,64}$, @idempotencyToken)
 - **Output:** `assertion` (Assertion, required)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ServiceQuotaExceededException (HTTP 402)`, `ValidationException (HTTP 400)`
 
 ## CreateInputSource
 
 - **Route:** `POST /v2/create-input-source`
-- **Input:** `serviceArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …, required), `resourceConfiguration` (ResourceConfiguration, required), `clientToken` (string, len 1..63, pattern ^[A-Za-z0-9_.-]{0,63}$, @idempotencyToken)
+- **Input:** `serviceArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …, required), `resourceConfiguration` (ResourceConfiguration, required), `clientToken` (string, len 1..64, pattern ^[A-Za-z0-9_.-]{1,64}$, @idempotencyToken)
 - **Output:** `serviceArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …, required), `inputSourceId` (string, len 1..255, pattern ^\S{1,255}$, required)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ServiceQuotaExceededException (HTTP 402)`, `ValidationException (HTTP 400)`
 
 ## CreatePolicy
 
 - **Route:** `POST /v2/create-policy`
-- **Input:** `name` (string, len 2..60, pattern ^[A-Za-z0-9][A-Za-z0-9_\-]{1,59}$, required), `description` (string, len ..615), `availabilitySlo` (AvailabilitySlo), `multiAz` (MultiAzTargets), `multiRegion` (MultiRegionTargets), `dataRecovery` (DataRecoveryTargets), `sharingEnabled` (boolean), `kmsKeyId` (string, len 1..2048), `tags` (map<string,string>, len 1..50), `clientToken` (string, len 1..63, pattern ^[A-Za-z0-9_.-]{0,63}$, @idempotencyToken)
+- **Input:** `name` (string, len 2..60, pattern ^[A-Za-z0-9][A-Za-z0-9_\-]{1,59}$, required), `description` (string, len ..615), `availabilitySlo` (AvailabilitySlo), `multiAz` (MultiAzTargets), `multiRegion` (MultiRegionTargets), `dataRecovery` (DataRecoveryTargets), `sharingEnabled` (boolean), `kmsKeyId` (string, len 1..2048), `tags` (map<string,string>, len 1..50), `clientToken` (string, len 1..64, pattern ^[A-Za-z0-9_.-]{1,64}$, @idempotencyToken)
 - **Output:** `policy` (Policy, required)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ServiceQuotaExceededException (HTTP 402)`, `ValidationException (HTTP 400)`
 
 ## CreateReport
 
 - **Route:** `POST /v2/create-report`
-- **Input:** `serviceArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …, required), `reportType` (ReportType, one of: FAILURE_MODE | TESTING, required), `clientToken` (string, len 1..63, pattern ^[A-Za-z0-9_.-]{0,63}$, @idempotencyToken)
+- **Input:** `serviceArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …, required), `reportType` (ReportType, one of: FAILURE_MODE | TESTING, required), `clientToken` (string, len 1..64, pattern ^[A-Za-z0-9_.-]{1,64}$, @idempotencyToken)
 - **Output:** `reportGenerationResult` (ReportGenerationResult, required)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## CreateService
 
 - **Route:** `POST /v2/create-service`
-- **Input:** `name` (string, len 2..60, pattern ^[A-Za-z0-9][A-Za-z0-9_\-]{1,59}$, required), `description` (string, len ..615), `associatedSystems` (list<AssociatedSystem>, len ..20), `policyArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …), `regions` (list<string>, len 1..5, required), `permissionModel` (PermissionModel, required), `dependencyDiscovery` (DependencyDiscoveryInput, one of: DISABLED | ENABLED), `reportConfiguration` (ServiceReportConfiguration), `kmsKeyId` (string, len 1..2048), `devOpsAgentConfiguration` (DevOpsAgentConfiguration), `tags` (map<string,string>, len 1..50), `clientToken` (string, len 1..63, pattern ^[A-Za-z0-9_.-]{0,63}$, @idempotencyToken)
+- **Input:** `name` (string, len 2..60, pattern ^[A-Za-z0-9][A-Za-z0-9_\-]{1,59}$, required), `description` (string, len ..615), `associatedSystems` (list<AssociatedSystem>, len ..20), `policyArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …), `regions` (list<string>, len 1..5, required), `permissionModel` (PermissionModel, required), `dependencyDiscovery` (DependencyDiscoveryInput, one of: DISABLED | ENABLED), `reportConfiguration` (ServiceReportConfiguration), `kmsKeyId` (string, len 1..2048), `devOpsAgentConfiguration` (DevOpsAgentConfiguration), `tags` (map<string,string>, len 1..50), `clientToken` (string, len 1..64, pattern ^[A-Za-z0-9_.-]{1,64}$, @idempotencyToken)
 - **Output:** `service` (Service, required)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ServiceQuotaExceededException (HTTP 402)`, `ValidationException (HTTP 400)`
 
 ## CreateServiceFunction
 
 - **Route:** `POST /v2/create-service-function`
-- **Input:** `name` (string, len 2..60, pattern ^[A-Za-z0-9][A-Za-z0-9 _\-]{1,59}$, required), `serviceArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …, required), `description` (string, len ..500), `criticality` (ServiceFunctionCriticality, one of: PRIMARY | SUPPLEMENTAL, required), `clientToken` (string, len 1..63, pattern ^[A-Za-z0-9_.-]{0,63}$, @idempotencyToken)
+- **Input:** `name` (string, len 2..60, pattern ^[A-Za-z0-9][A-Za-z0-9 _\-]{1,59}$, required), `serviceArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …, required), `description` (string, len ..500), `criticality` (ServiceFunctionCriticality, one of: PRIMARY | SUPPLEMENTAL, required), `clientToken` (string, len 1..64, pattern ^[A-Za-z0-9_.-]{1,64}$, @idempotencyToken)
 - **Output:** `serviceFunction` (ServiceFunction, required)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ServiceQuotaExceededException (HTTP 402)`, `ValidationException (HTTP 400)`
 
@@ -75,7 +75,7 @@ contents — read that shape in the model above when you need its own members.
 ## CreateSystem
 
 - **Route:** `POST /v2/create-system`
-- **Input:** `name` (string, len 2..60, pattern ^[A-Za-z0-9][A-Za-z0-9_\-]{1,59}$, required), `description` (string, len ..500), `sharingEnabled` (boolean), `kmsKeyId` (string, len 1..2048), `tags` (map<string,string>, len 1..50), `clientToken` (string, len 1..63, pattern ^[A-Za-z0-9_.-]{0,63}$, @idempotencyToken)
+- **Input:** `name` (string, len 2..60, pattern ^[A-Za-z0-9][A-Za-z0-9_\-]{1,59}$, required), `description` (string, len ..500), `sharingEnabled` (boolean), `kmsKeyId` (string, len 1..2048), `tags` (map<string,string>, len 1..50), `clientToken` (string, len 1..64, pattern ^[A-Za-z0-9_.-]{1,64}$, @idempotencyToken)
 - **Output:** `system` (System, required)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ServiceQuotaExceededException (HTTP 402)`, `ValidationException (HTTP 400)`
 
@@ -89,7 +89,7 @@ contents — read that shape in the model above when you need its own members.
 ## CreateUserJourney
 
 - **Route:** `POST /v2/create-user-journey`
-- **Input:** `systemArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …, required), `name` (string, len 2..60, pattern ^[A-Za-z0-9][A-Za-z0-9 _\-]{1,59}$, required), `description` (string, len ..500), `policyArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …), `clientToken` (string, len 1..63, pattern ^[A-Za-z0-9_.-]{0,63}$, @idempotencyToken)
+- **Input:** `systemArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …, required), `name` (string, len 2..60, pattern ^[A-Za-z0-9][A-Za-z0-9 _\-]{1,59}$, required), `description` (string, len ..500), `policyArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …), `clientToken` (string, len 1..64, pattern ^[A-Za-z0-9_.-]{1,64}$, @idempotencyToken)
 - **Output:** `userJourney` (UserJourney, required)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ServiceQuotaExceededException (HTTP 402)`, `ValidationException (HTTP 400)`
 
@@ -225,7 +225,7 @@ contents — read that shape in the model above when you need its own members.
 - **Traits:** @readonly
 - **Input:** `testTemplateArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …, @httpQuery(testTemplateArn), required)
 - **Output:** `testTemplate` (TestTemplate, required)
-- **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ValidationException (HTTP 400)`
+- **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## GetUserJourney
 
@@ -238,14 +238,14 @@ contents — read that shape in the model above when you need its own members.
 ## ImportApp
 
 - **Route:** `POST /v2/import-app`
-- **Input:** `v1AppArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …, required), `policyArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …), `kmsKeyId` (string, len 1..2048), `skipManuallyAddedResources` (boolean), `associatedSystems` (list<AssociatedSystem>, len ..20), `tags` (map<string,string>, len 1..50), `clientToken` (string, len 1..63, pattern ^[A-Za-z0-9_.-]{0,63}$, @idempotencyToken)
+- **Input:** `v1AppArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …, required), `policyArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …), `kmsKeyId` (string, len 1..2048), `skipManuallyAddedResources` (boolean), `associatedSystems` (list<AssociatedSystem>, len ..20), `tags` (map<string,string>, len 1..50), `clientToken` (string, len 1..64, pattern ^[A-Za-z0-9_.-]{1,64}$, @idempotencyToken)
 - **Output:** `service` (Service, required)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ServiceQuotaExceededException (HTTP 402)`, `ValidationException (HTTP 400)`
 
 ## ImportPolicy
 
 - **Route:** `POST /v2/import-policy`
-- **Input:** `v1PolicyArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …, required), `kmsKeyId` (string, len 1..2048), `availabilitySlo` (AvailabilitySlo), `multiAzDisasterRecoveryApproach` (MultiAzDisasterRecoveryApproach, one of: ACTIVE_ACTIVE | BACKUP_AND_RESTORE | HOT_STANDBY | PILOT_LIGHT | WARM_STANDBY), `multiRegionDisasterRecoveryApproach` (MultiRegionDisasterRecoveryApproach, one of: ACTIVE_ACTIVE | BACKUP_AND_RESTORE | HOT_STANDBY | PILOT_LIGHT | WARM_STANDBY), `tags` (map<string,string>, len 1..50), `clientToken` (string, len 1..63, pattern ^[A-Za-z0-9_.-]{0,63}$, @idempotencyToken)
+- **Input:** `v1PolicyArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …, required), `kmsKeyId` (string, len 1..2048), `availabilitySlo` (AvailabilitySlo), `multiAzDisasterRecoveryApproach` (MultiAzDisasterRecoveryApproach, one of: ACTIVE_ACTIVE | BACKUP_AND_RESTORE | HOT_STANDBY | PILOT_LIGHT | WARM_STANDBY), `multiRegionDisasterRecoveryApproach` (MultiRegionDisasterRecoveryApproach, one of: ACTIVE_ACTIVE | BACKUP_AND_RESTORE | HOT_STANDBY | PILOT_LIGHT | WARM_STANDBY), `tags` (map<string,string>, len 1..50), `clientToken` (string, len 1..64, pattern ^[A-Za-z0-9_.-]{1,64}$, @idempotencyToken)
 - **Output:** `policy` (Policy, required)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ServiceQuotaExceededException (HTTP 402)`, `ValidationException (HTTP 400)`
 
@@ -444,10 +444,10 @@ contents — read that shape in the model above when you need its own members.
 ## ListTestTemplates
 
 - **Route:** `GET /v2/list-test-templates`
-- **Traits:** @readonly
-- **Input:** (no members)
-- **Output:** `testTemplates` (list<TestTemplateSummary>, required)
-- **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ValidationException (HTTP 400)`
+- **Traits:** @paginated(inputToken=nextToken, outputToken=nextToken, items=testTemplates), @readonly
+- **Input:** `maxResults` (integer, range 1..100, default 100, @httpQuery(maxResults), required), `nextToken` (string, len 1..2000, pattern ^\S{1,2000}$, @httpQuery(nextToken))
+- **Output:** `testTemplates` (list<TestTemplateSummary>, required), `nextToken` (string, len 1..2000, pattern ^\S{1,2000}$)
+- **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## ListUserJourneys
 
@@ -467,14 +467,14 @@ contents — read that shape in the model above when you need its own members.
 ## StartDependencyInsights
 
 - **Route:** `POST /v2/start-dependency-insights -> 202`
-- **Input:** `serviceArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …, required), `clientToken` (string, len 1..63, pattern ^[A-Za-z0-9_.-]{0,63}$, @idempotencyToken)
+- **Input:** `serviceArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …, required), `clientToken` (string, len 1..64, pattern ^[A-Za-z0-9_.-]{1,64}$, @idempotencyToken)
 - **Output:** `status` (DependencyInsightsStatus, one of: COMPLETED | FAILED | IN_PROGRESS, required)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## StartFailureModeAssessment
 
 - **Route:** `POST /v2/start-failure-mode-assessment`
-- **Input:** `serviceArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …, required), `clientToken` (string, len 1..63, pattern ^[A-Za-z0-9_.-]{0,63}$, @idempotencyToken)
+- **Input:** `serviceArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …, required), `clientToken` (string, len 1..64, pattern ^[A-Za-z0-9_.-]{1,64}$, @idempotencyToken)
 - **Output:** `assessmentId` (string, len 36..36, pattern ^[0-9a-f]{8}-[0-9a-f]{4}-[0-5][0-9a-f]{3}-[089ab][0-9a-f]{3}-[0-9a-f]{12}$), `serviceArn` (string, len 31.., pattern ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov- …), `assessmentStatus` (AssessmentStatus, one of: FAILED | IN_PROGRESS | NOT_STARTED | PENDING | SUCCESS), `startedAt` (timestamp)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 

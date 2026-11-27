@@ -47,7 +47,7 @@
 //!
 //! ## Input
 //!
-//! * `clientToken` (ClientToken, len 1..63, pattern ^[A-Za-z0-9_.-]{0,63}$,
+//! * `clientToken` (ClientToken, len 1..64, pattern ^[A-Za-z0-9_.-]{1,64}$,
 //!   @idempotencyToken) — Idempotency token.
 //! * `resourceConfiguration` (ResourceConfiguration) **required** — Resource configuration
 //!   for an input source. Provide exactly one field.

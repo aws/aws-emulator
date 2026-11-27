@@ -546,9 +546,9 @@ async fn a_replayed_client_token_answers_the_first_created_source() {
     let router = emulator();
     let service_arn = create_service(&router, "InputSourceIdempotency").await;
 
-    // The rows span token shapes `ClientToken` admits (`len 1..63`, `^[A-Za-z0-9_.-]{0,63}$`)
+    // The rows span token shapes `ClientToken` admits (`len 1..64`, `^[A-Za-z0-9_.-]{1,64}$`)
     // and the configuration members a token can be used with.
-    let tokens = ["t", "retry_token.1-2", &"z".repeat(63)];
+    let tokens = ["t", "retry_token.1-2", &"z".repeat(64)];
     let rows = configuration_rows();
     for (token, row) in tokens.iter().zip(rows.iter()) {
         let mut body = row.body(&service_arn);

@@ -47,7 +47,7 @@
 //!
 //! ## Input
 //!
-//! * `clientToken` (ClientToken, len 1..63, pattern ^[A-Za-z0-9_.-]{0,63}$,
+//! * `clientToken` (ClientToken, len 1..64, pattern ^[A-Za-z0-9_.-]{1,64}$,
 //!   @idempotencyToken) — Idempotency token.
 //! * `serviceArn` (Arn, len 31.., pattern
 //!   ^arn:(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov):[A-Za-z0-9][A-Za-z0-9_/.-]{0,62}:([a-z]{2}-((iso[a-z]{0,1}-)|(gov-
@@ -194,10 +194,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The store is BOUNDED before it is written: every create grows the parent
         // service's record by one entry carrying caller-supplied text, so a caller that
         // repeats this call would otherwise grow the process's memory without limit. At the
-        // ceiling the create is refused with the quota error this operation models. The
-        // idempotency index is bounded by the same ceiling — a token already in it replays
-        // or is refused above, never inserting a second entry.
-        if service.assertions.len() >= crate::state::MAX_ASSERTIONS_PER_SERVICE {
+        // ceiling the create is refused with the quota error this operation models.
+        //
+        // The ceiling is held against BOTH maps the create writes, whichever is fuller: the
+        // idempotency index also holds one entry of caller-supplied text per consumed
+        // token, so bounding it here keeps it bounded by this handler alone rather than by
+        // another operation pruning it (`DeleteAssertion` drops the tokens that named the
+        // record it removed, which is what lets a caller create again after a delete).
+        if service
+            .assertions
+            .len()
+            .max(service.assertion_idempotency.len())
+            >= crate::state::MAX_ASSERTIONS_PER_SERVICE
+        {
             return Err(CreateAssertionErrorModeled::ServiceQuotaExceededException(
                 ServiceQuotaExceededException {
                     message: format!(

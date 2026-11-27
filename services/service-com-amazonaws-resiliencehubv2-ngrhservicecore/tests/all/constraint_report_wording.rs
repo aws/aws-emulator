@@ -42,7 +42,7 @@ const ENTITY_NAME_PATTERN: &str = r"^[A-Za-z0-9][A-Za-z0-9_\-]{1,59}$";
 const ENTITY_LABEL_PATTERN: &str = r"^[A-Za-z0-9][A-Za-z0-9 _\-]{1,59}$";
 
 /// `ClientToken`'s `@pattern`, from the same two operations' `clientToken`.
-const CLIENT_TOKEN_PATTERN: &str = r"^[A-Za-z0-9_.-]{0,63}$";
+const CLIENT_TOKEN_PATTERN: &str = r"^[A-Za-z0-9_.-]{1,64}$";
 
 /// `AccountId`'s `@pattern`, from
 /// `smithy_query(query="operation",operation="ListServices")`.

@@ -14,12 +14,15 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-resiliencehubv2-ngrhser
 #[smithy_macros::smithy(shape = "com.amazonaws.resiliencehubv2#ListTestTemplatesRequest")]
 #[derive(Debug, Clone, Default)]
 pub struct ListTestTemplatesInput {
+    pub max_results: i32,
+    pub next_token: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.resiliencehubv2#ListTestTemplatesResponse")]
 #[derive(Debug, Clone, Default)]
 pub struct ListTestTemplatesOutput {
     pub test_templates: Vec<TestTemplateSummary>,
+    pub next_token: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.resiliencehubv2#TestTemplateSummary")]

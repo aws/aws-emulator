@@ -582,11 +582,11 @@ async fn a_replayed_client_token_returns_the_function_the_first_call_created() {
     let service_arn = create_service(&router, "Idempotent").await;
 
     // The rows differ along the token's shape within `ClientToken`'s modelled
-    // `^[A-Za-z0-9_.-]{0,63}$` / `len 1..63`: the shortest, a dotted one, and the longest.
+    // `^[A-Za-z0-9_.-]{1,64}$` / `len 1..64`: the shortest, a dotted one, and the longest.
     let tokens = [
         ("shortest token", "t".to_string()),
         ("dotted token", "req.2026-01-01_42".to_string()),
-        ("longest token", "k".repeat(63)),
+        ("longest token", "k".repeat(64)),
     ];
 
     for (index, (case, token)) in tokens.iter().enumerate() {
