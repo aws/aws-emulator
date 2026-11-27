@@ -1996,7 +1996,7 @@ async fn a_view_the_store_does_not_hold_is_named_by_its_name_alone() {
         .await;
 
     // Rows span the `ViewName` class (`@length(6..256)`,
-    // `^view\.[a-z0-9][a-z0-9._-]{0,250}$`): the shortest name the model admits, one
+    // `^view\.[a-z0-9][a-z0-9_-]{0,250}$`): the shortest name the model admits, one
     // carrying the punctuation the pattern allows, one starting with a digit and the
     // longest name the model admits.
     for (case, name) in [

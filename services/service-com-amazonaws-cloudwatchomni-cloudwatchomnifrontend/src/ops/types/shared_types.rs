@@ -412,6 +412,15 @@ pub enum IntegrationIdentifier {
     integrationName(String),
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.cloudwatchomni#AwsCredentials")]
+#[derive(Debug, Clone)]
+pub struct AwsCredentials {
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    pub session_token: String,
+    pub expiration: ::aws_smithy_types::DateTime,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.cloudwatchomni#SpaceSummary")]
 #[derive(Debug, Clone)]
 pub struct SpaceSummary {
@@ -488,7 +497,15 @@ pub const INTEGRATION_STATUS_VALUES: &[&str] = &["ACTIVE", "DELETED", "ERROR", "
 
 
 /// The values `IntegrationType` accepts on the wire.
-pub const INTEGRATION_TYPE_VALUES: &[&str] = &["AWS_CONFIG_SLREC", "AWS_INTEGRATION", "EXTERNAL_AGENT", "SLACK"];
+pub const INTEGRATION_TYPE_VALUES: &[&str] = &["AWS_CONFIG_AZURE_SLREC", "AWS_CONFIG_SLREC", "AWS_INTEGRATION", "EXTERNAL_AGENT", "SLACK"];
+
+
+/// The values `MetricAggregationTemporality` accepts on the wire.
+pub const METRIC_AGGREGATION_TEMPORALITY_VALUES: &[&str] = &["cumulative", "delta"];
+
+
+/// The values `MetricMonotonicity` accepts on the wire.
+pub const METRIC_MONOTONICITY_VALUES: &[&str] = &["monotonic", "non_monotonic"];
 
 
 /// The values `NodeCategory` accepts on the wire.

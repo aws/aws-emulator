@@ -48,7 +48,7 @@
 //! * `definition` (ViewDefinition, len 1..10000) **required** — The SQL query that defines
 //!   the view.
 //! * `description` (ViewDescription, len ..1024) — A description of the view.
-//! * `name` (ViewName, len 6..256, pattern ^view\.[a-z0-9][a-z0-9._-]{0,250}$) **required** —
+//! * `name` (ViewName, len 6..256, pattern ^view\.[a-z0-9][a-z0-9_-]{0,250}$) **required** —
 //!   The name of the view. Must begin with the "view." prefix. View names must be unique
 //!   within the account and region.
 //! * `tags` (TagMap, len ..50) — Resource tags.

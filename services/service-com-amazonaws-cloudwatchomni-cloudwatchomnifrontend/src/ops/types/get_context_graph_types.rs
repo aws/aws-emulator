@@ -115,6 +115,8 @@ pub struct MetricMetadata {
     pub metric_type: Option<String>,
     pub attributes: Option<std::collections::HashMap<String, String>>,
     pub semantics: Option<MetricSemantics>,
+    pub aggregation_temporality: Option<String>,
+    pub monotonicity: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.cloudwatchomni#MetricSemantics")]

@@ -4,10 +4,12 @@
 //!
 //! A view's name is a `ViewName`, and that member's `@pattern` is the whole rule: the
 //! `view.` prefix, one lowercase alphanumeric character, then up to 250 characters drawn
-//! from the trailing class — which carries the PERIOD beside the hyphen and the underscore,
-//! so `view.<a>.<b>` is a view name. The same expression is what the constraint-violation
-//! message advertises, with the whole-value anchors stripped, so a client that compiles the
-//! regex out of that message derives exactly the rule the service enforces.
+//! from the trailing class — lowercase alphanumerics, the hyphen and the underscore, which
+//! is also what the member's own doc states ("must start with \"view.\" prefix followed by
+//! lowercase alphanumeric, hyphens, and underscores"), so a second PERIOD is outside the
+//! class. The same expression is what the constraint-violation message advertises, with the
+//! whole-value anchors stripped, so a client that compiles the regex out of that message
+//! derives exactly the rule the service enforces.
 //!
 //! The suite asserts that as a rule rather than as one recorded refusal:
 //!
@@ -24,8 +26,8 @@
 //!
 //! The rows differ along where the punctuation sits (after the prefix, among the trailing
 //! characters, at the end), along the character that breaks the rule (case, a separator the
-//! class excludes, a missing prefix) and along the operation, so none of them is one
-//! recorded request restated. Each assertion names its case and the actual value.
+//! class excludes — the period among them — a missing prefix) and along the operation, so
+//! none of them is one recorded request restated. Each assertion names its case and the actual value.
 
 use aws_smithy_schema::codec::Codec;
 use aws_smithy_schema_server::{CborCodec, DeserializableStruct};
@@ -50,9 +52,9 @@ const VALIDATION_STATUS: u16 = 400;
 
 /// The expression a refusal of a bad view name advertises: `ViewName`'s `@pattern`
 /// (`smithy_query(query="shape",shape="ViewName")` reports
-/// `^view\.[a-z0-9][a-z0-9._-]{0,250}$`) with the whole-value anchors stripped, which is how
+/// `^view\.[a-z0-9][a-z0-9_-]{0,250}$`) with the whole-value anchors stripped, which is how
 /// the shared wording renders a `@pattern` requirement.
-const ADVERTISED_EXPRESSION: &str = r"view\.[a-z0-9][a-z0-9._-]{0,250}";
+const ADVERTISED_EXPRESSION: &str = r"view\.[a-z0-9][a-z0-9_-]{0,250}";
 
 /// The fixed text a `@pattern` requirement is stated with, and the marker a client reads the
 /// expression back out of the message at.
@@ -75,30 +77,30 @@ fn pattern_message(member: &str) -> String {
 /// Names INSIDE the `ViewName` class.
 ///
 /// The rows differ along which characters of the trailing class the name carries and where:
-/// none at all, one period, several, a period beside a hyphen and an underscore, a leading
-/// digit, a period in final position, and the longest name the published `@length` admits.
+/// none at all, one hyphen, one underscore, both beside each other, a leading digit, a
+/// separator in final position, and the longest name the published `@length` admits.
 fn admitted_names() -> Vec<(&'static str, String)> {
     vec![
         ("the shortest name the class admits", "view.a".to_string()),
         (
-            "one period among the trailing characters",
-            "view.sales.weekly".to_string(),
+            "one hyphen among the trailing characters",
+            "view.sales-weekly".to_string(),
         ),
-        ("several periods", "view.a.b.c.d".to_string()),
+        ("several hyphens", "view.a-b-c-d".to_string()),
         (
-            "a period beside a hyphen and an underscore",
-            "view.sales_2026.q1-rollup".to_string(),
+            "an underscore beside a hyphen",
+            "view.sales_2026-q1-rollup".to_string(),
         ),
         (
-            "a digit first, then a period",
-            "view.0.errors-by-service".to_string(),
+            "a digit first, then a hyphen",
+            "view.0-errors-by-service".to_string(),
         ),
-        ("a period in final position", "view.sales.".to_string()),
+        ("a separator in final position", "view.sales_".to_string()),
         (
             "the longest name the class admits",
             // The prefix, one alphanumeric, then the 250 trailing characters the
             // expression's `{0,250}` admits: `LENGTH_BOUNDS.1` characters in all.
-            format!("view.a{}", "b.".repeat(125)),
+            format!("view.a{}", "b".repeat(250)),
         ),
     ]
 }
@@ -107,14 +109,18 @@ fn admitted_names() -> Vec<(&'static str, String)> {
 /// only constraint they violate.
 ///
 /// The rows differ along WHAT breaks the rule: the prefix (absent, undotted, upper case), the
-/// character right after it (a period, an underscore, a hyphen — the class admits them only
-/// from the second trailing character on), and a separator the trailing class excludes.
+/// character right after it (a period, an underscore, a hyphen — the class admits the last
+/// two only from the second trailing character on), and a separator the trailing class
+/// excludes, the period among them wherever it sits.
 const REFUSED_NAMES: &[(&str, &str)] = &[
-    ("no view. prefix at all", "sales.weekly"),
-    ("the prefix without its period", "viewsales.weekly"),
+    ("no view. prefix at all", "sales-weekly"),
+    ("the prefix without its period", "viewsales-weekly"),
     ("an upper-case prefix", "View.sales"),
     ("an upper-case trailing character", "view.Sales"),
     ("a period directly after the prefix", "view..sales"),
+    ("a period among the trailing characters", "view.sales.weekly"),
+    ("several periods", "view.a.b.c.d"),
+    ("a period in final position", "view.sales."),
     ("an underscore directly after the prefix", "view._sales"),
     ("a hyphen directly after the prefix", "view.-sales"),
     ("a blank among the trailing characters", "view.sales weekly"),
@@ -401,7 +407,7 @@ async fn the_published_length_bounds_decide_what_the_expression_leaves_open() {
         ),
         (
             "one character past the published maximum",
-            format!("view.a{}", "b.".repeat(125) + "c"),
+            format!("view.a{}", "b".repeat(251)),
             format!("Member must have length less than or equal to {max}"),
         ),
     ] {

@@ -363,7 +363,9 @@ pub struct StoredView {
 /// records and their tokens together, so nothing in the store grows without end.
 /// `deep_link_codes` is bounded by the LIFETIME of what it holds instead: every mint drops
 /// the codes whose expiry has passed, and the longest lifetime a request can ask for is the
-/// 600 seconds `ttlSeconds` admits.
+/// 600 seconds `ttlSeconds` admits. `data_access_sessions` is bounded the same way — the
+/// longest lifetime `durationSeconds` admits is 3600 seconds — and, above that, by
+/// [`DATA_ACCESS_SESSION_QUOTA`], past which a further credential issue is refused.
 #[derive(Debug, Default)]
 pub struct ComAmazonawsCloudwatchomniCloudwatchomnifrontendState {
     /// The account's persisted domain, keyed by its `domainId`. An account holds at
@@ -408,6 +410,12 @@ pub struct ComAmazonawsCloudwatchomniCloudwatchomnifrontendState {
     /// backend minted for it — which is what `StartTelemetryQuery` and
     /// `StopTelemetryQuerySession` address a session by.
     pub query_sessions: HashMap<String, StoredQuerySession>,
+    /// The LIVE sets of temporary data-access credentials, keyed by the access key id of
+    /// each. A set expires, and every issue drops the records whose expiry has passed, so
+    /// this map holds only the credentials of one lifetime's worth of calls — above that,
+    /// [`DATA_ACCESS_SESSION_QUOTA`] caps how many live records it holds at once (see
+    /// [`data_access`]).
+    pub data_access_sessions: DataAccessSessions,
     /// The LIVE one-time deep-link codes, keyed by
     /// [`deep_link_code_digest`] of the code handed to the caller — never by the code. A
     /// code expires, and a mint drops every record whose expiry has passed, so this map
@@ -1628,6 +1636,21 @@ mod deep_link;
 /// renders. It lives beside the store because the addresses are a fact about where this
 /// emulator serves the stored domain, read by every operation that reports one.
 mod domain_endpoint;
+
+/// The temporary credentials a caller works with a space's data under: the record each one
+/// is held as, the policy its requested actions are scoped by and the bound on how many the
+/// store holds. It lives beside the store because a credential set belongs to a space — it
+/// is scoped to that space's ARN, and it is released with it.
+mod data_access;
+
+pub use data_access::{
+    data_access_expiry, data_access_scope_policy, end_expired_data_access_sessions,
+    end_space_data_access_sessions, policy_too_large, AtDataAccessSessionQuota, DataAccessSessions,
+    StoredDataAccessSession, DATA_ACCESS_SESSION_QUOTA, DATA_ACCESS_THROTTLED_MESSAGE,
+    DEFAULT_DATA_ACCESS_DURATION_SECONDS, MAX_DATA_ACCESS_DURATION_SECONDS,
+    MAX_SESSION_POLICY_CHARACTERS, MIN_DATA_ACCESS_DURATION_SECONDS, POLICY_LANGUAGE_VERSION,
+    POLICY_TOO_LARGE_MESSAGE,
+};
 
 pub use domain_endpoint::{
     announced_authority, announced_domain, announced_endpoint_url, custom_endpoint_urls,

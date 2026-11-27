@@ -334,7 +334,7 @@ const NOT_ONE_QUERY: &[(&str, &str)] = &[
     ("three statements", "SELECT 1; SELECT 2; SELECT 3"),
 ];
 
-/// A view name satisfying `ViewName`'s `^view\.[a-z0-9][a-z0-9._-]{0,250}$` with its
+/// A view name satisfying `ViewName`'s `^view\.[a-z0-9][a-z0-9_-]{0,250}$` with its
 /// `@length(6..256)`, from `smithy_query(query="shape",shape="ViewName")`.
 pub(crate) fn view_name(suffix: &str) -> String {
     format!("view.{suffix}")
@@ -535,7 +535,7 @@ async fn conflict_message(omni: &Omni, case: &str, input: &CreateViewInput) -> S
 async fn a_taken_view_name_is_refused_with_the_name_it_is_held_under() {
     let omni = Omni::new();
     // Rows span the `ViewName` class the model admits (`@length(6..256)`,
-    // `^view\.[a-z0-9][a-z0-9._-]{0,250}$`): the shortest name, one carrying the
+    // `^view\.[a-z0-9][a-z0-9_-]{0,250}$`): the shortest name, one carrying the
     // punctuation the pattern allows, one whose first character is a digit, and the
     // longest name — because the conflict states the name the request carried whatever
     // form it takes.
@@ -1933,7 +1933,7 @@ async fn a_patch_of_a_name_the_store_holds_nothing_under_is_the_modelled_404() {
     .expect("the live view is created");
 
     // Rows span the `ViewName` class (`@length(6..256)`,
-    // `^view\.[a-z0-9][a-z0-9._-]{0,250}$`, from
+    // `^view\.[a-z0-9][a-z0-9_-]{0,250}$`, from
     // `smithy_query(query="shape",shape="ViewName")`): the shortest name the model
     // admits, one carrying the punctuation the pattern allows, one whose first character
     // is a digit, and the longest name the model admits.

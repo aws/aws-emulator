@@ -46,6 +46,7 @@ pub mod get_integration_types;
 pub mod get_intelligence_configuration_types;
 pub mod get_omni_dashboard_types;
 pub mod get_space_credentials_for_organization_types;
+pub mod get_space_data_access_types;
 pub mod get_space_types;
 pub mod get_telemetry_query_results_types;
 pub mod get_view_types;
@@ -141,6 +142,8 @@ pub use get_intelligence_configuration_types::*;
 pub use get_omni_dashboard_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_space_credentials_for_organization_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_space_data_access_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_space_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

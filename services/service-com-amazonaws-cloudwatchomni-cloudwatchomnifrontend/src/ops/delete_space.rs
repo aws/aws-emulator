@@ -116,7 +116,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             DeleteSpaceError::from(DeleteSpaceErrorModeled::InternalServerException(
                 InternalServerException {
@@ -138,6 +137,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The access control the service provisioned WITH this space goes with it:
         // nothing can address those rows once the space is gone.
         store.release_space_access_control(&input.space_id);
+        // So do the temporary data-access credentials issued for the space: they confer
+        // access to the data of THAT space, so none of them may stay signable once it is
+        // gone — in this store and in the emulator's credential store together.
+        crate::state::end_space_data_access_sessions(
+            &mut store,
+            ctx.credential_store(),
+            &input.space_id,
+        );
         // The create token that minted this space no longer names a live resource, so a
         // later replay of that create must mint a new space rather than resurrect this one.
         store

@@ -28,7 +28,7 @@
 //!
 //! ## Input
 //!
-//! * `name` (ViewName, len 6..256, pattern ^view\.[a-z0-9][a-z0-9._-]{0,250}$) **required** —
+//! * `name` (ViewName, len 6..256, pattern ^view\.[a-z0-9][a-z0-9_-]{0,250}$) **required** —
 //!   The name of the view.
 //!
 //! ## Output

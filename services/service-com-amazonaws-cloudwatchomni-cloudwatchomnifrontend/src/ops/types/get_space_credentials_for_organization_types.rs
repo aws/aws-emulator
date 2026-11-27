@@ -32,12 +32,3 @@ pub struct GetSpaceCredentialsForOrganizationOutput {
     pub credentials: AwsCredentials,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.cloudwatchomni#AwsCredentials")]
-#[derive(Debug, Clone)]
-pub struct AwsCredentials {
-    pub access_key_id: String,
-    pub secret_access_key: String,
-    pub session_token: String,
-    pub expiration: ::aws_smithy_types::DateTime,
-}
-
