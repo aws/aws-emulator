@@ -942,6 +942,15 @@ pub fn witness_region_is_a_replica(region: &str) -> RequestError {
     ))
 }
 
+/// How a witness `Delete` that is not accompanied by a replica `Delete` is refused: "you
+/// cannot delete a single witness from a MRSC global table - you must delete both a replica
+/// and the witness together" (`DeleteGlobalTableWitnessGroupMemberAction`), because a group
+/// that lost only its witness would be an MRSC group of two Regions, which is not one of the
+/// two shapes AWS serves.
+pub const WITNESS_DELETE_WITHOUT_REPLICA_MESSAGE: &str =
+    "One or more parameter values were invalid: You cannot delete a single witness from a MRSC \
+     global table - you must delete both a replica and the witness together";
+
 /// Why one request's multi-Region consistency configuration is not one AWS serves, or
 /// `None` when the request asks for a configuration that is.
 ///
@@ -950,7 +959,8 @@ pub fn witness_region_is_a_replica(region: &str) -> RequestError {
 /// it already has and the ones this request creates or deletes, plus the witnesses it holds
 /// and the one this request adds or removes. The rules are the model's own:
 ///
-/// * a witness `Delete` addresses a witness the group holds ([`witness_not_in_group`]);
+/// * a witness `Delete` addresses a witness the group holds ([`witness_not_in_group`]) and
+///   takes a replica with it ([`WITNESS_DELETE_WITHOUT_REPLICA_MESSAGE`]);
 /// * `MultiRegionConsistency` "is only valid when you create a global table by specifying
 ///   one or more Create actions in the ReplicaUpdates action list"
 ///   ([`CONSISTENCY_WITHOUT_CREATE_MESSAGE`]), and a witness belongs to the MRSC group that
@@ -984,6 +994,18 @@ pub fn unsupported_consistency_configuration(
             WitnessAction::Delete(_) => None,
         })
         .collect();
+    // A witness leaves the group together with a replica — "you must delete both a replica
+    // and the witness together" — so a request that removes the witness alone is refused
+    // and the group is left as it was ([`WITNESS_DELETE_WITHOUT_REPLICA_MESSAGE`]).
+    if witnesses.len() > added.len()
+        && !actions
+            .iter()
+            .any(|action| matches!(action, ReplicaAction::Delete(_)))
+    {
+        return Some(RequestError::Validation(
+            WITNESS_DELETE_WITHOUT_REPLICA_MESSAGE.to_string(),
+        ));
+    }
     if consistency.is_none() && witnesses.is_empty() {
         return None;
     }
@@ -1568,7 +1590,7 @@ impl ComAmazonawsDynamodbDynamodb20120810State {
 
     /// The Regions of one table's replication group: the Region of every regional table
     /// that holds it, read from the group the store keeps.
-    fn group_regions(&self, name: &str) -> Vec<String> {
+    pub(super) fn group_regions(&self, name: &str) -> Vec<String> {
         self.global_table_groups
             .get(name)
             .map(|group| group.regions.iter().cloned().collect())

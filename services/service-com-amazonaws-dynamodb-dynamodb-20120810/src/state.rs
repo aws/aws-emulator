@@ -4894,6 +4894,11 @@ pub use encryption::*;
 mod replicas;
 pub use replicas::*;
 
+/// Whether a table's replication group runs under multi-Region STRONG consistency — the one
+/// reading of the group's mode that the rules hanging off it are decided by. It adds an
+/// inherent method to [`Table`], so there is nothing to re-export.
+mod witnesses;
+
 /// The auto scaling settings each replica's capacities are scaled by, in its own file: the
 /// capacity windows and target-tracking policies the replica auto scaling surface writes
 /// and reports. Re-exported below, so every caller still names them `crate::state::…`.

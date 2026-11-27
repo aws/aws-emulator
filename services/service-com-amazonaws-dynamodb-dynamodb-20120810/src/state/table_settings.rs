@@ -840,8 +840,15 @@ pub const TTL_DELETION_DELAY: Duration = Duration::from_millis(500);
 /// ([`time_to_live_attribute_mismatch`]).
 pub const TIME_TO_LIVE_ALREADY_ENABLED_MESSAGE: &str = "TimeToLive is already enabled";
 
-/// The same for a call that turns TTL off while it is already off.
+/// How a call that turns TTL off while it is already off is refused.
 pub const TIME_TO_LIVE_ALREADY_DISABLED_MESSAGE: &str = "TimeToLive is already disabled";
+
+/// How an `UpdateTimeToLive` on a table of a multi-Region STRONG consistency global table
+/// is refused: a table whose group runs under that mode does not offer the setting at all,
+/// so the call can never succeed as long as the table is part of such a group. AWS's own
+/// fixed sentence for it, which names neither the table nor the attribute.
+pub const TIME_TO_LIVE_NOT_SUPPORTED_ON_MRSC_MESSAGE: &str =
+    "Time To Live is not supported for global tables with MultiRegionConsistency set to STRONG.";
 
 /// How a specification that names an attribute OTHER than the one TTL is in force for is
 /// refused: AWS's sentence for that case, whose variable part is the attribute this

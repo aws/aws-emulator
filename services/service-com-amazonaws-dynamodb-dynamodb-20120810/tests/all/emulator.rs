@@ -865,6 +865,21 @@ pub fn index_named(description: &Value, name: &str) -> Value {
         .unwrap_or(Value::Null)
 }
 
+/// The entry a `TableDescription` carries under the group-member list `member`
+/// (`Replicas`, `GlobalTableWitnesses`) for `region`, or `Null` when it carries none.
+///
+/// One reader for both lists a replication group's description reports its members through,
+/// so a suite about a group reads a member the same way whichever kind of member it is.
+pub fn group_member_in(description: &Value, member: &str, region: &str) -> Value {
+    description[member]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|entry| entry["RegionName"] == serde_json::json!(region))
+        .unwrap_or(Value::Null)
+}
+
 /// The restorable window `name` reports right now: `(earliest, latest)` as the
 /// continuous-backups reader states them, which is the window a point in time named for
 /// that table is held to.

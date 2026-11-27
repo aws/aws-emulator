@@ -13,6 +13,12 @@
 //! per `crate::state::TTL_MODIFICATION_INTERVAL`, and a further one inside that interval
 //! is refused whatever status the first one has already settled into.
 //!
+//! A table whose replication group runs under multi-Region STRONG consistency does not
+//! offer the setting at all, so the call is refused as the `ValidationException` it is
+//! (`crate::state::TIME_TO_LIVE_NOT_SUPPORTED_ON_MRSC_MESSAGE`) whatever it asks for — the
+//! group's mode is not something this API can change, which is what makes that refusal
+//! permanent for the request as sent rather than a conflict to retry.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -231,6 +237,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
                 .into())
             }
+        }
+        // A table whose replication group runs under multi-Region STRONG consistency does
+        // not offer this setting at all, so the call is refused whatever it asks for and
+        // whatever the table's TTL is — the group's mode is not something this API can
+        // change, which makes it a permanent refusal of the request as sent.
+        if table.is_mrsc() {
+            return Err(crate::scaffolded::Scaffolded::validation(
+                crate::state::TIME_TO_LIVE_NOT_SUPPORTED_ON_MRSC_MESSAGE,
+            ));
         }
         // A table whose TTL is on expires its items by ONE attribute, and this API does
         // not move it: a specification naming another attribute is refused, and told
