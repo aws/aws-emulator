@@ -323,8 +323,13 @@ async fn an_over_long_identifier_is_refused_whatever_the_store_holds() {
         controls: vec![ControlAssessment {
             control_id: Some("control-1".to_string()),
             control_assessment_result: Some("PASS".to_string()),
+            verification_source: Some("AWS_VERIFIED".to_string()),
             errors: None,
+            control_summary: None,
         }],
+        // A finished assessment: nothing of it is still running.
+        runs_until: None,
+        tags: Vec::new(),
     };
     let router = emulator_holding(vec![held]);
 

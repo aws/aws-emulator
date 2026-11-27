@@ -588,6 +588,11 @@ fn type_criteria(filters: &EntityTypeFilters) -> (&'static str, Vec<EntityCriter
                 "ResaleAuthorizationId",
                 asked.resale_authorization_id
             );
+            values!(
+                &mut criteria,
+                "SubsidiaryAuthorizationId",
+                asked.subsidiary_authorization_id
+            );
             range!(&mut criteria, "ReleaseDate", asked.release_date);
             range!(
                 &mut criteria,
@@ -675,6 +680,21 @@ fn type_criteria(filters: &EntityTypeFilters) -> (&'static str, Vec<EntityCriter
             values!(&mut criteria, "State", asked.state);
             "ExpressPrivateOfferConfiguration"
         }
+        EntityTypeFilters::SubsidiaryAuthorizationFilters(asked) => {
+            values!(&mut criteria, "EntityId", asked.entity_id);
+            values!(&mut criteria, "Status", asked.status);
+            values!(&mut criteria, "ResourceId", asked.resource_id);
+            text!(&mut criteria, "ResourceName", asked.resource_name);
+            text!(&mut criteria, "Name", asked.name);
+            values!(
+                &mut criteria,
+                "SubsidiaryAccountId",
+                asked.subsidiary_account_id
+            );
+            range!(&mut criteria, "CreatedDate", asked.created_date);
+            range!(&mut criteria, "LastModifiedDate", asked.last_modified_date);
+            "SubsidiaryAuthorization"
+        }
     };
     (entity_type, criteria)
 }
@@ -729,6 +749,11 @@ fn type_sort(sort: &EntityTypeSort) -> (&'static str, Option<&str>, Option<&str>
         ),
         EntityTypeSort::ExpressPrivateOfferConfigurationSort(asked) => (
             "ExpressPrivateOfferConfiguration",
+            asked.sort_by.as_deref(),
+            asked.sort_order.as_deref(),
+        ),
+        EntityTypeSort::SubsidiaryAuthorizationSort(asked) => (
+            "SubsidiaryAuthorization",
             asked.sort_by.as_deref(),
             asked.sort_order.as_deref(),
         ),

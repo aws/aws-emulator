@@ -72,6 +72,8 @@ pub struct AssessmentTargetSummary {
 pub enum FrameworkSummary {
     AMISecuritySummary(AMISecuritySummary),
     ContainerSecuritySummary(ContainerSecuritySummary),
+    ListingQualitySummary(ListingQualitySummary),
+    ListingRecommendationsSummary(ListingRecommendationsSummary),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#AMISecuritySummary")]
@@ -86,12 +88,28 @@ pub struct ContainerSecuritySummary {
     pub delivery_option_id: Option<String>,
 }
 
-// `skip_validation` names both members. `Type` is an entity type REFERENCE, which the
-// service accepts at a schema version (`DataProduct@1.0`) — the form every real caller
-// sends — where the modelled `EntityType` `@pattern` (`^[a-zA-Z]+$`) admits no `@`;
-// `Identifier` has two published forms wider than the modelled `^[\w\-@]+$`. Both are
-// judged by the handler (`crate::state::is_entity_type_reference` /
-// `is_entity_identifier`), which answers the modelled `ValidationException` and its 422.
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#ListingQualitySummary")]
+#[derive(Debug, Clone, Default)]
+pub struct ListingQualitySummary {
+    pub tier: String,
+    pub entity_revision: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#ListingRecommendationsSummary")]
+#[derive(Debug, Clone, Default)]
+pub struct ListingRecommendationsSummary {
+    pub tier: String,
+    pub entity_revision: Option<String>,
+}
+
+// `skip_validation` names both members: `Entity$Type` names an entity type at a SCHEMA
+// VERSION (`<EntityType>@<version>`), the form this service publishes and every real
+// caller sends, which the modelled `EntityType` pattern cannot state because it admits no
+// separator; and `Entity$Identifier` has two published forms (an entity id at an optional
+// revision, and a `$<ChangeName>.Entity.Identifier` reference to another change of the
+// same change set), both wider than the modelled pattern in the characters they admit.
+// Each is judged by the handler, which answers the modelled `ValidationException` and its
+// 422.
 #[smithy_macros::smithy(
     shape = "com.amazonaws.marketplacecatalog#Entity",
     skip_validation = ["Type", "Identifier"]
@@ -109,12 +127,11 @@ pub struct Filter {
     pub value_list: Option<Vec<String>>,
 }
 
-// `skip_validation = ["SortBy"]`: the member names the attribute the list being called
-// orders by, so what it may carry is that list's own set of attributes
-// (`crate::state::entity_sort_attributes`, `CHANGE_SET_SORT_BY`) — narrower than the
-// modelled `@pattern`, and held only by the handlers. Every value outside the set,
-// whatever its characters, is therefore the one refusal those handlers state, with the
-// modelled `ValidationException` and its 422 rather than the protocol's boundary status.
+// `skip_validation = ["SortBy"]`: the attributes a list orders by are the ones that list
+// publishes (`crate::state::entity_sort_attributes`, `crate::state::CHANGE_SET_SORT_BY`),
+// a set the modelled `@pattern` — any letters-only word — cannot state, so an attribute
+// outside it is refused by the handler with the modelled `ValidationException` and its
+// 422. `SortOrder` is a modelled enum and stays at the boundary.
 #[smithy_macros::smithy(
     shape = "com.amazonaws.marketplacecatalog#Sort",
     skip_validation = ["SortBy"]
@@ -130,6 +147,12 @@ pub struct Sort {
 pub struct Tag {
     pub key: String,
     pub value: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#ServiceQuotaExceededException")]
+#[derive(Debug, Clone, Default)]
+pub struct ServiceQuotaExceededException {
+    pub message: Option<String>,
 }
 
 /// The values `AmiProductSortBy` accepts on the wire.
@@ -154,6 +177,10 @@ pub const CONTAINER_PRODUCT_SORT_BY_VALUES: &[&str] = &["CompatibleAWSServices",
 
 /// The values `ContainerProductVisibilityString` accepts on the wire.
 pub const CONTAINER_PRODUCT_VISIBILITY_STRING_VALUES: &[&str] = &["Draft", "Limited", "Public", "Restricted"];
+
+
+/// The values `ContentRecommendationStatus` accepts on the wire.
+pub const CONTENT_RECOMMENDATION_STATUS_VALUES: &[&str] = &["GENERATED", "INSUFFICIENT_CONTEXT"];
 
 
 /// The values `ControlAssessmentResult` accepts on the wire.
@@ -184,6 +211,14 @@ pub const FAILURE_CODE_VALUES: &[&str] = &["CLIENT_ERROR", "SERVER_FAULT"];
 pub const INTENT_VALUES: &[&str] = &["APPLY", "VALIDATE"];
 
 
+/// The values `ListingFindingStatus` accepts on the wire.
+pub const LISTING_FINDING_STATUS_VALUES: &[&str] = &["FAIL", "PASS"];
+
+
+/// The values `ListingQualityTier` accepts on the wire.
+pub const LISTING_QUALITY_TIER_VALUES: &[&str] = &["BASIC", "EXCELLENT", "NEEDS_IMPROVEMENT", "STRONG"];
+
+
 /// The values `MachineLearningProductSortBy` accepts on the wire.
 pub const MACHINE_LEARNING_PRODUCT_SORT_BY_VALUES: &[&str] = &["EntityId", "LastModifiedDate", "ProductTitle", "Visibility"];
 
@@ -205,7 +240,7 @@ pub const OFFER_SET_STATE_STRING_VALUES: &[&str] = &["Draft", "Released"];
 
 
 /// The values `OfferSortBy` accepts on the wire.
-pub const OFFER_SORT_BY_VALUES: &[&str] = &["AvailabilityEndDate", "BuyerAccounts", "CreatedBySource", "EntityId", "LastModifiedDate", "Name", "OfferSetId", "ProductId", "ReleaseDate", "ResaleAuthorizationId", "State", "TargetAgreementId", "TargetAgreementIntent", "Targeting"];
+pub const OFFER_SORT_BY_VALUES: &[&str] = &["AvailabilityEndDate", "BuyerAccounts", "CreatedBySource", "EntityId", "LastModifiedDate", "Name", "OfferSetId", "ProductId", "ReleaseDate", "ResaleAuthorizationId", "State", "SubsidiaryAuthorizationId", "TargetAgreementId", "TargetAgreementIntent", "Targeting"];
 
 
 /// The values `OfferStateString` accepts on the wire.
@@ -222,6 +257,18 @@ pub const OFFER_TARGETING_STRING_VALUES: &[&str] = &["BuyerAccounts", "CountryCo
 
 /// The values `OwnershipType` accepts on the wire.
 pub const OWNERSHIP_TYPE_VALUES: &[&str] = &["SELF", "SHARED"];
+
+
+/// The values `RecommendationSeverity` accepts on the wire.
+pub const RECOMMENDATION_SEVERITY_VALUES: &[&str] = &["ADVISORY", "BLOCKING"];
+
+
+/// The values `RecommendedFeatureId` accepts on the wire.
+pub const RECOMMENDED_FEATURE_ID_VALUES: &[&str] = &["FREE_TRIAL", "PROMOTIONAL_MEDIA", "QUICK_LAUNCH", "REQUEST_A_DEMO", "REQUEST_PRIVATE_OFFER"];
+
+
+/// The values `RecommendedFeatureStatus` accepts on the wire.
+pub const RECOMMENDED_FEATURE_STATUS_VALUES: &[&str] = &["FAIL", "PASS"];
 
 
 /// The values `ResaleAuthorizationResellerRoleString` accepts on the wire.
@@ -248,7 +295,19 @@ pub const SAA_S_PRODUCT_VISIBILITY_STRING_VALUES: &[&str] = &["Draft", "Limited"
 pub const SORT_ORDER_VALUES: &[&str] = &["ASCENDING", "DESCENDING"];
 
 
+/// The values `SubsidiaryAuthorizationSortBy` accepts on the wire.
+pub const SUBSIDIARY_AUTHORIZATION_SORT_BY_VALUES: &[&str] = &["CreatedDate", "EntityId", "LastModifiedDate", "ResourceId", "Status", "SubsidiaryAccountId"];
+
+
+/// The values `SubsidiaryAuthorizationStatusString` accepts on the wire.
+pub const SUBSIDIARY_AUTHORIZATION_STATUS_STRING_VALUES: &[&str] = &["Active", "Draft", "Restricted"];
+
+
 /// The values `ValidationExceptionReason` accepts on the wire.
 pub const VALIDATION_EXCEPTION_REASON_VALUES: &[&str] = &["CannotParse", "FieldValidationFailed", "Other", "UnknownOperation"];
+
+
+/// The values `VerificationSource` accepts on the wire.
+pub const VERIFICATION_SOURCE_VALUES: &[&str] = &["AWS_VERIFIED", "SELF_ATTESTED"];
 
 

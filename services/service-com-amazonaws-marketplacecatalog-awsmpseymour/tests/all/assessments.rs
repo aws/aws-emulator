@@ -21,6 +21,7 @@
 //!   and it leaves the store exactly as it was.
 
 use std::sync::Arc;
+use std::time::UNIX_EPOCH;
 
 use bytes::Bytes;
 use serde_json::{json, Value};
@@ -714,8 +715,13 @@ fn record(
         controls: vec![ControlAssessment {
             control_id: Some("control-1".to_string()),
             control_assessment_result: Some("PASS".to_string()),
+            verification_source: Some("AWS_VERIFIED".to_string()),
             errors: None,
+            control_summary: None,
         }],
+        // A finished assessment: nothing of it is still running.
+        runs_until: None,
+        tags: Vec::new(),
     }
 }
 
@@ -735,7 +741,9 @@ fn seeded() -> Vec<AssessmentRecord> {
     newest.controls.push(ControlAssessment {
         control_id: Some("control-2".to_string()),
         control_assessment_result: Some("FAIL".to_string()),
+        verification_source: Some("AWS_VERIFIED".to_string()),
         errors: None,
+        control_summary: None,
     });
     let mut middle = record(
         "assessment-middle",
@@ -1016,7 +1024,9 @@ fn an_assessment_record_projects_the_framework_its_id_names() {
             None,
             Some("do-1"),
         );
-        let summary = held.to_summary();
+        // The record owes no run, so the projection reports what it holds at any instant;
+        // this one is a constant rather than the host's clock.
+        let summary = held.to_summary(UNIX_EPOCH);
         assert_eq!(
             (
                 summary.assessment_id.as_deref(),
@@ -1052,6 +1062,13 @@ fn an_assessment_record_projects_the_framework_its_id_names() {
             Some(FrameworkSummary::ContainerSecuritySummary(summary)) => {
                 ("ContainerSecurity", summary.delivery_option_id.as_deref())
             }
+            // The two framework summaries of the LISTING frameworks carry no
+            // delivery option: this catalog assesses neither, so no record
+            // reports one of them.
+            Some(FrameworkSummary::ListingQualitySummary(_)) => ("ListingQuality", None),
+            Some(FrameworkSummary::ListingRecommendationsSummary(_)) => {
+                ("ListingRecommendations", None)
+            }
             None => ("none", None),
         };
         assert_eq!(
@@ -1066,9 +1083,9 @@ fn an_assessment_record_projects_the_framework_its_id_names() {
     // rather than another framework's.
     let unknown = record("assessment-2", "us-east-1", "NoSuchSecurity", None, None, None);
     assert!(
-        unknown.to_summary().framework_summary.is_none(),
+        unknown.to_summary(UNIX_EPOCH).framework_summary.is_none(),
         "a framework with no modelled member must report none, got {:?}",
-        unknown.to_summary()
+        unknown.to_summary(UNIX_EPOCH)
     );
 }
 
@@ -1094,6 +1111,7 @@ fn the_modelled_filters_select_a_record_by_what_it_holds() {
             AssessmentTargetFilter {
                 entity_id: Some("ent-1".to_string()),
                 change_set_id: None,
+                entity_ids: None,
             },
             true,
         ),
@@ -1102,6 +1120,7 @@ fn the_modelled_filters_select_a_record_by_what_it_holds() {
             AssessmentTargetFilter {
                 entity_id: Some("ent-2".to_string()),
                 change_set_id: None,
+                entity_ids: None,
             },
             false,
         ),
@@ -1110,6 +1129,7 @@ fn the_modelled_filters_select_a_record_by_what_it_holds() {
             AssessmentTargetFilter {
                 entity_id: Some("ent-1".to_string()),
                 change_set_id: Some("cs-1".to_string()),
+                entity_ids: None,
             },
             true,
         ),
@@ -1118,6 +1138,7 @@ fn the_modelled_filters_select_a_record_by_what_it_holds() {
             AssessmentTargetFilter {
                 entity_id: Some("ent-1".to_string()),
                 change_set_id: Some("cs-2".to_string()),
+                entity_ids: None,
             },
             false,
         ),

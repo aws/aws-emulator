@@ -136,8 +136,13 @@ fn emulator() -> MultiServiceRouter {
                 controls: vec![ControlAssessment {
                     control_id: Some("control-1".to_string()),
                     control_assessment_result: Some("PASS".to_string()),
+                    verification_source: Some("AWS_VERIFIED".to_string()),
                     errors: None,
+                    control_summary: None,
                 }],
+                // A finished assessment: nothing of it is still running.
+                runs_until: None,
+                tags: Vec::new(),
             },
         );
     }

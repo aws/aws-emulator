@@ -262,7 +262,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let page = crate::state::paginate(
-            record.controls.clone(),
+            record.reported_controls(now),
             offset,
             page_size,
             crate::state::CONTROL_PAGE_PREFIX,
@@ -274,7 +274,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             framework_id: Some(record.framework_id.clone()),
             assessment_target_summary: Some(record.target_summary()),
             framework_summary: record.framework_summary(),
-            assessment_result: Some(record.result.clone()),
+            // "The assessment runs asynchronously": an assessment still running
+            // has reached neither of the two results `AssessmentResult`
+            // publishes, so it reports none, and the control results it will
+            // report are not in yet.
+            assessment_result: record.reported_result(now),
             created_at: Some(record.created_at.clone()),
             expires_at: Some(record.expires_at.clone()),
             control_assessments: Some(page.items),

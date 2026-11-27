@@ -11,10 +11,11 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-marketplacecatalog-awsmpseymour.json");
 
-// `skip_validation` names `Catalog` (see `CancelChangeSetInput`) plus `ChangeSetName` and
-// `ClientRequestToken`, whose faults quote the syntax this service publishes — the
-// modelled `@pattern` with the modelled `@length` folded into it — rather than the raw
-// pattern, so the HANDLER judges them and answers the modelled `ValidationException`.
+// `skip_validation` names `Catalog` for the reason given on `ListAssessmentsInput`, plus
+// the two members whose published syntax this operation states itself — `ChangeSetName`
+// and `ClientRequestToken` — each judged by the handler
+// (`crate::state::is_change_set_name`, `crate::state::is_client_request_token`) so the
+// refusal carries the modelled `ValidationException` and its 422.
 #[smithy_macros::smithy(
     shape = "com.amazonaws.marketplacecatalog#StartChangeSetRequest",
     skip_validation = ["Catalog", "ChangeSetName", "ClientRequestToken"]
@@ -29,21 +30,15 @@ pub struct StartChangeSetInput {
     pub intent: Option<String>,
 }
 
-// `skip_validation` names `ChangeName` for the same reason `Entity` (see `shared_types`)
-// names its two members: the syntax this service publishes for a change name is the one
-// the `$<ChangeName>.Entity.Identifier` reference states — up to 72 letters, which is also
-// the modelled `@length(min: 1, max: 72)` — where the modelled `@pattern` (`^[a-zA-Z]$`)
-// admits a single letter and so leaves that length nothing to describe. The handler judges
-// it (`crate::state::is_change_name`) and answers the modelled `ValidationException`.
-//
-// `ChangeType` joins it because the member names the change the catalog is to MAKE: the
-// set of changes this catalog performs (`crate::state::CHANGE_TYPES`) is narrower than the
-// modelled `@pattern`, and the handler holds it — so every value the member cannot carry,
-// whatever is wrong with it, is the one refusal that set states, carrying the modelled
-// `ValidationException` and its 422 rather than the protocol's boundary status.
+// `skip_validation` names `ChangeType` and `ChangeName`: a change type is the name of an
+// intention this catalog can carry out (`crate::state::CHANGE_TYPES`), a set the modelled
+// `@pattern` cannot state, and a change name is what the OTHER changes of the change set
+// name this change by — up to 72 letters, where the modelled `@pattern` admits a single
+// one. Both are judged by the handler, which answers the modelled `ValidationException`
+// and its 422. `Details` keeps its modelled `@length`, which the boundary enforces.
 #[smithy_macros::smithy(
     shape = "com.amazonaws.marketplacecatalog#Change",
-    skip_validation = ["ChangeName", "ChangeType"]
+    skip_validation = ["ChangeType", "ChangeName"]
 )]
 #[derive(Debug, Clone, Default)]
 pub struct Change {
@@ -60,11 +55,5 @@ pub struct Change {
 pub struct StartChangeSetOutput {
     pub change_set_id: Option<String>,
     pub change_set_arn: Option<String>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#ServiceQuotaExceededException")]
-#[derive(Debug, Clone, Default)]
-pub struct ServiceQuotaExceededException {
-    pub message: Option<String>,
 }
 

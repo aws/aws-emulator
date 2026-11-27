@@ -252,6 +252,46 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
+        // `AssessmentTargetFilter$EntityIds` is "a list of up to 50 entity IDs
+        // whose assessments you want to list", with two conditions of its own:
+        // "you must also specify FrameworkId in the request, and you can't
+        // combine EntityIds with EntityId or ChangeSetId". Both are rules about
+        // the REQUEST, so a request breaking either names no page of this list
+        // and is refused before anything is selected. Each id it carries NAMES
+        // an entity, so each is judged against the entity-id form beside the
+        // single `EntityId` below.
+        if let Some(filter) = input.assessment_target_filter.as_ref() {
+            if let Some(entity_ids) = filter.entity_ids.as_ref() {
+                if input.framework_id.is_none() {
+                    return Err(ListAssessmentsErrorModeled::ValidationException(
+                        crate::state::validation(
+                            "AssessmentTargetFilter.EntityIds",
+                            "EntityIds selects assessments only beside a FrameworkId",
+                        ),
+                    )
+                    .into());
+                }
+                if filter.entity_id.is_some() || filter.change_set_id.is_some() {
+                    return Err(ListAssessmentsErrorModeled::ValidationException(
+                        crate::state::validation(
+                            "AssessmentTargetFilter.EntityIds",
+                            "EntityIds cannot be combined with EntityId or ChangeSetId",
+                        ),
+                    )
+                    .into());
+                }
+                if let Some(malformed) = entity_ids
+                    .iter()
+                    .find(|entity_id| !crate::state::is_entity_id(entity_id))
+                {
+                    return Err(ListAssessmentsErrorModeled::ValidationException(
+                        crate::state::invalid_entity_id(malformed),
+                    )
+                    .into());
+                }
+            }
+        }
+
         // The token is the offset the next page resumes at; one this service
         // never issued names no page, and neither does one outside the modelled
         // `NextToken` syntax (`skip_validation` on `ListAssessmentsInput`), so
@@ -320,9 +360,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .cmp(&left.created_at)
                 .then_with(|| right.id.cmp(&left.id))
         });
+        // "The response includes only the latest published assessment of each
+        // entity": a request filtering by `EntityIds` is answered one
+        // assessment per entity it named, the latest one — which, the page
+        // being ordered newest first, is the FIRST the order reaches for that
+        // entity. An entity with no assessment at all contributes none.
+        if input
+            .assessment_target_filter
+            .as_ref()
+            .is_some_and(|filter| filter.entity_ids.is_some())
+        {
+            let mut reported: ::std::collections::HashSet<&str> =
+                ::std::collections::HashSet::new();
+            matched.retain(|record| match record.entity_id.as_deref() {
+                Some(entity_id) => reported.insert(entity_id),
+                None => false,
+            });
+        }
 
-        let summaries: Vec<AssessmentSummary> =
-            matched.iter().map(|record| record.to_summary()).collect();
+        let summaries: Vec<AssessmentSummary> = matched
+            .iter()
+            .map(|record| record.to_summary(now))
+            .collect();
         let page = crate::state::paginate(
             summaries,
             offset,

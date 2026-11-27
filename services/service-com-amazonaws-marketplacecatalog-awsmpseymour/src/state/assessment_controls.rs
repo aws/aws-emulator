@@ -92,6 +92,16 @@ pub(super) const SCOPE_CONTAINER_IMAGES: &str = "CONTAINER_IMAGES";
 /// logging in would hold every privilege on the instance as.
 pub(super) const AMI_SUPERUSER: &str = "root";
 
+/// A `VerificationSource`: "AWS_VERIFIED - AWS evaluated the control" — the
+/// source of every control result the catalog itself computed, over what the
+/// assessed entity holds.
+pub const VERIFICATION_AWS_VERIFIED: &str = "AWS_VERIFIED";
+
+/// The other `VerificationSource`: "SELF_ATTESTED - You attested to the result
+/// of the control" — the source of a control result computed over the input the
+/// CALLER supplied for that control rather than over what the catalog holds.
+pub const VERIFICATION_SELF_ATTESTED: &str = "SELF_ATTESTED";
+
 /// The CIDR blocks that admit EVERY address, in IPv4 and in IPv6 — an ingress
 /// rule naming one opens its port to the whole internet rather than to the
 /// addresses the product needs.
@@ -102,55 +112,119 @@ pub(super) const UNRESTRICTED_IP_RANGES: &[&str] = &["0.0.0.0/0", "::/0"];
 /// image that was assessed.
 pub(super) const FLOATING_IMAGE_TAG: &str = "latest";
 
-/// What evaluating the delivery option `option` against `framework` found: one
-/// `ControlAssessment` per control of that framework, in the order an
-/// assessment reports them.
+/// The controls of [`FRAMEWORK_AMI_SECURITY`], in the order an assessment
+/// reports them.
+pub const AMI_SECURITY_CONTROLS: &[&str] = &[
+    CONTROL_AMI_SOURCE_IMAGE,
+    CONTROL_AMI_ACCESS_ROLE,
+    CONTROL_AMI_LOGIN_USER,
+    CONTROL_AMI_INGRESS,
+    CONTROL_AMI_USAGE_INSTRUCTIONS,
+];
+
+/// The controls of [`FRAMEWORK_CONTAINER_SECURITY`], in the same order.
+pub const CONTAINER_SECURITY_CONTROLS: &[&str] = &[
+    CONTROL_CONTAINER_IMAGES,
+    CONTROL_CONTAINER_IMAGES_PINNED,
+    CONTROL_CONTAINER_USAGE_INSTRUCTIONS,
+];
+
+/// The controls `framework` defines — what an assessment against it runs, and
+/// what a request may provide input for.
 ///
 /// Empty for a framework this catalog does not assess against, which is what
 /// keeps "nothing was evaluated" apart from "every control passed": no
 /// assessment is recorded at all.
-pub fn assess_delivery_option(framework: &str, option: &Value) -> Vec<ControlAssessment> {
-    let details = delivery_option_details(option);
+pub fn framework_controls(framework: &str) -> &'static [&'static str] {
     match framework {
-        FRAMEWORK_AMI_SECURITY => vec![
-            text_declared_control(
-                CONTROL_AMI_SOURCE_IMAGE,
-                SCOPE_AMI_ID,
-                AMI_IMAGE_PATH,
-                &details,
-            ),
-            text_declared_control(
-                CONTROL_AMI_ACCESS_ROLE,
-                SCOPE_ACCESS_ROLE_ARN,
-                AMI_ACCESS_ROLE_PATH,
-                &details,
-            ),
-            ami_login_user_control(&details),
-            ami_ingress_control(&details),
-            text_declared_control(
-                CONTROL_AMI_USAGE_INSTRUCTIONS,
-                SCOPE_USAGE_INSTRUCTIONS,
-                USAGE_INSTRUCTIONS_PATH,
-                &details,
-            ),
-        ],
-        FRAMEWORK_CONTAINER_SECURITY => vec![
-            container_images_declared_control(&details),
-            container_images_pinned_control(&details),
-            text_declared_control(
-                CONTROL_CONTAINER_USAGE_INSTRUCTIONS,
-                SCOPE_USAGE_INSTRUCTIONS,
-                USAGE_INSTRUCTIONS_PATH,
-                &details,
-            ),
-        ],
-        _ => Vec::new(),
+        FRAMEWORK_AMI_SECURITY => AMI_SECURITY_CONTROLS,
+        FRAMEWORK_CONTAINER_SECURITY => CONTAINER_SECURITY_CONTROLS,
+        _ => &[],
     }
 }
 
-/// The number of delivery options the details of a change submit, or `None`
-/// when they carry no delivery option list at all.
+/// What running the control `control` over the members `details` found, and
+/// `None` when `control` names no control of this catalog — nothing ran, so
+/// nothing is reported for it.
 ///
+/// The members a control reads are the delivery form's own ([`AMI_IMAGE_PATH`]
+/// and the paths beside it), so the same control runs over whatever map carries
+/// them: the details of a submitted delivery option, or the input a request
+/// supplied for that control.
+pub fn assess_control(control: &str, details: &Map<String, Value>) -> Option<ControlAssessment> {
+    Some(match control {
+        CONTROL_AMI_SOURCE_IMAGE => {
+            text_declared_control(control, SCOPE_AMI_ID, AMI_IMAGE_PATH, details)
+        }
+        CONTROL_AMI_ACCESS_ROLE => {
+            text_declared_control(control, SCOPE_ACCESS_ROLE_ARN, AMI_ACCESS_ROLE_PATH, details)
+        }
+        CONTROL_AMI_LOGIN_USER => ami_login_user_control(details),
+        CONTROL_AMI_INGRESS => ami_ingress_control(details),
+        CONTROL_AMI_USAGE_INSTRUCTIONS | CONTROL_CONTAINER_USAGE_INSTRUCTIONS => {
+            text_declared_control(control, SCOPE_USAGE_INSTRUCTIONS, USAGE_INSTRUCTIONS_PATH, details)
+        }
+        CONTROL_CONTAINER_IMAGES => container_images_declared_control(details),
+        CONTROL_CONTAINER_IMAGES_PINNED => container_images_pinned_control(details),
+        _ => return None,
+    })
+}
+
+/// The same control assessment, reported as the CALLER's attestation rather
+/// than as the catalog's own finding: `VerificationSource` is "where the result
+/// of the control came from", so a result computed over the input a request
+/// supplied for that control is [`VERIFICATION_SELF_ATTESTED`] whatever the
+/// result itself is ("a control that you attested to can still have a result of
+/// PASS").
+pub fn self_attested(control: ControlAssessment) -> ControlAssessment {
+    ControlAssessment {
+        verification_source: Some(VERIFICATION_SELF_ATTESTED.to_string()),
+        ..control
+    }
+}
+
+/// What evaluating the delivery option `option` against `framework` found: one
+/// `ControlAssessment` per control of that framework
+/// ([`framework_controls`]), each run over the members that option submitted.
+pub fn assess_delivery_option(framework: &str, option: &Value) -> Vec<ControlAssessment> {
+    let details = delivery_option_details(option);
+    framework_controls(framework)
+        .iter()
+        .filter_map(|control| assess_control(control, &details))
+        .collect()
+}
+
+/// The delivery option an entity currently delivers, as an assessment of that
+/// entity reads it: the id the catalog assigned it, if it carries one, and the
+/// members a framework's controls read.
+///
+/// A product's delivery options accumulate in its details under
+/// [`DELIVERY_OPTIONS_DETAIL_MEMBER`], in the order the changes that submitted
+/// them were applied, and `FrameworkSummary` names ONE delivery option as the
+/// one an assessment evaluated — so an assessment of the ENTITY evaluates the
+/// LAST option its details carry, the one it delivers now. An entity carrying
+/// none is assessed all the same, over no members: each control of the
+/// framework then reads nothing, which is the finding it reports rather than a
+/// reason to refuse the run.
+pub fn current_delivery_option(details: &Value) -> (Option<String>, Map<String, Value>) {
+    let Some(option) = details
+        .get(DELIVERY_OPTIONS_DETAIL_MEMBER)
+        .and_then(Value::as_array)
+        .and_then(|options| options.iter().rev().find(|option| option.is_object()))
+    else {
+        return (None, Map::new());
+    };
+    (
+        option
+            .get(DELIVERY_OPTION_ID_MEMBER)
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        delivery_option_details(option),
+    )
+}
+
+/// The number of delivery options the details of a change submit, or `None`
+/// when they carry no delivery option list at all.///
 /// Reads the LENGTH of the submitted list without walking its entries, so a
 /// change past [`MAX_DELIVERY_OPTIONS_PER_CHANGE`] is refused before anything
 /// of it is copied.
@@ -196,14 +270,26 @@ pub(super) fn detail_at<'a>(details: &'a Map<String, Value>, path: &[&str]) -> O
     Some(value)
 }
 
+/// The `ControlSummary` a control of these frameworks reports: none.
+///
+/// `ControlSummary` is "a summary of what a control produced" whose one member
+/// is `ListingRecommendations`, "the recommendations that a listing
+/// recommendations control produced for the listing" — so the member is set by
+/// a control that PRODUCES recommendations, and every control here is a check
+/// over a submitted value that produces a verdict and nothing else. Reported
+/// absent rather than filled with recommendations the catalog did not generate.
+pub(super) const NO_CONTROL_SUMMARY: Option<ControlSummary> = None;
+
 /// The assessment of a control whose condition held.
 pub(super) fn control_passed(id: &str) -> ControlAssessment {
     ControlAssessment {
         control_id: Some(id.to_string()),
         control_assessment_result: Some(CONTROL_PASS.to_string()),
+        verification_source: Some(VERIFICATION_AWS_VERIFIED.to_string()),
         // "An array of ControlError objects associated with the control
         // evaluation": a control that found nothing wrong has none.
         errors: None,
+        control_summary: NO_CONTROL_SUMMARY,
     }
 }
 
@@ -213,7 +299,9 @@ pub(super) fn control_not_executed(id: &str) -> ControlAssessment {
     ControlAssessment {
         control_id: Some(id.to_string()),
         control_assessment_result: Some(CONTROL_NOT_EXECUTED.to_string()),
+        verification_source: Some(VERIFICATION_AWS_VERIFIED.to_string()),
         errors: None,
+        control_summary: NO_CONTROL_SUMMARY,
     }
 }
 
@@ -230,6 +318,7 @@ pub(super) fn control_failed(
     ControlAssessment {
         control_id: Some(id.to_string()),
         control_assessment_result: Some(CONTROL_FAIL.to_string()),
+        verification_source: Some(VERIFICATION_AWS_VERIFIED.to_string()),
         errors: Some(vec![ControlError {
             code: Some(code.to_string()),
             message: Some(message),
@@ -240,6 +329,7 @@ pub(super) fn control_failed(
                 value,
             }]),
         }]),
+        control_summary: NO_CONTROL_SUMMARY,
     }
 }
 

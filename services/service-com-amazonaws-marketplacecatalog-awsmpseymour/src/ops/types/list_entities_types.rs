@@ -11,11 +11,11 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-marketplacecatalog-awsmpseymour.json");
 
-// `skip_validation` names `Catalog` and `NextToken` (see `ListAssessmentsInput`) plus
-// `EntityType`: a letters-only value satisfies the modelled `@pattern` and may still name
-// no entity type at all, and only the handler holds the set of types this catalog has
-// (`crate::state::ENTITY_TYPES`), so it is what judges the member. `MaxResults` joins them
-// for the reason given on `ListChangeSetsInput`.
+// `skip_validation` names `Catalog`, `MaxResults` and `NextToken` for the reasons given on
+// `ListAssessmentsInput`, plus `EntityType`: the types this catalog HAS are a set this
+// service publishes in words (`crate::state::ENTITY_TYPES`), which the modelled `@pattern`
+// — any letters-only word — cannot state, so a value naming no type of it is refused by
+// the handler with the modelled `ValidationException` and its 422.
 #[smithy_macros::smithy(
     shape = "com.amazonaws.marketplacecatalog#ListEntitiesRequest",
     skip_validation = ["Catalog", "EntityType", "MaxResults", "NextToken"]
@@ -46,6 +46,7 @@ pub enum EntityTypeFilters {
     MachineLearningProductFilters(MachineLearningProductFilters),
     OfferSetFilters(OfferSetFilters),
     ExpressPrivateOfferConfigurationFilters(ExpressPrivateOfferConfigurationFilters),
+    SubsidiaryAuthorizationFilters(SubsidiaryAuthorizationFilters),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#DataProductFilters")]
@@ -178,6 +179,7 @@ pub struct OfferFilters {
     pub name: Option<OfferNameFilter>,
     pub product_id: Option<OfferProductIdFilter>,
     pub resale_authorization_id: Option<OfferResaleAuthorizationIdFilter>,
+    pub subsidiary_authorization_id: Option<OfferSubsidiaryAuthorizationIdFilter>,
     pub release_date: Option<OfferReleaseDateFilter>,
     pub availability_end_date: Option<OfferAvailabilityEndDateFilter>,
     pub buyer_accounts: Option<OfferBuyerAccountsFilter>,
@@ -212,6 +214,12 @@ pub struct OfferProductIdFilter {
 #[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#OfferResaleAuthorizationIdFilter")]
 #[derive(Debug, Clone, Default)]
 pub struct OfferResaleAuthorizationIdFilter {
+    pub value_list: Option<Vec<String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#OfferSubsidiaryAuthorizationIdFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct OfferSubsidiaryAuthorizationIdFilter {
     pub value_list: Option<Vec<String>>,
 }
 
@@ -619,6 +627,83 @@ pub struct ExpressPrivateOfferConfigurationStateFilter {
     pub value_list: Option<Vec<String>>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#SubsidiaryAuthorizationFilters")]
+#[derive(Debug, Clone, Default)]
+pub struct SubsidiaryAuthorizationFilters {
+    pub entity_id: Option<SubsidiaryAuthorizationEntityIdFilter>,
+    pub status: Option<SubsidiaryAuthorizationStatusFilter>,
+    pub resource_id: Option<SubsidiaryAuthorizationResourceIdFilter>,
+    pub resource_name: Option<SubsidiaryAuthorizationResourceNameFilter>,
+    pub name: Option<SubsidiaryAuthorizationNameFilter>,
+    pub subsidiary_account_id: Option<SubsidiaryAuthorizationSubsidiaryAccountIdFilter>,
+    pub created_date: Option<SubsidiaryAuthorizationCreatedDateFilter>,
+    pub last_modified_date: Option<SubsidiaryAuthorizationLastModifiedDateFilter>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#SubsidiaryAuthorizationEntityIdFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct SubsidiaryAuthorizationEntityIdFilter {
+    pub value_list: Option<Vec<String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#SubsidiaryAuthorizationStatusFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct SubsidiaryAuthorizationStatusFilter {
+    pub value_list: Option<Vec<String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#SubsidiaryAuthorizationResourceIdFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct SubsidiaryAuthorizationResourceIdFilter {
+    pub value_list: Option<Vec<String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#SubsidiaryAuthorizationResourceNameFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct SubsidiaryAuthorizationResourceNameFilter {
+    pub value_list: Option<Vec<String>>,
+    pub wild_card_value: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#SubsidiaryAuthorizationNameFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct SubsidiaryAuthorizationNameFilter {
+    pub value_list: Option<Vec<String>>,
+    pub wild_card_value: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#SubsidiaryAuthorizationSubsidiaryAccountIdFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct SubsidiaryAuthorizationSubsidiaryAccountIdFilter {
+    pub value_list: Option<Vec<String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#SubsidiaryAuthorizationCreatedDateFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct SubsidiaryAuthorizationCreatedDateFilter {
+    pub date_range: Option<SubsidiaryAuthorizationCreatedDateFilterDateRange>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#SubsidiaryAuthorizationCreatedDateFilterDateRange")]
+#[derive(Debug, Clone, Default)]
+pub struct SubsidiaryAuthorizationCreatedDateFilterDateRange {
+    pub after_value: Option<String>,
+    pub before_value: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#SubsidiaryAuthorizationLastModifiedDateFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct SubsidiaryAuthorizationLastModifiedDateFilter {
+    pub date_range: Option<SubsidiaryAuthorizationLastModifiedDateFilterDateRange>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#SubsidiaryAuthorizationLastModifiedDateFilterDateRange")]
+#[derive(Debug, Clone, Default)]
+pub struct SubsidiaryAuthorizationLastModifiedDateFilterDateRange {
+    pub after_value: Option<String>,
+    pub before_value: Option<String>,
+}
+
 #[smithy_macros::smithy(union_for = "com.amazonaws.marketplacecatalog#EntityTypeSort")]
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
@@ -632,6 +717,7 @@ pub enum EntityTypeSort {
     MachineLearningProductSort(MachineLearningProductSort),
     OfferSetSort(OfferSetSort),
     ExpressPrivateOfferConfigurationSort(ExpressPrivateOfferConfigurationSort),
+    SubsidiaryAuthorizationSort(SubsidiaryAuthorizationSort),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#DataProductSort")]
@@ -697,6 +783,13 @@ pub struct ExpressPrivateOfferConfigurationSort {
     pub sort_order: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#SubsidiaryAuthorizationSort")]
+#[derive(Debug, Clone, Default)]
+pub struct SubsidiaryAuthorizationSort {
+    pub sort_by: Option<String>,
+    pub sort_order: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#ListEntitiesResponse")]
 #[derive(Debug, Clone, Default)]
 pub struct ListEntitiesOutput {
@@ -722,6 +815,7 @@ pub struct EntitySummary {
     pub machine_learning_product_summary: Option<MachineLearningProductSummary>,
     pub offer_set_summary: Option<OfferSetSummary>,
     pub express_private_offer_configuration_summary: Option<ExpressPrivateOfferConfigurationSummary>,
+    pub subsidiary_authorization_summary: Option<SubsidiaryAuthorizationSummary>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#AmiProductSummary")]
@@ -758,6 +852,7 @@ pub struct OfferSummary {
     pub name: Option<String>,
     pub product_id: Option<String>,
     pub resale_authorization_id: Option<String>,
+    pub subsidiary_authorization_id: Option<String>,
     pub release_date: Option<String>,
     pub availability_end_date: Option<String>,
     pub buyer_accounts: Option<Vec<String>>,
@@ -810,5 +905,16 @@ pub struct OfferSetSummary {
 pub struct ExpressPrivateOfferConfigurationSummary {
     pub product_id: Option<String>,
     pub state: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#SubsidiaryAuthorizationSummary")]
+#[derive(Debug, Clone, Default)]
+pub struct SubsidiaryAuthorizationSummary {
+    pub name: Option<String>,
+    pub status: Option<String>,
+    pub resource_id: Option<String>,
+    pub resource_name: Option<String>,
+    pub subsidiary_account_id: Option<String>,
+    pub created_date: Option<String>,
 }
 

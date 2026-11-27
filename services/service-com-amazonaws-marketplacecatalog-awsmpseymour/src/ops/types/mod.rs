@@ -27,6 +27,7 @@ pub mod list_entities_types;
 pub mod list_tags_for_resource_types;
 pub mod put_resource_policy_types;
 pub mod shared_types;
+pub mod start_assessment_types;
 pub mod start_change_set_types;
 pub mod tag_resource_types;
 pub mod untag_resource_types;
@@ -57,6 +58,8 @@ pub use list_tags_for_resource_types::*;
 pub use put_resource_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use start_assessment_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use start_change_set_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

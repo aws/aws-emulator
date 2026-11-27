@@ -22,17 +22,18 @@ use crate::ops::types::{
     AssessmentTargetFilter, AssessmentTargetSummary, ChangeSetSummaryListItem, ChangeSummary,
     CHANGE_STATUS_VALUES,
     ContainerProductSummary, ContainerSecuritySummary, ControlAssessment, ControlError,
-    DataProductSummary, Entity, EntitySummary, ErrorDetail, ErrorScope,
+    ControlSummary, DataProductSummary, Entity, EntitySummary, ErrorDetail, ErrorScope,
     ExpressPrivateOfferConfigurationSummary, Filter, FrameworkFilters, FrameworkSummary,
     MachineLearningProductSummary, OfferSetSummary, OfferSummary, ResaleAuthorizationSummary,
-    ResourceInUseException, ResourceNotFoundException, SaaSProductSummary, Tag,
+    ResourceInUseException, ResourceNotFoundException, SaaSProductSummary,
+    SubsidiaryAuthorizationSummary, Tag,
     ValidationException, AMI_PRODUCT_SORT_BY_VALUES, AMI_PRODUCT_VISIBILITY_STRING_VALUES,
     CONTAINER_PRODUCT_SORT_BY_VALUES, CONTAINER_PRODUCT_VISIBILITY_STRING_VALUES,
     DATA_PRODUCT_SORT_BY_VALUES, DATA_PRODUCT_VISIBILITY_STRING_VALUES,
     EXPRESS_PRIVATE_OFFER_CONFIGURATION_SORT_BY_VALUES, MACHINE_LEARNING_PRODUCT_SORT_BY_VALUES,
     MACHINE_LEARNING_PRODUCT_VISIBILITY_STRING_VALUES, OFFER_SET_SORT_BY_VALUES,
     OFFER_SORT_BY_VALUES, RESALE_AUTHORIZATION_SORT_BY_VALUES, SAA_S_PRODUCT_SORT_BY_VALUES,
-    SAA_S_PRODUCT_VISIBILITY_STRING_VALUES,
+    SAA_S_PRODUCT_VISIBILITY_STRING_VALUES, SUBSIDIARY_AUTHORIZATION_SORT_BY_VALUES,
 };
 mod assessment_controls;
 pub use assessment_controls::*;
@@ -547,6 +548,7 @@ pub const SHAPED_ENTITY_TYPES: &[&str] = &[
     "OfferSet",
     "ResaleAuthorization",
     "SaaSProduct",
+    "SubsidiaryAuthorization",
 ];
 
 /// The entity types this catalog has at all — what an `EntityType` member is
@@ -560,7 +562,8 @@ pub const SHAPED_ENTITY_TYPES: &[&str] = &[
 /// * `ListEntitiesRequest$EntityType` enumerates them in prose — "Valid values
 ///   are: `AmiProduct`, `ContainerProduct`, `DataProduct`, `SaaSProduct`,
 ///   `ProcurementPolicy`, `Experience`, `Audience`, `BrandingSettings`,
-///   `Offer`, `OfferSet`, `Seller`, `ResaleAuthorization`, `Solution`"
+///   `Offer`, `OfferSet`, `Seller`, `ResaleAuthorization`, `Solution`,
+///   `SubsidiaryAuthorization`"
 ///   (`smithy_query(query="doc", shape="ListEntitiesRequest",
 ///   member="EntityType")`);
 /// * the per-type shapes the model declares name the rest
@@ -587,6 +590,7 @@ pub const ENTITY_TYPES: &[&str] = &[
     "SaaSProduct",
     "Seller",
     "Solution",
+    "SubsidiaryAuthorization",
 ];
 
 /// The change types this catalog performs — what a `Change$ChangeType` is
@@ -978,6 +982,31 @@ pub const MAX_DELIVERY_OPTIONS_PER_CHANGE: usize = 20;
 /// by this constant and not by the list the request sent. A request past it is
 /// refused ([`too_many_changes`]).
 pub const MAX_CHANGES_PER_CHANGE_SET: usize = 20;
+
+/// How long an assessment a caller STARTED runs before its result and its
+/// control results are reported.
+///
+/// `StartAssessment` documents the work as asynchronous ("the assessment runs
+/// asynchronously. This action returns the ID of the assessment immediately. To
+/// get its status and the results of each control, use the DescribeAssessment
+/// action") and neither the model nor the documentation says how long one
+/// takes, so this span is the emulator's OWN rather than a claim about AWS's. It
+/// is non-zero so that a caller reading straight after the start observes the
+/// run it started — and so that the entity being assessed is in use for as long
+/// as that run lasts ([`assessment_in_progress`]). The due instant is stored on
+/// the record ([`AssessmentRecord::runs_until`]) and read by whichever later
+/// call reports it; nothing sleeps for it.
+pub const ASSESSMENT_RUN: Duration = Duration::from_secs(3);
+
+/// How many assessments of this account may be RUNNING at once.
+///
+/// `StartAssessment` models a `ServiceQuotaExceededException` for "the maximum
+/// number of open requests per account has been exceeded" and publishes no
+/// number for it, so the bound itself is the emulator's OWN: an open request is
+/// an assessment still running ([`AssessmentRecord::is_running`]), far more at
+/// once than a workflow an emulator serves starts, and what keeps the work one
+/// caller can have in flight bounded.
+pub const OPEN_ASSESSMENT_LIMIT: usize = 10;
 
 /// How many assessments the store holds.
 ///
@@ -1410,12 +1439,13 @@ impl EntityRecord {
                     visibility,
                 },
             ),
-            // The four remaining summaries name members of their own, each the
+            // The five remaining summaries name members of their own, each the
             // name of the details member the entity carries that value in.
             offer_summary: self.is_type("Offer").then(|| OfferSummary {
                 name: self.summary_name(),
                 product_id: self.summary_text("ProductId"),
                 resale_authorization_id: self.summary_text("ResaleAuthorizationId"),
+                subsidiary_authorization_id: self.summary_text("SubsidiaryAuthorizationId"),
                 release_date: self.summary_text("ReleaseDate"),
                 availability_end_date: self.summary_text("AvailabilityEndDate"),
                 buyer_accounts: self.summary_texts("BuyerAccounts"),
@@ -1457,6 +1487,16 @@ impl EntityRecord {
                     product_id: self.summary_text("ProductId"),
                     state: self.summary_text("State"),
                 }),
+            subsidiary_authorization_summary: self.is_type("SubsidiaryAuthorization").then(|| {
+                SubsidiaryAuthorizationSummary {
+                    name: self.summary_name(),
+                    status: self.summary_text("Status"),
+                    resource_id: self.summary_text("ResourceId"),
+                    resource_name: self.summary_text("ResourceName"),
+                    subsidiary_account_id: self.summary_text("SubsidiaryAccountId"),
+                    created_date: self.summary_text("CreatedDate"),
+                }
+            }),
         }
     }
 
@@ -1726,6 +1766,7 @@ pub fn entity_type_sort_by_values(entity_type: &str) -> &'static [&'static str] 
         "OfferSet" => OFFER_SET_SORT_BY_VALUES,
         "ResaleAuthorization" => RESALE_AUTHORIZATION_SORT_BY_VALUES,
         "SaaSProduct" => SAA_S_PRODUCT_SORT_BY_VALUES,
+        "SubsidiaryAuthorization" => SUBSIDIARY_AUTHORIZATION_SORT_BY_VALUES,
         _ => ENTITY_SORT_BY,
     }
 }
@@ -1834,6 +1875,23 @@ pub struct AssessmentRecord {
     pub expires_at: String,
     /// One entry per control the framework evaluated.
     pub controls: Vec<ControlAssessment>,
+    /// The instant the RUN this assessment is finishes, for an assessment that
+    /// was started and is still running; `None` for one that is finished.
+    ///
+    /// `StartAssessment` "returns the ID of the assessment immediately" and the
+    /// assessment itself "runs asynchronously", so an assessment a caller
+    /// started is not finished when the call answers: until this instant the
+    /// record reports no `AssessmentResult` and no `ControlAssessments`
+    /// ([`Self::reported_result`]), which is what a caller polling
+    /// `DescribeAssessment` sees change. The span is
+    /// [`ASSESSMENT_RUN`]. An assessment a change set PRODUCED is the recorded
+    /// result of applying that change, so it is finished as soon as it exists.
+    pub runs_until: Option<SystemTime>,
+    /// The tags the assessment carries, held as the SET [`merge_tags`] keeps:
+    /// `StartAssessmentRequest$Tags` is "a map of tags to apply to the
+    /// assessment when you create it", and the tagging surface reports and
+    /// updates them through the assessment's own ARN.
+    pub tags: Vec<Tag>,
 }
 
 impl AssessmentRecord {
@@ -1863,15 +1921,38 @@ impl AssessmentRecord {
         }
     }
 
-    /// The `AssessmentSummary` projection `ListAssessments` reports.
-    pub fn to_summary(&self) -> AssessmentSummary {
+    /// Whether the run this assessment is has not finished as of `now`.
+    pub fn is_running(&self, now: SystemTime) -> bool {
+        self.runs_until.is_some_and(|due| now < due)
+    }
+
+    /// The `AssessmentResult` a report carries: the overall result once the run
+    /// has finished, and nothing while it is still running — the model
+    /// publishes `PASS` and `FAIL` alone, so an assessment that has reached
+    /// neither reports no result rather than one it did not establish.
+    pub fn reported_result(&self, now: SystemTime) -> Option<String> {
+        (!self.is_running(now)).then(|| self.result.clone())
+    }
+
+    /// The `ControlAssessments` a report carries: one per control once the run
+    /// has finished, and none while it is still running.
+    pub fn reported_controls(&self, now: SystemTime) -> Vec<ControlAssessment> {
+        if self.is_running(now) {
+            return Vec::new();
+        }
+        self.controls.clone()
+    }
+
+    /// The `AssessmentSummary` projection `ListAssessments` reports, as of
+    /// `now`.
+    pub fn to_summary(&self, now: SystemTime) -> AssessmentSummary {
         AssessmentSummary {
             assessment_arn: Some(self.arn.clone()),
             assessment_id: Some(self.id.clone()),
             framework_id: Some(self.framework_id.clone()),
             assessment_target_summary: Some(self.target_summary()),
             framework_summary: self.framework_summary(),
-            assessment_result: Some(self.result.clone()),
+            assessment_result: self.reported_result(now),
             created_at: Some(self.created_at.clone()),
             expires_at: Some(self.expires_at.clone()),
         }
@@ -1892,6 +1973,12 @@ impl AssessmentRecord {
     /// Whether this assessment satisfies an `AssessmentTargetFilter`: "Filters
     /// the list of assessments to those performed against a specific entity or
     /// change set". A member the filter leaves absent constrains nothing.
+    ///
+    /// `EntityIds` is "a list of up to 50 entity IDs whose assessments you want
+    /// to list", so it selects an assessment of ANY entity it names — one
+    /// entity's assessments being what each of its entries selects. Which of
+    /// those assessments a page then carries is the list's own decision ("the
+    /// response includes only the latest published assessment of each entity").
     pub fn matches_target(&self, filter: &AssessmentTargetFilter) -> bool {
         let entity = filter
             .entity_id
@@ -1901,7 +1988,12 @@ impl AssessmentRecord {
             .change_set_id
             .as_deref()
             .is_none_or(|wanted| self.change_set_id.as_deref() == Some(wanted));
-        entity && change_set
+        let entities = filter.entity_ids.as_ref().is_none_or(|wanted| {
+            self.entity_id
+                .as_deref()
+                .is_some_and(|held| wanted.iter().any(|asked| asked == held))
+        });
+        entity && change_set && entities
     }
 
     /// Whether this assessment satisfies `FrameworkFilters`: "Set exactly one
@@ -2021,6 +2113,10 @@ pub struct ComAmazonawsMarketplacecatalogAwsmpseymourState {
     /// started, so a retried start reports the first change set instead of
     /// minting a second.
     pub idempotency_tokens: HashMap<String, String>,
+    /// The same for a `StartAssessment` `ClientToken` and the assessment it
+    /// started: a separate namespace, because a token names the request it was
+    /// sent with and the two operations start different resources.
+    pub assessment_tokens: HashMap<String, String>,
     /// The counter change set ids are minted from.
     pub change_set_seq: u64,
     /// The counter entity ids are minted from.
@@ -2129,6 +2225,7 @@ impl ComAmazonawsMarketplacecatalogAwsmpseymourState {
                 .get(id)
                 .is_some_and(|held| &held.entity_type == entity_type),
             CatalogResource::ChangeSet { id } => self.change_sets.contains_key(id),
+            CatalogResource::Assessment { id } => self.assessments.contains_key(id),
         }
     }
 
@@ -2184,6 +2281,9 @@ impl ComAmazonawsMarketplacecatalogAwsmpseymourState {
             CatalogResource::ChangeSet { id } => {
                 self.change_sets.get(id).map(|held| held.arn.as_str())
             }
+            CatalogResource::Assessment { id } => {
+                self.assessments.get(id).map(|held| held.arn.as_str())
+            }
         }
     }
 
@@ -2199,6 +2299,9 @@ impl ComAmazonawsMarketplacecatalogAwsmpseymourState {
                 .map(|held| held.tags.as_slice()),
             CatalogResource::ChangeSet { id } => {
                 self.change_sets.get(id).map(|held| held.tags.as_slice())
+            }
+            CatalogResource::Assessment { id } => {
+                self.assessments.get(id).map(|held| held.tags.as_slice())
             }
         }
     }
@@ -2226,6 +2329,16 @@ impl ComAmazonawsMarketplacecatalogAwsmpseymourState {
                     // instants of the run it is: it publishes no member saying
                     // when it was last modified, so tagging one moves no
                     // timestamp of it.
+                    last_modified_date: None,
+                })
+            }
+            CatalogResource::Assessment { id } => {
+                self.assessments.get_mut(id).map(|held| ResourceTagsWrite {
+                    tags: &mut held.tags,
+                    // An assessment reports `CreatedAt` and `ExpiresAt`, the
+                    // instants of the evaluation it is: like a change set it
+                    // publishes no last-modified member, so tagging one moves
+                    // no timestamp of it.
                     last_modified_date: None,
                 })
             }
@@ -2528,13 +2641,40 @@ impl ComAmazonawsMarketplacecatalogAwsmpseymourState {
         if controls.is_empty() {
             return;
         }
-        let failed = controls.iter().any(|control| {
-            control.control_assessment_result.as_deref() == Some(CONTROL_FAIL)
-        });
-        // The store holds at most [`ASSESSMENT_QUOTA`] assessments: at the
-        // bound the oldest is dropped to make room for this one, so the state
-        // the assessment surface holds is bounded however many change sets
-        // submit delivery options.
+        let id = self.mint_assessment_id();
+        let record = AssessmentRecord {
+            arn: assessment_arn(region, &id),
+            id,
+            framework_id: format!("{framework}@{ASSESSMENT_FRAMEWORK_VERSION}"),
+            framework: framework.to_string(),
+            delivery_option_id: option
+                .get(DELIVERY_OPTION_ID_MEMBER)
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            entity_id: Some(entity_id.to_string()),
+            change_set_id: Some(change_set_id.to_string()),
+            result: assessment_result(&controls).to_string(),
+            created_at: iso8601(at),
+            expires_at: iso8601(at + ASSESSMENT_VALIDITY),
+            controls,
+            // The record IS the result of applying the change, so this
+            // assessment is finished as soon as it exists: nothing of it is
+            // still running.
+            runs_until: None,
+            // A change set applies tags to the ENTITIES its changes name; the
+            // assessment it produced carries none until one is put on it.
+            tags: Vec::new(),
+        };
+        self.store_assessment(record);
+    }
+
+    /// Store `record` under its id, making room for it first.
+    ///
+    /// The store holds at most [`ASSESSMENT_QUOTA`] assessments: at the bound
+    /// the OLDEST is dropped to make room for this one, so the state the
+    /// assessment surface holds is bounded however many assessments are
+    /// produced or started.
+    pub fn store_assessment(&mut self, record: AssessmentRecord) {
         while self.assessments.len() >= ASSESSMENT_QUOTA {
             let Some(oldest) = self
                 .assessments
@@ -2550,24 +2690,64 @@ impl ComAmazonawsMarketplacecatalogAwsmpseymourState {
             };
             self.assessments.remove(&oldest);
         }
-        let id = self.mint_assessment_id();
-        let record = AssessmentRecord {
-            arn: assessment_arn(region, &id),
-            id: id.clone(),
-            framework_id: format!("{framework}@{ASSESSMENT_FRAMEWORK_VERSION}"),
-            framework: framework.to_string(),
-            delivery_option_id: option
-                .get(DELIVERY_OPTION_ID_MEMBER)
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            entity_id: Some(entity_id.to_string()),
-            change_set_id: Some(change_set_id.to_string()),
-            result: if failed { ASSESSMENT_FAIL } else { ASSESSMENT_PASS }.to_string(),
-            created_at: iso8601(at),
-            expires_at: iso8601(at + ASSESSMENT_VALIDITY),
-            controls,
-        };
-        self.assessments.insert(id, record);
+        self.assessments.insert(record.id.clone(), record);
+    }
+
+    /// Remember that the `StartAssessment` token `token` started the assessment
+    /// `id`, so a retried start reports that assessment instead of starting a
+    /// second.
+    ///
+    /// The map is bounded the way the records it points at are
+    /// ([`ASSESSMENT_QUOTA`]): at the bound every token naming an assessment
+    /// the store no longer holds is dropped, since such a token names nothing a
+    /// retry could report.
+    pub fn remember_assessment_token(&mut self, token: String, id: String) {
+        if self.assessment_tokens.len() >= ASSESSMENT_QUOTA {
+            let held = &self.assessments;
+            self.assessment_tokens
+                .retain(|_, named| held.contains_key(named));
+        }
+        self.assessment_tokens.insert(token, id);
+    }
+
+    /// The assessment of the entity `entity_id` that is still running as of    /// `now`, if one is.
+    ///
+    /// An assessment is a run over one entity, so the entity is in use for as
+    /// long as that run lasts: this is what a second start against the same
+    /// entity is refused on ([`assessment_in_progress`]).
+    pub fn running_assessment_of(&self, entity_id: &str, now: SystemTime) -> Option<&str> {
+        self.assessments
+            .values()
+            .find(|record| {
+                record.entity_id.as_deref() == Some(entity_id) && record.is_running(now)
+            })
+            .map(|record| record.id.as_str())
+    }
+
+    /// How many assessments of this account are still running as of `now` —
+    /// the open requests [`OPEN_ASSESSMENT_LIMIT`] bounds.
+    pub fn open_assessments(&self, now: SystemTime) -> usize {
+        self.assessments
+            .values()
+            .filter(|record| record.is_running(now))
+            .count()
+    }
+}
+
+/// The `AssessmentResult` a set of control results adds up to: `FAIL` exactly
+/// when one of the controls failed.
+///
+/// `PASS` says that none did, never that every control ran — a control the
+/// assessed resource carries nothing for is [`CONTROL_NOT_EXECUTED`] and fails
+/// nothing.
+pub fn assessment_result(controls: &[ControlAssessment]) -> &'static str {
+    let failed = controls
+        .iter()
+        .any(|control| control.control_assessment_result.as_deref() == Some(CONTROL_FAIL));
+    if failed {
+        ASSESSMENT_FAIL
+    } else {
+        ASSESSMENT_PASS
     }
 }
 
@@ -2673,6 +2853,10 @@ pub enum DetailSyntax {
     /// The same form behind a fixed prefix, as `OfferSetIdString`'s
     /// `^offerset-[a-zA-Z0-9][.a-zA-Z0-9/-]+[a-zA-Z0-9]$` declares it.
     PrefixedId(&'static str),
+    /// A fixed prefix followed by exactly that many alphanumerics, as
+    /// `OfferSubsidiaryAuthorizationIdString`'s
+    /// `^subauthz-[a-zA-Z0-9]{13}$` declares it.
+    PrefixedCode(&'static str, usize),
     /// `DateTimeISO8601`'s pattern: the 20-character instant [`is_iso8601`]
     /// judges.
     Instant,
@@ -2687,6 +2871,11 @@ impl DetailSyntax {
             Self::Digits(_) => !value.is_empty() && value.chars().all(|c| c.is_ascii_digit()),
             Self::Id => is_entity_id(value),
             Self::PrefixedId(prefix) => value.strip_prefix(prefix).is_some_and(is_entity_id),
+            Self::PrefixedCode(prefix, count) => value
+                .strip_prefix(prefix)
+                .is_some_and(|code| {
+                    code.chars().count() == count && code.chars().all(|c| c.is_ascii_alphanumeric())
+                }),
             Self::Instant => is_iso8601(value),
         }
     }
@@ -2702,6 +2891,9 @@ impl DetailSyntax {
             Self::Id => ENTITY_ID_PATTERN.to_string(),
             Self::PrefixedId(prefix) => {
                 format!("^{prefix}{}", ENTITY_ID_PATTERN.trim_start_matches('^'))
+            }
+            Self::PrefixedCode(prefix, count) => {
+                format!("^{prefix}[a-zA-Z0-9]{{{count}}}$")
             }
             Self::Instant => DATE_TIME_PATTERN.to_string(),
         }
@@ -2814,6 +3006,11 @@ impl DetailContract {
         } else {
             format!("{min} to {max} characters")
         };
+        if self.syntax.is_empty() {
+            // A member the model bounds by `@length` alone ([`bounded`]) has no
+            // syntax to state.
+            return length;
+        }
         let patterns: Vec<String> = self.syntax.iter().map(|form| form.pattern()).collect();
         format!("{length} matching {}", patterns.join(" and "))
     }
@@ -2836,6 +3033,18 @@ const fn text(max: usize) -> DetailContract {
         values: &[],
         length: (1, max),
         syntax: &[DetailSyntax::OneLine],
+        items: None,
+    }
+}
+
+/// The contract of a member targeting a string the model bounds by LENGTH
+/// alone: `@length(min: 1, max)` with no `@pattern` beside it, so the value's
+/// characters are unconstrained.
+const fn bounded(max: usize) -> DetailContract {
+    DetailContract {
+        values: &[],
+        length: (1, max),
+        syntax: &[],
         items: None,
     }
 }
@@ -2893,6 +3102,17 @@ const OFFER_SET_ID: DetailContract = DetailContract {
     items: None,
 };
 
+/// The contract of `OfferSummary$SubsidiaryAuthorizationId`:
+/// `OfferSubsidiaryAuthorizationIdString`'s `@length(min: 1, max: 22)` and its
+/// own pattern, which its doc states in words as well ("the ID begins with
+/// `subauthz-` followed by 13 alphanumeric characters").
+const SUBSIDIARY_AUTHORIZATION_ID: DetailContract = DetailContract {
+    values: &[],
+    length: (1, 22),
+    syntax: &[DetailSyntax::PrefixedCode("subauthz-", 13)],
+    items: None,
+};
+
 /// `OfferSummary$State`'s and `OfferSetSummary$State`'s published values:
 /// `OfferStateString` and `OfferSetStateString` enumerate the same two.
 pub const OFFER_STATE_VALUES: &[&str] = &["Draft", "Released"];
@@ -2931,6 +3151,7 @@ pub const EXPRESS_PRIVATE_OFFER_CONFIGURATION_STATE_VALUES: &[&str] = &["ACTIVE"
 const OFFER_SUMMARY_MEMBERS: &[(&str, DetailContract)] = &[
     ("ProductId", text(255)),
     ("ResaleAuthorizationId", id(255)),
+    ("SubsidiaryAuthorizationId", SUBSIDIARY_AUTHORIZATION_ID),
     ("ReleaseDate", INSTANT),
     ("AvailabilityEndDate", INSTANT),
     ("BuyerAccounts", list(ACCOUNT_ID, 26)),
@@ -2986,6 +3207,26 @@ const EXPRESS_PRIVATE_OFFER_CONFIGURATION_SUMMARY_MEMBERS: &[(&str, DetailContra
     ),
 ];
 
+/// `SubsidiaryAuthorizationSummary$Status`'s published values: the three its
+/// own doc names ("Valid values are: `Draft` … `Active` … `Restricted`"),
+/// which are the values of `SubsidiaryAuthorizationStatusString`, the enum
+/// `SubsidiaryAuthorizationFilters$Status` selects on them through.
+pub const SUBSIDIARY_AUTHORIZATION_STATUS_VALUES: &[&str] = &["Active", "Draft", "Restricted"];
+
+/// The same for `SubsidiaryAuthorizationSummary`
+/// (`smithy_query(query="shape", shape="SubsidiaryAuthorizationSummary")`).
+///
+/// Three of its members target a string shape the model bounds by LENGTH alone,
+/// so [`bounded`] is their whole contract: the model declares no `@pattern` for
+/// them, and this service adds none of its own.
+const SUBSIDIARY_AUTHORIZATION_SUMMARY_MEMBERS: &[(&str, DetailContract)] = &[
+    ("Status", choice(SUBSIDIARY_AUTHORIZATION_STATUS_VALUES)),
+    ("ResourceId", bounded(255)),
+    ("ResourceName", bounded(255)),
+    ("SubsidiaryAccountId", ACCOUNT_ID),
+    ("CreatedDate", INSTANT),
+];
+
 /// The details members the per-type summary of `entity_type` reports, each with
 /// the contract the model declares for the summary member that reports it.
 ///
@@ -3002,6 +3243,7 @@ fn summary_member_contracts(entity_type: &str) -> &'static [(&'static str, Detai
         "ExpressPrivateOfferConfiguration" => {
             EXPRESS_PRIVATE_OFFER_CONFIGURATION_SUMMARY_MEMBERS
         }
+        "SubsidiaryAuthorization" => SUBSIDIARY_AUTHORIZATION_SUMMARY_MEMBERS,
         _ => &[],
     }
 }
@@ -3032,7 +3274,10 @@ const OFFER_NAME_MAX: usize = 150;
 /// Read off `EntitySummary`'s per-type summary members: the five product
 /// summaries name `ProductTitle` ([`PRODUCT_ENTITY_TYPES`]) and three more name
 /// `Name`. `ExpressPrivateOfferConfigurationSummary` names neither, so an
-/// entity of that type reports its name only through the common member.
+/// entity of that type reports its name only through the common member — and so
+/// does an entity whose per-type name member declares no pattern beside
+/// `EntityNameString`'s (`SubsidiaryAuthorizationSummary$Name` targets a shape
+/// bounded by `@length` alone), since there is no further syntax to satisfy.
 const NAMED_ENTITY_TYPES: &[&str] = &["Offer", "OfferSet", "ResaleAuthorization"];
 
 /// The contract the value an entity's `Name` is read from
@@ -4315,6 +4560,7 @@ pub fn resource_not_found(resource: &CatalogResource) -> ResourceNotFoundExcepti
     match resource {
         CatalogResource::Entity { id, .. } => entity_not_found(id),
         CatalogResource::ChangeSet { id } => change_set_not_found(id),
+        CatalogResource::Assessment { id } => assessment_not_found(id),
     }
 }
 
@@ -4414,6 +4660,20 @@ pub fn in_use(message: impl Into<String>) -> ResourceInUseException {
 pub fn entity_locked(entity_id: &str, holder: &str) -> ResourceInUseException {
     in_use(format!(
         "entity {entity_id} is locked by the running change set {holder}"
+    ))
+}
+
+/// The modelled `ResourceInUseException` payload for an entity an assessment is
+/// still running over, naming the entity and the assessment that holds it.
+///
+/// An assessment is a run over ONE entity ("starts an assessment of a product
+/// entity against a framework"), so while that run lasts the entity is in use:
+/// a second start against the same entity is refused, stated the way the
+/// sibling lock of this service is ([`entity_locked`]), with an assessment id
+/// the caller can read back with `DescribeAssessment`.
+pub fn assessment_in_progress(entity_id: &str, assessment_id: &str) -> ResourceInUseException {
+    in_use(format!(
+        "entity {entity_id} is being assessed by the running assessment {assessment_id}"
     ))
 }
 

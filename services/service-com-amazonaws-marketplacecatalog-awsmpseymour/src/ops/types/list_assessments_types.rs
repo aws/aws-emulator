@@ -11,11 +11,17 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-marketplacecatalog-awsmpseymour.json");
 
-// `skip_validation` names `Catalog` (see `CancelChangeSetInput`) and `NextToken`: a page
-// token is OPAQUE, so one outside the modelled `@pattern` and one that is well formed but
-// names no page are the SAME fault, which only the handler that issues the tokens can
-// tell — it answers both with `crate::state::invalid_page_token`. `MaxResults` joins them
-// for the reason given on `ListChangeSetsInput`.
+// `skip_validation` names three members this service judges by a rule of its OWN, each
+// answering the modelled `ValidationException` and its 422 — a status no boundary refusal
+// can carry, since a pre-dispatch refusal takes the protocol's own:
+//
+// * `Catalog`: every operation's `Catalog` documents one fixed value, so a well-formed
+//   catalog name other than it names nothing this service has
+//   (`crate::state::check_catalog`);
+// * `MaxResults`: a page size outside the modelled `@range` is judged by the one
+//   page-size rule every paginated operation shares (`crate::state::page_size`);
+// * `NextToken`: a token outside the modelled syntax names no page of this list, which is
+//   the same fault as a well-formed token naming none (`crate::state::page_offset`).
 #[smithy_macros::smithy(
     shape = "com.amazonaws.marketplacecatalog#ListAssessmentsRequest",
     skip_validation = ["Catalog", "MaxResults", "NextToken"]
@@ -35,6 +41,7 @@ pub struct ListAssessmentsInput {
 pub struct AssessmentTargetFilter {
     pub entity_id: Option<String>,
     pub change_set_id: Option<String>,
+    pub entity_ids: Option<Vec<String>>,
 }
 
 #[smithy_macros::smithy(union_for = "com.amazonaws.marketplacecatalog#FrameworkFilters")]

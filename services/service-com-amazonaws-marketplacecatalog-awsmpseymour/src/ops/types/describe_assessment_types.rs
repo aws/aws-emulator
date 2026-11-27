@@ -11,11 +11,12 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-marketplacecatalog-awsmpseymour.json");
 
-// `skip_validation` names `Catalog` and `NextToken` (see `ListAssessmentsInput`) plus
-// `AssessmentIdentifier`, whose two accepted forms are narrower in shape and wider in
-// namespace than the modelled `@pattern`, and whose fault quotes the syntax this service
-// publishes — so the HANDLER judges it. `MaxResults` joins them for the reason given on
-// `ListChangeSetsInput`.
+// `skip_validation` names `Catalog`, `MaxResults` and `NextToken` for the reasons given
+// on `ListAssessmentsInput` — this is the other paginated read of the assessment surface
+// — plus `AssessmentIdentifier`: "you can provide either the assessment ID … or the full
+// assessment ARN", two published forms the modelled `@pattern` states as one
+// alternation, and an identifier of neither form is refused by the handler
+// (`crate::state::assessment_id_of`) with the modelled `ValidationException` and its 422.
 #[smithy_macros::smithy(
     shape = "com.amazonaws.marketplacecatalog#DescribeAssessmentRequest",
     skip_validation = ["Catalog", "AssessmentIdentifier", "MaxResults", "NextToken"]
@@ -48,7 +49,9 @@ pub struct DescribeAssessmentOutput {
 pub struct ControlAssessment {
     pub control_id: Option<String>,
     pub control_assessment_result: Option<String>,
+    pub verification_source: Option<String>,
     pub errors: Option<Vec<ControlError>>,
+    pub control_summary: Option<ControlSummary>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#ControlError")]
@@ -64,5 +67,169 @@ pub struct ControlError {
 pub struct ErrorScope {
     pub name: Option<String>,
     pub value: Option<String>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.marketplacecatalog#ControlSummary")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum ControlSummary {
+    ListingRecommendations(ListingRecommendations),
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.marketplacecatalog#ListingRecommendations")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum ListingRecommendations {
+    ProductContentRecommendations(ProductContentRecommendations),
+    SolutionContentRecommendations(SolutionContentRecommendations),
+    FeatureRecommendations(FeatureRecommendations),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#ProductContentRecommendations")]
+#[derive(Debug, Clone, Default)]
+pub struct ProductContentRecommendations {
+    pub product_title: Option<ContentRecommendation>,
+    pub short_description: Option<ContentRecommendation>,
+    pub long_description: Option<ContentRecommendation>,
+    pub support_description: Option<ContentRecommendation>,
+    pub highlights: Option<ContentRecommendation>,
+    pub search_keywords: Option<ContentRecommendation>,
+    pub categories: Option<ContentRecommendation>,
+    pub additional_resources: Option<ContentRecommendation>,
+    pub citations: Vec<RecommendationCitation>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#ContentRecommendation")]
+#[derive(Debug, Clone)]
+pub struct ContentRecommendation {
+    pub status: String,
+    pub alternatives: ContentAlternatives,
+    pub follow_up_questions: Vec<FollowUpQuestion>,
+    pub findings: Vec<ListingFinding>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.marketplacecatalog#ContentAlternatives")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum ContentAlternatives {
+    Text(Vec<TextAlternative>),
+    TextList(Vec<TextListAlternative>),
+    AdditionalResources(Vec<AdditionalResourcesAlternative>),
+    UseCases(Vec<UseCasesAlternative>),
+    CaseStudies(Vec<CaseStudiesAlternative>),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#TextAlternative")]
+#[derive(Debug, Clone, Default)]
+pub struct TextAlternative {
+    pub value: String,
+    pub rationale: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#TextListAlternative")]
+#[derive(Debug, Clone, Default)]
+pub struct TextListAlternative {
+    pub value: Vec<String>,
+    pub rationale: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#AdditionalResourcesAlternative")]
+#[derive(Debug, Clone, Default)]
+pub struct AdditionalResourcesAlternative {
+    pub value: Vec<AdditionalResource>,
+    pub rationale: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#AdditionalResource")]
+#[derive(Debug, Clone, Default)]
+pub struct AdditionalResource {
+    pub r#type: String,
+    pub text: String,
+    pub url: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#UseCasesAlternative")]
+#[derive(Debug, Clone, Default)]
+pub struct UseCasesAlternative {
+    pub value: Vec<ListingUseCase>,
+    pub rationale: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#ListingUseCase")]
+#[derive(Debug, Clone, Default)]
+pub struct ListingUseCase {
+    pub id: String,
+    pub rank: i32,
+    pub name: String,
+    pub group: String,
+    pub subgroup: String,
+    pub use_case_details: Option<String>,
+    pub rationale: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#CaseStudiesAlternative")]
+#[derive(Debug, Clone, Default)]
+pub struct CaseStudiesAlternative {
+    pub value: Vec<ListingCaseStudy>,
+    pub rationale: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#ListingCaseStudy")]
+#[derive(Debug, Clone, Default)]
+pub struct ListingCaseStudy {
+    pub id: String,
+    pub title: String,
+    pub rationale: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#FollowUpQuestion")]
+#[derive(Debug, Clone, Default)]
+pub struct FollowUpQuestion {
+    pub question: String,
+    pub justification: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#ListingFinding")]
+#[derive(Debug, Clone, Default)]
+pub struct ListingFinding {
+    pub action: String,
+    pub description: String,
+    pub severity: String,
+    pub status: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#RecommendationCitation")]
+#[derive(Debug, Clone, Default)]
+pub struct RecommendationCitation {
+    pub url: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#SolutionContentRecommendations")]
+#[derive(Debug, Clone, Default)]
+pub struct SolutionContentRecommendations {
+    pub title: Option<ContentRecommendation>,
+    pub short_description: Option<ContentRecommendation>,
+    pub long_description: Option<ContentRecommendation>,
+    pub integration_details: Option<ContentRecommendation>,
+    pub additional_resources: Option<ContentRecommendation>,
+    pub use_cases: Option<ContentRecommendation>,
+    pub case_studies: Option<ContentRecommendation>,
+    pub citations: Vec<RecommendationCitation>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#FeatureRecommendations")]
+#[derive(Debug, Clone, Default)]
+pub struct FeatureRecommendations {
+    pub recommendations: Vec<FeatureRecommendation>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacecatalog#FeatureRecommendation")]
+#[derive(Debug, Clone, Default)]
+pub struct FeatureRecommendation {
+    pub feature_id: String,
+    pub action: String,
+    pub rationale: String,
+    pub severity: String,
+    pub status: String,
 }
 

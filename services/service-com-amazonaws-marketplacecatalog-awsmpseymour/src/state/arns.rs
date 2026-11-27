@@ -213,11 +213,13 @@ pub fn assessment_not_found(assessment_id: &str) -> ResourceNotFoundException {
 /// A resource of this catalog, as one of its resource ARNs names it.
 ///
 /// `ListTagsForResource` is documented for "a resource (either an entity or
-/// change set)", and [`entity_arn`] / [`change_set_arn`] write both in the one
-/// form `<catalog>/<type>/<id>`, so one parse covers both. Which KINDS an
-/// operation then acts on is the operation's own: the tagging surface acts on
-/// either, while the resource-policy surface is documented for an entity and
-/// acts on that alone
+/// change set)", and [`entity_arn`] / [`change_set_arn`] / [`assessment_arn`]
+/// write all three in the one form `<catalog>/<type>/<id>`, so one parse covers
+/// them. Which KINDS an operation then acts on is the operation's own: the
+/// tagging surface acts on any resource that CARRIES tags — an assessment does,
+/// since `StartAssessmentRequest$Tags` applies tags to the assessment it starts
+/// — while the resource-policy surface is documented for an entity and acts on
+/// that alone
 /// ([`ComAmazonawsMarketplacecatalogAwsmpseymourState::policy_key_for`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CatalogResource {
@@ -225,13 +227,17 @@ pub enum CatalogResource {
     Entity { entity_type: String, id: String },
     /// A change set, by its `ResourceId`.
     ChangeSet { id: String },
+    /// An assessment, by its `ResourceId`.
+    Assessment { id: String },
 }
 
 impl CatalogResource {
     /// The id the ARN named — what a `ResourceNotFoundException` for it names.
     pub fn id(&self) -> &str {
         match self {
-            Self::Entity { id, .. } | Self::ChangeSet { id } => id.as_str(),
+            Self::Entity { id, .. } | Self::ChangeSet { id } | Self::Assessment { id } => {
+                id.as_str()
+            }
         }
     }
 
@@ -246,7 +252,7 @@ impl CatalogResource {
     pub fn policy_key(&self) -> Option<String> {
         match self {
             Self::Entity { entity_type, id } => Some(format!("{entity_type}/{id}")),
-            Self::ChangeSet { .. } => None,
+            Self::ChangeSet { .. } | Self::Assessment { .. } => None,
         }
     }
 }
@@ -380,13 +386,13 @@ pub fn parse_resource_arn(arn: &str) -> Option<CatalogResource> {
     if id.is_empty() {
         return None;
     }
-    Some(if resource_type == CHANGE_SET_RESOURCE_TYPE {
-        CatalogResource::ChangeSet { id: id.to_string() }
-    } else {
-        CatalogResource::Entity {
-            entity_type: resource_type.to_string(),
+    Some(match resource_type {
+        CHANGE_SET_RESOURCE_TYPE => CatalogResource::ChangeSet { id: id.to_string() },
+        ASSESSMENT_ARN_RESOURCE_TYPE => CatalogResource::Assessment { id: id.to_string() },
+        entity_type => CatalogResource::Entity {
+            entity_type: entity_type.to_string(),
             id: id.to_string(),
-        }
+        },
     })
 }
 
