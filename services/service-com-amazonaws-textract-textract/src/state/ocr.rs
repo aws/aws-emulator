@@ -394,6 +394,47 @@ const CUT_COST: f32 = 0.2;
 /// for is the clear improvement that separating two letters really gives.
 const CUT_GAIN: f32 = 0.01;
 
+/// How far past the column a run is cut at, in its line's capital heights, a piece's own
+/// strokes are followed for the ink they continue into ([`Ink::piece_in`]): about a quarter
+/// of a character's width, which is as far as the bar of a `T`, the arm of an `L` or the
+/// crossbar of a `t` reaches over the character beside it.
+const OVERHANG_REACH: f32 = 0.25;
+
+/// How thick a run of inked rows may be, in its line's capital heights, to be a STROKE that
+/// reaches over the character beside it ([`Ink::piece_in`]): the bar of a `T`, the arm of an
+/// `L` or the hook of a `J` is a stroke of a face at any weight, while the stem, the bowl or
+/// the diagonal a column of a character's own BODY crosses is thicker than this and reaches
+/// over nothing.
+const OVERHANG_THICK: f32 = 0.3;
+
+/// How much better a PIECE of a cut run must agree with a character over its OWN ink than
+/// over that ink together with the stroke the cut severed for the piece to be named over its
+/// own ink alone ([`name_piece`]).
+///
+/// A margin rather than a hair: a character whose own stroke runs on over the columns of the
+/// one beside it — the bar of a `T`, the arm of an `L` — is complete inside its own columns
+/// and agrees with its character clearly better there than it does with the ink of its
+/// neighbour taken in as well, while a character whose stroke the cut cut short agrees with
+/// the character the rest of it is shaped like about as well as the whole of its stroke
+/// agrees with its own.
+const SEVERED_STROKE_MARGIN: f32 = 0.05;
+
+/// How closely a mark of PUNCTUATION must be named for a division of a run that is itself
+/// named as a letter or a figure to leave it ([`LookInside::punctuation`]): the ink must be
+/// that mark rather than merely be shaped a little like it.
+const PUNCTUATION_PIECE_MATCH: f32 = 0.78;
+
+/// How much better than the whole run's own name a mark of PUNCTUATION a division of it
+/// leaves must be named, beside [`PUNCTUATION_PIECE_MATCH`].
+///
+/// A letter whose own strokes a division would cut into the punctuation they are shaped like
+/// — the two diagonals of an `X`, the arcs of an `S`, the bowl and tail of a `g` — is named
+/// as that letter about as well as those pieces are named as their marks, while a figure set
+/// tight against a mark the page really drew — a point inside an amount, a solidus inside a
+/// date — leaves a mark whose ink agrees with it a clear margin better than the joined ink
+/// agreed with any one character.
+const PUNCTUATION_PIECE_GAIN: f32 = 0.12;
+
 /// How much better than the run's OWN name every piece of a cut must be named for a run no
 /// wider than one character of its line to be cut at all.
 ///
@@ -1575,6 +1616,158 @@ impl Ink {
             .sum()
     }
 
+    /// The ink one PIECE of the run `within` is named from: the ink of its own columns
+    /// `x0..=x1`, together with the ink of the STROKES that cross either end of it and belong
+    /// to it, as far as `reach` columns of the rest of the run.
+    ///
+    /// A cut down a column separates two characters whose strokes touch, and a face sets
+    /// characters whose strokes reach over their neighbour's columns — the bar of a `T`, the
+    /// arm of an `L`, the hook of a `J` — so the column a cut is taken at leaves part of one
+    /// character's own stroke standing in the other's columns. That stroke belongs to the
+    /// character it is part of: a piece is therefore named over it as well, or the ink of a
+    /// `T` whose bar was cut short is read as the character the rest of it is shaped like.
+    ///
+    /// What is followed is a STROKE and only a stroke: a run of inked rows no thicker than
+    /// `follow`'s own measure, carried on column by column through the rows it reaches — its
+    /// own rows and their immediate neighbours, since a stroke drawn at a slant moves a row
+    /// per column — and dropped where the ink it reaches is no stroke but the BODY of a
+    /// character, which reaches over nothing: a stem, a bowl or a diagonal standing at the cut
+    /// is the piece's own ink up to the cut and no further, so the character beside it is not
+    /// measured as part of it. `None` when the piece's own columns carry no ink at all.
+    fn piece_in(
+        &self,
+        x0: usize,
+        x1: usize,
+        within: &GlyphBox,
+        band: &InkLine,
+        follow: Follow,
+    ) -> Option<Region> {
+        let right = x1.min(self.width.saturating_sub(1));
+        let bottom = band.bottom.min(self.height.saturating_sub(1));
+        if x0 > right || band.top > bottom {
+            return None;
+        }
+        let mut pixels: Vec<(usize, usize)> = Vec::new();
+        for y in band.top..=bottom {
+            for x in x0..=right {
+                if self.at(x, y) {
+                    pixels.push((x, y));
+                }
+            }
+        }
+        if pixels.is_empty() {
+            return None;
+        }
+        // Each end of the piece, and the way out of it: a stroke that stands in the column
+        // beyond that end, against the piece's own ink there, is followed out as far as its
+        // own ink runs on. It is the ink of the column BEYOND that has to be a stroke rather
+        // than the piece's own, because the cut can fall anywhere across a character: the
+        // crossbar of a `t` set tight against the letter after it runs on past the stem the
+        // cut leaves standing at the piece's edge.
+        for (edge, outward, limit) in [(x0, -1isize, within.x0), (right, 1isize, within.x1)] {
+            let beyond = if outward < 0 {
+                edge.checked_sub(1).filter(|next| *next >= limit)
+            } else {
+                (edge < limit && edge + 1 < self.width).then_some(edge + 1)
+            };
+            let Some(beyond) = beyond else {
+                continue;
+            };
+            let own = self.row_runs(edge, band.top, bottom);
+            for stroke in self.row_runs(beyond, band.top, bottom) {
+                if stroke.1 + 1 - stroke.0 > follow.thick {
+                    continue;
+                }
+                // Against the piece's own ink at its edge: a stroke that stands clear of it
+                // is another character's, not the continuation of one of this piece's.
+                if !own
+                    .iter()
+                    .any(|(above, below)| stroke.0 <= below + 1 && *above <= stroke.1 + 1)
+                {
+                    continue;
+                }
+                pixels.extend((stroke.0..=stroke.1).map(|y| (beyond, y)));
+                pixels.extend(
+                    self.along_stroke(
+                        beyond,
+                        stroke,
+                        outward,
+                        limit,
+                        (band.top, bottom),
+                        follow.one_column_in(),
+                    )
+                    .0,
+                );
+            }
+        }
+        Some(Region::of(&pixels))
+    }
+
+    /// The ink the stroke `rows` of column `from` runs on into, stepping `step` columns at a
+    /// time: the pixels found and how many columns it was followed over.
+    ///
+    /// The walk stops at `limit`, after `follow`'s own reach of columns, where the next column
+    /// carries no ink in the rows the stroke reaches, and where the ink it reaches there is
+    /// thicker than a stroke — see [`Self::piece_in`].
+    fn along_stroke(
+        &self,
+        from: usize,
+        rows: (usize, usize),
+        step: isize,
+        limit: usize,
+        (top, bottom): (usize, usize),
+        follow: Follow,
+    ) -> (Vec<(usize, usize)>, usize) {
+        let mut found: Vec<(usize, usize)> = Vec::new();
+        let mut held = rows;
+        let mut at = from;
+        let mut steps = 0usize;
+        for _ in 0..follow.reach {
+            let next = match step {
+                step if step < 0 => match at.checked_sub(1) {
+                    Some(next) if next >= limit => next,
+                    _ => break,
+                },
+                _ if at < limit && at + 1 < self.width => at + 1,
+                _ => break,
+            };
+            let Some(along) = self
+                .row_runs(next, top, bottom)
+                .into_iter()
+                .filter(|(from, to)| to + 1 - from <= follow.thick)
+                .find(|(from, to)| *from <= held.1 + 1 && held.0 <= to + 1)
+            else {
+                break;
+            };
+            found.extend((along.0..=along.1).map(|y| (next, y)));
+            held = along;
+            at = next;
+            steps += 1;
+        }
+        (found, steps)
+    }
+
+    /// The contiguous runs of INKED ROWS column `x` carries inside `top..=bottom`, each as
+    /// `(first, last)`: the strokes of the characters that column crosses.
+    fn row_runs(&self, x: usize, top: usize, bottom: usize) -> Vec<(usize, usize)> {
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        let mut from: Option<usize> = None;
+        for y in top..=bottom {
+            match (self.at(x, y), from) {
+                (true, None) => from = Some(y),
+                (false, Some(start)) => {
+                    runs.push((start, y - 1));
+                    from = None;
+                }
+                _ => {}
+            }
+        }
+        if let Some(start) = from {
+            runs.push((start, bottom));
+        }
+        runs
+    }
+
     /// The CONNECTED regions of `run`'s ink inside `band`, in reading order: the marks its
     /// ink really falls into.
     ///
@@ -1891,6 +2084,36 @@ struct InkLine {
     glyphs: Vec<GlyphBox>,
 }
 
+/// How far a STROKE that crosses a cut is followed, and what still counts as a stroke: the
+/// measure [`Ink::piece_in`] reads a piece's ink by, in the pixels of the line it is on.
+#[derive(Debug, Clone, Copy)]
+struct Follow {
+    /// How many columns past the cut the stroke is followed: see [`OVERHANG_REACH`].
+    reach: usize,
+    /// How many rows of ink one column of it may carry and still be a stroke rather than the
+    /// body of a character: see [`OVERHANG_THICK`].
+    thick: usize,
+}
+
+impl Follow {
+    /// What a line of capital height `cap` follows a stroke by.
+    fn of(cap: f32) -> Self {
+        Self {
+            reach: (OVERHANG_REACH * cap).round().max(0.0) as usize,
+            thick: (OVERHANG_THICK * cap).round().max(1.0) as usize,
+        }
+    }
+
+    /// The same measure one column further on: what is left of the reach once the column
+    /// beyond the cut has been taken.
+    fn one_column_in(self) -> Self {
+        Self {
+            reach: self.reach.saturating_sub(1),
+            ..self
+        }
+    }
+}
+
 /// One CONNECTED region of a run's ink: the box it occupies, and which pixels of that box
 /// its own strokes reach.
 ///
@@ -2053,11 +2276,18 @@ fn settle(
             // letters and figures: a run the recogniser names as one of those is a letter
             // of the line's text, and a letter does not divide into the marks of
             // PUNCTUATION its own strokes are shaped like — the two diagonals of an `X`,
-            // the arcs of an `S`, the bowl and tail of a `g`. A run that names punctuation
-            // itself, or names nothing at all, is ink of another kind and may be cut into
-            // whatever its pieces are: a figure set tight against a currency sign, a letter
-            // against a bracket.
-            letters: !wide || names_a_character_of_a_word(&whole),
+            // the arcs of an `S`, the bowl and tail of a `g` — unless the ink of such a mark
+            // really is one, which is what a close name a clear margin better than the whole
+            // run's own says ([`PUNCTUATION_PIECE_MATCH`], [`PUNCTUATION_PIECE_GAIN`]): a
+            // figure set tight against a point or a solidus the page drew leaves exactly
+            // that. A run that names punctuation itself, or names nothing at all, is ink of
+            // another kind and may be divided into whatever its pieces are.
+            punctuation: if names_a_character_of_a_word(&whole) {
+                (whole.named.map_or(0.0, |found| found.score) + PUNCTUATION_PIECE_GAIN)
+                    .max(PUNCTUATION_PIECE_MATCH)
+            } else {
+                0.0
+            },
             settles: (!wide).then_some(index),
             regions: wide || weak,
         };
@@ -2074,6 +2304,16 @@ fn names_a_character_of_a_word(mark: &Settled) -> bool {
     })
 }
 
+/// Whether `mark` is a character a division of a run may leave: a letter or a figure, or a
+/// mark of punctuation whose ink really is that mark ([`LookInside::punctuation`]).
+fn divides_into(mark: &Settled, punctuation: f32) -> bool {
+    match mark.named {
+        Some(found) if found.ch.is_ascii_alphanumeric() => true,
+        Some(found) => found.score >= punctuation,
+        None => punctuation <= 0.0,
+    }
+}
+
 /// Which readings of a run of ink the segmentation takes beside the run as it stands: the
 /// cuts through the places its ink narrows, the run's own connected regions, or neither.
 #[derive(Debug, Clone, Copy)]
@@ -2083,14 +2323,19 @@ struct LookInside {
     cuts: usize,
     /// How well every piece of a cut must be named for that cut to be taken at all.
     floor: f32,
-    /// Whether every piece of a cut must be a LETTER OR A FIGURE for that cut to be taken.
+    /// Whether every piece of a division must be a LETTER OR A FIGURE, and how closely a
+    /// piece that is neither must be named for the division to be taken anyway.
     ///
-    /// What a cut separates is two characters of a word, and the words of a page are set with
-    /// letters and figures: ink that cuts into the marks of PUNCTUATION its halves are shaped
-    /// like — the diagonals of a `V`, the arcs of an `s`, the bowl and tail of a `g` — is one
-    /// character, which is what it stays. Asked of a run no wider than one character of its
-    /// line, where the only evidence of two characters is what the pieces are named.
-    letters: bool,
+    /// What a division separates is two characters of a word, and the words of a page are set
+    /// with letters and figures: ink that divides into the marks of PUNCTUATION its pieces are
+    /// shaped like — the diagonals of a `V`, the arcs of an `s`, the bowl and tail of a `g` —
+    /// is one character, which is what it stays. A page sets punctuation of its own too, and
+    /// sets it tight against the figures and letters beside it, so a piece that is a mark of
+    /// punctuation is admitted where its ink really is that mark: it has to be named this
+    /// closely, which is a clear margin better than the whole run was named as the character
+    /// it is not ([`PUNCTUATION_PIECE_MATCH`], [`PUNCTUATION_PIECE_GAIN`]). Zero admits any
+    /// piece, which is what a run that names no character of a word is divided under.
+    punctuation: f32,
     /// The run this look is into, where a cut taken here SETTLES that run's characters, so
     /// that [`join`] does not weigh its pieces against each other again: `Some` where the
     /// cut would be taken on the strength of the pieces' own names rather than on the run's
@@ -2128,6 +2373,63 @@ fn name_region(
         named: glyphs::recognise_region(ink, region.glyph, line, &|x, y| region.holds(x, y)),
         ink: ink.ink_in_region(region),
         glyph: region.glyph,
+        piece: None,
+    })
+}
+
+/// Name one PIECE a cut leaves of the run `within`: the mark the piece's own columns hold,
+/// named over the ink its strokes continue into past the cut as well ([`Ink::piece_in`]).
+///
+/// What the piece is WORTH to the segmentation is still measured over the ink of its own
+/// columns, and the rectangle it reports is still that ink's: the continuation says which
+/// character the piece is, not how much of the run it accounts for, so a cut cannot win by
+/// counting the ink either side of it twice.
+///
+/// Which of the two readings names the piece: the one that takes in the crossing stroke,
+/// since the stroke a cut severed is part of the character it was cut from — unless the
+/// piece's OWN ink agrees with a character a clear margin better ([`SEVERED_STROKE_MARGIN`]),
+/// which is what the ink beside a complete character says. A `T` whose bar runs on into the
+/// letter after it is a complete `T` either way and agrees with it best over its own ink,
+/// while a `T` whose bar was cut short agrees with the character the rest of it is shaped
+/// like no better than the whole of its bar agrees with a `T`. Where the piece's own ink
+/// leaves the reading OPEN — a bare stem, which is what a severed cross-stroke leaves — the
+/// crossing stroke settles it.
+fn name_piece(
+    ink: &Ink,
+    glyph: GlyphBox,
+    within: &GlyphBox,
+    band: &InkLine,
+    line: glyphs::Line,
+    budget: &mut Budget,
+) -> Result<Settled, Unreadable> {
+    budget.spend()?;
+    let own = glyphs::recognise(ink, &glyph, line);
+    let crossing = ink
+        .piece_in(glyph.x0, glyph.x1, within, band, Follow::of(line.cap))
+        .filter(|piece| piece.glyph.width() > glyph.width())
+        .and_then(|piece| {
+            glyphs::recognise_region(ink, piece.glyph, line, &|x, y| piece.holds(x, y))
+        });
+    let named = match (own, crossing) {
+        // A piece whose own ink is a BARE STEM is the ink of several characters at once, and
+        // the ink of one whose cross-stroke the cut severed is a bare stem too: so where the
+        // stroke that crosses the cut names a character, that is what the piece is. A piece
+        // that names a character with a stroke of its own keeps that reading unless taking
+        // the crossing stroke in agrees as closely ([`SEVERED_STROKE_MARGIN`]).
+        (Some(own), Some(crossing))
+            if glyphs::STEMS.contains(&own.ch)
+                || own.open
+                || own.score <= crossing.score + SEVERED_STROKE_MARGIN =>
+        {
+            Some(crossing)
+        }
+        (Some(own), _) => Some(own),
+        (None, crossing) => crossing,
+    };
+    Ok(Settled {
+        named,
+        ink: ink.ink_in(&glyph),
+        glyph,
         piece: None,
     })
 }
@@ -2186,13 +2488,12 @@ fn cut_apart(
         // A run the recogniser names as a letter or a figure is a character of the line's
         // own text, and such a character does not divide into the marks of PUNCTUATION its
         // own strokes are shaped like — whether it divides at a narrowing of its ink or at a
-        // break in it. So where a cut of this run would have to leave letters and figures
-        // ([`LookInside::letters`]), so must a reading by its regions: the two diagonals an
-        // `X` falls into when its crossing thins out are no two characters of a word.
-        if look.letters
-            && !regions
-                .iter()
-                .all(|region| region.named.is_some_and(|f| f.ch.is_ascii_alphanumeric()))
+        // break in it. So where a cut of this run would have to leave characters of a word
+        // ([`LookInside::punctuation`]), so must a reading by its regions: the two diagonals
+        // an `X` falls into when its crossing thins out are no two characters of a word.
+        if !regions
+            .iter()
+            .all(|region| divides_into(region, look.punctuation))
         {
             regions.clear();
         }
@@ -2244,16 +2545,14 @@ fn cut_apart(
                 if (piece.height() as f32) < MIN_PIECE_HEIGHT * line.cap {
                     continue;
                 }
-                let piece = name(ink, piece, line, budget)?;
+                let piece = name_piece(ink, piece, &run, band, line, budget)?;
                 // A cut separates two characters of this line, and a character of this line
-                // is named as well as the line's own marks are, and is a letter or a figure
-                // where the cut is taken on the naming alone: a piece that is neither is no
-                // character of a word, so the cut that would leave it is not taken (see
-                // [`LookInside::floor`] and [`LookInside::letters`]).
-                let character = piece.named.is_some_and(|found| {
-                    found.score >= look.floor
-                        && (!look.letters || found.ch.is_ascii_alphanumeric())
-                });
+                // is named as well as the line's own marks are, and is a character a word is
+                // set with where the cut is taken on the naming alone: a piece that is
+                // neither is no character of a word, so the cut that would leave it is not
+                // taken (see [`LookInside::floor`] and [`LookInside::punctuation`]).
+                let character = piece.named.is_some_and(|found| found.score >= look.floor)
+                    && divides_into(&piece, look.punctuation);
                 if !character {
                     continue;
                 }
@@ -3272,6 +3571,11 @@ impl Separators {
 
 #[cfg(test)]
 mod probe;
+
+/// The ink one piece of a cut run is named from: the stroke the cut severed.
+#[cfg(test)]
+#[path = "ocr/trial.rs"]
+mod severed_strokes;
 
 /// Reading the characters of a token off a page set in a proportional face.
 #[cfg(test)]
