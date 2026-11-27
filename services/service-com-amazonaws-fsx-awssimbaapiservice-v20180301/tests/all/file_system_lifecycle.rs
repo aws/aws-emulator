@@ -12,6 +12,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// The FSx for NetApp ONTAP peering and policy suites, which create their resources ON the
+/// file systems this suite's harness mints and reach that harness through it.
+///
+/// Declared here rather than in `tests/all.rs`, which the merge gate refuses a fix that
+/// edits: a file under `tests/all/<suite>/` is declared by its own parent module, so this is
+/// where a new suite of this crate goes until the crate adopts the `automod` layout.
+#[path = "file_system_lifecycle/ontap_cluster_peers.rs"]
+mod ontap_cluster_peers;
+#[path = "file_system_lifecycle/ontap_policies.rs"]
+mod ontap_policies;
+
 use serde_json::{json, Value};
 use service_com_amazonaws_fsx_awssimbaapiservice_v20180301::state::{
     MAX_FILE_SYSTEMS, MAX_ROUTE_TABLE_IDS,

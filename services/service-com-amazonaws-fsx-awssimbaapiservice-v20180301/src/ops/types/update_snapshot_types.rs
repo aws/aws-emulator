@@ -15,8 +15,17 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-fsx-awssimbaapiservice-
 #[derive(Debug, Clone, Default)]
 pub struct UpdateSnapshotInput {
     pub client_request_token: Option<String>,
-    pub name: String,
+    pub name: Option<String>,
     pub snapshot_id: String,
+    pub ontap_configuration: Option<UpdateOntapSnapshotConfiguration>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#UpdateOntapSnapshotConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct UpdateOntapSnapshotConfiguration {
+    pub snapmirror_label: Option<String>,
+    pub expiry_time: Option<::aws_smithy_types::DateTime>,
+    pub snaplock_expiry_time: Option<::aws_smithy_types::DateTime>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.fsx#UpdateSnapshotResponse")]

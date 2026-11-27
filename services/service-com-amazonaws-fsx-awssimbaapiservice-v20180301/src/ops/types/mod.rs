@@ -20,23 +20,34 @@ pub mod copy_backup_types;
 pub mod copy_snapshot_and_update_volume_types;
 pub mod create_and_attach_s3_access_point_types;
 pub mod create_backup_types;
+pub mod create_cluster_peer_types;
 pub mod create_data_repository_association_types;
 pub mod create_data_repository_task_types;
 pub mod create_file_cache_types;
 pub mod create_file_system_from_backup_types;
 pub mod create_file_system_types;
+pub mod create_snapmirror_policy_types;
+pub mod create_snapmirror_relationship_types;
+pub mod create_snapshot_policy_types;
 pub mod create_snapshot_types;
+pub mod create_storage_virtual_machine_peer_types;
 pub mod create_storage_virtual_machine_types;
 pub mod create_volume_from_backup_types;
 pub mod create_volume_types;
 pub mod delete_backup_types;
+pub mod delete_cluster_peer_types;
 pub mod delete_data_repository_association_types;
 pub mod delete_file_cache_types;
 pub mod delete_file_system_types;
+pub mod delete_snapmirror_policy_types;
+pub mod delete_snapmirror_relationship_types;
+pub mod delete_snapshot_policy_types;
 pub mod delete_snapshot_types;
+pub mod delete_storage_virtual_machine_peer_types;
 pub mod delete_storage_virtual_machine_types;
 pub mod delete_volume_types;
 pub mod describe_backups_types;
+pub mod describe_cluster_peers_types;
 pub mod describe_data_repository_associations_types;
 pub mod describe_data_repository_tasks_types;
 pub mod describe_file_caches_types;
@@ -44,7 +55,11 @@ pub mod describe_file_system_aliases_types;
 pub mod describe_file_systems_types;
 pub mod describe_s3_access_point_attachments_types;
 pub mod describe_shared_vpc_configuration_types;
+pub mod describe_snapmirror_policies_types;
+pub mod describe_snapmirror_relationships_types;
+pub mod describe_snapshot_policies_types;
 pub mod describe_snapshots_types;
+pub mod describe_storage_virtual_machine_peers_types;
 pub mod describe_storage_virtual_machines_types;
 pub mod describe_volumes_types;
 pub mod detach_and_delete_s3_access_point_types;
@@ -56,11 +71,16 @@ pub mod shared_types;
 pub mod start_misconfigured_state_recovery_types;
 pub mod tag_resource_types;
 pub mod untag_resource_types;
+pub mod update_cluster_peer_types;
 pub mod update_data_repository_association_types;
 pub mod update_file_cache_types;
 pub mod update_file_system_types;
 pub mod update_shared_vpc_configuration_types;
+pub mod update_snapmirror_policy_types;
+pub mod update_snapmirror_relationship_types;
+pub mod update_snapshot_policy_types;
 pub mod update_snapshot_types;
+pub mod update_storage_virtual_machine_peer_types;
 pub mod update_storage_virtual_machine_types;
 pub mod update_volume_types;
 
@@ -77,6 +97,8 @@ pub use create_and_attach_s3_access_point_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_backup_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_cluster_peer_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_data_repository_association_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_data_repository_task_types::*;
@@ -87,7 +109,15 @@ pub use create_file_system_from_backup_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_file_system_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_snapmirror_policy_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_snapmirror_relationship_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_snapshot_policy_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_snapshot_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_storage_virtual_machine_peer_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_storage_virtual_machine_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -97,19 +127,31 @@ pub use create_volume_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_backup_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_cluster_peer_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_data_repository_association_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_file_cache_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_file_system_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_snapmirror_policy_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_snapmirror_relationship_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_snapshot_policy_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_snapshot_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_storage_virtual_machine_peer_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_storage_virtual_machine_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_volume_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_backups_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use describe_cluster_peers_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_data_repository_associations_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -125,7 +167,15 @@ pub use describe_s3_access_point_attachments_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_shared_vpc_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use describe_snapmirror_policies_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use describe_snapmirror_relationships_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use describe_snapshot_policies_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_snapshots_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use describe_storage_virtual_machine_peers_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_storage_virtual_machines_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -149,6 +199,8 @@ pub use tag_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use untag_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_cluster_peer_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_data_repository_association_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_file_cache_types::*;
@@ -157,7 +209,15 @@ pub use update_file_system_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_shared_vpc_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_snapmirror_policy_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_snapmirror_relationship_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_snapshot_policy_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_snapshot_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_storage_virtual_machine_peer_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_storage_virtual_machine_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

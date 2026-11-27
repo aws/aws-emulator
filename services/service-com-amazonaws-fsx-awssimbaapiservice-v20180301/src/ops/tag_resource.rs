@@ -163,7 +163,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ResourceLookup::FileSystem(id)
             | ResourceLookup::Backup(id)
             | ResourceLookup::Volume(id)
-            | ResourceLookup::DataRepositoryAssociation(id) => id.clone(),
+            | ResourceLookup::DataRepositoryAssociation(id)
+            | ResourceLookup::ClusterPeer(id)
+            | ResourceLookup::SnapmirrorPolicy(id)
+            | ResourceLookup::SnapshotPolicy(id) => id.clone(),
             ResourceLookup::NotFound(resource_id) => {
                 return Err(TagResourceErrorModeled::ResourceNotFound(ResourceNotFound {
                     resource_arn: input.resource_arn.clone(),

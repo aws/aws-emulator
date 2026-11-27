@@ -295,6 +295,7 @@ pub struct OntapVolumeConfiguration {
     pub volume_style: Option<String>,
     pub aggregate_configuration: Option<AggregateConfiguration>,
     pub size_in_bytes: Option<i64>,
+    pub clone_configuration: Option<CloneConfiguration>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.fsx#TieringPolicy")]
@@ -344,10 +345,25 @@ pub struct AggregateConfiguration {
     pub total_constituents: Option<i32>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#CloneConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct CloneConfiguration {
+    pub parent_volume_id: Option<String>,
+    pub snapshot_id: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.fsx#LifecycleTransitionReason")]
 #[derive(Debug, Clone, Default)]
 pub struct LifecycleTransitionReason {
     pub message: Option<String>,
+    pub ontap_error: Option<OntapError>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#OntapError")]
+#[derive(Debug, Clone, Default)]
+pub struct OntapError {
+    pub message: Option<String>,
+    pub code: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.fsx#OpenZFSVolumeConfiguration")]
@@ -410,9 +426,21 @@ pub struct Snapshot {
     pub volume_id: Option<String>,
     pub creation_time: Option<::aws_smithy_types::DateTime>,
     pub lifecycle: Option<String>,
+    pub snapshot_type: Option<String>,
     pub lifecycle_transition_reason: Option<LifecycleTransitionReason>,
     pub tags: Option<Vec<Tag>>,
     pub administrative_actions: Option<Vec<AdministrativeAction>>,
+    pub ontap_configuration: Option<OntapSnapshotConfiguration>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#OntapSnapshotConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct OntapSnapshotConfiguration {
+    pub size_in_megabytes: Option<i64>,
+    pub snapmirror_label: Option<String>,
+    pub expiry_time: Option<::aws_smithy_types::DateTime>,
+    pub snaplock_expiry_time: Option<::aws_smithy_types::DateTime>,
+    pub uuid: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.fsx#OntapFileSystemConfiguration")]
@@ -591,6 +619,32 @@ pub struct VolumeNotFound {
 #[derive(Debug, Clone, Default)]
 pub struct BackupInProgress {
     pub message: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#ClusterPeer")]
+#[derive(Debug, Clone, Default)]
+pub struct ClusterPeer {
+    pub resource_arn: Option<String>,
+    pub cluster_peer_id: Option<String>,
+    pub file_system_id: Option<String>,
+    pub lifecycle: Option<String>,
+    pub lifecycle_transition_reason: Option<LifecycleTransitionReason>,
+    pub tags: Option<Vec<Tag>>,
+    pub peer_addresses: Option<Vec<String>>,
+    pub peer_cluster_name: Option<String>,
+    pub passphrase_secret_arn: Option<String>,
+    pub allowed_svm_mode: Option<String>,
+    pub allowed_svm_ids: Option<Vec<String>>,
+    pub status: Option<String>,
+    pub uuid: Option<String>,
+    pub authentication_status: Option<ClusterPeerAuthenticationStatus>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#ClusterPeerAuthenticationStatus")]
+#[derive(Debug, Clone, Default)]
+pub struct ClusterPeerAuthenticationStatus {
+    pub state: Option<String>,
+    pub in_use: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.fsx#S3DataRepositoryConfiguration")]
@@ -863,6 +917,134 @@ pub struct MissingFileSystemConfiguration {
     pub message: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#SnapmirrorPolicyRetentionRule")]
+#[derive(Debug, Clone, Default)]
+pub struct SnapmirrorPolicyRetentionRule {
+    pub label: String,
+    pub count: i32,
+    pub creation_schedule: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#SnapmirrorPolicy")]
+#[derive(Debug, Clone, Default)]
+pub struct SnapmirrorPolicy {
+    pub resource_arn: Option<String>,
+    pub snapmirror_policy_id: Option<String>,
+    pub file_system_id: Option<String>,
+    pub storage_virtual_machine_id: Option<String>,
+    pub name: Option<String>,
+    pub snapshot_copy_mode: Option<String>,
+    pub retention_rules: Option<Vec<SnapmirrorPolicyRetentionRule>>,
+    pub transfer_schedule: Option<String>,
+    pub network_compression_enabled: Option<bool>,
+    pub throttle_in_kbps: Option<i64>,
+    pub scope: Option<String>,
+    pub lifecycle: Option<String>,
+    pub uuid: Option<String>,
+    pub lifecycle_transition_reason: Option<LifecycleTransitionReason>,
+    pub tags: Option<Vec<Tag>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#StorageVirtualMachineNotFound")]
+#[derive(Debug, Clone, Default)]
+pub struct StorageVirtualMachineNotFound {
+    pub message: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#SnapmirrorRelationship")]
+#[derive(Debug, Clone, Default)]
+pub struct SnapmirrorRelationship {
+    pub resource_arn: Option<String>,
+    pub snapmirror_relationship_id: Option<String>,
+    pub file_system_id: Option<String>,
+    pub lifecycle: Option<String>,
+    pub lifecycle_transition_reason: Option<LifecycleTransitionReason>,
+    pub tags: Option<Vec<Tag>>,
+    pub source: Option<SnapmirrorSource>,
+    pub destination: Option<SnapmirrorDestination>,
+    pub snapmirror_policy: Option<SnapmirrorRelationshipPolicy>,
+    pub transfer_schedule: Option<String>,
+    pub throttle_in_kbps: Option<i64>,
+    pub state: Option<String>,
+    pub healthy: Option<bool>,
+    pub unhealthy_reason: Option<String>,
+    pub lag_time_in_minutes: Option<i64>,
+    pub exported_snapshot: Option<SnapmirrorExportedSnapshot>,
+    pub transfer_state: Option<SnapmirrorTransferState>,
+    pub uuid: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#SnapmirrorSource")]
+#[derive(Debug, Clone, Default)]
+pub struct SnapmirrorSource {
+    pub path: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#SnapmirrorDestination")]
+#[derive(Debug, Clone, Default)]
+pub struct SnapmirrorDestination {
+    pub path: Option<String>,
+    pub volume_id: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#SnapmirrorRelationshipPolicy")]
+#[derive(Debug, Clone, Default)]
+pub struct SnapmirrorRelationshipPolicy {
+    pub policy_id: Option<String>,
+    pub policy_name: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#SnapmirrorExportedSnapshot")]
+#[derive(Debug, Clone, Default)]
+pub struct SnapmirrorExportedSnapshot {
+    pub snapshot_id: Option<String>,
+    pub snapshot_name: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#SnapmirrorTransferState")]
+#[derive(Debug, Clone, Default)]
+pub struct SnapmirrorTransferState {
+    pub state: Option<String>,
+    pub r#type: Option<String>,
+    pub bytes_transferred: Option<i64>,
+    pub duration: Option<String>,
+    pub end_time: Option<::aws_smithy_types::DateTime>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#SnapshotPolicySchedule")]
+#[derive(Debug, Clone, Default)]
+pub struct SnapshotPolicySchedule {
+    pub name: String,
+    pub count: i32,
+    pub prefix: Option<String>,
+    pub snapmirror_label: Option<String>,
+    pub retention_period: Option<SnapshotPolicyRetentionPeriod>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#SnapshotPolicyRetentionPeriod")]
+#[derive(Debug, Clone, Default)]
+pub struct SnapshotPolicyRetentionPeriod {
+    pub r#type: String,
+    pub value: Option<i32>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#SnapshotPolicy")]
+#[derive(Debug, Clone, Default)]
+pub struct SnapshotPolicy {
+    pub resource_arn: Option<String>,
+    pub snapshot_policy_id: Option<String>,
+    pub file_system_id: Option<String>,
+    pub storage_virtual_machine_id: Option<String>,
+    pub name: Option<String>,
+    pub enabled: Option<bool>,
+    pub schedules: Option<Vec<SnapshotPolicySchedule>>,
+    pub scope: Option<String>,
+    pub lifecycle: Option<String>,
+    pub uuid: Option<String>,
+    pub lifecycle_transition_reason: Option<LifecycleTransitionReason>,
+    pub tags: Option<Vec<Tag>>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.fsx#StorageVirtualMachine")]
 #[derive(Debug, Clone, Default)]
 pub struct StorageVirtualMachine {
@@ -905,6 +1087,24 @@ pub struct SvmEndpoint {
     pub ipv6_addresses: Option<Vec<String>>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#StorageVirtualMachinePeer")]
+#[derive(Debug, Clone, Default)]
+pub struct StorageVirtualMachinePeer {
+    pub resource_arn: Option<String>,
+    pub storage_virtual_machine_peer_id: Option<String>,
+    pub storage_virtual_machine_id: Option<String>,
+    pub file_system_id: Option<String>,
+    pub lifecycle: Option<String>,
+    pub lifecycle_transition_reason: Option<LifecycleTransitionReason>,
+    pub tags: Option<Vec<Tag>>,
+    pub peer_svm_name: Option<String>,
+    pub peer_svm_alias: Option<String>,
+    pub peer_cluster_name: Option<String>,
+    pub applications: Option<Vec<String>>,
+    pub state: Option<String>,
+    pub uuid: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.fsx#CreateOntapVolumeConfiguration")]
 #[derive(Debug, Clone, Default)]
 pub struct CreateOntapVolumeConfiguration {
@@ -921,6 +1121,7 @@ pub struct CreateOntapVolumeConfiguration {
     pub volume_style: Option<String>,
     pub aggregate_configuration: Option<CreateAggregateConfiguration>,
     pub size_in_bytes: Option<i64>,
+    pub clone_configuration: Option<CreateCloneConfiguration>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.fsx#CreateSnaplockConfiguration")]
@@ -941,15 +1142,22 @@ pub struct CreateAggregateConfiguration {
     pub constituents_per_aggregate: Option<i32>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#CreateCloneConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct CreateCloneConfiguration {
+    pub parent_volume_id: String,
+    pub snapshot_id: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.fsx#MissingVolumeConfiguration")]
 #[derive(Debug, Clone, Default)]
 pub struct MissingVolumeConfiguration {
     pub message: Option<String>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.fsx#StorageVirtualMachineNotFound")]
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#ClusterPeerNotFound")]
 #[derive(Debug, Clone, Default)]
-pub struct StorageVirtualMachineNotFound {
+pub struct ClusterPeerNotFound {
     pub message: Option<String>,
 }
 
@@ -965,9 +1173,33 @@ pub struct FileCacheNotFound {
     pub message: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#SnapmirrorPolicyNotFound")]
+#[derive(Debug, Clone, Default)]
+pub struct SnapmirrorPolicyNotFound {
+    pub message: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#SnapmirrorRelationshipNotFound")]
+#[derive(Debug, Clone, Default)]
+pub struct SnapmirrorRelationshipNotFound {
+    pub message: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.fsx#SnapshotNotFound")]
 #[derive(Debug, Clone, Default)]
 pub struct SnapshotNotFound {
+    pub message: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#SnapshotPolicyNotFound")]
+#[derive(Debug, Clone, Default)]
+pub struct SnapshotPolicyNotFound {
+    pub message: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#StorageVirtualMachinePeerNotFound")]
+#[derive(Debug, Clone, Default)]
+pub struct StorageVirtualMachinePeerNotFound {
     pub message: Option<String>,
 }
 
@@ -1043,11 +1275,15 @@ pub const ACTIVE_DIRECTORY_ERROR_TYPE_VALUES: &[&str] = &["DOMAIN_NOT_FOUND", "I
 
 
 /// The values `AdministrativeActionType` accepts on the wire.
-pub const ADMINISTRATIVE_ACTION_TYPE_VALUES: &[&str] = &["DOWNLOAD_DATA_FROM_BACKUP", "FILE_SYSTEM_ALIAS_ASSOCIATION", "FILE_SYSTEM_ALIAS_DISASSOCIATION", "FILE_SYSTEM_UPDATE", "IOPS_OPTIMIZATION", "MISCONFIGURED_STATE_RECOVERY", "RELEASE_NFS_V3_LOCKS", "SNAPSHOT_UPDATE", "STORAGE_OPTIMIZATION", "STORAGE_TYPE_OPTIMIZATION", "THROUGHPUT_OPTIMIZATION", "VOLUME_INITIALIZE_WITH_SNAPSHOT", "VOLUME_RESTORE", "VOLUME_UPDATE", "VOLUME_UPDATE_WITH_SNAPSHOT"];
+pub const ADMINISTRATIVE_ACTION_TYPE_VALUES: &[&str] = &["DOWNLOAD_DATA_FROM_BACKUP", "FILE_SYSTEM_ALIAS_ASSOCIATION", "FILE_SYSTEM_ALIAS_DISASSOCIATION", "FILE_SYSTEM_UPDATE", "IOPS_OPTIMIZATION", "MISCONFIGURED_STATE_RECOVERY", "RELEASE_NFS_V3_LOCKS", "SNAPSHOT_UPDATE", "STORAGE_OPTIMIZATION", "STORAGE_TYPE_OPTIMIZATION", "THROUGHPUT_OPTIMIZATION", "VOLUME_CLONE_SPLIT", "VOLUME_INITIALIZE_WITH_SNAPSHOT", "VOLUME_RESTORE", "VOLUME_UPDATE", "VOLUME_UPDATE_WITH_SNAPSHOT"];
 
 
 /// The values `AliasLifecycle` accepts on the wire.
 pub const ALIAS_LIFECYCLE_VALUES: &[&str] = &["AVAILABLE", "CREATE_FAILED", "CREATING", "DELETE_FAILED", "DELETING"];
+
+
+/// The values `AllowedSvmMode` accepts on the wire.
+pub const ALLOWED_SVM_MODE_VALUES: &[&str] = &["ALL", "NONE", "SPECIFIED"];
 
 
 /// The values `AutoImportPolicyType` accepts on the wire.
@@ -1064,6 +1300,18 @@ pub const BACKUP_LIFECYCLE_VALUES: &[&str] = &["AVAILABLE", "COPYING", "CREATING
 
 /// The values `BackupType` accepts on the wire.
 pub const BACKUP_TYPE_VALUES: &[&str] = &["AUTOMATIC", "AWS_BACKUP", "USER_INITIATED"];
+
+
+/// The values `CloneSplitAction` accepts on the wire.
+pub const CLONE_SPLIT_ACTION_VALUES: &[&str] = &["START"];
+
+
+/// The values `ClusterPeerFilterName` accepts on the wire.
+pub const CLUSTER_PEER_FILTER_NAME_VALUES: &[&str] = &["file-system-id"];
+
+
+/// The values `ClusterPeerLifecycle` accepts on the wire.
+pub const CLUSTER_PEER_LIFECYCLE_VALUES: &[&str] = &["CREATED", "CREATING", "DELETING", "FAILED"];
 
 
 /// The values `DataCompressionType` accepts on the wire.
@@ -1167,7 +1415,7 @@ pub const NFS_VERSION_VALUES: &[&str] = &["NFS3"];
 
 
 /// The values `OntapDeploymentType` accepts on the wire.
-pub const ONTAP_DEPLOYMENT_TYPE_VALUES: &[&str] = &["MULTI_AZ_1", "MULTI_AZ_2", "SINGLE_AZ_1", "SINGLE_AZ_2"];
+pub const ONTAP_DEPLOYMENT_TYPE_VALUES: &[&str] = &["MULTI_AZ_1", "MULTI_AZ_2", "MULTI_AZ_3", "SINGLE_AZ_1", "SINGLE_AZ_2", "SINGLE_AZ_3"];
 
 
 /// The values `OntapFileSystemUserType` accepts on the wire.
@@ -1250,12 +1498,60 @@ pub const SERVICE_LIMIT_VALUES: &[&str] = &["FILE_CACHE_COUNT", "FILE_SYSTEM_COU
 pub const SNAPLOCK_TYPE_VALUES: &[&str] = &["COMPLIANCE", "ENTERPRISE"];
 
 
+/// The values `SnapmirrorPolicyFilterName` accepts on the wire.
+pub const SNAPMIRROR_POLICY_FILTER_NAME_VALUES: &[&str] = &["file-system-id", "storage-virtual-machine-id"];
+
+
+/// The values `SnapmirrorPolicyLifecycle` accepts on the wire.
+pub const SNAPMIRROR_POLICY_LIFECYCLE_VALUES: &[&str] = &["CREATED", "CREATING", "DELETING", "FAILED"];
+
+
+/// The values `SnapmirrorPolicyScope` accepts on the wire.
+pub const SNAPMIRROR_POLICY_SCOPE_VALUES: &[&str] = &["FILESYSTEM", "SVM"];
+
+
+/// The values `SnapmirrorPolicySnapshotCopyMode` accepts on the wire.
+pub const SNAPMIRROR_POLICY_SNAPSHOT_COPY_MODE_VALUES: &[&str] = &["COPY_ALL_SOURCE_SNAPSHOTS", "COPY_LATEST_SOURCE_SNAPSHOT", "NO_CREATE_SNAPSHOT_ON_SOURCE"];
+
+
+/// The values `SnapmirrorRelationshipFilterName` accepts on the wire.
+pub const SNAPMIRROR_RELATIONSHIP_FILTER_NAME_VALUES: &[&str] = &["destination-volume-id", "file-system-id"];
+
+
+/// The values `SnapmirrorRelationshipLifecycle` accepts on the wire.
+pub const SNAPMIRROR_RELATIONSHIP_LIFECYCLE_VALUES: &[&str] = &["CREATED", "CREATING", "DELETING", "FAILED"];
+
+
+/// The values `SnapmirrorRelationshipState` accepts on the wire.
+pub const SNAPMIRROR_RELATIONSHIP_STATE_VALUES: &[&str] = &["BROKEN_OFF", "PAUSED", "SNAPMIRRORED", "TRANSFERRING", "UNINITIALIZED"];
+
+
 /// The values `SnapshotFilterName` accepts on the wire.
 pub const SNAPSHOT_FILTER_NAME_VALUES: &[&str] = &["file-system-id", "volume-id"];
 
 
 /// The values `SnapshotLifecycle` accepts on the wire.
-pub const SNAPSHOT_LIFECYCLE_VALUES: &[&str] = &["AVAILABLE", "CREATING", "DELETING", "PENDING"];
+pub const SNAPSHOT_LIFECYCLE_VALUES: &[&str] = &["AVAILABLE", "CREATING", "DELETING", "FAILED", "PENDING"];
+
+
+/// The values `SnapshotPolicyFilterName` accepts on the wire.
+pub const SNAPSHOT_POLICY_FILTER_NAME_VALUES: &[&str] = &["file-system-id", "storage-virtual-machine-id"];
+
+
+/// The values `SnapshotPolicyLifecycle` accepts on the wire.
+pub const SNAPSHOT_POLICY_LIFECYCLE_VALUES: &[&str] = &["CREATED", "CREATING", "DELETING", "FAILED"];
+
+
+/// The values `SnapshotPolicyRetentionPeriodType` accepts on the wire.
+pub const SNAPSHOT_POLICY_RETENTION_PERIOD_TYPE_VALUES: &[&str] = &["DAYS", "HOURS", "INFINITE", "MINUTES", "MONTHS", "SECONDS", "YEARS"];
+
+
+/// The values `SnapshotPolicyScope` accepts on the wire.
+pub const SNAPSHOT_POLICY_SCOPE_VALUES: &[&str] = &["FILESYSTEM", "SVM"];
+
+
+/// The values `SnapshotType` accepts on the wire.
+pub const SNAPSHOT_TYPE_VALUES: &[&str] = &["ONTAP", "OPENZFS"];
 
 
 /// The values `Status` accepts on the wire.
@@ -1274,6 +1570,26 @@ pub const STORAGE_VIRTUAL_MACHINE_FILTER_NAME_VALUES: &[&str] = &["file-system-i
 pub const STORAGE_VIRTUAL_MACHINE_LIFECYCLE_VALUES: &[&str] = &["CREATED", "CREATING", "DELETING", "FAILED", "MISCONFIGURED", "PENDING"];
 
 
+/// The values `StorageVirtualMachinePeerApplication` accepts on the wire.
+pub const STORAGE_VIRTUAL_MACHINE_PEER_APPLICATION_VALUES: &[&str] = &["FILE_COPY", "FLEXCACHE", "LUN_COPY", "SNAPMIRROR"];
+
+
+/// The values `StorageVirtualMachinePeerFilterName` accepts on the wire.
+pub const STORAGE_VIRTUAL_MACHINE_PEER_FILTER_NAME_VALUES: &[&str] = &["file-system-id", "storage-virtual-machine-id"];
+
+
+/// The values `StorageVirtualMachinePeerLifecycle` accepts on the wire.
+pub const STORAGE_VIRTUAL_MACHINE_PEER_LIFECYCLE_VALUES: &[&str] = &["CREATED", "CREATING", "DELETING", "FAILED"];
+
+
+/// The values `StorageVirtualMachinePeerState` accepts on the wire.
+pub const STORAGE_VIRTUAL_MACHINE_PEER_STATE_VALUES: &[&str] = &["INITIALIZING", "INITIATED", "PEERED", "PENDING", "REJECTED", "SUSPENDED"];
+
+
+/// The values `StorageVirtualMachinePeerUpdateState` accepts on the wire.
+pub const STORAGE_VIRTUAL_MACHINE_PEER_UPDATE_STATE_VALUES: &[&str] = &["PEERED", "REJECTED", "SUSPENDED"];
+
+
 /// The values `StorageVirtualMachineRootVolumeSecurityStyle` accepts on the wire.
 pub const STORAGE_VIRTUAL_MACHINE_ROOT_VOLUME_SECURITY_STYLE_VALUES: &[&str] = &["MIXED", "NTFS", "UNIX"];
 
@@ -1288,6 +1604,10 @@ pub const TIERING_POLICY_NAME_VALUES: &[&str] = &["ALL", "AUTO", "NONE", "SNAPSH
 
 /// The values `Unit` accepts on the wire.
 pub const UNIT_VALUES: &[&str] = &["DAYS"];
+
+
+/// The values `UpdatableSnapmirrorRelationshipState` accepts on the wire.
+pub const UPDATABLE_SNAPMIRROR_RELATIONSHIP_STATE_VALUES: &[&str] = &["BROKEN_OFF", "PAUSED", "SNAPMIRRORED"];
 
 
 /// The values `UpdateOpenZFSVolumeOption` accepts on the wire.

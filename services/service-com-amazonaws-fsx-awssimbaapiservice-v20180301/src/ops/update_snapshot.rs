@@ -93,6 +93,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-fsx-awssimbaapiservice-
 #[derive(Debug)]
 pub enum UpdateSnapshotErrorModeled {
     BadRequest(BadRequest),
+    IncompatibleParameterError(IncompatibleParameterError),
     InternalServerError(InternalServerError),
     SnapshotNotFound(SnapshotNotFound),
 }

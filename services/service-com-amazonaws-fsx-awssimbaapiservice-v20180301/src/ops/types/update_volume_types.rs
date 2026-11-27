@@ -33,6 +33,7 @@ pub struct UpdateOntapVolumeConfiguration {
     pub copy_tags_to_backups: Option<bool>,
     pub snaplock_configuration: Option<UpdateSnaplockConfiguration>,
     pub size_in_bytes: Option<i64>,
+    pub clone_configuration: Option<UpdateCloneConfiguration>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.fsx#UpdateSnaplockConfiguration")]
@@ -43,6 +44,12 @@ pub struct UpdateSnaplockConfiguration {
     pub privileged_delete: Option<String>,
     pub retention_period: Option<SnaplockRetentionPeriod>,
     pub volume_append_mode_enabled: Option<bool>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#UpdateCloneConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct UpdateCloneConfiguration {
+    pub split_action: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.fsx#UpdateOpenZFSVolumeConfiguration")]

@@ -116,6 +116,7 @@ pub enum CreateVolumeErrorModeled {
     ServiceLimitExceeded(ServiceLimitExceeded),
     StorageVirtualMachineNotFound(StorageVirtualMachineNotFound),
     UnsupportedOperation(UnsupportedOperation),
+    VolumeNotFound(VolumeNotFound),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it

@@ -386,6 +386,34 @@ pub struct ComAmazonawsFsxAwssimbaapiserviceV20180301State {
     /// Insertion order of `data_repository_association_idempotency_tokens`, oldest first —
     /// what lets that map be bounded, exactly as `token_order` bounds the first one.
     data_repository_association_token_order: VecDeque<String>,
+    /// Stored cluster peers, keyed by `ClusterPeerId`. A `BTreeMap` for the same reason as
+    /// `file_systems`: `DescribeClusterPeers` pages over it, and minted ids sort in creation
+    /// order. See [`cluster_peers`] for the record. BOUNDED per file system by
+    /// [`MAX_CLUSTER_PEERS_PER_FILE_SYSTEM`]; write it through
+    /// [`ComAmazonawsFsxAwssimbaapiserviceV20180301State::insert_cluster_peer`], which
+    /// enforces that.
+    pub cluster_peers: BTreeMap<String, ClusterPeerRecord>,
+    /// Source of minted `ClusterPeerId`s.
+    pub next_cluster_peer_id_counter: u64,
+    /// `ClientRequestToken` -> the replay it stands for, for the `@idempotencyToken`
+    /// behaviour on `CreateClusterPeer`. See [`IdempotentCreates`], which bounds it.
+    pub cluster_peer_tokens: IdempotentCreates<CreatedByToken>,
+    /// Stored SnapMirror policies, keyed by `SnapmirrorPolicyId`, and the tokens
+    /// `CreateSnapmirrorPolicy` replays — bounded exactly as the cluster-peer pair above is.
+    /// See [`ontap_policies`] for the record.
+    pub snapmirror_policies: BTreeMap<String, SnapmirrorPolicyRecord>,
+    /// Source of minted `SnapmirrorPolicyId`s.
+    pub next_snapmirror_policy_id_counter: u64,
+    /// See [`ComAmazonawsFsxAwssimbaapiserviceV20180301State::cluster_peer_tokens`], for
+    /// `CreateSnapmirrorPolicy`.
+    pub snapmirror_policy_tokens: IdempotentCreates<CreatedByToken>,
+    /// Stored snapshot policies, keyed by `SnapshotPolicyId`. See [`ontap_policies`].
+    pub snapshot_policies: BTreeMap<String, SnapshotPolicyRecord>,
+    /// Source of minted `SnapshotPolicyId`s.
+    pub next_snapshot_policy_id_counter: u64,
+    /// See [`ComAmazonawsFsxAwssimbaapiserviceV20180301State::cluster_peer_tokens`], for
+    /// `CreateSnapshotPolicy`.
+    pub snapshot_policy_tokens: IdempotentCreates<CreatedByToken>,
 }
 
 /// What an FSx `ResourceARN` names, once resolved against the store.
@@ -399,6 +427,12 @@ pub enum ResourceLookup {
     Volume(String),
     /// A data repository association this service stores, by `AssociationId`.
     DataRepositoryAssociation(String),
+    /// A cluster peer this service stores, by `ClusterPeerId`.
+    ClusterPeer(String),
+    /// A SnapMirror policy this service stores, by `SnapmirrorPolicyId`.
+    SnapmirrorPolicy(String),
+    /// A snapshot policy this service stores, by `SnapshotPolicyId`.
+    SnapshotPolicy(String),
     /// An ARN naming a resource type FSx owns that holds no record here:
     /// `ResourceNotFound`. Carries the resource id from the request's ARN, because the
     /// error's `Message` is built from the identifier the caller sent (see
@@ -432,6 +466,8 @@ impl ComAmazonawsFsxAwssimbaapiserviceV20180301State {
         self.settle_due_backup_transitions(now);
         self.settle_due_volume_transitions(now);
         self.settle_due_data_repository_association_transitions(now);
+        self.settle_due_cluster_peer_transitions(now);
+        self.settle_due_ontap_policy_transitions(now);
         let mut removed: Vec<String> = Vec::new();
         for (id, record) in &mut self.file_systems {
             // The asynchronous work the file system owes the clock, which is settled whatever
@@ -460,6 +496,10 @@ impl ComAmazonawsFsxAwssimbaapiserviceV20180301State {
             // A data repository association belongs to its file system too, for the same
             // reason.
             self.remove_data_repository_associations_of_file_system(&id);
+            // A cluster peer and a policy belong to the file system they were created on,
+            // for the same reason.
+            self.remove_cluster_peers_of_file_system(&id);
+            self.remove_ontap_policies_of_file_system(&id);
             // A token whose file system is gone replays nothing, so it is released with
             // the record rather than held for the life of the process.
             self.forget_tokens_for(&id);
@@ -542,6 +582,21 @@ impl ComAmazonawsFsxAwssimbaapiserviceV20180301State {
         {
             return ResourceLookup::DataRepositoryAssociation(arn.resource_id);
         }
+        if arn.resource_type == CLUSTER_PEER_RESOURCE_TYPE
+            && self.cluster_peers.contains_key(&arn.resource_id)
+        {
+            return ResourceLookup::ClusterPeer(arn.resource_id);
+        }
+        if arn.resource_type == SNAPMIRROR_POLICY_RESOURCE_TYPE
+            && self.snapmirror_policies.contains_key(&arn.resource_id)
+        {
+            return ResourceLookup::SnapmirrorPolicy(arn.resource_id);
+        }
+        if arn.resource_type == SNAPSHOT_POLICY_RESOURCE_TYPE
+            && self.snapshot_policies.contains_key(&arn.resource_id)
+        {
+            return ResourceLookup::SnapshotPolicy(arn.resource_id);
+        }
         // An FSx resource type this slice does not store yet (a snapshot, an SVM) holds no
         // record either, because the operations that would create one are still 501 — so
         // there is genuinely no such resource. The id the ARN named travels with the
@@ -566,6 +621,13 @@ impl ComAmazonawsFsxAwssimbaapiserviceV20180301State {
                 .data_repository_associations
                 .get(id)
                 .map(|record| &record.tags),
+            ResourceLookup::ClusterPeer(id) => self.cluster_peers.get(id).map(|record| &record.tags),
+            ResourceLookup::SnapmirrorPolicy(id) => {
+                self.snapmirror_policies.get(id).map(|record| &record.tags)
+            }
+            ResourceLookup::SnapshotPolicy(id) => {
+                self.snapshot_policies.get(id).map(|record| &record.tags)
+            }
             ResourceLookup::NotFound(_) | ResourceLookup::NotFsxResource => None,
         }
     }
@@ -584,6 +646,18 @@ impl ComAmazonawsFsxAwssimbaapiserviceV20180301State {
             ResourceLookup::Volume(id) => self.volumes.get_mut(id).map(|record| &mut record.tags),
             ResourceLookup::DataRepositoryAssociation(id) => self
                 .data_repository_associations
+                .get_mut(id)
+                .map(|record| &mut record.tags),
+            ResourceLookup::ClusterPeer(id) => self
+                .cluster_peers
+                .get_mut(id)
+                .map(|record| &mut record.tags),
+            ResourceLookup::SnapmirrorPolicy(id) => self
+                .snapmirror_policies
+                .get_mut(id)
+                .map(|record| &mut record.tags),
+            ResourceLookup::SnapshotPolicy(id) => self
+                .snapshot_policies
                 .get_mut(id)
                 .map(|record| &mut record.tags),
             ResourceLookup::NotFound(_) | ResourceLookup::NotFsxResource => None,
@@ -738,6 +812,23 @@ pub use data_repository_associations::*;
 mod s3_data_repository;
 pub use s3_data_repository::*;
 
+/// What every FSx for NetApp ONTAP peering and policy resource of this store shares: its
+/// lifecycle, its bounded create-token memory, the selection its describe operation reports
+/// and the UUID ONTAP gives it. Re-exported, as above.
+mod ontap_resources;
+pub use ontap_resources::*;
+
+/// The cluster-peer slice: the peer relationships `CreateClusterPeer` writes between an FSx
+/// for NetApp ONTAP file system and another ONTAP cluster, and what `DescribeClusterPeers`
+/// reads. Re-exported, as above.
+mod cluster_peers;
+pub use cluster_peers::*;
+
+/// The ONTAP policy slice: the SnapMirror and snapshot policies the two create operations
+/// write and their describe operations read. Re-exported, as above.
+mod ontap_policies;
+pub use ontap_policies::*;
+
 /// Remember one `ClientRequestToken` replay in a bounded map, dropping the oldest once
 /// [`MAX_IDEMPOTENCY_TOKENS`] are held.
 ///
@@ -790,9 +881,11 @@ pub struct SubnetRecord {
 ///
 /// One per id shape the model declares (`FileSystemId` `fs-`, `BackupId` `backup-`,
 /// `VolumeId` `fsvol-`, `SnapshotId` `(fs)?volsnap-`, `StorageVirtualMachineId` `svm-`,
-/// `TaskId` `task-`, `AssociationId` `dra-`, `FileCacheId` `fc-`). An ARN naming a type
-/// NOT in this list is `NotServiceResourceError`; one naming a type in it that holds no
-/// record is `ResourceNotFound`.
+/// `TaskId` `task-`, `AssociationId` `dra-`, `FileCacheId` `fc-`, `ClusterPeerId`
+/// `clusterpeer-`, `SnapmirrorPolicyId` `snapmirrorpol-`, `SnapshotPolicyId`
+/// `snapshotpol-`, `StorageVirtualMachinePeerId` `svmpeer-`, `SnapmirrorRelationshipId`
+/// `snapmirror-`). An ARN naming a type NOT in this list is `NotServiceResourceError`; one
+/// naming a type in it that holds no record is `ResourceNotFound`.
 pub const FSX_RESOURCE_TYPES: &[&str] = &[
     "file-system",
     "backup",
@@ -802,6 +895,11 @@ pub const FSX_RESOURCE_TYPES: &[&str] = &[
     "task",
     "association",
     "file-cache",
+    CLUSTER_PEER_RESOURCE_TYPE,
+    SNAPMIRROR_POLICY_RESOURCE_TYPE,
+    SNAPSHOT_POLICY_RESOURCE_TYPE,
+    "storage-virtual-machine-peer",
+    "snapmirror-relationship",
 ];
 
 /// The resource type this slice stores records for.

@@ -18,6 +18,15 @@ pub struct CreateSnapshotInput {
     pub name: String,
     pub volume_id: String,
     pub tags: Option<Vec<Tag>>,
+    pub ontap_configuration: Option<CreateOntapSnapshotConfiguration>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.fsx#CreateOntapSnapshotConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct CreateOntapSnapshotConfiguration {
+    pub snapmirror_label: Option<String>,
+    pub expiry_time: Option<::aws_smithy_types::DateTime>,
+    pub snaplock_expiry_time: Option<::aws_smithy_types::DateTime>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.fsx#CreateSnapshotResponse")]
