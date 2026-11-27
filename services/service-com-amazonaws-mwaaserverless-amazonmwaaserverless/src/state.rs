@@ -38,6 +38,9 @@
 //! is caller-driven data held per version, and is capped at
 //! [`workflow_definition::MAX_DEFINITION_BYTES`] before a byte of the object is
 //! buffered, so the versions x content product is finite too.
+//! `airflow_ui_sessions` is caller-driven growth holding nothing of the request, and is
+//! capped at [`airflow_ui_session::MAX_SESSIONS`] and emptied of every session the clock
+//! has ended (see [`airflow_ui_session`]).
 //! A run's `pending_log_lines` — the output it owes the log group its workflow configured
 //! ([`run_logs`]) — is not caller-driven growth either: a line exists because a transition
 //! of that run was materialised, so the queue holds at most the lines one execution
@@ -56,9 +59,9 @@ use ::aws_smithy_schema_server::constraints::{
 use sha2::{Digest, Sha256};
 
 use crate::ops::types::{
-    Code, ConflictException, DefinitionS3Location, EncryptionConfiguration, LoggingConfiguration,
-    NetworkConfiguration, ResourceNotFoundException, ScheduleConfiguration, ValidationException,
-    ValidationExceptionField, ENCRYPTION_TYPE_VALUES,
+    Code, ConflictException, DefinitionS3Location, EncryptionConfiguration, Environment,
+    LoggingConfiguration, NetworkConfiguration, ResourceNotFoundException, ScheduleConfiguration,
+    ValidationException, ValidationExceptionField, ENCRYPTION_TYPE_VALUES,
 };
 
 /// Reading the workflow definition file a version snapshots out of Amazon S3, and the
@@ -79,6 +82,10 @@ pub mod declared_runtime;
 /// Exporting a run's own execution output to the CloudWatch Logs log group its
 /// workflow's `LoggingConfiguration` names.
 pub mod run_logs;
+
+/// The Apache Airflow UI sessions a launch URL opens, and how long each of them and the
+/// URL that starts it stay valid.
+pub mod airflow_ui_session;
 
 /// The region used in minted ARNs when the request carries no usable SigV4
 /// credential scope. Every generated emulator defaults to `us-east-1`.
@@ -299,6 +306,13 @@ pub struct WorkflowSnapshot {
     pub logging_configuration: Option<LoggingConfiguration>,
     pub engine_version: Option<i32>,
     pub network_configuration: Option<NetworkConfiguration>,
+    /// The environment variables the tasks of this version's definition run with —
+    /// "the environment variables that tasks in a workflow use during execution"
+    /// (`smithy_query(query="shape", shape="Environment")`). Part of the
+    /// configuration a version FREEZES, like every member beside it, so a read of this
+    /// version reports the variables that version was created with however the workflow
+    /// has been updated since.
+    pub environment: Option<Environment>,
     pub trigger_mode: Option<String>,
 }
 
@@ -1616,6 +1630,10 @@ pub struct ComAmazonawsMwaaserverlessAmazonmwaaserverlessState {
     /// `<operation>:<ClientToken>` -> what that token already produced. Capped and
     /// evicted on its own terms; see [`IdempotencyLedger`].
     pub idempotency: IdempotencyLedger,
+    /// The Apache Airflow UI sessions a launch URL has started, keyed by `SessionId`.
+    /// Each one ends at its own instant and is removed then, and the map is capped at
+    /// [`airflow_ui_session::MAX_SESSIONS`]; see [`airflow_ui_session`].
+    pub airflow_ui_sessions: BTreeMap<String, airflow_ui_session::AirflowUiSession>,
     /// Monotonic counter mixed into every minted identifier.
     pub mint_seq: u64,
 }
@@ -1830,9 +1848,10 @@ impl ComAmazonawsMwaaserverlessAmazonmwaaserverlessState {
     }
 
     /// Apply EVERY change the clock already owed this store — the workflow teardowns
-    /// whose removal has fallen due ([`Self::reap_deleted_workflows`]) and the
-    /// automated runs whose firing has ([`Self::fire_due_scheduled_runs`]) — and answer
-    /// the instant that was done AT.
+    /// whose removal has fallen due ([`Self::reap_deleted_workflows`]), the automated
+    /// runs whose firing has ([`Self::fire_due_scheduled_runs`]) and the Airflow UI
+    /// sessions whose end has ([`Self::expire_airflow_ui_sessions`]) — and answer the
+    /// instant that was done AT.
     ///
     /// Every handler that touches [`Self::workflows`] calls this FIRST, so what it
     /// answers is what the store would hold unpolled: a workflow never outlives its
@@ -1853,6 +1872,7 @@ impl ComAmazonawsMwaaserverlessAmazonmwaaserverlessState {
         let now = SystemTime::now();
         self.reap_deleted_workflows(now);
         self.fire_due_scheduled_runs(now);
+        self.expire_airflow_ui_sessions(now);
         now
     }
 
@@ -1944,21 +1964,24 @@ pub fn request_region(parts: &::http::request::Parts) -> String {
         .unwrap_or_else(|| DEFAULT_REGION.to_string())
 }
 
-/// True when `region` matches `([a-z]{2}-[a-z]+-[0-9]{1})`, the region segment of
-/// the modelled `WorkflowArn` pattern (`smithy_query shape=WorkflowArn`).
+/// True when `region` matches `([a-z]{2}-(?:[a-z]+-)+[0-9]{1})`, the region segment of
+/// the modelled `WorkflowArn` pattern (`smithy_query shape=WorkflowArn`): a two-letter
+/// area, one or more lowercase words, and a single-digit index — so a region of three or
+/// more words (`us-gov-west-1`) is one an ARN of this service can carry.
 fn is_arn_region(region: &str) -> bool {
-    let mut parts = region.split('-');
-    let (Some(area), Some(direction), Some(index), None) =
-        (parts.next(), parts.next(), parts.next(), parts.next())
-    else {
+    let Some((area, rest)) = region.split_once('-') else {
+        return false;
+    };
+    let Some((words, index)) = rest.rsplit_once('-') else {
         return false;
     };
     area.len() == 2
         && area.bytes().all(|b| b.is_ascii_lowercase())
-        && !direction.is_empty()
-        && direction.bytes().all(|b| b.is_ascii_lowercase())
         && index.len() == 1
         && index.bytes().all(|b| b.is_ascii_digit())
+        && words
+            .split('-')
+            .all(|word| !word.is_empty() && word.bytes().all(|b| b.is_ascii_lowercase()))
 }
 
 /// A lowercase-hex SHA-256 digest over `fields`, each field length-delimited so
@@ -2154,6 +2177,7 @@ pub struct WorkflowConfigurationView<'a> {
     pub encryption_configuration: Option<&'a EncryptionConfiguration>,
     pub logging_configuration: Option<&'a LoggingConfiguration>,
     pub network_configuration: Option<&'a NetworkConfiguration>,
+    pub environment: Option<&'a Environment>,
 }
 
 impl WorkflowConfigurationView<'_> {
@@ -2221,9 +2245,38 @@ impl WorkflowConfigurationView<'_> {
                                     .map(|ids| ids.iter().map(String::as_str)),
                             );
                     }
+                })
+                .group(|environment| {
+                    if let Some(supplied) = self.environment {
+                        // The variables are a map on the wire, whose iteration and
+                        // transmission order are no part of the value, so they are walked
+                        // in KEY ORDER with each entry contributing its key and then its
+                        // value — the same way the tag map a create carries is digested.
+                        environment.optional_list(sorted_variables(supplied).map(|entries| {
+                            entries
+                                .into_iter()
+                                .flat_map(|(key, value)| [key, value])
+                        }));
+                    }
                 });
         });
     }
+}
+
+/// The environment variables a request's `Environment` carries, in KEY ORDER.
+///
+/// A map's iteration order is no part of its value, so every derivation over the
+/// variables — the configuration digest above — walks them in this one order, and `None`
+/// for a configuration carrying no `Variables` member keeps an absent map apart from an
+/// empty one.
+fn sorted_variables(environment: &Environment) -> Option<Vec<(&str, &str)>> {
+    let variables = environment.variables.as_ref()?;
+    let mut entries: Vec<(&str, &str)> = variables
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    entries.sort_unstable();
+    Some(entries)
 }
 
 /// The `ResourceType` an error document of this service reports for a workflow.
@@ -2458,7 +2511,7 @@ pub fn page_size(max_results: i32) -> usize {
 /// What separates a listing cursor key's POSITION from the SCOPE of the walk it
 /// was issued for. Neither a zero-padded decimal position, a `WorkflowArn`
 /// (`^arn:…:workflow/[a-zA-Z0-9.\-_]+$`) nor a region segment
-/// (`[a-z]{2}-[a-z]+-[0-9]{1}`) can contain it, so the split is unambiguous.
+/// (`[a-z]{2}-(?:[a-z]+-)+[0-9]{1}`) can contain it, so the split is unambiguous.
 const LISTING_KEY_SCOPE_SEPARATOR: char = '@';
 
 /// The cursor key for a position in ONE listing walk: the position of the last
@@ -2834,7 +2887,7 @@ const NAMESPACE: &str = "com.amazonaws.mwaaserverless";
 
 /// The workflow-ARN `@pattern`, shared by `WorkflowArn` and
 /// `TaggableResourceArn` (`smithy_query(query="shape", shape="WorkflowArn")`).
-const WORKFLOW_ARN_PATTERN: &str = r"^arn:aws(?:-(?:cn|us-gov|iso|iso-b|iso-e|iso-f))?:airflow-serverless:([a-z]{2}-[a-z]+-[0-9]{1}):([0-9]{12}):workflow/([a-zA-Z0-9][a-zA-Z0-9\.\-_]{0,254}-[a-zA-Z0-9]{10})$";
+const WORKFLOW_ARN_PATTERN: &str = r"^arn:aws(?:-(?:cn|us-gov|iso|iso-b|iso-e|iso-f))?:airflow-serverless:([a-z]{2}-(?:[a-z]+-)+[0-9]{1}):([0-9]{12}):workflow/([a-zA-Z0-9][a-zA-Z0-9\.\-_]{0,254}-[a-zA-Z0-9]{10})$";
 
 /// The identifier `@pattern`, shared by `NameString` and `IdString`.
 const IDENTIFIER_PATTERN: &str = r"^[a-zA-Z0-9]+[a-zA-Z0-9\.\-_]*$";
@@ -3023,6 +3076,35 @@ static SECURITY_GROUP_IDS_TRAITS: LazyLock<TraitMap> = LazyLock::new(|| {
 static SUBNET_IDS_TRAITS: LazyLock<TraitMap> = LazyLock::new(|| {
     let mut traits = TraitMap::new();
     traits.insert(Box::new(ElementConstraintsTrait::new(&SUBNET_STRING_TRAITS)));
+    traits
+});
+
+/// `EnvironmentVariableKey`: `@length(1..128)` plus `@pattern(^[a-zA-Z][a-zA-Z0-9_]*$)`
+/// (`smithy_query(query="shape", shape="EnvironmentVariablesMap")`).
+static ENVIRONMENT_VARIABLE_KEY_TRAITS: LazyLock<TraitMap> = LazyLock::new(|| {
+    let mut traits = TraitMap::new();
+    traits.insert(Box::new(LengthTrait::new(Some(1), Some(128))));
+    traits.insert(Box::new(PatternTrait::new(r"^[a-zA-Z][a-zA-Z0-9_]*$")));
+    traits
+});
+
+/// `EnvironmentVariableValue`: `@length(0..255)`, no pattern.
+static ENVIRONMENT_VARIABLE_VALUE_TRAITS: LazyLock<TraitMap> = LazyLock::new(|| {
+    let mut traits = TraitMap::new();
+    traits.insert(Box::new(LengthTrait::new(Some(0), Some(255))));
+    traits
+});
+
+/// `EnvironmentVariablesMap`: `@length(0..50)` ENTRIES, with
+/// `EnvironmentVariableValue`'s own constraints carried for each value, exactly as
+/// codegen carries them. The KEY shape's constraints are carried separately, by
+/// [`M_ENVIRONMENT_VARIABLES_KEY`], for the reason [`TAGS_TRAITS`] states.
+static ENVIRONMENT_VARIABLES_TRAITS: LazyLock<TraitMap> = LazyLock::new(|| {
+    let mut traits = TraitMap::new();
+    traits.insert(Box::new(LengthTrait::new(Some(0), Some(50))));
+    traits.insert(Box::new(ElementConstraintsTrait::new(
+        &ENVIRONMENT_VARIABLE_VALUE_TRAITS,
+    )));
     traits
 });
 
@@ -3283,6 +3365,46 @@ pub static M_NETWORK_CONFIGURATION: Schema = Schema::new_member(
     "NetworkConfiguration",
     15,
 );
+
+/// `Environment`, whose `Variables` map carries the constraints.
+pub static M_ENVIRONMENT: Schema = Schema::new_member(
+    ShapeId::from_static(
+        "com.amazonaws.mwaaserverless#ConstrainedInput$Environment",
+        NAMESPACE,
+        "Environment",
+    ),
+    ShapeType::Structure,
+    "Environment",
+    17,
+);
+
+/// `Environment$Variables`, the `EnvironmentVariablesMap`.
+pub static M_ENVIRONMENT_VARIABLES: Schema = Schema::new_member(
+    ShapeId::from_static(
+        "com.amazonaws.mwaaserverless#Environment$Variables",
+        NAMESPACE,
+        "Variables",
+    ),
+    ShapeType::Map,
+    "Variables",
+    0,
+)
+.with_traits(&ENVIRONMENT_VARIABLES_TRAITS);
+
+/// The KEY position of an `Environment$Variables` map, which targets
+/// `EnvironmentVariableKey`. Named for the member that CARRIES the map, for the reason
+/// [`M_TAGS_KEY`] states.
+pub static M_ENVIRONMENT_VARIABLES_KEY: Schema = Schema::new_member(
+    ShapeId::from_static(
+        "com.amazonaws.mwaaserverless#Environment$VariablesKey",
+        NAMESPACE,
+        "Variables",
+    ),
+    ShapeType::String,
+    "Variables",
+    1,
+)
+.with_traits(&ENVIRONMENT_VARIABLE_KEY_TRAITS);
 
 /// `Code$S3Location`.
 pub static M_S3_LOCATION: Schema = Schema::new_member(
@@ -3571,6 +3693,40 @@ pub fn constrained_network_configuration(
     config.map(|config| ConstrainedNetworkConfiguration {
         security_group_ids: config.security_group_ids.as_deref(),
         subnet_ids: config.subnet_ids.as_deref(),
+    })
+}
+
+/// `Environment`, for the walk: the variables map — its entry count and each VALUE's own
+/// constraints — plus every KEY it carries, each handed over as its own leaf for the
+/// reason [`constrained_tags`] states.
+pub struct ConstrainedEnvironment<'a> {
+    /// `Environment$Variables`.
+    pub variables: Option<&'a HashMap<String, String>>,
+}
+
+impl SerializableStruct for ConstrainedEnvironment<'_> {
+    fn serialize_members(&self, s: &mut dyn ShapeSerializer) -> Result<(), SerdeError> {
+        let Some(variables) = self.variables else {
+            return Ok(());
+        };
+        write_constrained(
+            s,
+            &M_ENVIRONMENT_VARIABLES,
+            &ConstrainedValue::Entries(variables),
+        )?;
+        for key in variables.keys() {
+            s.write_string(&M_ENVIRONMENT_VARIABLES_KEY, key)?;
+        }
+        Ok(())
+    }
+}
+
+/// A request's `Environment`, ready for the walk.
+pub fn constrained_environment(
+    environment: Option<&Environment>,
+) -> Option<ConstrainedEnvironment<'_>> {
+    environment.map(|environment| ConstrainedEnvironment {
+        variables: environment.variables.as_ref(),
     })
 }
 

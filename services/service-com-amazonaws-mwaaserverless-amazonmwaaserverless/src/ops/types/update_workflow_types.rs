@@ -11,14 +11,23 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-mwaaserverless-amazonmwaaserverless.json");
 
-// The members whose modelled constraints the handler checks itself, by driving
-// the framework's own constraint walk over the shadow member schemas
-// `crate::state` re-declares, so a bad value is answered with the modelled
-// `ValidationException` (Message + Reason + FieldList) instead of the framework's
-// generic boundary refusal, which can carry none of them.
+// Members whose modelled constraints the handler checks itself, by driving the
+// framework's own constraint walk over the shadow member schemas `crate::state`
+// re-declares, so a bad value is answered with the modelled `ValidationException`
+// instead of the framework's generic boundary refusal. `skip_validation` is a choice
+// this crate makes that the model cannot express, so a model refresh that re-renders
+// this file drops it and it is restored here.
 #[smithy_macros::smithy(
     shape = "com.amazonaws.mwaaserverless#UpdateWorkflowRequest",
-    skip_validation = ["WorkflowArn", "RoleArn", "Description", "TriggerMode"]
+    skip_validation = [
+        "WorkflowArn",
+        "Code",
+        "RoleArn",
+        "Description",
+        "NetworkConfiguration",
+        "Environment",
+        "TriggerMode"
+    ]
 )]
 #[derive(Debug, Clone, Default)]
 pub struct UpdateWorkflowInput {
@@ -30,6 +39,7 @@ pub struct UpdateWorkflowInput {
     pub logging_configuration: Option<LoggingConfiguration>,
     pub engine_version: Option<i32>,
     pub network_configuration: Option<NetworkConfiguration>,
+    pub environment: Option<Environment>,
     pub trigger_mode: Option<String>,
 }
 

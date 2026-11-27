@@ -13,8 +13,10 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-mwaaserverless-amazonmw
 
 // Members whose modelled constraints the handler checks itself, by driving the
 // framework's own constraint walk over the shadow member schemas `crate::state`
-// re-declares, so a bad value is answered with the modelled
-// `ValidationException` instead of the framework's generic boundary refusal.
+// re-declares, so a bad value is answered with the modelled `ValidationException`
+// instead of the framework's generic boundary refusal. `skip_validation` is a choice
+// this crate makes that the model cannot express, so a model refresh that re-renders
+// this file drops it and it is restored here.
 #[smithy_macros::smithy(
     shape = "com.amazonaws.mwaaserverless#GetWorkflowRequest",
     skip_validation = ["WorkflowArn", "WorkflowVersion"]
@@ -44,6 +46,7 @@ pub struct GetWorkflowOutput {
     pub schedule_configuration: Option<ScheduleConfiguration>,
     pub role_arn: Option<String>,
     pub network_configuration: Option<NetworkConfiguration>,
+    pub environment: Option<Environment>,
     pub trigger_mode: Option<String>,
     pub workflow_definition: Option<String>,
 }

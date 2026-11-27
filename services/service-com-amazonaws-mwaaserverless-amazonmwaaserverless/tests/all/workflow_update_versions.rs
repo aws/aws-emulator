@@ -34,6 +34,7 @@ const UPDATABLE_MEMBERS: &[&str] = &[
     "LoggingConfiguration",
     "EngineVersion",
     "NetworkConfiguration",
+    "Environment",
     "TriggerMode",
 ];
 
@@ -45,6 +46,25 @@ const CREATED_DEFINITION_KEY: &str = "dags/v1.yaml";
 /// (`smithy_query(query="shape", shape="RoleARN")`), so a row can change the role.
 fn other_role_arn() -> String {
     "arn:aws:iam::000000000000:role/path/to/mwaa-serverless-other".to_string()
+}
+
+/// Fifty environment variables sitting on every published bound of
+/// `EnvironmentVariablesMap` at once: the map's own maximum of 50 entries, a name of one
+/// character and a name of 128 (`EnvironmentVariableKey`, `@length(1..128)` and
+/// `^[a-zA-Z][a-zA-Z0-9_]*$`), and a value of zero characters and one of 255
+/// (`EnvironmentVariableValue`, `@length(0..255)`) — all from
+/// `smithy_query(query="shape", shape="EnvironmentVariablesMap")`.
+fn variables_at_their_published_bounds() -> serde_json::Value {
+    let mut variables = serde_json::Map::new();
+    variables.insert("a".to_string(), serde_json::json!(""));
+    variables.insert(
+        format!("b{}", "_".repeat(127)),
+        serde_json::json!("v".repeat(255)),
+    );
+    for index in 0..48 {
+        variables.insert(format!("VAR_{index}"), serde_json::json!(format!("{index}")));
+    }
+    serde_json::Value::Object(variables)
 }
 
 /// The workflow every update row starts from: a create that supplies EVERY optional
@@ -67,6 +87,8 @@ fn full_create_body(name: &str) -> serde_json::Value {
         "LoggingConfiguration": {"LogGroupName": "/aws/mwaa-serverless/v1"},
         "EngineVersion": 1,
         "NetworkConfiguration": {"SecurityGroupIds": ["sg-1"], "SubnetIds": ["subnet-1"]},
+        "Environment": {"Variables": {"AIRFLOW_HOME": "/usr/local/airflow",
+                                      "retries": "2"}},
         "Tags": {"team": "data"},
         "TriggerMode": "SCHEDULED",
     })
@@ -111,6 +133,7 @@ fn update_cases() -> Vec<(&'static str, serde_json::Value)> {
                     "SecurityGroupIds": ["sg-1", "sg-2"],
                     "SubnetIds": ["subnet-1", "subnet-2"],
                 },
+                "Environment": {"Variables": {"AIRFLOW__WORKERS__SECRETS_BACKEND": "backend"}},
                 "TriggerMode": "SCHEDULED",
             }),
         ),
@@ -120,6 +143,15 @@ fn update_cases() -> Vec<(&'static str, serde_json::Value)> {
                 "DefinitionS3Location": {"Bucket": "defs", "ObjectKey": "dags/v2.yaml"},
                 "RoleArn": role_arn(),
                 "NetworkConfiguration": {"SecurityGroupIds": [], "SubnetIds": []},
+                "Environment": {"Variables": {}},
+            }),
+        ),
+        (
+            "fifty environment variables, with names and values at their published bounds",
+            serde_json::json!({
+                "DefinitionS3Location": {"Bucket": "defs", "ObjectKey": "dags/v2.yaml"},
+                "RoleArn": role_arn(),
+                "Environment": {"Variables": variables_at_their_published_bounds()},
             }),
         ),
         (

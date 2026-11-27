@@ -11,21 +11,26 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-mwaaserverless-amazonmwaaserverless.json");
 
-// `skip_validation` names the members whose modelled constraints the HANDLER
-// checks itself, by driving the framework's own constraint walk over the shadow
-// member schemas `crate::state` re-declares, so a bad value is answered with the
-// modelled `ValidationException` (Message + Reason + FieldList) instead of the
-// framework's generic boundary refusal, which carries none of them.
-// `DefinitionS3Location` and `LoggingConfiguration` declare no constrained
-// member, and `EngineVersion` is an `intEnum` with no captured constraint, so
-// there is nothing to take over for them.
-//
-// Every caller-driven bound this moves off the boundary (the `Tags` map's 0..50
-// entry count, every string `@length`) travels with the shadow schema as the same
-// `LengthTrait` codegen attached, so the SAME walk still enforces it.
+// Members whose modelled constraints the handler checks itself, by driving the
+// framework's own constraint walk over the shadow member schemas `crate::state`
+// re-declares, so a bad value is answered with the modelled `ValidationException`
+// instead of the framework's generic boundary refusal. `skip_validation` is a choice
+// this crate makes that the model cannot express, so a model refresh that re-renders
+// this file drops it and it is restored here.
 #[smithy_macros::smithy(
     shape = "com.amazonaws.mwaaserverless#CreateWorkflowRequest",
-    skip_validation = ["Name", "ClientToken", "RoleArn", "Description", "TriggerMode", "Tags"]
+    skip_validation = [
+        "Name",
+        "ClientToken",
+        "Code",
+        "RoleArn",
+        "Description",
+        "EncryptionConfiguration",
+        "NetworkConfiguration",
+        "Environment",
+        "Tags",
+        "TriggerMode"
+    ]
 )]
 #[derive(Debug, Clone, Default)]
 pub struct CreateWorkflowInput {
@@ -39,6 +44,7 @@ pub struct CreateWorkflowInput {
     pub logging_configuration: Option<LoggingConfiguration>,
     pub engine_version: Option<i32>,
     pub network_configuration: Option<NetworkConfiguration>,
+    pub environment: Option<Environment>,
     pub tags: Option<std::collections::HashMap<String, String>>,
     pub trigger_mode: Option<String>,
 }

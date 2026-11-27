@@ -17,6 +17,14 @@ pub struct AccessDeniedException {
     pub message: String,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.mwaaserverless#ConflictException")]
+#[derive(Debug, Clone, Default)]
+pub struct ConflictException {
+    pub message: String,
+    pub resource_id: String,
+    pub resource_type: String,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.mwaaserverless#InternalServerException")]
 #[derive(Debug, Clone, Default)]
 pub struct InternalServerException {
@@ -28,14 +36,6 @@ pub struct InternalServerException {
 #[derive(Debug, Clone, Default)]
 pub struct OperationTimeoutException {
     pub message: Option<String>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.mwaaserverless#ResourceNotFoundException")]
-#[derive(Debug, Clone, Default)]
-pub struct ResourceNotFoundException {
-    pub message: String,
-    pub resource_id: String,
-    pub resource_type: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.mwaaserverless#ThrottlingException")]
@@ -62,6 +62,14 @@ pub struct ValidationExceptionField {
     pub message: String,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.mwaaserverless#ResourceNotFoundException")]
+#[derive(Debug, Clone, Default)]
+pub struct ResourceNotFoundException {
+    pub message: String,
+    pub resource_id: String,
+    pub resource_type: String,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.mwaaserverless#DefinitionS3Location")]
 #[derive(Debug, Clone, Default)]
 pub struct DefinitionS3Location {
@@ -77,12 +85,16 @@ pub enum Code {
     S3Location(S3Location),
 }
 
-// Constrained members an operation reaches through its input: checked in the
-// handler, by driving the framework's own constraint walk over the shadow
-// `S3Location` schema in `crate::state`, so a bad value is answered with the
-// modelled `ValidationException` rather than the framework's generic boundary
-// refusal. Output shapes are never constraint-validated, so handing these over
-// costs a response nothing.
+// The nested shapes a workflow configuration carries hand their members' modelled
+// constraints to the handlers that accept them (`skip_validation`), exactly as the
+// request shapes that carry them do: the boundary's constraint walk descends into a
+// nested structure, so a member left to it would be refused in the framework's generic
+// envelope while its siblings are refused with the modelled `ValidationException`. The
+// handlers drive the same walk over the shadow member schemas `crate::state` re-declares
+// (`crate::state::constrained_code`, `constrained_encryption_configuration`,
+// `constrained_network_configuration`, `constrained_environment`), so one request is
+// refused one way. `skip_validation` is a choice this crate makes that the model cannot
+// express, so a model refresh that re-renders this file drops it and it is restored here.
 #[smithy_macros::smithy(
     shape = "com.amazonaws.mwaaserverless#S3Location",
     skip_validation = ["Bucket", "ObjectKey", "VersionId"]
@@ -94,9 +106,6 @@ pub struct S3Location {
     pub version_id: Option<String>,
 }
 
-// `Type` targets the `EncryptionType` enum; its value set travels with the
-// shadow `EncryptionConfiguration` schema in `crate::state`. `KmsKeyId` targets
-// a plain `String` and declares no constraint.
 #[smithy_macros::smithy(
     shape = "com.amazonaws.mwaaserverless#EncryptionConfiguration",
     skip_validation = ["Type"]
@@ -113,9 +122,6 @@ pub struct LoggingConfiguration {
     pub log_group_name: String,
 }
 
-// Both id lists carry their element shape's `@length`/`@pattern`, which travel
-// with the shadow `NetworkConfiguration` schema in `crate::state` as the same
-// `ElementConstraintsTrait` codegen attached.
 #[smithy_macros::smithy(
     shape = "com.amazonaws.mwaaserverless#NetworkConfiguration",
     skip_validation = ["SecurityGroupIds", "SubnetIds"]
@@ -126,12 +132,13 @@ pub struct NetworkConfiguration {
     pub subnet_ids: Option<Vec<String>>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.mwaaserverless#ConflictException")]
+#[smithy_macros::smithy(
+    shape = "com.amazonaws.mwaaserverless#Environment",
+    skip_validation = ["Variables"]
+)]
 #[derive(Debug, Clone, Default)]
-pub struct ConflictException {
-    pub message: String,
-    pub resource_id: String,
-    pub resource_type: String,
+pub struct Environment {
+    pub variables: Option<std::collections::HashMap<String, String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.mwaaserverless#ServiceQuotaExceededException")]

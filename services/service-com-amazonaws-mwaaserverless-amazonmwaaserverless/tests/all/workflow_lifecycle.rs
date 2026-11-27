@@ -2,7 +2,9 @@
 
 //! End-to-end tests for the MWAA Serverless workflow lifecycle slice:
 //! `CreateWorkflow`, `GetWorkflow`, `ListWorkflows`, `StartWorkflowRun`,
-//! `GetWorkflowRun` and `DeleteWorkflow`.
+//! `GetWorkflowRun` and `DeleteWorkflow` — and, at the end of the file,
+//! `CreateAirflowUiUrl`, the launch URL a caller opens the Airflow UI of this account's
+//! workflows with.
 //!
 //! Every test drives the real wire path — `MultiServiceRouter::dispatch` over an
 //! `awsJson1_0` request — against ONE shared engine, so what a test asserts is what a
@@ -38,6 +40,7 @@ const ECHOED_MEMBERS: &[&str] = &[
     "LoggingConfiguration",
     "EngineVersion",
     "NetworkConfiguration",
+    "Environment",
     "TriggerMode",
 ];
 
@@ -388,6 +391,8 @@ fn create_cases() -> Vec<(&'static str, serde_json::Value)> {
                     "SubnetIds": ["subnet-1", "subnet-2"],
                 },
                 "Tags": {"team": "data", "env": "test"},
+                "Environment": {"Variables": {"AIRFLOW_HOME": "/usr/local/airflow",
+                                              "retries": "2"}},
                 "TriggerMode": "SCHEDULED",
             }),
         ),
@@ -398,6 +403,7 @@ fn create_cases() -> Vec<(&'static str, serde_json::Value)> {
                 "DefinitionS3Location": {"Bucket": "defs", "ObjectKey": "dags/empty.yaml"},
                 "RoleArn": role_arn(),
                 "NetworkConfiguration": {"SecurityGroupIds": [], "SubnetIds": []},
+                "Environment": {"Variables": {}},
                 "Tags": {},
             }),
         ),
@@ -1442,6 +1448,7 @@ async fn deleting_one_named_version_keeps_the_workflow_until_no_version_is_left(
                     logging_configuration: None,
                     engine_version: None,
                     network_configuration: None,
+                    environment: None,
                     trigger_mode: None,
                 },
             });
@@ -1754,4 +1761,295 @@ async fn inputs_outside_the_modelled_constraints_are_refused() {
              {status} {body:?}"
         );
     }
+}
+
+// ===========================================================================
+// `CreateAirflowUiUrl`: the launch URL that opens the Airflow UI, and the
+// session it starts
+// ===========================================================================
+
+/// One row of the launch-URL table: what the request asks for, and the spans that
+/// request means.
+struct UiUrlCase {
+    label: &'static str,
+    /// `ExpiresInSeconds`, or `None` for a request that names none.
+    expires_in: Option<i32>,
+    /// `SessionDurationInSeconds`, or `None` for a request that names none.
+    session_duration: Option<i32>,
+    /// How long the URL may be opened in, for the request above.
+    url_validity: u64,
+    /// How long the session it starts lasts, for the request above.
+    session_lifetime: u64,
+}
+
+/// The launch-URL requests the table covers. Rows differ along which span the request
+/// names and which it leaves to the service's documented default, and they sit on each
+/// published bound of the two members: `ExpiresInSeconds` is `@range(5..300)` and
+/// `SessionDurationInSeconds` is `@range(1..43200)`
+/// (`smithy_query(query="operation", operation="CreateAirflowUiUrl")`).
+fn ui_url_cases() -> Vec<UiUrlCase> {
+    use service_com_amazonaws_mwaaserverless_amazonmwaaserverless::state::airflow_ui_session::{
+        DEFAULT_SESSION_DURATION, DEFAULT_URL_VALIDITY,
+    };
+
+    let default_url = DEFAULT_URL_VALIDITY.as_secs();
+    let default_session = DEFAULT_SESSION_DURATION.as_secs();
+    vec![
+        UiUrlCase {
+            label: "neither span named, so both documented defaults apply",
+            expires_in: None,
+            session_duration: None,
+            url_validity: default_url,
+            session_lifetime: default_session,
+        },
+        UiUrlCase {
+            label: "both spans at their published minimum",
+            expires_in: Some(5),
+            session_duration: Some(1),
+            url_validity: 5,
+            session_lifetime: 1,
+        },
+        UiUrlCase {
+            label: "both spans at their published maximum",
+            expires_in: Some(300),
+            session_duration: Some(43_200),
+            url_validity: 300,
+            session_lifetime: 43_200,
+        },
+        UiUrlCase {
+            label: "a URL validity named and the session duration defaulted",
+            expires_in: Some(60),
+            session_duration: None,
+            url_validity: 60,
+            session_lifetime: default_session,
+        },
+        UiUrlCase {
+            label: "a session duration named and the URL validity defaulted",
+            expires_in: None,
+            session_duration: Some(900),
+            url_validity: default_url,
+            session_lifetime: 900,
+        },
+    ]
+}
+
+/// The modelled `SessionIdString`: `^[a-z0-9]{32}$`, length 32..32
+/// (`smithy_query(query="shape", shape="SessionIdString")`).
+fn is_session_id(session_id: &str) -> bool {
+    session_id.len() == 32
+        && session_id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b.is_ascii_lowercase() && b.is_ascii_alphabetic()))
+}
+
+/// The `CreateAirflowUiUrl` body for one row.
+fn ui_url_body(case: &UiUrlCase) -> serde_json::Value {
+    let mut body = serde_json::Map::new();
+    if let Some(seconds) = case.expires_in {
+        body.insert("ExpiresInSeconds".to_string(), serde_json::json!(seconds));
+    }
+    if let Some(seconds) = case.session_duration {
+        body.insert(
+            "SessionDurationInSeconds".to_string(),
+            serde_json::json!(seconds),
+        );
+    }
+    serde_json::Value::Object(body)
+}
+
+/// RULE: `CreateAirflowUiUrl` mints a UI session and answers a launch URL that leads
+/// back to THIS emulator, signed for exactly as long as the request allows the URL to be
+/// opened in, while the session it starts is recorded at the caller's endpoint and ends
+/// the span the request asked for after it was opened.
+#[tokio::test]
+async fn a_launch_url_is_signed_for_this_emulator_and_starts_a_recorded_session() {
+    use service_com_amazonaws_mwaaserverless_amazonmwaaserverless::state::airflow_ui_session::session_path;
+
+    for case in ui_url_cases() {
+        let label = case.label;
+        // A fresh emulator per row, so one row's sessions cannot be read as another's.
+        let harness = Harness::new("us-west-2");
+
+        let (status, answered) = harness
+            .call("CreateAirflowUiUrl", ui_url_body(&case))
+            .await;
+        assert_eq!(
+            status, 200,
+            "case {label:?}: expected CreateAirflowUiUrl to succeed, got {status} {answered:?}"
+        );
+
+        let session_id = answered["SessionId"].as_str().unwrap_or_default();
+        assert!(
+            is_session_id(session_id),
+            "case {label:?}: expected a 32-character lowercase-alphanumeric SessionId, got \
+             {session_id:?}"
+        );
+
+        // The URL leads back to this emulator, at the session's own address, carrying a
+        // SigV4 query signature that is valid for exactly the span asked for.
+        let url = answered["AuthorizedUrl"].as_str().unwrap_or_default();
+        assert!(
+            (1..=2048).contains(&url.chars().count()),
+            "case {label:?}: AuthorizedUrl must satisfy AuthorizedUrlString's length \
+             1..2048, got {} characters",
+            url.chars().count()
+        );
+        assert!(
+            url.starts_with("https://"),
+            "case {label:?}: expected an https URL on this emulator, got {url:?}"
+        );
+        let path = session_path(session_id);
+        assert!(
+            url.contains(&path),
+            "case {label:?}: expected the URL to address {path:?}, got {url:?}"
+        );
+        assert!(
+            url.contains("X-Amz-Signature=") && url.contains("X-Amz-Credential="),
+            "case {label:?}: expected a SigV4 query-signed URL, got {url:?}"
+        );
+        let expires = format!("X-Amz-Expires={}", case.url_validity);
+        assert!(
+            url.contains(&expires),
+            "case {label:?}: expected the signature to be valid for {expires:?}, got {url:?}"
+        );
+
+        assert!(
+            is_date_time(&answered["UrlExpiresAt"]),
+            "case {label:?}: expected a UrlExpiresAt date-time string, got {:?}",
+            answered["UrlExpiresAt"]
+        );
+        assert!(
+            is_date_time(&answered["SessionExpiresAt"]),
+            "case {label:?}: expected a SessionExpiresAt date-time string, got {:?}",
+            answered["SessionExpiresAt"]
+        );
+
+        // The session the URL starts is REAL: the store holds it at the endpoint the
+        // call was signed for, ending the span the request asked for after it opened,
+        // and that is the instant the answer reported.
+        let state = harness
+            .engine()
+            .state::<ComAmazonawsMwaaserverlessAmazonmwaaserverlessState>();
+        let store = state.lock();
+        let session = store
+            .airflow_ui_session_in(harness.region(), session_id)
+            .unwrap_or_else(|| {
+                panic!("case {label:?}: the store must hold the session the answer reported")
+            });
+        assert_eq!(
+            session
+                .expires_at
+                .duration_since(session.created_at)
+                .unwrap_or_default(),
+            Duration::from_secs(case.session_lifetime),
+            "case {label:?}: expected the session to last {} seconds from the instant it \
+             opened, got {:?} to {:?}",
+            case.session_lifetime,
+            session.created_at,
+            session.expires_at
+        );
+        let reported = reported_instant(&answered["SessionExpiresAt"]).unwrap_or_default();
+        let stored = session
+            .expires_at
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        assert!(
+            (reported - stored).abs() < 0.002,
+            "case {label:?}: SessionExpiresAt must name the instant the stored session \
+             ends, got {reported} against {stored}"
+        );
+        // A session belongs to the endpoint it was opened through, so another region's
+        // endpoint does not hold it.
+        assert!(
+            store
+                .airflow_ui_session_in("eu-west-1", session_id)
+                .is_none(),
+            "case {label:?}: a session of {:?} must not be held at another region's \
+             endpoint",
+            harness.region()
+        );
+    }
+}
+
+/// RULE: two calls open two different sessions, and a session the clock has carried past
+/// its end is gone from the store — the end the answer already promised, applied whether
+/// or not anybody called again.
+#[tokio::test]
+async fn two_calls_open_two_sessions_and_an_ended_one_is_dropped() {
+    let harness = Harness::new("eu-central-1");
+
+    let mut opened = Vec::new();
+    for round in 0..2 {
+        let (status, answered) = harness
+            .call(
+                "CreateAirflowUiUrl",
+                serde_json::json!({"SessionDurationInSeconds": 43_200}),
+            )
+            .await;
+        assert_eq!(
+            status, 200,
+            "case round {round}: expected CreateAirflowUiUrl to succeed, got {status} \
+             {answered:?}"
+        );
+        opened.push(
+            answered["SessionId"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        );
+    }
+    assert_ne!(
+        opened[0], opened[1],
+        "case two calls: each call must open its own session, got {opened:?}"
+    );
+
+    let state = harness
+        .engine()
+        .state::<ComAmazonawsMwaaserverlessAmazonmwaaserverlessState>();
+    for session_id in &opened {
+        assert!(
+            state
+                .lock()
+                .airflow_ui_session_in(harness.region(), session_id)
+                .is_some(),
+            "case two calls: the store must hold both sessions, {session_id:?} is missing"
+        );
+    }
+
+    // Bring the FIRST session's end forward to the instant it opened, the way the clock
+    // would have carried it there, and let the next call materialise what that owes.
+    {
+        let mut store = state.lock();
+        let session = store
+            .airflow_ui_sessions
+            .get_mut(&opened[0])
+            .expect("the first session is stored");
+        session.expires_at = session.created_at;
+    }
+    let (status, answered) = harness
+        .call("CreateAirflowUiUrl", serde_json::json!({}))
+        .await;
+    assert_eq!(
+        status, 200,
+        "case an ended session: expected CreateAirflowUiUrl to succeed, got {status} \
+         {answered:?}"
+    );
+
+    let store = state.lock();
+    assert!(
+        store
+            .airflow_ui_session_in(harness.region(), &opened[0])
+            .is_none(),
+        "case an ended session: a session past its end must be gone, {:?} is still held",
+        opened[0]
+    );
+    assert!(
+        store
+            .airflow_ui_session_in(harness.region(), &opened[1])
+            .is_some(),
+        "case an ended session: a session still within its span must be kept, {:?} is \
+         gone",
+        opened[1]
+    );
 }

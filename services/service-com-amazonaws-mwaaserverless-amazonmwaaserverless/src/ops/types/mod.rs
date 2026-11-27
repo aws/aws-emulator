@@ -14,6 +14,7 @@
 //! here named after an operation would make that operation's own module name
 //! ambiguous inside `ops` (`E0659`).
 
+pub mod create_airflow_ui_url_types;
 pub mod create_workflow_types;
 pub mod delete_workflow_types;
 pub mod get_task_instance_types;
@@ -31,6 +32,8 @@ pub mod tag_resource_types;
 pub mod untag_resource_types;
 pub mod update_workflow_types;
 
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_airflow_ui_url_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_workflow_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

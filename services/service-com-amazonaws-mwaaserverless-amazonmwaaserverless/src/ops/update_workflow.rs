@@ -71,6 +71,9 @@
 //!   for the workflow.
 //! * `EngineVersion` (EngineVersion) — The version of the Amazon Managed Workflows for Apache
 //!   Airflow Serverless engine that you want to use for the updated workflow.
+//! * `Environment` (Environment) — Contains the environment variables that tasks in a
+//!   workflow use during execution. For the full text ask the model:
+//!   `smithy_query(query="doc",shape="Environment",member="Variables",model_path="services/service-com-amazonaws-mwaaserverless-amazonmwaaserverless/smithy-model/com-amazonaws-mwaaserverless-amazonmwaaserverless.json")`.
 //! * `LoggingConfiguration` (LoggingConfiguration) — Updated logging configuration for the
 //!   workflow.
 //! * `NetworkConfiguration` (NetworkConfiguration) — Updated network configuration for the
@@ -399,6 +402,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )),
             engine_version: input.engine_version,
             network_configuration: input.network_configuration.clone(),
+            environment: input.environment.clone(),
             trigger_mode: Some(crate::state::applied_trigger_mode(
                 input.trigger_mode.as_deref(),
                 schedule_configuration.as_ref(),
@@ -473,6 +477,7 @@ fn request_fingerprint(input: &UpdateWorkflowInput) -> String {
         encryption_configuration: None,
         logging_configuration: input.logging_configuration.as_ref(),
         network_configuration: input.network_configuration.as_ref(),
+        environment: input.environment.as_ref(),
     }
     .digest_group(&mut fields);
     fields.digest()
@@ -492,6 +497,7 @@ fn validate_input(input: &UpdateWorkflowInput) -> Result<(), ValidationException
     let code = crate::state::constrained_code(input.code.as_ref());
     let network =
         crate::state::constrained_network_configuration(input.network_configuration.as_ref());
+    let environment = crate::state::constrained_environment(input.environment.as_ref());
 
     let mut members: Vec<(&'static ::aws_smithy_schema::Schema, crate::state::ConstrainedValue)> =
         vec![
@@ -509,6 +515,11 @@ fn validate_input(input: &UpdateWorkflowInput) -> Result<(), ValidationException
     }
     if let Some(network) = network.as_ref() {
         members.push((&crate::state::M_NETWORK_CONFIGURATION, Nested(network)));
+    }
+    // Handed over exactly as `CreateWorkflow` hands it over, so a variable name or value
+    // one operation refuses is refused by both.
+    if let Some(environment) = environment.as_ref() {
+        members.push((&crate::state::M_ENVIRONMENT, Nested(environment)));
     }
 
     let violations = crate::state::validate_members(&members);

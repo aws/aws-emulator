@@ -50,6 +50,14 @@ pub(crate) fn good_definition() -> serde_json::Value {
     serde_json::json!({"Bucket": "defs", "ObjectKey": "dags/v.yaml"})
 }
 
+/// An `Environment$Variables` map of one entry, for a row whose variable NAME is the
+/// value under test and so cannot be written as a literal key.
+fn one_variable(name: &str, value: &str) -> serde_json::Value {
+    let mut variables = serde_json::Map::new();
+    variables.insert(name.to_string(), serde_json::json!(value));
+    serde_json::Value::Object(variables)
+}
+
 /// One row of the table: a label, the operation to call, the request body, and
 /// the `FieldList` names the answer must carry — exactly those, in any order.
 struct Case {
@@ -215,6 +223,67 @@ fn refusal_cases() -> Vec<Case> {
                 "Description": "",
             }),
             &["Name", "Description"],
+        ),
+        // ---- the key and the value of a map inside a nested structure ----
+        // `EnvironmentVariablesMap` is `@length(0..50)` entries over a key
+        // `@length(1..128)` + `^[a-zA-Z][a-zA-Z0-9_]*$` and a value `@length(0..255)`
+        // (`smithy_query(query="shape", shape="EnvironmentVariablesMap")`).
+        case(
+            "CreateWorkflow Environment variable name starts with a digit the pattern excludes",
+            "CreateWorkflow",
+            serde_json::json!({
+                "Name": "badVariableName",
+                "DefinitionS3Location": good_definition(),
+                "RoleArn": role_arn(),
+                "Environment": {"Variables": {"1RETRIES": "2"}},
+            }),
+            &["Environment.variables"],
+        ),
+        case(
+            "CreateWorkflow Environment variable name one past its maximum of 128",
+            "CreateWorkflow",
+            serde_json::json!({
+                "Name": "longVariableName",
+                "DefinitionS3Location": good_definition(),
+                "RoleArn": role_arn(),
+                "Environment": {"Variables": one_variable(&format!("V{}", "x".repeat(128)), "2")},
+            }),
+            &["Environment.variables"],
+        ),
+        case(
+            "CreateWorkflow Environment variable value one past its maximum of 255",
+            "CreateWorkflow",
+            serde_json::json!({
+                "Name": "longVariableValue",
+                "DefinitionS3Location": good_definition(),
+                "RoleArn": role_arn(),
+                "Environment": {"Variables": {"RETRIES": "v".repeat(256)}},
+            }),
+            &["Environment.variables.RETRIES"],
+        ),
+        case(
+            "CreateWorkflow Environment one past the variables maximum of 50 entries",
+            "CreateWorkflow",
+            serde_json::json!({
+                "Name": "tooManyVariables",
+                "DefinitionS3Location": good_definition(),
+                "RoleArn": role_arn(),
+                "Environment": {"Variables": (0..51)
+                    .map(|index| (format!("VAR_{index}"), serde_json::json!("1")))
+                    .collect::<serde_json::Map<String, serde_json::Value>>()},
+            }),
+            &["Environment.variables"],
+        ),
+        case(
+            "UpdateWorkflow Environment variable name is empty, below its minimum of 1",
+            "UpdateWorkflow",
+            serde_json::json!({
+                "WorkflowArn": arn.clone(),
+                "DefinitionS3Location": good_definition(),
+                "RoleArn": role_arn(),
+                "Environment": {"Variables": {"": "2"}},
+            }),
+            &["Environment.variables"],
         ),
         // ---- the same rule on the other operations ----
         case(
@@ -688,6 +757,11 @@ fn every_shadow_member_schema_carries_the_model_s_own_constraints() {
             &state::M_SECURITY_GROUP_IDS,
         ),
         ("NetworkConfiguration", "SubnetIds", &state::M_SUBNET_IDS),
+        (
+            "Environment",
+            "Variables",
+            &state::M_ENVIRONMENT_VARIABLES,
+        ),
     ];
     for (shape, member, schema) in nested {
         let shape_id = format!("com.amazonaws.mwaaserverless#{shape}");

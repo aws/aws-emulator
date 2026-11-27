@@ -25,7 +25,7 @@
 use std::collections::HashMap;
 
 use service_com_amazonaws_mwaaserverless_amazonmwaaserverless::ops::types::{
-    Code, DefinitionS3Location, EncryptionConfiguration, LoggingConfiguration,
+    Code, DefinitionS3Location, EncryptionConfiguration, Environment, LoggingConfiguration,
     NetworkConfiguration, S3Location,
 };
 use service_com_amazonaws_mwaaserverless_amazonmwaaserverless::state::{
@@ -50,6 +50,7 @@ const READABLE_MEMBERS: &[&str] = &[
     "LoggingConfiguration",
     "EngineVersion",
     "NetworkConfiguration",
+    "Environment",
     "TriggerMode",
 ];
 
@@ -161,6 +162,24 @@ fn member_boundary_cases() -> Vec<(&'static str, serde_json::Value, serde_json::
             serde_json::json!({"Code": {"S3Location": {"Bucket": "code",
                                                        "ObjectKey": "base.zip",
                                                        "VersionId": "codeversion1"}}}),
+        ),
+        (
+            // An environment variable NAME satisfies `^[a-zA-Z][a-zA-Z0-9_]*$`
+            // (`smithy_query(query="shape", shape="EnvironmentVariablesMap")`), which a
+            // tag key may also carry — `TagKey` is `^.*$`.
+            "one tag entry against one environment variable of the same name and value",
+            serde_json::json!({"Tags": {"AIRFLOW_HOME": "sg-1"}}),
+            serde_json::json!({"Environment": {"Variables": {"AIRFLOW_HOME": "sg-1"}}}),
+        ),
+        (
+            "an omitted variables map against an empty one",
+            serde_json::json!({"Environment": {}}),
+            serde_json::json!({"Environment": {"Variables": {}}}),
+        ),
+        (
+            "two environment variables against one carrying the other's name in its value",
+            serde_json::json!({"Environment": {"Variables": {"A": "1", "B": "2"}}}),
+            serde_json::json!({"Environment": {"Variables": {"A": "1B2"}}}),
         ),
     ]
 }
@@ -372,6 +391,12 @@ const SHARED_SUBNET: &str = "subnet-1";
 /// `CUSTOMER_MANAGED_KEY`).
 const ENCRYPTION_TYPE: &str = "CUSTOMER_MANAGED_KEY";
 
+/// The environment variable names the sweep uses, as `EnvironmentVariableKey`'s
+/// `^[a-zA-Z][a-zA-Z0-9_]*$` requires
+/// (`smithy_query(query="shape", shape="EnvironmentVariablesMap")`). Two of them, so the
+/// sweep covers a map of one entry and a map of two.
+const VARIABLE_NAMES: &[&str] = &["A", "B"];
+
 /// Every `Option<&str>` a sweep member walks: absent, and present carrying the shared
 /// text.
 const OPTIONAL_TEXTS: &[Option<&str>] = &[None, Some(SHARED)];
@@ -397,6 +422,7 @@ struct Layout {
     encryption: Option<EncryptionConfiguration>,
     logging: Option<LoggingConfiguration>,
     network: Option<NetworkConfiguration>,
+    environment: Option<Environment>,
 }
 
 impl Layout {
@@ -414,6 +440,7 @@ impl Layout {
             encryption_configuration: self.encryption.as_ref(),
             logging_configuration: self.logging.as_ref(),
             network_configuration: self.network.as_ref(),
+            environment: self.environment.as_ref(),
         }
         .digest_group(&mut fields);
         fields.digest()
@@ -423,14 +450,15 @@ impl Layout {
     fn label(&self) -> String {
         format!(
             "description={:?} trigger_mode={:?} engine_version={:?} code={:?} \
-             encryption={:?} logging={:?} network={:?}",
+             encryption={:?} logging={:?} network={:?} environment={:?}",
             self.description,
             self.trigger_mode,
             self.engine_version,
             self.code,
             self.encryption,
             self.logging,
-            self.network
+            self.network,
+            self.environment
         )
     }
 }
@@ -439,7 +467,8 @@ impl Layout {
 /// present, the code union absent or present with and without an object version, the
 /// encryption configuration absent or present with and without a key id, the logging
 /// configuration absent or present, and the network configuration absent or present with
-/// each pair of list shapes.
+/// each pair of list shapes, and the environment absent or present in each shape its
+/// variables map takes.
 fn sweep_layouts() -> Vec<Layout> {
     let mut codes: Vec<Option<Code>> = vec![None];
     for version_id in OPTIONAL_TEXTS {
@@ -465,6 +494,28 @@ fn sweep_layouts() -> Vec<Layout> {
             }));
         }
     }
+    // Every shape of the variables map: the member absent, the structure present with no
+    // map at all, the map empty, one entry, and two entries. An `EnvironmentVariableKey`
+    // is `^[a-zA-Z][a-zA-Z0-9_]*$`
+    // (`smithy_query(query="shape", shape="EnvironmentVariablesMap")`), so the names come
+    // from [`VARIABLE_NAMES`] while the values carry the text every other member carries.
+    let mut environments: Vec<Option<Environment>> = vec![
+        None,
+        Some(Environment::default()),
+        Some(Environment {
+            variables: Some(HashMap::new()),
+        }),
+    ];
+    for names in [&VARIABLE_NAMES[..1], &VARIABLE_NAMES[..2]] {
+        environments.push(Some(Environment {
+            variables: Some(
+                names
+                    .iter()
+                    .map(|name| ((*name).to_string(), SHARED.to_string()))
+                    .collect(),
+            ),
+        }));
+    }
 
     let mut layouts = Vec::new();
     for description in OPTIONAL_TEXTS {
@@ -474,17 +525,20 @@ fn sweep_layouts() -> Vec<Layout> {
                     for encryption in &encryptions {
                         for logging in [None, Some(SHARED)] {
                             for network in &networks {
-                                layouts.push(Layout {
-                                    description: *description,
-                                    trigger_mode: *trigger_mode,
-                                    engine_version,
-                                    code: code.clone(),
-                                    encryption: encryption.clone(),
-                                    logging: logging.map(|name| LoggingConfiguration {
-                                        log_group_name: name.to_string(),
-                                    }),
-                                    network: network.clone(),
-                                });
+                                for environment in &environments {
+                                    layouts.push(Layout {
+                                        description: *description,
+                                        trigger_mode: *trigger_mode,
+                                        engine_version,
+                                        code: code.clone(),
+                                        encryption: encryption.clone(),
+                                        logging: logging.map(|name| LoggingConfiguration {
+                                            log_group_name: name.to_string(),
+                                        }),
+                                        network: network.clone(),
+                                        environment: environment.clone(),
+                                    });
+                                }
                             }
                         }
                     }

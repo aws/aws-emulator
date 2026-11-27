@@ -74,6 +74,9 @@
 //!   the workflow.
 //! * `EngineVersion` (EngineVersion) — The version of the Amazon Managed Workflows for Apache
 //!   Airflow Serverless engine that this workflow uses.
+//! * `Environment` (Environment) — Contains the environment variables that tasks in a
+//!   workflow use during execution. For the full text ask the model:
+//!   `smithy_query(query="doc",shape="Environment",member="Variables",model_path="services/service-com-amazonaws-mwaaserverless-amazonmwaaserverless/smithy-model/com-amazonaws-mwaaserverless-amazonmwaaserverless.json")`.
 //! * `LoggingConfiguration` (LoggingConfiguration) — The logging configuration for the
 //!   workflow.
 //! * `ModifiedAt` (TimestampValue) — The timestamp when the workflow was last modified, in
@@ -292,6 +295,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             schedule_configuration: snapshot.schedule_configuration.clone(),
             role_arn: Some(snapshot.role_arn.clone()),
             network_configuration: snapshot.network_configuration.clone(),
+            // The environment variables this version froze, reported as the request that
+            // created the version supplied them: a version is immutable, so a later
+            // update's variables belong to the version that update appended.
+            environment: snapshot.environment.clone(),
             trigger_mode: snapshot.trigger_mode.clone(),
             workflow_definition: snapshot.workflow_definition.clone(),
         })

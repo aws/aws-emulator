@@ -85,6 +85,9 @@
 //!   your workflow. Amazon Managed Workflows for Apache Airflow Serverless maintains backward
 //!   compatibility across versions while introducing new features and improvements. Currently
 //!   supports version 1 with plans for additional versions as the service evolves.
+//! * `Environment` (Environment) — Contains the environment variables that tasks in a
+//!   workflow use during execution. For the full text ask the model:
+//!   `smithy_query(query="doc",shape="Environment",member="Variables",model_path="services/service-com-amazonaws-mwaaserverless-amazonmwaaserverless/smithy-model/com-amazonaws-mwaaserverless-amazonmwaaserverless.json")`.
 //! * `LoggingConfiguration` (LoggingConfiguration) — The configuration for workflow logging.
 //!   Specifies the CloudWatch log group where workflow execution logs are stored. Amazon
 //!   Managed Workflows for Apache Airflow Serverless automatically exports worker logs and
@@ -410,6 +413,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )),
             engine_version: input.engine_version,
             network_configuration: input.network_configuration.clone(),
+            environment: input.environment.clone(),
             trigger_mode: Some(crate::state::applied_trigger_mode(
                 input.trigger_mode.as_deref(),
                 schedule_configuration.as_ref(),
@@ -510,6 +514,7 @@ fn validate_input(input: &CreateWorkflowInput) -> Result<(), ValidationException
         crate::state::constrained_encryption_configuration(input.encryption_configuration.as_ref());
     let network =
         crate::state::constrained_network_configuration(input.network_configuration.as_ref());
+    let environment = crate::state::constrained_environment(input.environment.as_ref());
 
     let mut members: Vec<(&'static ::aws_smithy_schema::Schema, crate::state::ConstrainedValue)> =
         vec![
@@ -540,6 +545,12 @@ fn validate_input(input: &CreateWorkflowInput) -> Result<(), ValidationException
     }
     if let Some(network) = network.as_ref() {
         members.push((&crate::state::M_NETWORK_CONFIGURATION, Nested(network)));
+    }
+    // `Environment` is handed over the same way, so every variable NAME is checked
+    // against the key shape's own constraints beside the map's entry count and each
+    // value's — a workflow never freezes a variable outside them.
+    if let Some(environment) = environment.as_ref() {
+        members.push((&crate::state::M_ENVIRONMENT, Nested(environment)));
     }
 
     let violations = crate::state::validate_members(&members);
@@ -618,6 +629,7 @@ fn request_fingerprint(input: &CreateWorkflowInput) -> String {
         encryption_configuration: input.encryption_configuration.as_ref(),
         logging_configuration: input.logging_configuration.as_ref(),
         network_configuration: input.network_configuration.as_ref(),
+        environment: input.environment.as_ref(),
     }
     .digest_group(&mut fields);
     fields.group(|entries| {
