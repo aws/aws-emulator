@@ -17,8 +17,8 @@
 //! * the listing is narrowed by EVERY member of `filter`: a member the caller omits
 //!   narrows nothing, one they send keeps the enablements whose own value its set holds,
 //!   a member no enablement has a value for (`parentIdentifiers`) selects nothing, and
-//!   `inheritanceDriftStatuses` selects the enablements carrying that drift status, so it
-//!   selects nothing while no enablement has one yet;
+//!   `inheritanceDriftStatuses`/`sourceDriftStatuses` select the enablements carrying that
+//!   drift status, so they select nothing while no enablement has one yet;
 //! * a paginated walk returns every selected enablement exactly once, in pages of at most
 //!   `maxResults`, ending when the answer carries no `nextToken`; a token this operation
 //!   never handed out is refused.
@@ -35,12 +35,12 @@
 
 use smithy_server_runtime::MultiServiceRouter;
 
-use service_com_amazonaws_controltower_awscontroltowerapis::state::assesses_inheritance_drift;
+use service_com_amazonaws_controltower_awscontroltowerapis::state::assesses_drift;
 
 use crate::baseline_operations::{disable, enable, enablements, Enablement};
 use crate::enabled_control_lifecycle::entries;
 use crate::front_door_validation::FRONT_DOOR_CODE;
-use crate::landing_zone_lifecycle::{call, past_the_settle_span, set_up_emulator, Answer};
+use crate::landing_zone_lifecycle::{call, poll_until, set_up_emulator, Answer};
 
 /// POST `/list-enabled-baselines` with `body`.
 async fn list(router: &MultiServiceRouter, body: serde_json::Value) -> Answer {
@@ -99,6 +99,22 @@ async fn details(router: &MultiServiceRouter, identifier: &str) -> serde_json::V
         got.status, got.body
     );
     got.get("enabledBaselineDetails").clone()
+}
+
+/// Wait for the clock to make each enablement of `arns` due, looking again for the
+/// CONDITION the case waits on rather than for a duration it measures.
+async fn await_all_deployed(router: &MultiServiceRouter, case: &str, arns: &[String]) {
+    for arn in arns {
+        poll_until(case, "the enablement reads as deployed", || async {
+            details(router, arn)
+                .await
+                .get("statusSummary")
+                .and_then(|summary| summary.get("status"))
+                .and_then(serde_json::Value::as_str)
+                == Some("SUCCEEDED")
+        })
+        .await;
+    }
 }
 
 /// Enable every row of `rows` on `router`, handing back each row's `(arn,
@@ -219,9 +235,17 @@ async fn the_listing_reports_every_enablement_the_store_holds() {
         again.body
     );
 
-    // The clock makes every enablement's operation due; nothing sleeps server-side, the
-    // wait is the test's.
-    tokio::time::sleep(past_the_settle_span()).await;
+    // The clock makes every enablement's operation due; nothing sleeps server-side, and the
+    // case waits for that CONDITION rather than for a duration.
+    await_all_deployed(
+        &router,
+        "every enablement is deployed",
+        &enabled
+            .iter()
+            .map(|(arn, _)| arn.clone())
+            .collect::<Vec<String>>(),
+    )
+    .await;
 
     let settled = list(&router, serde_json::json!({})).await;
     assert_eq!(
@@ -255,10 +279,15 @@ async fn the_listing_reports_every_enablement_the_store_holds() {
             row.case
         );
         // The deployed enablement carries the drift summary for the baselines AWS
-        // assesses inheritance drift on, and none for the others — the same summary
+        // assesses drift on, and none for the others — the same summary
         // `GetEnabledBaseline` reports for the same record.
-        let expected_drift = assesses_inheritance_drift(row.baseline_identifier).then(|| {
-            serde_json::json!({ "types": { "inheritance": { "status": "IN_SYNC" } } })
+        let expected_drift = assesses_drift(row.baseline_identifier).then(|| {
+            serde_json::json!({
+                "types": {
+                    "inheritance": { "status": "IN_SYNC" },
+                    "source": { "status": "IN_SYNC" }
+                }
+            })
         });
         assert_eq!(
             summary.get("driftStatusSummary").cloned(),
@@ -286,9 +315,15 @@ async fn the_listing_reports_every_enablement_the_store_holds() {
         "disable-baseline: expected 200, got {} body {:?}",
         disabled.status, disabled.body
     );
-    tokio::time::sleep(past_the_settle_span()).await;
-
     expected.retain(|arn| arn != torn_down);
+    // The teardown the clock owes removes the enablement; the case looks again until the
+    // listing no longer holds it rather than waiting a fixed time for it.
+    poll_until(
+        "the torn-down enablement is gone",
+        "the listing stops holding the torn-down enablement",
+        || async { listed_arns(&list(&router, serde_json::json!({})).await) == expected },
+    )
+    .await;
     let after = list(&router, serde_json::json!({})).await;
     assert_eq!(
         listed_arns(&after),
@@ -435,6 +470,18 @@ async fn the_listing_is_narrowed_by_every_filter_member() {
             none.clone(),
         ),
         (
+            "sourceDriftStatuses IN_SYNC, which no enablement carries while its \
+             deployment is still in flight",
+            serde_json::json!({ "filter": { "sourceDriftStatuses": ["IN_SYNC"] } }),
+            none.clone(),
+        ),
+        (
+            "sourceDriftStatuses DRIFTED, which no enablement under an unchanged landing \
+             zone reaches",
+            serde_json::json!({ "filter": { "sourceDriftStatuses": ["DRIFTED"] } }),
+            none.clone(),
+        ),
+        (
             "includeChildren, which widens the listing by nothing",
             serde_json::json!({ "includeChildren": true }),
             all.clone(),
@@ -455,7 +502,8 @@ async fn the_listing_is_narrowed_by_every_filter_member() {
                     "targetIdentifiers": [first_target],
                     "parentIdentifiers": [first_target],
                     "statuses": ["UNDER_CHANGE"],
-                    "inheritanceDriftStatuses": ["IN_SYNC"]
+                    "inheritanceDriftStatuses": ["IN_SYNC"],
+                    "sourceDriftStatuses": ["IN_SYNC"]
                 }
             }),
             none.clone(),
@@ -478,8 +526,17 @@ async fn the_listing_is_narrowed_by_every_filter_member() {
     }
 
     // The status filter reads the store rather than a constant, so the two status cases
-    // above swap over once the clock has made every enablement due.
-    tokio::time::sleep(past_the_settle_span()).await;
+    // above swap over once the clock has made every enablement due — the case waits for
+    // that CONDITION rather than for a duration.
+    await_all_deployed(
+        &router,
+        "every enablement is deployed",
+        &enabled
+            .iter()
+            .map(|(arn, _)| arn.clone())
+            .collect::<Vec<String>>(),
+    )
+    .await;
 
     for (case, status, expected) in [
         ("UNDER_CHANGE once every enablement is due", "UNDER_CHANGE", none.clone()),
@@ -498,23 +555,38 @@ async fn the_listing_is_narrowed_by_every_filter_member() {
         );
     }
 
-    // So does the drift filter: the enablements of a drift-assessed baseline carry
-    // IN_SYNC once deployed, and are the ones that filter then selects.
-    for (case, status, expected) in [
+    // So do the two drift filters: the enablements of a drift-assessed baseline carry
+    // IN_SYNC in both dimensions once deployed under a landing zone whose configuration has
+    // not changed under them, and are the ones those filters then select.
+    for (case, member, status, expected) in [
         (
             "inheritanceDriftStatuses IN_SYNC once every enablement is due",
+            "inheritanceDriftStatuses",
             "IN_SYNC",
-            selects(&|row| assesses_inheritance_drift(row.baseline_identifier)),
+            selects(&|row| assesses_drift(row.baseline_identifier)),
         ),
         (
             "inheritanceDriftStatuses DRIFTED once every enablement is due",
+            "inheritanceDriftStatuses",
+            "DRIFTED",
+            none.clone(),
+        ),
+        (
+            "sourceDriftStatuses IN_SYNC once every enablement is due",
+            "sourceDriftStatuses",
+            "IN_SYNC",
+            selects(&|row| assesses_drift(row.baseline_identifier)),
+        ),
+        (
+            "sourceDriftStatuses DRIFTED once every enablement is due",
+            "sourceDriftStatuses",
             "DRIFTED",
             none.clone(),
         ),
     ] {
         let listed = list(
             &router,
-            serde_json::json!({ "filter": { "inheritanceDriftStatuses": [status] } }),
+            serde_json::json!({ "filter": { member: [status] } }),
         )
         .await;
         assert_eq!(

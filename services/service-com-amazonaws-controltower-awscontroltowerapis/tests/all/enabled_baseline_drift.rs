@@ -1,19 +1,21 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! The inheritance drift an `EnabledBaseline` reports, end to end over HTTP.
+//! The drift an `EnabledBaseline` reports, end to end over HTTP.
 //!
 //! Driven through the same [`MultiServiceRouter`] the production emulator dispatches with,
 //! so what these tests exercise is the wire behaviour a client sees — status codes and JSON
 //! bodies — not the handlers' Rust signatures.
 //!
 //! The rule under test, asserted over a TABLE spanning every baseline the service
-//! publishes rather than one case: a DEPLOYED enablement reports
-//! `driftStatusSummary.types.inheritance.status` exactly when its baseline is one AWS
-//! Control Tower assesses inheritance drift on, and that status is `IN_SYNC` while no
-//! account under the target organizational unit has diverged from the configuration the
-//! enablement applies to it; an enablement whose deployment — of the configuration it was
+//! publishes rather than one case: a DEPLOYED enablement reports a status for each drift
+//! dimension the model declares for a baseline —
+//! `driftStatusSummary.types.inheritance.status` and `driftStatusSummary.types.source.status`
+//! — exactly when its baseline is one AWS Control Tower assesses drift on, and both read
+//! `IN_SYNC` while no account under the target organizational unit has diverged from the
+//! configuration the enablement applies to it and the landing zone's configuration has not
+//! changed under it; an enablement whose deployment — of the configuration it was
 //! enabled with, or of one a later call started applying — the clock has not made due yet,
-//! and one of a baseline no inheritance drift is assessed for, carry no
+//! and one of a baseline no drift is assessed for, carry no
 //! `driftStatusSummary` member at all.
 //!
 //! The table is `state::BASELINE_CATALOG` itself — the catalog `ListBaselines`/`GetBaseline`
@@ -22,19 +24,21 @@
 //! comes from the model: `EnabledBaselineDriftTypes`
 //! (`smithy_query(query="shape", shape="EnabledBaselineDriftTypes")`) documents that
 //! Control Tower detects inheritance drift on the enabled baselines that target OUs and
-//! not on the ones that apply to the landing zone, which is the catalog's
-//! `detects_inheritance_drift` flag the service reads through
-//! `state::assesses_inheritance_drift`. The status value set (`IN_SYNC` | `DRIFTED`) comes
+//! does not detect drift on the ones that apply to the landing zone, which is the catalog's
+//! `detects_drift` flag the service reads through
+//! `state::assesses_drift`. The status value set (`IN_SYNC` | `DRIFTED`) comes
 //! from `smithy_query(query="shape", shape="EnabledBaselineDriftStatus")`.
 
 use smithy_server_runtime::MultiServiceRouter;
 
 use service_com_amazonaws_controltower_awscontroltowerapis::state::{
-    assesses_inheritance_drift, CatalogBaseline, BASELINE_CATALOG,
+    assesses_drift, CatalogBaseline, BASELINE_CATALOG,
 };
 
 use crate::baseline_catalog::served_arn;
-use crate::landing_zone_lifecycle::{call, past_the_settle_span, set_up_emulator, Answer};
+use crate::landing_zone_lifecycle::{
+    call, past_the_settle_span, poll_until, set_up_emulator, Answer,
+};
 
 /// The ARN the service serves `baseline` under, in the region these tests sign for. The
 /// sibling `baseline_catalog` suite owns that form, so the two cannot disagree about it.
@@ -83,22 +87,42 @@ fn drift_summary(record: &serde_json::Value) -> Option<serde_json::Value> {
     record.get("driftStatusSummary").cloned()
 }
 
+/// Wait for the clock to make `arn`'s deployment due, looking again for the CONDITION the
+/// case waits on rather than for a duration it measures.
+async fn await_deployed(router: &MultiServiceRouter, case: &str, arn: &str) {
+    poll_until(case, "the enablement reads as deployed", || async {
+        details(router, case, arn)
+            .await
+            .get("statusSummary")
+            .and_then(|summary| summary.get("status"))
+            .and_then(serde_json::Value::as_str)
+            == Some("SUCCEEDED")
+    })
+    .await;
+}
+
 /// The drift summary a deployed enablement of `baseline` must report: the whole member as
-/// the model nests it (`driftStatusSummary.types.inheritance.status`) for a baseline whose
-/// inheritance drift AWS assesses, and nothing at all for one it does not.
+/// the model nests it (`driftStatusSummary.types.inheritance.status` and
+/// `driftStatusSummary.types.source.status`) for a baseline whose drift AWS assesses, and
+/// nothing at all for one it does not.
 fn expected_summary(baseline: &CatalogBaseline) -> Option<serde_json::Value> {
-    assesses_inheritance_drift(&baseline_identifier(baseline)).then(|| {
-        serde_json::json!({ "types": { "inheritance": { "status": "IN_SYNC" } } })
+    assesses_drift(&baseline_identifier(baseline)).then(|| {
+        serde_json::json!({
+            "types": {
+                "inheritance": { "status": "IN_SYNC" },
+                "source": { "status": "IN_SYNC" }
+            }
+        })
     })
 }
 
-/// RULE: a deployed enablement reports an inheritance drift status exactly when its
-/// baseline is one AWS Control Tower assesses inheritance drift on, and that status is
+/// RULE: a deployed enablement reports a drift status in each dimension exactly when its
+/// baseline is one AWS Control Tower assesses drift on, and both are
 /// `IN_SYNC` for an enablement nothing has diverged from; an enablement still being
 /// deployed reports no drift summary, because drift is a property of a deployed
 /// configuration.
 #[tokio::test]
-async fn a_deployed_enablement_reports_the_inheritance_drift_of_its_baseline() {
+async fn a_deployed_enablement_reports_the_drift_of_its_baseline() {
     let router = set_up_emulator().await;
 
     // Every baseline the catalog publishes, each on its own target so the rows do not
@@ -133,9 +157,11 @@ async fn a_deployed_enablement_reports_the_inheritance_drift_of_its_baseline() {
         );
     }
 
-    // The clock makes every enablement due; nothing sleeps server-side, the wait is the
-    // test's.
-    tokio::time::sleep(past_the_settle_span()).await;
+    // The clock makes every enablement due; nothing sleeps server-side, and the case waits
+    // for that CONDITION rather than for a duration.
+    for (baseline, arn) in &rows {
+        await_deployed(&router, baseline.name, arn).await;
+    }
 
     for (baseline, arn) in &rows {
         let expected = expected_summary(baseline);

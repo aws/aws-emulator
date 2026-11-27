@@ -73,11 +73,18 @@ pub struct EnabledBaselineDriftStatusSummary {
 #[derive(Debug, Clone, Default)]
 pub struct EnabledBaselineDriftTypes {
     pub inheritance: Option<EnabledBaselineInheritanceDrift>,
+    pub source: Option<EnabledBaselineSourceDrift>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.controltower#EnabledBaselineInheritanceDrift")]
 #[derive(Debug, Clone, Default)]
 pub struct EnabledBaselineInheritanceDrift {
+    pub status: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.controltower#EnabledBaselineSourceDrift")]
+#[derive(Debug, Clone, Default)]
+pub struct EnabledBaselineSourceDrift {
     pub status: Option<String>,
 }
 

@@ -31,10 +31,10 @@
 //! of any particular unit, so attaching them to whichever unit a request names would report
 //! resources this service does not hold.
 //!
-//! `inheritanceDriftStatuses` DOES select, on the drift status the enablement carries —
-//! the same one `GetEnabledBaseline` reports — so an enablement of a baseline AWS assesses
-//! no inheritance drift on, or one whose deployment is not due yet, carries no status and
-//! is selected only when that filter is absent.
+//! `inheritanceDriftStatuses` and `sourceDriftStatuses` DO select, on the two drift
+//! statuses the enablement carries — the same ones `GetEnabledBaseline` reports — so an
+//! enablement of a baseline AWS assesses no drift on, or one whose deployment is not due
+//! yet, carries neither status and is selected only when both filters are absent.
 //!
 //! Implemented: this operation no longer answers HTTP 501.
 //!
@@ -123,7 +123,7 @@ use super::types::*;
 // `selected_optional` is the rule for a member an enablement may have no value for: an
 // absent actual value is selected only by an absent filter, so a filter on it selects
 // just the enablements that do carry one (see the module header on `parentIdentifiers`
-// and `inheritanceDriftStatuses`).
+// and the two drift-status filters).
 use crate::state::{filter_set, resolve_baseline, selected, selected_optional, selected_resolved};
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
@@ -229,6 +229,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let parent_identifiers = filter_set(filter.parent_identifiers.as_ref());
         let statuses = filter_set(filter.statuses.as_ref());
         let inheritance_drift_statuses = filter_set(filter.inheritance_drift_statuses.as_ref());
+        let source_drift_statuses = filter_set(filter.source_drift_statuses.as_ref());
 
         // Every member that narrows WHAT this call lists, so a `nextToken` minted below is
         // bound to all of them: a position in this selection is a position in no other.
@@ -243,7 +244,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .filter(
                 "filter.inheritanceDriftStatuses",
                 &inheritance_drift_statuses,
-            );
+            )
+            .filter("filter.sourceDriftStatuses", &source_drift_statuses);
 
         let mut store = state.lock();
         // Only materialises transitions the clock already owed; this operation is
@@ -288,15 +290,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         resolve_baseline,
                     )
                     && selected(&statuses, enabled_baseline.status.as_wire())
-                    // Each of these two members only some enablements carry a value for:
-                    // one whose inheritance drift is not assessed has no drift status, and
+                    // Each of these three members only some enablements carry a value for:
+                    // one whose drift is not assessed has neither drift status, and
                     // one applied directly to its target has no parent, so a filter on
-                    // either selects just the enablements that do carry one — and, for a
-                    // member no enablement here carries, nothing (see the module header).
+                    // any of them selects just the enablements that do carry one — and, for
+                    // a member no enablement here carries, nothing (see the module header).
                     && selected_optional(
                         &inheritance_drift_statuses,
                         enabled_baseline
                             .inheritance_drift_status
+                            .map(|status| status.as_wire()),
+                    )
+                    && selected_optional(
+                        &source_drift_statuses,
+                        enabled_baseline
+                            .source_drift_status
                             .map(|status| status.as_wire()),
                     )
                     && selected_optional(

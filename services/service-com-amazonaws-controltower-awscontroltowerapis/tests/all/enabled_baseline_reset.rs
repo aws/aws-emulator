@@ -17,7 +17,7 @@
 //! * while that operation is in flight the enablement reads as `UNDER_CHANGE` with the reset
 //!   as its `lastOperationIdentifier` and no drift assessed, because an enablement cannot be
 //!   assessed against a configuration still being applied; once the clock has made the
-//!   operation due the enablement is `SUCCEEDED` again and reports the inheritance drift its
+//!   operation due the enablement is `SUCCEEDED` again and reports the drift its
 //!   baseline is assessed for;
 //! * every reset starts its OWN operation, so a repeated reset mints a fresh
 //!   `operationIdentifier` that resolves to its own `RESET_ENABLED_BASELINE` record;
@@ -29,8 +29,8 @@
 //! configures them with are read off `state::BASELINE_CATALOG` — the catalog
 //! `ListBaselines`/`GetBaseline` publish and `EnableBaseline` resolves a `baselineIdentifier`
 //! against — rather than written out by hand, so no row can drift from what this emulator
-//! publishes, and which baselines report inheritance drift comes from the same catalog
-//! through `state::assesses_inheritance_drift`. The enum values written out here come from
+//! publishes, and which baselines report drift comes from the same catalog
+//! through `state::assesses_drift`. The enum values written out here come from
 //! `smithy_query(query="shape", shape="BaselineOperationType,BaselineOperationStatus,\
 //! EnablementStatus,EnabledBaselineDriftStatus")` on this crate's `smithy-model/`:
 //! `ENABLE_BASELINE` | `DISABLE_BASELINE` | `UPDATE_ENABLED_BASELINE` |
@@ -43,7 +43,7 @@
 use smithy_server_runtime::MultiServiceRouter;
 
 use service_com_amazonaws_controltower_awscontroltowerapis::state::{
-    assesses_inheritance_drift, CatalogBaseline, BASELINE_CATALOG,
+    assesses_drift, CatalogBaseline, BASELINE_CATALOG,
 };
 
 use crate::baseline_catalog::served_arn;
@@ -61,7 +61,7 @@ struct ResetCase {
 }
 
 /// The reset table: rows differ along what the rule generalises over — the baseline (every
-/// entry of the catalog, including the ones whose inheritance drift AWS does not assess),
+/// entry of the catalog, including the ones whose drift AWS does not assess),
 /// the version it is enabled at (the OLDEST and the NEWEST version each baseline offers)
 /// and the parameters applied (absent, empty, and the key the baseline declares with
 /// several `Document` kinds — `EnabledBaselineParameter$value` is "a document of any type").
@@ -222,11 +222,17 @@ fn drift_summary(record: &serde_json::Value) -> Option<serde_json::Value> {
 }
 
 /// The drift summary an enablement of `baseline` reports once its configuration is applied:
-/// the whole member as the model nests it for a baseline whose inheritance drift AWS
+/// the whole member as the model nests it for a baseline whose drift AWS
 /// assesses, and nothing at all for one it does not.
 fn expected_summary(baseline: &CatalogBaseline) -> Option<serde_json::Value> {
-    assesses_inheritance_drift(&served_arn(baseline))
-        .then(|| serde_json::json!({ "types": { "inheritance": { "status": "IN_SYNC" } } }))
+    assesses_drift(&served_arn(baseline)).then(|| {
+        serde_json::json!({
+            "types": {
+                "inheritance": { "status": "IN_SYNC" },
+                "source": { "status": "IN_SYNC" }
+            }
+        })
+    })
 }
 
 /// RULE: `ResetEnabledBaseline` starts an asynchronous `RESET_ENABLED_BASELINE` operation

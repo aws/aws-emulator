@@ -38,6 +38,8 @@ emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
 hex = { workspace = true }
+# Declares one module per `tests/all/<name>.rs`, so a suite is a new file and nothing else.
+automod = { workspace = true }
 
 [lints]
 workspace = true

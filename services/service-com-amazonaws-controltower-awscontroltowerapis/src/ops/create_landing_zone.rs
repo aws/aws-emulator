@@ -307,6 +307,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // A landing zone is not being decommissioned the moment it is created.
                 pending_deletion: None,
                 created_at: now,
+                // Nothing has changed the configuration of a landing zone this call is
+                // still deploying the first one of, so what the enablements under it
+                // measure their source drift against is this instant; the deployment queued
+                // below carries exactly the configuration stored here, so applying it moves
+                // nothing.
+                configuration_changed_at: now,
             },
         );
 

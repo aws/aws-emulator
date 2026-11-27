@@ -130,8 +130,8 @@ use std::time::{Duration, SystemTime};
 // summary is written out once for each resource kind rather than once per handler.
 use crate::ops::types::{
     DriftStatusSummary, EnabledBaselineDriftStatusSummary, EnabledBaselineDriftTypes,
-    EnabledBaselineInheritanceDrift, EnabledControlDriftTypes, EnabledControlInheritanceDrift,
-    EnabledControlResourceDrift,
+    EnabledBaselineInheritanceDrift, EnabledBaselineSourceDrift, EnabledControlDriftTypes,
+    EnabledControlInheritanceDrift, EnabledControlResourceDrift,
 };
 
 /// The ARN namespace (and SigV4 signing name) this service's ARNs carry, from the
@@ -830,11 +830,13 @@ impl DriftStatus {
     }
 }
 
-/// `EnabledBaselineDriftStatus`: whether every account in the target organizational unit
-/// still matches the baseline configuration that unit's enablement defines.
+/// `EnabledBaselineDriftStatus`: whether what an enablement has deployed still matches the
+/// configuration it is measured against.
 ///
-/// Wire values from the model's `EnabledBaselineDriftStatus` enum, reported through
-/// `EnabledBaselineInheritanceDrift$status` (`IN_SYNC` | `DRIFTED`). It is a DIFFERENT enum
+/// Wire values from the model's `EnabledBaselineDriftStatus` enum, reported through both
+/// drift dimensions the model declares for a baseline —
+/// `EnabledBaselineInheritanceDrift$status` and `EnabledBaselineSourceDrift$status`
+/// (`IN_SYNC` | `DRIFTED`). It is a DIFFERENT enum
 /// from the [`DriftStatus`] an enabled control carries: a baseline's drift is only ever
 /// in-sync or drifted, with no "unknown" or "not checking" value, so an enablement whose
 /// drift is not assessed reports no drift summary at all rather than a third status.
@@ -1029,6 +1031,23 @@ pub struct LandingZone {
     /// [`settle`]: ComAmazonawsControltowerAwscontroltowerapisState::settle
     pub pending_deletion: Option<PendingLandingZoneDeletion>,
     pub created_at: SystemTime,
+    /// The instant the landing zone's DEPLOYED configuration last changed — its creation
+    /// instant until a deployment leaves it configured differently, and then the instant
+    /// the clock owed that deployment.
+    ///
+    /// What the enablements deployed under this landing zone are measured against: a
+    /// baseline enablement is in source drift "when an enabled baseline no longer matches
+    /// the landing zone's configuration" (model docs), and what an enablement has deployed
+    /// is the landing zone's configuration as of the instant the clock deployed it. Stored,
+    /// never slept on, and moved only by a deployment [`settle`] applies, so no reader
+    /// changes what a later reader sees.
+    ///
+    /// A deployment that re-applies the configuration already in place (a `RESET`, or an
+    /// `UPDATE` carrying no new value) leaves it where it is: nothing the enablements follow
+    /// has changed.
+    ///
+    /// [`settle`]: ComAmazonawsControltowerAwscontroltowerapisState::settle
+    pub configuration_changed_at: SystemTime,
 }
 
 impl LandingZone {
@@ -1195,13 +1214,30 @@ pub struct EnabledBaseline {
     /// Two things decide whether drift is assessed at all. Control Tower "detects
     /// inheritance drift on the enabled baselines that target OUs" and "does not detect
     /// drift on the baselines that apply to your landing zone" (model docs), which is the
-    /// [`CatalogBaseline::detects_inheritance_drift`] flag; and drift is a property of a
+    /// [`CatalogBaseline::detects_drift`] flag; and drift is a property of a
     /// DEPLOYED configuration, so it is assessed only once the enablement's operation has
     /// become due — [`settle`] materialises it then, the same way it materialises an
     /// enabled control's drift statuses.
     ///
     /// [`settle`]: ComAmazonawsControltowerAwscontroltowerapisState::settle
     pub inheritance_drift_status: Option<EnabledBaselineDriftStatus>,
+    /// `EnabledBaselineDriftStatusSummary` -> `EnabledBaselineDriftTypes$source` ->
+    /// `EnabledBaselineSourceDrift$status`, or `None` when no source drift is assessed for
+    /// this enablement.
+    ///
+    /// The same two things decide whether it is assessed at all as for the dimension above:
+    /// the baseline is one AWS Control Tower detects drift on
+    /// ([`CatalogBaseline::detects_drift`]), and the enablement's configuration is deployed.
+    /// WHICH status it then carries is the one question this dimension answers differently:
+    /// source drift occurs "when an enabled baseline no longer matches the landing zone's
+    /// configuration" (model docs), so an enablement deployed before the landing zone's
+    /// configuration last changed ([`LandingZone::configuration_changed_at`]) has fallen
+    /// behind it and reads `DRIFTED`, and one deployed since still matches it and reads
+    /// `IN_SYNC`. [`settle`] derives it from those two stored instants, so re-deploying the
+    /// enablement — a reset or an update — is what brings a drifted one back in sync.
+    ///
+    /// [`settle`]: ComAmazonawsControltowerAwscontroltowerapisState::settle
+    pub source_drift_status: Option<EnabledBaselineDriftStatus>,
     /// The change an `UPDATE_ENABLED_BASELINE` still in flight will apply, or `None`
     /// when nothing is pending. `settle` applies it once that operation is due, so the
     /// applied version and parameters change when the asynchronous update completes and
@@ -1217,26 +1253,32 @@ pub struct EnabledBaseline {
 }
 
 impl EnabledBaseline {
-    /// The `driftStatusSummary` this enablement reports: the stored
-    /// [`inheritance_drift_status`] nested under the one drift dimension the model declares
-    /// for a baseline (`types.inheritance.status`), and NOTHING at all when no inheritance
-    /// drift is assessed for the enablement — a baseline AWS detects no drift on, or a
-    /// deployment the clock has not made due yet — rather than a status the model does not
-    /// declare.
+    /// The `driftStatusSummary` this enablement reports: the stored statuses nested under
+    /// the drift dimensions the model declares for a baseline (`types.inheritance.status`
+    /// and `types.source.status`), and NOTHING at all when no drift is assessed for the
+    /// enablement — a baseline AWS detects no drift on, or a deployment the clock has not
+    /// made due yet — rather than a status the model does not declare.
     ///
     /// `GetEnabledBaseline` and `ListEnabledBaselines` both report the member through here,
     /// so they cannot disagree about one stored record.
-    ///
-    /// [`inheritance_drift_status`]: EnabledBaseline::inheritance_drift_status
     pub fn drift_status_summary(&self) -> Option<EnabledBaselineDriftStatusSummary> {
-        self.inheritance_drift_status
-            .map(|status| EnabledBaselineDriftStatusSummary {
-                types: Some(EnabledBaselineDriftTypes {
-                    inheritance: Some(EnabledBaselineInheritanceDrift {
+        if self.inheritance_drift_status.is_none() && self.source_drift_status.is_none() {
+            return None;
+        }
+        Some(EnabledBaselineDriftStatusSummary {
+            types: Some(EnabledBaselineDriftTypes {
+                inheritance: self.inheritance_drift_status.map(|status| {
+                    EnabledBaselineInheritanceDrift {
+                        status: Some(status.as_wire().to_string()),
+                    }
+                }),
+                source: self
+                    .source_drift_status
+                    .map(|status| EnabledBaselineSourceDrift {
                         status: Some(status.as_wire().to_string()),
                     }),
-                }),
-            })
+            }),
+        })
     }
 }
 
@@ -1500,12 +1542,23 @@ impl ComAmazonawsControltowerAwscontroltowerapisState {
                 // version, manifest, remediation types and drift status it had.
                 continue;
             }
+            // Whether this deployment leaves the landing zone configured DIFFERENTLY,
+            // asked before it is applied. A `RESET` re-deploys the configuration already in
+            // place and an `UPDATE` carries the deployed value forward for every member the
+            // request omits, so neither moves the instant the enablements under this
+            // landing zone measure their source drift against; a deployment that changes
+            // the version or the manifest does, as of the instant the clock owed it.
+            let changes_configuration =
+                landing_zone.version != pending.version || landing_zone.manifest != pending.manifest;
             landing_zone.version = pending.version;
             landing_zone.latest_available_version =
                 latest_available_version(&landing_zone.version, CATALOG_LANDING_ZONE_VERSION);
             landing_zone.manifest = pending.manifest;
             landing_zone.remediation_types = pending.remediation_types;
             landing_zone.drift_status = pending.drift_status;
+            if changes_configuration {
+                landing_zone.configuration_changed_at = pending.due_at;
+            }
         }
 
         let operations = &self.landing_zone_operations;
@@ -1696,6 +1749,14 @@ impl ComAmazonawsControltowerAwscontroltowerapisState {
             }
         }
 
+        // What a deployed enablement's SOURCE drift is measured against, read once before
+        // the walk below: source drift occurs "when an enabled baseline no longer matches
+        // the landing zone's configuration" (model docs), and what every enablement has
+        // deployed is the landing zone's configuration as of the instant the clock deployed
+        // it. `None` when the account holds no landing zone at all, so nothing an
+        // enablement could have fallen behind has ever been deployed.
+        let configuration_changed_at = self.landing_zone_configuration_changed_at();
+
         for enabled_baseline in self.enabled_baselines.values_mut() {
             // A FAILED enablement is not re-derived, for the same reason as a FAILED
             // landing zone: a reader must not overwrite a failure.
@@ -1714,17 +1775,36 @@ impl ComAmazonawsControltowerAwscontroltowerapisState {
                 EnablementStatus::Succeeded
             };
             // Inheritance drift is only assessable once the baseline configuration is
-            // deployed, and only for the baselines Control Tower assesses it on; the
+            // deployed, and only for the baselines Control Tower assesses drift on; the
             // deployment that has become due here is of the configuration the enablement
             // defines for the whole target organizational unit, so no account under it has
             // diverged from that configuration yet. Assessed once and then left alone, so
             // a later reader cannot reset a drift status already reported.
             if enabled_baseline.status == EnablementStatus::Succeeded
                 && enabled_baseline.inheritance_drift_status.is_none()
-                && assesses_inheritance_drift(&enabled_baseline.baseline_identifier)
+                && assesses_drift(&enabled_baseline.baseline_identifier)
             {
                 enabled_baseline.inheritance_drift_status =
                     Some(EnabledBaselineDriftStatus::InSync);
+            }
+            // Source drift is assessable under the same two conditions — a deployed
+            // configuration, of a baseline Control Tower assesses drift on — but it is a
+            // comparison against something that keeps moving, so it is DERIVED on every
+            // settle rather than assessed once: what makes an enablement that was in sync
+            // drift is the landing zone having a changed configuration deployed after this
+            // enablement deployed its own, and what brings a drifted one back is
+            // re-deploying the enablement (a reset or an update, each of which moves its
+            // `due_at`). Both are transitions the clock owes, so materialising them here
+            // reports what a caller would see had nobody called.
+            if enabled_baseline.status == EnablementStatus::Succeeded
+                && assesses_drift(&enabled_baseline.baseline_identifier)
+            {
+                enabled_baseline.source_drift_status = Some(match configuration_changed_at {
+                    Some(changed_at) if enabled_baseline.due_at < changed_at => {
+                        EnabledBaselineDriftStatus::Drifted
+                    }
+                    _ => EnabledBaselineDriftStatus::InSync,
+                });
             }
         }
 
@@ -1824,6 +1904,21 @@ impl ComAmazonawsControltowerAwscontroltowerapisState {
             || !self.control_operations.is_empty()
             || !self.enabled_baselines.is_empty()
             || !self.baseline_operations.is_empty()
+    }
+
+    /// The latest instant a landing zone of this account had a CHANGED configuration
+    /// deployed ([`LandingZone::configuration_changed_at`]), or `None` while the account
+    /// holds no landing zone at all.
+    ///
+    /// The one instant an enablement's source drift is measured against, so every reader
+    /// asks the question the same way: Control Tower governs an account through one landing
+    /// zone, and the latest change is what an enablement has to match to be in sync with
+    /// it.
+    pub fn landing_zone_configuration_changed_at(&self) -> Option<SystemTime> {
+        self.landing_zones
+            .values()
+            .map(|landing_zone| landing_zone.configuration_changed_at)
+            .max()
     }
 
     /// Whether the landing zone `arn` names is still being changed by an operation of its
@@ -2502,8 +2597,9 @@ impl ComAmazonawsControltowerAwscontroltowerapisState {
                 created_at: now,
                 // Drift is a property of a DEPLOYED configuration, so nothing is assessed
                 // while the ENABLE_BASELINE operation is still in flight; `settle`
-                // materialises it once that operation is due.
+                // materialises both dimensions once that operation is due.
                 inheritance_drift_status: None,
+                source_drift_status: None,
                 pending_update: None,
                 pending_deletion: None,
             },
@@ -2863,8 +2959,8 @@ impl ComAmazonawsControltowerAwscontroltowerapisState {
     /// The one span every call that starts changing what an already enabled baseline has
     /// deployed shares — applying a new configuration, re-applying the one in place, or
     /// removing it: mark the enablement `UNDER_CHANGE` until `due_at`, record
-    /// `operation_identifier` as the operation changing it, and drop the inheritance drift
-    /// assessment it carries.
+    /// `operation_identifier` as the operation changing it, and drop the drift assessment
+    /// it carries.
     ///
     /// Drift is a property of a DEPLOYED configuration, and what a call like this starts is
     /// not deployed until the clock makes the operation due, so the assessment the
@@ -2889,6 +2985,7 @@ impl ComAmazonawsControltowerAwscontroltowerapisState {
         enabled_baseline.last_operation_identifier = operation_identifier.to_string();
         enabled_baseline.due_at = due_at;
         enabled_baseline.inheritance_drift_status = None;
+        enabled_baseline.source_drift_status = None;
         Some(enabled_baseline)
     }
 }
@@ -3168,9 +3265,10 @@ pub struct CatalogBaseline {
     /// baseline that declares none carries an EMPTY set, and any `parameters` entry at
     /// all is then refused for it.
     pub parameters: &'static [&'static str],
-    /// Whether AWS Control Tower assesses INHERITANCE DRIFT on this baseline.
+    /// Whether AWS Control Tower detects DRIFT on this baseline at all.
     ///
-    /// `EnabledBaselineDriftTypes` names the set exactly: Control Tower "detects
+    /// `EnabledBaselineDriftTypes`, the shape that declares both dimensions a baseline's
+    /// drift is reported in, names the set exactly: Control Tower "detects
     /// inheritance drift on the enabled baselines that target OUs:
     /// `AWSControlTowerBaseline` and `BackupBaseline`" and "does not detect drift on the
     /// baselines that apply to your landing zone: `IdentityCenterBaseline`,
@@ -3179,7 +3277,7 @@ pub struct CatalogBaseline {
     /// enablement, which is why it lives in the catalog beside the versions and parameters
     /// a baseline publishes; an enablement of a baseline this is `false` for reports no
     /// `driftStatusSummary` at all.
-    pub detects_inheritance_drift: bool,
+    pub detects_drift: bool,
     /// Whether enabling this baseline is what brings a target under AWS Control Tower's
     /// GOVERNANCE.
     ///
@@ -3226,7 +3324,7 @@ impl CatalogBaseline {
 ///
 /// The remaining members are this service's own model of what a baseline OFFERS (the
 /// versions it may be enabled at, the parameter keys it declares, whether AWS Control Tower
-/// assesses inheritance drift on it and whether enabling it brings a target under
+/// assesses drift on it and whether enabling it brings a target under
 /// governance); see [`CatalogBaseline`] for the rule behind each.
 ///
 /// Every description below is AWS's own sentence for that baseline, reproduced verbatim —
@@ -3240,7 +3338,7 @@ pub const BASELINE_CATALOG: &[CatalogBaseline] = &[
                       in your organization.",
         versions: &["1.0"],
         parameters: &[],
-        detects_inheritance_drift: false,
+        detects_drift: false,
         establishes_governance: false,
     },
     CatalogBaseline {
@@ -3250,7 +3348,7 @@ pub const BASELINE_CATALOG: &[CatalogBaseline] = &[
                       within the target OU, required for AWS Control Tower governance.",
         versions: &["1.0", "2.0", "3.0", "4.0"],
         parameters: &["IdentityCenterEnabledForBaseline"],
-        detects_inheritance_drift: true,
+        detects_drift: true,
         // The one baseline that governs a target organizational unit's accounts, which is
         // what registering that target with AWS Control Tower means.
         establishes_governance: true,
@@ -3261,7 +3359,7 @@ pub const BASELINE_CATALOG: &[CatalogBaseline] = &[
         description: "Sets up AWS Backup Audit Manager.",
         versions: &["1.0"],
         parameters: &[],
-        detects_inheritance_drift: false,
+        detects_drift: false,
         establishes_governance: false,
     },
     CatalogBaseline {
@@ -3271,7 +3369,7 @@ pub const BASELINE_CATALOG: &[CatalogBaseline] = &[
                       plans.",
         versions: &["1.0"],
         parameters: &[],
-        detects_inheritance_drift: true,
+        detects_drift: true,
         establishes_governance: false,
     },
     CatalogBaseline {
@@ -3280,7 +3378,7 @@ pub const BASELINE_CATALOG: &[CatalogBaseline] = &[
         description: "Sets up a central AWS Backup vault in your organization.",
         versions: &["1.0"],
         parameters: &[],
-        detects_inheritance_drift: false,
+        detects_drift: false,
         establishes_governance: false,
     },
     CatalogBaseline {
@@ -3290,7 +3388,7 @@ pub const BASELINE_CATALOG: &[CatalogBaseline] = &[
                       within your organization using AWS Config.",
         versions: &["1.0"],
         parameters: &[],
-        detects_inheritance_drift: false,
+        detects_drift: false,
         establishes_governance: false,
     },
     CatalogBaseline {
@@ -3300,7 +3398,7 @@ pub const BASELINE_CATALOG: &[CatalogBaseline] = &[
                       organization.",
         versions: &["1.0"],
         parameters: &[],
-        detects_inheritance_drift: false,
+        detects_drift: false,
         establishes_governance: false,
     },
     CatalogBaseline {
@@ -3311,7 +3409,7 @@ pub const BASELINE_CATALOG: &[CatalogBaseline] = &[
                       up are a subset of resources of AWSControlTowerBaseline.",
         versions: &["1.0"],
         parameters: &[],
-        detects_inheritance_drift: false,
+        detects_drift: false,
         establishes_governance: false,
     },
     CatalogBaseline {
@@ -3322,7 +3420,7 @@ pub const BASELINE_CATALOG: &[CatalogBaseline] = &[
                       accounts.",
         versions: &["1.0", "4.0"],
         parameters: &[],
-        detects_inheritance_drift: false,
+        detects_drift: false,
         establishes_governance: false,
     },
     CatalogBaseline {
@@ -3332,7 +3430,7 @@ pub const BASELINE_CATALOG: &[CatalogBaseline] = &[
                       resource configurations from accounts in your organization.",
         versions: &["1.0"],
         parameters: &[],
-        detects_inheritance_drift: false,
+        detects_drift: false,
         establishes_governance: false,
     },
 ];
@@ -3373,16 +3471,16 @@ pub fn resolve_baseline(baseline_identifier: &str) -> Option<&'static CatalogBas
         .find(|baseline| baseline.id == baseline_id)
 }
 
-/// Whether AWS Control Tower assesses inheritance drift on the baseline
-/// `baseline_identifier` names, read off the catalog
-/// ([`CatalogBaseline::detects_inheritance_drift`]).
+/// Whether AWS Control Tower detects drift on the baseline `baseline_identifier` names,
+/// read off the catalog ([`CatalogBaseline::detects_drift`]).
 ///
 /// The one place that question is asked of a stored enablement, so `settle` and every
-/// reporting call agree on which enablements carry a `driftStatusSummary`. An identifier
-/// naming no catalog baseline assesses nothing — no enablement can hold one, since
-/// `EnableBaseline` refuses an unpublished baseline before anything is persisted.
-pub fn assesses_inheritance_drift(baseline_identifier: &str) -> bool {
-    resolve_baseline(baseline_identifier).is_some_and(|baseline| baseline.detects_inheritance_drift)
+/// reporting call agree on which enablements carry a `driftStatusSummary` — in either
+/// dimension the model declares for a baseline. An identifier naming no catalog baseline
+/// assesses nothing — no enablement can hold one, since `EnableBaseline` refuses an
+/// unpublished baseline before anything is persisted.
+pub fn assesses_drift(baseline_identifier: &str) -> bool {
+    resolve_baseline(baseline_identifier).is_some_and(|baseline| baseline.detects_drift)
 }
 
 /// Whether `identifier` is a baseline ARN at all.

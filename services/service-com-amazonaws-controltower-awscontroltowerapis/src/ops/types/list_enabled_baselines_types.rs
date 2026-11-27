@@ -28,6 +28,7 @@ pub struct EnabledBaselineFilter {
     pub parent_identifiers: Option<Vec<String>>,
     pub statuses: Option<Vec<String>>,
     pub inheritance_drift_statuses: Option<Vec<String>>,
+    pub source_drift_statuses: Option<Vec<String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.controltower#ListEnabledBaselinesOutput")]

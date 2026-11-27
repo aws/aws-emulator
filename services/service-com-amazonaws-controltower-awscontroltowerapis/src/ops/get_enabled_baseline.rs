@@ -19,13 +19,14 @@
 //! naming the role rather than a report about the identifier — see `crate::state` for the
 //! one precondition the enablement reads share.
 //!
-//! `driftStatusSummary` reports the INHERITANCE drift of the enablement, which is the one
-//! drift type the model declares for a baseline: Control Tower "detects inheritance drift
-//! on the enabled baselines that target OUs" and "does not detect drift on the baselines
-//! that apply to your landing zone", so the summary is present for an enablement of a
-//! drift-assessed baseline whose deployment the clock has made due and absent otherwise —
-//! the status is stored on the enablement and materialised by `settle`, never computed
-//! here.
+//! `driftStatusSummary` reports BOTH drift types the model declares for a baseline: the
+//! INHERITANCE drift of the enablement, and its SOURCE drift — "source drift occurs when an
+//! enabled baseline no longer matches the landing zone's configuration". Control Tower
+//! "detects inheritance drift on the enabled baselines that target OUs" and "does not
+//! detect drift on the baselines that apply to your landing zone", so the summary is present
+//! for an enablement of a drift-assessed baseline whose deployment the clock has made due
+//! and absent otherwise — each status is stored on the enablement and materialised by
+//! `settle`, never computed here.
 //!
 //! `parentIdentifier` is the enablement a reported one INHERITED its configuration from:
 //! it "represents the parent EnabledBaseline at the Organizational Unit (OU) level, from

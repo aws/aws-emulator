@@ -24,7 +24,7 @@
 //! * for an enabled baseline, `UpdateEnabledBaseline` moving the applied version,
 //!   rewriting the applied parameters at the version already applied, and doing both, plus
 //!   `ResetEnabledBaseline` re-applying what is already applied — over every baseline the
-//!   catalog publishes, including the ones whose inheritance drift AWS does not assess (an
+//!   catalog publishes, including the ones whose drift AWS does not assess (an
 //!   enablement that reports no assessment when deployed must report none mid-change
 //!   either);
 //! * for an enabled control, `UpdateEnabledControl` with a configuration that differs from
@@ -38,8 +38,8 @@
 //! `state::BASELINE_CATALOG`, and the controls and their parameter keys off
 //! `state::CONTROL_CATALOG` — the catalogs these operations resolve an identifier against —
 //! so no row can name a baseline, version, control or parameter key this emulator does not
-//! publish. Which baselines report an inheritance drift status comes from the same catalog
-//! through `state::assesses_inheritance_drift`. The enum values written out here come from
+//! publish. Which baselines report a drift status comes from the same catalog
+//! through `state::assesses_drift`. The enum values written out here come from
 //! `smithy_query(query="shape", shape="EnablementStatus,EnabledBaselineDriftStatus,\
 //! DriftStatus")` on this crate's `smithy-model/`: `SUCCEEDED` | `FAILED` | `UNDER_CHANGE`,
 //! `IN_SYNC` | `DRIFTED`, and `DRIFTED` | `IN_SYNC` | `NOT_CHECKING` | `UNKNOWN`.
@@ -47,7 +47,7 @@
 use smithy_server_runtime::MultiServiceRouter;
 
 use service_com_amazonaws_controltower_awscontroltowerapis::state::{
-    assesses_inheritance_drift, CatalogBaseline, CatalogControl, BASELINE_CATALOG,
+    assesses_drift, CatalogBaseline, CatalogControl, BASELINE_CATALOG,
     CONTROL_CATALOG,
 };
 
@@ -288,11 +288,17 @@ pub(crate) fn baseline_status(record: &serde_json::Value) -> Option<&str> {
 }
 
 /// The drift summary an enablement of `baseline` reports once its configuration is
-/// deployed: the whole member as the model nests it for a baseline whose inheritance drift
+/// deployed: the whole member as the model nests it for a baseline whose drift
 /// AWS assesses, and nothing at all for one it does not.
 pub(crate) fn deployed_summary(baseline: &CatalogBaseline) -> Option<serde_json::Value> {
-    assesses_inheritance_drift(&served_arn(baseline))
-        .then(|| serde_json::json!({ "types": { "inheritance": { "status": "IN_SYNC" } } }))
+    assesses_drift(&served_arn(baseline)).then(|| {
+        serde_json::json!({
+            "types": {
+                "inheritance": { "status": "IN_SYNC" },
+                "source": { "status": "IN_SYNC" }
+            }
+        })
+    })
 }
 
 /// RULE: an enabled baseline whose configuration a call has started applying reports no

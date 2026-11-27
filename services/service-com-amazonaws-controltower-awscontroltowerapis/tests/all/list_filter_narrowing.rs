@@ -46,7 +46,7 @@ use crate::enabled_control_lifecycle::{
     control, enable as enable_control, enabled_control_prefix, entries, ou,
 };
 use crate::front_door_validation::FRONT_DOOR_CODE;
-use crate::landing_zone_lifecycle::{call, emulator, past_the_settle_span, set_up_emulator, Answer};
+use crate::landing_zone_lifecycle::{call, emulator, poll_until, set_up_emulator, Answer};
 
 /// One listing that narrows by the shared rule: the path its `@http` trait binds it to,
 /// the output member carrying its records, and the record member that identifies one
@@ -131,6 +131,10 @@ const CONTROL_OPERATION_TYPES: &[&str] = &[
 /// Where an enabled baseline reports the drift status `inheritanceDriftStatuses` narrows
 /// by — a member only the baselines Control Tower assesses drift on have a value for.
 const BASELINE_INHERITANCE_DRIFT_PATH: &str = "driftStatusSummary.types.inheritance.status";
+
+/// Where the same enablement reports the drift status `sourceDriftStatuses` narrows by —
+/// the other dimension the model declares for a baseline, assessed on the same baselines.
+const BASELINE_SOURCE_DRIFT_PATH: &str = "driftStatusSummary.types.source.status";
 
 /// A record's value at a DOTTED path into its summary, or `None` when the record reports
 /// no value there.
@@ -529,9 +533,24 @@ async fn every_listing_narrows_by_the_one_shared_filter_rule() {
     let router = set_up_emulator().await;
     seed(&router).await;
 
-    // Past the settle span, so every seeded record is in its terminal status and the
-    // status and drift rows below do not race the clock.
-    tokio::time::sleep(past_the_settle_span()).await;
+    // The seeded records reach their terminal status on the emulator's own clock, so the
+    // case looks again until every one of them has rather than waiting a fixed time: the
+    // status and drift rows below must not race the clock.
+    poll_until(
+        "every seeded record is in its terminal status",
+        "every seeded enablement reads SUCCEEDED",
+        || async {
+            let settled = |records: Vec<serde_json::Value>| {
+                !records.is_empty()
+                    && records
+                        .iter()
+                        .all(|record| at(record, "statusSummary.status") == Some("SUCCEEDED"))
+            };
+            settled(list(&router, ENABLED_CONTROLS, serde_json::json!({})).await)
+                && settled(list(&router, ENABLED_BASELINES, serde_json::json!({})).await)
+        },
+    )
+    .await;
 
     the_rule_holds_over(
         &router,
@@ -678,6 +697,11 @@ async fn every_listing_narrows_by_the_one_shared_filter_rule() {
             EnumMember {
                 member: "inheritanceDriftStatuses",
                 path: BASELINE_INHERITANCE_DRIFT_PATH,
+                values: BASELINE_DRIFT_STATUSES,
+            },
+            EnumMember {
+                member: "sourceDriftStatuses",
+                path: BASELINE_SOURCE_DRIFT_PATH,
                 values: BASELINE_DRIFT_STATUSES,
             },
         ],

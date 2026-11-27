@@ -19,19 +19,19 @@
 //! publishes is covered, including the ones whose drift AWS does not assess; which ones
 //! those are comes from the model (`smithy_query(query="shape",
 //! shape="EnabledBaselineDriftTypes")` documents that Control Tower detects inheritance
-//! drift on enabled baselines that target OUs and not on the baselines that apply to the
-//! landing zone), read through `state::assesses_inheritance_drift`. The nesting each
+//! drift on enabled baselines that target OUs and does not detect drift on the baselines
+//! that apply to the landing zone), read through `state::assesses_drift`. The nesting each
 //! summary is asserted at, and the status value sets written out by hand, come from
 //! `smithy_query(query="shape", shape="EnabledBaselineDriftStatusSummary,\
 //! EnabledBaselineDriftStatus,DriftStatusSummary,DriftStatus")`: a baseline summary carries
-//! only `types.inheritance.status` (`IN_SYNC` | `DRIFTED`), while a control summary carries
-//! its own `driftStatus` plus `types.inheritance.status` and `types.resource.status`
-//! (`DRIFTED` | `IN_SYNC` | `NOT_CHECKING` | `UNKNOWN`).
+//! `types.inheritance.status` and `types.source.status` (`IN_SYNC` | `DRIFTED`), while a
+//! control summary carries its own `driftStatus` plus `types.inheritance.status` and
+//! `types.resource.status` (`DRIFTED` | `IN_SYNC` | `NOT_CHECKING` | `UNKNOWN`).
 
 use smithy_server_runtime::MultiServiceRouter;
 
 use service_com_amazonaws_controltower_awscontroltowerapis::state::{
-    assesses_inheritance_drift, CatalogBaseline, BASELINE_CATALOG,
+    assesses_drift, CatalogBaseline, BASELINE_CATALOG,
 };
 
 use crate::baseline_catalog::served_arn;
@@ -122,11 +122,17 @@ fn assert_agrees(
 }
 
 /// The drift summary a DEPLOYED enablement of `baseline` projects onto: the whole member as
-/// the model nests it for a baseline whose inheritance drift AWS assesses, and nothing at
+/// the model nests it for a baseline whose drift AWS assesses, and nothing at
 /// all for one it does not.
 fn expected_baseline_summary(baseline: &CatalogBaseline) -> Option<serde_json::Value> {
-    assesses_inheritance_drift(&served_arn(baseline))
-        .then(|| serde_json::json!({ "types": { "inheritance": { "status": "IN_SYNC" } } }))
+    assesses_drift(&served_arn(baseline)).then(|| {
+        serde_json::json!({
+            "types": {
+                "inheritance": { "status": "IN_SYNC" },
+                "source": { "status": "IN_SYNC" }
+            }
+        })
+    })
 }
 
 /// The drift summary a control whose three stored dimensions all read `status` projects
@@ -155,7 +161,7 @@ enum Change {
 /// stored enablement, so for every baseline the service publishes and in every drift state
 /// an enablement reaches — nothing deployed yet, deployed, and a change in flight again —
 /// the detail and the listing report the same `driftStatusSummary`, nested as the model
-/// declares it and absent when no inheritance drift is assessed.
+/// declares it and absent when no drift is assessed.
 #[tokio::test]
 async fn both_enabled_baseline_readers_report_one_projection() {
     let router = set_up_emulator().await;
