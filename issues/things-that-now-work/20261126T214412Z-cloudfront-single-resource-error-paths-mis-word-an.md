@@ -64,3 +64,59 @@ Model evidence (services/service-com-amazonaws-cloudfront-cloudfront2020-05-31/s
 5. Still on cause 2: check that a read-only or failing request on the profile does not change the ETag the emulator reports for it, and that a delete presenting a genuinely stale version still answers 412 - the conditional error must stay reachable.
 6. Confirm the modeled contract with smithy_query(query="operation", operation="GetOriginAccessControl,DeleteFieldLevelEncryptionProfile", model_path="services/service-com-amazonaws-cloudfront-cloudfront2020-05-31/smithy-model/com-amazonaws-cloudfront-cloudfront2020-05-31.json"): success codes 200 and 204, and NoSuchOriginAccessControl/PreconditionFailed are conditional errors rather than the default answers.
 7. Note that teardown#8 of the same fixture (DeletePublicKey 204->412) is the sibling symptom on the public-key resource and is already owned by 20261118T213617Z-cloudfront-public-key-lifecycle-refuses-creates-and-deletes.md - do not treat closing that as closing cause 2.
+
+## Resolution
+
+Cause 1 is served and graded `fixed` by the replay; cause 2's requirement — "an unchanged resource
+must keep the ETag it last published, and a failed or read-only request must not advance it" — is
+served too, and is now pinned by a suite, while the step's remaining divergence is the per-run
+version-token VALUE the replay carries into the request and is declined on that ground.
+
+- Cause 1 was already served by the code base this branch forked from and is confirmed by replay:
+  an operation ADDRESSED by an origin access control `Id` reads the alphabet that `Id` is written
+  in BEFORE it resolves it against the store, so a value written outside the alphabet CloudFront
+  writes an entity identifier in carries the unreadable-identifier sentence, while a value of that
+  alphabet the account holds no control under keeps the kind's absent-record sentence
+  (`state::unresolved_origin_access_control_id`). Both branches are pinned over a table of crossed
+  identifiers, on all four routes addressed by that `Id`, by
+  `tests/all/origin_access_control_identifier_readability.rs` and
+  `tests/all/crossed_resource_identifiers.rs`;
+  `cloudfront-cfoac-oac-and-distribution-id-crossover` replays end to end.
+- Cause 2: the emulator's bookkeeping already holds what this cause asks for, and
+  `tests/all/key_material_version_survives_failed_probes.rs` now pins it end to end over HTTP: a
+  record of the key-material surface publishes a version token only where a WRITE stores it, so
+  neither reader, the listing, a probe for an id the store holds nothing under, a rewrite refused
+  on the header's form or on the precondition, nor a delete refused on the precondition or on a
+  reference moves it on — and the whole field-level encryption chain (a public key, the profile
+  that encrypts with it, the configuration that maps to that profile) is torn down afterwards
+  under the three tokens its three creates handed back, each answering 204 with an empty body.
+  The conditional delete keeps the one comparison every conditional request of this service makes
+  (`state::check_if_match`): the version the record is currently at is served, and a readable
+  token that is not that version — the one it published before a rewrite, a token this account
+  holds for another record, or one never issued — is `PreconditionFailed`, which the same corpus
+  requires (`cfetag-field-level-encryption-profile-etag-chain#task#5`,
+  `cfetag-public-key-etag-chain#task#6`).
+  What the replay step still diverges on is the per-run token VALUE it delivers. Instrumenting the
+  412 branch and replaying shows the `If-Match` reaching teardown#7 is the token this emulator
+  published for the field-level encryption CONFIGURATION created earlier in the same fixture (draw
+  6 of this emulator's deterministic mint: 1 the public key's id, 2 its version, 3 the profile's
+  id, 4 the profile's version, 5 the configuration's id, 6 the configuration's version), while the
+  profile's own current version is draw 4 — and teardown#8 presents that SAME token to delete the
+  public key, whose own version is draw 2. The recording handed AWS each record's own current
+  `ETag` ("the ETag returned by the preceding create/read"), so the value the replay delivers is
+  not the value the recording delivered: it is a token published for a third record, one the
+  fixture had already deleted by that step. A version token is a value the service generates per
+  run; this emulator's has the modelled form, is stable across reads and refused calls, is unique
+  and advances only when the record changes, so the remaining difference is in that generated
+  value rather than in the behaviour, and the cause is declined on that ground. Serving it would
+  mean either admitting a token the record never published — which makes the modelled
+  `PreconditionFailed` unreachable for a record nothing has rewritten — or making two records
+  carry one version token; neither is CloudFront's behaviour, and the first was refused by the
+  merge gate's code reviewer.
+- Not this issue's, and unaffected: `GetFieldLevelEncryptionConfig` at task#4 of the same fixture
+  answers the unreadable-identifier sentence where the recording answers the absent-configuration
+  one (owned by
+  20261125T151601Z-cloudfront-field-level-encryption-reads-and-deletes-answer.md, which carries
+  that key), and `DeletePublicKey` at teardown#8, which carries the same per-run token as
+  teardown#7 (cause 2 of
+  20261118T213617Z-cloudfront-public-key-lifecycle-refuses-creates-and-deletes.md).
