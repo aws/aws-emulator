@@ -218,6 +218,20 @@ pub fn bulk_put_request_signature(
     )
 }
 
+/// How a bulk operation's `ClientToken`, re-used with a request the token does not stand
+/// for ([`bulk_put_request_signature`]), is refused.
+///
+/// The modelled error says what happened — "DynamoDB rejected the request because you
+/// retried a request with a different payload but with an idempotent token that was already
+/// used" (`IdempotentParameterMismatchException`) — and the bulk-operation surface states it
+/// in this one fixed sentence, which names the token's window and nothing of the request
+/// that was sent or of the operation the token stands for. The sentence belongs to THIS
+/// surface: the transactional operations state their own
+/// ([`super::IDEMPOTENT_PARAMETER_MISMATCH_MESSAGE`]) for the same modelled error.
+pub const BULK_OPERATION_IDEMPOTENT_PARAMETER_MISMATCH_MESSAGE: &str =
+    "Specified idempotent token was already used with different request parameters within the \
+     idempotency window";
+
 /// One recorded bulk operation: what it wrote, into which table, and how far it got.///
 /// The status a reader REPORTS is derived at every read from the stored instants
 /// ([`Self::status`]), the way an import's and a table's are, so the `IN_PROGRESS` ->

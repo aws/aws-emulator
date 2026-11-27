@@ -425,11 +425,11 @@ fn select_items(
     let table = store.active_table(region, name, now).map_err(lift)?;
     // A statement whose source qualifier names an index this table does not declare is
     // a bad STATEMENT rather than a resource that could not be found: the table was
-    // resolved, and nothing it carries answers to that name.
+    // resolved, and nothing it carries answers to that name. An index the table DOES
+    // carry, of a kind no statement is served from, is refused as that index type instead
+    // ([`crate::state::check_statement_source_index`]).
     if let Some(index) = select.index.as_deref() {
-        if !crate::state::declares_index(table, index) {
-            return Err(lift(crate::state::unknown_index()));
-        }
+        crate::state::check_statement_source_index(table, index).map_err(lift)?;
         // "Global secondary indexes support eventually consistent reads only, so do not
         // specify ConsistentRead when querying a global secondary index"
         // (`Query$ConsistentRead`). A LOCAL secondary index shares the table's

@@ -4234,9 +4234,54 @@ fn index_shape<'t>(
         .map(|found| (found.key_schema.as_slice(), &found.projection))
 }
 
-/// Whether `index` is one this table declares.
+/// Whether `index` is one this table declares as a source a statement can READ: a
+/// secondary index holds a projection of the table's items, which is what a statement's
+/// `FROM` qualifier reads through.
 pub fn declares_index(table: &Table, index: &str) -> bool {
     index_shape(table, index).is_some()
+}
+
+/// How a statement whose source qualifier names a VECTOR index is refused: a vector index
+/// is SEARCHED — `SearchVectors` "performs a vector similarity search on a vector index"
+/// and takes its own `IndexName` — and it declares no primary key schema a `WHERE` clause
+/// could pin an equality on, so every statement over it asks for a walk of the whole index,
+/// which an index of that kind does not serve. The sentence names the read that was asked
+/// for and the index TYPE, and nothing of the index itself: what is wrong is the kind of
+/// index the name resolved to.
+///
+/// Its own constant rather than [`super::unsupported_index_type`], which the readers that
+/// take the index in an `IndexName` MEMBER state: the two sentences are recorded
+/// separately, and the one this surface serves carries no closing full stop while the
+/// member-named readers' does. Each is the fixed text AWS answers on the surface it belongs
+/// to, so neither is derived from the other.
+pub const STATEMENT_UNSUPPORTED_INDEX_TYPE_MESSAGE: &str =
+    "Scan operation not supported on this index type";
+
+/// Hold the index a statement's `FROM` qualifier names to the kinds of index a statement
+/// can be served from.
+///
+/// A name the table carries NO index for is a defect of the statement's own text, stated
+/// with the sentence for an unresolved source qualifier ([`unknown_index`]); a name the
+/// table DOES carry an index for, of a kind no statement reads, is refused as that index
+/// type instead ([`STATEMENT_UNSUPPORTED_INDEX_TYPE_MESSAGE`]) — the table has the index,
+/// so reporting it absent would send a caller looking for a resource that is there, or
+/// creating one that already exists. The same split the member-named readers answer by
+/// ([`super::resolve_index`]), stated here for the surface that names its source in the
+/// statement.
+pub fn check_statement_source_index(table: &Table, index: &str) -> Result<(), RequestError> {
+    if declares_index(table, index) {
+        return Ok(());
+    }
+    if table
+        .vector_indexes
+        .iter()
+        .any(|candidate| candidate.name == index)
+    {
+        return Err(RequestError::Validation(
+            STATEMENT_UNSUPPORTED_INDEX_TYPE_MESSAGE.to_string(),
+        ));
+    }
+    Err(unknown_index())
 }
 
 /// Whether `index` is one of the table's GLOBAL secondary indexes.

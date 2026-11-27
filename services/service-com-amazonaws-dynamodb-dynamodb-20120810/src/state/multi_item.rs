@@ -1064,10 +1064,12 @@ pub const TRANSACTION_IDEMPOTENCY_WINDOW: Duration = Duration::from_secs(10 * 60
 ///
 /// The modelled error says what happened — "DynamoDB rejected the request because you
 /// retried a request with a different payload but with an idempotent token that was
-/// already used" (`IdempotentParameterMismatchException`) — and the service states it in
-/// the one fixed sentence below, which names the token's window and nothing of the
-/// request that was sent. Shared by every operation a token makes idempotent, because it
-/// is one refusal.
+/// already used" (`IdempotentParameterMismatchException`) — and the TRANSACTIONAL
+/// operations state it in the one fixed sentence below, which names the token's window and
+/// nothing of the request that was sent. Shared by both of them, because to them it is one
+/// refusal; the bulk-operation surface words the same modelled error its own way
+/// ([`super::BULK_OPERATION_IDEMPOTENT_PARAMETER_MISMATCH_MESSAGE`]), so each surface's
+/// sentence is stated where that surface's rules live.
 pub const IDEMPOTENT_PARAMETER_MISMATCH_MESSAGE: &str =
     "Specified idempotent token was used with different request parameters within the idempotency \
      window";

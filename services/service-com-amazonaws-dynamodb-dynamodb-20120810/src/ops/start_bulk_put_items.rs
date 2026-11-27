@@ -411,14 +411,16 @@ fn replayed(
 /// The modelled refusal of a `ClientToken` that already stands for a DIFFERENT request:
 /// "DynamoDB rejected the request because you retried a request with a different payload
 /// but with an idempotent token that was already used"
-/// (`IdempotentParameterMismatchException`), stated in the one sentence this service states
-/// for that refusal wherever a token makes a call idempotent
-/// ([`crate::state::IDEMPOTENT_PARAMETER_MISMATCH_MESSAGE`]) — one refusal, one sentence,
-/// naming neither the token nor the member that changed.
+/// (`IdempotentParameterMismatchException`), stated in the fixed sentence the
+/// bulk-operation surface states for that refusal
+/// ([`crate::state::BULK_OPERATION_IDEMPOTENT_PARAMETER_MISMATCH_MESSAGE`]) — naming
+/// neither the token nor the member that changed.
 fn conflict() -> StartBulkPutItemsError {
     StartBulkPutItemsErrorModeled::IdempotentParameterMismatchException(
         IdempotentParameterMismatchException {
-            message: Some(crate::state::IDEMPOTENT_PARAMETER_MISMATCH_MESSAGE.to_string()),
+            message: Some(
+                crate::state::BULK_OPERATION_IDEMPOTENT_PARAMETER_MISMATCH_MESSAGE.to_string(),
+            ),
         },
     )
     .into()
