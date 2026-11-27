@@ -1892,12 +1892,12 @@ pub(super) const PREVIOUS_GENERATION_FAMILIES: [&str; 16] = [
 ///
 /// The dense HDD storage family `d2` is on it beside the three the page names, as are the
 /// families the recorded catalog reports as previous generation while still reporting IPv6
-/// addresses per interface for them — the fourth generation general purpose and memory
-/// optimized families, the fifth generation general purpose one, the fifth generation
-/// graphics one and the sixth generation Intel general purpose one: those two facts are read
-/// apart here the way the doc comment above says.
-pub(super) const IPV6_PREVIOUS_GENERATION_FAMILIES: [&str; 9] =
-    ["c3", "d2", "g5", "i2", "m4", "m5", "m6i", "r3", "r4"];
+/// addresses per interface for them — the FIRST generation AWS Graviton family, the fourth
+/// generation general purpose and memory optimized families, the fifth generation general
+/// purpose one, the fifth generation graphics one and the sixth generation Intel general
+/// purpose one: those two facts are read apart here the way the doc comment above says.
+pub(super) const IPV6_PREVIOUS_GENERATION_FAMILIES: [&str; 10] =
+    ["a1", "c3", "d2", "g5", "i2", "m4", "m5", "m6i", "r3", "r4"];
 
 /// The families that run on the Nitro System from BEFORE their fifth generation, as the
 /// EC2 User Guide's list of "instances built on the Nitro System" names them. The
@@ -2020,8 +2020,12 @@ pub(super) const NO_IPV6_ADDRESSES_PER_INTERFACE: i32 = 0;
 pub(super) const CONNECTION_TRACKING_TIMEOUTS: (i32, i32, i32) = (432_000, 30, 180);
 
 /// The instance types the Amazon Web Services Free Tier covers: "750 hours per month of
-/// Linux, RHEL or SLES t2.micro or t3.micro instance usage" (AWS Free Tier).
-pub(super) const FREE_TIER_INSTANCE_TYPES: [&str; 2] = ["t2.micro", "t3.micro"];
+/// Linux, RHEL or SLES t2.micro instance usage — t3.micro in the Regions where t2.micro is
+/// unavailable" (AWS Free Tier). Every Region this emulator serves offers the burstable Xen
+/// family's `micro` size ([`region_offers_instance_type`] restricts no size of it), so the
+/// Free Tier type of each of them is that one and the Nitro burstable `micro` is covered in
+/// none — which is what `InstanceTypeInfo$FreeTierEligible` answers per type.
+pub(super) const FREE_TIER_INSTANCE_TYPES: [&str; 1] = ["t2.micro"];
 
 /// The instance types that run 32-bit AMIs, each of which also runs 64-bit ones: the
 /// sizes the EC2 User Guide lists for `i386` — the five previous generation ones and the

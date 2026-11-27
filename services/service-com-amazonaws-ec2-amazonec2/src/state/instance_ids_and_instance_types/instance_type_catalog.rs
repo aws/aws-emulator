@@ -4692,9 +4692,10 @@ static PUBLISHED_INSTANCE_TYPE_FACTS: &[PublishedInstanceTypeFacts] = &[
 /// NVMe devices, the seventh generation graphics family, the block storage optimized memory
 /// one on the newest AWS Graviton hardware, the two storage optimized families on the Xen
 /// hypervisor, the two Intel storage optimized ones, the two high-memory families on the
-/// Xen hypervisor, the sixth generation AWS Graviton general purpose one and the EC2 Mac
-/// hosts. A row is reached by its instance type alone, so which table it is written in is
-/// nothing but where the figures of one group of families are kept together.
+/// Xen hypervisor, the sixth generation AWS Graviton general purpose one, the first generation
+/// AWS Graviton general purpose one and the EC2 Mac hosts. A row is reached by its instance
+/// type alone, so which table it is written in is nothing but where the figures of one group
+/// of families are kept together.
 fn published_rows() -> impl Iterator<Item = &'static PublishedInstanceTypeFacts> {
     PUBLISHED_INSTANCE_TYPE_FACTS
         .iter()
