@@ -5,12 +5,16 @@
 //!
 //! The rules under test are:
 //!
-//! 1. THE COMPARISON IS OF CONTENT: the blocks reported for two snapshots of one lineage
-//!    are exactly the indexes at which the two do not hold the same bytes — an index only
-//!    one of them holds, or one both hold different bytes at — ascending by index, with
-//!    each side's own `BlockToken` reported for the side that holds the block and no token
-//!    at all for the side that does not. A snapshot compared against one it inherited
-//!    every block from reports no changed block.
+//! 1. THE COMPARISON IS OF THE CONTENT THE SECOND SNAPSHOT HOLDS: the blocks reported for
+//!    two snapshots of one lineage are exactly the indexes the SECOND snapshot holds a block
+//!    at whose bytes the first does not hold there — one the first holds no block at, or one
+//!    it holds other bytes at — ascending by index, each carrying that second snapshot's own
+//!    `BlockToken` and the first snapshot's only where that side holds the block too. An
+//!    index only the FIRST snapshot holds is not a block of the second and is never
+//!    reported. A snapshot compared against one it inherited every block from reports no
+//!    changed block.
+//!    (See [`super::a_changed_block_is_a_block_of_the_second_snapshot`] for that rule
+//!    asserted on its own.)
 //! 2. "Returns information about the blocks that are different between two Amazon Elastic
 //!    Block Store snapshots OF THE SAME VOLUME/SNAPSHOT LINEAGE" (`ListChangedBlocks`):
 //!    two snapshots that share no ancestor cannot be compared, which is the modelled
@@ -127,15 +131,18 @@ pub(crate) async fn compared(
 
 /// One changed block a listing reported: its index and each side's token, with `None` for a
 /// side the report carried no token for.
+///
+/// `pub(crate)` so the sibling suite asserting the second-side rule reads a reported block
+/// the same way rather than growing a second copy of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Changed {
-    block_index: i32,
-    first_block_token: Option<String>,
-    second_block_token: Option<String>,
+pub(crate) struct Changed {
+    pub(crate) block_index: i32,
+    pub(crate) first_block_token: Option<String>,
+    pub(crate) second_block_token: Option<String>,
 }
 
 /// The changed blocks a listing reported, in the order it reported them.
-fn reported(reply: &Reply) -> Vec<Changed> {
+pub(crate) fn reported(reply: &Reply) -> Vec<Changed> {
     let token = |block: &serde_json::Value, name: &str| {
         block
             .get(name)
@@ -294,10 +301,11 @@ enum Side {
     Sibling,
 }
 
-/// RULE 1 and RULE 4: the reported blocks are exactly the indexes the two snapshots do not
-/// hold the same bytes at, ascending, each side's token present only where that side holds
-/// the block — and a comparison against a first snapshot that holds NOTHING reports every
-/// block the named snapshot holds.
+/// RULE 1 and RULE 4: the reported blocks are exactly the blocks the second snapshot holds
+/// whose bytes the first snapshot does not hold at that index, ascending, each carrying the
+/// second side's token and the first side's only where that side holds the block — and a
+/// comparison against a first snapshot that holds NOTHING reports every block the named
+/// snapshot holds.
 ///
 /// One lineage is built once — an empty base, a parent taken from it, a child of the parent,
 /// a grandchild of the child and a second child (sibling) of the parent — and the rows
@@ -337,10 +345,13 @@ async fn the_reported_blocks_are_the_indexes_whose_content_differs() {
             vec![(1, true, true), (2, false, true)],
         ),
         (
+            // Reversed, the child's added block 2 is an index the SECOND side holds no
+            // block at, so it is no changed block OF the second snapshot: only index 1,
+            // which both hold different bytes at, is reported.
             "the same pair with the two sides swapped",
             Side::Child,
             Side::Parent,
-            vec![(1, true, true), (2, true, false)],
+            vec![(1, true, true)],
         ),
         (
             "two generations apart",
@@ -355,10 +366,13 @@ async fn the_reported_blocks_are_the_indexes_whose_content_differs() {
             vec![(3, false, true)],
         ),
         (
+            // The sibling's own block 4 is held by the FIRST side alone, so the comparison
+            // of it against the child reports only what the child holds: 1 (other bytes)
+            // and 2 (a block the sibling holds nothing at).
             "two siblings of one parent",
             Side::Sibling,
             Side::Child,
-            vec![(1, true, true), (2, false, true), (4, true, false)],
+            vec![(1, true, true), (2, false, true)],
         ),
         ("a snapshot against itself", Side::Child, Side::Child, Vec::new()),
         (
@@ -396,11 +410,10 @@ async fn the_reported_blocks_are_the_indexes_whose_content_differs() {
                 "case {case:?}: block {index} must report a FirstBlockToken only when the \
                  first snapshot holds it, got {block:?}"
             );
-            assert_eq!(
-                block.second_block_token.is_some(),
-                *second_holds,
-                "case {case:?}: block {index} must report a SecondBlockToken only when the \
-                 second snapshot holds it, got {block:?}"
+            assert!(
+                *second_holds && block.second_block_token.is_some(),
+                "case {case:?}: block {index} is a block of the second snapshot, so it must \
+                 report a SecondBlockToken, got {block:?}"
             );
             // The two sides are distinct snapshots, so one index never reports one token
             // twice: each side hands out its own.
@@ -1009,20 +1022,17 @@ fn seed_at(blocks: &[(i32, u8)], block_index: i32) -> Option<u8> {
         .map(|(_, seed)| *seed)
 }
 
-/// Every index at which the two sides do not hold the same bytes, ascending: the union of
-/// their indexes, minus the ones both hold the same seed at.
-fn differing_indexes(first: &[(i32, u8)], second: &[(i32, u8)]) -> Vec<i32> {
-    let mut indexes: Vec<i32> = first
+/// Every changed block of `second`, ascending: the indexes `second` holds a block at whose
+/// seed `first` does not hold at that index.
+fn changed_indexes_of_second(first: &[(i32, u8)], second: &[(i32, u8)]) -> Vec<i32> {
+    let mut indexes: Vec<i32> = second
         .iter()
-        .chain(second.iter())
+        .filter(|(index, seed)| seed_at(first, *index) != Some(*seed))
         .map(|(index, _)| *index)
         .collect();
     indexes.sort_unstable();
     indexes.dedup();
     indexes
-        .into_iter()
-        .filter(|index| seed_at(first, *index) != seed_at(second, *index))
-        .collect()
 }
 
 /// RULE 7, for one reported token: reading `block_index` of `snapshot_id` with it answers
@@ -1190,7 +1200,7 @@ async fn each_reported_token_reads_its_own_sides_bytes_back() {
     for (case, first, first_blocks, second, second_blocks) in rows {
         let reply = compared(&router, case, first, second, "").await;
         let blocks = reported(&reply);
-        let expected = differing_indexes(&first_blocks, &second_blocks);
+        let expected = changed_indexes_of_second(&first_blocks, &second_blocks);
         let indexes: Vec<i32> = blocks.iter().map(|block| block.block_index).collect();
         assert_eq!(
             indexes, expected,
@@ -1208,11 +1218,10 @@ async fn each_reported_token_reads_its_own_sides_bytes_back() {
                 "case {case:?}: block {index} must carry a FirstBlockToken exactly when the \
                  first snapshot holds that block, got {block:?}"
             );
-            assert_eq!(
-                block.second_block_token.is_some(),
-                second_seed.is_some(),
-                "case {case:?}: block {index} must carry a SecondBlockToken exactly when the \
-                 second snapshot holds that block, got {block:?}"
+            assert!(
+                second_seed.is_some() && block.second_block_token.is_some(),
+                "case {case:?}: block {index} is a block of the second snapshot, so it must \
+                 carry a SecondBlockToken, got {block:?}"
             );
 
             if let (Some(token), Some(seed)) = (block.first_block_token.as_deref(), first_seed) {

@@ -3,8 +3,8 @@
 //! @op ListChangedBlocks
 //!
 //! Implemented: compares the blocks of two snapshots of one lineage out of
-//! [`crate::state`] and reports the indexes whose content differs, with each side's own
-//! block token. This is the ONLY file to touch for this operation.
+//! [`crate::state`] and reports the blocks of the second snapshot whose content differs
+//! from the first's, with each side's own block token. This is the ONLY file to touch for this operation.
 //!
 //! ## Shape of an operation
 //!
@@ -100,7 +100,6 @@
 #[allow(unused_imports)]
 use super::types::*;
 
-use std::collections::BTreeSet;
 use std::time::SystemTime;
 
 use crate::state::{
@@ -250,27 +249,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         }
 
-        // The comparison itself: a block index is CHANGED when the two snapshots do not
-        // hold the same content at it — one holds a block the other does not, or both
-        // hold one and the stored checksums of their bytes differ. Each side's token is
-        // the one that side hands out for that index, so a caller can read either
-        // version back through `GetSnapshotBlock`; the side that holds no block at the
-        // index reports no token for it — "this value is absent if the first snapshot does
-        // not have the changed block that is on the second snapshot" (`ChangedBlock`).
-        let changed: Vec<ChangedBlock> = changed_indexes(first, second)
-            .into_iter()
-            .map(|block_index| ChangedBlock {
-                block_index: Some(block_index),
-                first_block_token: first
-                    .blocks
-                    .get(&block_index)
-                    .map(|entry| entry.block_token.clone()),
-                second_block_token: second
-                    .blocks
-                    .get(&block_index)
-                    .map(|entry| entry.block_token.clone()),
-            })
-            .collect();
+        // The comparison itself ([`changed_blocks`]): every reported block is a block OF
+        // the snapshot the URI names, so each one carries that side's own token and the
+        // first side's token only where that side holds the same index — "this value is
+        // absent if the first snapshot does not have the changed block that is on the
+        // second snapshot" (`ChangedBlock`).
+        let changed: Vec<ChangedBlock> = changed_blocks(first, second);
 
         // Where the page starts, by the rule both listings of this service share
         // ([`crate::state::page_resume_index`]): a `NextToken` wins over
@@ -306,9 +290,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
         });
 
-        // Whether this answer reports any changed block at all. A changed index is one at
-        // least one side holds a block at, so a page carrying changed blocks always
-        // carries tokens, and a page carrying none carries none.
+        // Whether this answer reports any changed block at all. Every changed block is one
+        // the second snapshot holds, so a page carrying changed blocks always carries
+        // tokens, and a page carrying none carries none.
         let reports_changed_blocks = !page.is_empty();
 
         Ok(ListChangedBlocksOutput {
@@ -362,25 +346,37 @@ fn resolve<'store>(
     Err(not_found(snapshot_not_found_message(snapshot_id)))
 }
 
-/// Every block index at which `first` and `second` do not hold the same content,
-/// ascending.
+/// Every changed block of `second` relative to `first`, ascending by block index.
 ///
-/// The union of the two block maps, minus the indexes both hold the same bytes at —
-/// compared through the checksum each entry stores for its own bytes, which is a digest of
-/// exactly those bytes.
-fn changed_indexes(first: &Snapshot, second: &Snapshot) -> Vec<i32> {
-    let mut indexes: BTreeSet<i32> = second.blocks.keys().copied().collect();
-    indexes.extend(first.blocks.keys().copied());
-    indexes
-        .into_iter()
-        .filter(|block_index| {
-            match (first.blocks.get(block_index), second.blocks.get(block_index)) {
-                (Some(first_block), Some(second_block)) => {
-                    first_block.checksum != second_block.checksum
-                }
-                // An index only one of them holds is a block the other does not have.
-                _ => true,
-            }
+/// A `ChangedBlock` is "a block of data in an Amazon Elastic Block Store snapshot that is
+/// different from another snapshot of the same volume/snapshot lineage" and its
+/// `SecondBlockToken` is "the block token for the block index of the `SecondSnapshotId`"
+/// with no absence clause, while `FirstBlockToken` "is absent if the first snapshot does not
+/// have the changed block THAT IS ON THE SECOND SNAPSHOT" (`ChangedBlock`): the reported set
+/// is therefore walked over the blocks the SECOND snapshot holds, each kept when the first
+/// snapshot holds no block at that index or holds other bytes there — compared through the
+/// checksum each entry stores for its own bytes, which is a digest of exactly those bytes.
+/// An index the second snapshot holds no block at is not a changed block of it and is never
+/// reported.
+fn changed_blocks(first: &Snapshot, second: &Snapshot) -> Vec<ChangedBlock> {
+    second
+        .blocks
+        .iter()
+        .filter(|(block_index, second_block)| {
+            first
+                .blocks
+                .get(block_index)
+                .is_none_or(|first_block| first_block.checksum != second_block.checksum)
+        })
+        .map(|(block_index, second_block)| ChangedBlock {
+            block_index: Some(*block_index),
+            // Each side's token is the one that side hands out for that index, so a caller
+            // can read either version back through `GetSnapshotBlock`.
+            first_block_token: first
+                .blocks
+                .get(block_index)
+                .map(|entry| entry.block_token.clone()),
+            second_block_token: Some(second_block.block_token.clone()),
         })
         .collect()
 }
