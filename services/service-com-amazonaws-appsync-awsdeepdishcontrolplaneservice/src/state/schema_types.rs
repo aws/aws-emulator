@@ -1202,7 +1202,8 @@ impl SchemaDocumentError {
 }
 
 /// Parse one caller-supplied schema document, written in GraphQL schema language, into
-/// the types it declares — in document order.
+/// the types it declares — in document order — beside how many definitions it states
+/// ([`SchemaDocument`]).
 ///
 /// A schema document declares a whole type system rather than the one type
 /// [`parse_type_definition`] reads, so every type definition it writes is kept, a type
@@ -1222,7 +1223,7 @@ impl SchemaDocumentError {
 /// [`DEFINITION_TOKEN_LIMIT`], the same bounds a single definition is read under, so
 /// neither the depth nor the amount of work one caller-supplied document costs comes
 /// from the request.
-pub fn parse_schema_document(definition: &str) -> Result<Vec<DeclaredType>, SchemaDocumentError> {
+pub fn parse_schema_document(definition: &str) -> Result<SchemaDocument, SchemaDocumentError> {
     let tree = Parser::new(definition)
         .recursion_limit(DEFINITION_RECURSION_LIMIT)
         .token_limit(DEFINITION_TOKEN_LIMIT)
@@ -1231,6 +1232,12 @@ pub fn parse_schema_document(definition: &str) -> Result<Vec<DeclaredType>, Sche
         let (line, column) = source_location(definition, error.index());
         return Err(SchemaDocumentError::Unparseable { line, column });
     }
+
+    // How much the document STATES, which is not how many types it declares: a `schema`
+    // definition and a directive definition declare no type (see this function's own
+    // account of them), and what a successful creation details is counted over all of them
+    // (`super::schema_success_detail`).
+    let definitions = tree.document().definitions().count();
 
     // Declaration order is the document's, which is the order a listing reports a
     // schema's types in, so it is kept beside the by-name index the checks below need.
@@ -1308,10 +1315,28 @@ pub fn parse_schema_document(definition: &str) -> Result<Vec<DeclaredType>, Sche
         return Err(SchemaDocumentError::UndefinedTypesReferenced(undefined));
     }
 
-    Ok(order
-        .iter()
-        .filter_map(|name| declared.remove(name))
-        .collect())
+    Ok(SchemaDocument {
+        types: order
+            .iter()
+            .filter_map(|name| declared.remove(name))
+            .collect(),
+        definitions,
+    })
+}
+
+/// What one caller-supplied schema document holds: the types it declares, in document order,
+/// beside HOW MANY top-level definitions it states.
+///
+/// The two counts differ, and both are read off the one document: a `schema` definition and a
+/// directive definition are definitions that declare no type, so a document that binds its
+/// root operation types states one more definition than it declares types.
+#[derive(Debug, Clone)]
+pub struct SchemaDocument {
+    /// The types the document declares, in the order it declares them.
+    pub types: Vec<DeclaredType>,
+    /// How many top-level definitions the document states, type definitions and the
+    /// definitions that declare no type alike.
+    pub definitions: usize,
 }
 
 impl TypeDefinition {

@@ -233,9 +233,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // that does not yields the reason it does not. Nothing of a later request takes
         // part in the outcome.
         let outcome = match crate::state::parse_schema_document(&definition) {
-            Ok(declared) => {
+            Ok(document) => {
                 let mut types = std::collections::BTreeMap::new();
-                for crate::state::DeclaredType { definition, parsed } in declared {
+                for crate::state::DeclaredType { definition, parsed } in document.types {
                     // Creation order comes from the store's own counter, so the types a
                     // document installs are ordered exactly as separately created ones
                     // are.
@@ -254,7 +254,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         },
                     );
                 }
-                crate::state::SchemaCreationOutcome::Created(types)
+                crate::state::SchemaCreationOutcome::Created {
+                    types,
+                    definitions: document.definitions,
+                }
             }
             Err(refusal) => crate::state::SchemaCreationOutcome::Failed(refusal.detail()),
         };

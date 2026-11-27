@@ -45,7 +45,8 @@ use crate::field_level_encryption_profile_lifecycle::store_profile;
 /// report for it.
 struct Row {
     config: Config,
-    /// What `ForwardWhenQueryArgProfileIsUnknown` must read back as.
+    /// What `ForwardWhenQueryArgProfileIsUnknown` must read back as — the flag the request
+    /// submitted, or the supplied mapping's flag for a request that states no section.
     forwards: bool,
 }
 

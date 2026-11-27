@@ -203,13 +203,17 @@ struct Declared {
     fields: &'static [&'static str],
 }
 
-/// One row of the creation table: a schema document and the types it declares.
+/// One row of the creation table: a schema document, the types it declares and how many
+/// definitions it states.
 #[derive(Debug, Clone)]
 struct Row {
     label: &'static str,
     /// The schema document the creation carries, in GraphQL schema language.
     document: &'static str,
     declared: Vec<Declared>,
+    /// The definitions the document states, which the success detail counts: the types
+    /// above and every definition that declares none.
+    definitions: usize,
 }
 
 /// The documents a creation succeeds on.
@@ -231,6 +235,7 @@ fn rows() -> Vec<Row> {
                 description: None,
                 fields: &["hello"],
             }],
+            definitions: 1,
         },
         Row {
             label: "every kind the SDL grammar declares",
@@ -311,6 +316,7 @@ fn rows() -> Vec<Row> {
                     fields: &["post", "posts", "rendered", "content"],
                 },
             ],
+            definitions: 8,
         },
         Row {
             label: "definitions that declare no type",
@@ -325,6 +331,7 @@ fn rows() -> Vec<Row> {
                 description: None,
                 fields: &["hello"],
             }],
+            definitions: 3,
         },
         Row {
             label: "a type the document extends",
@@ -350,6 +357,7 @@ fn rows() -> Vec<Row> {
                     fields: &[],
                 },
             ],
+            definitions: 4,
         },
     ]
 }
@@ -429,12 +437,12 @@ async fn a_created_schema_is_the_types_its_document_declares() {
 
     for (row, api_id) in rows.iter().zip(&apis) {
         let settled = creation_status(&router, api_id).await;
-        // The detail counts the types the created schema holds: the ones the document
-        // declares plus the one the service contributes to every schema it creates.
-        // Written out here rather than read off the service's own template.
+        // The detail counts the definitions the document states: the types it declares
+        // and the definitions that declare none alike. Written out here rather than read
+        // off the service's own template.
         let detail = format!(
             "Successfully created schema with {} types.",
-            row.declared.len() + 1
+            row.definitions
         );
         assert_eq!(
             (

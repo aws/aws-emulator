@@ -103,7 +103,8 @@ fn supplied() -> ExpectedContentType {
 /// configuration has to report for it.
 struct Row {
     config: Config,
-    /// What `ForwardWhenQueryArgProfileIsUnknown` has to read back as.
+    /// What `ForwardWhenQueryArgProfileIsUnknown` has to read back as: the flag the request
+    /// stated, or the supplied mapping's own for a request that states no section.
     forwards_unknown_profile: bool,
     content_type: ExpectedContentType,
 }

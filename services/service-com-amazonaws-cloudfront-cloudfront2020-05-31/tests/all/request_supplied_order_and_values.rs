@@ -18,8 +18,8 @@
 //!   carries the value submitted for it, and an OPTIONAL member the request left out stays
 //!   absent rather than being filled in by the read, save for the members the SERVICE itself
 //!   supplies for a configuration that states none (`server_supplied_config_members.rs`
-//!   states that rule, and `field_level_encryption_query_arg_forwarding.rs` the one member a
-//!   field-level encryption configuration answers from its own mapping);
+//!   states that rule, and `field_level_encryption_query_arg_forwarding.rs` the forwarding
+//!   flags a stated section carries in its own right);
 //! * `Paths$Items` (`PathList`), `FieldPatterns$Items` (`FieldPatternList`) and
 //!   `EncryptionEntities$Items` (`EncryptionEntityList`) are Smithy LISTS, i.e. ordered
 //!   sequences, so the SEQUENCE is part of the value: the entries are reported at the

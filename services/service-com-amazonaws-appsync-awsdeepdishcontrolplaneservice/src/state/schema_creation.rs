@@ -73,37 +73,28 @@ pub const SCHEMA_PROCESSING_DETAIL: &str =
 /// because an API no creation has run for has no creation of its own to report.
 pub const SCHEMA_NOT_APPLICABLE_DETAIL: &str = "No schema creation has been performed for this API.";
 
-/// The `details` that goes with [`SCHEMA_SUCCESS`], for a creation whose document
-/// declares `declared_types` types.
+/// The `details` that goes with [`SCHEMA_SUCCESS`], for a creation whose document states
+/// `definitions` definitions.
 ///
 /// The member is "Detailed information about the status of the schema creation
-/// operation", and what a creation that succeeded has to detail is the type system it
-/// installed: the sentence states HOW MANY types the schema the creation produced holds,
-/// so a caller that reports or gates on how much of its document was accepted reads that
-/// number off the schema it submitted rather than off a constant sentence.
+/// operation", and what a creation that succeeded has to detail is the schema it
+/// installed: the sentence states HOW MANY definitions the document the creation compiled
+/// states, so a caller that reports or gates on how much of its document was accepted
+/// reads that number off the schema it submitted rather than off a constant sentence.
 ///
-/// A created schema holds the types its document declares PLUS the types the service
-/// itself contributes to every schema it creates ([`SERVICE_CONTRIBUTED_TYPES`]), so the
-/// count is stated over both rather than over the document alone.
+/// RECORDED behaviour is what the count is over: the DEFINITIONS the document states
+/// rather than the types it declares. A document of one type definition is detailed as one,
+/// and a document that also binds its root operation types in a `schema` definition — a
+/// definition that declares no type — is detailed as one more than the types it declares.
+/// So every definition the document states is counted once, and nothing the service
+/// contributes to a schema is.
 ///
 /// The count is the only variable part: the noun is not inflected for it, because the
 /// sentence recorded behaviour supplies carries the plural form and the service states no
 /// rule that would change it with the number.
-pub fn schema_success_detail(declared_types: usize) -> String {
-    let type_count = declared_types + SERVICE_CONTRIBUTED_TYPES;
-    format!("Successfully created schema with {type_count} types.")
+pub fn schema_success_detail(definitions: usize) -> String {
+    format!("Successfully created schema with {definitions} types.")
 }
-
-/// How many types the SERVICE contributes to every schema it creates, beside the ones the
-/// submitted document declares.
-///
-/// RECORDED behaviour: the count a successful creation details
-/// ([`schema_success_detail`]) is one higher than the number of types the submitted
-/// document declares, whatever that document declares — the type system AppSync compiles
-/// carries one type of its own beside them. It is a type of the SCHEMA rather than a type
-/// of the API, so it is not one of the types the type operations address: `GetType` and
-/// `ListTypes` report the document's own ([`SchemaCreationOutcome::Created`]).
-pub const SERVICE_CONTRIBUTED_TYPES: usize = 1;
 
 /// How long after a `StartSchemaCreation` the creation it scheduled comes due.
 ///
@@ -121,9 +112,16 @@ pub const SCHEMA_CREATION_SPAN: Duration = Duration::from_secs(3);
 /// without reading anything of a later request.
 #[derive(Debug, Clone)]
 pub enum SchemaCreationOutcome {
-    /// The document defines a type system; these are the types it declares, keyed as
-    /// every type operation addresses one — by name within its API.
-    Created(BTreeMap<String, TypeRecord>),
+    /// The document defines a type system the API can hold.
+    Created {
+        /// The types the document declares, keyed as every type operation addresses one —
+        /// by name within its API. These are the API's types: `GetType` and `ListTypes`
+        /// report exactly them.
+        types: BTreeMap<String, TypeRecord>,
+        /// How many definitions the document states, which is what the creation's own
+        /// detail is counted over ([`schema_success_detail`]).
+        definitions: usize,
+    },
     /// The document defines no type system, for this reason.
     Failed(String),
 }
@@ -218,13 +216,11 @@ impl GraphqlApiRecord {
             schema.outcome.take()
         });
         let (status, details) = match outcome {
-            Some(SchemaCreationOutcome::Created(types)) => {
-                // Counted off the type system this creation installs — the types its
-                // document defines, beside the one the service contributes to every
-                // schema it creates ([`schema_success_detail`]) — so the detail reports
-                // the schema that was created rather than a sentence that holds for
-                // every one.
-                let detail = schema_success_detail(types.len());
+            Some(SchemaCreationOutcome::Created { types, definitions }) => {
+                // Counted off the document this creation compiled — every definition it
+                // states ([`schema_success_detail`]) — so the detail reports the schema
+                // that was created rather than a sentence that holds for every one.
+                let detail = schema_success_detail(definitions);
                 self.types = types;
                 // The document is the WHOLE type system of this API, so nothing a merge
                 // installed on it is held any longer either: a Merged API's contributions

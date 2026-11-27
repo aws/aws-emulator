@@ -6,18 +6,18 @@
 //! Two rules, each asserted over a class of inputs rather than over the one request that
 //! exposed the defect:
 //!
-//! 1. the detail of a schema creation that SUCCEEDED states how many types the created
-//!    schema holds ("Successfully created schema with `<N>` types.") — the types the
-//!    submitted document defines plus the one the service contributes to every schema it
-//!    creates — so the number is derived from the document the caller passed rather than
+//! 1. the detail of a schema creation that SUCCEEDED states how many DEFINITIONS the
+//!    document it compiled states ("Successfully created schema with `<N>` types.") — every
+//!    definition the document writes, whether or not it declares a type — so the number is
+//!    derived from the document the caller passed rather than
 //!    being a sentence that
 //!    holds for every schema. Asserted over a table of documents spanning the count of
 //!    types they define, the kinds they declare them with, definitions that declare no
 //!    type at all (a `schema` definition, a directive definition), extensions of types
 //!    the document declares, and a generated document far past the counts written out by
 //!    hand — each row cross-checked against the types `ListTypes` reports for the API, so
-//!    the detail is pinned to the stored type system and not to the test's own
-//!    arithmetic; and over a second creation on the SAME API, whose detail follows the new
+//!    the types the API holds are pinned beside the count the detail states; and over a
+//!    second creation on the SAME API, whose detail follows the new
 //!    document's count;
 //! 2. `StartSchemaCreation` classifies the `apiId` it is addressed at by that id's FORM:
 //!    a value no id the service issues could be is a 400 `BadRequestException` whose
@@ -47,15 +47,17 @@ use super::schema_creation::{await_creation, creation_status, start_creation};
 /// of any size is read in as few calls as the service allows.
 const TYPE_PAGE: usize = 25;
 
-/// One row of the detail table: a schema document, and how many types it defines.
+/// One row of the detail table: a schema document, how many types it defines and how many
+/// definitions it states.
 #[derive(Debug)]
 struct Row {
     label: &'static str,
     /// The document the creation carries, in GraphQL schema language.
     document: String,
-    /// The number of types the document defines; the success detail states this count
-    /// plus the one type the service contributes to every schema it creates.
+    /// The number of types the document defines, which the API holds afterwards.
     types: usize,
+    /// The number of definitions the document states, which the success detail counts.
+    definitions: usize,
 }
 
 /// The documents the detail rule is asserted over.
@@ -65,13 +67,15 @@ struct Row {
 /// extensions and its `schema` and directive definitions, which
 /// `StartSchemaCreationRequest$definition` ("The schema definition, in GraphQL schema
 /// language format") is written in — an extension and a `schema` or directive definition
-/// declare no type of their own, so neither adds to the count.
+/// declare no type of their own, so neither adds to the types the API holds, while the
+/// detail counts every definition the document states.
 fn rows() -> Vec<Row> {
     vec![
         Row {
             label: "one object type",
             document: "type Query {\n  hello: String\n}\n".to_string(),
             types: 1,
+            definitions: 1,
         },
         Row {
             label: "a schema definition and the types it reaches",
@@ -81,6 +85,7 @@ fn rows() -> Vec<Row> {
                        type Author {\n  name: String\n}\n"
                 .to_string(),
             types: 3,
+            definitions: 4,
         },
         Row {
             label: "every kind the SDL grammar declares",
@@ -94,6 +99,7 @@ fn rows() -> Vec<Row> {
                        type Query {\n  book(filter: Filter): Book\n  any: Publication\n}\n"
                 .to_string(),
             types: 8,
+            definitions: 8,
         },
         Row {
             label: "extensions of the types the document declares",
@@ -103,6 +109,7 @@ fn rows() -> Vec<Row> {
                        extend enum Mood {\n  BAD\n}\n"
                 .to_string(),
             types: 2,
+            definitions: 4,
         },
         Row {
             label: "a directive definition and the type that uses it",
@@ -110,6 +117,7 @@ fn rows() -> Vec<Row> {
                        type Query {\n  hello: String @auth(level: 1)\n}\n"
                 .to_string(),
             types: 1,
+            definitions: 2,
         },
         Row {
             label: "a generated document of many types",
@@ -117,6 +125,7 @@ fn rows() -> Vec<Row> {
                 .map(|index| format!("type T{index} {{\n  id: ID\n}}\n"))
                 .collect(),
             types: 37,
+            definitions: 37,
         },
     ]
 }
@@ -161,7 +170,7 @@ async fn the_success_detail_states_how_many_types_the_document_defines() {
     // Every row's creation is scheduled first, each on its own API, so the ONE wait below
     // crosses the due instant of all of them.
     for row in &rows {
-        let api_id = create_api(&router, &format!("detail-{}", row.types)).await;
+        let api_id = create_api(&router, &format!("detail-{}", row.definitions)).await;
         let started = start_creation(&router, &api_id, row.document.as_bytes()).await;
         assert_eq!(
             started.status, 200,
@@ -177,7 +186,7 @@ async fn the_success_detail_states_how_many_types_the_document_defines() {
         let settled = creation_status(&router, api_id).await;
         let expected = format!(
             "Successfully created schema with {} types.",
-            row.types + 1
+            row.definitions
         );
         assert_eq!(
             (
@@ -191,9 +200,9 @@ async fn the_success_detail_states_how_many_types_the_document_defines() {
             settled.body
         );
 
-        // The count the detail states is the type system the creation installed plus the
-        // service's own type, not the test's own reading of the document: the API reports
-        // exactly the types the document declared.
+        // The count the detail states is read off the document the creation compiled, not
+        // off the test's own reading of it, and the type system that document installed is
+        // reported beside it: the API holds exactly the types the document declared.
         let listed = listed_types(&router, api_id).await;
         assert_eq!(
             listed.len(),
@@ -212,12 +221,12 @@ async fn a_second_creation_detail_follows_the_new_document() {
     let api_id = create_api(&router, "detail-recomputed").await;
 
     // A schema document is the whole type system, so the detail of the creation that ran
-    // last counts the types THAT document defines — a different number from the first.
-    for (label, document, types) in [
+    // last counts the definitions THAT document states — a different number from the first.
+    for (label, document, definitions) in [
         (
             "the first document",
-            "type Query {\n  book: Book\n}\ntype Book {\n  id: ID!\n}\n",
-            2,
+            "schema { query: Query }\ntype Query {\n  book: Book\n}\ntype Book {\n  id: ID!\n}\n",
+            3,
         ),
         ("the second document", "type Query {\n  hello: String\n}\n", 1),
     ] {
@@ -230,7 +239,7 @@ async fn a_second_creation_detail_follows_the_new_document() {
         await_creation(&router, &api_id, label).await;
 
         let settled = creation_status(&router, &api_id).await;
-        let expected = format!("Successfully created schema with {} types.", types + 1);
+        let expected = format!("Successfully created schema with {definitions} types.");
         assert_eq!(
             settled.body["details"].as_str(),
             Some(expected.as_str()),

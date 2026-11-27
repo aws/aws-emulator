@@ -215,8 +215,9 @@ fn meta_types() -> &'static BTreeMap<String, TypeDefinition> {
     static TYPES: OnceLock<BTreeMap<String, TypeDefinition>> = OnceLock::new();
     TYPES.get_or_init(|| {
         parse_schema_document(INTROSPECTION_SYSTEM_SDL)
-            .map(|declared| {
-                declared
+            .map(|document| {
+                document
+                    .types
                     .into_iter()
                     .map(|entry| (entry.parsed.name.clone(), entry.parsed))
                     .collect()

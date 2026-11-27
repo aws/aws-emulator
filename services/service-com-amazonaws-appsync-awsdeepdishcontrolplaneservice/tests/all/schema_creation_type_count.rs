@@ -2,12 +2,14 @@
 
 //! How many types a successful schema creation DETAILS, end to end over HTTP.
 //!
-//! RULE: the `details` of a creation that reached `SUCCESS` states how many types the
-//! created schema holds — the types its document declares plus the one type the service
-//! contributes to every schema it creates — in AppSync's own sentence "Successfully
-//! created schema with `<N>` types.", whose only variable part is that number. The count
-//! is therefore always one more than the number of types the API goes on to report, which
-//! is what pins it to the stored type system rather than to the test's arithmetic.
+//! RULE: the `details` of a creation that reached `SUCCESS` states how many DEFINITIONS the
+//! document it compiled states — every type definition, and the definitions that declare no
+//! type at all beside them (a `schema` definition binding the root operation types) — in
+//! AppSync's own sentence "Successfully created schema with `<N>` types.", whose only variable
+//! part is that number. So a document of nothing but type definitions is detailed as the
+//! number of types the API goes on to report, and one that also binds its root is detailed as
+//! one more than that, which is what pins the count to the submitted document rather than to
+//! the test's arithmetic.
 //!
 //! The rows differ along what the rule generalises over: how many types the document
 //! declares (one, a handful, and a generated document far past what is written out by
@@ -34,14 +36,16 @@ const TYPE_PAGE: usize = 25;
 /// page the listing several times over, and small enough to stay fast.
 const GENERATED_TYPES: usize = 40;
 
-/// One row: a document, and how many types it declares.
+/// One row: a document, how many types it declares, and how many definitions it states.
 #[derive(Debug)]
 struct Row {
     label: &'static str,
     document: String,
-    /// The types the document declares, which the API holds afterwards. The detail states
-    /// this count plus the service's own type.
+    /// The types the document declares, which the API holds afterwards.
     declared: usize,
+    /// The definitions the document states, which the detail counts: the types above plus
+    /// every definition that declares no type.
+    definitions: usize,
 }
 
 /// The documents the rule is asserted over.
@@ -57,9 +61,10 @@ fn rows() -> Vec<Row> {
 
     vec![
         Row {
-            label: "a document declaring one type",
+            label: "a document declaring one type and nothing else",
             document: "type Query {\n  hello: String\n}\n".to_string(),
             declared: 1,
+            definitions: 1,
         },
         Row {
             label: "a schema definition, which declares no type, and two that do",
@@ -67,6 +72,7 @@ fn rows() -> Vec<Row> {
                        id: ID!\n}\n"
                 .to_string(),
             declared: 2,
+            definitions: 3,
         },
         Row {
             label: "four types declared with four different keywords",
@@ -75,6 +81,7 @@ fn rows() -> Vec<Row> {
                        String\n}\n"
                 .to_string(),
             declared: 4,
+            definitions: 4,
         },
         Row {
             // The shape of the recorded document: N object types, a Query type selecting
@@ -82,6 +89,7 @@ fn rows() -> Vec<Row> {
             label: "a generated document of many object types and a Query over them",
             document: generated,
             declared: GENERATED_TYPES + 1,
+            definitions: GENERATED_TYPES + 2,
         },
     ]
 }
@@ -125,7 +133,7 @@ async fn the_success_detail_counts_the_types_the_created_schema_holds() {
     // Every row's creation is scheduled first, each on its own API, so the ONE wait below
     // is crossed by all of them: the transition is one the clock owes.
     for row in &rows {
-        let api_id = create_api(&router, &format!("Api_count_{}", row.declared)).await;
+        let api_id = create_api(&router, &format!("Api_count_{}", row.definitions)).await;
         let started = start_creation(&router, &api_id, row.document.as_bytes()).await;
         assert_eq!(
             started.status, 200,
@@ -143,7 +151,7 @@ async fn the_success_detail_counts_the_types_the_created_schema_holds() {
         // so a change of wording is caught rather than followed.
         let expected = format!(
             "Successfully created schema with {} types.",
-            row.declared + 1
+            row.definitions
         );
         assert_eq!(
             (
@@ -157,9 +165,10 @@ async fn the_success_detail_counts_the_types_the_created_schema_holds() {
             settled.body
         );
 
-        // The number is one more than the type system the creation installed, which the
-        // API reports for itself: the count follows the stored schema rather than a
-        // constant, and the service's own type is not one of the API's types.
+        // The number follows the document that was compiled, and the type system that
+        // document installed is what the API reports for itself: the types it declares are
+        // the API's types, and the definitions that declare none are counted by the detail
+        // without ever becoming one.
         let listed = listed_types(&router, api_id).await;
         assert_eq!(
             listed.len(),
@@ -172,10 +181,11 @@ async fn the_success_detail_counts_the_types_the_created_schema_holds() {
         let counted = counted_types(&settled.body["details"], row.label);
         assert_eq!(
             counted,
-            listed.len() + 1,
-            "case {:?}: expected the detail to count one more type than the API holds \
-             ({listed:?}), got {counted}",
-            row.label
+            row.definitions,
+            "case {:?}: expected the detail to count the {} definitions the document stated \
+             (the API holds {listed:?}), got {counted}",
+            row.label,
+            row.definitions
         );
     }
 }
@@ -186,9 +196,9 @@ async fn a_second_creation_recounts_the_new_document() {
     let api_id = create_api(&router, "Api_count_recomputed").await;
 
     // A schema document is the whole type system, so the detail of the creation that ran
-    // last counts the types THAT document declares — a different number each time, and
-    // the service's own type is counted once rather than accumulating.
-    for (label, document, declared) in [
+    // last counts the definitions THAT document states — a different number each time,
+    // never an accumulation of the ones before it.
+    for (label, document, definitions) in [
         (
             "the first document",
             "type Query {\n  book: Book\n}\ntype Book {\n  id: ID!\n}\n",
@@ -197,8 +207,9 @@ async fn a_second_creation_recounts_the_new_document() {
         ("the second document", "type Query {\n  hello: String\n}\n", 1),
         (
             "the third document",
-            "type Query {\n  a: A\n  b: B\n}\ntype A {\n  id: ID\n}\ntype B {\n  id: ID\n}\n",
-            3,
+            "schema { query: Query }\ntype Query {\n  a: A\n  b: B\n}\ntype A {\n  id: ID\n}\n\
+             type B {\n  id: ID\n}\n",
+            4,
         ),
     ] {
         let started = start_creation(&router, &api_id, document.as_bytes()).await;
@@ -209,7 +220,7 @@ async fn a_second_creation_recounts_the_new_document() {
         await_creation(&router, &api_id, label).await;
 
         let settled = creation_status(&router, &api_id).await;
-        let expected = format!("Successfully created schema with {} types.", declared + 1);
+        let expected = format!("Successfully created schema with {definitions} types.");
         assert_eq!(
             settled.body["details"].as_str(),
             Some(expected.as_str()),
