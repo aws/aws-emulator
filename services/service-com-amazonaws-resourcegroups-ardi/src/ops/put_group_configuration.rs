@@ -78,10 +78,9 @@
 //!
 //! ## Output
 //!
-//! * `GroupIdentifier` (GroupIdentifier) — The identifiers of the group the accepted
-//!   configuration was attached to.
-//! * `GroupConfiguration` (GroupConfiguration) — The service configuration now reported
-//!   for the group, the accepted update included.
+//! The operation declares no output member: an accepted update is answered with the
+//! empty document and HTTP 202, and `GetGroupConfiguration` is where the caller reads
+//! the status of the update.
 //!
 //! ## Errors
 //!
@@ -267,15 +266,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // due a span later, so a caller reading straight after this call still sees the
         // update in flight.
         record.put_configuration(input.configuration, now);
-        // Reported from the record that was just written, so the answer and the
-        // store cannot disagree: which group took the configuration, and the
-        // configuration now reported for it — the one still in effect beside the
-        // update this call accepted, exactly as `GetGroupConfiguration` reports
-        // it at this instant.
-        let output = PutGroupConfigurationOutput {
-            group_identifier: Some(record.to_identifier()),
-            group_configuration: record.to_group_configuration(),
-        };
         let items_proposed = record
             .configuration_update_in_flight(now)
             .map(|pending| pending.configuration.iter().flatten().count())
@@ -296,9 +286,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             outcome = "configuration update accepted",
             "resource group configuration update accepted",
         );
-        // The 202 says the update was accepted rather than applied, and the
-        // document it carries is what is now reported for the group.
-        Ok(output)
+        // The 202 says the update was accepted rather than applied. The modelled
+        // output declares no member, so the answer carries the empty document and
+        // the update is read back through `GetGroupConfiguration`.
+        Ok(PutGroupConfigurationOutput {})
     }
 }
 

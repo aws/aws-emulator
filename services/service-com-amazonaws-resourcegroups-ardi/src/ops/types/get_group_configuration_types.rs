@@ -20,9 +20,6 @@ pub struct GetGroupConfigurationInput {
 #[smithy_macros::smithy(shape = "com.amazonaws.resourcegroups#GetGroupConfigurationOutput")]
 #[derive(Debug, Clone, Default)]
 pub struct GetGroupConfigurationOutput {
-    /// Which group the reported configuration belongs to. Every response of this
-    /// operation AWS puts on the wire carries it.
-    pub group_identifier: Option<GroupIdentifier>,
     pub group_configuration: Option<GroupConfiguration>,
 }
 

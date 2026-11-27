@@ -9,9 +9,9 @@
 //!
 //! The rules under test, each asserted over a TABLE of inputs rather than one row:
 //!
-//! * every `Group` structure a response carries reports `OwnerId`, the id of the
-//!   account that owns the group — the same account its `GroupArn` names — whatever
-//!   the operation that answers and whatever the group was created with;
+//! * every `Group` structure a response carries reports exactly the members the model
+//!   declares for it — both required ones always, and nothing the model does not declare
+//!   — whatever the operation that answers and whatever the group was created with;
 //! * a group created with a service `Configuration` is an ordinary group: it is
 //!   stored, reports the configuration it holds, and resolves by name or by ARN
 //!   through every operation that addresses one group, up to and including its
@@ -29,27 +29,57 @@ use super::resource_group_lifecycle::{error_code, identifier_names, Emulator, AC
 /// beside the group identifier).
 const UPDATABLE: [&str; 4] = ["Description", "Criticality", "Owner", "DisplayName"];
 
+/// The members the modelled `Group` structure declares
+/// (`smithy_query(query="shape",shape="Group",model_path="services/service-com-amazonaws-resourcegroups-ardi/smithy-model/com-amazonaws-resourcegroups-ardi.json")`),
+/// the two `@required` ones first.
+const GROUP_MEMBERS: [&str; 7] = [
+    "GroupArn",
+    "Name",
+    "Description",
+    "Criticality",
+    "Owner",
+    "DisplayName",
+    "ApplicationTag",
+];
+
 /// The account segment of an ARN
 /// (`arn:<partition>:<service>:<region>:<account>:<resource>`).
 fn arn_account(arn: &str) -> &str {
     arn.split(':').nth(4).unwrap_or("<no account segment>")
 }
 
-/// Assert that `group` — a `Group` structure answered by `source` — reports the
-/// owning account id, and that it is the account its own ARN names.
-fn assert_owner_id(case: &str, source: &str, group: &Value) {
-    let owner = group.get("OwnerId").and_then(Value::as_str);
-    assert_eq!(
-        owner,
-        Some(ACCOUNT),
-        "case {case:?}: {source} must report Group.OwnerId {ACCOUNT}, got {group}",
+/// Assert that `group` — a `Group` structure answered by `source` — carries only
+/// members the model declares, reports the two required ones, and names the account
+/// that owns it in the ARN that identifies it.
+fn assert_modelled_group(case: &str, source: &str, group: &Value) {
+    let members = group.as_object().unwrap_or_else(|| {
+        panic!("case {case:?}: {source} must answer a Group structure, got {group}")
+    });
+    let unmodelled: Vec<&str> = members
+        .keys()
+        .map(String::as_str)
+        .filter(|member| !GROUP_MEMBERS.contains(member))
+        .collect();
+    assert!(
+        unmodelled.is_empty(),
+        "case {case:?}: {source} reported Group members the model does not declare \
+         ({unmodelled:?}), got {group}",
     );
+    for required in ["GroupArn", "Name"] {
+        assert!(
+            members
+                .get(required)
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.is_empty()),
+            "case {case:?}: {source} must report Group.{required}, got {group}",
+        );
+    }
     let arn = group["GroupArn"].as_str().unwrap_or("<no GroupArn>");
     assert_eq!(
-        owner,
-        Some(arn_account(arn)),
-        "case {case:?}: {source} must report the account its ARN names ({arn}), got {:?}",
-        group["OwnerId"],
+        arn_account(arn),
+        ACCOUNT,
+        "case {case:?}: {source} must identify the group by an ARN naming the owning \
+         account {ACCOUNT}, got {arn}",
     );
 }
 
@@ -58,10 +88,10 @@ fn group_member(body: &Value, member: &str) -> Value {
     body["Group"].get(member).cloned().unwrap_or(Value::Null)
 }
 
-/// Every operation that answers a `Group` reports the owning account id: the
+/// Every operation that answers a `Group` answers the modelled projection of it: the
 /// create, the read, the update, the (deprecated) listing and the delete.
 #[tokio::test]
-async fn every_group_payload_reports_the_owning_account_id() {
+async fn every_group_payload_reports_only_the_modelled_members() {
     // (label, the CreateGroup request, the region its credential scope names)
     let cases = vec![
         (
@@ -100,8 +130,8 @@ async fn every_group_payload_reports_the_owning_account_id() {
             "us-east-1",
         ),
         (
-            // The owner is the ACCOUNT, so a group minted in another region
-            // reports the same one.
+            // The account is the one every ARN this emulator mints names, so a group
+            // minted in another region is identified the same way.
             "another region in the credential scope",
             json!({ "Name": "owner-elsewhere" }),
             "eu-west-1",
@@ -116,12 +146,12 @@ async fn every_group_payload_reports_the_owning_account_id() {
             status, 200,
             "case {case:?}: expected CreateGroup to answer 200, got {status} {created}",
         );
-        assert_owner_id(case, "CreateGroup", &created["Group"]);
+        assert_modelled_group(case, "CreateGroup", &created["Group"]);
 
         let read = emulator
             .ok_in(region, "/get-group", &json!({ "Group": name }))
             .await;
-        assert_owner_id(case, "GetGroup", &read["Group"]);
+        assert_modelled_group(case, "GetGroup", &read["Group"]);
 
         let listed = emulator.ok_in(region, "/groups-list", &json!({})).await;
         assert_eq!(
@@ -129,7 +159,11 @@ async fn every_group_payload_reports_the_owning_account_id() {
             vec![name.to_string()],
             "case {case:?}: expected ListGroups to report exactly [{name}], got {listed}",
         );
-        assert_owner_id(case, "the deprecated ListGroups$Groups", &listed["Groups"][0]);
+        assert_modelled_group(
+            case,
+            "the deprecated ListGroups$Groups",
+            &listed["Groups"][0],
+        );
 
         let updated = emulator
             .ok_in(
@@ -138,12 +172,12 @@ async fn every_group_payload_reports_the_owning_account_id() {
                 &json!({ "Group": name, "Description": "Updated probe group" }),
             )
             .await;
-        assert_owner_id(case, "UpdateGroup", &updated["Group"]);
+        assert_modelled_group(case, "UpdateGroup", &updated["Group"]);
 
         let deleted = emulator
             .ok_in(region, "/delete-group", &json!({ "Group": name }))
             .await;
-        assert_owner_id(case, "DeleteGroup", &deleted["Group"]);
+        assert_modelled_group(case, "DeleteGroup", &deleted["Group"]);
     }
 }
 
@@ -518,7 +552,7 @@ async fn update_group_persists_each_attribute_and_leaves_the_others_alone() {
         }
         // The identity of the group is not updatable: the name and the ARN it was
         // created with survive the update.
-        for member in ["Name", "GroupArn", "OwnerId"] {
+        for member in ["Name", "GroupArn"] {
             assert_eq!(
                 group_member(&created, member),
                 group_member(&updated, member),

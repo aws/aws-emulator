@@ -321,7 +321,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 Some(id) => crate::state::qualified_group_arn(&region, &input.name, id),
                 None => crate::state::group_arn(&region, &input.name),
             },
-            owner_id: crate::state::owning_account_id(),
             name: input.name.clone(),
             description: input.description,
             criticality: input.criticality,

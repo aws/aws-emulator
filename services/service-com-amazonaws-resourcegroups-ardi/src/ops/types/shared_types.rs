@@ -71,10 +71,6 @@ pub struct GroupConfigurationParameter {
 #[smithy_macros::smithy(shape = "com.amazonaws.resourcegroups#Group")]
 #[derive(Debug, Clone, Default)]
 pub struct Group {
-    /// The id of the account that owns the group. Every `Group` AWS puts on the
-    /// wire carries it (`CreateGroup`, `GetGroup`, `UpdateGroup`, `DeleteGroup`
-    /// and the deprecated `ListGroups$Groups` alike).
-    pub owner_id: Option<String>,
     pub group_arn: String,
     pub name: String,
     pub description: Option<String>,
@@ -87,11 +83,6 @@ pub struct Group {
 #[smithy_macros::smithy(shape = "com.amazonaws.resourcegroups#GroupConfiguration")]
 #[derive(Debug, Clone, Default)]
 pub struct GroupConfiguration {
-    /// The parameters the reported configuration sets, flattened across its
-    /// items in configuration order. Every `GroupConfiguration` AWS puts on the
-    /// wire carries them beside the items that declare them (`CreateGroup`,
-    /// `GetGroupConfiguration` and `PutGroupConfiguration` alike).
-    pub group_parameters: Option<Vec<GroupConfigurationParameter>>,
     pub configuration: Option<Vec<GroupConfigurationItem>>,
     pub proposed_configuration: Option<Vec<GroupConfigurationItem>>,
     pub status: Option<String>,

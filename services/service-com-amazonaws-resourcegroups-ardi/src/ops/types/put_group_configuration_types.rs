@@ -21,10 +21,5 @@ pub struct PutGroupConfigurationInput {
 #[smithy_macros::smithy(shape = "com.amazonaws.resourcegroups#PutGroupConfigurationOutput")]
 #[derive(Debug, Clone, Default)]
 pub struct PutGroupConfigurationOutput {
-    /// Which group the accepted configuration was attached to.
-    pub group_identifier: Option<GroupIdentifier>,
-    /// The group's service configuration as it stands once the update has been
-    /// accepted — the applied document, and the update still in flight.
-    pub group_configuration: Option<GroupConfiguration>,
 }
 

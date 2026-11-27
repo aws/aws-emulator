@@ -60,8 +60,6 @@
 //!
 //! ## Output
 //!
-//! * `GroupIdentifier` (GroupIdentifier) — The identifiers of the group the reported
-//!   configuration belongs to.
 //! * `GroupConfiguration` (GroupConfiguration) — A structure that describes the service
 //!   configuration attached with the specified group. For details about the service
 //!   configuration syntax, see Service configurations for Resource Groups.
@@ -214,10 +212,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
+        // Reported from the stored record, so the answer and the store cannot
+        // disagree. The modelled output declares `GroupConfiguration` and nothing
+        // else, so the document is the whole answer.
         Ok(GetGroupConfigurationOutput {
-            // Which group answered: the identity the record holds, so a caller
-            // reading a configuration can tell the group it belongs to.
-            group_identifier: Some(record.to_identifier()),
             group_configuration: Some(configuration),
         })
     }

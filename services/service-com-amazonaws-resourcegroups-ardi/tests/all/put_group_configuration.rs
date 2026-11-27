@@ -9,12 +9,11 @@
 //!
 //! The rules under test, each asserted over a TABLE of inputs rather than one row:
 //!
-//! * a put is ACCEPTED rather than applied: it answers 202 reporting which group took
-//!   the configuration and the configuration document now reported for that group, and
-//!   the configuration it carries is reported as the group's proposed one, under the
-//!   `UPDATING` status and beside the configuration still in effect, until the span the
-//!   put started has elapsed — the span is never zero, so a caller reading straight
-//!   afterwards still sees the update in flight;
+//! * a put is ACCEPTED rather than applied: it answers 202 with the empty document its
+//!   modelled output declares, and the configuration it carries is then reported as the
+//!   group's proposed one, under the `UPDATING` status and beside the configuration
+//!   still in effect, until the span the put started has elapsed — the span is never
+//!   zero, so a caller reading straight afterwards still sees the update in flight;
 //! * once the span has elapsed the configuration the put carried is the one in effect,
 //!   reported under `UPDATE_COMPLETE` with nothing proposed, and every later read
 //!   reports the same thing;
@@ -39,6 +38,7 @@ use service_com_amazonaws_resourcegroups_ardi::state::{
     CONFIGURATION_UPDATING,
 };
 
+use super::group_configuration_projection::is_empty_document;
 use super::resource_group_lifecycle::{error_code, Emulator, ACCOUNT};
 
 /// The region every row works in unless it is asserting the per-region rule.
@@ -56,9 +56,9 @@ async fn put(emulator: &Emulator, body: &Value) -> (u16, Value) {
     put_in(emulator, HOME, body).await
 }
 
-/// A put the caller expects to be accepted: a 202 that reports which group took the
-/// configuration and the configuration now reported for it — the document the request
-/// carried is the PROPOSED one, under the `UPDATING` status, because the span a put
+/// A put the caller expects to be accepted: a 202 carrying the empty document its
+/// modelled output declares, after which the document the request carried is the
+/// group's PROPOSED configuration, under the `UPDATING` status, because the span a put
 /// starts is never zero.
 async fn accepted(emulator: &Emulator, case: &str, body: &Value) {
     let (status, answered) = put(emulator, body).await;
@@ -66,27 +66,25 @@ async fn accepted(emulator: &Emulator, case: &str, body: &Value) {
         status, 202,
         "case {case:?}: expected an accepted put to answer 202, got {status} {answered}",
     );
-    let group = body["Group"].as_str().expect("the request names a group");
-    assert_eq!(
-        answered["GroupIdentifier"],
-        json!({
-            "GroupName": group,
-            "GroupArn": format!("arn:aws:resource-groups:{HOME}:{ACCOUNT}:group/{group}"),
-        }),
-        "case {case:?}: expected the accepted put to report the group it configured, got \
-         {answered}",
+    assert!(
+        is_empty_document(&answered),
+        "case {case:?}: PutGroupConfiguration declares no output member, so an accepted \
+         put answers the empty document, got {answered}",
     );
-    let (_in_effect, proposed, status_reported) = members_of(&answered["GroupConfiguration"]);
+    let group = body["Group"].as_str().expect("the request names a group");
+    // What the put wrote is read back where the model puts it: the group's own
+    // configuration document.
+    let (_in_effect, proposed, status_reported) =
+        members_of(&reported(emulator, case, group).await);
     assert_eq!(
         proposed,
         body.get("Configuration").cloned().unwrap_or_else(|| json!([])),
-        "case {case:?}: expected the accepted put to report the configuration it accepted as \
-         the proposed one, got {answered}",
+        "case {case:?}: expected the configuration the put accepted to be the group's \
+         proposed one",
     );
     assert_eq!(
         status_reported, CONFIGURATION_UPDATING,
-        "case {case:?}: expected the accepted put to report the update as in flight, got \
-         {answered}",
+        "case {case:?}: expected the accepted update to be reported as in flight",
     );
 }
 

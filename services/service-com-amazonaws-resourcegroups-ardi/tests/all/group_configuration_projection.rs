@@ -13,14 +13,13 @@
 //! parameters and values each one carries:
 //!
 //! * a reported configuration document carries every item it holds with the parameters
-//!   attached to that item, and restates those parameters flattened across the items in
-//!   configuration order (`GroupParameters`), so the flat list and the items it is read
-//!   off can never disagree; a document that sets no parameter reports none;
-//! * an operation that reports ONE group's configuration also reports which group the
-//!   configuration belongs to — the group's name and its stored ARN — whether the
-//!   request addressed the group by name or by ARN;
-//! * applying a configuration answers with that same projection, computed from the
-//!   state the call has just written, rather than with an empty document.
+//!   attached to that item, and carries only the members the model declares for it, so
+//!   nothing restates a parameter beside the item it belongs to;
+//! * an operation answers exactly the members its modelled output declares: a read of
+//!   one group's configuration answers the document alone, and an accepted put answers
+//!   the empty document;
+//! * applying a configuration writes it, so the projection a later read reports is the
+//!   one the put accepted rather than an empty document.
 
 use serde_json::{json, Value};
 
@@ -32,16 +31,24 @@ use service_com_amazonaws_resourcegroups_ardi::state::{
 use super::put_group_configuration::make_update_due;
 use super::resource_group_lifecycle::Emulator;
 
-/// One row: a `Configuration` document, and the parameters a response that reports it
-/// must restate beside the items.
+/// One row: a `Configuration` document, exactly as a request carries it.
 struct ConfigurationCase {
     label: &'static str,
-    /// The `Configuration` list, exactly as a request carries it.
     configuration: Value,
-    /// The flattened parameter list the projection reports, or `Value::Null` for a
-    /// document whose items set no parameter at all.
-    group_parameters: Value,
 }
+
+/// The members the modelled `GroupConfiguration` structure declares
+/// (`smithy_query(query="shape",shape="GroupConfiguration",model_path="services/service-com-amazonaws-resourcegroups-ardi/smithy-model/com-amazonaws-resourcegroups-ardi.json")`).
+const CONFIGURATION_MEMBERS: [&str; 4] = [
+    "Configuration",
+    "ProposedConfiguration",
+    "Status",
+    "FailureReason",
+];
+
+/// The members the modelled `GetGroupConfigurationOutput` declares
+/// (`smithy_query(query="shape",shape="GetGroupConfigurationOutput",model_path="services/service-com-amazonaws-resourcegroups-ardi/smithy-model/com-amazonaws-resourcegroups-ardi.json")`).
+const GET_OUTPUT_MEMBERS: [&str; 1] = ["GroupConfiguration"];
 
 /// Every configuration document the rules are asserted over.
 ///
@@ -60,7 +67,6 @@ fn configuration_cases() -> Vec<ConfigurationCase> {
         ConfigurationCase {
             label: "one item, no parameters at all",
             configuration: json!([{ "Type": "AWS::EC2::CapacityReservationPool" }]),
-            group_parameters: Value::Null,
         },
         ConfigurationCase {
             label: "one item, one parameter with one value",
@@ -68,7 +74,6 @@ fn configuration_cases() -> Vec<ConfigurationCase> {
                 "Type": "AWS::ResourceGroups::Generic",
                 "Parameters": [{ "Name": protection, "Values": [unless_empty] }]
             }]),
-            group_parameters: json!([{ "Name": protection, "Values": [unless_empty] }]),
         },
         ConfigurationCase {
             label: "two items, the parameters on the second",
@@ -80,9 +85,6 @@ fn configuration_cases() -> Vec<ConfigurationCase> {
                         { "Name": allowed, "Values": ["AWS::EC2::CapacityReservation"] }
                     ]
                 }
-            ]),
-            group_parameters: json!([
-                { "Name": allowed, "Values": ["AWS::EC2::CapacityReservation"] }
             ]),
         },
         ConfigurationCase {
@@ -97,10 +99,6 @@ fn configuration_cases() -> Vec<ConfigurationCase> {
                 },
                 { "Type": "AWS::EC2::CapacityReservationPool" }
             ]),
-            group_parameters: json!([{
-                "Name": allowed,
-                "Values": ["AWS::EC2::CapacityReservation", "AWS::EC2::Instance"]
-            }]),
         },
         ConfigurationCase {
             label: "one item carrying two parameters",
@@ -111,13 +109,9 @@ fn configuration_cases() -> Vec<ConfigurationCase> {
                     { "Name": protection, "Values": [unless_empty] }
                 ]
             }]),
-            group_parameters: json!([
-                { "Name": allowed, "Values": ["AWS::EC2::CapacityReservation"] },
-                { "Name": protection, "Values": [unless_empty] }
-            ]),
         },
         ConfigurationCase {
-            label: "both items carrying parameters, flattened in configuration order",
+            label: "both items carrying parameters",
             configuration: json!([
                 {
                     "Type": "AWS::EC2::HostManagement",
@@ -128,10 +122,6 @@ fn configuration_cases() -> Vec<ConfigurationCase> {
                     "Parameters": [{ "Name": protection, "Values": [unless_empty] }]
                 }
             ]),
-            group_parameters: json!([
-                { "Name": "allowed-host-families", "Values": ["c5", "m5"] },
-                { "Name": protection, "Values": [unless_empty] }
-            ]),
         },
         ConfigurationCase {
             label: "a parameter that names no value",
@@ -139,7 +129,6 @@ fn configuration_cases() -> Vec<ConfigurationCase> {
                 "Type": "AWS::ResourceGroups::Generic",
                 "Parameters": [{ "Name": allowed }]
             }]),
-            group_parameters: json!([{ "Name": allowed }]),
         },
         ConfigurationCase {
             label: "a parameter whose value list is empty",
@@ -147,24 +136,26 @@ fn configuration_cases() -> Vec<ConfigurationCase> {
                 "Type": "AWS::ResourceGroups::Generic",
                 "Parameters": [{ "Name": allowed, "Values": [] }]
             }]),
-            group_parameters: json!([{ "Name": allowed, "Values": [] }]),
         },
     ]
 }
 
-/// The `GroupIdentifier` a configuration projection reports for the group `name`
-/// stored under `arn`.
-fn identifier(name: &str, arn: &str) -> Value {
-    json!({ "GroupName": name, "GroupArn": arn })
-}
-
-/// The `GroupParameters` member of a reported configuration document, read as the
-/// absent list it is when the document reports none.
-fn group_parameters(configuration: &Value) -> Value {
-    configuration
-        .get("GroupParameters")
-        .cloned()
-        .unwrap_or(Value::Null)
+/// Assert that the JSON object `document` carries only members in `modelled`, which is
+/// the member list the model declares for the shape it is an instance of.
+fn assert_only_modelled_members(case: &str, source: &str, modelled: &[&str], document: &Value) {
+    let members = document.as_object().unwrap_or_else(|| {
+        panic!("case {case:?}: expected {source} to answer a structure, got {document}")
+    });
+    let unmodelled: Vec<&str> = members
+        .keys()
+        .map(String::as_str)
+        .filter(|member| !modelled.contains(member))
+        .collect();
+    assert!(
+        unmodelled.is_empty(),
+        "case {case:?}: {source} reported members the model does not declare \
+         ({unmodelled:?}), got {document}",
+    );
 }
 
 /// The group a response created, and the ARN it was stored under.
@@ -178,11 +169,11 @@ async fn create(emulator: &Emulator, request: &Value) -> (Value, String) {
 }
 
 /// A create echoes the whole configuration document — every item with its own
-/// parameters, and the parameters of the document flattened beside them — and a read
-/// of that group reports the same document plus the identity of the group it belongs
-/// to, by name and by ARN alike.
+/// parameters — and a read of that group answers the same document as the only member
+/// its modelled output declares, whether the request addressed the group by name or by
+/// ARN.
 #[tokio::test]
-async fn a_reported_configuration_carries_its_parameters_and_the_group_it_belongs_to() {
+async fn a_reported_configuration_carries_its_items_and_only_its_modelled_members() {
     for case in configuration_cases() {
         let label = case.label;
         let emulator = Emulator::new();
@@ -198,11 +189,11 @@ async fn a_reported_configuration_carries_its_parameters_and_the_group_it_belong
             "case {label:?}: expected the create to echo every configuration item with its \
              own parameters, got {echoed}",
         );
-        assert_eq!(
-            group_parameters(&echoed),
-            case.group_parameters,
-            "case {label:?}: expected GroupParameters {}, got {echoed}",
-            case.group_parameters,
+        assert_only_modelled_members(
+            label,
+            "the GroupConfiguration a create reports",
+            &CONFIGURATION_MEMBERS,
+            &echoed,
         );
         assert_eq!(
             echoed["Status"],
@@ -211,17 +202,17 @@ async fn a_reported_configuration_carries_its_parameters_and_the_group_it_belong
              {echoed}",
         );
 
-        // The same document, and which group it is, on every read of it — whichever
-        // form the request addressed the group in.
+        // The same document on every read of it — whichever form the request
+        // addressed the group in — and nothing beside it.
         for (addressed, identifying) in [("by name", name), ("by ARN", arn.as_str())] {
             let read = emulator
                 .ok("/get-group-configuration", &json!({ "Group": identifying }))
                 .await;
-            assert_eq!(
-                read["GroupIdentifier"],
-                identifier(name, &arn),
-                "case {label:?} ({addressed}): expected the read to report the group the \
-                 configuration belongs to, got {read}",
+            assert_only_modelled_members(
+                label,
+                &format!("GetGroupConfiguration {addressed}"),
+                &GET_OUTPUT_MEMBERS,
+                &read,
             );
             assert_eq!(
                 read["GroupConfiguration"], echoed,
@@ -232,19 +223,18 @@ async fn a_reported_configuration_carries_its_parameters_and_the_group_it_belong
     }
 }
 
-/// A put answers with the projection it has just written: which group took the
-/// configuration, and the configuration now reported for that group — the accepted
-/// document as the proposed one while the update is in flight, and the one in effect,
-/// with its parameters flattened beside it, once the clock owes the update.
+/// A put is accepted with the empty document its model declares, and the projection it
+/// wrote is what a read then reports: the accepted document as the proposed one while
+/// the update is in flight, and the one in effect once the clock owes the update.
 #[tokio::test]
-async fn applying_a_configuration_answers_with_the_projection_it_wrote() {
+async fn applying_a_configuration_answers_the_empty_document_and_writes_the_projection() {
     for case in configuration_cases() {
         let label = case.label;
         let emulator = Emulator::new();
         let name = "configuration-applied";
         // A group created with neither a configuration nor a query: it holds none in
         // effect until this row's put attaches one.
-        let (_, arn) = create(&emulator, &json!({ "Name": name })).await;
+        create(&emulator, &json!({ "Name": name })).await;
 
         let (status, answered) = emulator
             .call(
@@ -256,53 +246,62 @@ async fn applying_a_configuration_answers_with_the_projection_it_wrote() {
             status, 202,
             "case {label:?}: expected an accepted put to answer 202, got {status} {answered}",
         );
-        assert_eq!(
-            answered["GroupIdentifier"],
-            identifier(name, &arn),
-            "case {label:?}: expected the put to report the group it configured, got \
-             {answered}",
+        assert!(
+            is_empty_document(&answered),
+            "case {label:?}: PutGroupConfiguration declares no output member, so an \
+             accepted put answers the empty document, got {answered}",
         );
-        let applied = answered["GroupConfiguration"].clone();
+
+        // While the update is in flight it is the proposed configuration, and the
+        // read answers the document alone.
+        let in_flight = emulator
+            .ok("/get-group-configuration", &json!({ "Group": name }))
+            .await;
+        assert_only_modelled_members(
+            label,
+            "GetGroupConfiguration while the update is in flight",
+            &GET_OUTPUT_MEMBERS,
+            &in_flight,
+        );
+        let applied = in_flight["GroupConfiguration"].clone();
+        assert_only_modelled_members(
+            label,
+            "the GroupConfiguration reported while the update is in flight",
+            &CONFIGURATION_MEMBERS,
+            &applied,
+        );
         assert_eq!(
             applied["ProposedConfiguration"], case.configuration,
-            "case {label:?}: expected the put to report the configuration it accepted as the \
-             proposed one, got {answered}",
+            "case {label:?}: expected the configuration the put accepted to be the proposed \
+             one, got {applied}",
         );
         assert_eq!(
             applied["Status"],
             json!(CONFIGURATION_UPDATING),
-            "case {label:?}: expected the put to report the update as in flight, got \
-             {answered}",
-        );
-        assert_eq!(
-            group_parameters(&applied),
-            Value::Null,
-            "case {label:?}: a group that holds no configuration in effect sets no \
-             parameter, got {answered}",
+            "case {label:?}: expected the update to be reported as in flight, got {applied}",
         );
 
-        // Once the clock owes the update, the document it carried is the one reported,
-        // parameters and all, beside the identity of the group that took it.
+        // Once the clock owes the update, the document it carried is the one in
+        // effect — items and parameters as the put carried them.
         make_update_due(&emulator, name);
         let read = emulator
             .ok("/get-group-configuration", &json!({ "Group": name }))
             .await;
         assert_eq!(
-            read["GroupIdentifier"],
-            identifier(name, &arn),
-            "case {label:?}: expected the read to report the group the configuration \
-             belongs to, got {read}",
-        );
-        assert_eq!(
             read["GroupConfiguration"]["Configuration"], case.configuration,
             "case {label:?}: expected the applied configuration in effect, got {read}",
         );
-        assert_eq!(
-            group_parameters(&read["GroupConfiguration"]),
-            case.group_parameters,
-            "case {label:?}: expected GroupParameters {} once the update is in effect, got \
-             {read}",
-            case.group_parameters,
+        assert_only_modelled_members(
+            label,
+            "the GroupConfiguration reported once the update is in effect",
+            &CONFIGURATION_MEMBERS,
+            &read["GroupConfiguration"],
         );
     }
+}
+
+/// Whether a response carries no member at all: an empty body, or the empty JSON
+/// document the restJson1 wire writes for an output shape that declares none.
+pub(crate) fn is_empty_document(body: &Value) -> bool {
+    body.is_null() || body.as_object().is_some_and(|members| members.is_empty())
 }

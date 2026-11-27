@@ -44,7 +44,7 @@ pub use stacks::StackRecord;
 
 use crate::ops::types::{
     AccountSettings, FailedResource, Group, GroupConfiguration, GroupConfigurationItem,
-    GroupConfigurationParameter, GroupIdentifier, GroupingStatusesItem, ListGroupResourcesItem,
+    GroupIdentifier, GroupingStatusesItem, ListGroupResourcesItem,
     QueryError, ResourceIdentifier, ResourceQuery, ResourceStatus, TagSyncTaskItem,
     GROUP_LIFECYCLE_EVENTS_DESIRED_STATUS_VALUES, QUERY_TYPE_VALUES,
 };
@@ -845,29 +845,6 @@ pub fn check_configuration(items: &[GroupConfigurationItem]) -> Result<(), Strin
     Ok(())
 }
 
-/// The parameters a service-configuration document sets: every parameter of
-/// every item it carries, in configuration order, or `None` when the document
-/// sets none at all.
-///
-/// A configuration is one document whatever item declares a parameter, which is
-/// how [`GroupRecord::configuration_parameter_values`] reads one parameter
-/// across the items too; this is the whole set, reported beside the items it is
-/// read off so the two can never disagree. A document with no item, an item with
-/// no parameters, and a group with no configuration all set nothing, which is
-/// reported as the absent list it is rather than an empty one.
-pub fn configuration_parameters(
-    items: Option<&[GroupConfigurationItem]>,
-) -> Option<Vec<GroupConfigurationParameter>> {
-    let parameters: Vec<GroupConfigurationParameter> = items
-        .into_iter()
-        .flatten()
-        .filter_map(|item| item.parameters.as_ref())
-        .flatten()
-        .cloned()
-        .collect();
-    (!parameters.is_empty()).then_some(parameters)
-}
-
 /// A service-configuration update that the clock already owes at
 /// [`PendingGroupConfiguration::due_at`], whether or not anybody calls.
 #[derive(Debug, Clone)]
@@ -985,10 +962,6 @@ pub struct GroupRecord {
     /// that ARN (`group/<name>/<id>`), because the modelled `ApplicationArn` its
     /// membership tag carries admits only the qualified form.
     pub group_arn: String,
-    /// The id of the account that owns the group, captured once at create time
-    /// from the emulator's canonical account id — the same account the stored
-    /// ARN names — so every later read reports the same owner.
-    pub owner_id: String,
     pub description: Option<String>,
     pub criticality: Option<i32>,
     pub owner: Option<String>,
@@ -1188,7 +1161,6 @@ impl GroupRecord {
     /// The modelled `Group` structure for this record.
     pub fn to_group(&self) -> Group {
         Group {
-            owner_id: Some(self.owner_id.clone()),
             group_arn: self.group_arn.clone(),
             name: self.name.clone(),
             description: self.description.clone(),
@@ -1220,14 +1192,15 @@ impl GroupRecord {
     /// status; a configuration with no update in flight is the one in effect, so
     /// it reports neither a proposal nor a `FailureReason` — no update this
     /// emulator accepts fails, so nothing writes that reason.
-    /// `GroupParameters` restates the parameters the reported configuration
-    /// sets, so the flattened list and the items it is read off can never
-    /// disagree ([`configuration_parameters`]).
+    ///
+    /// The document carries the configuration ITEMS and nothing derived from
+    /// them: the modelled `GroupConfiguration` declares `Configuration`,
+    /// `ProposedConfiguration`, `Status` and `FailureReason`, so each item's own
+    /// parameters are reported on that item and nowhere else.
     pub fn to_group_configuration(&self) -> Option<GroupConfiguration> {
         let now = SystemTime::now();
         if let Some(in_flight) = self.configuration_update_in_flight(now) {
             return Some(GroupConfiguration {
-                group_parameters: configuration_parameters(self.configuration.as_deref()),
                 configuration: self.configuration.clone(),
                 proposed_configuration: Some(
                     in_flight.configuration.clone().unwrap_or_default(),
@@ -1238,7 +1211,6 @@ impl GroupRecord {
         }
         self.configuration_at(now)
             .map(|items| GroupConfiguration {
-                group_parameters: configuration_parameters(Some(items)),
                 configuration: Some(items.clone()),
                 proposed_configuration: None,
                 status: Some(CONFIGURATION_IN_EFFECT.to_string()),
@@ -2256,13 +2228,6 @@ pub fn group_arn(region: &str, name: &str) -> String {
 /// (`smithy_query(query="shape",shape="ApplicationArn")`).
 pub fn qualified_group_arn(region: &str, name: &str, application_id: &str) -> String {
     group_arn(region, &format!("{name}/{application_id}"))
-}
-
-/// The id of the account that owns every group this emulator holds: the
-/// emulator's canonical account id, which is also the account segment of every
-/// ARN [`group_arn`] mints.
-pub fn owning_account_id() -> String {
-    emulator_server::emulator_account_id().to_string()
 }
 
 /// The largest page any listing of this service answers, and the page size it
