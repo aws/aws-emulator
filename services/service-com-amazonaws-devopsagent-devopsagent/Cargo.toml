@@ -37,6 +37,9 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
+# Declares one module per `tests/all/<name>.rs`, so a new suite is a new file with
+# nothing to declare.
+automod = { workspace = true }
 # `rand`: the generator the drawn asset-identifier suite
 # (`tests/all/asset_identifier_form.rs`) draws its creates from, replayed from a fixed
 # set of seeds. Test-only: nothing in `src/` draws random values.

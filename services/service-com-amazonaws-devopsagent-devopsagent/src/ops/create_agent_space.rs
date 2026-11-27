@@ -244,7 +244,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             triggers: ::std::collections::HashMap::new(),
             assets: ::std::collections::HashMap::new(),
             recommendations: ::std::collections::HashMap::new(),
+            chats: ::std::collections::BTreeMap::new(),
             operator_app: None,
+            aws_source_mode: input.aws_source_mode,
         };
         if let Some(token) = input.client_token.as_deref() {
             store.record_client_token(Self::NAME, token, &agent_space_id, now);

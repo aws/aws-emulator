@@ -69,6 +69,7 @@ pub struct AccessDeniedException {
 #[derive(Debug, Clone, Default)]
 pub struct ConflictException {
     pub message: String,
+    pub reason: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.devopsagent#InternalServerException")]
@@ -303,6 +304,7 @@ pub struct AgentSpace {
     pub kms_key_arn: Option<String>,
     pub agent_space_id: String,
     pub preferences: Option<std::collections::HashMap<String, bool>>,
+    pub aws_source_mode: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.devopsagent#InvalidParameterException")]
@@ -352,6 +354,7 @@ pub struct IdpAuthConfiguration {
 #[derive(Debug, Clone)]
 pub enum ServiceConfiguration {
     sourceAws(SourceAwsConfiguration),
+    sourceAwsOrg(SourceAwsOrgConfiguration),
     Aws(AWSConfiguration),
     Github(GitHubConfiguration),
     Slack(SlackConfiguration),
@@ -385,6 +388,38 @@ pub struct SourceAwsConfiguration {
     pub agent_elevated_role_arn_status: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.devopsagent#SourceAwsOrgConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct SourceAwsOrgConfiguration {
+    pub account_type: String,
+    pub organizational_unit: SourceAwsOrgUnit,
+    pub deployment_state: Option<OrgSourceDeploymentState>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.devopsagent#SourceAwsOrgUnit")]
+#[derive(Debug, Clone, Default)]
+pub struct SourceAwsOrgUnit {
+    pub organizational_unit_id: String,
+    pub account_ids: Option<Vec<String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.devopsagent#OrgSourceDeploymentState")]
+#[derive(Debug, Clone, Default)]
+pub struct OrgSourceDeploymentState {
+    pub deployed_account_count: Option<i32>,
+    pub issues: Option<Vec<OrgSourceIssue>>,
+    pub last_evaluated_at: Option<::aws_smithy_types::DateTime>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.devopsagent#OrgSourceIssue")]
+#[derive(Debug, Clone, Default)]
+pub struct OrgSourceIssue {
+    pub reason_code: String,
+    pub account_count: i32,
+    pub account_ids: Vec<String>,
+    pub message: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.devopsagent#AWSConfiguration")]
 #[derive(Debug, Clone, Default)]
 pub struct AWSConfiguration {
@@ -393,6 +428,7 @@ pub struct AWSConfiguration {
     pub account_type: String,
     pub agent_elevated_role_arn: Option<String>,
     pub agent_elevated_role_arn_status: Option<String>,
+    pub service_management_role_arn: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.devopsagent#GitHubConfiguration")]
@@ -551,6 +587,7 @@ pub struct MSTeamsConfiguration {
     pub team_id: String,
     pub team_name: String,
     pub transmission_target: MSTeamsTransmissionTarget,
+    pub bidirectional: Option<MSTeamsBidirectionalConfiguration>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.devopsagent#MSTeamsTransmissionTarget")]
@@ -565,6 +602,13 @@ pub struct MSTeamsTransmissionTarget {
 pub struct MSTeamsChannel {
     pub channel_name: String,
     pub channel_id: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.devopsagent#MSTeamsBidirectionalConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct MSTeamsBidirectionalConfiguration {
+    pub role_arn: String,
+    pub enabled: Option<bool>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.devopsagent#ReleaseManagementConfiguration")]
@@ -792,8 +836,20 @@ pub const APPROVAL_STATUS_VALUES: &[&str] = &["APPROVED", "PENDING", "REDEEMED",
 pub const AUTH_FLOW_VALUES: &[&str] = &["iam", "idc", "idp"];
 
 
+/// The values `AwsSourceMode` accepts on the wire.
+pub const AWS_SOURCE_MODE_VALUES: &[&str] = &["organization", "standalone"];
+
+
 /// The values `CapabilityType` accepts on the wire.
-pub const CAPABILITY_TYPE_VALUES: &[&str] = &["RELEASE_READINESS_REVIEW", "RELEASE_READINESS_REVIEW_AUTOMATED_TESTING"];
+pub const CAPABILITY_TYPE_VALUES: &[&str] = &["CODE_CHANGE_RISK_ANALYSIS", "CODE_CHANGE_RISK_ANALYSIS_AUTOMATED_TESTING", "RELEASE_READINESS_REVIEW", "RELEASE_READINESS_REVIEW_AUTOMATED_TESTING"];
+
+
+/// The values `ChatArchiveStatus` accepts on the wire.
+pub const CHAT_ARCHIVE_STATUS_VALUES: &[&str] = &["ACTIVE", "ARCHIVED"];
+
+
+/// The values `ConflictExceptionReason` accepts on the wire.
+pub const CONFLICT_EXCEPTION_REASON_VALUES: &[&str] = &["CHAT_ARCHIVED"];
 
 
 /// The values `DayOfWeek` accepts on the wire.
@@ -846,6 +902,10 @@ pub const NEW_RELIC_REGION_VALUES: &[&str] = &["EU", "JP", "US"];
 
 /// The values `OrderType` accepts on the wire.
 pub const ORDER_TYPE_VALUES: &[&str] = &["ASC", "DESC"];
+
+
+/// The values `OrgSourceAccountReasonCode` accepts on the wire.
+pub const ORG_SOURCE_ACCOUNT_REASON_CODE_VALUES: &[&str] = &["accessDenied", "accountNotInScope", "accountSuspended", "deploymentFailed", "managementAccountNotSupported", "secondaryAccountLimitExceeded", "stackInstanceInoperable"];
 
 
 /// The values `PostRegisterServiceSupportedService` accepts on the wire.
@@ -905,7 +965,7 @@ pub const TASK_STATUS_VALUES: &[&str] = &["CANCELED", "COMPLETED", "FAILED", "IN
 
 
 /// The values `TaskType` accepts on the wire.
-pub const TASK_TYPE_VALUES: &[&str] = &["EVALUATION", "INVESTIGATION", "RELEASE_READINESS_REVIEW", "RELEASE_TESTING"];
+pub const TASK_TYPE_VALUES: &[&str] = &["CODE_CHANGE_RISK_ANALYSIS", "EVALUATION", "INVESTIGATION", "RELEASE_READINESS_REVIEW", "RELEASE_TESTING"];
 
 
 /// The values `ToolClassification` accepts on the wire.

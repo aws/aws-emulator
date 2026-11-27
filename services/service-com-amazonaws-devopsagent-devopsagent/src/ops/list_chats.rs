@@ -1,15 +1,8 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListChats
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListChats`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListChats::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! IMPLEMENTED: lists one AgentSpace's stored chat executions out of
+//! [`crate::state`], newest first, a page at a time.
 //!
 //! ## Shape of an operation
 //!
@@ -55,7 +48,9 @@
 //!
 //! * `agentSpaceId` (AgentSpaceIdentifier, len 1..2048) **required** — The unique identifier
 //!   for the agent space to list chats from.
-//! * `maxResults` (Integer) — Maximum number of results to return
+//! * `archiveStatus` (ChatArchiveStatus, one of: ACTIVE | ARCHIVED) — The archive status to
+//!   filter by. Use this parameter to list only archived chat executions or only active ones.
+//! * `maxResults` (Integer, range 1..20) — Maximum number of results to return
 //! * `nextToken` (String) — Token for pagination
 //! * `userId` (ResourceId, len 1..128, pattern ^[a-zA-Z0-9_.-]+$) — The user identifier to
 //!   list chats for. This field is deprecated and will be ignored — the service resolves user
@@ -68,6 +63,8 @@
 //!
 //! ## Errors
 //!
+//! * `AccessDeniedException` (HTTP 403) — Access to the requested resource is denied due to
+//!   insufficient permissions.
 //! * `InternalServerException` (HTTP 500) — This exception is thrown when an unexpected error
 //!   occurs in the processing of a request.
 //! * `ResourceNotFoundException` (HTTP 404) — The requested resource could not be found.
@@ -93,6 +90,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-devopsagent-devopsagent
 #[smithy_macros::operation_error("com.amazonaws.devopsagent#ListChats")]
 #[derive(Debug)]
 pub enum ListChatsErrorModeled {
+    AccessDeniedException(AccessDeniedException),
     InternalServerException(InternalServerException),
     ResourceNotFoundException(ResourceNotFoundException),
     ThrottlingException(ThrottlingException),
@@ -113,6 +111,13 @@ impl From<ListChatsErrorModeled> for ListChatsError {
         crate::scaffolded::Scaffolded::Modeled(modeled)
     }
 }
+
+/// The page size a request that names no `maxResults` is served.
+///
+/// CHOSEN: `maxResults` carries `@range(1..20)` and no `@default`, so the model
+/// states no default; the largest page it admits is what a request that asks for no
+/// bound gets.
+const DEFAULT_MAX_RESULTS: usize = 20;
 
 /// The `ListChats` operation.
 ///
@@ -150,18 +155,99 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListChats` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListChatsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
+        let _ = ctx;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            ListChatsErrorModeled::InternalServerException(InternalServerException {
+                message: "the DevOps Agent state store is unavailable".to_string(),
+            })
+        })?;
+
+        // `userId` is "deprecated and will be ignored — the service resolves user
+        // identity from the authenticated session", so it selects nothing here.
+        let _ = &input.user_id;
+
+        // `maxResults` carries `@range(1..20)`, so a value outside the range is
+        // refused before this handler runs; a request that names none is served
+        // `DEFAULT_MAX_RESULTS`.
+        let page_size = input
+            .max_results
+            .map_or(DEFAULT_MAX_RESULTS, |max| max.max(1) as usize);
+
+        // A `nextToken` this service did not issue cannot name a position in the
+        // listing: refuse it with the modelled client error.
+        let resume_after = match input.next_token.as_deref() {
+            None => None,
+            Some(token) => Some(crate::state::decode_chat_token(token).ok_or_else(|| {
+                ListChatsErrorModeled::ValidationException(ValidationException {
+                    message: "nextToken is not a pagination token issued by this service"
+                        .to_string(),
+                    field_list: Some(vec![ValidationExceptionField {
+                        path: "nextToken".to_string(),
+                        message: "malformed pagination token".to_string(),
+                    }]),
+                })
+            })?),
+        };
+
+        // The listing is computed from state and writes nothing.
+        let store = state.lock();
+
+        // A chat execution is reachable only through the agent space that owns it, and
+        // the caller is authorised against that space before anything inside it can be
+        // known, so an `agentSpaceId` that resolves to no space fails CLOSED rather
+        // than disclosing which spaces exist.
+        let space = store.agent_spaces.get(&input.agent_space_id).ok_or_else(|| {
+            ListChatsErrorModeled::AccessDeniedException(AccessDeniedException {
+                message: crate::state::ACCESS_DENIED_MESSAGE.to_string(),
+            })
+        })?;
+
+        // `archiveStatus` is "the archive status to filter by. Use this parameter to
+        // list only archived chat executions or only active ones", and archiving a
+        // chat "hides it from the DEFAULT chat list" — so a request that names no
+        // status is served the active chats alone, and one that names a status is
+        // served exactly the chats in it.
+        let listed_status = input
+            .archive_status
+            .as_deref()
+            .unwrap_or(crate::state::CHAT_ARCHIVE_STATUS_ACTIVE);
+
+        // These are the user's RECENT chat executions, so the newest comes first. The
+        // identifiers are drawn from a fixed-width monotonic sequence, so their
+        // descending order IS newest-first and stays a total order while chats are
+        // created and removed around a cursor — which is what lets a token name a
+        // POSITION in it rather than an index into one snapshot.
         //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListChats"))
+        // The cursor is exclusive: the page resumes at the first chat ordered after
+        // it, found by comparison, so a cursor whose chat is gone resumes at the next
+        // one still stored.
+        let mut ordered = space
+            .chats
+            .range::<str, _>((
+                ::std::ops::Bound::Unbounded,
+                match resume_after.as_deref() {
+                    None => ::std::ops::Bound::Unbounded,
+                    Some(cursor) => ::std::ops::Bound::Excluded(cursor),
+                },
+            ))
+            .rev()
+            .map(|(_, chat)| chat)
+            .filter(|chat| chat.archive_status == listed_status);
+        let executions: Vec<ChatExecution> = ordered
+            .by_ref()
+            .take(page_size)
+            .map(crate::state::ChatRecord::to_summary)
+            .collect();
+        // A `nextToken` is issued only when a chat follows the page just served, so
+        // the last page of a listing carries none.
+        let next_token = executions
+            .last()
+            .filter(|_| ordered.next().is_some())
+            .map(|last| crate::state::encode_next_token(&last.execution_id));
+
+        Ok(ListChatsOutput {
+            executions,
+            next_token,
+        })
     }
 }

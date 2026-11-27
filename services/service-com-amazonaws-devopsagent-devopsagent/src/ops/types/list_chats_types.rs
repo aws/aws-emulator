@@ -18,6 +18,7 @@ pub struct ListChatsInput {
     pub user_id: Option<String>,
     pub max_results: Option<i32>,
     pub next_token: Option<String>,
+    pub archive_status: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.devopsagent#ListChatsResponse")]
@@ -34,5 +35,6 @@ pub struct ChatExecution {
     pub created_at: ::aws_smithy_types::DateTime,
     pub updated_at: Option<::aws_smithy_types::DateTime>,
     pub summary: Option<String>,
+    pub archive_status: Option<String>,
 }
 

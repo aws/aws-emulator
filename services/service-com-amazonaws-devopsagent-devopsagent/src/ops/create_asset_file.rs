@@ -239,6 +239,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                             &input.asset_id,
                             &input.path,
                         ),
+                        // `ConflictException$reason` is "absent when no specific
+                        // reason applies", and the one reason the model declares
+                        // (`ConflictExceptionReason`) is about a chat execution,
+                        // not a file that already exists.
+                        reason: None,
                     },
                 )
                 .into());

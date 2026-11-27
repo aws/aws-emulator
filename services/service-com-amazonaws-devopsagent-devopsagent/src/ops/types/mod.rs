@@ -39,6 +39,7 @@ pub mod get_asset_file_types;
 pub mod get_asset_types;
 pub mod get_association_types;
 pub mod get_backlog_task_types;
+pub mod get_chat_types;
 pub mod get_operator_app_types;
 pub mod get_recommendation_types;
 pub mod get_service_types;
@@ -71,6 +72,7 @@ pub mod update_asset_file_types;
 pub mod update_asset_types;
 pub mod update_association_types;
 pub mod update_backlog_task_types;
+pub mod update_chat_types;
 pub mod update_goal_types;
 pub mod update_operator_app_idp_config_types;
 pub mod update_private_connection_certificate_types;
@@ -128,6 +130,8 @@ pub use get_asset_types::*;
 pub use get_association_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_backlog_task_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_chat_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_operator_app_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -192,6 +196,8 @@ pub use update_asset_types::*;
 pub use update_association_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_backlog_task_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_chat_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_goal_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

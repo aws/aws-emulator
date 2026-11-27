@@ -16,9 +16,9 @@ use sha2::{Digest, Sha256};
 
 use crate::ops::types::{
     AgentSpace, Asset, AssetFile, AssetFileBody, AssetFileSummary, AssetVersionMetadata,
-    IamAuthConfiguration, IdcAuthConfiguration, IdpAuthConfiguration, Recommendation,
-    RecommendationContent, Recurrence, ReferenceOutput, ScheduleCondition, ScheduleSpec, Task,
-    Trigger, TriggerCondition,
+    ChatExecution, IamAuthConfiguration, IdcAuthConfiguration, IdpAuthConfiguration,
+    Recommendation, RecommendationContent, Recurrence, ReferenceOutput, ScheduleCondition,
+    ScheduleSpec, Task, Trigger, TriggerCondition,
 };
 
 /// The most AgentSpaces this emulator stores for the account before
@@ -442,6 +442,64 @@ pub fn operator_app_space_not_found_message(agent_space_id: &str) -> String {
 /// part.
 pub const ACCESS_DENIED_MESSAGE: &str = "Access denied";
 
+/// The refusal message a chat operation answers with when the `executionId` it
+/// was given names no chat execution in an AgentSpace the caller can reach.
+///
+/// The same form as [`asset_not_found_message`]: the kind of resource the
+/// operation resolved and the identifier the request carried, taken verbatim from
+/// it; the parent space is already known to the caller, so it is not repeated.
+pub fn chat_not_found_message(execution_id: &str) -> String {
+    format!("Chat execution not found: {execution_id}")
+}
+
+/// The refusal message `UpdateChat` answers with when the chat execution it names
+/// is archived and the request would change anything other than that.
+///
+/// Archiving hides a chat execution from the default chat list, and the only
+/// change an archived one still accepts is being restored to that list, so any
+/// other update conflicts with the state the chat is in. The fixed text names that
+/// state and the one change that resolves it; the single variable part is the
+/// identifier, taken verbatim from the request. The machine-readable half of the
+/// same refusal is [`CONFLICT_REASON_CHAT_ARCHIVED`].
+pub fn chat_archived_message(execution_id: &str) -> String {
+    format!(
+        "Chat execution {execution_id} is archived. Set archiveStatus to {CHAT_ARCHIVE_STATUS_ACTIVE} to unarchive it before updating it."
+    )
+}
+
+/// The `ConflictExceptionReason` a refusal of an update to an archived chat
+/// execution carries (`smithy_query(query="shape",
+/// shape="ConflictExceptionReason")` — the one value the enum declares, documented
+/// as "the request acted on a chat that is archived").
+pub const CONFLICT_REASON_CHAT_ARCHIVED: &str = "CHAT_ARCHIVED";
+
+/// The `ChatArchiveStatus` values, from the model's enum
+/// (`smithy_query(query="shape", shape="ChatArchiveStatus")`): a chat execution is
+/// in the default chat list while it is `ACTIVE`, and hidden from it once
+/// `ARCHIVED`.
+pub const CHAT_ARCHIVE_STATUS_ACTIVE: &str = "ACTIVE";
+pub const CHAT_ARCHIVE_STATUS_ARCHIVED: &str = "ARCHIVED";
+
+/// The most chat executions one AgentSpace holds before `CreateChat` answers
+/// `ServiceQuotaExceededException`. CHOSEN for the same reason as
+/// [`MAX_AGENT_SPACES`]: the model states no chat quota.
+pub const MAX_CHATS_PER_AGENT_SPACE: usize = 1_000;
+
+/// The kind of resource a chat `executionId` is minted for, which is also the
+/// prefix [`mint_id`](ComAmazonawsDevopsagentDevopsagentState::mint_id) puts in
+/// front of its sequence — so it is what [`decode_chat_token`] reads a pagination
+/// cursor back as.
+const CHAT_EXECUTION_ID_KIND: &str = "chat";
+
+/// The chat execution a pagination token this service issued over one space's chat
+/// list resumes after, or `None` when the token is not one it issued.
+///
+/// A cursor in that listing names a chat execution by the identifier this service
+/// minted for it, so it is read back through [`decode_minted_token`].
+pub fn decode_chat_token(token: &str) -> Option<String> {
+    decode_minted_token(token, CHAT_EXECUTION_ID_KIND)
+}
+
 /// The refusal message an asset operation answers with when the `assetId` it was
 /// given names no asset in an AgentSpace the caller can reach.
 ///
@@ -654,9 +712,20 @@ pub struct AgentSpaceRecord {
     /// identifier belonging to another space is as absent as one that never
     /// existed.
     pub recommendations: HashMap<String, RecommendationRecord>,
+    /// The chat executions created in this AgentSpace, keyed by their minted
+    /// `executionId`. Bounded by [`MAX_CHATS_PER_AGENT_SPACE`]. A chat is
+    /// reachable only through its space, so deleting the space takes its chats
+    /// with it. Held in a `BTreeMap` because the identifiers are drawn from a
+    /// fixed-width monotonic sequence, so their order IS creation order, which is
+    /// what a page cursor names a position in.
+    pub chats: BTreeMap<String, ChatRecord>,
     /// The Operator App configured for this AgentSpace, absent until an
     /// authentication flow is enabled for it.
     pub operator_app: Option<OperatorAppRecord>,
+    /// Whether this AgentSpace's AWS source configuration targets one account or
+    /// an Organization, when the caller configured it. Absent until they do:
+    /// `AgentSpace$awsSourceMode` carries no default.
+    pub aws_source_mode: Option<String>,
 }
 
 impl AgentSpaceRecord {
@@ -671,12 +740,62 @@ impl AgentSpaceRecord {
             kms_key_arn: self.kms_key_arn.clone(),
             agent_space_id: self.agent_space_id.clone(),
             preferences: (!self.preferences.is_empty()).then(|| self.preferences.clone()),
+            aws_source_mode: self.aws_source_mode.clone(),
         }
     }
 
     /// The stored tags, omitted entirely when the resource carries none.
     pub fn tags_to_api(&self) -> Option<HashMap<String, String>> {
         (!self.tags.is_empty()).then(|| self.tags.clone())
+    }
+}
+
+/// A persisted chat execution of one AgentSpace: when it was created, what it is
+/// summarised as, and whether it is in the default chat list.
+///
+/// A chat execution is created empty — `CreateChat` carries no summary — and both
+/// of the things that can change about it afterwards (`summary` and
+/// `archiveStatus`) are what `UpdateChat` sets, which is why `updated_at` is held
+/// beside `created_at` rather than derived from it.
+#[derive(Debug, Clone)]
+pub struct ChatRecord {
+    pub execution_id: String,
+    /// The summary of the chat execution, absent until one is set.
+    pub summary: Option<String>,
+    /// Whether this chat execution is in the default chat list: one of
+    /// [`CHAT_ARCHIVE_STATUS_ACTIVE`] / [`CHAT_ARCHIVE_STATUS_ARCHIVED`].
+    pub archive_status: String,
+    pub created_at: SystemTime,
+    pub updated_at: SystemTime,
+}
+
+impl ChatRecord {
+    /// A chat execution as `CreateChat` mints it: in the default chat list, with
+    /// no summary yet, created and last updated at the same instant.
+    pub fn new(execution_id: String, now: SystemTime) -> Self {
+        Self {
+            execution_id,
+            summary: None,
+            archive_status: CHAT_ARCHIVE_STATUS_ACTIVE.to_string(),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Whether this chat execution is hidden from the default chat list.
+    pub fn is_archived(&self) -> bool {
+        self.archive_status == CHAT_ARCHIVE_STATUS_ARCHIVED
+    }
+
+    /// The modelled `ChatExecution` summary this record is listed as.
+    pub fn to_summary(&self) -> ChatExecution {
+        ChatExecution {
+            execution_id: self.execution_id.clone(),
+            created_at: to_date_time(self.created_at),
+            updated_at: Some(to_date_time(self.updated_at)),
+            summary: self.summary.clone(),
+            archive_status: Some(self.archive_status.clone()),
+        }
     }
 }
 
@@ -1549,6 +1668,16 @@ impl ComAmazonawsDevopsagentDevopsagentState {
         )
     }
 
+    /// Mint a fresh chat `executionId`.
+    ///
+    /// Drawn from the chat plane's own monotonic sequence
+    /// ([`CHAT_EXECUTION_ID_KIND`]), so no two chats of one store share an
+    /// identifier and the identifiers of one space sort in creation order — which
+    /// is what [`decode_chat_token`] resumes a page of the chat list at.
+    pub fn mint_chat_execution_id(&mut self) -> String {
+        self.mint_id(CHAT_EXECUTION_ID_KIND)
+    }
+
     /// The id a previous `@idempotent` create recorded for `client_token`, when
     /// the entry is still inside [`CLIENT_TOKEN_TTL`] at `now`.
     pub fn replayed_id(&self, scope: &str, client_token: &str, now: SystemTime) -> Option<String> {
@@ -1625,8 +1754,13 @@ fn token_key(scope: &str, client_token: &str) -> String {
 /// did not issue is rejected instead of being read as a resume point.
 const PAGE_TOKEN_PREFIX: &str = "v1:";
 
-/// The prefix of a minted `agentSpaceId`, and the hex width of its sequence.
-const AGENT_SPACE_ID_PREFIX: &str = "as-";
+/// The kind of resource a minted `agentSpaceId` is drawn for, which is also the
+/// prefix [`mint_id`](ComAmazonawsDevopsagentDevopsagentState::mint_id) puts in
+/// front of its sequence.
+const AGENT_SPACE_ID_KIND: &str = "as";
+
+/// The hex width of the sequence a minted id carries, which is what tells a
+/// minted id from a value that merely starts with the same prefix.
 const MINTED_SEQUENCE_WIDTH: usize = 16;
 
 /// Encode an opaque pagination token that resumes AFTER `last_id`.
@@ -1662,18 +1796,26 @@ pub fn decode_asset_file_token(token: &str) -> Option<String> {
 }
 
 /// The cursor a token carries, or `None` when the token is not one this service
-/// issued.
+/// issued over the resources of `kind`.
 ///
-/// A cursor this service issued always names a minted `agentSpaceId`, so a token
-/// that decodes to anything else is rejected rather than read as a resume point
-/// past every stored agent space.
-pub fn decode_next_token(token: &str) -> Option<String> {
+/// Every listing whose cursor names a MINTED id resumes through here: the token
+/// carries [`PAGE_TOKEN_PREFIX`] and the hex of the cursor, and the cursor itself
+/// must be an id [`mint_id`](ComAmazonawsDevopsagentDevopsagentState::mint_id)
+/// drew for that kind — so a token that decodes to anything else is rejected
+/// rather than read as a resume point past every stored resource.
+fn decode_minted_token(token: &str, kind: &str) -> Option<String> {
     let body = token.strip_prefix(PAGE_TOKEN_PREFIX)?;
     let cursor = String::from_utf8(hex::decode(body).ok()?).ok()?;
-    let sequence = cursor.strip_prefix(AGENT_SPACE_ID_PREFIX)?;
-    let names_an_agent_space = sequence.len() == MINTED_SEQUENCE_WIDTH
-        && sequence.chars().all(|c| c.is_ascii_hexdigit());
-    names_an_agent_space.then_some(cursor)
+    let sequence = cursor.strip_prefix(&format!("{kind}-"))?;
+    let names_a_minted_id =
+        sequence.len() == MINTED_SEQUENCE_WIDTH && sequence.chars().all(|c| c.is_ascii_hexdigit());
+    names_a_minted_id.then_some(cursor)
+}
+
+/// The agent space a pagination token this service issued over the account's
+/// spaces resumes after, or `None` when the token is not one it issued.
+pub fn decode_next_token(token: &str) -> Option<String> {
+    decode_minted_token(token, AGENT_SPACE_ID_KIND)
 }
 
 /// This service's store in the shared engine: call it with a handler's `&*self.engine`.

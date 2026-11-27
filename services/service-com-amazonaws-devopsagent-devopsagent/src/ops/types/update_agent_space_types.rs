@@ -19,6 +19,7 @@ pub struct UpdateAgentSpaceInput {
     pub description: Option<String>,
     pub locale: Option<String>,
     pub preferences: Option<std::collections::HashMap<String, bool>>,
+    pub aws_source_mode: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.devopsagent#UpdateAgentSpaceOutput")]

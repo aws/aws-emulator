@@ -1,15 +1,8 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateChat
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateChat`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateChat::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! IMPLEMENTED: mints a chat execution in one AgentSpace in [`crate::state`] — the
+//! resource `GetChat` reads, `UpdateChat` changes and `ListChats` enumerates.
 //!
 //! ## Shape of an operation
 //!
@@ -90,11 +83,21 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-devopsagent-devopsagent
 // here — hence the `CreateChatError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.devopsagent#CreateChat")]
+#[smithy_macros::operation_error(
+    "com.amazonaws.devopsagent#CreateChat",
+    extra_errors = ["AccessDeniedException", "ServiceQuotaExceededException"]
+)]
 #[derive(Debug)]
 pub enum CreateChatErrorModeled {
+    // Widened in through `extra_errors`: the SERVICE declares both of these as
+    // common errors. `AccessDeniedException` (HTTP 403) is what an operation
+    // addressed inside an agent space answers when the caller reaches no such
+    // space, and `ServiceQuotaExceededException` (HTTP 402) is what a per-space
+    // chat quota has to answer with.
+    AccessDeniedException(AccessDeniedException),
     InternalServerException(InternalServerException),
     ResourceNotFoundException(ResourceNotFoundException),
+    ServiceQuotaExceededException(ServiceQuotaExceededException),
     ThrottlingException(ThrottlingException),
     ValidationException(ValidationException),
 }
@@ -150,18 +153,71 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateChat` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateChatErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateChat"))
+        let _ = ctx;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            CreateChatErrorModeled::InternalServerException(InternalServerException {
+                message: "the DevOps Agent state store is unavailable".to_string(),
+            })
+        })?;
+
+        // `userId` is "deprecated and will be ignored — the service resolves user
+        // identity from the authenticated session", so it names nothing about the
+        // chat; `userType` is the authentication type of that identity, which the
+        // Operator App plane owns and which nothing in the chat surface reports, so
+        // neither becomes part of the stored chat.
+        let _ = (&input.user_id, &input.user_type);
+
+        let mut store = state.lock();
+        let now = ::std::time::SystemTime::now();
+
+        // A chat execution lives inside the agent space that owns it, and the caller
+        // is authorised against that space before anything inside it can be known, so
+        // an `agentSpaceId` that resolves to no space fails CLOSED rather than
+        // disclosing which spaces exist. The space is resolved twice — once to count
+        // what it holds, once to insert into it — because minting the identifier
+        // between the two needs the store itself, so both arms refuse the same way.
+        let access_denied = || {
+            CreateChatErrorModeled::AccessDeniedException(AccessDeniedException {
+                message: crate::state::ACCESS_DENIED_MESSAGE.to_string(),
+            })
+        };
+        let chat_count = store
+            .agent_spaces
+            .get(&input.agent_space_id)
+            .ok_or_else(access_denied)?
+            .chats
+            .len();
+
+        // Every chat execution is a stored record under its agent space, so the
+        // number one space can hold is bounded: past the quota this operation answers
+        // the service's `ServiceQuotaExceededException` (HTTP 402) instead of growing
+        // the space without end.
+        if chat_count >= crate::state::MAX_CHATS_PER_AGENT_SPACE {
+            return Err(CreateChatErrorModeled::ServiceQuotaExceededException(
+                ServiceQuotaExceededException {
+                    message: format!(
+                        "The request would exceed the maximum number of chat executions ({}) for agent space {}",
+                        crate::state::MAX_CHATS_PER_AGENT_SPACE,
+                        input.agent_space_id
+                    ),
+                },
+            )
+            .into());
+        }
+
+        let execution_id = store.mint_chat_execution_id();
+        let record = crate::state::ChatRecord::new(execution_id.clone(), now);
+        let space = store
+            .agent_spaces
+            .get_mut(&input.agent_space_id)
+            .ok_or_else(access_denied)?;
+
+        // The response is rendered from the record the store now holds, so what the
+        // caller sees is what was persisted.
+        let stored = space.chats.entry(execution_id).or_insert(record);
+        Ok(CreateChatOutput {
+            execution_id: stored.execution_id.clone(),
+            created_at: crate::state::to_date_time(stored.created_at),
+        })
     }
 }
